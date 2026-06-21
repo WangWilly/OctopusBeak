@@ -1,0 +1,20 @@
+{
+  "name": "libretto-playground",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "libretto:status": "libretto status",
+    "libretto:setup": "libretto setup",
+    "run:example": "libretto run src/workflows/scrape-page.ts --headless",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^2.0.0",
+    "libretto": "^0.6.31"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0"
+  }
+}

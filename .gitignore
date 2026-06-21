@@ -1,0 +1,6 @@
+node_modules/
+.env
+
+# Libretto runtime state. Keep config/skills if setup creates them.
+.libretto/sessions/
+.libretto/profiles/
