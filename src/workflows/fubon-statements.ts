@@ -135,7 +135,7 @@ async function fillLoginForm(page: Page, credentials: Input["credentials"]) {
 async function waitForSignedInState(page: Page) {
   const headerFrame = await waitForFrame(page, "frame1");
   await headerFrame.locator("#header_form\\:header_logout").waitFor({
-    state: "attached",
+    state: "visible",
     timeout: 120_000,
   });
 }

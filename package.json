@@ -8,6 +8,7 @@
     "libretto:setup": "libretto setup",
     "run:example": "libretto run src/workflows/scrape-page.ts --headless",
     "run:fubon-statements": "libretto run src/workflows/fubon-statements.ts --headed",
+    "run:fubon-credit-card-statements": "libretto run src/workflows/fubon-credit-card-statements.ts --headed",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

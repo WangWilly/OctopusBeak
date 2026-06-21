@@ -65,3 +65,33 @@ npx libretto resume --session <session-name>
 ```
 
 By default, the workflow downloads the past year by running both bank ranges: `180` and `180_365`. The bank UI limits each query to roughly six months, so the workflow saves one file per account per range under `downloads/fubon-statements/` and returns the file metadata. It does not print statement rows to stdout.
+
+## Fubon Credit Card Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_FUBON_USER_ID=
+LIBRETTO_CLOUD_FUBON_ACCOUNT=
+LIBRETTO_CLOUD_FUBON_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA and may require OTP:
+
+```bash
+npm run run:fubon-credit-card-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow parses credit card `帳單明細` for the six visible period tabs (`本期` through `前五期`) and parses `未出帳單消費明細`. It writes CSV files under `downloads/fubon-credit-card-statements/` and returns only file metadata, period labels, and masked card labels.
+
+Optional filters can be passed with Libretto params:
+
+```bash
+npx libretto run src/workflows/fubon-credit-card-statements.ts --headed --params '{"periodOffsets":[1,2,3,4,5,6],"statementCardLabels":["4281","6704"],"unbilledCardNumbers":["6704","4281"]}'
+```
