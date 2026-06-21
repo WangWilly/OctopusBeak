@@ -95,3 +95,43 @@ Optional filters can be passed with Libretto params:
 ```bash
 npx libretto run src/workflows/fubon-credit-card-statements.ts --headed --params '{"periodOffsets":[1,2,3,4,5,6],"statementCardLabels":["4281","6704"],"unbilledCardNumbers":["6704","4281"]}'
 ```
+
+## Fubon Loan Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_FUBON_USER_ID=
+LIBRETTO_CLOUD_FUBON_ACCOUNT=
+LIBRETTO_CLOUD_FUBON_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA and may require OTP:
+
+```bash
+npm run run:fubon-loan-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow selects every available loan account, runs all discovered loan query items for `近六個月`, downloads `EXCEL`, and saves files under `downloads/fubon-loan-statements/`. The workflow returns file metadata only; it does not print loan statement rows to stdout.
+
+Optional filters and date ranges can be passed with Libretto params:
+
+```bash
+npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"loanAccountLabels":["9498"],"quickMonths":"6","downloadFormat":"EXCEL"}'
+```
+
+```bash
+npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"dateRange":{"startDate":"2026/01/01","endDate":"2026/06/21"},"downloadFormat":"EXCEL"}'
+```
+
+To run only one loan query item:
+
+```bash
+npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"queryItem":"TRANSACTION_DETAIL_QUERY","downloadFormat":"EXCEL"}'
+```
