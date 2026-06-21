@@ -7,11 +7,13 @@
     "libretto:status": "libretto status",
     "libretto:setup": "libretto setup",
     "run:example": "libretto run src/workflows/scrape-page.ts --headless",
+    "run:fubon-statements": "libretto run src/workflows/fubon-statements.ts --headed",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",
-    "libretto": "^0.6.31"
+    "libretto": "^0.6.31",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
