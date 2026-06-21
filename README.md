@@ -135,3 +135,35 @@ To run only one loan query item:
 ```bash
 npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"queryItem":"TRANSACTION_DETAIL_QUERY","downloadFormat":"EXCEL"}'
 ```
+
+## YuanTa Domestic-Currency Statements Workflow
+
+Fill these values in `.env` before running. `YUANTA_ACCOUNT` is the YuanTa `使用者代號` login field.
+
+```bash
+LIBRETTO_CLOUD_YUANTA_USER_ID=
+LIBRETTO_CLOUD_YUANTA_ACCOUNT=
+LIBRETTO_CLOUD_YUANTA_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA:
+
+```bash
+npm run run:yuanta-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow opens `臺幣交易明細查詢`, uses the `一個月` date range, iterates all domestic-currency account options, downloads each `下載CSV檔`, and saves the files under `downloads/yuanta-statements/`. It returns only file metadata and masked account labels.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-statements.ts --headed --params '{"dateRange":"three_months","accountFilters":["9947"],"replaceActiveSession":true}'
+```
+
+Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. Set `replaceActiveSession` to `false` if you do not want the workflow to click YuanTa's active-session replacement prompt.
