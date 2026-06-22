@@ -174,6 +174,39 @@ npx libretto run src/workflows/yuanta-statements.ts --headed --params '{"dateRan
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. Set `replaceActiveSession` to `false` if you do not want the workflow to click YuanTa's active-session replacement prompt.
 
+## YuanTa Nexus WebTrade Statements And Holdings Workflow
+
+Fill these values in `.env` before running. The certificate path and certificate password use separate settings from the WebTrade login credentials.
+
+```bash
+LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID=
+LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD=
+LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH=
+LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD=
+```
+
+Run the workflow in headed mode because YuanTa Nexus WebTrade requires the image challenge and may require the local certificate selection flow:
+
+```bash
+npm run run:yuanta-trade-statements
+```
+
+When the workflow pauses, solve the YuanTa challenge in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+If the certificate file prompt remains open after resume, select the certificate file in the browser and resume again. By default, the workflow queries all discovered AssetReport holding pages and all matching trade-detail pages for the last 90 days, then writes CSV files under `downloads/yuanta-trade-statements/`. Grid CSVs use the site table headers. `*-summary-*` CSVs are raw mixed page-summary rows, so they use synthetic `column_1`, `column_2`, etc. headers to avoid treating an unrelated page row as the CSV schema. It also writes a JSON manifest for audit/debugging, and returns only counts and file metadata to stdout.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-trade-statements.ts --headed --params '{"startDate":"2026/03/24","endDate":"2026/06/22","accountIndex":-1}'
+```
+
+YuanTa enforces a 90-day custom date range limit in the UI.
+
 ## YuanTa Foreign-Currency Statements Workflow
 
 Use the same `.env` values:
