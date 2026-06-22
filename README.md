@@ -167,3 +167,35 @@ npx libretto run src/workflows/yuanta-statements.ts --headed --params '{"dateRan
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. Set `replaceActiveSession` to `false` if you do not want the workflow to click YuanTa's active-session replacement prompt.
+
+## YuanTa Foreign-Currency Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_YUANTA_USER_ID=
+LIBRETTO_CLOUD_YUANTA_ACCOUNT=
+LIBRETTO_CLOUD_YUANTA_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA:
+
+```bash
+npm run run:yuanta-foreign-currency-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow opens `外幣交易明細查詢`, uses the `三個月` date range, iterates all available foreign-currency account options, selects `全部` currency when available, downloads each `下載CSV檔`, and saves files under `downloads/yuanta-foreign-currency-statements/`. It returns only file metadata, masked account labels, and currency labels.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-foreign-currency-statements.ts --headed --params '{"dateRange":"one_month","accountFilters":["9947"],"currencyFilters":["USD"],"channelType":"mobile_bank","replaceActiveSession":true}'
+```
+
+Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
