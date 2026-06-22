@@ -200,6 +200,38 @@ npx libretto run src/workflows/yuanta-foreign-currency-statements.ts --headed --
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
 
+## YuanTa Loan Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_YUANTA_USER_ID=
+LIBRETTO_CLOUD_YUANTA_ACCOUNT=
+LIBRETTO_CLOUD_YUANTA_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA:
+
+```bash
+npm run run:yuanta-loan-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow opens `貸款繳款明細查詢`, uses the `一年` date range, iterates all available loan account options, parses the result table on the page, and writes CSV and JSON files under `downloads/yuanta-loan-statements/`. It returns only file metadata and masked loan account labels.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-loan-statements.ts --headed --params '{"dateRange":"six_months","loanAccountFilters":["1234"],"replaceActiveSession":true}'
+```
+
+Supported `dateRange` values are `three_months`, `six_months`, and `one_year`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
+
 ## Cathay Domestic-Currency Statements Workflow
 
 Fill these values in `.env` before running. `CATHAY_ACCOUNT` is the Cathay `用戶代號` login field.
