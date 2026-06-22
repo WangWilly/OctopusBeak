@@ -255,10 +255,42 @@ async function fillLoginForm(
   await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const loginFrame = await waitForFrame(page, "main");
-  await loginFrame.locator("#custidMask").fill(userId);
+  const userIdField = loginFrame.locator("#custidMask");
+  await userIdField.fill(userId);
+  await maskUserId(loginFrame);
   await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
   await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
   await loginFrame.locator("#gcode").focus();
+}
+
+async function maskUserId(loginFrame: Frame): Promise<void> {
+  await loginFrame.evaluate(() => {
+    const yuanTaWindow = window as typeof window & { maskID?: () => void };
+    if (typeof yuanTaWindow.maskID !== "function") {
+      throw new Error("YuanTa login page did not expose maskID().");
+    }
+    yuanTaWindow.maskID();
+  });
+
+  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
+  if (!hiddenUserId.trim()) {
+    throw new Error("YuanTa login page did not populate hidden custid.");
+  }
+}
+
+async function restoreUserIdForSubmit(
+  loginFrame: Frame,
+  userId: string,
+): Promise<void> {
+  const normalizedUserId = userId.trim();
+  await loginFrame.locator("#custid").evaluate((element, value) => {
+    (element as HTMLInputElement).value = value;
+  }, normalizedUserId);
+
+  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
+  if (hiddenUserId !== normalizedUserId) {
+    throw new Error("YuanTa login page did not restore hidden custid.");
+  }
 }
 
 async function fillReadonlyLoginInput(
@@ -270,8 +302,15 @@ async function fillReadonlyLoginInput(
   await field.fill(value);
 }
 
-async function submitLogin(page: Page): Promise<void> {
+async function submitLogin(
+  page: Page,
+  credentials: YuantaCredentials,
+): Promise<void> {
   const loginFrame = await waitForFrame(page, "main");
+  await restoreUserIdForSubmit(
+    loginFrame,
+    requireCredential(credentials, "yuanta_user_id"),
+  );
   await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
 }
 
@@ -587,16 +626,15 @@ export default workflow("yuantaLoanStatements", {
             "`.",
         );
         await pause(authSession);
-        if (!(await isSignedIn(authPage))) {
-          const loginFrame = authPage.frame({ name: "main" });
-          const stillOnLogin =
-            loginFrame &&
-            (await loginFrame
-              .locator("#custidMask, #custnoInput, #custcode, #gcode")
-              .first()
-              .isVisible()
-              .catch(() => false));
-          if (stillOnLogin) await submitLogin(authPage);
+        const loginFrame = authPage.frame({ name: "main" });
+        const loginButtonVisible =
+          loginFrame &&
+          (await loginFrame
+            .locator('a[href="javascript:doPreLogin();"]')
+            .isVisible()
+            .catch(() => false));
+        if (loginButtonVisible) {
+          await submitLogin(authPage, signInCredentials as YuantaCredentials);
         }
         replacedActiveSession = await waitForSignedInState(
           authPage,

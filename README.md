@@ -232,6 +232,38 @@ npx libretto run src/workflows/yuanta-loan-statements.ts --headed --params '{"da
 
 Supported `dateRange` values are `three_months`, `six_months`, and `one_year`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
 
+## YuanTa Credit Card Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_YUANTA_USER_ID=
+LIBRETTO_CLOUD_YUANTA_ACCOUNT=
+LIBRETTO_CLOUD_YUANTA_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA:
+
+```bash
+npm run run:yuanta-credit-card-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow opens `歷史帳單明細查詢`, parses all visible statement months, then parses `未出帳明細查詢`, `近三個月繳款明細查詢`, and `信用卡總覽`. YuanTa does not provide download buttons for these tables, so the workflow writes parsed CSV and JSON files under `downloads/yuanta-credit-card-statements/` and returns file metadata. It also writes aggregate CSV/JSON files named `*-aggregate-*.csv` and `*-aggregate-*.json` for transaction-style tables, grouped by table type such as `transactions` and `payment-details`.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-credit-card-statements.ts --headed --params '{"monthIndexes":[0,1,2],"includeUnbilled":true,"includePaymentDetails":true,"includeSummary":false,"replaceActiveSession":true}'
+```
+
+`monthIndexes` maps to YuanTa's visible statement links: `0` is the current visible statement month, `1` is the next older month, and so on. Omit it to parse every visible statement month.
+
 ## Cathay Domestic-Currency Statements Workflow
 
 Fill these values in `.env` before running. `CATHAY_ACCOUNT` is the Cathay `用戶代號` login field.
