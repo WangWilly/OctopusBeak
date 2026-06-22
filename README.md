@@ -270,6 +270,38 @@ npx libretto run src/workflows/yuanta-credit-card-statements.ts --headed --param
 
 `monthIndexes` maps to YuanTa's visible statement links: `0` is the current visible statement month, `1` is the next older month, and so on. Omit it to parse every visible statement month.
 
+## YuanTa Fund Statements Workflow
+
+Use the same `.env` values:
+
+```bash
+LIBRETTO_CLOUD_YUANTA_USER_ID=
+LIBRETTO_CLOUD_YUANTA_ACCOUNT=
+LIBRETTO_CLOUD_YUANTA_PASSWORD=
+```
+
+Run the workflow in headed mode because the bank login requires manual CAPTCHA:
+
+```bash
+npm run run:yuanta-fund-statements
+```
+
+When the workflow pauses, enter the CAPTCHA in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow opens `基金歸戶總覽`, `基金投資明細總覽`, each fund's `基金歷史交易明細查詢`, and `營業時間外交易查詢與取消`. YuanTa does not provide download buttons for these tables, so the workflow parses the pages and writes raw CSV/JSON files under `downloads/yuanta-fund-statements/`. It also writes schema-stable aggregate CSV/JSON files named `*-aggregate-*.csv` and `*-aggregate-*.json` for real data tables such as `portfolio-summary`, `investment-detail`, `buy-details`, and `redemption-details`; reference, query-form, and header-only empty tables are kept as raw files but skipped from aggregates.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/yuanta-fund-statements.ts --headed --params '{"dateRange":"six_months","fundFilters":["77A6"],"includeOffHourOrders":true,"replaceActiveSession":true}'
+```
+
+Supported `dateRange` values are `three_months`, `six_months`, and `one_year`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces a maximum query interval of one year.
+
 ## Cathay Domestic-Currency Statements Workflow
 
 Fill these values in `.env` before running. `CATHAY_ACCOUNT` is the Cathay `用戶代號` login field.
