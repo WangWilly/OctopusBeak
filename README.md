@@ -39,8 +39,14 @@ npm run libretto:status
 npx libretto open https://example.com --headed --session demo
 npx libretto snapshot --session demo
 npx libretto exec --session demo "return await page.title()"
-npx libretto close --session demo
+npm run libretto:close-session -- demo
+npm run libretto:close-all
 ```
+
+`libretto:close-session` passes the session name after `--`, so
+`npm run libretto:close-session -- demo` runs `libretto close --session demo`.
+Use `libretto:close-all` after failed or interrupted workflows to clean up
+unused `Google Chrome for Testing` windows.
 
 ## Fubon Statements Workflow
 
