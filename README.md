@@ -199,3 +199,35 @@ npx libretto run src/workflows/yuanta-foreign-currency-statements.ts --headed --
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
+
+## Cathay Domestic-Currency Statements Workflow
+
+Fill these values in `.env` before running. `CATHAY_ACCOUNT` is the Cathay `用戶代號` login field.
+
+```bash
+LIBRETTO_CLOUD_CATHAY_USER_ID=
+LIBRETTO_CLOUD_CATHAY_ACCOUNT=
+LIBRETTO_CLOUD_CATHAY_PASSWORD=
+```
+
+Run the workflow in headed mode because Cathay may require Email OTP verification:
+
+```bash
+npm run run:cathay-statements
+```
+
+When the workflow pauses, enter the Email OTP in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow uses the authenticated Cathay statement APIs to fetch `近 1 年` for every TWD account and writes CSV files under `downloads/cathay-statements/`. It returns only file metadata, row counts, and masked account labels.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/cathay-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["2751"],"trustDevice":false}'
+```
+
+Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
