@@ -231,3 +231,35 @@ npx libretto run src/workflows/cathay-statements.ts --headed --params '{"dateRan
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
+
+## Cathay Foreign-Currency Statements Workflow
+
+Use the same Cathay `.env` values. `CATHAY_ACCOUNT` is the Cathay `用戶代號` login field.
+
+```bash
+LIBRETTO_CLOUD_CATHAY_USER_ID=
+LIBRETTO_CLOUD_CATHAY_ACCOUNT=
+LIBRETTO_CLOUD_CATHAY_PASSWORD=
+```
+
+Run the workflow in headed mode because Cathay may require Email OTP verification:
+
+```bash
+npm run run:cathay-foreign-statements
+```
+
+When the workflow pauses, enter the Email OTP in the browser and resume:
+
+```bash
+npx libretto resume --session <session-name>
+```
+
+By default, this workflow uses the authenticated Cathay foreign-currency APIs to fetch `近 1 年` for every foreign-currency account and all available currencies, then writes CSV files under `downloads/cathay-foreign-statements/`. It returns only file metadata, row counts, selected currencies, and masked account labels.
+
+Optional params can be passed with Libretto:
+
+```bash
+npx libretto run src/workflows/cathay-foreign-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["2561"],"currencyFilters":["USD"],"trustDevice":false}'
+```
+
+Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
