@@ -1,7 +1,8 @@
 {
-  "name": "libretto-playground",
+  "name": "octopus-beak",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "libretto:status": "libretto status",
