@@ -129,7 +129,7 @@ By default, this workflow selects every available loan account, runs all discove
 Optional filters and date ranges can be passed with Libretto params:
 
 ```bash
-npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"loanAccountLabels":["9498"],"quickMonths":"6","downloadFormat":"EXCEL"}'
+npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"loanAccountLabels":["<loan-account-label>"],"quickMonths":"6","downloadFormat":"EXCEL"}'
 ```
 
 ```bash
@@ -164,12 +164,12 @@ When the workflow pauses, enter the CAPTCHA in the browser and resume:
 npx libretto resume --session <session-name>
 ```
 
-By default, this workflow opens `臺幣交易明細查詢`, uses the `一個月` date range, iterates all domestic-currency account options, downloads each `下載CSV檔`, and saves the files under `downloads/yuanta-statements/`. It returns only file metadata and masked account labels.
+By default, this workflow opens `臺幣交易明細查詢`, uses the `三個月` date range, iterates all domestic-currency account options, downloads each `下載CSV檔`, and saves the files under `downloads/yuanta-statements/`. It returns only file metadata and masked account labels.
 
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/yuanta-statements.ts --headed --params '{"dateRange":"three_months","accountFilters":["9947"],"replaceActiveSession":true}'
+npx libretto run src/workflows/yuanta-statements.ts --headed --params '{"dateRange":"three_months","accountFilters":["<account-suffix>"],"replaceActiveSession":true}'
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. Set `replaceActiveSession` to `false` if you do not want the workflow to click YuanTa's active-session replacement prompt.
@@ -234,7 +234,7 @@ By default, this workflow opens `外幣交易明細查詢`, uses the `三個月`
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/yuanta-foreign-currency-statements.ts --headed --params '{"dateRange":"one_month","accountFilters":["9947"],"currencyFilters":["USD"],"channelType":"mobile_bank","replaceActiveSession":true}'
+npx libretto run src/workflows/yuanta-foreign-currency-statements.ts --headed --params '{"dateRange":"one_month","accountFilters":["<account-suffix>"],"currencyFilters":["USD"],"channelType":"mobile_bank","replaceActiveSession":true}'
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
@@ -266,7 +266,7 @@ By default, this workflow opens `貸款繳款明細查詢`, uses the `一年` da
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/yuanta-loan-statements.ts --headed --params '{"dateRange":"six_months","loanAccountFilters":["1234"],"replaceActiveSession":true}'
+npx libretto run src/workflows/yuanta-loan-statements.ts --headed --params '{"dateRange":"six_months","loanAccountFilters":["<loan-account-suffix>"],"replaceActiveSession":true}'
 ```
 
 Supported `dateRange` values are `three_months`, `six_months`, and `one_year`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces the range limits shown in its UI.
@@ -330,7 +330,7 @@ By default, this workflow opens `基金歸戶總覽`, `基金投資明細總覽`
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/yuanta-fund-statements.ts --headed --params '{"dateRange":"six_months","fundFilters":["77A6"],"includeOffHourOrders":true,"replaceActiveSession":true}'
+npx libretto run src/workflows/yuanta-fund-statements.ts --headed --params '{"dateRange":"six_months","fundFilters":["<fund-code-or-name>"],"includeOffHourOrders":true,"replaceActiveSession":true}'
 ```
 
 Supported `dateRange` values are `three_months`, `six_months`, and `one_year`. For a custom date range, pass `customDateRange` with `YYYY/MM/DD` dates; YuanTa enforces a maximum query interval of one year.
@@ -362,7 +362,7 @@ By default, this workflow uses the authenticated Cathay statement APIs to fetch 
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/cathay-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["2751"],"trustDevice":false}'
+npx libretto run src/workflows/cathay-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["<account-suffix>"],"trustDevice":false}'
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
@@ -394,7 +394,7 @@ By default, this workflow uses the authenticated Cathay foreign-currency APIs to
 Optional params can be passed with Libretto:
 
 ```bash
-npx libretto run src/workflows/cathay-foreign-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["2561"],"currencyFilters":["USD"],"trustDevice":false}'
+npx libretto run src/workflows/cathay-foreign-statements.ts --headed --params '{"dateRange":"six_months","accountFilters":["<account-suffix>"],"currencyFilters":["USD"],"trustDevice":false}'
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
