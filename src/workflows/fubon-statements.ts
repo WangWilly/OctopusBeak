@@ -10,7 +10,7 @@ const BANK_ENTRY_URL =
 
 type BrowserScope = Page | Frame;
 
-const dateRangeSchema = z.enum([
+export const fubonStatementDateRangeSchema = z.enum([
   "1",
   "3",
   "7",
@@ -23,19 +23,22 @@ const dateRangeSchema = z.enum([
   "180_365",
 ]);
 
-const inputSchema = z.object({
-  dateRanges: z.array(dateRangeSchema).min(1).default(["180", "180_365"]),
+export const fubonStatementsInputSchema = z.object({
+  dateRanges: z
+    .array(fubonStatementDateRangeSchema)
+    .min(1)
+    .default(["180", "180_365"]),
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]).default("EXCEL"),
 });
 
-const outputSchema = z.object({
-  dateRanges: z.array(dateRangeSchema),
+export const fubonStatementsOutputSchema = z.object({
+  dateRanges: z.array(fubonStatementDateRangeSchema),
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]),
   count: z.number().int().nonnegative(),
   downloads: z.array(
     z.object({
       account: z.string(),
-      dateRange: dateRangeSchema,
+      dateRange: fubonStatementDateRangeSchema,
       filename: z.string(),
       path: z.string(),
       bytes: z.number().int().nonnegative(),
@@ -45,17 +48,22 @@ const outputSchema = z.object({
   ),
 });
 
-type Input = z.infer<typeof inputSchema> & {
-  credentials: {
-    fubon_user_id?: string;
-    fubon_account?: string;
-    fubon_password?: string;
-  };
+export type FubonCredentials = {
+  fubon_user_id?: string;
+  fubon_account?: string;
+  fubon_password?: string;
+};
+
+export type FubonStatementsInput = z.infer<typeof fubonStatementsInputSchema>;
+export type FubonStatementsOutput = z.infer<typeof fubonStatementsOutputSchema>;
+
+type Input = FubonStatementsInput & {
+  credentials: FubonCredentials;
 };
 
 function requireCredential(
-  credentials: Input["credentials"],
-  name: keyof Input["credentials"],
+  credentials: FubonCredentials,
+  name: keyof FubonCredentials,
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
@@ -115,7 +123,7 @@ async function waitForFrame(
   throw new Error(`Timed out waiting for frame "${name}".`);
 }
 
-async function fillLoginForm(page: Page, credentials: Input["credentials"]) {
+async function fillLoginForm(page: Page, credentials: FubonCredentials) {
   const userId = requireCredential(credentials, "fubon_user_id");
   const account = requireCredential(credentials, "fubon_account");
   const password = requireCredential(credentials, "fubon_password");
@@ -285,7 +293,7 @@ async function openTransactionDetailForAccountIndex(
 
 async function queryStatements(
   page: Page,
-  dateRange: z.infer<typeof dateRangeSchema>,
+  dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
 ) {
   const scope = await findScopeWithSelector(
     page,
@@ -328,10 +336,76 @@ async function downloadStatements(
   return { filename, path, bytes: fileStat.size, ...converted };
 }
 
+export async function signInFubon(
+  page: Page,
+  session: string,
+  credentials: FubonCredentials,
+): Promise<void> {
+  await fillLoginForm(page, credentials);
+
+  console.log(
+    "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
+      session +
+      "`.",
+  );
+  await pause(session);
+
+  const loginFrame = await waitForFrame(page, "txnFrame");
+  await loginFrame.locator("#btnLogin2").click();
+
+  if (
+    await loginFrame
+      .locator("#m1_inputOTP")
+      .isVisible()
+      .catch(() => false)
+  ) {
+    console.log(
+      "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
+        session +
+        "`.",
+    );
+    await pause(session);
+  }
+
+  await waitForSignedInState(page);
+}
+
+export async function runFubonStatements(
+  page: Page,
+  input: FubonStatementsInput,
+): Promise<FubonStatementsOutput> {
+  const depositScope = await openMyDepositsPage(page);
+  const accountCount = await countDepositRows(depositScope);
+  const downloads: FubonStatementsOutput["downloads"] = [];
+
+  for (let accountIndex = 0; accountIndex < accountCount; accountIndex += 1) {
+    for (const dateRange of input.dateRanges) {
+      const account = await openTransactionDetailForAccountIndex(
+        page,
+        accountIndex,
+      );
+      await queryStatements(page, dateRange);
+      const download = await downloadStatements(page, input.downloadFormat);
+      downloads.push({
+        account,
+        dateRange,
+        ...download,
+      });
+    }
+  }
+
+  return {
+    dateRanges: input.dateRanges,
+    downloadFormat: input.downloadFormat,
+    count: downloads.length,
+    downloads,
+  };
+}
+
 export default workflow("fubonStatements", {
   credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
-  input: inputSchema,
-  output: outputSchema,
+  input: fubonStatementsInputSchema,
+  output: fubonStatementsOutputSchema,
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
     const { page, session } = ctx;
@@ -341,59 +415,7 @@ export default workflow("fubonStatements", {
       await dialog.accept();
     });
 
-    await fillLoginForm(page, input.credentials);
-
-    console.log(
-      "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-        session +
-        "`.",
-    );
-    await pause(session);
-
-    const loginFrame = await waitForFrame(page, "txnFrame");
-    await loginFrame.locator("#btnLogin2").click();
-
-    if (
-      await loginFrame
-        .locator("#m1_inputOTP")
-        .isVisible()
-        .catch(() => false)
-    ) {
-      console.log(
-        "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-    }
-
-    await waitForSignedInState(page);
-
-    const depositScope = await openMyDepositsPage(page);
-    const accountCount = await countDepositRows(depositScope);
-    const downloads = [];
-
-    for (let accountIndex = 0; accountIndex < accountCount; accountIndex += 1) {
-      for (const dateRange of input.dateRanges) {
-        const account = await openTransactionDetailForAccountIndex(
-          page,
-          accountIndex,
-        );
-        await queryStatements(page, dateRange);
-        const download = await downloadStatements(page, input.downloadFormat);
-        downloads.push({
-          account,
-          dateRange,
-          ...download,
-        });
-      }
-    }
-
-    return {
-      dateRanges: input.dateRanges,
-      downloadFormat: input.downloadFormat,
-      count: downloads.length,
-      downloads,
-    };
+    await signInFubon(page, session, input.credentials);
+    return await runFubonStatements(page, input);
   },
 });

@@ -76,6 +76,7 @@ npm run libretto:close-all
 
 | Bank   | Records                                                                         | Command                                          | Output                                          |
 | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------- |
+| Fubon  | Deposit, credit card, and loan statements in one login session                  | `npm run run:fubon-all-statements`               | `downloads/fubon-*/`                            |
 | Fubon  | Deposit statements                                                              | `npm run run:fubon-statements`                   | `downloads/fubon-statements/`                   |
 | Fubon  | Credit card statements and unbilled details                                     | `npm run run:fubon-credit-card-statements`       | `downloads/fubon-credit-card-statements/`       |
 | Fubon  | Loan statements                                                                 | `npm run run:fubon-loan-statements`              | `downloads/fubon-loan-statements/`              |
@@ -134,13 +135,33 @@ LIBRETTO_CLOUD_CATHAY_PASSWORD=
 
 ## Workflow Details
 
+### Fubon All Statements
+
+```bash
+npm run run:fubon-all-statements
+```
+
+Logs in to Fubon once, then runs the deposit, credit card, and loan workflows in the same browser session. This avoids repeating CAPTCHA/OTP for the three separate Fubon workflows. Output is grouped in the workflow result as `statements`, `creditCards`, and `loans`; files are still written to the same per-workflow folders:
+
+- `downloads/fubon-statements/`
+- `downloads/fubon-credit-card-statements/`
+- `downloads/fubon-loan-statements/`
+
+The nested params match the original workflow params:
+
+```bash
+npx libretto run src/workflows/fubon-all-statements.ts --headed --params '{"statements":{"dateRanges":["180","180_365"],"downloadFormat":"EXCEL"},"creditCards":{"periodOffsets":[1,2,3,4,5,6]},"loans":{"quickMonths":"6","downloadFormat":"EXCEL"}}'
+```
+
+For Fubon deposit and loan `EXCEL` downloads, the workflow keeps the original bank file and also writes a sibling `.csv` file. The result metadata includes the original `path`/`bytes` plus `csvPath`/`csvBytes`.
+
 ### Fubon Deposit Statements
 
 ```bash
 npm run run:fubon-statements
 ```
 
-Downloads the past year by running both bank ranges, `180` and `180_365`, because the bank UI limits each query to roughly six months. The workflow saves one file per account per range and does not print statement rows to stdout.
+Downloads the past year by running both bank ranges, `180` and `180_365`, because the bank UI limits each query to roughly six months. The workflow saves one file per account per range and does not print statement rows to stdout. For `EXCEL` downloads, it also writes a sibling `.csv` file and returns `csvPath`/`csvBytes`.
 
 ### Fubon Credit Card Statements
 
@@ -163,6 +184,10 @@ npm run run:fubon-loan-statements
 ```
 
 Selects every available loan account, runs all discovered loan query items for `近六個月`, downloads `EXCEL`, and returns file metadata only.
+
+Some loan accounts expose only a subset of the query item options. By default, the workflow reads the visible options for each account and runs only the available query items, avoiding long `selectOption` timeouts for unavailable items. If you explicitly pass `queryItem` or `queryItems`, unavailable items are reported in `skippedAccounts`.
+
+For `EXCEL` downloads, the workflow keeps the original bank file and also writes a sibling `.csv` file with `csvPath`/`csvBytes` in the output metadata.
 
 Optional filters and date ranges:
 
