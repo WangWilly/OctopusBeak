@@ -23,7 +23,9 @@ const queryItemSchema = z.enum([
   "DYNAMIC_BRANCH_DETAIL_QUERY",
 ]);
 
-const DEFAULT_QUERY_ITEMS: z.infer<typeof queryItemSchema>[] = [
+type QueryItem = z.infer<typeof queryItemSchema>;
+
+const DEFAULT_QUERY_ITEMS: QueryItem[] = [
   "TRANSACTION_DETAIL_QUERY",
   "PARTLY_PAID_TRANSACTION_DETAIL_QUERY",
   "DATES_DETAIL_QUERY",
@@ -75,6 +77,14 @@ const outputSchema = z.object({
     }),
   ),
 });
+
+export {
+  inputSchema as fubonLoanStatementsInputSchema,
+  outputSchema as fubonLoanStatementsOutputSchema,
+};
+
+export type FubonLoanStatementsInput = z.infer<typeof inputSchema>;
+export type FubonLoanStatementsOutput = z.infer<typeof outputSchema>;
 
 function requireCredential(
   credentials: FubonCredentials,
@@ -396,6 +406,16 @@ type LoanAccountOption = {
   value: string;
 };
 
+function requestedQueryItems(input: FubonLoanStatementsInput): QueryItem[] {
+  if (input.queryItems && input.queryItems.length > 0) return input.queryItems;
+  if (input.queryItem) return [input.queryItem];
+  return DEFAULT_QUERY_ITEMS;
+}
+
+function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
+  return Boolean(input.queryItem || (input.queryItems && input.queryItems.length > 0));
+}
+
 async function readLoanAccountOptions(
   scope: BrowserScope,
   filters: string[],
@@ -426,11 +446,9 @@ async function readLoanAccountOptions(
   return result;
 }
 
-async function configureLoanQuery(
+async function selectLoanAccount(
   page: Page,
   account: LoanAccountOption,
-  input: z.infer<typeof inputSchema>,
-  queryItem: z.infer<typeof queryItemSchema>,
 ): Promise<BrowserScope> {
   let scope = await findScopeWithSelector(page, "#form1\\:loanAccountCombo");
   await waitForNoVisibleBankMask(page);
@@ -440,7 +458,44 @@ async function configureLoanQuery(
     .selectOption(account.value, { force: true });
   await waitForNoVisibleBankMask(page);
 
-  scope = await findScopeWithSelector(page, "#form1\\:queryItemCombo");
+  return await findScopeWithSelector(page, "#form1\\:queryItemCombo");
+}
+
+async function readAvailableLoanQueryItems(
+  scope: BrowserScope,
+): Promise<QueryItem[]> {
+  const combo = scope.locator("#form1\\:queryItemCombo");
+  await combo.locator("option").first().waitFor({
+    state: "attached",
+    timeout: 60_000,
+  });
+
+  const options = combo.locator("option");
+  const count = await options.count();
+  const result: QueryItem[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const value = cleanText(await options.nth(index).getAttribute("value"));
+    const parsed = queryItemSchema.safeParse(value);
+    if (parsed.success && !result.includes(parsed.data)) {
+      result.push(parsed.data);
+    }
+  }
+
+  return result;
+}
+
+async function configureLoanQuery(
+  page: Page,
+  input: FubonLoanStatementsInput,
+  queryItem: QueryItem,
+): Promise<BrowserScope> {
+  const scope = await findScopeWithSelector(page, "#form1\\:queryItemCombo");
+  const availableQueryItems = await readAvailableLoanQueryItems(scope);
+  if (!availableQueryItems.includes(queryItem)) {
+    throw new Error(`Loan query item is not available for this account: ${queryItem}`);
+  }
+
   await scope
     .locator("#form1\\:queryItemCombo")
     .selectOption(queryItem, { force: true });
@@ -507,6 +562,122 @@ async function downloadLoanStatement(
   return { filename, path, bytes: fileStat.size, ...converted };
 }
 
+export async function runFubonLoanStatements(
+  page: Page,
+  input: FubonLoanStatementsInput,
+): Promise<FubonLoanStatementsOutput> {
+  let scope = await openLoanStatementsPage(page);
+  const loanAccounts = await readLoanAccountOptions(
+    scope,
+    input.loanAccountLabels,
+  );
+  const queryItems = requestedQueryItems(input);
+  const explicitQueryItems = hasExplicitQueryItems(input);
+
+  const downloads: FubonLoanStatementsOutput["downloads"] = [];
+  const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
+
+  for (const account of loanAccounts) {
+    scope = await selectLoanAccount(page, account);
+    const availableQueryItems = await readAvailableLoanQueryItems(scope);
+    const accountQueryItems = queryItems.filter((queryItem) =>
+      availableQueryItems.includes(queryItem),
+    );
+    const unavailableQueryItems = queryItems.filter(
+      (queryItem) => !availableQueryItems.includes(queryItem),
+    );
+
+    if (explicitQueryItems) {
+      for (const queryItem of unavailableQueryItems) {
+        const reason = `Loan query item is not available for this account: ${queryItem}`;
+        console.warn("loan-query-skipped", {
+          loanAccount: account.label,
+          queryItem,
+          reason,
+        });
+        skippedAccounts.push({
+          loanAccount: account.label,
+          queryItem,
+          reason,
+        });
+      }
+    }
+
+    if (accountQueryItems.length === 0) {
+      const queryItem = queryItems[0];
+      const reason = "No requested loan query items are available for this account.";
+      console.warn("loan-query-skipped", {
+        loanAccount: account.label,
+        queryItem,
+        reason,
+      });
+      skippedAccounts.push({
+        loanAccount: account.label,
+        queryItem,
+        reason,
+      });
+      continue;
+    }
+
+    for (const queryItem of accountQueryItems) {
+      try {
+        scope = await configureLoanQuery(page, input, queryItem);
+        scope = await runLoanQuery(page);
+        await loanDownloadLink(scope).waitFor({
+          state: "attached",
+          timeout: 60_000,
+        });
+        const download = await downloadLoanStatement(
+          page,
+          account.label,
+          queryItem,
+          input.downloadFormat,
+        );
+        downloads.push({
+          loanAccount: account.label,
+          queryItem,
+          ...download,
+        });
+      } catch (error) {
+        console.warn("loan-query-skipped", {
+          loanAccount: account.label,
+          queryItem,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        skippedAccounts.push({
+          loanAccount: account.label,
+          queryItem,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  if (downloads.length === 0 && skippedAccounts.length > 0) {
+    throw new Error(
+      `No loan statements were downloaded. First skipped account reason: ${skippedAccounts[0].reason}`,
+    );
+  }
+
+  return {
+    queryItems,
+    period: input.dateRange
+      ? {
+          mode: "custom" as const,
+          startDate: input.dateRange.startDate,
+          endDate: input.dateRange.endDate,
+        }
+      : {
+          mode: "quick" as const,
+          quickMonths: input.quickMonths,
+        },
+    downloadFormat: input.downloadFormat,
+    count: downloads.length,
+    downloads,
+    skippedAccounts,
+  };
+}
+
 export default workflow("fubonLoanStatements", {
   credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
   input: inputSchema,
@@ -548,78 +719,6 @@ export default workflow("fubonLoanStatements", {
     }
 
     await waitForSignedInState(page);
-    let scope = await openLoanStatementsPage(page);
-    const loanAccounts = await readLoanAccountOptions(
-      scope,
-      input.loanAccountLabels,
-    );
-    const queryItems =
-      input.queryItems && input.queryItems.length > 0
-        ? input.queryItems
-        : input.queryItem
-          ? [input.queryItem]
-          : DEFAULT_QUERY_ITEMS;
-
-    const downloads = [];
-    const skippedAccounts = [];
-
-    for (const account of loanAccounts) {
-      for (const queryItem of queryItems) {
-        try {
-          scope = await configureLoanQuery(page, account, input, queryItem);
-          scope = await runLoanQuery(page);
-          await loanDownloadLink(scope).waitFor({
-            state: "attached",
-            timeout: 60_000,
-          });
-          const download = await downloadLoanStatement(
-            page,
-            account.label,
-            queryItem,
-            input.downloadFormat,
-          );
-          downloads.push({
-            loanAccount: account.label,
-            queryItem,
-            ...download,
-          });
-        } catch (error) {
-          console.warn("loan-query-skipped", {
-            loanAccount: account.label,
-            queryItem,
-            reason: error instanceof Error ? error.message : String(error),
-          });
-          skippedAccounts.push({
-            loanAccount: account.label,
-            queryItem,
-            reason: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    }
-
-    if (downloads.length === 0 && skippedAccounts.length > 0) {
-      throw new Error(
-        `No loan statements were downloaded. First skipped account reason: ${skippedAccounts[0].reason}`,
-      );
-    }
-
-    return {
-      queryItems,
-      period: input.dateRange
-        ? {
-            mode: "custom" as const,
-            startDate: input.dateRange.startDate,
-            endDate: input.dateRange.endDate,
-          }
-        : {
-            mode: "quick" as const,
-            quickMonths: input.quickMonths,
-          },
-      downloadFormat: input.downloadFormat,
-      count: downloads.length,
-      downloads,
-      skippedAccounts,
-    };
+    return await runFubonLoanStatements(page, input);
   },
 });

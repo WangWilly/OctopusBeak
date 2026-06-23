@@ -11,6 +11,7 @@
     "libretto:close-all": "libretto close --all",
     "run:example": "libretto run src/workflows/scrape-page.ts --headless",
     "run:fubon-statements": "libretto run src/workflows/fubon-statements.ts --headed",
+    "run:fubon-all-statements": "libretto run src/workflows/fubon-all-statements.ts --headed",
     "run:fubon-credit-card-statements": "libretto run src/workflows/fubon-credit-card-statements.ts --headed",
     "run:fubon-loan-statements": "libretto run src/workflows/fubon-loan-statements.ts --headed",
     "run:yuanta-statements": "libretto run src/workflows/yuanta-statements.ts --headed",

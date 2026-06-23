@@ -45,6 +45,14 @@ const outputSchema = z.object({
   }),
 });
 
+export {
+  inputSchema as fubonCreditCardStatementsInputSchema,
+  outputSchema as fubonCreditCardStatementsOutputSchema,
+};
+
+export type FubonCreditCardStatementsInput = z.infer<typeof inputSchema>;
+export type FubonCreditCardStatementsOutput = z.infer<typeof outputSchema>;
+
 const periodTabs = [
   { offset: 1, label: "本期" },
   { offset: 2, label: "前一期" },
@@ -270,6 +278,23 @@ async function clickLinkByClassOrText(
   throw new Error(`Could not find link "${text}".`);
 }
 
+async function openCreditCardFunctionPage(
+  page: Page,
+  classSelector: string,
+  text: string,
+): Promise<void> {
+  try {
+    await clickLinkByClassOrText(page, classSelector, text, 5_000);
+    return;
+  } catch {
+    // The combined workflow may be sitting in another product area after login.
+  }
+
+  const headerFrame = await waitForFrame(page, "frame1");
+  await headerFrame.locator("#menu_CCC").click({ force: true });
+  await clickLinkByClassOrText(page, classSelector, text);
+}
+
 async function fillCreditCardLoginForm(
   page: Page,
   credentials: FubonCredentials,
@@ -323,7 +348,7 @@ async function waitForSignedInState(page: Page): Promise<void> {
 }
 
 async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
-  await clickLinkByClassOrText(
+  await openCreditCardFunctionPage(
     page,
     "task_CCCQU003.menu_CCC0202",
     "帳單明細查詢",
@@ -342,7 +367,7 @@ async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
 }
 
 async function openUnbilledDetailsPage(page: Page): Promise<BrowserScope> {
-  await clickLinkByClassOrText(
+  await openCreditCardFunctionPage(
     page,
     "task_CCCQU004.menu_CCC0203",
     "未出帳單消費明細",
@@ -530,6 +555,60 @@ async function readUnbilledRows(
   return details;
 }
 
+export async function runFubonCreditCardStatements(
+  page: Page,
+  input: FubonCreditCardStatementsInput,
+): Promise<FubonCreditCardStatementsOutput> {
+  await openStatementDetailsPage(page);
+
+  const statementRows: CsvRow[] = [];
+  const statementPeriods: string[] = [];
+  for (const periodOffset of input.periodOffsets) {
+    const scope = await selectStatementPeriod(page, periodOffset);
+    const periodLabel = await readStatementPeriodLabel(scope);
+    statementPeriods.push(periodLabel);
+    statementRows.push(
+      ...(await readStatementRows(
+        scope,
+        periodLabel,
+        input.statementCardLabels,
+      )),
+    );
+  }
+
+  const unbilledScope = await openUnbilledDetailsPage(page);
+  const unbilledRows = await readUnbilledRows(
+    unbilledScope,
+    input.unbilledCardNumbers,
+  );
+
+  const statementDetails = await writeCsv(
+    "statement-details.csv",
+    statementRows,
+    statementHeaders,
+  );
+  const unbilledDetails = await writeCsv(
+    "unbilled-details.csv",
+    unbilledRows,
+    unbilledHeaders,
+  );
+
+  return {
+    periodOffsets: input.periodOffsets,
+    statementPeriods,
+    statementCards: unique(
+      statementRows.map((row) => row.card_label).filter(Boolean),
+    ),
+    unbilledCards: unique(
+      unbilledRows.map((row) => row.card_number).filter(Boolean),
+    ),
+    csvFiles: {
+      statementDetails,
+      unbilledDetails,
+    },
+  };
+}
+
 export default workflow("fubonCreditCardStatements", {
   credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
   input: inputSchema,
@@ -571,54 +650,6 @@ export default workflow("fubonCreditCardStatements", {
     }
 
     await waitForSignedInState(page);
-
-    await openStatementDetailsPage(page);
-
-    const statementRows: CsvRow[] = [];
-    const statementPeriods: string[] = [];
-    for (const periodOffset of input.periodOffsets) {
-      const scope = await selectStatementPeriod(page, periodOffset);
-      const periodLabel = await readStatementPeriodLabel(scope);
-      statementPeriods.push(periodLabel);
-      statementRows.push(
-        ...(await readStatementRows(
-          scope,
-          periodLabel,
-          input.statementCardLabels,
-        )),
-      );
-    }
-
-    const unbilledScope = await openUnbilledDetailsPage(page);
-    const unbilledRows = await readUnbilledRows(
-      unbilledScope,
-      input.unbilledCardNumbers,
-    );
-
-    const statementDetails = await writeCsv(
-      "statement-details.csv",
-      statementRows,
-      statementHeaders,
-    );
-    const unbilledDetails = await writeCsv(
-      "unbilled-details.csv",
-      unbilledRows,
-      unbilledHeaders,
-    );
-
-    return {
-      periodOffsets: input.periodOffsets,
-      statementPeriods,
-      statementCards: unique(
-        statementRows.map((row) => row.card_label).filter(Boolean),
-      ),
-      unbilledCards: unique(
-        unbilledRows.map((row) => row.card_number).filter(Boolean),
-      ),
-      csvFiles: {
-        statementDetails,
-        unbilledDetails,
-      },
-    };
+    return await runFubonCreditCardStatements(page, input);
   },
 });
