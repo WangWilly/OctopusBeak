@@ -80,6 +80,7 @@ npm run libretto:close-all
 | Fubon  | Deposit statements                                                              | `npm run run:fubon-statements`                   | `downloads/fubon-statements/`                   |
 | Fubon  | Credit card statements and unbilled details                                     | `npm run run:fubon-credit-card-statements`       | `downloads/fubon-credit-card-statements/`       |
 | Fubon  | Loan statements                                                                 | `npm run run:fubon-loan-statements`              | `downloads/fubon-loan-statements/`              |
+| YuanTa | TWD, foreign-currency, loan, credit card, and fund statements in one session    | `npm run run:yuanta-all-statements`              | Multiple `downloads/yuanta-*/` folders          |
 | YuanTa | TWD account statements                                                          | `npm run run:yuanta-statements`                  | `downloads/yuanta-statements/`                  |
 | YuanTa | Nexus WebTrade statements and holdings                                          | `npm run run:yuanta-trade-statements`            | `downloads/yuanta-trade-statements/`            |
 | YuanTa | Foreign-currency statements                                                     | `npm run run:yuanta-foreign-currency-statements` | `downloads/yuanta-foreign-currency-statements/` |
@@ -211,7 +212,7 @@ npx libretto run src/workflows/fubon-loan-statements.ts --headed --params '{"que
 npm run run:yuanta-statements
 ```
 
-Opens `臺幣交易明細查詢`, uses the `三個月` date range by default, iterates all domestic-currency account options, downloads each `下載CSV檔`, and returns only file metadata and masked account labels.
+Opens `臺幣交易明細查詢`, uses the `三個月` date range by default, iterates all domestic-currency account options, downloads each `下載CSV檔`, re-encodes the bank's Big5 CSV as UTF-8, and returns only file metadata and masked account labels.
 
 Optional params:
 
@@ -239,13 +240,37 @@ npx libretto run src/workflows/yuanta-trade-statements.ts --headed --params '{"s
 
 YuanTa enforces a 90-day custom date range limit in the UI.
 
+### YuanTa All Internet Banking Statements
+
+```bash
+npm run run:yuanta-all-statements
+```
+
+Runs the YuanTa Internet Banking TWD, foreign-currency, loan, credit card, and fund workflows through the same headed browser session. Complete the CAPTCHA once, resume the session, and the wrapper reuses the authenticated page for the remaining workflows. The fund workflow runs last because the existing fund workflow logs out when it finishes.
+
+The wrapper uses the existing individual workflow components and writes each workflow's files to its own existing output folder. YuanTa TWD and foreign-currency CSV downloads are saved as UTF-8 even though the bank serves those downloads as Big5.
+
+Run only selected components:
+
+```bash
+npm run run:yuanta-all-statements -- --params '{"include":{"statements":true,"foreignCurrency":true,"loan":false,"creditCard":false,"fund":false}}'
+```
+
+Pass options through to individual components:
+
+```bash
+npm run run:yuanta-all-statements -- --params '{"statements":{"dateRange":"one_month","accountFilters":["<account-suffix>"]},"foreignCurrency":{"currencyFilters":["USD"]},"creditCard":{"monthIndexes":[0,1,2]},"continueOnError":true}'
+```
+
+By default, every component is enabled, `prepareBetweenComponents` is `true`, and `continueOnError` is `false`. If a run fails between components, keep only the `yuanta-all-*` log lines and the final error when sharing diagnostics; avoid sharing account rows or downloaded file contents.
+
 ### YuanTa Foreign-Currency Statements
 
 ```bash
 npm run run:yuanta-foreign-currency-statements
 ```
 
-Opens `外幣交易明細查詢`, uses the `三個月` date range by default, iterates all available foreign-currency account options, selects `全部` currency when available, downloads each `下載CSV檔`, and returns only file metadata, masked account labels, and currency labels.
+Opens `外幣交易明細查詢`, uses the `三個月` date range by default, iterates all available foreign-currency account options, selects `全部` currency when available, downloads each `下載CSV檔`, re-encodes the bank's Big5 CSV as UTF-8, and returns only file metadata, masked account labels, and currency labels.
 
 Optional params:
 
