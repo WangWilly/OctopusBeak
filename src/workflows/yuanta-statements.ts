@@ -1,10 +1,12 @@
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { TextDecoder } from "node:util";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Frame, Locator, Page } from "playwright";
+import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
+const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
 
@@ -78,6 +80,15 @@ function maskAccountLabel(value: string): string {
 
 function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+async function saveBig5DownloadAsUtf8(
+  download: Download,
+  path: string,
+): Promise<void> {
+  await download.saveAs(path);
+  const big5Bytes = await readFile(path);
+  await writeFile(path, big5Decoder.decode(big5Bytes), "utf8");
 }
 
 function matchesAccountFilter(
@@ -421,7 +432,7 @@ async function downloadCsv(page: Page, accountLabel: string) {
     downloadsDir,
     `${Date.now()}-${safeFilename(accountLabel)}-${safeFilename(filename)}`,
   );
-  await download.saveAs(path);
+  await saveBig5DownloadAsUtf8(download, path);
 
   const fileStat = await stat(path);
   return { filename, path, bytes: fileStat.size };
