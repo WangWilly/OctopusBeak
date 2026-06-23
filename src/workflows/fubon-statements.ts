@@ -1,7 +1,8 @@
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, pause, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
+import XLSX from "xlsx";
 import { z } from "zod";
 
 const BANK_ENTRY_URL =
@@ -38,6 +39,8 @@ const outputSchema = z.object({
       filename: z.string(),
       path: z.string(),
       bytes: z.number().int().nonnegative(),
+      csvPath: z.string().optional(),
+      csvBytes: z.number().int().nonnegative().optional(),
     }),
   ),
 });
@@ -75,6 +78,27 @@ function maskAccount(account: string): string {
 
 function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+function csvPathFor(path: string): string {
+  const csvPath = path.replace(/\.[^/.]+$/, ".csv");
+  return csvPath === path ? `${path}.csv` : csvPath;
+}
+
+async function convertXlsToCsv(path: string) {
+  const workbook = XLSX.readFile(path);
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    throw new Error(`Downloaded Excel file has no worksheets: ${path}`);
+  }
+
+  const worksheet = workbook.Sheets[sheetName];
+  const csv = XLSX.utils.sheet_to_csv(worksheet);
+  const csvPath = csvPathFor(path);
+  await writeFile(csvPath, csv.endsWith("\n") ? csv : `${csv}\n`, "utf8");
+
+  const csvStat = await stat(csvPath);
+  return { csvPath, csvBytes: csvStat.size };
 }
 
 async function waitForFrame(
@@ -299,7 +323,9 @@ async function downloadStatements(
   await download.saveAs(path);
 
   const fileStat = await stat(path);
-  return { filename, path, bytes: fileStat.size };
+  const converted =
+    downloadFormat === "EXCEL" ? await convertXlsToCsv(path) : undefined;
+  return { filename, path, bytes: fileStat.size, ...converted };
 }
 
 export default workflow("fubonStatements", {
