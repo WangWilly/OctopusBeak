@@ -26,6 +26,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",
     "libretto": "^0.6.31",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

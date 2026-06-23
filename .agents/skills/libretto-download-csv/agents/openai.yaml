@@ -1,0 +1,4 @@
+interface:
+  display_name: "Libretto Download CSV"
+  short_description: "Convert workflow downloads to CSV"
+  default_prompt: "Use $libretto-download-csv to add CSV conversion for a Libretto workflow download."
