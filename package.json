@@ -20,6 +20,7 @@
     "run:yuanta-credit-card-statements": "libretto run src/workflows/yuanta-credit-card-statements.ts --headed",
     "run:yuanta-fund-statements": "libretto run src/workflows/yuanta-fund-statements.ts --headed",
     "run:cathay-statements": "libretto run src/workflows/cathay-statements.ts --headed",
+    "run:cathay-all-statements": "libretto run src/workflows/cathay-all-statements.ts --headed",
     "run:cathay-foreign-statements": "libretto run src/workflows/cathay-foreign-statements.ts --headed",
     "typecheck": "tsc --noEmit"
   },

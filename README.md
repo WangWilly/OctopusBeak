@@ -86,6 +86,7 @@ npm run libretto:close-all
 | YuanTa | Credit card statements                                                          | `npm run run:yuanta-credit-card-statements`      | `downloads/yuanta-credit-card-statements/`      |
 | YuanTa | Fund portfolio, investment details, historical fund orders, and off-hour orders | `npm run run:yuanta-fund-statements`             | `downloads/yuanta-fund-statements/`             |
 | Cathay | TWD account statements                                                          | `npm run run:cathay-statements`                  | `downloads/cathay-statements/`                  |
+| Cathay | TWD and foreign-currency statements in one login session                        | `npm run run:cathay-all-statements`              | `downloads/cathay-statements/`, `downloads/cathay-foreign-statements/` |
 | Cathay | Foreign-currency statements                                                     | `npm run run:cathay-foreign-statements`          | `downloads/cathay-foreign-statements/`          |
 
 ## Credentials
@@ -292,6 +293,22 @@ npx libretto run src/workflows/cathay-statements.ts --headed --params '{"dateRan
 ```
 
 Supported `dateRange` values are `one_week`, `one_month`, `three_months`, `six_months`, and `one_year`. Set `trustDevice` to `true` only if you want the workflow to opt into Cathay's trusted-device prompt when it appears.
+
+### Cathay TWD and Foreign-Currency Statements
+
+```bash
+npm run run:cathay-all-statements
+```
+
+Logs in once, creates one Cathay API session, then fetches both TWD and foreign-currency statements. It writes TWD CSV files to `downloads/cathay-statements/` and foreign-currency CSV files to `downloads/cathay-foreign-statements/`.
+
+Optional params:
+
+```bash
+npx libretto run src/workflows/cathay-all-statements.ts --headed --params '{"statementTypes":["domestic","foreign"],"dateRange":"six_months","domesticAccountFilters":["<twd-account-suffix>"],"foreignAccountFilters":["<foreign-account-suffix>"],"currencyFilters":["USD"],"trustDevice":false}'
+```
+
+Supported `statementTypes` values are `domestic` and `foreign`; omit it to fetch both in one login session. `accountFilters` applies to both account families unless `domesticAccountFilters` or `foreignAccountFilters` is provided.
 
 ### Cathay Foreign-Currency Statements
 
