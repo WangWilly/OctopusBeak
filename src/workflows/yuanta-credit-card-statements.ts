@@ -575,7 +575,12 @@ async function parseCreditCardTables(
     if (rows.length === 0) continue;
 
     const tableLabel = classifyTable(category, rows, tableIndex);
-    parsed.push({ category, period, tableLabel, rows });
+    parsed.push({
+      category,
+      period,
+      tableLabel,
+      rows: normalizeTableRows(tableLabel, rows),
+    });
   }
 
   if (parsed.length === 0) {
@@ -624,6 +629,32 @@ function classifyTable(
   if (/帳單結帳日/.test(text)) return "payment-summary";
   if (/自動扣款/.test(text)) return "auto-payment-summary";
   return `${category}-table-${tableIndex + 1}`;
+}
+
+function normalizeTableRows(tableLabel: string, rows: string[][]): string[][] {
+  if (tableLabel !== "transactions" || rows.length < 2) return rows;
+
+  const [headers, ...bodyRows] = rows;
+  const trailingHeaderIndex = headers.length - 1;
+  const hasBlankTrailingHeader =
+    trailingHeaderIndex >= 0 && !headers[trailingHeaderIndex];
+  const hasTwdAmountHeader = headers.includes("新臺幣金額");
+  if (!hasBlankTrailingHeader || !hasTwdAmountHeader) return rows;
+
+  const normalizedHeaders = headers.slice(0, trailingHeaderIndex);
+  const normalizedBodyRows = bodyRows.map((row) => {
+    if (
+      row.length === headers.length &&
+      !row[0] &&
+      row[trailingHeaderIndex]
+    ) {
+      return row.slice(1);
+    }
+
+    return row.slice(0, normalizedHeaders.length);
+  });
+
+  return [normalizedHeaders, ...normalizedBodyRows];
 }
 
 function creditCardDownloadsDir(): string {

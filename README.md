@@ -72,6 +72,85 @@ Clean up browser sessions after failed or interrupted runs:
 npm run libretto:close-all
 ```
 
+## Local CSV Import
+
+```bash
+npm run run:import-downloads-csv
+```
+
+本命令是本機 TypeScript Node CLI，不是 Libretto browser workflow。第一階段只做入庫 raw ledger：掃描 `downloads/**/*.csv`、保留可重跑與可稽核 metadata、標記 duplicate，不做 dashboard、轉帳配對或卡費對帳。
+
+CSV 會先經過表格 layout 正規化：有些下載檔第一列就是 header，有些會先出現報表標題、查詢條件、帳戶資料，再到真正的「查詢結果」表格。若檔案第一列是 workflow 產生的 `column_1` / `column_2` 位置欄名，CLI 會保守保留後續列，不猜測中間 section header。CLI 會逐檔記錄 `csvLayout`，包含 header row、data start row、preamble row count 與 warning；raw row 的 `sourceRowIndex` 仍是原 CSV 的 1-based 列號，方便回查原始檔。
+
+它不會解析 `.xls` / `.xlsx` / `.json`。同名原始檔會保留在 `relatedRawFiles`、`relatedRawFileRelativePaths` 與 `relatedRawFileMetadata`，作為後續稽核與對帳的原始憑證鏈接。metadata 只記錄 bytes、modifiedAt、hash，不解析內容。
+
+Raw ledger contract: [docs/raw-ledger.md](docs/raw-ledger.md)
+Financial model and dashboard contract: [docs/financial-model.md](docs/financial-model.md)
+
+匯入結果會 append 到：
+
+- `data/ledger/import_run_events.jsonl`
+- `data/ledger/import_runs.jsonl`
+- `data/ledger/import_batches.jsonl`
+- `data/ledger/raw_transaction_occurrences.jsonl`
+
+正式匯入會先寫入 `started` event；完成時寫入 `completed` event；如果匯入流程中途丟錯，會寫入帶有 `activeSourceFile` 的 `failed` event，方便稽核中斷或失敗的 run。
+
+命令輸出欄位可直接當成第一階段報表：
+
+- `schemaVersion`：raw ledger record 格式版本，目前為 `raw-ledger.v1`
+- `recordType`：stdout 結果與 JSONL records 的用途標記
+- `importerName` / `importerVersion`：產生 raw ledger records 的 importer 標記
+- `importRunId`：本次執行 ID，可用來追蹤這次匯入造成的 batch 與 raw rows
+- `runEventLogPath`：正式匯入時寫入 run lifecycle events 的路徑
+- `runLogPath`：正式匯入時寫入 run-level manifest 的路徑
+- `scannedCsvFiles`：本次實際掃到並符合 filter 的 csv 數
+- `importedRows`：本次新增的原始列總數（含 duplicate）
+- `uniqueRows`：本次判定為新列
+- `duplicateRows`：本次判定為重複列（保留 row，但 `dedupeStatus=duplicate`）
+- `batchesWritten`：本次建立的 import batch 數
+- `files`：逐檔摘要，包含每個 csv 的 `sourceRelativePath`、`sourceFileMetadata`、`sourceSheetName`、`csvLayout`、headers、recordKeys、row 數、unique/duplicate 數與 related raw file metadata
+
+第一階段的 duplicate 判斷使用 `sourceHash`，它由來源檔 hash、來源列號與 raw row hash 組成，用來偵測同一來源列被重跑。`contentHash` 會保留下來給後續分析，但不在第一階段用來直接判 duplicate。
+
+可選擇只跑某些來源：
+
+```bash
+npm run run:import-downloads-csv -- --params '{"bankFilters":["yuanta"],"productFilters":["statements"]}'
+```
+
+會只處理 `downloads/yuanta-statements/**` 下的 csv 檔（`productFilters` 由第一層資料夾名去掉銀行前綴推導）。
+
+第一次執行可先 dry run，不寫入 ledger：
+
+```bash
+npm run run:import-downloads-csv -- --params '{"dryRun":true}'
+```
+
+dry run 仍會回傳 `files` 摘要，可先確認本次會吃進哪些 CSV 與關聯哪些原始檔。
+
+正式匯入若沒有任何符合條件的 CSV，預設會失敗並留下 `failed` event，避免誤記空 run。若你確定要記錄空 run，可明確傳入：
+
+```bash
+npm run run:import-downloads-csv -- --params '{"allowEmpty":true}'
+```
+
+## Local Financial Dashboard
+
+Raw ledger 建好後，可以建立第二層 parser/model 與本機 dashboard：
+
+```bash
+npm run run:build-financial-dashboard
+```
+
+輸出會寫到：
+
+- `data/ledger/financial_model.json`
+- `data/ledger/financial_model_quality.json`
+- `data/ledger/financial_dashboard.html`
+
+Dashboard 會顯示整合資產狀態、幣別 totals、parser coverage 與 data quality。`includeInTotals=false` 的項目只做稽核展示，不納入總額，避免把券商或基金 summary rollup 與明細重複計算。
+
 ## Supported Workflows
 
 | Bank   | Records                                                                         | Command                                          | Output                                          |
