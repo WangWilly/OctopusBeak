@@ -89,6 +89,12 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function toAsciiDigits(value: string): string {
+  return value.replace(/[０-９]/g, (char) =>
+    String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
+  );
+}
+
 function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -105,6 +111,22 @@ function createTimestampGenerator(): () => string {
     lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
     return String(lastTimestamp);
   };
+}
+
+function consumeDateSortKey(row: StatementRow): string {
+  const date = toAsciiDigits(cleanText(row.consumeDate));
+  const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
+  if (!match) return "";
+
+  const year = match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  return `${String(year).padStart(4, "0")}${match[2]}${match[3]}`;
+}
+
+function compareRowsByConsumeDateDesc(
+  left: StatementRow,
+  right: StatementRow,
+): number {
+  return consumeDateSortKey(right).localeCompare(consumeDateSortKey(left));
 }
 
 async function waitForFrame(
@@ -842,7 +864,7 @@ function statementHeaders(kind: StatementKind): string[] {
 function statementRowsToCsv(kind: StatementKind, rows: StatementRow[]): string {
   const csvRows = [
     statementHeaders(kind),
-    ...rows.map((row) => {
+    ...[...rows].sort(compareRowsByConsumeDateDesc).map((row) => {
       const values = [
         row.creditCardNo,
         row.creditCardName,

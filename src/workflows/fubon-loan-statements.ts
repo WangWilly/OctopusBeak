@@ -227,15 +227,24 @@ function parseLoanStatement(path: string, fallbackLoanAccount: string): ParsedLo
   };
 }
 
-function loanRowSortKey(row: string[]): string {
-  return cleanText(row[0]);
+function loanRowSortTime(row: string[]): number | null {
+  const match = cleanText(row[0]).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (!match) return null;
+
+  const time = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isFinite(time) ? time : null;
 }
 
 function compareLoanRowsByTransactionDateDesc(
   left: string[],
   right: string[],
 ): number {
-  return loanRowSortKey(right).localeCompare(loanRowSortKey(left));
+  const leftTime = loanRowSortTime(left);
+  const rightTime = loanRowSortTime(right);
+  if (leftTime === null && rightTime === null) return 0;
+  if (leftTime === null) return 1;
+  if (rightTime === null) return -1;
+  return rightTime - leftTime;
 }
 
 function matchesFilter(value: string, filters: string[]): boolean {
