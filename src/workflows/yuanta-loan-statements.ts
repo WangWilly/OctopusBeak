@@ -26,12 +26,16 @@ type LoanAccountOption = {
 };
 
 type StatementRow = {
-  transactionAndPostingDate: string;
+  accountLabel: string;
+  transactionDate: string;
+  postingDate: string;
   paymentItem: string;
-  interestPeriod: string;
+  interestStartDate: string;
+  interestEndDate: string;
   transactionAmount: string;
   balanceAfterTransaction: string;
   overpayment: string;
+  sortTime: number | null;
 };
 
 const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
@@ -48,9 +52,21 @@ const inputSchema = z.object({
   replaceActiveSession: z.boolean().default(true),
 });
 
-const statementFileSchema = z.object({
+const sourceTableSchema = z.object({
   account: z.string(),
   rowCount: z.number().int().nonnegative(),
+});
+
+const tableFileSchema = z.object({
+  baseName: z.string(),
+  kind: z.literal("loan-statements"),
+  rowCount: z.number().int().nonnegative(),
+  headers: z.array(z.string()),
+  accounts: z.array(z.string()),
+  dateRange: z.string(),
+  sourceTables: z.array(sourceTableSchema),
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
   csvPath: z.string(),
   jsonPath: z.string(),
   csvBytes: z.number().int().nonnegative(),
@@ -62,11 +78,12 @@ const outputSchema = z.object({
   usedExistingSession: z.boolean(),
   replacedActiveSession: z.boolean(),
   count: z.number().int().nonnegative(),
-  statements: z.array(statementFileSchema),
+  files: z.array(tableFileSchema),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
-type StatementFile = z.infer<typeof statementFileSchema>;
+type TableFile = z.infer<typeof tableFileSchema>;
+type SourceTable = z.infer<typeof sourceTableSchema>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   three_months: "三個月",
@@ -75,13 +92,18 @@ const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
 };
 
 const statementHeaders = [
-  "交易日/記帳日",
+  "貸款帳戶",
+  "交易日",
+  "記帳日",
   "繳款項目",
-  "提息起日/提息迄日",
+  "提息起日",
+  "提息迄日",
   "交易金額",
   "交易後餘額",
   "溢繳款",
 ] as const;
+
+const sourceStatementColumnCount = 6;
 
 function requireCredential(
   credentials: YuantaCredentials,
@@ -117,10 +139,6 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 function matchesFilter(
   option: { label: string; value: string },
   filters: string[],
@@ -153,23 +171,118 @@ function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function rowsToCsv(rows: StatementRow[]): string {
-  const lines = [
-    statementHeaders.map(csvCell).join(","),
-    ...rows.map((row) =>
-      [
-        row.transactionAndPostingDate,
-        row.paymentItem,
-        row.interestPeriod,
-        row.transactionAmount,
-        row.balanceAfterTransaction,
-        row.overpayment,
-      ]
-        .map(csvCell)
-        .join(","),
-    ),
-  ];
-  return `${lines.join("\n")}\n`;
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
+
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
+}
+
+function splitDatePair(value: string): [string, string] {
+  const normalized = toAsciiDigits(cleanText(value));
+  const dates = normalized.match(/\d{4}\/\d{2}\/\d{2}/g) ?? [];
+  return [dates[0] ?? normalized, dates[1] ?? ""];
+}
+
+function parseDateSortValue(value: string): number | null {
+  const match = toAsciiDigits(cleanText(value)).match(
+    /^(\d{4})\/(\d{2})\/(\d{2})$/,
+  );
+  if (!match) return null;
+
+  const time = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isFinite(time) ? time : null;
+}
+
+function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
+  return [...rows].sort((left, right) => {
+    if (left.sortTime === null && right.sortTime === null) return 0;
+    if (left.sortTime === null) return 1;
+    if (right.sortTime === null) return -1;
+    return right.sortTime - left.sortTime;
+  });
+}
+
+function statementRowsToCsv(rows: StatementRow[]): string {
+  return rowsToCsv([
+    [...statementHeaders],
+    ...sortedStatementRows(rows).map((row) => [
+      row.accountLabel,
+      row.transactionDate,
+      row.postingDate,
+      row.paymentItem,
+      row.interestStartDate,
+      row.interestEndDate,
+      row.transactionAmount,
+      row.balanceAfterTransaction,
+      row.overpayment,
+    ]),
+  ]);
+}
+
+async function writeLoanStatementsFile(
+  nextTimestamp: () => string,
+  dateRange: string,
+  rows: StatementRow[],
+  sourceTables: SourceTable[],
+): Promise<TableFile> {
+  const downloadsDir = join(process.cwd(), "downloads", "yuanta-loan-statements");
+  await mkdir(downloadsDir, { recursive: true });
+
+  const baseName = `loan-statements-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
+  const accounts = [...new Set(sourceTables.map((source) => source.account))];
+
+  await writeFile(csvPath, statementRowsToCsv(rows), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: "download-table-metadata.v1",
+        generatedAt: new Date().toISOString(),
+        workflow: "yuantaLoanStatements",
+        kind: "loan-statements",
+        csvFilename,
+        jsonFilename,
+        rowCount: rows.length,
+        headers: statementHeaders,
+        accounts,
+        dateRange,
+        sourceTables,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+  return {
+    baseName,
+    kind: "loan-statements",
+    rowCount: rows.length,
+    headers: [...statementHeaders],
+    accounts,
+    dateRange,
+    sourceTables,
+    csvFilename,
+    jsonFilename,
+    csvPath,
+    jsonPath,
+    csvBytes: csvStat.size,
+    jsonBytes: jsonStat.size,
+  };
 }
 
 async function waitForFrame(
@@ -534,7 +647,10 @@ async function queryLoanAccount(
   await findScopeWithSelector(page, "#resultdiv");
 }
 
-async function parseLoanStatementRows(page: Page): Promise<StatementRow[]> {
+async function parseLoanStatementRows(
+  page: Page,
+  accountLabel: string,
+): Promise<StatementRow[]> {
   const scope = await findScopeWithSelector(page, "#resultdiv");
   const tables = scope.locator("table.normalTable");
   const tableCount = await tables.count();
@@ -550,7 +666,7 @@ async function parseLoanStatementRows(page: Page): Promise<StatementRow[]> {
   for (let rowIndex = 1; rowIndex < rowCount; rowIndex += 1) {
     const cells = rows.nth(rowIndex).locator("td");
     const cellCount = await cells.count();
-    if (cellCount !== statementHeaders.length) continue;
+    if (cellCount !== sourceStatementColumnCount) continue;
 
     const values: string[] = [];
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
@@ -558,41 +674,24 @@ async function parseLoanStatementRows(page: Page): Promise<StatementRow[]> {
     }
     if (values.every((value) => value.length === 0)) continue;
 
+    const [transactionDate, postingDate] = splitDatePair(values[0]);
+    const [interestStartDate, interestEndDate] = splitDatePair(values[2]);
+
     statements.push({
-      transactionAndPostingDate: values[0],
+      accountLabel,
+      transactionDate,
+      postingDate,
       paymentItem: values[1],
-      interestPeriod: values[2],
+      interestStartDate,
+      interestEndDate,
       transactionAmount: values[3],
       balanceAfterTransaction: values[4],
       overpayment: values[5],
+      sortTime: parseDateSortValue(transactionDate),
     });
   }
 
   return statements;
-}
-
-async function writeStatementFiles(
-  accountLabel: string,
-  rows: StatementRow[],
-): Promise<Omit<StatementFile, "account" | "rowCount">> {
-  const downloadsDir = join(process.cwd(), "downloads", "yuanta-loan-statements");
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${Date.now()}-${safeFilename(accountLabel)}`;
-  const csvPath = join(downloadsDir, `${baseName}.csv`);
-  const jsonPath = join(downloadsDir, `${baseName}.json`);
-
-  await writeFile(csvPath, rowsToCsv(rows), "utf8");
-  await writeFile(jsonPath, `${JSON.stringify(rows, null, 2)}\n`, "utf8");
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
 }
 
 export default workflow("yuantaLoanStatements", {
@@ -646,26 +745,35 @@ export default workflow("yuantaLoanStatements", {
 
     await openLoanStatementPage(page);
     const accounts = await readLoanAccountOptions(page, input.loanAccountFilters);
-    const statements: StatementFile[] = [];
+    const rows: StatementRow[] = [];
+    const sourceTables: SourceTable[] = [];
+    const nextTimestamp = createTimestampGenerator();
 
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
       await queryLoanAccount(page, input, account);
-      const rows = await parseLoanStatementRows(page);
-      const files = await writeStatementFiles(maskedAccount, rows);
-      statements.push({
+      const accountRows = await parseLoanStatementRows(page, maskedAccount);
+      rows.push(...accountRows);
+      sourceTables.push({
         account: maskedAccount,
-        rowCount: rows.length,
-        ...files,
+        rowCount: accountRows.length,
       });
     }
 
+    const dateRange = describeDateRange(input);
+    const file = await writeLoanStatementsFile(
+      nextTimestamp,
+      dateRange,
+      rows,
+      sourceTables,
+    );
+
     return {
-      dateRange: describeDateRange(input),
+      dateRange,
       usedExistingSession: authResult.usedProfile,
       replacedActiveSession,
-      count: statements.length,
-      statements,
+      count: 1,
+      files: [file],
     };
   },
 });

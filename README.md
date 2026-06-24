@@ -327,7 +327,7 @@ npm run run:yuanta-all-statements
 
 Runs the YuanTa Internet Banking TWD, foreign-currency, loan, credit card, and fund workflows through the same headed browser session. Complete the CAPTCHA once, resume the session, and the wrapper reuses the authenticated page for the remaining workflows. The fund workflow runs last because the existing fund workflow logs out when it finishes.
 
-The wrapper uses the existing individual workflow components and writes each workflow's files to its own existing output folder. YuanTa TWD and foreign-currency CSV downloads are saved as UTF-8 even though the bank serves those downloads as Big5.
+The wrapper uses the existing individual workflow components and writes each workflow's files to its own existing output folder. YuanTa TWD and foreign-currency statement downloads are parsed into clean timestamped CSV/JSON table pairs.
 
 Run only selected components:
 
@@ -349,7 +349,12 @@ By default, every component is enabled, `prepareBetweenComponents` is `true`, an
 npm run run:yuanta-foreign-currency-statements
 ```
 
-Opens `外幣交易明細查詢`, uses the `三個月` date range by default, iterates all available foreign-currency account options, selects `全部` currency when available, downloads each `下載CSV檔`, re-encodes the bank's Big5 CSV as UTF-8, and returns only file metadata, masked account labels, and currency labels.
+Opens `外幣交易明細查詢`, uses the `三個月` date range by default, iterates all available foreign-currency account options, selects `全部` currency when available, parses the bank's Big5 CSV downloads, and writes one clean table pair:
+
+- `downloads/yuanta-foreign-currency-statements/foreign-currency-transactions-{timestamp}.csv`
+- `downloads/yuanta-foreign-currency-statements/foreign-currency-transactions-{timestamp}.json`
+
+The CSV contains only headers and transaction rows, sorted by `交易日期` and `交易時間` from newest to oldest. Metadata such as source download filenames, accounts, currencies, date range, and channel type is stored in the JSON file.
 
 Optional params:
 
@@ -365,7 +370,12 @@ Supported `dateRange` values are `one_week`, `one_month`, and `three_months`. Fo
 npm run run:yuanta-loan-statements
 ```
 
-Opens `貸款繳款明細查詢`, uses the `一年` date range by default, iterates all available loan account options, parses the result table, and writes CSV and JSON files.
+Opens `貸款繳款明細查詢`, uses the `一年` date range by default, iterates all available loan account options, parses the result table, and writes one clean table pair:
+
+- `downloads/yuanta-loan-statements/loan-statements-{timestamp}.csv`
+- `downloads/yuanta-loan-statements/loan-statements-{timestamp}.json`
+
+The CSV splits `交易日/記帳日` into `交易日` and `記帳日`, splits `提息起日/提息迄日` into `提息起日` and `提息迄日`, includes the source `貸款帳戶`, and sorts rows by `交易日` from newest to oldest. Metadata such as source accounts, row counts, and date range is stored in the JSON file.
 
 Optional params:
 

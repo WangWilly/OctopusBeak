@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import {
@@ -55,12 +55,21 @@ const inputSchema = z.object({
   replaceActiveSession: z.boolean().default(true),
 });
 
-const downloadSchema = z.object({
-  account: z.string(),
-  currency: z.string(),
-  filename: z.string(),
-  path: z.string(),
-  bytes: z.number().int().nonnegative(),
+const tableFileSchema = z.object({
+  baseName: z.string(),
+  kind: z.literal("foreign-currency-transactions"),
+  rowCount: z.number().int().nonnegative(),
+  headers: z.array(z.string()),
+  accounts: z.array(z.string()),
+  currencies: z.array(z.string()),
+  dateRange: z.string(),
+  channelType: channelTypeSchema,
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
+  csvPath: z.string(),
+  jsonPath: z.string(),
+  csvBytes: z.number().int().nonnegative(),
+  jsonBytes: z.number().int().nonnegative(),
 });
 
 const outputSchema = z.object({
@@ -69,11 +78,25 @@ const outputSchema = z.object({
   usedExistingSession: z.boolean(),
   replacedActiveSession: z.boolean(),
   count: z.number().int().nonnegative(),
-  downloads: z.array(downloadSchema),
+  files: z.array(tableFileSchema),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
-type DownloadMetadata = z.infer<typeof downloadSchema>;
+type TableFile = z.infer<typeof tableFileSchema>;
+
+type SourceDownloadMetadata = {
+  account: string;
+  currency: string;
+  filename: string;
+  rowCount: number;
+};
+
+type ForeignCurrencyTransactionRow = {
+  accountLabel: string;
+  queryCurrencyLabel: string;
+  values: string[];
+  sortTime: number | null;
+};
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   one_week: "一週",
@@ -88,6 +111,25 @@ const channelTypeValues: Record<z.infer<typeof channelTypeSchema>, string> = {
   business_bank: "C",
   mobile_bank: "O",
 };
+
+const foreignCurrencyTransactionHeaders = [
+  "帳戶名稱",
+  "查詢幣別",
+  "帳號",
+  "帳務日期",
+  "交易日期",
+  "交易時間",
+  "幣別",
+  "交易說明",
+  "支出金額",
+  "存入金額",
+  "帳面餘額",
+  "交易資訊",
+  "匯率",
+];
+
+const downloadedForeignCurrencyHeaders =
+  foreignCurrencyTransactionHeaders.slice(2);
 
 function requireCredential(
   credentials: YuantaCredentials,
@@ -123,17 +165,237 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
-async function saveBig5DownloadAsUtf8(
-  download: Download,
-  path: string,
-): Promise<void> {
-  await download.saveAs(path);
-  const big5Bytes = await readFile(path);
-  await writeFile(path, big5Decoder.decode(big5Bytes), "utf8");
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
+
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
+}
+
+function stripSpreadsheetTextPrefix(value: string): string {
+  const text = cleanText(value);
+  return text.replace(/^'+/, "").replace(/'+$/, "");
+}
+
+function parseCsvRows(content: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    const nextChar = content[index + 1];
+
+    if (quoted) {
+      if (char === "\"" && nextChar === "\"") {
+        cell += "\"";
+        index += 1;
+      } else if (char === "\"") {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (char !== "\r") {
+      cell += char;
+    }
+  }
+
+  if (cell || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function isRepeatedHeaderRow(values: string[]): boolean {
+  return values.length === downloadedForeignCurrencyHeaders.length &&
+    values.every(
+      (value, index) => value === downloadedForeignCurrencyHeaders[index],
+    );
+}
+
+function parseTransactionSortTime(values: string[]): number | null {
+  const dateText = toAsciiDigits(stripSpreadsheetTextPrefix(values[2] ?? ""));
+  const timeText = toAsciiDigits(stripSpreadsheetTextPrefix(values[3] ?? ""));
+  const dateMatch = dateText.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const timeMatch = timeText.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!dateMatch) return null;
+
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = timeMatch ? Number(timeMatch[1]) : 0;
+  const minute = timeMatch ? Number(timeMatch[2]) : 0;
+  const second = timeMatch ? Number(timeMatch[3] ?? "0") : 0;
+  const time = Date.UTC(year, month - 1, day, hour, minute, second);
+  return Number.isFinite(time) ? time : null;
+}
+
+function transactionRowsFromDownloadedCsv(
+  content: string,
+  accountLabel: string,
+  queryCurrencyLabel: string,
+): ForeignCurrencyTransactionRow[] {
+  const rows = parseCsvRows(content).map((row) =>
+    row.map(stripSpreadsheetTextPrefix),
+  );
+  const headerIndex = rows.findIndex(isRepeatedHeaderRow);
+  if (headerIndex < 0) {
+    throw new Error(
+      "Downloaded YuanTa foreign-currency CSV did not contain expected headers.",
+    );
+  }
+
+  const transactions: ForeignCurrencyTransactionRow[] = [];
+  for (let rowIndex = headerIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const values = rows[rowIndex];
+    if (!values.some((value) => value.length > 0)) continue;
+    if (isRepeatedHeaderRow(values)) continue;
+    if (values.length !== downloadedForeignCurrencyHeaders.length) {
+      throw new Error(
+        `Downloaded YuanTa foreign-currency CSV row had ${values.length} columns; expected ${downloadedForeignCurrencyHeaders.length}.`,
+      );
+    }
+
+    transactions.push({
+      accountLabel,
+      queryCurrencyLabel,
+      values,
+      sortTime: parseTransactionSortTime(values),
+    });
+  }
+
+  return transactions;
+}
+
+function sortedTransactionRows(
+  rows: ForeignCurrencyTransactionRow[],
+): ForeignCurrencyTransactionRow[] {
+  return [...rows].sort((left, right) => {
+    if (left.sortTime === null && right.sortTime === null) return 0;
+    if (left.sortTime === null) return 1;
+    if (right.sortTime === null) return -1;
+    return right.sortTime - left.sortTime;
+  });
+}
+
+function foreignCurrencyTransactionsToCsv(
+  rows: ForeignCurrencyTransactionRow[],
+): string {
+  return rowsToCsv([
+    foreignCurrencyTransactionHeaders,
+    ...sortedTransactionRows(rows).map((row) => [
+      row.accountLabel,
+      row.queryCurrencyLabel,
+      ...row.values,
+    ]),
+  ]);
+}
+
+async function readBig5DownloadAsUtf8(download: Download): Promise<string> {
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return big5Decoder.decode(Buffer.concat(chunks));
+}
+
+async function writeForeignCurrencyTransactionsFile(
+  nextTimestamp: () => string,
+  dateRange: string,
+  channelType: z.infer<typeof channelTypeSchema>,
+  rows: ForeignCurrencyTransactionRow[],
+  sourceDownloads: SourceDownloadMetadata[],
+): Promise<TableFile> {
+  const downloadsDir = join(
+    process.cwd(),
+    "downloads",
+    "yuanta-foreign-currency-statements",
+  );
+  await mkdir(downloadsDir, { recursive: true });
+
+  const baseName = `foreign-currency-transactions-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
+  const accounts = [...new Set(rows.map((row) => row.accountLabel))];
+  const currencies = [
+    ...new Set(rows.map((row) => stripSpreadsheetTextPrefix(row.values[4] ?? ""))),
+  ].filter((currency) => currency.length > 0);
+
+  await writeFile(csvPath, foreignCurrencyTransactionsToCsv(rows), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: "download-table-metadata.v1",
+        generatedAt: new Date().toISOString(),
+        workflow: "yuantaForeignCurrencyStatements",
+        kind: "foreign-currency-transactions",
+        csvFilename,
+        jsonFilename,
+        rowCount: rows.length,
+        headers: foreignCurrencyTransactionHeaders,
+        accounts,
+        currencies,
+        dateRange,
+        channelType,
+        sourceDownloads,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+  return {
+    baseName,
+    kind: "foreign-currency-transactions",
+    rowCount: rows.length,
+    headers: foreignCurrencyTransactionHeaders,
+    accounts,
+    currencies,
+    dateRange,
+    channelType,
+    csvFilename,
+    jsonFilename,
+    csvPath,
+    jsonPath,
+    csvBytes: csvStat.size,
+    jsonBytes: jsonStat.size,
+  };
 }
 
 function matchesFilter(
@@ -617,11 +879,11 @@ async function queryAccountCurrency(
   await waitForCsvDownloadLink(page);
 }
 
-async function downloadCsv(
+async function downloadTransactionRows(
   page: Page,
   accountLabel: string,
   currencyLabel: string,
-): Promise<Omit<DownloadMetadata, "account" | "currency">> {
+): Promise<{ filename: string; rows: ForeignCurrencyTransactionRow[] }> {
   const scope = await findScopeWithLocator(
     page,
     (candidate) =>
@@ -642,22 +904,12 @@ async function downloadCsv(
   await link.click();
   const download = await downloadPromise;
 
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    "yuanta-foreign-currency-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
   const filename = download.suggestedFilename();
-  const path = join(
-    downloadsDir,
-    `${Date.now()}-${safeFilename(accountLabel)}-${safeFilename(currencyLabel)}-${safeFilename(filename)}`,
-  );
-  await saveBig5DownloadAsUtf8(download, path);
-
-  const fileStat = await stat(path);
-  return { filename, path, bytes: fileStat.size };
+  const content = await readBig5DownloadAsUtf8(download);
+  return {
+    filename,
+    rows: transactionRowsFromDownloadedCsv(content, accountLabel, currencyLabel),
+  };
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
@@ -715,7 +967,9 @@ export default workflow("yuantaForeignCurrencyStatements", {
     await openForeignCurrencyDetailsPage(page);
 
     const accounts = await readAccountOptions(page, input.accountFilters);
-    const downloads: DownloadMetadata[] = [];
+    const rows: ForeignCurrencyTransactionRow[] = [];
+    const sourceDownloads: SourceDownloadMetadata[] = [];
+    const nextTimestamp = createTimestampGenerator();
 
     for (const account of accounts) {
       await selectAccount(page, account);
@@ -724,22 +978,37 @@ export default workflow("yuantaForeignCurrencyStatements", {
       for (const currency of currencies) {
         const maskedAccount = maskAccountLabel(account.label);
         await queryAccountCurrency(page, input, account, currency);
-        const download = await downloadCsv(page, maskedAccount, currency.label);
-        downloads.push({
+        const download = await downloadTransactionRows(
+          page,
+          maskedAccount,
+          currency.label,
+        );
+        rows.push(...download.rows);
+        sourceDownloads.push({
           account: maskedAccount,
           currency: currency.label,
-          ...download,
+          filename: download.filename,
+          rowCount: download.rows.length,
         });
       }
     }
 
+    const dateRange = describeDateRange(input);
+    const file = await writeForeignCurrencyTransactionsFile(
+      nextTimestamp,
+      dateRange,
+      input.channelType,
+      rows,
+      sourceDownloads,
+    );
+
     return {
-      dateRange: describeDateRange(input),
+      dateRange,
       channelType: input.channelType,
       usedExistingSession: authResult.usedProfile,
       replacedActiveSession,
-      count: downloads.length,
-      downloads,
+      count: 1,
+      files: [file],
     };
   },
 });
