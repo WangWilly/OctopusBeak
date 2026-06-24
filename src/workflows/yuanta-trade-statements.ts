@@ -58,14 +58,23 @@ const inputSchema = z.object({
   outputDir: z.string().default("downloads/yuanta-trade-statements"),
 });
 
-const fileSchema = z.object({
-  kind: z.enum(["csv", "manifest"]),
-  filename: z.string(),
-  path: z.string(),
-  bytes: z.number().int().nonnegative(),
-  reportType: z.string().optional(),
-  category: z.string().optional(),
-  rowCount: z.number().int().nonnegative().optional(),
+const generatedTableFileSchema = z.object({
+  tableName: z.enum(["trade-transactions", "holdings", "asset-summaries"]),
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
+  csvPath: z.string(),
+  jsonPath: z.string(),
+  csvBytes: z.number().int().nonnegative(),
+  jsonBytes: z.number().int().nonnegative(),
+  accounts: z.array(z.string()),
+  periods: z.array(z.string()),
+  assetTypes: z.array(z.string()),
+  tradeTypes: z.array(z.string()),
+  subCategories: z.array(z.string()),
+  generatedAt: z.string(),
+  workflow: z.literal("yuantaTradeStatements"),
+  rowCount: z.number().int().nonnegative(),
+  headers: z.array(z.string()),
 });
 
 const outputSchema = z.object({
@@ -80,13 +89,14 @@ const outputSchema = z.object({
   tradePageCount: z.number().int().nonnegative(),
   tradeGridCount: z.number().int().nonnegative(),
   tradeRowCount: z.number().int().nonnegative(),
-  files: z.array(fileSchema),
+  files: z.array(generatedTableFileSchema),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
 type HoldingType = z.infer<typeof holdingTypeSchema>;
 type TradeType = z.infer<typeof tradeTypeSchema>;
-type FileMetadata = z.infer<typeof fileSchema>;
+type FileMetadata = z.infer<typeof generatedTableFileSchema>;
+type CsvRow = Record<string, string>;
 
 type GridColumn = {
   field: string;
@@ -98,6 +108,13 @@ type CapturedGrid = {
   category: string;
   columns: GridColumn[];
   rows: Record<string, unknown>[];
+};
+
+type AssetSummaryRow = {
+  assetType: string;
+  assetName: string;
+  assetValueTwd: string;
+  unrealizedPnlTwd: string;
 };
 
 type ReportPage = {
@@ -112,9 +129,59 @@ type ReportPage = {
   endDate: string | null;
   subCategory: string | null;
   accountOptions: unknown[];
-  summaryRows: string[][];
+  summaryRows: AssetSummaryRow[];
   grids: CapturedGrid[];
 };
+
+const tradeTransactionHeaders = [
+  "trade_date",
+  "account_number",
+  "asset_type",
+  "trade_type",
+  "sub_category",
+  "product_code",
+  "product_name",
+  "currency",
+  "action",
+  "quantity",
+  "price",
+  "gross_amount",
+  "fee",
+  "tax",
+  "settlement_amount",
+  "settlement_currency",
+  "realized_pnl",
+  "cost_amount",
+] as const;
+
+const holdingHeaders = [
+  "as_of_date",
+  "account_number",
+  "asset_type",
+  "sub_category",
+  "product_code",
+  "product_name",
+  "currency",
+  "quantity",
+  "market_date",
+  "market_price",
+  "market_value_original",
+  "market_value_twd",
+  "cost_price",
+  "cost_amount",
+  "unrealized_pnl_original",
+  "unrealized_pnl_twd",
+  "return_rate",
+  "fx_rate",
+] as const;
+
+const assetSummaryHeaders = [
+  "as_of_date",
+  "asset_type",
+  "asset_name",
+  "asset_value_twd",
+  "unrealized_pnl_twd",
+] as const;
 
 const DEFAULT_TRADE_SUBCATEGORIES: Partial<Record<TradeType, string>> = {
   SecuritiesLendingTrade: "Lend",
@@ -197,10 +264,6 @@ function stripTags(html: string): string {
   );
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 function csvCell(value: unknown): string {
   const text =
     value === null || value === undefined
@@ -211,37 +274,62 @@ function csvCell(value: unknown): string {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function recordsToCsv(rows: Record<string, unknown>[]): string {
-  const headers = [
-    ...new Set(rows.flatMap((row) => Object.keys(row).filter(Boolean))),
-  ];
-  const lines = [headers.map(csvCell).join(",")];
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
 
-  for (const row of rows) {
-    lines.push(headers.map((header) => csvCell(row[header])).join(","));
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
+}
+
+const nextTimestamp = createTimestampGenerator();
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+function rowValue(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== null && value !== undefined && String(value).length > 0) {
+      return cleanText(String(value));
+    }
   }
+  return "";
+}
 
+function cleanOptionalAmount(value: string): string {
+  const text = cleanText(value);
+  return text === "--" ? "" : text;
+}
+
+function rowsToCsv(rows: CsvRow[], headers: readonly string[]): string {
+  const lines = [headers.map(csvCell).join(",")];
+  for (const row of rows) {
+    lines.push(headers.map((header) => csvCell(row[header] ?? "")).join(","));
+  }
   return `${lines.join("\n")}\n`;
 }
 
-function tableRowsToCsv(rows: string[][]): string {
-  const columnCount = rows.reduce(
-    (largest, row) => Math.max(largest, row.length),
-    0,
-  );
-  if (columnCount === 0) return "";
+function periodLabel(dateRange: { startDate: string; endDate: string }): string {
+  return `${dateRange.startDate}~${dateRange.endDate}`;
+}
 
-  const headers = Array.from(
-    { length: columnCount },
-    (_, index) => `column_${index + 1}`,
-  );
-  const lines = [headers.map(csvCell).join(",")];
+function reportPeriod(page: ReportPage): string {
+  if (page.startDate && page.endDate) return `${page.startDate}~${page.endDate}`;
+  return page.startDate || page.endDate || "";
+}
 
-  for (const row of rows) {
-    lines.push(headers.map((_, index) => csvCell(row[index] ?? "")).join(","));
-  }
+function dateSortKey(value: string): string {
+  const match = cleanText(value).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (!match) return "";
+  return `${match[1]}${match[2]}${match[3]}`;
+}
 
-  return `${lines.join("\n")}\n`;
+function compareTradeRowsByDateDesc(left: CsvRow, right: CsvRow): number {
+  return dateSortKey(right.trade_date).localeCompare(dateSortKey(left.trade_date));
 }
 
 function getStringVar(html: string, name: string): string | null {
@@ -385,14 +473,35 @@ function extractGrids(html: string): CapturedGrid[] {
   return grids;
 }
 
-function extractTableRows(html: string): string[][] {
-  return [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)]
-    .map((rowMatch) => {
-      return [...rowMatch[0].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)]
-        .map((cellMatch) => stripTags(cellMatch[1]))
-        .filter(Boolean);
-    })
-    .filter((row) => row.length > 0);
+function extractAssetSummaryRows(html: string): AssetSummaryRow[] {
+  const tableMatch = html.match(
+    /<table\b[^>]*class=["'][^"']*\btable-asset\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i,
+  );
+  if (!tableMatch) return [];
+
+  const rows: AssetSummaryRow[] = [];
+  for (const rowMatch of tableMatch[0].matchAll(
+    /<tr\b([^>]*)>([\s\S]*?)<\/tr>/gi,
+  )) {
+    const assetType = rowMatch[1].match(
+      /data-asset-type=["']([^"']+)["']/i,
+    )?.[1];
+    if (!assetType) continue;
+
+    const cells = [...rowMatch[2].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(
+      (cellMatch) => stripTags(cellMatch[1]),
+    );
+    if (cells.length < 3) continue;
+
+    rows.push({
+      assetType,
+      assetName: cleanText(cells[0]),
+      assetValueTwd: cleanOptionalAmount(cells[1]),
+      unrealizedPnlTwd: cleanOptionalAmount(cells[2]),
+    });
+  }
+
+  return rows;
 }
 
 function parseReportPage(html: string, url: string, reportType: string): ReportPage {
@@ -408,7 +517,7 @@ function parseReportPage(html: string, url: string, reportType: string): ReportP
     endDate: getStringVar(html, "endDate"),
     subCategory: getStringVar(html, "subCategory"),
     accountOptions: extractJsonArrayVar(html, "accountData"),
-    summaryRows: extractTableRows(html),
+    summaryRows: extractAssetSummaryRows(html),
     grids: extractGrids(html),
   };
 }
@@ -582,101 +691,339 @@ function tradeParams(
   return params;
 }
 
-function rowCount(pages: ReportPage[]): number {
-  return pages.reduce((total, page) => {
-    return (
-      total +
-      page.grids.reduce((gridTotal, grid) => gridTotal + grid.rows.length, 0)
-    );
-  }, 0);
-}
-
 function gridCount(pages: ReportPage[]): number {
   return pages.reduce((total, page) => total + page.grids.length, 0);
 }
 
-async function writeTextFile(
+function normalizeTradeRows(
+  pages: ReportPage[],
+  dateRange: { startDate: string; endDate: string },
+): CsvRow[] {
+  const period = periodLabel(dateRange);
+  const rows: CsvRow[] = [];
+
+  for (const page of pages) {
+    for (const grid of page.grids) {
+      for (const row of grid.rows) {
+        const tradeDate = rowValue(row, ["交易日期"]);
+        if (!tradeDate) continue;
+
+        rows.push({
+          trade_date: tradeDate,
+          account_number: rowValue(row, ["交易帳號"]),
+          asset_type: page.currentAssetType ?? "",
+          trade_type: page.reportType,
+          sub_category: page.subCategory || grid.category,
+          product_code: rowValue(row, [
+            "商品代號",
+            "證券代號",
+            "股票代號",
+            "標的代號",
+            "債券代號",
+          ]),
+          product_name: rowValue(row, [
+            "商品名稱",
+            "證券名稱",
+            "投資標的",
+            "標的名稱",
+            "擔保品名稱",
+          ]),
+          currency: rowValue(row, [
+            "商品幣別",
+            "交易幣別",
+            "幣別",
+            "計價幣別",
+            "投資幣別",
+          ]),
+          action: rowValue(row, ["交易類別"]),
+          quantity: rowValue(row, [
+            "面額/股數",
+            "股數",
+            "數量",
+            "成交口數",
+            "沖銷單位",
+            "原始單位",
+            "單位數",
+            "交易單位數",
+            "交易面額",
+            "名目本金",
+            "契約名目本金",
+          ]),
+          price: rowValue(row, [
+            "價格",
+            "成交價",
+            "成交價格",
+            "淨值",
+            "約定利率 (年化)",
+          ]),
+          gross_amount: rowValue(row, [
+            "交易價金",
+            "成交金額",
+            "價金",
+            "交易金額",
+            "交割金額",
+            "現金收入(元)",
+          ]),
+          fee: rowValue(row, [
+            "手續費",
+            "手續/處理費",
+            "手續處理費",
+            "借券費",
+            "入券費",
+            "設質費",
+          ]),
+          tax: rowValue(row, ["稅/費", "交易稅", "代扣稅", "分離課稅"]),
+          settlement_amount: rowValue(row, [
+            "交割金額(原幣)",
+            "應收付",
+            "淨收付",
+            "給付淨額",
+            "應收付金額",
+            "交割金額",
+            "現金收入(元)",
+            "現金支出(元)",
+            "收入",
+            "支出",
+          ]),
+          settlement_currency: rowValue(row, ["交割幣別"]),
+          realized_pnl: rowValue(row, [
+            "已實現損益",
+            "含息投資損益",
+            "客戶損益(稅前)",
+          ]),
+          cost_amount: rowValue(row, [
+            "成本金額(原幣)",
+            "投資成本",
+            "累計投資成本",
+          ]),
+          __period: period,
+        });
+      }
+    }
+  }
+
+  return rows.sort(compareTradeRowsByDateDesc);
+}
+
+function normalizeHoldingRows(
+  pages: ReportPage[],
+  fallbackDateRange: { startDate: string; endDate: string },
+): CsvRow[] {
+  const rows: CsvRow[] = [];
+
+  for (const page of pages) {
+    const asOfDate = page.endDate || page.startDate || fallbackDateRange.endDate;
+    const period = reportPeriod(page) || asOfDate;
+
+    for (const grid of page.grids) {
+      for (const row of grid.rows) {
+        const productCode = rowValue(row, [
+          "商品代號",
+          "證券代號",
+          "股票代號",
+          "標的代號",
+        ]);
+        const productName = rowValue(row, [
+          "商品名稱",
+          "證券名稱",
+          "股票名稱",
+          "基金名稱",
+          "商品",
+          "標的",
+        ]);
+
+        if (!productCode && !productName) continue;
+
+        rows.push({
+          as_of_date: asOfDate,
+          account_number: rowValue(row, ["交易帳號"]),
+          asset_type: page.currentAssetType ?? page.reportType,
+          sub_category: page.subCategory || grid.category,
+          product_code: productCode,
+          product_name: productName,
+          currency: rowValue(row, ["交易幣別", "商品幣別", "計價幣別", "幣別"]),
+          quantity: rowValue(row, [
+            "面額/股數",
+            "股數",
+            "數量",
+            "餘額單位",
+            "單位數",
+            "未平倉口數",
+            "票面餘額",
+            "名目本金",
+          ]),
+          market_date: rowValue(row, ["市價日期", "淨值日", "價格參考日", "交易日"]),
+          market_price: rowValue(row, ["參考市價", "參考價格", "參考淨值"]),
+          market_value_original: rowValue(row, [
+            "原幣現值",
+            "參考現值 (原幣)",
+            "資產淨值",
+          ]),
+          market_value_twd: rowValue(row, [
+            "台幣現值",
+            "市值",
+            "參考現值 (約當台幣)",
+            "擔保品市值",
+            "約當台幣",
+          ]),
+          cost_price: rowValue(row, ["成本價格"]),
+          cost_amount: rowValue(row, ["買入成本", "投資成本", "期初投入 (約當台幣)"]),
+          unrealized_pnl_original: rowValue(row, [
+            "未實現損益 (原幣)",
+            "未實現損益",
+          ]),
+          unrealized_pnl_twd: rowValue(row, [
+            "未實現損益 (約當台幣)",
+            "未實現損益 (台幣)",
+            "損益",
+          ]),
+          return_rate: rowValue(row, ["參考報酬率", "含息報酬率", "不含息報酬率"]),
+          fx_rate: rowValue(row, ["參考匯率 (原幣)", "參考匯率"]),
+          __period: period,
+          __trade_type: page.currentTradeType ?? "",
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+function normalizeSummaryRows(
+  pages: ReportPage[],
+  fallbackDateRange: { startDate: string; endDate: string },
+): CsvRow[] {
+  const rows: CsvRow[] = [];
+  const seen = new Set<string>();
+
+  for (const page of pages) {
+    const asOfDate = page.endDate || page.startDate || fallbackDateRange.endDate;
+    const period = reportPeriod(page) || asOfDate;
+
+    for (const summaryRow of page.summaryRows) {
+      const key = `${asOfDate}|${summaryRow.assetType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      rows.push({
+        as_of_date: asOfDate,
+        asset_type: summaryRow.assetType,
+        asset_name: summaryRow.assetName,
+        asset_value_twd: summaryRow.assetValueTwd,
+        unrealized_pnl_twd: summaryRow.unrealizedPnlTwd,
+        __period: period,
+      });
+    }
+  }
+
+  return rows;
+}
+
+function metadataForRows(
+  tableName: FileMetadata["tableName"],
+  rows: CsvRow[],
+  headers: readonly string[],
+  generatedAt: string,
+  csvFilename: string,
+  jsonFilename: string,
+): Omit<FileMetadata, "csvPath" | "jsonPath" | "csvBytes" | "jsonBytes"> {
+  return {
+    tableName,
+    csvFilename,
+    jsonFilename,
+    accounts: unique(rows.map((row) => row.account_number ?? "")),
+    periods: unique(rows.map((row) => row.__period ?? "")),
+    assetTypes: unique(rows.map((row) => row.asset_type ?? "")),
+    tradeTypes: unique(rows.map((row) => row.trade_type ?? row.__trade_type ?? "")),
+    subCategories: unique(rows.map((row) => row.sub_category ?? "")),
+    generatedAt,
+    workflow: "yuantaTradeStatements",
+    rowCount: rows.length,
+    headers: [...headers],
+  };
+}
+
+async function writeTableWithMetadata(
   outputDir: string,
-  filename: string,
-  content: string,
-  metadata: Omit<FileMetadata, "filename" | "path" | "bytes">,
+  tableName: FileMetadata["tableName"],
+  rows: CsvRow[],
+  headers: readonly string[],
 ): Promise<FileMetadata> {
-  const path = join(outputDir, filename);
-  await writeFile(path, content, "utf8");
-  const stats = await stat(path);
+  await mkdir(outputDir, { recursive: true });
+
+  const csvFilename = `${tableName}-${nextTimestamp()}.csv`;
+  const jsonFilename = csvFilename.replace(/\.csv$/, ".json");
+  const csvPath = join(outputDir, csvFilename);
+  const jsonPath = join(outputDir, jsonFilename);
+  const generatedAt = new Date().toISOString();
+  const metadata = metadataForRows(
+    tableName,
+    rows,
+    headers,
+    generatedAt,
+    csvFilename,
+    jsonFilename,
+  );
+  const csvContent = rowsToCsv(rows, headers);
+  const jsonContent = `${JSON.stringify(metadata, null, 2)}\n`;
+
+  await writeFile(csvPath, csvContent, "utf8");
+  await writeFile(jsonPath, jsonContent, "utf8");
+
+  const csvStats = await stat(csvPath);
+  const jsonStats = await stat(jsonPath);
+
   return {
     ...metadata,
-    filename,
-    path,
-    bytes: stats.size,
+    csvPath,
+    jsonPath,
+    csvBytes: csvStats.size,
+    jsonBytes: jsonStats.size,
   };
 }
 
 async function writeResultsFiles(
   outputDir: string,
   result: {
-    dateRange: { startDate: string; endDate: string };
-    holdings: ReportPage[];
-    trades: ReportPage[];
+    holdings: CsvRow[];
+    trades: CsvRow[];
+    summaries: CsvRow[];
   },
 ): Promise<FileMetadata[]> {
-  await mkdir(outputDir, { recursive: true });
-  const id = new Date().toISOString().replace(/[:.]/g, "-");
   const files: FileMetadata[] = [];
 
-  for (const [kind, pages] of [
-    ["holdings", result.holdings],
-    ["trades", result.trades],
-  ] as const) {
-    for (const page of pages) {
-      if (page.summaryRows.length > 0) {
-        files.push(
-          await writeTextFile(
-            outputDir,
-            safeFilename(`${kind}-${page.reportType}-summary-${id}.csv`),
-            tableRowsToCsv(page.summaryRows),
-            {
-              kind: "csv",
-              reportType: page.reportType,
-              category: "summary",
-              rowCount: page.summaryRows.length,
-            },
-          ),
-        );
-      }
-
-      for (const [gridIndex, grid] of page.grids.entries()) {
-        if (grid.rows.length === 0) continue;
-
-        files.push(
-          await writeTextFile(
-            outputDir,
-            safeFilename(
-              `${kind}-${page.reportType}-${grid.category}-${gridIndex + 1}-${id}.csv`,
-            ),
-            recordsToCsv(grid.rows),
-            {
-              kind: "csv",
-              reportType: page.reportType,
-              category: grid.category,
-              rowCount: grid.rows.length,
-            },
-          ),
-        );
-      }
-    }
+  if (result.trades.length > 0) {
+    files.push(
+      await writeTableWithMetadata(
+        outputDir,
+        "trade-transactions",
+        result.trades,
+        tradeTransactionHeaders,
+      ),
+    );
   }
 
-  files.push(
-    await writeTextFile(
-      outputDir,
-      safeFilename(`yuanta-trade-statements-${id}.json`),
-      `${JSON.stringify(result, null, 2)}\n`,
-      {
-        kind: "manifest",
-      },
-    ),
-  );
+  if (result.holdings.length > 0) {
+    files.push(
+      await writeTableWithMetadata(
+        outputDir,
+        "holdings",
+        result.holdings,
+        holdingHeaders,
+      ),
+    );
+  }
+
+  if (result.summaries.length > 0) {
+    files.push(
+      await writeTableWithMetadata(
+        outputDir,
+        "asset-summaries",
+        result.summaries,
+        assetSummaryHeaders,
+      ),
+    );
+  }
 
   return files;
 }
@@ -768,14 +1115,23 @@ export default workflow("yuantaTradeStatements", {
 
     if (input.includeTrades) {
       for (const tradeType of input.tradeTypes as TradeType[]) {
-        trades.push(await captureReport(page, tradeType, tradeParams(input, tradeType, dateRange)));
+        trades.push(
+          await captureReport(
+            page,
+            tradeType,
+            tradeParams(input, tradeType, dateRange),
+          ),
+        );
       }
     }
 
+    const tradeRows = normalizeTradeRows(trades, dateRange);
+    const holdingRows = normalizeHoldingRows(holdings, dateRange);
+    const summaryRows = normalizeSummaryRows([...holdings, ...trades], dateRange);
     const files = await writeResultsFiles(input.outputDir, {
-      dateRange,
-      holdings,
-      trades,
+      holdings: holdingRows,
+      trades: tradeRows,
+      summaries: summaryRows,
     });
 
     return {
@@ -783,10 +1139,10 @@ export default workflow("yuantaTradeStatements", {
       usedExistingSession: authResult.usedProfile,
       holdingPageCount: holdings.length,
       holdingGridCount: gridCount(holdings),
-      holdingRowCount: rowCount(holdings),
+      holdingRowCount: holdingRows.length,
       tradePageCount: trades.length,
       tradeGridCount: gridCount(trades),
-      tradeRowCount: rowCount(trades),
+      tradeRowCount: tradeRows.length,
       files,
     };
   },
