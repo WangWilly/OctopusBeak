@@ -24,21 +24,20 @@ type MonthOption = {
   label: string;
 };
 
-type ParsedTable = {
-  category: string;
-  period: string | null;
-  tableLabel: string;
-  rows: string[][];
-};
+type StatementKind = "unbilled" | "billed";
 
-type AggregateRow = {
-  category: string;
+type StatementRow = {
+  creditCardNo: string;
+  creditCardName: string;
+  consumeDate: string;
+  postedDate: string;
+  description: string;
+  countryCurrency: string;
+  foreignExchangeDate: string;
+  foreignAmount: string;
+  twdAmount: string;
+  paymentStatus: string;
   period: string | null;
-  tableLabel: string;
-  sourceTableIndex: number;
-  sourceRowIndex: number;
-  columns: Record<string, string>;
-  values: string[];
 };
 
 const inputSchema = z.object({
@@ -50,20 +49,13 @@ const inputSchema = z.object({
 });
 
 const tableFileSchema = z.object({
-  category: z.string(),
-  period: z.string().nullable(),
-  tableLabel: z.string(),
+  baseName: z.string(),
+  kind: z.enum(["unbilled", "billed"]),
   rowCount: z.number().int().nonnegative(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const aggregateFileSchema = z.object({
-  aggregateLabel: z.string(),
-  sourceTableCount: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
+  headers: z.array(z.string()),
+  periods: z.array(z.string()),
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
   csvPath: z.string(),
   jsonPath: z.string(),
   csvBytes: z.number().int().nonnegative(),
@@ -75,13 +67,10 @@ const outputSchema = z.object({
   replacedActiveSession: z.boolean(),
   count: z.number().int().nonnegative(),
   files: z.array(tableFileSchema),
-  aggregateCount: z.number().int().nonnegative(),
-  aggregateFiles: z.array(aggregateFileSchema),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
-type AggregateFile = z.infer<typeof aggregateFileSchema>;
 
 function requireCredential(
   credentials: YuantaCredentials,
@@ -100,16 +89,22 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
 function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
+
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
 }
 
 async function waitForFrame(
@@ -238,8 +233,14 @@ async function fillReadonlyLoginInput(
   value: string,
 ): Promise<void> {
   await field.click({ force: true });
-  await field.evaluate((element) => element.removeAttribute("readonly"));
-  await field.fill(value);
+  await field.evaluate((element, nextValue) => {
+    const input = element as HTMLInputElement;
+    input.removeAttribute("readonly");
+    input.readOnly = false;
+    input.value = nextValue;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
 }
 
 async function submitLogin(
@@ -531,79 +532,30 @@ async function clickCreditCardFunction(
   return await findScopeWithSelector(page, "table.rwdTable");
 }
 
-async function clickCreditCardSummary(page: Page): Promise<BrowserScope> {
-  const summaryScope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('a[onclick*="turnCDSummary"]')
-        .or(
-          candidate
-            .locator('a[onclick*="creditcardsummary"]')
-            .filter({ hasText: "信用卡總覽" }),
-        ),
-    "YuanTa credit card summary link",
-  );
-  const link = await firstVisibleLocator(
-    summaryScope
-      .locator('a[onclick*="turnCDSummary"]')
-      .or(
-        summaryScope
-          .locator('a[onclick*="creditcardsummary"]')
-          .filter({ hasText: "信用卡總覽" }),
-      ),
-    "YuanTa credit card summary link",
-  );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  return await findScopeWithSelector(page, "table.rwdTable");
-}
+const baseStatementHeaders = [
+  "信用卡號",
+  "信用卡名稱",
+  "消費日期",
+  "入帳日期",
+  "消費明細",
+  "國家/幣別",
+  "外幣折算日",
+  "外幣金額",
+  "新臺幣金額",
+];
 
-async function parseCreditCardTables(
-  page: Page,
-  category: string,
-  period: string | null,
-): Promise<ParsedTable[]> {
-  const scope = await findScopeWithSelector(page, "table.rwdTable");
-  const tables = scope.locator("table.rwdTable");
-  const count = await tables.count();
-  const parsed: ParsedTable[] = [];
-
-  for (let tableIndex = 0; tableIndex < count; tableIndex += 1) {
-    const table = tables.nth(tableIndex);
-    const rows = await parseHtmlTableRows(table);
-    if (rows.length === 0) continue;
-
-    const tableLabel = classifyTable(category, rows, tableIndex);
-    parsed.push({
-      category,
-      period,
-      tableLabel,
-      rows: normalizeTableRows(tableLabel, rows),
-    });
-  }
-
-  if (parsed.length === 0) {
-    throw new Error(`No YuanTa credit card tables found for ${category}.`);
-  }
-
-  return parsed;
-}
+const billedStatementHeaders = [...baseStatementHeaders, "繳費狀態"];
 
 async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
-  const rows = table.locator("tr");
-  const rowCount = await rows.count();
+  const rows = await table.locator("tr").all();
   const parsedRows: string[][] = [];
 
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-    const cells = rows.nth(rowIndex).locator("th, td");
-    const cellCount = await cells.count();
-    const values: string[] = [];
-
-    for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
-      values.push(cleanText(await cells.nth(cellIndex).innerText()));
-    }
-
+  for (const row of rows) {
+    const values = (
+      await row
+        .locator("th, td:not(.cardDetailList):not(.billcontrol_Btn)")
+        .allTextContents()
+    ).map(cleanText);
     if (values.some((value) => value.length > 0)) parsedRows.push(values);
   }
 
@@ -613,22 +565,6 @@ async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
   }
 
   return parsedRows;
-}
-
-function classifyTable(
-  category: string,
-  rows: string[][],
-  tableIndex: number,
-): string {
-  const text = rows.flat().join(" ");
-  if (/帳單月份/.test(text)) return "bill-summary";
-  if (/消費日期/.test(text)) return "transactions";
-  if (/本期無消費明細/.test(text)) return "no-transactions";
-  if (/繳款日/.test(text)) return "payment-details";
-  if (/信用額度/.test(text)) return "credit-limit-summary";
-  if (/帳單結帳日/.test(text)) return "payment-summary";
-  if (/自動扣款/.test(text)) return "auto-payment-summary";
-  return `${category}-table-${tableIndex + 1}`;
 }
 
 function normalizeTableRows(tableLabel: string, rows: string[][]): string[][] {
@@ -661,36 +597,18 @@ function creditCardDownloadsDir(): string {
   return join(process.cwd(), "downloads", "yuanta-credit-card-statements");
 }
 
-const nonAggregateTableLabels = new Set([
-  "bill-summary",
-  "no-transactions",
-  "credit-limit-summary",
-  "payment-summary",
-  "auto-payment-summary",
-]);
-
-function isAggregateTable(table: ParsedTable): boolean {
-  if (nonAggregateTableLabels.has(table.tableLabel)) return false;
-  if (table.rows.length < 2) return false;
-
-  const text = table.rows.flat().join(" ");
-  if (/本期無消費明細|查無資料|無資料/.test(text)) return false;
-
-  return findHeaderRowIndex(table) >= 0;
-}
-
 function headerScore(row: string[]): number {
   return row.filter((value) =>
     /日期|明細|幣別|金額|繳款|入帳|消費/.test(value),
   ).length;
 }
 
-function findHeaderRowIndex(table: ParsedTable): number {
+function findHeaderRowIndex(rows: string[][]): number {
   let bestIndex = -1;
   let bestScore = 0;
 
-  for (let index = 0; index < table.rows.length; index += 1) {
-    const score = headerScore(table.rows[index]);
+  for (let index = 0; index < rows.length; index += 1) {
+    const score = headerScore(rows[index]);
     if (score > bestScore) {
       bestIndex = index;
       bestScore = score;
@@ -698,7 +616,7 @@ function findHeaderRowIndex(table: ParsedTable): number {
   }
 
   if (bestIndex >= 0) return bestIndex;
-  return table.rows[0].some((header) => header.length > 0) ? 0 : -1;
+  return rows[0]?.some((header) => header.length > 0) ? 0 : -1;
 }
 
 function uniqueHeaders(row: string[]): string[] {
@@ -725,186 +643,262 @@ function isRepeatedHeaderRow(values: string[], headers: string[]): boolean {
   return values.every((value, index) => !value || value === headers[index]);
 }
 
-function aggregateRowsForTable(
-  table: ParsedTable,
-  sourceTableIndex: number,
-): AggregateRow[] {
-  const headerRowIndex = findHeaderRowIndex(table);
+function hasTransactionHeaders(headers: string[]): boolean {
+  return ["消費日期", "入帳日期", "消費明細", "新臺幣金額"].every((header) =>
+    headers.includes(header),
+  );
+}
+
+function columnsFromValues(
+  headers: string[],
+  values: string[],
+): Record<string, string> {
+  const columns: Record<string, string> = {};
+  for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
+    columns[headers[columnIndex]] = values[columnIndex] ?? "";
+  }
+  return columns;
+}
+
+function shouldLeaveCardInfoBlank(description: string): boolean {
+  return description.includes("鑽金紅利回饋");
+}
+
+function statementRowsFromTableRows(
+  rows: string[][],
+  context: {
+    creditCardNo: string;
+    creditCardName: string;
+    period: string | null;
+    paymentStatus: string;
+  },
+): StatementRow[] {
+  const normalizedRows = normalizeTableRows("transactions", rows);
+  const headerRowIndex = findHeaderRowIndex(normalizedRows);
   if (headerRowIndex < 0) return [];
 
-  const headers = uniqueHeaders(table.rows[headerRowIndex]);
-  const rows: AggregateRow[] = [];
+  const headers = uniqueHeaders(normalizedRows[headerRowIndex]);
+  if (!hasTransactionHeaders(headers)) return [];
 
+  const statementRows: StatementRow[] = [];
   for (
     let rowIndex = headerRowIndex + 1;
-    rowIndex < table.rows.length;
+    rowIndex < normalizedRows.length;
     rowIndex += 1
   ) {
-    const values = alignValuesToHeaders(table.rows[rowIndex], headers);
+    const values = alignValuesToHeaders(
+      normalizedRows[rowIndex],
+      headers,
+    ).slice(0, headers.length);
     if (!values.some((value) => value.length > 0)) continue;
     if (isRepeatedHeaderRow(values, headers)) continue;
 
-    const columns: Record<string, string> = {};
-    for (let columnIndex = 0; columnIndex < values.length; columnIndex += 1) {
-      const header = headers[columnIndex] ?? `column_${columnIndex + 1}`;
-      columns[header] = values[columnIndex] ?? "";
-    }
-
-    rows.push({
-      category: table.category,
-      period: table.period,
-      tableLabel: table.tableLabel,
-      sourceTableIndex,
-      sourceRowIndex: rowIndex + 1,
-      columns,
-      values,
+    const columns = columnsFromValues(headers, values);
+    const description = columns["消費明細"] ?? "";
+    const blankCardInfo = shouldLeaveCardInfoBlank(description);
+    statementRows.push({
+      creditCardNo: blankCardInfo ? "" : context.creditCardNo,
+      creditCardName: blankCardInfo ? "" : context.creditCardName,
+      consumeDate: columns["消費日期"] ?? "",
+      postedDate: columns["入帳日期"] ?? "",
+      description,
+      countryCurrency: columns["國家/幣別"] ?? "",
+      foreignExchangeDate: columns["外幣折算日"] ?? "",
+      foreignAmount: columns["外幣金額"] ?? "",
+      twdAmount: columns["新臺幣金額"] ?? "",
+      paymentStatus: context.paymentStatus,
+      period: context.period,
     });
   }
 
-  return rows;
+  return statementRows;
 }
 
-function groupedAggregateRows(
-  tables: ParsedTable[],
-): Map<string, { sourceTableCount: number; rows: AggregateRow[] }> {
-  const groups = new Map<
-    string,
-    { sourceTableCount: number; rows: AggregateRow[] }
-  >();
-
-  for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
-    const table = tables[tableIndex];
-    if (!isAggregateTable(table)) continue;
-
-    const rows = aggregateRowsForTable(table, tableIndex + 1);
-    if (rows.length === 0) continue;
-
-    const group = groups.get(table.tableLabel) ?? {
-      sourceTableCount: 0,
-      rows: [],
-    };
-    group.sourceTableCount += 1;
-    group.rows.push(...rows);
-    groups.set(table.tableLabel, group);
+async function findStatementScope(page: Page): Promise<BrowserScope | null> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if ((await scope.locator(".cardBx").count().catch(() => 0)) > 0) {
+        return scope;
+      }
+      const noRecordText = await scope
+        .locator("#creditNoRecordMsg, .errorArea")
+        .first()
+        .textContent({ timeout: 1_000 })
+        .catch(() => "");
+      if (/查無資料|無資料|無消費/.test(noRecordText ?? "")) return null;
+    }
+    await page.waitForTimeout(250);
   }
 
-  return groups;
+  return null;
 }
 
-function aggregateRowsToCsv(rows: AggregateRow[]): string {
-  const dataColumns = [
-    ...new Set(rows.flatMap((row) => Object.keys(row.columns))),
-  ];
-  const metadataColumns = [
-    "source_category",
-    "source_period",
-    "source_table_label",
-    "source_table_index",
-    "source_row_index",
-  ];
+async function parseStatementRows(
+  page: Page,
+  period: string | null,
+  paymentStatus: string,
+): Promise<StatementRow[]> {
+  const scope = await findStatementScope(page);
+  if (!scope) return [];
 
+  const cardTables = await scope
+    .locator(".cardBx")
+    .evaluateAll((cardBoxes) =>
+      cardBoxes
+        .filter(
+          (cardBox) =>
+            cardBox.querySelector(".cardInfoD") &&
+            cardBox.querySelector("table.rwdTable"),
+        )
+        .map((cardBox) => {
+        const textOf = (element: Element | null): string =>
+          (element?.textContent ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+        const creditCardName = textOf(
+          cardBox.querySelector(".cardInfoD h4.web") ??
+            cardBox.querySelector(".cardHead h4"),
+        ).replace(/主卡/g, "").trim();
+        let creditCardNo = "";
+        for (const item of Array.from(
+          cardBox.querySelectorAll(".cardInfod_Con li"),
+        )) {
+          if (textOf(item.querySelector("h5")).includes("卡號")) {
+            creditCardNo = textOf(item.querySelector("p"));
+            break;
+          }
+        }
+        const tables = Array.from(cardBox.querySelectorAll("table.rwdTable")).map(
+          (table) =>
+            Array.from(table.querySelectorAll("tr"))
+              .map((row) =>
+                Array.from(
+                  row.querySelectorAll(
+                    "th, td:not(.cardDetailList):not(.billcontrol_Btn)",
+                  ),
+                ).map(textOf),
+              )
+              .filter((row) => row.some((value) => value.length > 0)),
+        );
+        return { creditCardNo, creditCardName, tables };
+      }),
+    );
+
+  return cardTables.flatMap(({ creditCardNo, creditCardName, tables }) =>
+    tables.flatMap((rows) =>
+      statementRowsFromTableRows(rows, {
+        creditCardNo,
+        creditCardName,
+        period,
+        paymentStatus,
+      }),
+    ),
+  );
+}
+
+function parseAmount(value: string | undefined): number | null {
+  const normalized = (value ?? "").replace(/[, $NT]/g, "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function inferPaymentStatus(columns: Record<string, string>): string {
+  const due = parseAmount(columns["本期應繳金額"]);
+  const paid = parseAmount(columns["已繳款金額"]);
+  if (due === null || paid === null) return "";
+  if (due <= 0) return "無應繳";
+  if (paid <= 0) return "未繳";
+  if (paid >= due) return "已繳";
+  return "部分繳款";
+}
+
+async function readBillingPaymentStatus(page: Page): Promise<string> {
+  const scope = await findScopeWithSelector(page, "table.rwdTable");
+  const tables = scope.locator("table.rwdTable");
+  const count = await tables.count();
+
+  for (let tableIndex = 0; tableIndex < count; tableIndex += 1) {
+    const rows = await parseHtmlTableRows(tables.nth(tableIndex));
+    const headerRowIndex = rows.findIndex(
+      (row) => row.includes("帳單月份") && row.includes("已繳款金額"),
+    );
+    if (headerRowIndex < 0 || headerRowIndex + 1 >= rows.length) continue;
+
+    const headers = uniqueHeaders(rows[headerRowIndex]);
+    const values = alignValuesToHeaders(rows[headerRowIndex + 1], headers).slice(
+      0,
+      headers.length,
+    );
+    return inferPaymentStatus(columnsFromValues(headers, values));
+  }
+
+  return "";
+}
+
+function statementHeaders(kind: StatementKind): string[] {
+  return kind === "billed" ? billedStatementHeaders : baseStatementHeaders;
+}
+
+function statementRowsToCsv(kind: StatementKind, rows: StatementRow[]): string {
   const csvRows = [
-    [...metadataColumns, ...dataColumns],
-    ...rows.map((row) => [
-      row.category,
-      row.period ?? "",
-      row.tableLabel,
-      String(row.sourceTableIndex),
-      String(row.sourceRowIndex),
-      ...dataColumns.map((column) => row.columns[column] ?? ""),
-    ]),
+    statementHeaders(kind),
+    ...rows.map((row) => {
+      const values = [
+        row.creditCardNo,
+        row.creditCardName,
+        row.consumeDate,
+        row.postedDate,
+        row.description,
+        row.countryCurrency,
+        row.foreignExchangeDate,
+        row.foreignAmount,
+        row.twdAmount,
+      ];
+      if (kind === "billed") values.push(row.paymentStatus);
+      return values;
+    }),
   ];
 
   return rowsToCsv(csvRows);
 }
 
-async function writeAggregateFile(
-  runId: string,
-  aggregateLabel: string,
-  sourceTableCount: number,
-  rows: AggregateRow[],
-): Promise<AggregateFile> {
-  const downloadsDir = creditCardDownloadsDir();
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${runId}-aggregate-${safeFilename(aggregateLabel)}`;
-  const csvPath = join(downloadsDir, `${baseName}.csv`);
-  const jsonPath = join(downloadsDir, `${baseName}.json`);
-
-  await writeFile(csvPath, aggregateRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        aggregateLabel,
-        sourceTableCount,
-        rowCount: rows.length,
-        rows,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    aggregateLabel,
-    sourceTableCount,
-    rowCount: rows.length,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
-}
-
-async function writeAggregateFiles(
-  runId: string,
-  tables: ParsedTable[],
-): Promise<AggregateFile[]> {
-  const aggregateFiles: AggregateFile[] = [];
-  const groups = groupedAggregateRows(tables);
-
-  for (const [aggregateLabel, group] of groups.entries()) {
-    aggregateFiles.push(
-      await writeAggregateFile(
-        runId,
-        aggregateLabel,
-        group.sourceTableCount,
-        group.rows,
-      ),
-    );
-  }
-
-  return aggregateFiles;
-}
-
-async function writeTableFiles(
-  runId: string,
-  sequence: number,
-  table: ParsedTable,
+async function writeStatementFile(
+  nextTimestamp: () => string,
+  kind: StatementKind,
+  rows: StatementRow[],
 ): Promise<TableFile> {
   const downloadsDir = creditCardDownloadsDir();
   await mkdir(downloadsDir, { recursive: true });
 
-  const period = table.period ? safeFilename(table.period) : "all";
-  const baseName = `${runId}-${String(sequence).padStart(2, "0")}-${safeFilename(
-    table.category,
-  )}-${period}-${safeFilename(table.tableLabel)}`;
-  const csvPath = join(downloadsDir, `${baseName}.csv`);
-  const jsonPath = join(downloadsDir, `${baseName}.json`);
+  const baseName = `${kind}-statements-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
+  const generatedAt = new Date().toISOString();
+  const headers = statementHeaders(kind);
+  const periods = [
+    ...new Set(rows.map((row) => row.period).filter((period) => period !== null)),
+  ];
 
-  await writeFile(csvPath, rowsToCsv(table.rows), "utf8");
+  await writeFile(csvPath, statementRowsToCsv(kind, rows), "utf8");
   await writeFile(
     jsonPath,
     `${JSON.stringify(
       {
-        category: table.category,
-        period: table.period,
-        tableLabel: table.tableLabel,
-        rows: table.rows,
+        schemaVersion: "download-table-metadata.v1",
+        generatedAt,
+        workflow: "yuantaCreditCardStatements",
+        kind,
+        csvFilename,
+        jsonFilename,
+        rowCount: rows.length,
+        headers,
+        periods,
+        paymentStatuses:
+          kind === "billed"
+            ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
+            : [],
       },
       null,
       2,
@@ -915,34 +909,18 @@ async function writeTableFiles(
   const csvStat = await stat(csvPath);
   const jsonStat = await stat(jsonPath);
   return {
-    category: table.category,
-    period: table.period,
-    tableLabel: table.tableLabel,
-    rowCount: table.rows.length,
+    baseName,
+    kind,
+    rowCount: rows.length,
+    headers,
+    periods,
+    csvFilename,
+    jsonFilename,
     csvPath,
     jsonPath,
     csvBytes: csvStat.size,
     jsonBytes: jsonStat.size,
   };
-}
-
-async function captureTables(
-  page: Page,
-  runId: string,
-  files: TableFile[],
-  parsedTables: ParsedTable[],
-  category: string,
-  period: string | null,
-): Promise<void> {
-  const tables = await parseCreditCardTables(page, category, period);
-  for (const table of tables) {
-    parsedTables.push(table);
-    files.push(await writeTableFiles(runId, files.length + 1, table));
-  }
-}
-
-function runId(): string {
-  return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 }
 
 export default workflow("yuantaCreditCardStatements", {
@@ -998,60 +976,37 @@ export default workflow("yuantaCreditCardStatements", {
 
     const allMonthOptions = await readMonthOptions(page);
     const monthOptions = selectMonthOptions(allMonthOptions, input);
-    const files: TableFile[] = [];
-    const parsedTables: ParsedTable[] = [];
-    const id = runId();
+    const nextTimestamp = createTimestampGenerator();
+    const billedRows: StatementRow[] = [];
 
     for (const month of monthOptions) {
       if (month.index !== 0) await clickMonth(page, month);
-      await captureTables(
-        page,
-        id,
-        files,
-        parsedTables,
-        "monthly-bill",
-        month.label,
+      const paymentStatus = await readBillingPaymentStatus(page);
+      billedRows.push(
+        ...(await parseStatementRows(page, month.label, paymentStatus)),
       );
     }
 
+    const files: TableFile[] = [];
+    let unbilledFile: TableFile | null = null;
     if (input.includeUnbilled) {
       await clickCreditCardFunction(page, 1, "YuanTa unbilled credit card link");
-      await captureTables(page, id, files, parsedTables, "unbilled", null);
-    }
-
-    if (input.includePaymentDetails) {
-      await clickCreditCardFunction(
-        page,
-        3,
-        "YuanTa recent credit card payment details link",
-      );
-      await captureTables(
-        page,
-        id,
-        files,
-        parsedTables,
-        "payment-details",
-        null,
+      const unbilledRows = await parseStatementRows(page, null, "");
+      unbilledFile = await writeStatementFile(
+        nextTimestamp,
+        "unbilled",
+        unbilledRows,
       );
     }
 
-    if (input.includeSummary) {
-      await clickCreditCardSummary(page);
-      await captureTables(page, id, files, parsedTables, "summary", null);
-    }
-
-    const aggregateFiles = await writeAggregateFiles(id, parsedTables);
+    if (unbilledFile) files.push(unbilledFile);
+    files.push(await writeStatementFile(nextTimestamp, "billed", billedRows));
 
     return {
       usedExistingSession: authResult.usedProfile,
       replacedActiveSession,
       count: files.length,
       files,
-      aggregateCount: aggregateFiles.reduce(
-        (total, file) => total + file.rowCount,
-        0,
-      ),
-      aggregateFiles,
     };
   },
 });
