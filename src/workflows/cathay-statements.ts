@@ -9,7 +9,7 @@ const BANK_ENTRY_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
 
-type CathayCredentials = {
+export type CathayCredentials = {
   cathay_user_id?: string;
   cathay_account?: string;
   cathay_password?: string;
@@ -48,7 +48,18 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: CathayCredentials;
 };
 
-type CathaySession = {
+export type CathayDateRange = z.infer<typeof dateRangeSchema>;
+
+export type CathayStatementDownload = {
+  account: string;
+  dateRange: CathayDateRange;
+  filename: string;
+  path: string;
+  bytes: number;
+  rows: number;
+};
+
+export type CathaySession = {
   jwtToken: string;
   customerId: string;
   idType: string;
@@ -356,6 +367,22 @@ async function dismissPostLoginPrompts(
   }
 }
 
+export async function signInCathay(
+  ctx: LibrettoWorkflowContext,
+  credentials: CathayCredentials,
+  trustDevice: boolean,
+): Promise<{ usedExistingSession: boolean }> {
+  const { page, session } = ctx;
+  if (await isSignedIn(page)) return { usedExistingSession: true };
+
+  await fillLoginForm(page, credentials);
+  await completeEmailOtpIfNeeded(page, session);
+  await waitForSignedInState(page);
+  await dismissPostLoginPrompts(page, trustDevice);
+
+  return { usedExistingSession: false };
+}
+
 async function openDomesticStatementsPage(page: Page): Promise<void> {
   await page.goto(DOMESTIC_STATEMENTS_URL, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("domcontentloaded");
@@ -564,9 +591,13 @@ class CathayApiClient {
   }
 }
 
+export async function createCathaySession(page: Page): Promise<CathaySession> {
+  return await new CathayApiClient(page).createSession();
+}
+
 async function writeStatementCsv(
   account: string,
-  dateRange: z.infer<typeof dateRangeSchema>,
+  dateRange: CathayDateRange,
   statement: CathayTransferResult,
 ) {
   const downloadsDir = join(process.cwd(), "downloads", "cathay-statements");
@@ -613,53 +644,63 @@ async function writeStatementCsv(
   return { filename, path, bytes: fileStat.size, rows: details.length };
 }
 
+export async function downloadCathayStatements(
+  page: Page,
+  dateRange: CathayDateRange,
+  accountFilters: string[],
+  cathaySession?: CathaySession,
+): Promise<CathayStatementDownload[]> {
+  const apiClient = new CathayApiClient(page);
+  const session = cathaySession ?? (await apiClient.createSession());
+  const accounts = await apiClient.fetchDomesticAccounts(
+    session,
+    accountFilters,
+  );
+
+  await openDomesticStatementsPage(page);
+
+  const downloads: CathayStatementDownload[] = [];
+  for (const account of accounts) {
+    const maskedAccount = maskAccountLabel(accountLabel(account));
+    const statement = await apiClient.fetchTransferDetails(
+      session,
+      account.accountNo,
+      dateRange,
+    );
+    const download = await writeStatementCsv(
+      maskedAccount,
+      dateRange,
+      statement,
+    );
+    downloads.push({
+      account: maskedAccount,
+      dateRange,
+      ...download,
+    });
+  }
+
+  return downloads;
+}
+
 export default workflow("cathayStatements", {
   credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
-    const { page, session } = ctx;
+    const { page } = ctx;
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
       await dialog.accept();
     });
 
-    await fillLoginForm(page, input.credentials);
-    await completeEmailOtpIfNeeded(page, session);
-    await waitForSignedInState(page);
-    await dismissPostLoginPrompts(page, input.trustDevice);
-
-    const apiClient = new CathayApiClient(page);
-    const cathaySession = await apiClient.createSession();
-    const accounts = await apiClient.fetchDomesticAccounts(
-      cathaySession,
+    await signInCathay(ctx, input.credentials, input.trustDevice);
+    const downloads = await downloadCathayStatements(
+      page,
+      input.dateRange,
       input.accountFilters,
     );
-
-    await openDomesticStatementsPage(page);
-
-    const downloads = [];
-
-    for (const account of accounts) {
-      const maskedAccount = maskAccountLabel(accountLabel(account));
-      const statement = await apiClient.fetchTransferDetails(
-        cathaySession,
-        account.accountNo,
-        input.dateRange,
-      );
-      const download = await writeStatementCsv(
-        maskedAccount,
-        input.dateRange,
-        statement,
-      );
-      downloads.push({
-        account: maskedAccount,
-        dateRange: input.dateRange,
-        ...download,
-      });
-    }
 
     return {
       dateRange: input.dateRange,

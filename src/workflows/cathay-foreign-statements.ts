@@ -1,19 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Locator, Page } from "playwright";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Page } from "playwright";
 import { z } from "zod";
+import {
+  type CathayCredentials,
+  type CathaySession,
+  signInCathay,
+} from "./cathay-statements.js";
 
-const BANK_ENTRY_URL = "https://www.cathaybk.com.tw/MyBank/";
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
-
-type CathayCredentials = {
-  cathay_user_id?: string;
-  cathay_account?: string;
-  cathay_password?: string;
-};
 
 const dateRangeSchema = z.enum([
   "one_week",
@@ -50,10 +48,16 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: CathayCredentials;
 };
 
-type CathaySession = {
-  jwtToken: string;
-  customerId: string;
-  idType: string;
+export type CathayForeignDateRange = z.infer<typeof dateRangeSchema>;
+
+export type CathayForeignStatementDownload = {
+  account: string;
+  currencies: string[];
+  dateRange: CathayForeignDateRange;
+  filename: string;
+  path: string;
+  bytes: number;
+  rows: number;
 };
 
 type CathayApiResponse<T> = {
@@ -101,19 +105,6 @@ type CathayForeignTransferResult = {
   currencyCode?: string;
   transferInfos?: CathayForeignTransferInfo[];
 };
-
-function requireCredential(
-  credentials: CathayCredentials,
-  name: keyof CathayCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -183,200 +174,6 @@ function matchesCurrencyFilter(
 
 function currencyCodeOf(currency: CathayForeignCurrency): string | undefined {
   return currency.currency ?? currency.currencyCode;
-}
-
-async function clickFirstVisible(locator: Locator): Promise<boolean> {
-  const count = await locator.count().catch(() => 0);
-  for (let index = 0; index < count; index += 1) {
-    const candidate = locator.nth(index);
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.click({ force: true });
-      return true;
-    }
-  }
-  return false;
-}
-
-async function hasStartupAnnouncement(page: Page): Promise<boolean> {
-  return await page
-    .getByText(/系統維護公告/)
-    .first()
-    .isVisible()
-    .catch(() => false);
-}
-
-async function dismissStartupAnnouncements(
-  page: Page,
-  timeoutMs = 15_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastActionAt = Date.now();
-
-  while (Date.now() < deadline) {
-    const clicked = await clickFirstVisible(
-      page.locator("button").filter({
-        hasText: /^\s*(下一則|我知道了|OK)\s*$/,
-      }),
-    );
-    if (clicked) {
-      lastActionAt = Date.now();
-      await page.waitForTimeout(700);
-      continue;
-    }
-
-    const announcementVisible = await hasStartupAnnouncement(page);
-    if (!announcementVisible && Date.now() - lastActionAt >= 1_000) {
-      return;
-    }
-
-    await page.waitForTimeout(250);
-  }
-
-  if (await hasStartupAnnouncement(page)) {
-    throw new Error("Could not dismiss Cathay startup announcements.");
-  }
-}
-
-async function isSignedIn(page: Page): Promise<boolean> {
-  if (!/\/OnlineBanking\//.test(page.url())) return false;
-  return await page
-    .getByText(/^登出$/)
-    .first()
-    .isVisible()
-    .catch(() => false);
-}
-
-async function fillLoginForm(
-  page: Page,
-  credentials: CathayCredentials,
-): Promise<void> {
-  const userId = requireCredential(credentials, "cathay_user_id");
-  const account = requireCredential(credentials, "cathay_account");
-  const password = requireCredential(credentials, "cathay_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-  await dismissStartupAnnouncements(page);
-
-  await page.locator("#CustID").fill(userId);
-  await page.locator("#UserIdKeyin").fill(account);
-  await page.locator("#PasswordKeyin").fill(password);
-  await dismissStartupAnnouncements(page, 5_000);
-  await page.locator("button.js-login").click();
-}
-
-async function completeEmailOtpIfNeeded(
-  page: Page,
-  session: string,
-): Promise<void> {
-  const emailVerificationLink = page.locator("a").filter({ hasText: "Email驗證" });
-  const otpField = page.locator("#OtpMailPassword");
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return;
-    if (await otpField.isVisible().catch(() => false)) break;
-    if (await emailVerificationLink.first().isVisible().catch(() => false)) {
-      break;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  if (!(await emailVerificationLink.first().isVisible().catch(() => false))) {
-    if (await otpField.isVisible().catch(() => false)) {
-      console.log(
-        "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-      if (await otpField.isVisible().catch(() => false)) {
-        await page.locator("#btnConfirm").click();
-      }
-      return;
-    }
-
-    throw new Error(
-      `Cathay sign-in did not reach Email OTP or signed-in state. Current URL: ${page.url()}`,
-    );
-  }
-
-  await emailVerificationLink.first().click();
-
-  const sendEmailOtp = page.locator("#js-otp-email-send");
-  if (await sendEmailOtp.isVisible().catch(() => false)) {
-    await sendEmailOtp.click();
-  }
-
-  await otpField.waitFor({ state: "visible", timeout: 30_000 });
-  await otpField.focus();
-
-  console.log(
-    "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
-      session +
-      "`.",
-  );
-  await pause(session);
-
-  if (await otpField.isVisible().catch(() => false)) {
-    await page.locator("#btnConfirm").click();
-  }
-}
-
-async function waitForSignedInState(page: Page): Promise<void> {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return;
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Timed out waiting for Cathay signed-in state.");
-}
-
-async function dismissPostLoginPrompts(
-  page: Page,
-  trustDevice: boolean,
-): Promise<void> {
-  const trustDeviceModal = page.getByText("信任這台裝置？");
-  const deadline = Date.now() + 15_000;
-  const stableLoggedInAt = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    if (await trustDeviceModal.first().isVisible().catch(() => false)) break;
-    if (
-      Date.now() >= stableLoggedInAt &&
-      (await page.getByText(/^登出$/).first().isVisible().catch(() => false))
-    ) {
-      return;
-    }
-    await page.waitForTimeout(250);
-  }
-
-  if (await trustDeviceModal.first().isVisible().catch(() => false)) {
-    if (trustDevice) {
-      const clicked = await clickFirstVisible(
-        page.getByText(/^信任這台裝置$/),
-      );
-      if (!clicked) {
-        throw new Error("Could not click Cathay trusted-device opt-in.");
-      }
-    } else {
-      const clicked = await clickFirstVisible(
-        page.getByText("暫時不用加入信任裝置"),
-      );
-      if (!clicked) {
-        throw new Error("Could not click Cathay trusted-device opt-out.");
-      }
-    }
-
-    const confirm = page.locator('button[aria-label="確定"]');
-    if (await confirm.isVisible().catch(() => false)) {
-      await confirm.click();
-      await page.waitForTimeout(500);
-    }
-
-    await trustDeviceModal
-      .first()
-      .waitFor({ state: "hidden", timeout: 15_000 })
-      .catch(() => undefined);
-  }
 }
 
 async function openForeignStatementsPage(page: Page): Promise<void> {
@@ -591,7 +388,7 @@ class CathayForeignApiClient {
 async function writeForeignStatementCsv(
   account: string,
   currencies: string[],
-  dateRange: z.infer<typeof dateRangeSchema>,
+  dateRange: CathayForeignDateRange,
   statements: CathayForeignTransferResult[],
 ) {
   const downloadsDir = join(
@@ -641,59 +438,71 @@ async function writeForeignStatementCsv(
   return { filename, path, bytes: fileStat.size, rows: rows.length - 1 };
 }
 
+export async function downloadCathayForeignStatements(
+  page: Page,
+  dateRange: CathayForeignDateRange,
+  accountFilters: string[],
+  currencyFilters: string[],
+  cathaySession?: CathaySession,
+): Promise<CathayForeignStatementDownload[]> {
+  await openForeignStatementsPage(page);
+
+  const apiClient = new CathayForeignApiClient(page);
+  const session = cathaySession ?? (await apiClient.createSession());
+  const accounts = await apiClient.fetchForeignAccounts(
+    session,
+    accountFilters,
+    currencyFilters,
+  );
+
+  const downloads: CathayForeignStatementDownload[] = [];
+  for (const account of accounts) {
+    const maskedAccount = maskAccountLabel(foreignAccountLabel(account));
+    const currencies = (account.currencyList ?? [])
+      .map(currencyCodeOf)
+      .filter((currency): currency is string => Boolean(currency));
+    const statements = await apiClient.fetchTransferDetails(
+      session,
+      account,
+      dateRange,
+    );
+    const download = await writeForeignStatementCsv(
+      maskedAccount,
+      currencies,
+      dateRange,
+      statements,
+    );
+    downloads.push({
+      account: maskedAccount,
+      currencies,
+      dateRange,
+      ...download,
+    });
+  }
+
+  return downloads;
+}
+
 export default workflow("cathayForeignStatements", {
   credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
-    const { page, session } = ctx;
+    const { page } = ctx;
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
       await dialog.accept();
     });
 
-    await fillLoginForm(page, input.credentials);
-    await completeEmailOtpIfNeeded(page, session);
-    await waitForSignedInState(page);
-    await dismissPostLoginPrompts(page, input.trustDevice);
-
-    await openForeignStatementsPage(page);
-
-    const apiClient = new CathayForeignApiClient(page);
-    const cathaySession = await apiClient.createSession();
-    const accounts = await apiClient.fetchForeignAccounts(
-      cathaySession,
+    await signInCathay(ctx, input.credentials, input.trustDevice);
+    const downloads = await downloadCathayForeignStatements(
+      page,
+      input.dateRange,
       input.accountFilters,
       input.currencyFilters,
     );
-
-    const downloads = [];
-
-    for (const account of accounts) {
-      const maskedAccount = maskAccountLabel(foreignAccountLabel(account));
-      const currencies = (account.currencyList ?? [])
-        .map(currencyCodeOf)
-        .filter((currency): currency is string => Boolean(currency));
-      const statements = await apiClient.fetchTransferDetails(
-        cathaySession,
-        account,
-        input.dateRange,
-      );
-      const download = await writeForeignStatementCsv(
-        maskedAccount,
-        currencies,
-        input.dateRange,
-        statements,
-      );
-      downloads.push({
-        account: maskedAccount,
-        currencies,
-        dateRange: input.dateRange,
-        ...download,
-      });
-    }
 
     return {
       dateRange: input.dateRange,
