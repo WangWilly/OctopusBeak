@@ -34,12 +34,18 @@ const outputSchema = z.object({
   count: z.number().int().nonnegative(),
   downloads: z.array(
     z.object({
+      accountId: z.string(),
       account: z.string(),
-      dateRange: dateRangeSchema,
-      filename: z.string(),
-      path: z.string(),
-      bytes: z.number().int().nonnegative(),
-      rows: z.number().int().nonnegative(),
+      queryPeriods: z.array(z.string()),
+      branchName: z.string(),
+      baseName: z.string(),
+      csvFilename: z.string(),
+      csvPath: z.string(),
+      csvBytes: z.number().int().nonnegative(),
+      jsonFilename: z.string(),
+      jsonPath: z.string(),
+      jsonBytes: z.number().int().nonnegative(),
+      rowCount: z.number().int().nonnegative(),
     }),
   ),
 });
@@ -51,12 +57,18 @@ type Input = z.infer<typeof inputSchema> & {
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
 export type CathayStatementDownload = {
+  accountId: string;
   account: string;
-  dateRange: CathayDateRange;
-  filename: string;
-  path: string;
-  bytes: number;
-  rows: number;
+  queryPeriods: string[];
+  branchName: string;
+  baseName: string;
+  csvFilename: string;
+  csvPath: string;
+  csvBytes: number;
+  jsonFilename: string;
+  jsonPath: string;
+  jsonBytes: number;
+  rowCount: number;
 };
 
 export type CathaySession = {
@@ -110,6 +122,18 @@ type CathayTransferResult = {
   details?: CathayTransferDetail[];
 };
 
+const statementHeaders = [
+  "帳務日期",
+  "交易時間",
+  "摘要",
+  "支出金額",
+  "存入金額",
+  "即時餘額",
+  "附註",
+];
+
+let lastTimestamp = 0;
+
 function requireCredential(
   credentials: CathayCredentials,
   name: keyof CathayCredentials,
@@ -146,6 +170,70 @@ function maskAccountLabel(value: string): string {
 
 function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+function nextTimestamp(): string {
+  const timestamp = Date.now();
+  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+  return String(lastTimestamp);
+}
+
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function formatNullableAmount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function normalizeDate(value: string | null | undefined): string {
+  const text = cleanText(value);
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}/${compact[2]}/${compact[3]}`;
+
+  const date = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (date) return `${date[1]}/${date[2]}/${date[3]}`;
+
+  return text;
+}
+
+function statementRowSortKey(row: string[]): string {
+  return cleanText(row[1]) || cleanText(row[0]);
+}
+
+function compareStatementRowsByTransactionTimeDesc(
+  left: string[],
+  right: string[],
+): number {
+  return statementRowSortKey(right).localeCompare(statementRowSortKey(left));
+}
+
+function queryPeriodForStatement(
+  dateRange: CathayDateRange,
+  statement: CathayTransferResult,
+): string {
+  if (statement.startDate && statement.endDate) {
+    return `${normalizeDate(statement.startDate)}~${normalizeDate(statement.endDate)}`;
+  }
+
+  const bounds = dateRangeBounds(dateRange);
+  return `${normalizeDate(bounds.startDate)}~${normalizeDate(bounds.endDate)}`;
+}
+
+function noteForDomesticDetail(detail: CathayTransferDetail): string {
+  return [
+    detail.specialMemo,
+    detail.memo,
+    [detail.expendBankId, detail.expendAcctNo].filter(Boolean).join(" "),
+  ]
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .join(" ");
 }
 
 function matchesAccountFilter(
@@ -437,13 +525,6 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function csvEscape(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  const text = String(value).replace(/\u00a0/g, " ").replace(/\r?\n/g, " ");
-  if (!/[",\n]/.test(text)) return text;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 class CathayApiClient {
   constructor(private page: Page) {}
 
@@ -595,53 +676,66 @@ export async function createCathaySession(page: Page): Promise<CathaySession> {
   return await new CathayApiClient(page).createSession();
 }
 
-async function writeStatementCsv(
-  account: string,
+async function writeStatementFiles(
+  account: CathayAccount,
   dateRange: CathayDateRange,
   statement: CathayTransferResult,
-) {
+): Promise<CathayStatementDownload> {
   const downloadsDir = join(process.cwd(), "downloads", "cathay-statements");
   await mkdir(downloadsDir, { recursive: true });
 
-  const details = statement.details ?? [];
-  const columns: Array<keyof CathayTransferDetail | "accountNumber"> = [
-    "accountNumber",
-    "sequenceNumber",
-    "txnDateTime",
-    "accountDate",
-    "description",
-    "expendAmt",
-    "incomeAmt",
-    "balance",
-    "expendBankId",
-    "expendAcctNo",
-    "specialMemo",
-    "memo",
-  ];
-  const rows = [
-    columns.join(","),
-    ...details.map((detail) =>
-      columns
-        .map((column) =>
-          csvEscape(
-            column === "accountNumber"
-              ? statement.accountNumber
-              : detail[column],
-          ),
-        )
-        .join(","),
-    ),
-  ];
+  const accountId = digitsOnly(statement.accountNumber ?? account.accountNo);
+  const accountName = accountLabel(account);
+  const queryPeriods = [queryPeriodForStatement(dateRange, statement)];
+  const rows = (statement.details ?? [])
+    .map((detail) => [
+      normalizeDate(detail.accountDate),
+      cleanText(detail.txnDateTime),
+      cleanText(detail.description),
+      formatNullableAmount(detail.expendAmt),
+      formatNullableAmount(detail.incomeAmt),
+      formatNullableAmount(detail.balance),
+      noteForDomesticDetail(detail),
+    ])
+    .sort(compareStatementRowsByTransactionTimeDesc);
+  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
 
-  const filename = `${safeFilename(account)}-${dateRange}-${Date.now()}.csv`;
-  const path = join(
-    downloadsDir,
-    filename,
+  await writeFile(csvPath, rowsToCsv([statementHeaders, ...rows]), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        帳號: accountName,
+        查詢期間: queryPeriods,
+        分行名稱: cleanText(account.branchName),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
   );
-  await writeFile(path, `${rows.join("\n")}\n`, "utf8");
 
-  const fileStat = await stat(path);
-  return { filename, path, bytes: fileStat.size, rows: details.length };
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+
+  return {
+    accountId,
+    account: accountName,
+    queryPeriods,
+    branchName: cleanText(account.branchName),
+    baseName,
+    csvFilename,
+    csvPath,
+    csvBytes: csvStat.size,
+    jsonFilename,
+    jsonPath,
+    jsonBytes: jsonStat.size,
+    rowCount: rows.length,
+  };
 }
 
 export async function downloadCathayStatements(
@@ -661,22 +755,12 @@ export async function downloadCathayStatements(
 
   const downloads: CathayStatementDownload[] = [];
   for (const account of accounts) {
-    const maskedAccount = maskAccountLabel(accountLabel(account));
     const statement = await apiClient.fetchTransferDetails(
       session,
       account.accountNo,
       dateRange,
     );
-    const download = await writeStatementCsv(
-      maskedAccount,
-      dateRange,
-      statement,
-    );
-    downloads.push({
-      account: maskedAccount,
-      dateRange,
-      ...download,
-    });
+    downloads.push(await writeStatementFiles(account, dateRange, statement));
   }
 
   return downloads;

@@ -35,23 +35,35 @@ function createInputSchema(defaultTypes: StatementType[]) {
 
 const domesticDownloadSchema = z.object({
   type: z.literal("domestic"),
+  accountId: z.string(),
   account: z.string(),
-  dateRange: dateRangeSchema,
-  filename: z.string(),
-  path: z.string(),
-  bytes: z.number().int().nonnegative(),
-  rows: z.number().int().nonnegative(),
+  queryPeriods: z.array(z.string()),
+  branchName: z.string(),
+  baseName: z.string(),
+  csvFilename: z.string(),
+  csvPath: z.string(),
+  csvBytes: z.number().int().nonnegative(),
+  jsonFilename: z.string(),
+  jsonPath: z.string(),
+  jsonBytes: z.number().int().nonnegative(),
+  rowCount: z.number().int().nonnegative(),
 });
 
 const foreignDownloadSchema = z.object({
   type: z.literal("foreign"),
+  accountId: z.string(),
   account: z.string(),
   currencies: z.array(z.string()),
-  dateRange: dateRangeSchema,
-  filename: z.string(),
-  path: z.string(),
-  bytes: z.number().int().nonnegative(),
-  rows: z.number().int().nonnegative(),
+  queryPeriods: z.array(z.string()),
+  branchName: z.string(),
+  baseName: z.string(),
+  csvFilename: z.string(),
+  csvPath: z.string(),
+  csvBytes: z.number().int().nonnegative(),
+  jsonFilename: z.string(),
+  jsonPath: z.string(),
+  jsonBytes: z.number().int().nonnegative(),
+  rowCount: z.number().int().nonnegative(),
 });
 
 const outputSchema = z.object({

@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   type CathayCredentials,
   type CathaySession,
+  createCathaySession,
   signInCathay,
 } from "./cathay-statements.js";
 
@@ -33,13 +34,19 @@ const outputSchema = z.object({
   count: z.number().int().nonnegative(),
   downloads: z.array(
     z.object({
+      accountId: z.string(),
       account: z.string(),
       currencies: z.array(z.string()),
-      dateRange: dateRangeSchema,
-      filename: z.string(),
-      path: z.string(),
-      bytes: z.number().int().nonnegative(),
-      rows: z.number().int().nonnegative(),
+      queryPeriods: z.array(z.string()),
+      branchName: z.string(),
+      baseName: z.string(),
+      csvFilename: z.string(),
+      csvPath: z.string(),
+      csvBytes: z.number().int().nonnegative(),
+      jsonFilename: z.string(),
+      jsonPath: z.string(),
+      jsonBytes: z.number().int().nonnegative(),
+      rowCount: z.number().int().nonnegative(),
     }),
   ),
 });
@@ -51,13 +58,19 @@ type Input = z.infer<typeof inputSchema> & {
 export type CathayForeignDateRange = z.infer<typeof dateRangeSchema>;
 
 export type CathayForeignStatementDownload = {
+  accountId: string;
   account: string;
   currencies: string[];
-  dateRange: CathayForeignDateRange;
-  filename: string;
-  path: string;
-  bytes: number;
-  rows: number;
+  queryPeriods: string[];
+  branchName: string;
+  baseName: string;
+  csvFilename: string;
+  csvPath: string;
+  csvBytes: number;
+  jsonFilename: string;
+  jsonPath: string;
+  jsonBytes: number;
+  rowCount: number;
 };
 
 type CathayApiResponse<T> = {
@@ -69,11 +82,6 @@ type CathayApiResponse<T> = {
   success?: boolean;
   returnCode?: string;
   returnDesc?: string;
-};
-
-type CathayUserProfile = {
-  customerId?: string;
-  idType?: string;
 };
 
 type CathayForeignCurrency = {
@@ -106,6 +114,18 @@ type CathayForeignTransferResult = {
   transferInfos?: CathayForeignTransferInfo[];
 };
 
+const statementHeaders = [
+  "帳務日期",
+  "交易時間",
+  "摘要",
+  "支出金額",
+  "存入金額",
+  "即時餘額",
+  "附註",
+];
+
+let lastTimestamp = 0;
+
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -129,6 +149,91 @@ function maskAccountLabel(value: string): string {
 
 function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+function nextTimestamp(): string {
+  const timestamp = Date.now();
+  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+  return String(lastTimestamp);
+}
+
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function formatNullableAmount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function normalizeDate(value: string | null | undefined): string {
+  const text = cleanText(value);
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}/${compact[2]}/${compact[3]}`;
+
+  const date = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (date) return `${date[1]}/${date[2]}/${date[3]}`;
+
+  return text;
+}
+
+function statementRowSortKey(row: string[]): string {
+  return cleanText(row[1]) || cleanText(row[0]);
+}
+
+function compareStatementRowsByTransactionTimeDesc(
+  left: string[],
+  right: string[],
+): number {
+  return statementRowSortKey(right).localeCompare(statementRowSortKey(left));
+}
+
+function queryPeriodForDateRange(dateRange: CathayForeignDateRange): string {
+  const bounds = dateRangeBounds(dateRange);
+  return `${normalizeDate(bounds.startDate)}~${normalizeDate(bounds.endDate)}`;
+}
+
+function foreignAmountColumns(
+  debitCreditType: string | undefined,
+  amount: number | null | undefined,
+): [string, string] {
+  const formattedAmount = formatNullableAmount(amount);
+  if (!formattedAmount) return ["", ""];
+
+  const type = cleanText(debitCreditType).toUpperCase();
+  const isDebit =
+    type === "D" ||
+    type.includes("DEBIT") ||
+    /支出|扣|提出|轉出|匯出|買/.test(type);
+  const isCredit =
+    type === "C" ||
+    type.includes("CREDIT") ||
+    /存入|收入|轉入|匯入|賣/.test(type);
+
+  if (isDebit) return [formattedAmount, ""];
+  if (isCredit) return ["", formattedAmount];
+  return ["", formattedAmount];
+}
+
+function foreignSummary(info: CathayForeignTransferInfo): string {
+  return [info.debitCreditType, info.custName]
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function foreignNote(info: CathayForeignTransferInfo): string {
+  return [
+    info.memo,
+    info.exRate ? `匯率 ${cleanText(info.exRate)}` : "",
+  ]
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .join(" ");
 }
 
 function matchesAccountFilter(
@@ -225,63 +330,8 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function csvEscape(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  const text = String(value).replace(/\u00a0/g, " ").replace(/\r?\n/g, " ");
-  if (!/[",\n]/.test(text)) return text;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 class CathayForeignApiClient {
   constructor(private page: Page) {}
-
-  async createSession(): Promise<CathaySession> {
-    const result = (await this.page.evaluate(async () => {
-      const response = await fetch("/MyBank/Customized/GetJWT", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-        },
-      });
-      if (!response.ok) throw new Error(`${response.status} for GetJWT`);
-      return await response.json();
-    })) as {
-      IsSuccess?: boolean;
-      Msg?: string | null;
-      Data?: {
-        JwtToken?: string;
-        CustomerId?: string;
-      };
-    };
-
-    if (!result.IsSuccess || !result.Data?.JwtToken || !result.Data.CustomerId) {
-      throw new Error(result.Msg ?? "Cathay GetJWT did not return a token.");
-    }
-
-    const tokenSession = {
-      jwtToken: result.Data.JwtToken,
-      customerId: result.Data.CustomerId,
-    };
-
-    const profile = await this.apiPost<CathayUserProfile>(
-      "/OnlineBankingApi/Common/Api/ClientCommon/G_COMM_Q_UserProfile",
-      tokenSession,
-      {
-        functionSeqNo: functionSeqNo(),
-        content: { customerId: tokenSession.customerId },
-      },
-    );
-    const userProfile = profile.content;
-    if (!userProfile?.idType) {
-      throw new Error("Cathay user profile did not return idType.");
-    }
-
-    return {
-      ...tokenSession,
-      idType: userProfile.idType,
-    };
-  }
 
   async fetchForeignAccounts(
     session: CathaySession,
@@ -385,12 +435,12 @@ class CathayForeignApiClient {
   }
 }
 
-async function writeForeignStatementCsv(
-  account: string,
-  currencies: string[],
+async function writeForeignStatementFiles(
+  account: CathayForeignAccount,
+  currency: string,
   dateRange: CathayForeignDateRange,
-  statements: CathayForeignTransferResult[],
-) {
+  statement: CathayForeignTransferResult,
+): Promise<CathayForeignStatementDownload> {
   const downloadsDir = join(
     process.cwd(),
     "downloads",
@@ -398,44 +448,67 @@ async function writeForeignStatementCsv(
   );
   await mkdir(downloadsDir, { recursive: true });
 
-  const columns: Array<keyof CathayForeignTransferInfo | "account" | "currencyCode"> = [
-    "account",
-    "currencyCode",
-    "sequenceNumber",
-    "transferDate",
-    "txntDate",
-    "debitCreditType",
-    "amount",
-    "balance",
-    "custName",
-    "memo",
-    "exRate",
-  ];
-  const rows = [
-    columns.join(","),
-    ...statements.flatMap((statement) =>
-      (statement.transferInfos ?? []).map((info) =>
-        columns
-          .map((column) =>
-            csvEscape(
-              column === "account"
-                ? account
-                : column === "currencyCode"
-                  ? statement.currencyCode
-                  : info[column],
-            ),
-          )
-          .join(","),
-      ),
-    ),
-  ];
+  const currencyCode = cleanText(statement.currencyCode ?? currency);
+  const accountId = `${digitsOnly(account.account)}-${currencyCode}`;
+  const accountName = foreignAccountLabel(account);
+  const queryPeriods = [queryPeriodForDateRange(dateRange)];
+  const rows = (statement.transferInfos ?? [])
+    .map((info) => {
+      const [withdrawal, deposit] = foreignAmountColumns(
+        info.debitCreditType,
+        info.amount,
+      );
+      return [
+        normalizeDate(info.transferDate ?? info.txntDate),
+        cleanText(info.txntDate ?? info.transferDate),
+        foreignSummary(info),
+        withdrawal,
+        deposit,
+        formatNullableAmount(info.balance),
+        foreignNote(info),
+      ];
+    })
+    .sort(compareStatementRowsByTransactionTimeDesc);
+  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
 
-  const filename = `${safeFilename(account)}-${safeFilename(currencies.join("-"))}-${dateRange}-${Date.now()}.csv`;
-  const path = join(downloadsDir, filename);
-  await writeFile(path, `${rows.join("\n")}\n`, "utf8");
+  await writeFile(csvPath, rowsToCsv([statementHeaders, ...rows]), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        帳號: accountName,
+        查詢期間: queryPeriods,
+        分行名稱: cleanText(account.demandType),
+        幣別: currencyCode,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
 
-  const fileStat = await stat(path);
-  return { filename, path, bytes: fileStat.size, rows: rows.length - 1 };
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+
+  return {
+    accountId,
+    account: accountName,
+    currencies: [currencyCode],
+    queryPeriods,
+    branchName: cleanText(account.demandType),
+    baseName,
+    csvFilename,
+    csvPath,
+    csvBytes: csvStat.size,
+    jsonFilename,
+    jsonPath,
+    jsonBytes: jsonStat.size,
+    rowCount: rows.length,
+  };
 }
 
 export async function downloadCathayForeignStatements(
@@ -448,7 +521,7 @@ export async function downloadCathayForeignStatements(
   await openForeignStatementsPage(page);
 
   const apiClient = new CathayForeignApiClient(page);
-  const session = cathaySession ?? (await apiClient.createSession());
+  const session = cathaySession ?? (await createCathaySession(page));
   const accounts = await apiClient.fetchForeignAccounts(
     session,
     accountFilters,
@@ -457,7 +530,6 @@ export async function downloadCathayForeignStatements(
 
   const downloads: CathayForeignStatementDownload[] = [];
   for (const account of accounts) {
-    const maskedAccount = maskAccountLabel(foreignAccountLabel(account));
     const currencies = (account.currencyList ?? [])
       .map(currencyCodeOf)
       .filter((currency): currency is string => Boolean(currency));
@@ -466,18 +538,20 @@ export async function downloadCathayForeignStatements(
       account,
       dateRange,
     );
-    const download = await writeForeignStatementCsv(
-      maskedAccount,
-      currencies,
-      dateRange,
-      statements,
+    const statementsByCurrency = new Map(
+      statements.map((statement) => [cleanText(statement.currencyCode), statement]),
     );
-    downloads.push({
-      account: maskedAccount,
-      currencies,
-      dateRange,
-      ...download,
-    });
+
+    for (const currency of currencies) {
+      const statement =
+        statementsByCurrency.get(cleanText(currency)) ?? {
+          currencyCode: currency,
+          transferInfos: [],
+        };
+      downloads.push(
+        await writeForeignStatementFiles(account, currency, dateRange, statement),
+      );
+    }
   }
 
   return downloads;
