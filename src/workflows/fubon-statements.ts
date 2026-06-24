@@ -1,4 +1,5 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workflow, pause, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
@@ -37,13 +38,18 @@ export const fubonStatementsOutputSchema = z.object({
   count: z.number().int().nonnegative(),
   downloads: z.array(
     z.object({
+      accountId: z.string(),
       account: z.string(),
-      dateRange: fubonStatementDateRangeSchema,
-      filename: z.string(),
-      path: z.string(),
-      bytes: z.number().int().nonnegative(),
-      csvPath: z.string().optional(),
-      csvBytes: z.number().int().nonnegative().optional(),
+      queryPeriods: z.array(z.string()),
+      branchName: z.string(),
+      baseName: z.string(),
+      csvFilename: z.string(),
+      csvPath: z.string(),
+      csvBytes: z.number().int().nonnegative(),
+      jsonFilename: z.string(),
+      jsonPath: z.string(),
+      jsonBytes: z.number().int().nonnegative(),
+      rowCount: z.number().int().nonnegative(),
     }),
   ),
 });
@@ -60,6 +66,26 @@ export type FubonStatementsOutput = z.infer<typeof fubonStatementsOutputSchema>;
 type Input = FubonStatementsInput & {
   credentials: FubonCredentials;
 };
+
+type ParsedDepositStatement = {
+  account: string;
+  accountId: string;
+  queryPeriod: string;
+  branchName: string;
+  rows: string[][];
+};
+
+let lastTimestamp = 0;
+
+const depositHeaders = [
+  "帳務日期",
+  "交易時間",
+  "摘要",
+  "支出金額",
+  "存入金額",
+  "即時餘額",
+  "附註",
+];
 
 function requireCredential(
   credentials: FubonCredentials,
@@ -88,12 +114,28 @@ function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-function csvPathFor(path: string): string {
-  const csvPath = path.replace(/\.[^/.]+$/, ".csv");
-  return csvPath === path ? `${path}.csv` : csvPath;
+function cleanText(value: string | null | undefined): string {
+  return (value ?? "")
+    .replace(/[\u00a0\u3000]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-async function convertXlsToCsv(path: string) {
+function nextTimestamp(): string {
+  const timestamp = Date.now();
+  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+  return String(lastTimestamp);
+}
+
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function readFirstSheetRows(path: string): string[][] {
   const workbook = XLSX.readFile(path);
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) {
@@ -101,12 +143,81 @@ async function convertXlsToCsv(path: string) {
   }
 
   const worksheet = workbook.Sheets[sheetName];
-  const csv = XLSX.utils.sheet_to_csv(worksheet);
-  const csvPath = csvPathFor(path);
-  await writeFile(csvPath, csv.endsWith("\n") ? csv : `${csv}\n`, "utf8");
+  return XLSX.utils
+    .sheet_to_json<unknown[]>(worksheet, {
+      header: 1,
+      raw: false,
+      blankrows: false,
+    })
+    .map((row) => row.map((cell) => cleanText(String(cell ?? ""))));
+}
 
-  const csvStat = await stat(csvPath);
-  return { csvPath, csvBytes: csvStat.size };
+function metadataValue(rows: string[][], label: string): string {
+  for (const row of rows) {
+    for (let index = 0; index < row.length - 1; index += 1) {
+      if (cleanText(row[index]) === label) return cleanText(row[index + 1]);
+    }
+  }
+
+  return "";
+}
+
+function findHeaderRowIndex(rows: string[][], headers: string[]): number {
+  const index = rows.findIndex((row) =>
+    headers.every((header, headerIndex) => cleanText(row[headerIndex]) === header),
+  );
+  if (index === -1) {
+    throw new Error(`Downloaded statement table is missing headers: ${headers.join(",")}`);
+  }
+  return index;
+}
+
+function branchNameFromAccount(account: string): string {
+  return cleanText(account.match(/\(([^()]+)\)\s*$/)?.[1]);
+}
+
+function accountIdFor(account: string, fallback: string): string {
+  const accountPrefix = account.split(/[（(]/)[0] ?? account;
+  const fallbackPrefix = fallback.split(/[（(]/)[0] ?? fallback;
+  return (
+    digitsOnly(accountPrefix) ||
+    digitsOnly(fallbackPrefix) ||
+    safeFilename(fallback)
+  );
+}
+
+function parseDepositStatement(path: string, fallbackAccount: string): ParsedDepositStatement {
+  const rows = readFirstSheetRows(path);
+  const account = metadataValue(rows, "帳號") || fallbackAccount;
+  const queryPeriod = metadataValue(rows, "查詢期間");
+  const headerRowIndex = findHeaderRowIndex(rows, depositHeaders);
+  const dataRows = rows
+    .slice(headerRowIndex + 1)
+    .map((row) => depositHeaders.map((_, index) => cleanText(row[index])))
+    .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+
+  return {
+    account,
+    accountId: accountIdFor(account, fallbackAccount),
+    queryPeriod,
+    branchName: branchNameFromAccount(account),
+    rows: dataRows,
+  };
+}
+
+function uniqueValues(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+function depositRowSortKey(row: string[]): string {
+  return cleanText(row[1]) || cleanText(row[0]);
+}
+
+function compareDepositRowsByTransactionTimeDesc(
+  left: string[],
+  right: string[],
+): number {
+  return depositRowSortKey(right).localeCompare(depositRowSortKey(left));
 }
 
 async function waitForFrame(
@@ -312,7 +423,8 @@ async function queryStatements(
 async function downloadStatements(
   page: Page,
   downloadFormat: "TXT" | "EXCEL" | "PDF",
-) {
+  fallbackAccount: string,
+): Promise<ParsedDepositStatement> {
   const scope = await findScopeWithSelector(page, "#multipleDownload");
   await scope.locator("#multipleDownload").click();
   await scope
@@ -323,17 +435,75 @@ async function downloadStatements(
   await scope.locator("a.confirm").click();
   const download = await downloadPromise;
 
+  const filename = download.suggestedFilename();
+  const tempPath = join(
+    tmpdir(),
+    `fubon-statements-${nextTimestamp()}-${safeFilename(filename)}`,
+  );
+  await download.saveAs(tempPath);
+
+  try {
+    return parseDepositStatement(tempPath, fallbackAccount);
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function writeDepositStatementFiles(
+  statements: ParsedDepositStatement[],
+): Promise<FubonStatementsOutput["downloads"][number]> {
+  const first = statements[0];
+  if (!first) throw new Error("Cannot write an empty deposit statement file.");
+
   const downloadsDir = join(process.cwd(), "downloads", "fubon-statements");
   await mkdir(downloadsDir, { recursive: true });
 
-  const filename = download.suggestedFilename();
-  const path = join(downloadsDir, `${Date.now()}-${safeFilename(filename)}`);
-  await download.saveAs(path);
+  const account = first.account;
+  const accountId = first.accountId;
+  const queryPeriods = uniqueValues(
+    statements.map((statement) => statement.queryPeriod),
+  );
+  const branchName = first.branchName;
+  const rows = statements
+    .flatMap((statement) => statement.rows)
+    .sort(compareDepositRowsByTransactionTimeDesc);
+  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
 
-  const fileStat = await stat(path);
-  const converted =
-    downloadFormat === "EXCEL" ? await convertXlsToCsv(path) : undefined;
-  return { filename, path, bytes: fileStat.size, ...converted };
+  await writeFile(csvPath, rowsToCsv([depositHeaders, ...rows]), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        帳號: account,
+        查詢期間: queryPeriods,
+        分行名稱: branchName,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+
+  return {
+    accountId,
+    account,
+    queryPeriods,
+    branchName,
+    baseName,
+    csvFilename,
+    csvPath,
+    csvBytes: csvStat.size,
+    jsonFilename,
+    jsonPath,
+    jsonBytes: jsonStat.size,
+    rowCount: rows.length,
+  };
 }
 
 export async function signInFubon(
@@ -374,24 +544,29 @@ export async function runFubonStatements(
   page: Page,
   input: FubonStatementsInput,
 ): Promise<FubonStatementsOutput> {
+  if (input.downloadFormat !== "EXCEL") {
+    throw new Error("fubon-statements normalized output requires EXCEL downloadFormat.");
+  }
+
   const depositScope = await openMyDepositsPage(page);
   const accountCount = await countDepositRows(depositScope);
   const downloads: FubonStatementsOutput["downloads"] = [];
 
   for (let accountIndex = 0; accountIndex < accountCount; accountIndex += 1) {
+    const accountStatements: ParsedDepositStatement[] = [];
+
     for (const dateRange of input.dateRanges) {
       const account = await openTransactionDetailForAccountIndex(
         page,
         accountIndex,
       );
       await queryStatements(page, dateRange);
-      const download = await downloadStatements(page, input.downloadFormat);
-      downloads.push({
-        account,
-        dateRange,
-        ...download,
-      });
+      accountStatements.push(
+        await downloadStatements(page, input.downloadFormat, account),
+      );
     }
+
+    downloads.push(await writeDepositStatementFiles(accountStatements));
   }
 
   return {

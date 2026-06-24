@@ -28,10 +28,30 @@ const inputSchema = z.object({
   unbilledCardNumbers: z.array(z.string()).default([]),
 });
 
-const csvFileSchema = z.object({
-  path: z.string(),
-  rows: z.number().int().nonnegative(),
-  bytes: z.number().int().nonnegative(),
+const paymentStatusSchema = z.object({
+  statement_period: z.string(),
+  payment_status: z.string(),
+  previous_balance: z.string().optional(),
+  payment_date: z.string().optional(),
+  payment_posting_date: z.string().optional(),
+  payment_amount: z.string().optional(),
+  payment_description: z.string().optional(),
+});
+
+const generatedCsvFileSchema = z.object({
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
+  csvPath: z.string(),
+  jsonPath: z.string(),
+  csvBytes: z.number().int().nonnegative(),
+  jsonBytes: z.number().int().nonnegative(),
+  cardNumbers: z.array(z.string()),
+  periods: z.array(z.string()),
+  paymentStatuses: z.array(paymentStatusSchema),
+  generatedAt: z.string(),
+  workflow: z.literal("fubonCreditCardStatements"),
+  rowCount: z.number().int().nonnegative(),
+  headers: z.array(z.string()),
 });
 
 const outputSchema = z.object({
@@ -40,8 +60,8 @@ const outputSchema = z.object({
   statementCards: z.array(z.string()),
   unbilledCards: z.array(z.string()),
   csvFiles: z.object({
-    statementDetails: csvFileSchema,
-    unbilledDetails: csvFileSchema,
+    billedStatements: generatedCsvFileSchema,
+    unbilledStatements: generatedCsvFileSchema,
   }),
 });
 
@@ -52,6 +72,13 @@ export {
 
 export type FubonCreditCardStatementsInput = z.infer<typeof inputSchema>;
 export type FubonCreditCardStatementsOutput = z.infer<typeof outputSchema>;
+type PaymentStatus = z.infer<typeof paymentStatusSchema>;
+type GeneratedCsvFile = z.infer<typeof generatedCsvFileSchema>;
+
+type StatementRowsResult = {
+  rows: CsvRow[];
+  paymentStatuses: PaymentStatus[];
+};
 
 const periodTabs = [
   { offset: 1, label: "本期" },
@@ -62,27 +89,29 @@ const periodTabs = [
   { offset: 6, label: "前五期" },
 ] as const;
 
-const statementHeaders = [
-  "statement_period",
+const billedHeaders = [
+  "card_number",
   "card_label",
   "consume_date",
   "description",
   "posting_date",
-  "foreign_exchange_date_or_currency",
-  "foreign_amount_or_location",
-  "twd_amount",
-] as const;
-
-const unbilledHeaders = [
-  "card_number",
-  "consume_date",
-  "description",
-  "posting_date",
-  "card_last_four",
   "foreign_currency",
   "foreign_amount",
   "twd_amount",
   "installment_action",
+  "payment_status",
+] as const;
+
+const unbilledHeaders = [
+  "statement_period",
+  "card_number",
+  "card_label",
+  "consume_date",
+  "description",
+  "posting_date",
+  "foreign_currency",
+  "foreign_amount",
+  "twd_amount",
 ] as const;
 
 function requireCredential(
@@ -136,6 +165,18 @@ function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
+
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
+}
+
+const nextTimestamp = createTimestampGenerator();
+
 function csvCell(value: string): string {
   if (!/[",\n\r]/.test(value)) return value;
   return `"${value.replace(/"/g, '""')}"`;
@@ -149,11 +190,93 @@ function toCsv(rows: CsvRow[], headers: readonly string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function writeCsv(
+function isDateLike(value: string): boolean {
+  return /^\d{3,4}\/\d{2}\/\d{2}$/.test(toAsciiDigits(cleanText(value)));
+}
+
+function consumeDateSortKey(row: CsvRow): string {
+  const date = toAsciiDigits(cleanText(row.consume_date));
+  const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
+  if (!match) return "";
+
+  const year = match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  return `${String(year).padStart(4, "0")}${match[2]}${match[3]}`;
+}
+
+function compareRowsByConsumeDateDesc(left: CsvRow, right: CsvRow): number {
+  return consumeDateSortKey(right).localeCompare(consumeDateSortKey(left));
+}
+
+function parseStatementCardLabel(cardLabel: string): {
+  cardNumber: string;
+  cardLabel: string;
+} {
+  const asciiLabel = toAsciiDigits(cleanText(cardLabel));
+  const digits = digitsOnly(asciiLabel);
+  return {
+    cardNumber: digits.slice(-4),
+    cardLabel: cleanText(asciiLabel.replace(/末\s*\d+\s*碼\s*\d+$/, "")),
+  };
+}
+
+function paymentStatusValue(description: string): string {
+  if (description.includes("行動銀行繳款")) return "paid_by_mobile_banking";
+  if (description.includes("前期應繳總額")) return "previous_balance";
+  return "";
+}
+
+function isPaymentStatusRow(cells: string[]): boolean {
+  const description = cells[1] ?? "";
+  return description.includes("前期應繳總額") || description.includes("行動銀行繳款");
+}
+
+function paymentStatusFromRows(
+  period: string,
+  previousBalanceCells: string[] | null,
+  paymentCells: string[] | null,
+): PaymentStatus | null {
+  if (!previousBalanceCells && !paymentCells) return null;
+  const paymentDescription = paymentCells?.[1] ?? "";
+  const previousBalance = previousBalanceCells?.[5] ?? "";
+  const paymentStatus = paymentDescription
+    ? paymentStatusValue(paymentDescription)
+    : "previous_balance_only";
+
+  return {
+    statement_period: period,
+    payment_status: paymentStatus,
+    previous_balance: previousBalance || undefined,
+    payment_date: paymentCells?.[0] || undefined,
+    payment_posting_date: paymentCells?.[2] || undefined,
+    payment_amount: paymentCells?.[5] || undefined,
+    payment_description: paymentDescription || undefined,
+  };
+}
+
+function metadataForRows(
+  rows: CsvRow[],
+  headers: readonly string[],
+  paymentStatuses: PaymentStatus[],
+  periods = unique(rows.map((row) => row.statement_period).filter(Boolean)),
+) {
+  return {
+    cardNumbers: unique(rows.map((row) => row.card_number).filter(Boolean)),
+    periods,
+    paymentStatuses,
+    generatedAt: new Date().toISOString(),
+    workflow: "fubonCreditCardStatements" as const,
+    rowCount: rows.length,
+    headers: [...headers],
+  };
+}
+
+async function writeCsvWithMetadata(
   baseName: string,
   rows: CsvRow[],
   headers: readonly string[],
-) {
+  paymentStatuses: PaymentStatus[] = [],
+  periods?: string[],
+): Promise<GeneratedCsvFile> {
   const downloadsDir = join(
     process.cwd(),
     "downloads",
@@ -161,14 +284,33 @@ async function writeCsv(
   );
   await mkdir(downloadsDir, { recursive: true });
 
-  const path = join(downloadsDir, `${Date.now()}-${safeFilename(baseName)}`);
+  const csvFilename = `${safeFilename(baseName)}-${nextTimestamp()}.csv`;
+  const jsonFilename = csvFilename.replace(/\.csv$/, ".json");
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
   const content = toCsv(rows, headers);
-  await writeFile(path, content, "utf8");
+  const metadata = metadataForRows(rows, headers, paymentStatuses, periods);
+  const jsonContent = `${JSON.stringify(
+    {
+      ...metadata,
+      csvFilename,
+      jsonFilename,
+    },
+    null,
+    2,
+  )}\n`;
+
+  await writeFile(csvPath, content, "utf8");
+  await writeFile(jsonPath, jsonContent, "utf8");
 
   return {
-    path,
-    rows: rows.length,
-    bytes: Buffer.byteLength(content, "utf8"),
+    ...metadata,
+    csvFilename,
+    jsonFilename,
+    csvPath,
+    jsonPath,
+    csvBytes: Buffer.byteLength(content, "utf8"),
+    jsonBytes: Buffer.byteLength(jsonContent, "utf8"),
   };
 }
 
@@ -485,11 +627,13 @@ async function readStatementRows(
   scope: BrowserScope,
   periodLabel: string,
   cardFilters: string[],
-): Promise<CsvRow[]> {
+): Promise<StatementRowsResult> {
   const rows = statementDetailsTable(scope).locator("tr");
   const count = await rows.count();
   const details: CsvRow[] = [];
   let cardLabel = "";
+  let previousBalanceCells: string[] | null = null;
+  let paymentCells: string[] | null = null;
 
   for (let index = 0; index < count; index += 1) {
     const cells = await readCells(rows.nth(index));
@@ -500,22 +644,46 @@ async function readStatementRows(
       continue;
     }
 
+    if (isPaymentStatusRow(cells)) {
+      if ((cells[1] ?? "").includes("前期應繳總額")) previousBalanceCells = cells;
+      if ((cells[1] ?? "").includes("行動銀行繳款")) paymentCells = cells;
+      continue;
+    }
+
+    if (!isDateLike(cells[0] ?? "")) continue;
     if (cardLabel && !matchesFilter(cardLabel, cardFilters)) continue;
     if (!cardLabel && cardFilters.length > 0) continue;
 
+    const parsedCard = parseStatementCardLabel(cardLabel);
     details.push({
       statement_period: periodLabel,
-      card_label: cardLabel,
+      card_number: parsedCard.cardNumber,
+      card_label: parsedCard.cardLabel || cardLabel,
       consume_date: cells[0] ?? "",
       description: cells[1] ?? "",
       posting_date: cells[2] ?? "",
-      foreign_exchange_date_or_currency: cells[3] ?? "",
-      foreign_amount_or_location: cells[4] ?? "",
+      foreign_currency: cells[3] ?? "",
+      foreign_amount: cells[4] ?? "",
       twd_amount: cells[5] ?? "",
+      installment_action: "",
+      payment_status: "",
     });
   }
 
-  return details;
+  const paymentStatus = paymentStatusFromRows(
+    periodLabel,
+    previousBalanceCells,
+    paymentCells,
+  );
+  const paymentStatusLabel = paymentStatus?.payment_status ?? "";
+  for (const row of details) {
+    row.payment_status = paymentStatusLabel;
+  }
+
+  return {
+    rows: details,
+    paymentStatuses: paymentStatus ? [paymentStatus] : [],
+  };
 }
 
 async function readUnbilledRows(
@@ -538,17 +706,18 @@ async function readUnbilledRows(
 
     if (cardNumber && !matchesFilter(cardNumber, cardFilters)) continue;
     if (!cardNumber && cardFilters.length > 0) continue;
+    if (!isDateLike(cells[0] ?? "")) continue;
 
     details.push({
-      card_number: cardNumber,
+      statement_period: "unbilled",
+      card_number: toAsciiDigits(cardNumber),
+      card_label: toAsciiDigits(cardNumber),
       consume_date: cells[0] ?? "",
       description: cells[1] ?? "",
       posting_date: cells[2] ?? "",
-      card_last_four: cells[3] ?? "",
       foreign_currency: cells[4] ?? "",
       foreign_amount: cells[5] ?? "",
       twd_amount: cells[6] ?? "",
-      installment_action: cells[7] ?? "",
     });
   }
 
@@ -563,17 +732,18 @@ export async function runFubonCreditCardStatements(
 
   const statementRows: CsvRow[] = [];
   const statementPeriods: string[] = [];
+  const paymentStatuses: PaymentStatus[] = [];
   for (const periodOffset of input.periodOffsets) {
     const scope = await selectStatementPeriod(page, periodOffset);
     const periodLabel = await readStatementPeriodLabel(scope);
     statementPeriods.push(periodLabel);
-    statementRows.push(
-      ...(await readStatementRows(
-        scope,
-        periodLabel,
-        input.statementCardLabels,
-      )),
+    const statementResult = await readStatementRows(
+      scope,
+      periodLabel,
+      input.statementCardLabels,
     );
+    statementRows.push(...statementResult.rows);
+    paymentStatuses.push(...statementResult.paymentStatuses);
   }
 
   const unbilledScope = await openUnbilledDetailsPage(page);
@@ -581,16 +751,26 @@ export async function runFubonCreditCardStatements(
     unbilledScope,
     input.unbilledCardNumbers,
   );
+  const sortedStatementRows = statementRows
+    .slice()
+    .sort(compareRowsByConsumeDateDesc);
+  const sortedUnbilledRows = unbilledRows
+    .slice()
+    .sort(compareRowsByConsumeDateDesc);
 
-  const statementDetails = await writeCsv(
-    "statement-details.csv",
-    statementRows,
-    statementHeaders,
+  const billedStatements = await writeCsvWithMetadata(
+    "billed-statements",
+    sortedStatementRows,
+    billedHeaders,
+    paymentStatuses,
+    statementPeriods,
   );
-  const unbilledDetails = await writeCsv(
-    "unbilled-details.csv",
-    unbilledRows,
+  const unbilledStatements = await writeCsvWithMetadata(
+    "unbilled-statements",
+    sortedUnbilledRows,
     unbilledHeaders,
+    [],
+    ["unbilled"],
   );
 
   return {
@@ -603,8 +783,8 @@ export async function runFubonCreditCardStatements(
       unbilledRows.map((row) => row.card_number).filter(Boolean),
     ),
     csvFiles: {
-      statementDetails,
-      unbilledDetails,
+      billedStatements,
+      unbilledStatements,
     },
   };
 }

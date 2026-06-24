@@ -1,4 +1,5 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
@@ -27,10 +28,8 @@ type QueryItem = z.infer<typeof queryItemSchema>;
 
 const DEFAULT_QUERY_ITEMS: QueryItem[] = [
   "TRANSACTION_DETAIL_QUERY",
-  "PARTLY_PAID_TRANSACTION_DETAIL_QUERY",
-  "DATES_DETAIL_QUERY",
-  "DYNAMIC_BRANCH_DETAIL_QUERY",
 ];
+const SUPPORTED_NORMALIZED_QUERY_ITEM: QueryItem = "TRANSACTION_DETAIL_QUERY";
 
 const quickMonthsSchema = z.enum(["1", "3", "6"]);
 
@@ -60,13 +59,21 @@ const outputSchema = z.object({
   count: z.number().int().nonnegative(),
   downloads: z.array(
     z.object({
+      loanAccountId: z.string(),
       loanAccount: z.string(),
       queryItem: queryItemSchema,
-      filename: z.string(),
-      path: z.string(),
-      bytes: z.number().int().nonnegative(),
-      csvPath: z.string().optional(),
-      csvBytes: z.number().int().nonnegative().optional(),
+      queryPeriod: z.string(),
+      branchName: z.string(),
+      accountType: z.string(),
+      currency: z.string(),
+      baseName: z.string(),
+      csvFilename: z.string(),
+      csvPath: z.string(),
+      csvBytes: z.number().int().nonnegative(),
+      jsonFilename: z.string(),
+      jsonPath: z.string(),
+      jsonBytes: z.number().int().nonnegative(),
+      rowCount: z.number().int().nonnegative(),
     }),
   ),
   skippedAccounts: z.array(
@@ -86,6 +93,31 @@ export {
 export type FubonLoanStatementsInput = z.infer<typeof inputSchema>;
 export type FubonLoanStatementsOutput = z.infer<typeof outputSchema>;
 
+type LoanPeriod = FubonLoanStatementsOutput["period"];
+
+let lastTimestamp = 0;
+
+type ParsedLoanStatement = {
+  loanAccount: string;
+  loanAccountId: string;
+  queryPeriod: string;
+  branchName: string;
+  accountType: string;
+  currency: string;
+  rows: string[][];
+};
+
+const loanHeaders = [
+  "交易日期",
+  "交易內容",
+  "異動金額",
+  "利率",
+  "計息起日",
+  "計息止日",
+  "餘額",
+  "備註",
+];
+
 function requireCredential(
   credentials: FubonCredentials,
   name: keyof FubonCredentials,
@@ -100,7 +132,10 @@ function requireCredential(
 }
 
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/[\u00a0\u3000]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function digitsOnly(value: string): string {
@@ -111,12 +146,21 @@ function safeFilename(filename: string): string {
   return filename.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-function csvPathFor(path: string): string {
-  const csvPath = path.replace(/\.[^/.]+$/, ".csv");
-  return csvPath === path ? `${path}.csv` : csvPath;
+function nextTimestamp(): string {
+  const timestamp = Date.now();
+  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+  return String(lastTimestamp);
 }
 
-async function convertXlsToCsv(path: string) {
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function rowsToCsv(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function readFirstSheetRows(path: string): string[][] {
   const workbook = XLSX.readFile(path);
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) {
@@ -124,12 +168,74 @@ async function convertXlsToCsv(path: string) {
   }
 
   const worksheet = workbook.Sheets[sheetName];
-  const csv = XLSX.utils.sheet_to_csv(worksheet);
-  const csvPath = csvPathFor(path);
-  await writeFile(csvPath, csv.endsWith("\n") ? csv : `${csv}\n`, "utf8");
+  return XLSX.utils
+    .sheet_to_json<unknown[]>(worksheet, {
+      header: 1,
+      raw: false,
+      blankrows: false,
+    })
+    .map((row) => row.map((cell) => cleanText(String(cell ?? ""))));
+}
 
-  const csvStat = await stat(csvPath);
-  return { csvPath, csvBytes: csvStat.size };
+function metadataValue(rows: string[][], label: string): string {
+  for (const row of rows) {
+    for (let index = 0; index < row.length - 1; index += 1) {
+      if (cleanText(row[index]) === label) return cleanText(row[index + 1]);
+    }
+  }
+
+  return "";
+}
+
+function findHeaderRowIndex(rows: string[][], headers: string[]): number {
+  const index = rows.findIndex((row) =>
+    headers.every((header, headerIndex) => cleanText(row[headerIndex]) === header),
+  );
+  if (index === -1) {
+    throw new Error(`Downloaded loan table is missing headers: ${headers.join(",")}`);
+  }
+  return index;
+}
+
+function loanAccountIdFor(loanAccount: string, fallback: string): string {
+  const loanAccountPrefix = loanAccount.split(/[（(]/)[0] ?? loanAccount;
+  const fallbackPrefix = fallback.split(/[（(]/)[0] ?? fallback;
+  return (
+    digitsOnly(loanAccountPrefix) ||
+    digitsOnly(fallbackPrefix) ||
+    safeFilename(fallback)
+  );
+}
+
+function parseLoanStatement(path: string, fallbackLoanAccount: string): ParsedLoanStatement {
+  const rows = readFirstSheetRows(path);
+  const loanAccount = metadataValue(rows, "貸款帳號") || fallbackLoanAccount;
+  const headerRowIndex = findHeaderRowIndex(rows, loanHeaders);
+  const dataRows = rows
+    .slice(headerRowIndex + 1)
+    .map((row) => loanHeaders.map((_, index) => cleanText(row[index])))
+    .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+
+  return {
+    loanAccount,
+    loanAccountId: loanAccountIdFor(loanAccount, fallbackLoanAccount),
+    queryPeriod: metadataValue(rows, "查詢期間"),
+    branchName: metadataValue(rows, "分行名稱"),
+    accountType: metadataValue(rows, "帳號類別"),
+    currency: metadataValue(rows, "幣別"),
+    rows: dataRows,
+  };
+}
+
+function loanRowSortKey(row: string[]): string {
+  return cleanText(row[0]);
+}
+
+function compareLoanRowsByTransactionDateDesc(
+  left: string[],
+  right: string[],
+): number {
+  return loanRowSortKey(right).localeCompare(loanRowSortKey(left));
 }
 
 function matchesFilter(value: string, filters: string[]): boolean {
@@ -407,13 +513,41 @@ type LoanAccountOption = {
 };
 
 function requestedQueryItems(input: FubonLoanStatementsInput): QueryItem[] {
-  if (input.queryItems && input.queryItems.length > 0) return input.queryItems;
-  if (input.queryItem) return [input.queryItem];
-  return DEFAULT_QUERY_ITEMS;
+  const requested =
+    input.queryItems && input.queryItems.length > 0
+      ? input.queryItems
+      : input.queryItem
+        ? [input.queryItem]
+        : DEFAULT_QUERY_ITEMS;
+  const unsupported = requested.filter(
+    (queryItem) => queryItem !== SUPPORTED_NORMALIZED_QUERY_ITEM,
+  );
+  if (unsupported.length > 0) {
+    throw new Error(
+      `fubon-loan-statements normalized output only supports ${SUPPORTED_NORMALIZED_QUERY_ITEM}; unsupported query items: ${unsupported.join(
+        ", ",
+      )}`,
+    );
+  }
+
+  return requested;
 }
 
 function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
   return Boolean(input.queryItem || (input.queryItems && input.queryItems.length > 0));
+}
+
+function describeLoanPeriod(input: FubonLoanStatementsInput): LoanPeriod {
+  return input.dateRange
+    ? {
+        mode: "custom" as const,
+        startDate: input.dateRange.startDate,
+        endDate: input.dateRange.endDate,
+      }
+    : {
+        mode: "quick" as const,
+        quickMonths: input.quickMonths,
+      };
 }
 
 async function readLoanAccountOptions(
@@ -532,7 +666,7 @@ async function downloadLoanStatement(
   loanAccount: string,
   queryItem: z.infer<typeof queryItemSchema>,
   downloadFormat: "TXT" | "EXCEL" | "PDF",
-) {
+): Promise<FubonLoanStatementsOutput["downloads"][number]> {
   const scope = await findScopeWithSelector(page, 'a[title="下載"], a.download');
   await loanDownloadLink(scope).click({ force: true });
 
@@ -546,26 +680,78 @@ async function downloadLoanStatement(
   await scope.locator("a.confirm").first().click({ force: true });
   const download = await downloadPromise;
 
+  const filename = download.suggestedFilename();
+  const tempPath = join(
+    tmpdir(),
+    `fubon-loan-statements-${nextTimestamp()}-${safeFilename(filename)}`,
+  );
+  await download.saveAs(tempPath);
+
+  let parsed: ParsedLoanStatement;
+  try {
+    parsed = parseLoanStatement(tempPath, loanAccount);
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
+
   const downloadsDir = join(process.cwd(), "downloads", "fubon-loan-statements");
   await mkdir(downloadsDir, { recursive: true });
 
-  const filename = download.suggestedFilename();
-  const path = join(
-    downloadsDir,
-    `${Date.now()}-${safeFilename(loanAccount)}-${safeFilename(queryItem)}-${safeFilename(filename)}`,
-  );
-  await download.saveAs(path);
+  const baseName = `loan-${safeFilename(parsed.loanAccountId)}-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
+  const rows = parsed.rows.slice().sort(compareLoanRowsByTransactionDateDesc);
 
-  const fileStat = await stat(path);
-  const converted =
-    downloadFormat === "EXCEL" ? await convertXlsToCsv(path) : undefined;
-  return { filename, path, bytes: fileStat.size, ...converted };
+  await writeFile(csvPath, rowsToCsv([loanHeaders, ...rows]), "utf8");
+  await writeFile(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        貸款帳號: parsed.loanAccount,
+        查詢期間: parsed.queryPeriod,
+        分行名稱: parsed.branchName,
+        帳號類別: parsed.accountType,
+        幣別: parsed.currency,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const csvStat = await stat(csvPath);
+  const jsonStat = await stat(jsonPath);
+
+  return {
+    loanAccountId: parsed.loanAccountId,
+    loanAccount: parsed.loanAccount,
+    queryItem,
+    queryPeriod: parsed.queryPeriod,
+    branchName: parsed.branchName,
+    accountType: parsed.accountType,
+    currency: parsed.currency,
+    baseName,
+    csvFilename,
+    csvPath,
+    csvBytes: csvStat.size,
+    jsonFilename,
+    jsonPath,
+    jsonBytes: jsonStat.size,
+    rowCount: rows.length,
+  };
 }
 
 export async function runFubonLoanStatements(
   page: Page,
   input: FubonLoanStatementsInput,
 ): Promise<FubonLoanStatementsOutput> {
+  if (input.downloadFormat !== "EXCEL") {
+    throw new Error(
+      "fubon-loan-statements normalized output requires EXCEL downloadFormat.",
+    );
+  }
+
   let scope = await openLoanStatementsPage(page);
   const loanAccounts = await readLoanAccountOptions(
     scope,
@@ -573,6 +759,7 @@ export async function runFubonLoanStatements(
   );
   const queryItems = requestedQueryItems(input);
   const explicitQueryItems = hasExplicitQueryItems(input);
+  const period = describeLoanPeriod(input);
 
   const downloads: FubonLoanStatementsOutput["downloads"] = [];
   const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
@@ -633,11 +820,7 @@ export async function runFubonLoanStatements(
           queryItem,
           input.downloadFormat,
         );
-        downloads.push({
-          loanAccount: account.label,
-          queryItem,
-          ...download,
-        });
+        downloads.push(download);
       } catch (error) {
         console.warn("loan-query-skipped", {
           loanAccount: account.label,
@@ -661,16 +844,7 @@ export async function runFubonLoanStatements(
 
   return {
     queryItems,
-    period: input.dateRange
-      ? {
-          mode: "custom" as const,
-          startDate: input.dateRange.startDate,
-          endDate: input.dateRange.endDate,
-        }
-      : {
-          mode: "quick" as const,
-          quickMonths: input.quickMonths,
-        },
+    period,
     downloadFormat: input.downloadFormat,
     count: downloads.length,
     downloads,
