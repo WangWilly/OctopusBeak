@@ -105,11 +105,6 @@ const KNOWN_HEADER_HINTS = [
     product: "loan-statements",
     requiredHeaders: ["交易日期", "交易內容", "異動金額", "餘額"],
   },
-  {
-    bank: "fubon",
-    product: "loan-statements",
-    requiredHeaders: ["交易日期", "本金", "利息", "違約金"],
-  },
 ];
 
 function baseRecord(recordType: RecordType) {
@@ -492,7 +487,7 @@ function detectCsvLayout(
 }
 
 function parseCsvRows(csvText: string, context: SourceContext): ParsedCsv {
-  const workbook = XLSX.read(csvText, { raw: false, type: "string" });
+  const workbook = XLSX.read(csvText, { raw: true, type: "string" });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) {
     return {
@@ -509,7 +504,7 @@ function parseCsvRows(csvText: string, context: SourceContext): ParsedCsv {
     {
       defval: "",
       header: 1,
-      raw: false,
+      raw: true,
     },
   );
   const csvLayout = detectCsvLayout(matrix, context);

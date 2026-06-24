@@ -15,11 +15,14 @@ type Input = z.infer<typeof inputSchema>;
 type RawRecord = Record<string, unknown>;
 
 type BatchRecord = RawRecord & {
+  importRunId?: string;
   importBatchId: string;
   sourceRelativePath: string;
+  sourceFile?: string;
   bank: string;
   product: string;
   rowCount: number;
+  importedAt?: string;
   csvLayout?: {
     strategy?: string;
     detectionSource?: string;
@@ -27,9 +30,17 @@ type BatchRecord = RawRecord & {
   };
 };
 
+type ImportRunRecord = RawRecord & {
+  importRunId: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 type RawTransactionOccurrence = RawRecord & {
+  importRunId?: string;
   importBatchId: string;
   sourceHash: string;
+  contentHash?: string;
   sourceRelativePath: string;
   sourceRowIndex: number;
   bank: string;
@@ -58,6 +69,7 @@ type NormalizedTransaction = {
   accountLabel: string;
   currency: string;
   date: string | null;
+  occurredAt: string | null;
   description: string;
   status: "posted" | "unbilled" | "payment" | "detail" | "dividend" | "unknown";
   inflow: number | null;
@@ -89,10 +101,62 @@ type AssetPosition = {
   valueSign: "asset" | "liability" | "informational";
   includeInTotals: boolean;
   asOfDate: string | null;
+  asOfDateTime: string | null;
   sourceRelativePath: string;
   sourceRowIndex: number;
   confidence: "high" | "medium" | "low";
   warnings: string[];
+};
+
+type FinancialTotals = {
+  includedByCurrency: Record<
+    string,
+    {
+      assets: number;
+      liabilities: number;
+      net: number;
+    }
+  >;
+  informationalByCurrency: Record<string, number>;
+};
+
+type SnapshotAccountValue = {
+  id: string;
+  institution: string;
+  product: string;
+  assetClass: AssetPosition["assetClass"];
+  accountId: string;
+  label: string;
+  currency: string;
+  value: number;
+  valueSign: AssetPosition["valueSign"];
+  includeInTotals: boolean;
+};
+
+type AssetSnapshot = {
+  importRunId: string;
+  importedAt: string;
+  snapshotDate: string;
+  totals: FinancialTotals;
+  positionCount: number;
+  includedPositionCount: number;
+  accounts: SnapshotAccountValue[];
+};
+
+type DailyAssetHistoryPoint = {
+  date: string;
+  importRunId: string;
+  importedAt: string;
+  assets: CurrencyBucket;
+  liabilities: CurrencyBucket;
+  netAssets: CurrencyBucket;
+  netChange: CurrencyBucket;
+  positionCount: number;
+};
+
+type SnapshotHistory = {
+  snapshots: AssetSnapshot[];
+  daily: DailyAssetHistoryPoint[];
 };
 
 type Classification = {
@@ -122,20 +186,12 @@ type FinancialModel = {
     normalizedTransactions: number;
     assetPositions: number;
     includedPositions: number;
+    duplicateNormalizedTransactions: number;
+    assetSnapshots: number;
     auditOnlyRows: number;
     unsupportedRows: number;
   };
-  totals: {
-    includedByCurrency: Record<
-      string,
-      {
-        assets: number;
-        liabilities: number;
-        net: number;
-      }
-    >;
-    informationalByCurrency: Record<string, number>;
-  };
+  totals: FinancialTotals;
   dashboard: DashboardView;
   parserCoverage: Record<
     string,
@@ -150,6 +206,7 @@ type FinancialModel = {
   >;
   assetPositions: AssetPosition[];
   normalizedTransactions: NormalizedTransaction[];
+  snapshotHistory: SnapshotHistory;
   unsupportedRows: Array<{
     bank: string;
     product: string;
@@ -248,6 +305,22 @@ async function readJsonl<T>(path: string): Promise<T[]> {
         );
       }
     });
+}
+
+async function readJsonlIfExists<T>(path: string): Promise<T[]> {
+  try {
+    return await readJsonl<T>(path);
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 async function buildSourceAccountHints(
@@ -393,14 +466,74 @@ function parseDate(value: unknown): string | null {
   return null;
 }
 
-function parseDateToken(
-  value: unknown,
-  token: "first" | "last" = "first",
-): string | null {
+function parseDateTime(value: unknown): string | null {
   const raw = String(value ?? "").trim();
-  const matches = raw.match(/\d{3,4}[/-]\d{1,2}[/-]\d{1,2}/g);
-  if (!matches || matches.length === 0) return parseDate(raw);
-  return parseDate(token === "last" ? matches[matches.length - 1] : matches[0]);
+  if (!raw) return null;
+
+  const timeMatch = raw.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+  const dateText = raw.replace(/\s+\d{1,2}:\d{2}(?::\d{2})?.*$/, "");
+  const date = parseDate(dateText);
+  if (!date) return null;
+
+  if (!timeMatch) return `${date}T00:00:00`;
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const second = Number(timeMatch[3] ?? "0");
+  if (
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    !Number.isInteger(second) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return null;
+  }
+
+  return `${date}T${hour.toString().padStart(2, "0")}:${minute
+    .toString()
+    .padStart(2, "0")}:${second.toString().padStart(2, "0")}`;
+}
+
+function rowDateTime(row: RawTransactionOccurrence, fallbackDate: string | null) {
+  const p = row.rawPayload;
+  const directTime = firstCell(p, [
+    "交易時間",
+    "transaction_time",
+    "datetime",
+    "date_time",
+  ]);
+  const directDateTime = parseDateTime(directTime);
+  if (directDateTime) return directDateTime;
+
+  const dateText =
+    firstCell(p, [
+      "帳務日期",
+      "交易日期",
+      "交易日",
+      "記帳日",
+      "消費日期",
+      "入帳日期",
+      "posting_date",
+      "consume_date",
+      "trade_date",
+      "as_of_date",
+      "投資日期",
+      "轉出日期",
+      "轉入日期",
+      "分配日期",
+    ]) ||
+    fallbackDate ||
+    "";
+  if (directTime && /\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(directTime)) {
+    const combined = parseDateTime(`${dateText} ${directTime}`);
+    if (combined) return combined;
+  }
+
+  return parseDateTime(dateText) ?? (fallbackDate ? `${fallbackDate}T00:00:00` : null);
 }
 
 function parseStatementPeriod(value: unknown): string | null {
@@ -479,33 +612,30 @@ function sourceAccount(row: RawTransactionOccurrence, explicit = ""): string {
 }
 
 function sourceAccountFromPath(row: RawTransactionOccurrence): string | null {
-  if (`${row.bank}/${row.product}` !== "yuanta/loan-statements") return null;
   const fileName = row.sourceRelativePath.split("/").pop() ?? "";
-  const match = fileName.match(/(\d{4})\.csv$/);
-  return match ? `****${match[1]}` : null;
+  const stem = fileName.replace(/\.[^.]+$/, "").replace(/-\d{10,}$/, "");
+
+  if (`${row.bank}/${row.product}` === "yuanta/loan-statements") {
+    const accountText = cell(row.rawPayload, "貸款帳戶");
+    if (accountText) return maskIdentifier(accountText);
+  }
+
+  const longDigits = stem.match(/\d{6,}/);
+  return longDigits ? maskIdentifier(longDigits[0]) : null;
+}
+
+function currencyFromSourcePath(row: RawTransactionOccurrence): string | null {
+  const fileName = row.sourceRelativePath.split("/").pop() ?? "";
+  const stem = fileName.replace(/\.[^.]+$/, "").replace(/-\d{10,}$/, "");
+  const token = stem
+    .split(/[-_]/)
+    .map((part) => part.trim())
+    .find((part) => /^[A-Za-z]{3}$/.test(part));
+  return token ? normalizeCurrency(token, "UNKNOWN") : null;
 }
 
 function fundAccountId(label: string): string {
   return stableId(["fund", label.trim()]);
-}
-
-function fundLabelFromTradeField(value: string): string {
-  return value
-    .trim()
-    .replace(/\s+[A-Z]{2}\d+(?:[-\w]+)?$/i, "")
-    .trim();
-}
-
-function splitFundConversionLabels(value: string): {
-  fromLabel: string;
-  toLabel: string;
-} | null {
-  const labels = value.trim().split(/\s+/).filter(Boolean);
-  if (labels.length < 2) return null;
-  return {
-    fromLabel: labels[0],
-    toLabel: labels.slice(1).join(" "),
-  };
 }
 
 function baseTransaction(
@@ -539,6 +669,7 @@ function baseTransaction(
     accountLabel: accountId,
     currency,
     date,
+    occurredAt: rowDateTime(row, date),
   };
 }
 
@@ -573,6 +704,7 @@ function positionFromRow(
     valueSign,
     includeInTotals: options.includeInTotals ?? true,
     asOfDate,
+    asOfDateTime: rowDateTime(row, asOfDate),
     sourceRelativePath: row.sourceRelativePath,
     sourceRowIndex: row.sourceRowIndex,
     confidence: options.confidence ?? "high",
@@ -586,15 +718,15 @@ function classifyDepositRow(
   const p = row.rawPayload;
   const bankProduct = `${row.bank}/${row.product}`;
 
-  if (bankProduct === "cathay/statements") {
-    const accountId = sourceAccount(row, cell(p, "accountNumber"));
-    const date = parseDate(firstCell(p, ["accountDate", "txnDateTime"]));
-    const inflow = parseAmount(cell(p, "incomeAmt"));
-    const outflow = parseAmount(cell(p, "expendAmt"));
-    const balanceAfter = parseAmount(cell(p, "balance"));
+  if (bankProduct === "cathay/statements" && cell(p, "帳務日期")) {
+    const accountId = sourceAccount(row);
+    const date = parseDate(cell(p, "帳務日期"));
+    const inflow = parseAmount(cell(p, "存入金額"));
+    const outflow = parseAmount(cell(p, "支出金額"));
+    const balanceAfter = parseAmount(cell(p, "即時餘額"));
     const transaction: NormalizedTransaction = {
-      ...baseTransaction(row, "cathay.deposit.v1", "deposit", accountId, "TWD", date),
-      description: cell(p, "description") || cell(p, "memo"),
+      ...baseTransaction(row, "cathay.deposit.v2", "deposit", accountId, "TWD", date),
+      description: [cell(p, "摘要"), cell(p, "附註")].filter(Boolean).join(" "),
       inflow,
       outflow,
       amountSigned: (inflow ?? 0) - (outflow ?? 0),
@@ -606,42 +738,30 @@ function classifyDepositRow(
     return { row, transactions: [transaction], positions: [] };
   }
 
-  if (bankProduct === "cathay/foreign-statements") {
-    const accountId = sourceAccount(row, cell(p, "account"));
-    const currency = normalizeCurrency(cell(p, "currencyCode"), "UNKNOWN");
-    const date = parseDate(firstCell(p, ["txntDate", "transferDate"]));
-    const amount = parseAmount(cell(p, "amount"));
-    const balanceAfter = parseAmount(cell(p, "balance"));
-    const debitCreditType = cell(p, "debitCreditType").toLowerCase();
-    const isOutflow =
-      debitCreditType.includes("debit") ||
-      debitCreditType.includes("支") ||
-      debitCreditType === "d";
-    const isInflow =
-      debitCreditType.includes("credit") ||
-      debitCreditType.includes("存") ||
-      debitCreditType === "c";
+  if (bankProduct === "cathay/foreign-statements" && cell(p, "帳務日期")) {
+    const accountId = sourceAccount(row);
+    const currency = currencyFromSourcePath(row) ?? "UNKNOWN";
+    const date = parseDate(cell(p, "帳務日期"));
+    const inflow = parseAmount(cell(p, "存入金額"));
+    const outflow = parseAmount(cell(p, "支出金額"));
+    const balanceAfter = parseAmount(cell(p, "即時餘額"));
     const transaction: NormalizedTransaction = {
       ...baseTransaction(
         row,
-        "cathay.foreign-deposit.v1",
+        "cathay.foreign-deposit.v2",
         "foreign_deposit",
         accountId,
         currency,
         date,
       ),
-      description: cell(p, "memo") || cell(p, "custName"),
-      inflow: isInflow ? amount : null,
-      outflow: isOutflow ? amount : null,
-      amountSigned:
-        amount === null ? null : isOutflow ? -amount : isInflow ? amount : null,
+      description: [cell(p, "摘要"), cell(p, "附註")].filter(Boolean).join(" "),
+      inflow,
+      outflow,
+      amountSigned: (inflow ?? 0) - (outflow ?? 0),
       balanceAfter,
       status: "posted",
-      includeInCashFlow: amount !== null && (isInflow || isOutflow),
-      warnings:
-        amount !== null && !isInflow && !isOutflow
-          ? ["unknown debit/credit direction"]
-          : [],
+      includeInCashFlow: true,
+      warnings: balanceAfter === null ? ["missing balance"] : [],
     };
     return { row, transactions: [transaction], positions: [] };
   }
@@ -740,40 +860,9 @@ function classifyLoanRow(row: RawTransactionOccurrence): Classification | null {
     return { row, transactions: [transaction], positions: [] };
   }
 
-  if (bankProduct === "fubon/loan-statements" && cell(p, "本金")) {
-    const accountId = sourceAccount(row);
-    const date = parseDate(cell(p, "交易日期"));
-    const principal = parseAmount(cell(p, "本金"));
-    const interest = parseAmount(cell(p, "利息"));
-    const fees =
-      (parseAmount(cell(p, "違約金")) ?? 0) +
-      (parseAmount(cell(p, "遲延息")) ?? 0) +
-      (parseAmount(cell(p, "緩繳息")) ?? 0);
-    const amount = (principal ?? 0) + (interest ?? 0) + fees;
-    const transaction: NormalizedTransaction = {
-      ...baseTransaction(
-        row,
-        "fubon.loan-payment-detail.v1",
-        "loan",
-        accountId,
-        "TWD",
-        date,
-      ),
-      description: "loan payment detail",
-      inflow: null,
-      outflow: amount || null,
-      amountSigned: amount ? -amount : null,
-      balanceAfter: null,
-      status: "payment",
-      includeInCashFlow: false,
-      warnings: ["payment detail row has no outstanding balance"],
-    };
-    return { row, transactions: [transaction], positions: [] };
-  }
-
   if (bankProduct === "yuanta/loan-statements") {
-    const accountId = sourceAccount(row);
-    const date = parseDate(cell(p, "交易日/記帳日"));
+    const accountId = sourceAccount(row, cell(p, "貸款帳戶"));
+    const date = parseDate(cell(p, "交易日"));
     const amount = parseAmount(cell(p, "交易金額"));
     const balanceAfter = parseAmount(cell(p, "交易後餘額"));
     const transaction: NormalizedTransaction = {
@@ -876,93 +965,37 @@ function classifyCreditCardRow(
   }
 
   if (bankProduct === "yuanta/credit-card-statements") {
-    const accountId = "Yuanta credit card";
-    const sourceTableLabel = cell(p, "source_table_label");
+    const explicitAccount = firstCell(p, ["信用卡號", "信用卡名稱"]);
+    const accountId = explicitAccount
+      ? sourceAccount(row, explicitAccount)
+      : "Yuanta credit card";
 
-    if (sourceTableLabel === "payment-details" && cell(p, "尚未繳款")) {
-      const value = parseAmount(cell(p, "尚未繳款"));
-      if (value !== null) {
-        const asOfDate = parseDate(
-          firstCell(p, ["本月繳款期限", "最近繳款日期", "繳款截止日"]),
-        );
-        const position = positionFromRow(
-          row,
-          "yuanta.credit-card-outstanding.v1",
-          "credit_card",
-          accountId,
-          "TWD",
-          value,
-          "liability",
-          asOfDate,
-          {
-            label: accountId,
-            confidence: "medium",
-            warnings: ["derived from statement payment summary"],
-          },
-        );
-        return { row, transactions: [], positions: [position] };
-      }
-    }
-
-    if (sourceTableLabel === "transactions" && cell(p, "新臺幣金額")) {
-      const date = parseDate(firstCell(p, ["入帳日期", "消費日期"]));
+    if (cell(p, "新臺幣金額")) {
+      const date = parseDate(firstCell(p, ["交易日期", "入帳日期", "消費日期"]));
       const amount = parseAmount(cell(p, "新臺幣金額"));
       if (amount !== null) {
-        if (amount <= 0) {
-          return {
-            row,
-            transactions: [],
-            positions: [],
-            auditOnlyReason:
-              "yuanta credit-card payment or rebate row is covered by payment details",
-          };
-        }
         const transaction: NormalizedTransaction = {
           ...baseTransaction(
             row,
-            "yuanta.credit-card-transaction.v1",
+            "yuanta.credit-card-transaction.v2",
             "credit_card",
             accountId,
             "TWD",
             date,
           ),
+          accountLabel: firstCell(p, ["信用卡名稱", "信用卡號"]) || accountId,
           description: cell(p, "消費明細"),
-          inflow: null,
-          outflow: amount,
+          inflow: amount < 0 ? Math.abs(amount) : null,
+          outflow: amount > 0 ? amount : null,
           amountSigned: -amount,
           balanceAfter: null,
-          status:
-            cell(p, "source_category") === "unbilled" ||
-            row.sourceRelativePath.includes("unbilled")
-              ? "unbilled"
+          status: row.sourceRelativePath.includes("unbilled")
+            ? "unbilled"
+            : amount < 0
+              ? "payment"
               : "posted",
           includeInCashFlow: true,
-          warnings: ["transaction row only; not used as liability balance"],
-        };
-        return { row, transactions: [transaction], positions: [] };
-      }
-    }
-
-    if (sourceTableLabel === "payment-details" && cell(p, "繳款金額")) {
-      const amount = parseAmount(cell(p, "繳款金額"));
-      if (amount !== null) {
-        const transaction: NormalizedTransaction = {
-          ...baseTransaction(
-            row,
-            "yuanta.credit-card-payment.v1",
-            "credit_card",
-            accountId,
-            "TWD",
-            parseDate(cell(p, "繳款日")),
-          ),
-          description: cell(p, "中文說明") || "credit card payment",
-          inflow: amount,
-          outflow: null,
-          amountSigned: amount,
-          balanceAfter: null,
-          status: "payment",
-          includeInCashFlow: true,
-          warnings: ["payment transaction; not used as liability balance"],
+          warnings: ["transaction row only; no statement liability balance"],
         };
         return { row, transactions: [transaction], positions: [] };
       }
@@ -983,7 +1016,7 @@ function classifyCreditCardRow(
         transactions: [],
         positions: [],
         auditOnlyReason:
-          "yuanta credit-card statement due is kept as audit metadata; aggregate payment details provide current outstanding",
+          "yuanta credit-card statement due is kept as audit metadata",
       };
     }
 
@@ -1026,25 +1059,19 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
     }
   }
 
-  if (
-    cell(p, "source_category") === "historical-transactions" &&
-    cell(p, "source_table_label") === "buy-details" &&
-    cell(p, "投資日期") &&
-    cell(p, "投資金額")
-  ) {
+  if (cell(p, "資料類別") === "歷史交易" && cell(p, "投資日期") && cell(p, "投資金額")) {
     const amountText = cell(p, "投資金額");
     const amount = parseAmountToken(amountText);
     const date = parseDate(cell(p, "投資日期"));
     if (amount !== null) {
-      const currency = currencyFromText(amountText);
-      const fundLabel = firstCell(p, ["基金名稱", "基金名稱 交易編號"]);
+      const fundLabel = cell(p, "基金名稱");
       const transaction: NormalizedTransaction = {
         ...baseTransaction(
           row,
-          "yuanta.fund-buy.v1",
+          "yuanta.fund-buy.v2",
           "investment",
           fundAccountId(fundLabel),
-          currency,
+          currencyFromText(amountText),
           date,
         ),
         accountLabel: fundLabel,
@@ -1061,20 +1088,43 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
     }
   }
 
-  if (
-    cell(p, "source_category") === "historical-transactions" &&
-    cell(p, "source_table_label") === "cash-dividend-details" &&
-    cell(p, "入帳日期") &&
-    cell(p, "基準單位數 分配金額")
-  ) {
-    const amountText = cell(p, "基準單位數 分配金額");
-    const amount = parseAmountToken(amountText, "last");
-    const fundLabel = fundLabelFromTradeField(cell(p, "基金名稱 交易編號"));
+  if (cell(p, "資料類別") === "歷史交易" && cell(p, "贖回日期") && cell(p, "基金名稱")) {
+    const amountText = firstCell(p, ["入帳淨額", "贖回投資金額"]);
+    const amount = parseAmountToken(amountText);
+    if (amount !== null) {
+      const fundLabel = cell(p, "基金名稱");
+      const transaction: NormalizedTransaction = {
+        ...baseTransaction(
+          row,
+          "yuanta.fund-redemption.v2",
+          "investment",
+          fundAccountId(fundLabel),
+          currencyFromText(amountText),
+          parseDate(firstCell(p, ["分配日期", "贖回日期"])),
+        ),
+        accountLabel: fundLabel,
+        description: `贖回 ${fundLabel}`,
+        inflow: amount,
+        outflow: null,
+        amountSigned: amount,
+        balanceAfter: null,
+        status: "posted",
+        includeInCashFlow: true,
+        warnings: [],
+      };
+      return { row, transactions: [transaction], positions: [] };
+    }
+  }
+
+  if (cell(p, "資料類別") === "歷史交易" && cell(p, "入帳日期") && cell(p, "分配金額")) {
+    const amountText = cell(p, "分配金額");
+    const amount = parseAmountToken(amountText);
+    const fundLabel = cell(p, "基金名稱");
     if (amount !== null && fundLabel) {
       const transaction: NormalizedTransaction = {
         ...baseTransaction(
           row,
-          "yuanta.fund-cash-dividend.v1",
+          "yuanta.fund-cash-dividend.v2",
           "investment",
           fundAccountId(fundLabel),
           currencyFromText(amountText),
@@ -1095,27 +1145,29 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
   }
 
   if (
-    cell(p, "source_category") === "historical-transactions" &&
-    cell(p, "source_table_label") === "conversion-details" &&
-    cell(p, "轉出日期 轉入日期") &&
-    cell(p, "轉出基金 轉入基金") &&
+    cell(p, "資料類別") === "歷史交易" &&
+    cell(p, "轉出日期") &&
+    cell(p, "轉入日期") &&
+    cell(p, "轉出基金") &&
+    cell(p, "轉入基金") &&
     cell(p, "轉換投資金額")
   ) {
-    const labels = splitFundConversionLabels(cell(p, "轉出基金 轉入基金"));
     const amountText = cell(p, "轉換投資金額");
     const amount = parseAmountToken(amountText);
-    if (labels && amount !== null) {
+    if (amount !== null) {
+      const fromLabel = cell(p, "轉出基金");
+      const toLabel = cell(p, "轉入基金");
       const transaction: NormalizedTransaction = {
         ...baseTransaction(
           row,
-          "yuanta.fund-conversion-in.v1",
+          "yuanta.fund-conversion-in.v2",
           "investment",
-          fundAccountId(labels.toLabel),
+          fundAccountId(toLabel),
           currencyFromText(amountText),
-          parseDateToken(cell(p, "轉出日期 轉入日期"), "last"),
+          parseDate(cell(p, "轉入日期")),
         ),
-        accountLabel: labels.toLabel,
-        description: `轉換轉入 ${labels.fromLabel} -> ${labels.toLabel}`,
+        accountLabel: toLabel,
+        description: `轉換轉入 ${fromLabel} -> ${toLabel}`,
         inflow: amount,
         outflow: null,
         amountSigned: amount,
@@ -1142,22 +1194,22 @@ function classifyBrokerageRow(
   const p = row.rawPayload;
   if (`${row.bank}/${row.product}` !== "yuanta/trade-statements") return null;
 
-  if (cell(p, "台幣現值")) {
-    const valueTwd = parseAmount(cell(p, "台幣現值"));
+  if (cell(p, "market_value_twd")) {
+    const valueTwd = parseAmount(cell(p, "market_value_twd"));
     if (valueTwd !== null) {
-      const currency = normalizeCurrency(cell(p, "交易幣別"));
-      const value = parseAmount(cell(p, "原幣現值")) ?? valueTwd;
+      const currency = normalizeCurrency(cell(p, "currency"), "UNKNOWN");
+      const value = parseAmount(cell(p, "market_value_original")) ?? valueTwd;
       const position = positionFromRow(
         row,
-        "yuanta.brokerage-holding.v1",
+        "yuanta.brokerage-holding.v2",
         "brokerage",
-        sourceAccount(row, cell(p, "交易帳號")),
+        sourceAccount(row, cell(p, "account_number")),
         currency,
         value,
         "asset",
-        parseDate(cell(p, "市價日期")),
+        parseDate(firstCell(p, ["as_of_date", "market_date"])),
         {
-          label: [cell(p, "商品代號"), cell(p, "商品名稱")]
+          label: [cell(p, "product_code"), cell(p, "product_name")]
             .filter(Boolean)
             .join(" "),
           valueTwd,
@@ -1168,47 +1220,22 @@ function classifyBrokerageRow(
     }
   }
 
-  if (cell(p, "本日餘額")) {
-    const value = parseAmount(cell(p, "本日餘額"));
+  if (cell(p, "asset_value_twd")) {
+    const value = parseAmount(cell(p, "asset_value_twd"));
     if (value !== null) {
       const position = positionFromRow(
         row,
-        "yuanta.futures-balance.v1",
-        "brokerage",
-        "Yuanta futures",
-        "TWD",
-        value,
-        "asset",
-        null,
-        {
-          label: "Yuanta futures margin balance",
-          confidence: "medium",
-          warnings: ["futures balance has no explicit as-of date in CSV row"],
-        },
-      );
-      return { row, transactions: [], positions: [position] };
-    }
-  }
-
-  if (
-    row.sourceRelativePath.includes("/holdings-") &&
-    row.sourceRelativePath.includes("-summary-") &&
-    cell(p, "column_1") &&
-    cell(p, "column_2")
-  ) {
-    const value = parseAmount(cell(p, "column_2"));
-    if (value !== null) {
-      const position = positionFromRow(
-        row,
-        "yuanta.brokerage-summary-rollup.v1",
+        "yuanta.brokerage-summary-rollup.v2",
         "brokerage_rollup",
-        stableId(["brokerage-rollup", row.sourceRelativePath, cell(p, "column_1")]),
+        stableId(["brokerage-rollup", row.sourceRelativePath, cell(p, "asset_name")]),
         "TWD",
         value,
         "informational",
-        null,
+        parseDate(cell(p, "as_of_date")),
         {
-          label: cell(p, "column_1"),
+          label: [cell(p, "asset_type"), cell(p, "asset_name")]
+            .filter(Boolean)
+            .join(" "),
           includeInTotals: false,
           confidence: "low",
           warnings: [
@@ -1220,30 +1247,32 @@ function classifyBrokerageRow(
     }
   }
 
-  if (cell(p, "交易日期") && cell(p, "交割金額(原幣)")) {
-    const amount = parseAmount(cell(p, "交割金額(原幣)"));
-    const tradeType = cell(p, "交易類別");
-    const isDividend = tradeType.includes("配息");
+  if (cell(p, "trade_date") && cell(p, "settlement_amount")) {
+    const amount = parseAmount(cell(p, "settlement_amount"));
+    const action = cell(p, "action") || cell(p, "trade_type");
+    const isInflow = /賣|賣出|sell|配息|股息|息/i.test(action);
     const transaction: NormalizedTransaction = {
       ...baseTransaction(
         row,
-        "yuanta.brokerage-trade.v1",
+        "yuanta.brokerage-trade.v2",
         "brokerage",
-        sourceAccount(row, cell(p, "交易帳號")),
+        sourceAccount(row, cell(p, "account_number")),
         normalizeCurrency(
-          firstCell(p, ["交割幣別", "商品幣別"]),
+          firstCell(p, ["settlement_currency", "currency"]),
           "UNKNOWN",
         ),
-        parseDate(cell(p, "交易日期")),
+        parseDate(cell(p, "trade_date")),
       ),
-      description: [tradeType, cell(p, "商品名稱")].filter(Boolean).join(" "),
-      inflow: isDividend ? amount : null,
-      outflow: isDividend ? null : amount,
-      amountSigned: amount === null ? null : isDividend ? amount : -amount,
+      description: [action, cell(p, "product_code"), cell(p, "product_name")]
+        .filter(Boolean)
+        .join(" "),
+      inflow: isInflow ? amount : null,
+      outflow: isInflow ? null : amount,
+      amountSigned: amount === null ? null : isInflow ? amount : -amount,
       balanceAfter: null,
-      status: isDividend ? "dividend" : "posted",
+      status: /配息|股息|息/i.test(action) ? "dividend" : "posted",
       includeInCashFlow: false,
-      warnings: isDividend ? [] : ["trade cash-flow direction is not normalized yet"],
+      warnings: isInflow ? [] : ["trade cash-flow direction is not normalized yet"],
     };
     return { row, transactions: [transaction], positions: [] };
   }
@@ -1344,14 +1373,75 @@ function pickLatestSnapshotPositions(
   return positions;
 }
 
+function pickCreditCardLiabilityPositions(
+  transactions: NormalizedTransaction[],
+  sourceRows: Map<string, RawTransactionOccurrence>,
+): AssetPosition[] {
+  const byAccount = new Map<
+    string,
+    {
+      transaction: NormalizedTransaction;
+      value: number;
+    }
+  >();
+
+  for (const transaction of transactions) {
+    if (transaction.type !== "credit_card") continue;
+    if (transaction.status !== "unbilled") continue;
+    if (transaction.amountSigned === null || transaction.amountSigned >= 0) continue;
+
+    const key = [transaction.accountId, transaction.currency].join("|");
+    const previous = byAccount.get(key);
+    const value = Math.abs(transaction.amountSigned);
+    if (!previous) {
+      byAccount.set(key, { transaction, value });
+      continue;
+    }
+
+    previous.value += value;
+    if (compareTransactionDate(transaction, previous.transaction) >= 0) {
+      previous.transaction = transaction;
+    }
+  }
+
+  const positions: AssetPosition[] = [];
+  for (const { transaction, value } of byAccount.values()) {
+    const sourceRow = sourceRows.get(transaction.sourceHash);
+    if (!sourceRow || value <= 0) continue;
+    positions.push(
+      positionFromRow(
+        sourceRow,
+        "credit-card-unbilled.snapshot",
+        "credit_card",
+        transaction.accountId,
+        transaction.currency,
+        value,
+        "liability",
+        transaction.date,
+        {
+          label: transaction.accountLabel || transaction.accountId,
+          confidence: "medium",
+          warnings: ["derived from current unbilled credit-card transactions"],
+        },
+      ),
+    );
+  }
+
+  return positions;
+}
+
 function compareTransactionDate(
   left: NormalizedTransaction,
   right: NormalizedTransaction,
 ): number {
-  const leftDate = left.date ?? "";
-  const rightDate = right.date ?? "";
-  if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
-  return left.sourceRowIndex - right.sourceRowIndex;
+  const leftDateTime =
+    left.occurredAt ?? (left.date ? `${left.date}T00:00:00` : "");
+  const rightDateTime =
+    right.occurredAt ?? (right.date ? `${right.date}T00:00:00` : "");
+  if (leftDateTime !== rightDateTime) {
+    return leftDateTime.localeCompare(rightDateTime);
+  }
+  return right.sourceRowIndex - left.sourceRowIndex;
 }
 
 function reducePositions(positions: AssetPosition[]): AssetPosition[] {
@@ -1376,14 +1466,285 @@ function reducePositions(positions: AssetPosition[]): AssetPosition[] {
 }
 
 function comparePositionFreshness(left: AssetPosition, right: AssetPosition) {
-  const leftDate = left.asOfDate ?? "";
-  const rightDate = right.asOfDate ?? "";
-  if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+  const leftDateTime =
+    left.asOfDateTime ?? (left.asOfDate ? `${left.asOfDate}T00:00:00` : "");
+  const rightDateTime =
+    right.asOfDateTime ?? (right.asOfDate ? `${right.asOfDate}T00:00:00` : "");
+  if (leftDateTime !== rightDateTime) {
+    return leftDateTime.localeCompare(rightDateTime);
+  }
+  return right.sourceRowIndex - left.sourceRowIndex;
+}
+
+function rowImportRunId(row: RawTransactionOccurrence): string {
+  return row.importRunId ?? `legacy:${row.sourceRelativePath}`;
+}
+
+function buildImportRunTimes(
+  importRuns: ImportRunRecord[],
+  batches: BatchRecord[],
+): Map<string, string> {
+  const times = new Map<string, string>();
+
+  for (const run of importRuns) {
+    times.set(
+      run.importRunId,
+      run.finishedAt ?? run.startedAt ?? new Date(0).toISOString(),
+    );
+  }
+
+  for (const batch of batches) {
+    if (!batch.importRunId) continue;
+    if (times.has(batch.importRunId)) continue;
+    if (batch.importedAt) times.set(batch.importRunId, batch.importedAt);
+  }
+
+  return times;
+}
+
+function importedAtForRow(
+  row: RawTransactionOccurrence,
+  importRunTimes: Map<string, string>,
+): string {
+  const runTime = importRunTimes.get(rowImportRunId(row));
+  if (runTime) return runTime;
+  const importedAt = String(row.importedAt ?? "");
+  return importedAt || new Date(0).toISOString();
+}
+
+function transactionDeduplicationKey(transaction: NormalizedTransaction): string {
+  return stableId([
+    "normalized-transaction",
+    transaction.institution,
+    transaction.product,
+    transaction.type,
+    transaction.accountId,
+    transaction.currency,
+    transaction.date,
+    transaction.description,
+    transaction.status,
+    transaction.inflow,
+    transaction.outflow,
+    transaction.amountSigned,
+    transaction.balanceAfter,
+  ]);
+}
+
+function compareTransactionOccurrenceFreshness(
+  left: NormalizedTransaction,
+  right: NormalizedTransaction,
+  sourceRows: Map<string, RawTransactionOccurrence>,
+  importRunTimes: Map<string, string>,
+): number {
+  const leftRow = sourceRows.get(left.sourceHash);
+  const rightRow = sourceRows.get(right.sourceHash);
+  const leftImportedAt = leftRow
+    ? importedAtForRow(leftRow, importRunTimes)
+    : "";
+  const rightImportedAt = rightRow
+    ? importedAtForRow(rightRow, importRunTimes)
+    : "";
+  if (leftImportedAt !== rightImportedAt) {
+    return leftImportedAt.localeCompare(rightImportedAt);
+  }
+  if (left.sourceRelativePath !== right.sourceRelativePath) {
+    return left.sourceRelativePath.localeCompare(right.sourceRelativePath);
+  }
   return left.sourceRowIndex - right.sourceRowIndex;
 }
 
-function computeTotals(positions: AssetPosition[]): FinancialModel["totals"] {
-  const includedByCurrency: FinancialModel["totals"]["includedByCurrency"] = {};
+function dedupeTransactions(
+  transactions: NormalizedTransaction[],
+  sourceRows: Map<string, RawTransactionOccurrence>,
+  importRunTimes: Map<string, string>,
+): {
+  transactions: NormalizedTransaction[];
+  duplicateCount: number;
+} {
+  const byKey = new Map<string, NormalizedTransaction>();
+  let duplicateCount = 0;
+
+  for (const transaction of transactions) {
+    const key = transactionDeduplicationKey(transaction);
+    const previous = byKey.get(key);
+    if (!previous) {
+      byKey.set(key, transaction);
+      continue;
+    }
+
+    duplicateCount += 1;
+    if (
+      compareTransactionOccurrenceFreshness(
+        transaction,
+        previous,
+        sourceRows,
+        importRunTimes,
+      ) >= 0
+    ) {
+      byKey.set(key, transaction);
+    }
+  }
+
+  return { transactions: [...byKey.values()], duplicateCount };
+}
+
+function bucketFromTotals(
+  totals: FinancialTotals,
+  side: "assets" | "liabilities" | "net",
+): CurrencyBucket {
+  const bucket: CurrencyBucket = {};
+  for (const [currency, value] of Object.entries(totals.includedByCurrency)) {
+    bucket[currency] = value[side];
+  }
+  return bucket;
+}
+
+function subtractCurrencyBuckets(
+  current: CurrencyBucket,
+  previous: CurrencyBucket,
+): CurrencyBucket {
+  const bucket: CurrencyBucket = {};
+  for (const currency of new Set([
+    ...Object.keys(current),
+    ...Object.keys(previous),
+  ])) {
+    const value = (current[currency] ?? 0) - (previous[currency] ?? 0);
+    if (Math.abs(value) > 0.000001) bucket[currency] = value;
+  }
+  return bucket;
+}
+
+function snapshotAccounts(positions: AssetPosition[]): SnapshotAccountValue[] {
+  return positions
+    .filter((position) => position.includeInTotals)
+    .map((position) => ({
+      id: stableId([
+        "snapshot-account",
+        position.institution,
+        position.product,
+        position.assetClass,
+        position.accountId,
+        position.label,
+        position.currency,
+      ]),
+      institution: sourceInstitutionForPosition(position),
+      product: position.product,
+      assetClass: position.assetClass,
+      accountId: position.accountId,
+      label: position.label,
+      currency: position.currency,
+      value: position.value,
+      valueSign: position.valueSign,
+      includeInTotals: position.includeInTotals,
+    }));
+}
+
+function buildPositionsForClassifications(
+  classifications: Classification[],
+  transactions: NormalizedTransaction[],
+  sourceRows: Map<string, RawTransactionOccurrence>,
+): AssetPosition[] {
+  const directPositions = classifications.flatMap((item) => item.positions);
+  const snapshotPositions = pickLatestSnapshotPositions(transactions, sourceRows);
+  const creditCardPositions = pickCreditCardLiabilityPositions(
+    transactions,
+    sourceRows,
+  );
+  return reducePositions([
+    ...directPositions,
+    ...snapshotPositions,
+    ...creditCardPositions,
+  ]);
+}
+
+function buildSnapshotHistory(
+  classifications: Classification[],
+  sourceRows: Map<string, RawTransactionOccurrence>,
+  importRunTimes: Map<string, string>,
+  generatedAt: string,
+): SnapshotHistory {
+  const byRun = new Map<string, Classification[]>();
+  for (const classification of classifications) {
+    const runId = rowImportRunId(classification.row);
+    byRun.set(runId, [...(byRun.get(runId) ?? []), classification]);
+  }
+
+  const snapshots = [...byRun.entries()]
+    .map(([importRunId, runClassifications]) => {
+      const runSourceRows = new Map(
+        runClassifications.map((classification) => [
+          classification.row.sourceHash,
+          classification.row,
+        ]),
+      );
+      const { transactions } = dedupeTransactions(
+        runClassifications.flatMap((item) => item.transactions),
+        runSourceRows,
+        importRunTimes,
+      );
+      const positions = buildPositionsForClassifications(
+        runClassifications,
+        transactions,
+        runSourceRows,
+      );
+      const importedAt =
+        importRunTimes.get(importRunId) ??
+        runClassifications
+          .map((classification) =>
+            importedAtForRow(classification.row, importRunTimes),
+          )
+          .sort()
+          .at(-1) ??
+        generatedAt;
+
+      return {
+        importRunId,
+        importedAt,
+        snapshotDate: importedAt.slice(0, 10),
+        totals: computeTotals(positions),
+        positionCount: positions.length,
+        includedPositionCount: positions.filter((position) => position.includeInTotals)
+          .length,
+        accounts: snapshotAccounts(positions),
+      };
+    })
+    .sort((left, right) => left.importedAt.localeCompare(right.importedAt));
+
+  const latestSnapshotByDate = new Map<string, AssetSnapshot>();
+  for (const snapshot of snapshots) {
+    const previous = latestSnapshotByDate.get(snapshot.snapshotDate);
+    if (!previous || previous.importedAt <= snapshot.importedAt) {
+      latestSnapshotByDate.set(snapshot.snapshotDate, snapshot);
+    }
+  }
+
+  const daily = [...latestSnapshotByDate.values()]
+    .sort((left, right) => left.snapshotDate.localeCompare(right.snapshotDate))
+    .map((snapshot, index, orderedSnapshots) => {
+      const previous = index > 0 ? orderedSnapshots[index - 1] : null;
+      const netAssets = bucketFromTotals(snapshot.totals, "net");
+      return {
+        date: snapshot.snapshotDate,
+        importRunId: snapshot.importRunId,
+        importedAt: snapshot.importedAt,
+        assets: bucketFromTotals(snapshot.totals, "assets"),
+        liabilities: bucketFromTotals(snapshot.totals, "liabilities"),
+        netAssets,
+        netChange: previous
+          ? subtractCurrencyBuckets(
+              netAssets,
+              bucketFromTotals(previous.totals, "net"),
+            )
+          : {},
+        positionCount: snapshot.positionCount,
+      };
+    });
+
+  return { snapshots, daily };
+}
+
+function computeTotals(positions: AssetPosition[]): FinancialTotals {
+  const includedByCurrency: FinancialTotals["includedByCurrency"] = {};
   const informationalByCurrency: Record<string, number> = {};
 
   for (const position of positions) {
@@ -1511,8 +1872,12 @@ function accountKindLabel(kind: DashboardAccount["kind"]): string {
 function buildDashboardView(
   positions: AssetPosition[],
   transactions: NormalizedTransaction[],
+  currentTransactions: NormalizedTransaction[] = transactions,
 ): DashboardView {
   const includedPositions = positions.filter((position) => position.includeInTotals);
+  const currentTransactionIds = new Set(
+    currentTransactions.map((transaction) => transaction.id),
+  );
   const overview: DashboardView["overview"] = {
     assets: {
       totalTwdAssets: sumPositionValues(
@@ -1536,7 +1901,7 @@ function buildDashboardView(
     },
     liabilities: {
       unbilledCreditCardAmount: sumTransactionLiability(
-        transactions,
+        currentTransactions,
         (transaction) =>
           transaction.type === "credit_card" && transaction.status === "unbilled",
       ),
@@ -1657,6 +2022,9 @@ function buildDashboardView(
     const accountTransactions = transactions.filter((transaction) =>
       account.transactionIds.includes(transaction.id),
     );
+    const accountCurrentTransactions = accountTransactions.filter((transaction) =>
+      currentTransactionIds.has(transaction.id),
+    );
 
     if (account.kind === "account") {
       const total = sumPositionValues(
@@ -1674,7 +2042,7 @@ function buildDashboardView(
       ];
     } else if (account.kind === "credit_card") {
       const unbilled = sumTransactionLiability(
-        accountTransactions,
+        accountCurrentTransactions,
         (transaction) => transaction.status === "unbilled",
       );
       const includedUnpaid = sumPositionValues(
@@ -1889,6 +2257,10 @@ function buildCoverage(
 async function buildFinancialModel(input: Input): Promise<FinancialModel> {
   const ledgerDir = resolve(input.ledgerDir);
   const batches = await readJsonl<BatchRecord>(join(ledgerDir, "import_batches.jsonl"));
+  const importRuns = await readJsonlIfExists<ImportRunRecord>(
+    join(ledgerDir, "import_runs.jsonl"),
+  );
+  const importRunTimes = buildImportRunTimes(importRuns, batches);
   const sourceAccountHints = await buildSourceAccountHints(batches);
   const rawRows = (
     await readJsonl<RawTransactionOccurrence>(
@@ -1904,10 +2276,39 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
     : rawRows.filter((row) => row.dedupeStatus !== "duplicate");
   const sourceRows = new Map(rows.map((row) => [row.sourceHash, row]));
   const classifications = rows.map(classifyRow);
-  const transactions = classifications.flatMap((item) => item.transactions);
-  const directPositions = classifications.flatMap((item) => item.positions);
-  const snapshotPositions = pickLatestSnapshotPositions(transactions, sourceRows);
-  const assetPositions = reducePositions([...directPositions, ...snapshotPositions]);
+  const rawTransactions = classifications.flatMap((item) => item.transactions);
+  const { transactions, duplicateCount: duplicateNormalizedTransactions } =
+    dedupeTransactions(rawTransactions, sourceRows, importRunTimes);
+  const generatedAt = new Date().toISOString();
+  const snapshotHistory = buildSnapshotHistory(
+    classifications,
+    sourceRows,
+    importRunTimes,
+    generatedAt,
+  );
+  const latestSnapshotRunId = snapshotHistory.snapshots.at(-1)?.importRunId;
+  const currentClassifications = latestSnapshotRunId
+    ? classifications.filter(
+        (classification) =>
+          rowImportRunId(classification.row) === latestSnapshotRunId,
+      )
+    : classifications;
+  const currentSourceRows = new Map(
+    currentClassifications.map((classification) => [
+      classification.row.sourceHash,
+      classification.row,
+    ]),
+  );
+  const { transactions: currentTransactions } = dedupeTransactions(
+    currentClassifications.flatMap((item) => item.transactions),
+    currentSourceRows,
+    importRunTimes,
+  );
+  const assetPositions = buildPositionsForClassifications(
+    currentClassifications,
+    currentTransactions,
+    currentSourceRows,
+  );
   const unsupportedRows = classifications
     .filter((item) => item.unsupportedReason)
     .map((item) => ({
@@ -1927,10 +2328,14 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
       reason: item.auditOnlyReason ?? "audit only",
     }));
   const parserCoverage = buildCoverage(rows, classifications);
-  const dashboard = buildDashboardView(assetPositions, transactions);
+  const dashboard = buildDashboardView(
+    assetPositions,
+    transactions,
+    currentTransactions,
+  );
   const baseModel = {
     schemaVersion: "financial-model.v1" as const,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     sourceLedgerDir: ledgerDir,
     counts: {
       rawRows: rawRows.length,
@@ -1940,6 +2345,8 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
       assetPositions: assetPositions.length,
       includedPositions: assetPositions.filter((position) => position.includeInTotals)
         .length,
+      duplicateNormalizedTransactions,
+      assetSnapshots: snapshotHistory.snapshots.length,
       auditOnlyRows: auditOnlyRows.length,
       unsupportedRows: unsupportedRows.length,
     },
@@ -1948,6 +2355,7 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
     parserCoverage,
     assetPositions,
     normalizedTransactions: transactions,
+    snapshotHistory,
     unsupportedRows,
     auditOnlyRows,
     sourceBatches: {
@@ -2931,6 +3339,20 @@ function renderDashboard(model: FinancialModel): string {
       return escapeText(item.sourceRelativePath + ":" + item.sourceRowIndex);
     }
 
+    function transactionDateTimeLabel(transaction) {
+      const value = String(transaction.occurredAt || transaction.date || "").trim();
+      if (!value) return "";
+      const normalized = value.replace("T", " ");
+      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(normalized)) return normalized + " 00:00:00";
+      const match = normalized.match(/^(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}:\\d{2})(?::(\\d{2}))?/);
+      if (!match) return normalized;
+      const timeParts = match[2].split(":");
+      const hour = timeParts[0].padStart(2, "0");
+      const minute = timeParts[1].padStart(2, "0");
+      const second = (match[3] || "00").padStart(2, "0");
+      return match[1] + " " + hour + ":" + minute + ":" + second;
+    }
+
     function relatedTransactions(position, transactions) {
       if (!position) return transactions;
       const parts = position.label.split(/\\s+/).filter(Boolean);
@@ -2963,10 +3385,10 @@ function renderDashboard(model: FinancialModel): string {
       const rows = transactions
         .slice()
         .sort(function(left, right) {
-          return String(right.date || "").localeCompare(String(left.date || "")) || right.sourceRowIndex - left.sourceRowIndex;
+          return String(right.occurredAt || right.date || "").localeCompare(String(left.occurredAt || left.date || "")) || Number(left.sourceRowIndex || 0) - Number(right.sourceRowIndex || 0);
         })
         .map(function(transaction) {
-          return '<tr><td>' + escapeText(transaction.date || "-") + '</td><td>' + escapeText(statusLabels[transaction.status] || transaction.status) + '</td><td>' + escapeText(transaction.description || "-") + '</td><td class="num">' + rowAmount(transaction) + '</td><td class="source">' + sourceText(transaction) + '</td></tr>';
+          return '<tr><td>' + escapeText(transactionDateTimeLabel(transaction) || "-") + '</td><td>' + escapeText(statusLabels[transaction.status] || transaction.status) + '</td><td>' + escapeText(transaction.description || "-") + '</td><td class="num">' + rowAmount(transaction) + '</td><td class="source">' + sourceText(transaction) + '</td></tr>';
         })
         .join("");
       return '<div class="table-wrap"><table><thead><tr><th>日期</th><th>狀態</th><th>描述</th><th>金額</th><th>Source</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
@@ -3848,12 +4270,9 @@ function renderLedgerLensStyles(includeSources = false): string {
       }
       .actions, .btn { width: 100%; }
       .summary-strip {
-        grid-template-columns: repeat(4, minmax(156px, 1fr));
-        overflow-x: auto;
-        padding-bottom: var(--space-1);
-        scroll-snap-type: x proximity;
+        grid-template-columns: 1fr;
       }
-      .metric { scroll-snap-align: start; }
+      .metric { min-height: 128px; }
       .account-row {
         grid-template-columns: 1fr;
         grid-template-areas: "main" "amount" "actions";
@@ -3936,11 +4355,27 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
       ],
     }),
   ].join("");
+  const historyRows = model.snapshotHistory.daily
+    .slice(-14)
+    .reverse()
+    .map(
+      (point) => `
+        <tr>
+          <td>${escapeHtml(point.date)}</td>
+          <td>${escapeHtml(currencyBucketText(point.netAssets))}</td>
+          <td>${escapeHtml(currencyBucketText(point.netChange))}</td>
+          <td>${escapeHtml(currencyBucketText(point.assets))}</td>
+          <td>${escapeHtml(currencyBucketText(point.liabilities))}</td>
+          <td class="num">${point.positionCount}</td>
+        </tr>`,
+    )
+    .join("");
   const firstAccountId = accounts[0]?.id ?? null;
   const payload = {
     accounts,
     positions: model.assetPositions,
     transactions: model.normalizedTransactions,
+    snapshotHistory: model.snapshotHistory,
     firstAccountId,
   };
 
@@ -3971,6 +4406,36 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
 
       <section class="summary-strip" aria-label="Portfolio value and account counts">
         ${overviewHtml}
+      </section>
+
+      <section class="panel history-panel" aria-labelledby="history-title">
+        <div class="panel-head">
+          <div class="panel-title">
+            <span class="label">Snapshot history</span>
+            <strong id="history-title">Daily asset changes</strong>
+          </div>
+          <span class="result-count">${model.snapshotHistory.snapshots.length} snapshots</span>
+        </div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Net assets</th>
+                  <th>Daily change</th>
+                  <th>Assets</th>
+                  <th>Liabilities</th>
+                  <th class="num">Positions</th>
+                </tr>
+              </thead>
+              <tbody>${
+                historyRows ||
+                '<tr><td colspan="6">No snapshot history yet.</td></tr>'
+              }</tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section class="workbench" id="accounts">
@@ -4199,8 +4664,21 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
     function sourceText(item) {
       return String(item.sourceRelativePath || "") + ":" + String(item.sourceRowIndex ?? "");
     }
+    function txDateTimeLabel(row) {
+      const value = String(row.occurredAt || row.date || "").trim();
+      if (!value) return "";
+      const normalized = value.replace("T", " ");
+      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(normalized)) return normalized + " 00:00:00";
+      const match = normalized.match(/^(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}:\\d{2})(?::(\\d{2}))?/);
+      if (!match) return normalized;
+      const timeParts = match[2].split(":");
+      const hour = timeParts[0].padStart(2, "0");
+      const minute = timeParts[1].padStart(2, "0");
+      const second = (match[3] || "00").padStart(2, "0");
+      return match[1] + " " + hour + ":" + minute + ":" + second;
+    }
     function txCell(row, key) {
-      if (key === "date") return row.date || "";
+      if (key === "date") return txDateTimeLabel(row);
       if (key === "status") return row.status || "";
       if (key === "description") return row.description || "";
       if (key === "source") return sourceText(row);
@@ -4209,7 +4687,7 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
     }
     function txSortValue(row, key) {
       if (key === "date") {
-        const timestamp = Date.parse(txCell(row, key));
+        const timestamp = Date.parse(row.occurredAt || row.date || "");
         return Number.isFinite(timestamp) ? timestamp : 0;
       }
       if (key === "amount") {
@@ -4224,6 +4702,9 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
       const direction = txTableState.sortDir === "asc" ? 1 : -1;
       if (leftValue > rightValue) return direction;
       if (leftValue < rightValue) return -direction;
+      if (txTableState.sortKey === "date") {
+        return Number(left.sourceRowIndex ?? 0) - Number(right.sourceRowIndex ?? 0);
+      }
       return 0;
     }
     function matchesTxFilter(row) {
@@ -4231,7 +4712,7 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
       const query = txTableState.filter.trim().toLowerCase();
       if (!query) return true;
       const amountLabel = Number.isFinite(row.amountSigned) ? money(row.amountSigned, row.currency) : "";
-      return [row.date, row.status, row.description, sourceText(row), row.currency, amountLabel].some(function(value) {
+      return [txDateTimeLabel(row), row.status, row.description, sourceText(row), row.currency, amountLabel].some(function(value) {
         return String(value ?? "").toLowerCase().includes(query);
       });
     }
@@ -4266,7 +4747,7 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
       txModalRows.innerHTML = visibleRows.map(function(row) {
         const amount = Number(row.amountSigned);
         const amountLabel = Number.isFinite(amount) ? money(amount, row.currency) : "-";
-        return '<tr><td>' + escapeHtml(row.date || "-") + '</td><td>' + escapeHtml(row.status || "-") + '</td><td>' + escapeHtml(row.description || "-") + '</td><td>' + escapeHtml(sourceText(row)) + '</td><td class="num ' + (Number.isFinite(amount) ? signedClass(amount) : "neutral") + '">' + sensitiveHtml(amountLabel) + '</td></tr>';
+        return '<tr><td>' + escapeHtml(txDateTimeLabel(row) || "-") + '</td><td>' + escapeHtml(row.status || "-") + '</td><td>' + escapeHtml(row.description || "-") + '</td><td>' + escapeHtml(sourceText(row)) + '</td><td class="num ' + (Number.isFinite(amount) ? signedClass(amount) : "neutral") + '">' + sensitiveHtml(amountLabel) + '</td></tr>';
       }).join("");
       applyValueVisibility();
     }
