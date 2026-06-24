@@ -36,20 +36,30 @@ type ParsedTable = {
   rows: string[][];
 };
 
-type AggregateRow = {
+type NormalizedRow = {
   category: string;
   fund: string | null;
   period: string | null;
-  tableLabel: string;
-  sourceTableIndex: number;
-  sourceRowIndex: number;
-  columns: Record<string, string>;
+  values: string[];
 };
 
-type AggregateGroup = {
-  columns: string[];
+type TableOutputConfig = {
+  kind: string;
+  rawColumns: string[];
+  headers: string[];
+  normalize: (columns: Record<string, string>) => string[];
+};
+
+type OutputTableGroup = {
+  kind: string;
+  headers: string[];
+  categories: Set<string>;
+  funds: Set<string>;
+  periods: Set<string>;
+  sourceTableLabels: Set<string>;
   sourceTableCount: number;
-  rows: AggregateRow[];
+  noDataSourceTableCount: number;
+  rows: NormalizedRow[];
 };
 
 const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
@@ -64,29 +74,25 @@ const inputSchema = z.object({
   customDateRange: customDateRangeSchema.optional(),
   fundFilters: z.array(z.string()).default([]),
   includePortfolioSummary: z.boolean().default(true),
-  includeInvestmentDetails: z.boolean().default(true),
+  includeInvestmentDetails: z.boolean().default(false),
   includeHistoricalTransactions: z.boolean().default(true),
-  includeOffHourOrders: z.boolean().default(true),
+  includeOffHourOrders: z.boolean().default(false),
   replaceActiveSession: z.boolean().default(true),
 });
 
 const tableFileSchema = z.object({
-  category: z.string(),
-  fund: z.string().nullable(),
-  period: z.string().nullable(),
-  tableLabel: z.string(),
+  baseName: z.string(),
+  kind: z.string(),
   rowCount: z.number().int().nonnegative(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const aggregateFileSchema = z.object({
-  aggregateLabel: z.string(),
-  columns: z.array(z.string()),
+  headers: z.array(z.string()),
+  categories: z.array(z.string()),
+  funds: z.array(z.string()),
+  periods: z.array(z.string()),
+  sourceTableLabels: z.array(z.string()),
   sourceTableCount: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
+  noDataSourceTableCount: z.number().int().nonnegative(),
+  csvFilename: z.string(),
+  jsonFilename: z.string(),
   csvPath: z.string(),
   jsonPath: z.string(),
   csvBytes: z.number().int().nonnegative(),
@@ -100,13 +106,10 @@ const outputSchema = z.object({
   fundCount: z.number().int().nonnegative(),
   count: z.number().int().nonnegative(),
   files: z.array(tableFileSchema),
-  aggregateCount: z.number().int().nonnegative(),
-  aggregateFiles: z.array(aggregateFileSchema),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
-type AggregateFile = z.infer<typeof aggregateFileSchema>;
 
 const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   three_months: 92,
@@ -114,148 +117,420 @@ const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   one_year: 364,
 };
 
-const aggregateColumnsByLabel: Record<string, string[]> = {
-  "portfolio-summary": [
-    "基金名稱",
-    "基金類型",
-    "投資幣別",
-    "投資金額",
-    "不含息參考市值",
-    "不含息參考損益",
-    "不含息參考報酬率",
-    "含息參考損益",
-    "含息參考報酬率",
-    "狀態",
-  ],
-  "currency-total": [
-    "幣別總計",
-    "投資金額",
-    "不含息參考市值",
-    "不含息參考損益",
-    "不含息參考報酬率",
-    "含息參考損益",
-    "含息參考報酬率",
-  ],
-  "investment-detail": [
-    "投資日期",
-    "幣別",
-    "基金名稱 交易編號",
-    "效率投資",
-    "投資金額 不含息參考市值",
-    "投資淨值 參考淨值",
-    "單位數 參考匯率",
-    "(不含息) 參考損益 參考報酬率",
-    "(含息) 參考損益 參考報酬率",
-    "累積配息 在途交易",
-    "操作",
-  ],
-  "buy-details": [
-    "投資日期",
-    "基金名稱",
-    "交易編號",
-    "投資金額",
-    "申購匯率",
-    "申購淨值",
-    "申購手續費",
-    "點數折抵",
-    "申購單位數",
-  ],
-  "redemption-details": [
-    "贖回日期 分配日期",
-    "基金名稱 交易編號",
-    "贖回投資金額 單位數",
-    "贖回價格 贖回匯率",
-    "信託管理費 短線費用",
-    "遞延手續費",
-    "入帳帳號 入帳淨額",
-    "贖回參考損益 參考贖回報酬率",
-    "備註",
-  ],
-  "conversion-details": [
-    "轉出日期 轉入日期",
-    "交易編號",
-    "轉出基金 轉入基金",
-    "轉換投資金額",
-    "轉出單位數 轉入單位數",
-    "轉出基金淨值 轉入基金淨值",
-    "轉換匯率 短線費用",
-    "銀行轉換手續費 基金公司轉換手續費",
-  ],
-  "cash-dividend-details": [
-    "入帳日期",
-    "基金名稱 交易編號",
-    "基準日期 計價幣別",
-    "基準單位數 分配金額",
-    "匯率 分配率",
-    "入帳帳號",
-  ],
-  "unit-dividend-details": [
-    "分配日期",
-    "基金名稱",
-    "交易編號",
-    "基準日期",
-    "基準單位數",
-    "分配率",
-    "分配單位數",
-  ],
-  "offhour-buy-orders": [
-    "申購基金",
-    "投資類型",
-    "申購日期",
-    "投資生效日期",
-    "投資幣別",
-    "客戶風險等級",
-    "扣款帳號",
-    "申購手續費",
-    "投資金額",
-    "總扣款金額",
-    "介紹人編號",
-    "公開說明書交付方式",
-  ],
-  "offhour-conversion-orders": [
-    "轉出基金",
-    "轉換方式",
-    "轉換幣別",
-    "申請日期",
-    "轉換生效日期",
-    "轉入基金",
-    "轉換金額",
-    "轉換單位數",
-    "風險等級",
-    "扣繳手續費帳號",
-    "轉換手續費",
-    "客戶風險等級",
-    "介紹人編號",
-    "公開說明書交付方式",
-  ],
-  "offhour-redemption-orders": [
-    "贖回基金",
-    "贖回方式",
-    "申請日期",
-    "贖回生效日期",
-    "贖回轉入帳號",
-    "贖回投資金額",
-    "贖回單位數",
-  ],
-  "offhour-redemption-rebuy-orders": [
-    "贖回基金",
-    "贖回方式",
-    "申請日期",
-    "贖回生效日期",
-    "贖回投資金額",
-    "贖回單位數",
-    "贖回轉入帳號",
-    "再申購基金",
-    "預估再申購手續費率",
-    "保留金額",
-  ],
-  "offhour-change-orders": [
-    "異動基金",
-    "申請日期",
-    "生效日期",
-    "異動種類",
-    "變更後設定值",
-  ],
+const rowMetadataHeaders = ["資料類別", "基金識別", "查詢期間"];
+
+const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
+  "portfolio-summary": simpleTableConfig(
+    "fund-holdings",
+    [
+      "基金名稱",
+      "基金類型",
+      "投資幣別",
+      "投資金額",
+      "不含息參考市值",
+      "不含息參考損益",
+      "不含息參考報酬率",
+      "含息參考損益",
+      "含息參考報酬率",
+      "狀態",
+    ],
+  ),
+  "currency-total": simpleTableConfig(
+    "fund-currency-totals",
+    [
+      "幣別總計",
+      "投資金額",
+      "不含息參考市值",
+      "不含息參考損益",
+      "不含息參考報酬率",
+      "含息參考損益",
+      "含息參考報酬率",
+    ],
+  ),
+  "investment-detail": {
+    kind: "fund-position-lots",
+    rawColumns: [
+      "投資日期",
+      "幣別",
+      "基金名稱 交易編號",
+      "效率投資",
+      "投資金額 不含息參考市值",
+      "投資淨值 參考淨值",
+      "單位數 參考匯率",
+      "(不含息) 參考損益 參考報酬率",
+      "(含息) 參考損益 參考報酬率",
+      "累積配息 在途交易",
+      "操作",
+    ],
+    headers: [
+      "投資日期",
+      "投資幣別",
+      "基金名稱",
+      "交易編號",
+      "效率投資",
+      "投資金額",
+      "不含息參考市值",
+      "投資淨值",
+      "參考淨值",
+      "單位數",
+      "參考匯率",
+      "不含息參考損益",
+      "不含息參考報酬率",
+      "含息參考損益",
+      "含息參考報酬率",
+      "累積配息",
+      "在途交易",
+    ],
+    normalize: (columns) => {
+      const [fundName, transactionNo] = splitFundNameAndTransactionNo(
+        columns["基金名稱 交易編號"] ?? "",
+      );
+      const [investedAmount, marketValueExDividend] = splitWhitespacePair(
+        columns["投資金額 不含息參考市值"] ?? "",
+      );
+      const [purchaseNav, referenceNav] = splitWhitespacePair(
+        columns["投資淨值 參考淨值"] ?? "",
+      );
+      const [units, referenceExchangeRate] = splitWhitespacePair(
+        columns["單位數 參考匯率"] ?? "",
+      );
+      const [gainLossExDividend, returnRateExDividend] = splitWhitespacePair(
+        columns["(不含息) 參考損益 參考報酬率"] ?? "",
+      );
+      const [gainLossWithDividend, returnRateWithDividend] =
+        splitWhitespacePair(columns["(含息) 參考損益 參考報酬率"] ?? "");
+      const [accumulatedDividend, pendingTransaction] = splitWhitespacePair(
+        columns["累積配息 在途交易"] ?? "",
+      );
+
+      return [
+        columns["投資日期"] ?? "",
+        columns["幣別"] ?? "",
+        fundName,
+        transactionNo,
+        columns["效率投資"] ?? "",
+        investedAmount,
+        marketValueExDividend,
+        purchaseNav,
+        referenceNav,
+        units,
+        referenceExchangeRate,
+        gainLossExDividend,
+        returnRateExDividend,
+        gainLossWithDividend,
+        returnRateWithDividend,
+        accumulatedDividend,
+        pendingTransaction,
+      ];
+    },
+  },
+  "buy-details": simpleTableConfig(
+    "fund-buy-transactions",
+    [
+      "投資日期",
+      "基金名稱",
+      "交易編號",
+      "投資金額",
+      "申購匯率",
+      "申購淨值",
+      "申購手續費",
+      "點數折抵",
+      "申購單位數",
+    ],
+  ),
+  "redemption-details": {
+    kind: "fund-redemption-transactions",
+    rawColumns: [
+      "贖回日期 分配日期",
+      "基金名稱 交易編號",
+      "贖回投資金額 單位數",
+      "贖回價格 贖回匯率",
+      "信託管理費 短線費用",
+      "遞延手續費",
+      "入帳帳號 入帳淨額",
+      "贖回參考損益 參考贖回報酬率",
+      "備註",
+    ],
+    headers: [
+      "贖回日期",
+      "分配日期",
+      "基金名稱",
+      "交易編號",
+      "贖回投資金額",
+      "贖回單位數",
+      "贖回價格",
+      "贖回匯率",
+      "信託管理費",
+      "短線費用",
+      "遞延手續費",
+      "入帳帳號",
+      "入帳淨額",
+      "贖回參考損益",
+      "參考贖回報酬率",
+      "備註",
+    ],
+    normalize: (columns) => {
+      const [redemptionDate, allocationDate] = splitWhitespacePair(
+        columns["贖回日期 分配日期"] ?? "",
+      );
+      const [fundName, transactionNo] = splitFundNameAndTransactionNo(
+        columns["基金名稱 交易編號"] ?? "",
+      );
+      const [redemptionAmount, units] = splitWhitespacePair(
+        columns["贖回投資金額 單位數"] ?? "",
+      );
+      const [redemptionPrice, redemptionRate] = splitWhitespacePair(
+        columns["贖回價格 贖回匯率"] ?? "",
+      );
+      const [trustFee, shortTermFee] = splitWhitespacePair(
+        columns["信託管理費 短線費用"] ?? "",
+      );
+      const [depositAccount, netDepositAmount] = splitWhitespacePair(
+        columns["入帳帳號 入帳淨額"] ?? "",
+      );
+      const [referenceGainLoss, referenceReturnRate] = splitWhitespacePair(
+        columns["贖回參考損益 參考贖回報酬率"] ?? "",
+      );
+
+      return [
+        redemptionDate,
+        allocationDate,
+        fundName,
+        transactionNo,
+        redemptionAmount,
+        units,
+        redemptionPrice,
+        redemptionRate,
+        trustFee,
+        shortTermFee,
+        columns["遞延手續費"] ?? "",
+        depositAccount,
+        netDepositAmount,
+        referenceGainLoss,
+        referenceReturnRate,
+        columns["備註"] ?? "",
+      ];
+    },
+  },
+  "conversion-details": {
+    kind: "fund-conversion-transactions",
+    rawColumns: [
+      "轉出日期 轉入日期",
+      "交易編號",
+      "轉出基金 轉入基金",
+      "轉換投資金額",
+      "轉出單位數 轉入單位數",
+      "轉出基金淨值 轉入基金淨值",
+      "轉換匯率 短線費用",
+      "銀行轉換手續費 基金公司轉換手續費",
+    ],
+    headers: [
+      "轉出日期",
+      "轉入日期",
+      "交易編號",
+      "轉出基金",
+      "轉入基金",
+      "轉換投資金額",
+      "轉出單位數",
+      "轉入單位數",
+      "轉出基金淨值",
+      "轉入基金淨值",
+      "轉換匯率",
+      "短線費用",
+      "銀行轉換手續費",
+      "基金公司轉換手續費",
+    ],
+    normalize: (columns) => {
+      const [transferOutDate, transferInDate] = splitWhitespacePair(
+        columns["轉出日期 轉入日期"] ?? "",
+      );
+      const [transferOutFund, transferInFund] = splitWhitespacePair(
+        columns["轉出基金 轉入基金"] ?? "",
+      );
+      const [transferOutUnits, transferInUnits] = splitWhitespacePair(
+        columns["轉出單位數 轉入單位數"] ?? "",
+      );
+      const [transferOutNav, transferInNav] = splitWhitespacePair(
+        columns["轉出基金淨值 轉入基金淨值"] ?? "",
+      );
+      const [conversionRate, shortTermFee] = splitWhitespacePair(
+        columns["轉換匯率 短線費用"] ?? "",
+      );
+      const [bankFee, fundCompanyFee] = splitWhitespacePair(
+        columns["銀行轉換手續費 基金公司轉換手續費"] ?? "",
+      );
+
+      return [
+        transferOutDate,
+        transferInDate,
+        columns["交易編號"] ?? "",
+        transferOutFund,
+        transferInFund,
+        columns["轉換投資金額"] ?? "",
+        transferOutUnits,
+        transferInUnits,
+        transferOutNav,
+        transferInNav,
+        conversionRate,
+        shortTermFee,
+        bankFee,
+        fundCompanyFee,
+      ];
+    },
+  },
+  "cash-dividend-details": {
+    kind: "fund-cash-dividends",
+    rawColumns: [
+      "入帳日期",
+      "基金名稱 交易編號",
+      "基準日期 計價幣別",
+      "基準單位數 分配金額",
+      "匯率 分配率",
+      "入帳帳號",
+    ],
+    headers: [
+      "入帳日期",
+      "基金名稱",
+      "交易編號",
+      "基準日期",
+      "計價幣別",
+      "基準單位數",
+      "分配金額",
+      "匯率",
+      "分配率",
+      "入帳帳號",
+    ],
+    normalize: (columns) => {
+      const [fundName, transactionNo] = splitFundNameAndTransactionNo(
+        columns["基金名稱 交易編號"] ?? "",
+      );
+      const [recordDate, currency] = splitWhitespacePair(
+        columns["基準日期 計價幣別"] ?? "",
+      );
+      const [baseUnits, dividendAmount] = splitWhitespacePair(
+        columns["基準單位數 分配金額"] ?? "",
+      );
+      const [exchangeRate, dividendRate] = splitWhitespacePair(
+        columns["匯率 分配率"] ?? "",
+      );
+
+      return [
+        columns["入帳日期"] ?? "",
+        fundName,
+        transactionNo,
+        recordDate,
+        currency,
+        baseUnits,
+        dividendAmount,
+        exchangeRate,
+        dividendRate,
+        columns["入帳帳號"] ?? "",
+      ];
+    },
+  },
+  "unit-dividend-details": simpleTableConfig(
+    "fund-unit-dividends",
+    [
+      "分配日期",
+      "基金名稱",
+      "交易編號",
+      "基準日期",
+      "基準單位數",
+      "分配率",
+      "分配單位數",
+    ],
+  ),
+  "offhour-buy-orders": simpleTableConfig(
+    "fund-offhour-buy-orders",
+    [
+      "申購基金",
+      "投資類型",
+      "申購日期",
+      "投資生效日期",
+      "投資幣別",
+      "客戶風險等級",
+      "扣款帳號/信用卡卡號",
+      "申購手續費",
+      "每月扣款日期",
+      "每次投資金額",
+      "扣款起始日",
+      "扣款到期日",
+      "精選組合",
+      "介紹人編號",
+      "公開說明書交付方式",
+    ],
+  ),
+  "offhour-conversion-orders": simpleTableConfig(
+    "fund-offhour-conversion-orders",
+    [
+      "轉出基金",
+      "轉換方式",
+      "轉換幣別",
+      "申請日期",
+      "轉換生效日期",
+      "轉入基金",
+      "轉換金額",
+      "轉換單位數",
+      "風險等級",
+      "扣繳手續費帳號",
+      "轉換手續費",
+      "客戶風險等級",
+      "介紹人編號",
+      "公開說明書交付方式",
+    ],
+  ),
+  "offhour-redemption-orders": simpleTableConfig(
+    "fund-offhour-redemption-orders",
+    [
+      "贖回基金",
+      "贖回方式",
+      "申請日期",
+      "贖回生效日期",
+      "贖回轉入帳號",
+      "贖回投資金額",
+      "贖回單位數",
+    ],
+  ),
+  "offhour-redemption-rebuy-orders": simpleTableConfig(
+    "fund-offhour-redemption-rebuy-orders",
+    [
+      "贖回基金",
+      "贖回方式",
+      "申請日期",
+      "贖回生效日期",
+      "贖回投資金額",
+      "贖回單位數",
+      "贖回轉入帳號",
+      "再申購基金",
+      "預估再申購手續費率",
+      "保留金額",
+    ],
+  ),
+  "offhour-change-orders": simpleTableConfig(
+    "fund-offhour-change-orders",
+    [
+      "異動基金",
+      "申請日期",
+      "生效日期",
+      "異動種類",
+      "變更後設定值",
+    ],
+  ),
+};
+
+const bookingOutputKinds = new Set([
+  "fund-holdings",
+  "fund-buy-transactions",
+  "fund-redemption-transactions",
+  "fund-cash-dividends",
+  "fund-conversion-transactions",
+]);
+
+const sortDateHeaderByKind: Record<string, string> = {
+  "fund-buy-transactions": "投資日期",
+  "fund-redemption-transactions": "贖回日期",
+  "fund-cash-dividends": "入帳日期",
+  "fund-conversion-transactions": "轉出日期",
 };
 
 function requireCredential(
@@ -281,16 +556,73 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
 function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function createTimestampGenerator(): () => string {
+  let lastTimestamp = 0;
+
+  return () => {
+    const timestamp = Date.now();
+    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
+    return String(lastTimestamp);
+  };
+}
+
+function simpleTableConfig(kind: string, headers: string[]): TableOutputConfig {
+  return {
+    kind,
+    rawColumns: headers,
+    headers,
+    normalize: (columns) => headers.map((header) => columns[header] ?? ""),
+  };
+}
+
+function splitWhitespacePair(value: string): [string, string] {
+  const text = cleanText(value);
+  const parts = text.split(" ").filter(Boolean);
+  if (parts.length <= 1) return [text, ""];
+  return [parts[0] ?? "", parts.slice(1).join(" ")];
+}
+
+function splitFundNameAndTransactionNo(value: string): [string, string] {
+  const text = cleanText(value);
+  const match = text.match(/^(.+?)\s+([A-Z]{1,8}\d[\w-]*)$/);
+  if (!match) return [text, ""];
+  return [match[1] ?? "", match[2] ?? ""];
+}
+
+function categoryDisplayLabel(category: string): string {
+  const labels: Record<string, string> = {
+    "portfolio-summary": "投資總覽",
+    "investment-overview": "投資明細",
+    "historical-transactions": "歷史交易",
+    "offhour-orders": "預約交易",
+  };
+
+  return labels[category] ?? category;
+}
+
+function parseDateSortValue(value: string): number | null {
+  const text = toAsciiDigits(cleanText(value));
+  const match = text.match(/(\d{2,4})[\/.-](\d{1,2})[\/.-](\d{1,2})/);
+  if (!match) return null;
+
+  const rawYear = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(rawYear) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+
+  const year = rawYear < 1911 ? rawYear + 1911 : rawYear;
+  const time = Date.UTC(year, month - 1, day);
+  return Number.isFinite(time) ? time : null;
 }
 
 function formatDate(date: Date): string {
@@ -1066,47 +1398,50 @@ function isRepeatedHeaderRow(values: string[], headers: string[]): boolean {
   return values.every((value, index) => !value || value === headers[index]);
 }
 
-function aggregateRowsForTable(
-  table: ParsedTable,
-  sourceTableIndex: number,
-): AggregateRow[] {
-  const columns = aggregateColumnsByLabel[table.tableLabel];
-  if (!columns) return [];
-
+function tableHasNoData(table: ParsedTable): boolean {
   const text = table.rows.flat().join(" ");
-  if (/查無資料|無資料|無交易明細/.test(text)) return [];
+  return /查無資料|無資料|無交易明細/.test(text);
+}
 
-  const headerRowIndex = findMatchingHeaderRowIndex(table, columns);
+function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
+  const config = tableOutputConfigsByLabel[table.tableLabel];
+  if (!config) return [];
+  if (tableHasNoData(table)) return [];
+
+  const headerRowIndex = findMatchingHeaderRowIndex(table, config.rawColumns);
   if (headerRowIndex < 0) return [];
 
-  const rows: AggregateRow[] = [];
+  const rows: NormalizedRow[] = [];
 
   for (
     let rowIndex = headerRowIndex + 1;
     rowIndex < table.rows.length;
     rowIndex += 1
   ) {
-    const values = alignValuesToHeaders(table.rows[rowIndex], columns);
+    const values = alignValuesToHeaders(table.rows[rowIndex], config.rawColumns);
     if (!values.some((value) => value.length > 0)) continue;
-    if (values.length !== columns.length) continue;
-    if (isRepeatedHeaderRow(values, columns)) continue;
+    if (values.length !== config.rawColumns.length) continue;
+    if (isRepeatedHeaderRow(values, config.rawColumns)) continue;
 
     const rowColumns: Record<string, string> = {};
     for (let columnIndex = 0; columnIndex < values.length; columnIndex += 1) {
-      const header =
-        aggregateColumnsByLabel[table.tableLabel][columnIndex] ??
-        `column_${columnIndex + 1}`;
+      const header = config.rawColumns[columnIndex] ?? `column_${columnIndex + 1}`;
       rowColumns[header] = values[columnIndex] ?? "";
     }
+
+    const normalizedValues = config.normalize(rowColumns);
+    if (normalizedValues.length !== config.headers.length) {
+      throw new Error(
+        `Normalized YuanTa fund table ${table.tableLabel} produced ${normalizedValues.length} values for ${config.headers.length} headers.`,
+      );
+    }
+    if (!normalizedValues.some((value) => value.length > 0)) continue;
 
     rows.push({
       category: table.category,
       fund: table.fund,
       period: table.period,
-      tableLabel: table.tableLabel,
-      sourceTableIndex,
-      sourceRowIndex: rowIndex + 1,
-      columns: rowColumns,
+      values: normalizedValues,
     });
   }
 
@@ -1132,151 +1467,114 @@ function findMatchingHeaderRowIndex(
   return findHeaderRowIndex(table);
 }
 
-function groupedAggregateRows(
-  tables: ParsedTable[],
-): Map<string, AggregateGroup> {
-  const groups = new Map<string, AggregateGroup>();
-
-  for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
-    const table = tables[tableIndex];
-    const columns = aggregateColumnsByLabel[table.tableLabel];
-    if (!columns) continue;
-
-    const rows = aggregateRowsForTable(table, tableIndex + 1);
-    if (rows.length === 0) continue;
-
-    const group = groups.get(table.tableLabel) ?? {
-      columns,
-      sourceTableCount: 0,
-      rows: [],
-    };
-    group.sourceTableCount += 1;
-    group.rows.push(...rows);
-    groups.set(table.tableLabel, group);
-  }
-
-  return groups;
+function addIfPresent(values: Set<string>, value: string | null): void {
+  if (value) values.add(value);
 }
 
-function aggregateRowsToCsv(rows: AggregateRow[], dataColumns: string[]): string {
-  const metadataColumns = [
-    "source_category",
-    "source_fund",
-    "source_period",
-    "source_table_label",
-    "source_table_index",
-    "source_row_index",
-  ];
+function groupedOutputTables(
+  tables: ParsedTable[],
+): OutputTableGroup[] {
+  const groups = new Map<string, OutputTableGroup>();
 
+  for (const table of tables) {
+    const config = tableOutputConfigsByLabel[table.tableLabel];
+    if (!config) continue;
+    if (!bookingOutputKinds.has(config.kind)) continue;
+
+    const group = groups.get(config.kind) ?? {
+      kind: config.kind,
+      headers: config.headers,
+      categories: new Set<string>(),
+      funds: new Set<string>(),
+      periods: new Set<string>(),
+      sourceTableLabels: new Set<string>(),
+      sourceTableCount: 0,
+      noDataSourceTableCount: 0,
+      rows: [],
+    };
+
+    group.sourceTableCount += 1;
+    group.sourceTableLabels.add(table.tableLabel);
+    group.categories.add(table.category);
+    addIfPresent(group.funds, table.fund);
+    addIfPresent(group.periods, table.period);
+    if (tableHasNoData(table)) group.noDataSourceTableCount += 1;
+    group.rows.push(...normalizedRowsForTable(table));
+    groups.set(config.kind, group);
+  }
+
+  return [...groups.values()];
+}
+
+function sortedOutputRows(group: OutputTableGroup): NormalizedRow[] {
+  const sortHeader = sortDateHeaderByKind[group.kind];
+  if (!sortHeader) return group.rows;
+
+  const sortIndex = group.headers.indexOf(sortHeader);
+  if (sortIndex < 0) return group.rows;
+
+  return [...group.rows].sort((left, right) => {
+    const leftTime = parseDateSortValue(left.values[sortIndex] ?? "");
+    const rightTime = parseDateSortValue(right.values[sortIndex] ?? "");
+
+    if (leftTime === null && rightTime === null) return 0;
+    if (leftTime === null) return 1;
+    if (rightTime === null) return -1;
+    return rightTime - leftTime;
+  });
+}
+
+function outputTableRowsToCsv(group: OutputTableGroup): string {
   const csvRows = [
-    [...metadataColumns, ...dataColumns],
-    ...rows.map((row) => [
-      row.category,
+    [...rowMetadataHeaders, ...group.headers],
+    ...sortedOutputRows(group).map((row) => [
+      categoryDisplayLabel(row.category),
       row.fund ?? "",
       row.period ?? "",
-      row.tableLabel,
-      String(row.sourceTableIndex),
-      String(row.sourceRowIndex),
-      ...dataColumns.map((column) => row.columns[column] ?? ""),
+      ...row.values,
     ]),
   ];
 
   return rowsToCsv(csvRows);
 }
 
-async function writeAggregateFile(
-  runId: string,
-  aggregateLabel: string,
-  columns: string[],
-  sourceTableCount: number,
-  rows: AggregateRow[],
-): Promise<AggregateFile> {
-  const downloadsDir = fundDownloadsDir();
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${runId}-aggregate-${safeFilename(aggregateLabel)}`;
-  const csvPath = join(downloadsDir, `${baseName}.csv`);
-  const jsonPath = join(downloadsDir, `${baseName}.json`);
-
-  await writeFile(csvPath, aggregateRowsToCsv(rows, columns), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        aggregateLabel,
-        columns,
-        sourceTableCount,
-        rowCount: rows.length,
-        rows,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    aggregateLabel,
-    columns,
-    sourceTableCount,
-    rowCount: rows.length,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
-}
-
-async function writeAggregateFiles(
-  runId: string,
-  tables: ParsedTable[],
-): Promise<AggregateFile[]> {
-  const aggregateFiles: AggregateFile[] = [];
-  const groups = groupedAggregateRows(tables);
-
-  for (const [aggregateLabel, group] of groups.entries()) {
-    aggregateFiles.push(
-      await writeAggregateFile(
-        runId,
-        aggregateLabel,
-        group.columns,
-        group.sourceTableCount,
-        group.rows,
-      ),
-    );
-  }
-
-  return aggregateFiles;
-}
-
-async function writeTableFiles(
-  runId: string,
-  sequence: number,
-  table: ParsedTable,
+async function writeOutputTableFile(
+  nextTimestamp: () => string,
+  group: OutputTableGroup,
 ): Promise<TableFile> {
   const downloadsDir = fundDownloadsDir();
   await mkdir(downloadsDir, { recursive: true });
 
-  const fund = table.fund ? safeFilename(table.fund) : "all";
-  const period = table.period ? safeFilename(table.period) : "all";
-  const baseName = `${runId}-${String(sequence).padStart(2, "0")}-${safeFilename(
-    table.category,
-  )}-${fund}-${period}-${safeFilename(table.tableLabel)}`;
-  const csvPath = join(downloadsDir, `${baseName}.csv`);
-  const jsonPath = join(downloadsDir, `${baseName}.json`);
+  const baseName = `${group.kind}-${nextTimestamp()}`;
+  const csvFilename = `${baseName}.csv`;
+  const jsonFilename = `${baseName}.json`;
+  const csvPath = join(downloadsDir, csvFilename);
+  const jsonPath = join(downloadsDir, jsonFilename);
+  const headers = [...rowMetadataHeaders, ...group.headers];
+  const categories = [...group.categories];
+  const funds = [...group.funds];
+  const periods = [...group.periods];
+  const sourceTableLabels = [...group.sourceTableLabels];
 
-  await writeFile(csvPath, rowsToCsv(table.rows), "utf8");
+  await writeFile(csvPath, outputTableRowsToCsv(group), "utf8");
   await writeFile(
     jsonPath,
     `${JSON.stringify(
       {
-        category: table.category,
-        fund: table.fund,
-        period: table.period,
-        tableLabel: table.tableLabel,
-        rows: table.rows,
+        schemaVersion: "download-table-metadata.v1",
+        generatedAt: new Date().toISOString(),
+        workflow: "yuantaFundStatements",
+        kind: group.kind,
+        csvFilename,
+        jsonFilename,
+        rowCount: group.rows.length,
+        headers,
+        categories,
+        funds,
+        periods,
+        sourceTableLabels,
+        sourceTableCount: group.sourceTableCount,
+        noDataSourceTableCount: group.noDataSourceTableCount,
       },
       null,
       2,
@@ -1287,11 +1585,18 @@ async function writeTableFiles(
   const csvStat = await stat(csvPath);
   const jsonStat = await stat(jsonPath);
   return {
-    category: table.category,
-    fund: table.fund,
-    period: table.period,
-    tableLabel: table.tableLabel,
-    rowCount: table.rows.length,
+    baseName,
+    kind: group.kind,
+    rowCount: group.rows.length,
+    headers,
+    categories,
+    funds,
+    periods,
+    sourceTableLabels,
+    sourceTableCount: group.sourceTableCount,
+    noDataSourceTableCount: group.noDataSourceTableCount,
+    csvFilename,
+    jsonFilename,
     csvPath,
     jsonPath,
     csvBytes: csvStat.size,
@@ -1299,10 +1604,21 @@ async function writeTableFiles(
   };
 }
 
+async function writeOutputTableFiles(
+  nextTimestamp: () => string,
+  tables: ParsedTable[],
+): Promise<TableFile[]> {
+  const files: TableFile[] = [];
+
+  for (const group of groupedOutputTables(tables)) {
+    files.push(await writeOutputTableFile(nextTimestamp, group));
+  }
+
+  return files;
+}
+
 async function captureTables(
   page: Page,
-  runId: string,
-  files: TableFile[],
   parsedTables: ParsedTable[],
   category: string,
   fund: string | null,
@@ -1311,12 +1627,7 @@ async function captureTables(
   const tables = await parseFundTables(page, category, fund, period);
   for (const table of tables) {
     parsedTables.push(table);
-    files.push(await writeTableFiles(runId, files.length + 1, table));
   }
-}
-
-function runId(): string {
-  return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 }
 
 export default workflow("yuantaFundStatements", {
@@ -1370,17 +1681,14 @@ export default workflow("yuantaFundStatements", {
 
     try {
       const dateRange = resolveDateRange(input);
-      const files: TableFile[] = [];
       const parsedTables: ParsedTable[] = [];
-      const id = runId();
+      const nextTimestamp = createTimestampGenerator();
       let selectedFunds: FundPosition[] = [];
 
       if (input.includePortfolioSummary) {
         await openPortfolioSummary(page);
         await captureTables(
           page,
-          id,
-          files,
           parsedTables,
           "portfolio-summary",
           null,
@@ -1401,8 +1709,6 @@ export default workflow("yuantaFundStatements", {
         if (input.includeInvestmentDetails) {
           await captureTables(
             page,
-            id,
-            files,
             parsedTables,
             "investment-overview",
             null,
@@ -1425,8 +1731,6 @@ export default workflow("yuantaFundStatements", {
             );
             await captureTables(
               page,
-              id,
-              files,
               parsedTables,
               "historical-transactions",
               `${position.paperNo}-${position.trustNo}`,
@@ -1441,8 +1745,6 @@ export default workflow("yuantaFundStatements", {
         await queryOffHourOrders(page, dateRange.startDate, dateRange.endDate);
         await captureTables(
           page,
-          id,
-          files,
           parsedTables,
           "offhour-orders",
           null,
@@ -1450,7 +1752,7 @@ export default workflow("yuantaFundStatements", {
         );
       }
 
-      const aggregateFiles = await writeAggregateFiles(id, parsedTables);
+      const files = await writeOutputTableFiles(nextTimestamp, parsedTables);
 
       return {
         dateRange: dateRange.label,
@@ -1459,11 +1761,6 @@ export default workflow("yuantaFundStatements", {
         fundCount: selectedFunds.length,
         count: files.length,
         files,
-        aggregateCount: aggregateFiles.reduce(
-          (total, file) => total + file.rowCount,
-          0,
-        ),
-        aggregateFiles,
       };
     } finally {
       await logoutFromYuanTa(page).catch((error: unknown) => {
