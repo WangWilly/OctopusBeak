@@ -70,7 +70,7 @@ Current workflows should prefer:
 
 ## Ledger And Dashboard
 
-Import all CSV files from `downloads/` into the local raw ledger:
+Import new CSV files from `downloads/` into the local SQLite ledger:
 
 ```bash
 npm run run:import-downloads-csv
@@ -84,15 +84,12 @@ npm run run:build-financial-dashboard
 
 Generated files:
 
-- `data/ledger/raw_transaction_occurrences.jsonl`
-- `data/ledger/import_batches.jsonl`
-- `data/ledger/import_runs.jsonl`
-- `data/ledger/financial_model.json`
-- `data/ledger/financial_model_quality.json`
+- `data/ledger/ledger.sqlite`
 - `data/ledger/financial_dashboard.html`
-- `data/ledger/financial_dashboard_sources.html`
 
-The importer appends raw ledger records and marks duplicates. For a clean rebuild, back up and clear `data/ledger/`, then run import and build again.
+`ledger.sqlite` is the primary local ledger store. It tracks imported source files and only reads a download path once. Statement rows are stored in typed tables such as account transactions, credit card lines, loan transactions, fund records, and brokerage records. Schema changes are applied through SQLite migrations.
+
+The dashboard compares daily asset changes from account balances: for each day, every account uses that day's balance when available, otherwise the closest prior balance.
 
 ## Development
 

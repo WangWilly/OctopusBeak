@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import XLSX from "xlsx";
 import { z } from "zod";
 
@@ -10,9 +12,28 @@ const inputSchema = z.object({
   includeDuplicates: z.boolean().default(false),
 });
 
+const SQLITE_LEDGER_FILE = "ledger.sqlite";
+const TYPED_STATEMENT_TABLES = [
+  "account_transactions",
+  "foreign_currency_transactions",
+  "credit_card_statement_lines",
+  "loan_transactions",
+  "fund_holdings",
+  "fund_buy_transactions",
+  "fund_redemption_transactions",
+  "fund_cash_dividends",
+  "fund_conversion_transactions",
+  "brokerage_holdings",
+  "brokerage_asset_summaries",
+  "brokerage_trade_transactions",
+  "unsupported_statement_rows",
+] as const;
+
 type Input = z.infer<typeof inputSchema>;
 
 type RawRecord = Record<string, unknown>;
+type LedgerDatabase = InstanceType<typeof DatabaseSync>;
+type TypedStatementTable = (typeof TYPED_STATEMENT_TABLES)[number];
 
 type BatchRecord = RawRecord & {
   importRunId?: string;
@@ -25,7 +46,6 @@ type BatchRecord = RawRecord & {
   importedAt?: string;
   csvLayout?: {
     strategy?: string;
-    detectionSource?: string;
     warnings?: string[];
   };
 };
@@ -133,6 +153,15 @@ type SnapshotAccountValue = {
   includeInTotals: boolean;
 };
 
+type DailyAccountChange = SnapshotAccountValue & {
+  snapshotDate: string;
+  signedValue: number;
+  previousSnapshotDate: string | null;
+  previousValue: number | null;
+  previousSignedValue: number | null;
+  change: number;
+};
+
 type AssetSnapshot = {
   importRunId: string;
   importedAt: string;
@@ -152,6 +181,7 @@ type DailyAssetHistoryPoint = {
   netAssets: CurrencyBucket;
   netChange: CurrencyBucket;
   positionCount: number;
+  accountChanges: DailyAccountChange[];
 };
 
 type SnapshotHistory = {
@@ -179,6 +209,7 @@ type FinancialModel = {
   schemaVersion: "financial-model.v1";
   generatedAt: string;
   sourceLedgerDir: string;
+  sourceLedgerStore: "sqlite";
   counts: {
     rawRows: number;
     uniqueRows: number;
@@ -221,6 +252,10 @@ type FinancialModel = {
     sourceRowIndex: number;
     reason: string;
   }>;
+  sourceBatches: {
+    count: number;
+    layoutStrategies: Record<string, number>;
+  };
   quality: {
     status: "pass" | "warn" | "fail";
     issues: QualityIssue[];
@@ -289,37 +324,185 @@ function parseParams(argv: string[]): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-async function readJsonl<T>(path: string): Promise<T[]> {
-  const text = await readFile(path, "utf8");
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== "")
-    .map((line, index) => {
-      try {
-        return JSON.parse(line) as T;
-      } catch (error) {
-        throw new Error(
-          `Invalid JSONL in ${path}:${index + 1}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    });
+function readSqliteRecords<T>(db: LedgerDatabase, table: string): T[] {
+  if (table !== "import_runs") {
+    throw new Error(`Unsupported ledger SQLite table: ${table}`);
+  }
+
+  const rows = db
+    .prepare(`SELECT record_json FROM ${table} ORDER BY id`)
+    .all() as Array<{ record_json: string }>;
+  return rows.map((row) => JSON.parse(row.record_json) as T);
 }
 
-async function readJsonlIfExists<T>(path: string): Promise<T[]> {
+function sqliteTableExists(db: LedgerDatabase, table: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+    )
+    .get(table);
+  return Boolean(row);
+}
+
+function readSqliteSourceFiles(db: LedgerDatabase): BatchRecord[] {
+  if (!sqliteTableExists(db, "source_files")) return [];
+
+  const rows = db
+    .prepare(
+      `SELECT
+        source_file_id,
+        import_run_id,
+        source_file,
+        source_relative_path,
+        source_file_hash,
+        source_file_bytes,
+        source_file_modified_at,
+        imported_at,
+        bank,
+        product,
+        source_sheet_name,
+        csv_layout_json,
+        headers_json,
+        record_keys_json,
+        related_raw_files_json,
+        related_raw_file_metadata_json,
+        row_count,
+        status,
+        record_json
+      FROM source_files
+      ORDER BY imported_at, source_relative_path`,
+    )
+    .all() as Array<{
+    source_file_id: string;
+    import_run_id: string;
+    source_file: string | null;
+    source_relative_path: string;
+    source_file_hash: string;
+    source_file_bytes: number;
+    source_file_modified_at: string | null;
+    imported_at: string;
+    bank: string;
+    product: string;
+    source_sheet_name: string | null;
+    csv_layout_json: string;
+    headers_json: string;
+    record_keys_json: string;
+    related_raw_files_json: string;
+    related_raw_file_metadata_json: string;
+    row_count: number;
+    status: string;
+    record_json: string;
+  }>;
+
+  return rows.map((row) => {
+    const record = JSON.parse(row.record_json || "{}") as Record<string, unknown>;
+    return {
+      ...record,
+      importRunId: row.import_run_id,
+      importBatchId: row.source_file_id,
+      sourceFile: row.source_file ?? "",
+      sourceRelativePath: row.source_relative_path,
+      sourceFileHash: row.source_file_hash,
+      sourceFileBytes: row.source_file_bytes,
+      sourceFileModifiedAt: row.source_file_modified_at ?? "",
+      importedAt: row.imported_at,
+      bank: row.bank,
+      product: row.product,
+      sourceSheetName: row.source_sheet_name ?? "",
+      csvLayout: JSON.parse(row.csv_layout_json || "{}"),
+      headers: JSON.parse(row.headers_json || "[]"),
+      recordKeys: JSON.parse(row.record_keys_json || "[]"),
+      relatedRawFileRelativePaths: JSON.parse(
+        row.related_raw_files_json || "[]",
+      ),
+      relatedRawFileMetadata: JSON.parse(
+        row.related_raw_file_metadata_json || "[]",
+      ),
+      rowCount: row.row_count,
+      status: row.status,
+    } as BatchRecord;
+  });
+}
+
+function readTypedStatementRowsFromTable(
+  db: LedgerDatabase,
+  table: TypedStatementTable,
+): RawTransactionOccurrence[] {
+  if (!sqliteTableExists(db, table)) return [];
+
+  const rows = db
+    .prepare(
+      `SELECT
+        source_file_id,
+        import_run_id,
+        source_relative_path,
+        source_row_index,
+        source_hash,
+        raw_row_hash,
+        content_hash,
+        bank,
+        product,
+        dedupe_status,
+        raw_payload_json
+      FROM ${table}
+      ORDER BY imported_at, source_relative_path, source_row_index`,
+    )
+    .all() as Array<{
+    source_file_id: string;
+    import_run_id: string;
+    source_relative_path: string;
+    source_row_index: number;
+    source_hash: string;
+    raw_row_hash: string;
+    content_hash: string;
+    bank: string;
+    product: string;
+    dedupe_status: "unique" | "duplicate";
+    raw_payload_json: string;
+  }>;
+
+  return rows.map((row) => ({
+    importRunId: row.import_run_id,
+    importBatchId: row.source_file_id,
+    sourceHash: row.source_hash,
+    rawRowHash: row.raw_row_hash,
+    contentHash: row.content_hash,
+    sourceRelativePath: row.source_relative_path,
+    sourceRowIndex: row.source_row_index,
+    bank: row.bank,
+    product: row.product,
+    dedupeStatus: row.dedupe_status,
+    rawPayload: JSON.parse(row.raw_payload_json || "{}") as Record<string, string>,
+  }));
+}
+
+function readSqliteTypedRows(db: LedgerDatabase): RawTransactionOccurrence[] {
+  return TYPED_STATEMENT_TABLES.flatMap((table) =>
+    readTypedStatementRowsFromTable(db, table),
+  );
+}
+
+async function readLedgerRecords(ledgerDir: string): Promise<{
+  source: "sqlite";
+  batches: BatchRecord[];
+  importRuns: ImportRunRecord[];
+  rawRows: RawTransactionOccurrence[];
+}> {
+  const sqlitePath = join(ledgerDir, SQLITE_LEDGER_FILE);
+  if (!existsSync(sqlitePath)) {
+    throw new Error(`Missing SQLite ledger: ${sqlitePath}`);
+  }
+
+  const db = new DatabaseSync(sqlitePath, { readOnly: true });
   try {
-    return await readJsonl<T>(path);
-  } catch (error) {
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
-      return [];
-    }
-    throw error;
+    return {
+      source: "sqlite",
+      batches: readSqliteSourceFiles(db),
+      importRuns: readSqliteRecords<ImportRunRecord>(db, "import_runs"),
+      rawRows: readSqliteTypedRows(db),
+    };
+  } finally {
+    db.close();
   }
 }
 
@@ -1588,6 +1771,41 @@ function dedupeTransactions(
   return { transactions: [...byKey.values()], duplicateCount };
 }
 
+function selectLatestCreditCardUnbilledTransactions(
+  transactions: NormalizedTransaction[],
+  sourceRows: Map<string, RawTransactionOccurrence>,
+  importRunTimes: Map<string, string>,
+): NormalizedTransaction[] {
+  const latestRunByAccount = new Map<
+    string,
+    { importRunId: string; importedAt: string }
+  >();
+
+  for (const transaction of transactions) {
+    if (transaction.type !== "credit_card") continue;
+    if (transaction.status !== "unbilled") continue;
+    const sourceRow = sourceRows.get(transaction.sourceHash);
+    if (!sourceRow) continue;
+
+    const importRunId = rowImportRunId(sourceRow);
+    const importedAt = importedAtForRow(sourceRow, importRunTimes);
+    const key = [transaction.accountId, transaction.currency].join("|");
+    const previous = latestRunByAccount.get(key);
+    if (!previous || previous.importedAt <= importedAt) {
+      latestRunByAccount.set(key, { importRunId, importedAt });
+    }
+  }
+
+  return transactions.filter((transaction) => {
+    if (transaction.type !== "credit_card") return true;
+    if (transaction.status !== "unbilled") return true;
+    const sourceRow = sourceRows.get(transaction.sourceHash);
+    if (!sourceRow) return false;
+    const key = [transaction.accountId, transaction.currency].join("|");
+    return latestRunByAccount.get(key)?.importRunId === rowImportRunId(sourceRow);
+  });
+}
+
 function bucketFromTotals(
   totals: FinancialTotals,
   side: "assets" | "liabilities" | "net",
@@ -1639,15 +1857,164 @@ function snapshotAccounts(positions: AssetPosition[]): SnapshotAccountValue[] {
     }));
 }
 
+function signedSnapshotAccountValue(account: SnapshotAccountValue): number {
+  if (account.valueSign === "liability") return -Math.abs(account.value);
+  return account.value;
+}
+
+function totalsFromSnapshotAccounts(
+  accounts: SnapshotAccountValue[],
+): FinancialTotals {
+  const includedByCurrency: FinancialTotals["includedByCurrency"] = {};
+  const informationalByCurrency: FinancialTotals["informationalByCurrency"] = {};
+
+  for (const account of accounts) {
+    if (!account.includeInTotals) {
+      informationalByCurrency[account.currency] =
+        (informationalByCurrency[account.currency] ?? 0) + account.value;
+      continue;
+    }
+
+    includedByCurrency[account.currency] ??= {
+      assets: 0,
+      liabilities: 0,
+      net: 0,
+    };
+    if (account.valueSign === "liability") {
+      includedByCurrency[account.currency].liabilities += account.value;
+      includedByCurrency[account.currency].net -= account.value;
+    } else {
+      includedByCurrency[account.currency].assets += account.value;
+      includedByCurrency[account.currency].net += account.value;
+    }
+  }
+
+  return { includedByCurrency, informationalByCurrency };
+}
+
+function addDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function datesBetween(startDate: string, endDate: string): string[] {
+  const dates: string[] = [];
+  for (
+    let cursor = startDate;
+    cursor <= endDate;
+    cursor = addDays(cursor, 1)
+  ) {
+    dates.push(cursor);
+  }
+  return dates;
+}
+
+function buildDailyHistoryFromSnapshots(
+  snapshots: AssetSnapshot[],
+): DailyAssetHistoryPoint[] {
+  if (snapshots.length === 0) return [];
+
+  const sortedSnapshots = [...snapshots].sort((left, right) =>
+    left.importedAt.localeCompare(right.importedAt),
+  );
+  const firstDate = sortedSnapshots
+    .map((snapshot) => snapshot.snapshotDate)
+    .sort()[0];
+  const lastDate = sortedSnapshots
+    .map((snapshot) => snapshot.snapshotDate)
+    .sort()
+    .at(-1);
+  if (!firstDate || !lastDate) return [];
+
+  const carriedAccounts = new Map<
+    string,
+    { account: SnapshotAccountValue; snapshotDate: string; importedAt: string }
+  >();
+  let previousAccounts = new Map<string, DailyAccountChange>();
+  const daily: DailyAssetHistoryPoint[] = [];
+  let snapshotIndex = 0;
+  let latestAppliedSnapshot = sortedSnapshots[0];
+
+  for (const date of datesBetween(firstDate, lastDate)) {
+    while (
+      snapshotIndex < sortedSnapshots.length &&
+      sortedSnapshots[snapshotIndex].snapshotDate <= date
+    ) {
+      const snapshot = sortedSnapshots[snapshotIndex];
+      latestAppliedSnapshot = snapshot;
+      for (const account of snapshot.accounts) {
+        carriedAccounts.set(account.id, {
+          account,
+          snapshotDate: snapshot.snapshotDate,
+          importedAt: snapshot.importedAt,
+        });
+      }
+      snapshotIndex += 1;
+    }
+
+    const accounts = [...carriedAccounts.values()]
+      .sort((left, right) => left.account.id.localeCompare(right.account.id));
+    const totals = totalsFromSnapshotAccounts(
+      accounts.map((entry) => entry.account),
+    );
+    const hasPreviousDay = daily.length > 0;
+    const accountChanges = accounts.map((entry) => {
+      const previous = previousAccounts.get(entry.account.id);
+      const signedValue = signedSnapshotAccountValue(entry.account);
+      const previousSignedValue = previous?.signedValue ?? null;
+      return {
+        ...entry.account,
+        snapshotDate: entry.snapshotDate,
+        signedValue,
+        previousSnapshotDate: previous?.snapshotDate ?? null,
+        previousValue: previous?.value ?? null,
+        previousSignedValue,
+        change:
+          previousSignedValue === null
+            ? hasPreviousDay
+              ? signedValue
+              : 0
+            : signedValue - previousSignedValue,
+      };
+    });
+    const netAssets = bucketFromTotals(totals, "net");
+    const previousNetAssets =
+      daily.length > 0 ? daily[daily.length - 1].netAssets : {};
+
+    daily.push({
+      date,
+      importRunId: latestAppliedSnapshot.importRunId,
+      importedAt: latestAppliedSnapshot.importedAt,
+      assets: bucketFromTotals(totals, "assets"),
+      liabilities: bucketFromTotals(totals, "liabilities"),
+      netAssets,
+      netChange:
+        daily.length > 0
+          ? subtractCurrencyBuckets(netAssets, previousNetAssets)
+          : {},
+      positionCount: accounts.length,
+      accountChanges,
+    });
+
+    previousAccounts = new Map(
+      accountChanges.map((change) => [change.id, change]),
+    );
+  }
+
+  return daily;
+}
+
 function buildPositionsForClassifications(
   classifications: Classification[],
   transactions: NormalizedTransaction[],
   sourceRows: Map<string, RawTransactionOccurrence>,
+  creditCardTransactions: NormalizedTransaction[] = transactions,
 ): AssetPosition[] {
   const directPositions = classifications.flatMap((item) => item.positions);
   const snapshotPositions = pickLatestSnapshotPositions(transactions, sourceRows);
   const creditCardPositions = pickCreditCardLiabilityPositions(
-    transactions,
+    creditCardTransactions,
     sourceRows,
   );
   return reducePositions([
@@ -1710,35 +2077,7 @@ function buildSnapshotHistory(
     })
     .sort((left, right) => left.importedAt.localeCompare(right.importedAt));
 
-  const latestSnapshotByDate = new Map<string, AssetSnapshot>();
-  for (const snapshot of snapshots) {
-    const previous = latestSnapshotByDate.get(snapshot.snapshotDate);
-    if (!previous || previous.importedAt <= snapshot.importedAt) {
-      latestSnapshotByDate.set(snapshot.snapshotDate, snapshot);
-    }
-  }
-
-  const daily = [...latestSnapshotByDate.values()]
-    .sort((left, right) => left.snapshotDate.localeCompare(right.snapshotDate))
-    .map((snapshot, index, orderedSnapshots) => {
-      const previous = index > 0 ? orderedSnapshots[index - 1] : null;
-      const netAssets = bucketFromTotals(snapshot.totals, "net");
-      return {
-        date: snapshot.snapshotDate,
-        importRunId: snapshot.importRunId,
-        importedAt: snapshot.importedAt,
-        assets: bucketFromTotals(snapshot.totals, "assets"),
-        liabilities: bucketFromTotals(snapshot.totals, "liabilities"),
-        netAssets,
-        netChange: previous
-          ? subtractCurrencyBuckets(
-              netAssets,
-              bucketFromTotals(previous.totals, "net"),
-            )
-          : {},
-        positionCount: snapshot.positionCount,
-      };
-    });
+  const daily = buildDailyHistoryFromSnapshots(snapshots);
 
   return { snapshots, daily };
 }
@@ -2256,17 +2595,11 @@ function buildCoverage(
 
 async function buildFinancialModel(input: Input): Promise<FinancialModel> {
   const ledgerDir = resolve(input.ledgerDir);
-  const batches = await readJsonl<BatchRecord>(join(ledgerDir, "import_batches.jsonl"));
-  const importRuns = await readJsonlIfExists<ImportRunRecord>(
-    join(ledgerDir, "import_runs.jsonl"),
-  );
+  const ledgerRecords = await readLedgerRecords(ledgerDir);
+  const { batches, importRuns } = ledgerRecords;
   const importRunTimes = buildImportRunTimes(importRuns, batches);
   const sourceAccountHints = await buildSourceAccountHints(batches);
-  const rawRows = (
-    await readJsonl<RawTransactionOccurrence>(
-    join(ledgerDir, "raw_transaction_occurrences.jsonl"),
-    )
-  ).map((row) => ({
+  const rawRows = ledgerRecords.rawRows.map((row) => ({
     ...row,
     sourceAccountHint: sourceAccountHints.get(row.sourceRelativePath),
   }));
@@ -2286,28 +2619,16 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
     importRunTimes,
     generatedAt,
   );
-  const latestSnapshotRunId = snapshotHistory.snapshots.at(-1)?.importRunId;
-  const currentClassifications = latestSnapshotRunId
-    ? classifications.filter(
-        (classification) =>
-          rowImportRunId(classification.row) === latestSnapshotRunId,
-      )
-    : classifications;
-  const currentSourceRows = new Map(
-    currentClassifications.map((classification) => [
-      classification.row.sourceHash,
-      classification.row,
-    ]),
-  );
-  const { transactions: currentTransactions } = dedupeTransactions(
-    currentClassifications.flatMap((item) => item.transactions),
-    currentSourceRows,
+  const currentTransactions = selectLatestCreditCardUnbilledTransactions(
+    transactions,
+    sourceRows,
     importRunTimes,
   );
   const assetPositions = buildPositionsForClassifications(
-    currentClassifications,
+    classifications,
+    transactions,
+    sourceRows,
     currentTransactions,
-    currentSourceRows,
   );
   const unsupportedRows = classifications
     .filter((item) => item.unsupportedReason)
@@ -2337,6 +2658,7 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
     schemaVersion: "financial-model.v1" as const,
     generatedAt,
     sourceLedgerDir: ledgerDir,
+    sourceLedgerStore: ledgerRecords.source,
     counts: {
       rawRows: rawRows.length,
       uniqueRows: rawRows.filter((row) => row.dedupeStatus !== "duplicate").length,
@@ -2418,1035 +2740,6 @@ function jsonForScript(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function renderDashboard(model: FinancialModel): string {
-  const generatedAt = new Date(model.generatedAt).toLocaleString("zh-TW", {
-    hour12: false,
-  });
-  const firstAccountId = model.dashboard.institutions
-    .flatMap((institution) => institution.groups)
-    .flatMap((group) => group.accounts)[0]?.id;
-  const overview = model.dashboard.overview;
-  const summaryAccounts = model.dashboard.institutions
-    .flatMap((institution) => institution.groups)
-    .flatMap((group) => group.accounts);
-  const summaryCounts = {
-    all: summaryAccounts.length,
-    cash: summaryAccounts.filter((account) => account.kind === "account").length,
-    liability: summaryAccounts.filter((account) =>
-      ["credit_card", "loan"].includes(account.kind),
-    ).length,
-    investment: summaryAccounts.filter((account) =>
-      ["fund", "brokerage"].includes(account.kind),
-    ).length,
-  };
-  const overviewMetrics = [
-    {
-      group: "淨值",
-      label: "淨資產總額",
-      value: currencyBucketText(overview.netAssets),
-      primary: true,
-      breakdown: [
-        `${summaryCounts.all} 帳戶`,
-        `${summaryCounts.cash} 現金`,
-        `${summaryCounts.liability} 負債`,
-        `${summaryCounts.investment} 投資`,
-      ],
-    },
-    {
-      group: "資產",
-      label: "總台幣資產",
-      value: currencyBucketText(overview.assets.totalTwdAssets),
-      primary: false,
-      breakdown: [],
-    },
-    {
-      group: "資產",
-      label: "總外幣資產",
-      value: currencyBucketText(overview.assets.totalForeignAssets),
-      primary: false,
-      breakdown: [],
-    },
-    {
-      group: "資產",
-      label: "總投資資產",
-      value: currencyBucketText(overview.assets.totalInvestmentAssets),
-      primary: false,
-      breakdown: [],
-    },
-    {
-      group: "負債",
-      label: "未結帳信用卡金額",
-      value: currencyBucketText(overview.liabilities.unbilledCreditCardAmount),
-      primary: false,
-      breakdown: [],
-    },
-    {
-      group: "負債",
-      label: "貸款總餘額",
-      value: currencyBucketText(overview.liabilities.loanTotalBalance),
-      primary: false,
-      breakdown: [],
-    },
-  ];
-  const overviewHtml = overviewMetrics
-    .map(
-      (item) => `
-        <div class="metric${item.primary ? " primary" : ""}">
-          <span class="metric-label">${escapeHtml(item.group)} / ${escapeHtml(item.label)}</span>
-          <div class="metric-value"><strong>${escapeHtml(item.value)}</strong></div>
-          ${
-            item.breakdown.length > 0
-              ? `<div class="metric-breakdown">${item.breakdown
-                  .map((label) => `<span>${escapeHtml(label)}</span>`)
-                  .join("")}</div>`
-              : ""
-          }
-        </div>`,
-    )
-    .join("");
-  const coverageRows = Object.entries(model.parserCoverage)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([source, coverage]) => `
-        <tr>
-          <td>${escapeHtml(source)}</td>
-          <td class="num">${coverage.rows}</td>
-          <td class="num">${coverage.parsedRows}</td>
-          <td class="num">${coverage.auditOnlyRows}</td>
-          <td class="num">${coverage.unsupportedRows}</td>
-        </tr>`,
-    )
-    .join("");
-  const issueRows =
-    model.quality.issues.length === 0
-      ? `<tr><td colspan="4">No quality issues.</td></tr>`
-      : model.quality.issues
-          .map(
-            (issue) => `
-              <tr>
-                <td>${escapeHtml(issue.level)}</td>
-                <td>${escapeHtml(issue.code)}</td>
-                <td>${escapeHtml(issue.message)}</td>
-                <td>${escapeHtml(
-                  issue.sourceRelativePath
-                    ? `${issue.sourceRelativePath}:${issue.sourceRowIndex ?? ""}`
-                    : "",
-                )}</td>
-              </tr>`,
-          )
-          .join("");
-  const payload = {
-    dashboard: model.dashboard,
-    positions: model.assetPositions,
-    transactions: model.normalizedTransactions,
-    firstAccountId,
-  };
-
-  return `<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Financial Dashboard</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #ffffff;
-      --surface: #f7f7f7;
-      --surface-warm: #eeeeee;
-      --fg: #111111;
-      --fg-2: #3a3a3a;
-      --muted: #707070;
-      --border: #d9d9d9;
-      --border-soft: #eeeeee;
-      --accent: #111111;
-      --accent-on: #ffffff;
-      --success: #168a46;
-      --warn: #b7791f;
-      --danger: #c53030;
-      --font-display: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
-      --radius-sm: 4px;
-      --radius-md: 8px;
-      --radius-lg: 12px;
-      --radius-pill: 9999px;
-      --focus-ring: 0 0 0 3px rgba(17, 17, 17, 0.18);
-      --shadow-ring: 0 0 0 1px var(--border);
-      --motion-fast: 150ms;
-      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-    }
-
-    * { box-sizing: border-box; }
-    html { background: var(--bg); }
-    body {
-      min-width: 0;
-      margin: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font: 16px/1.52 var(--font-display);
-      -webkit-font-smoothing: antialiased;
-      text-rendering: optimizeLegibility;
-    }
-    button,
-    input {
-      font: inherit;
-    }
-    button { cursor: pointer; }
-    h1, h2, h3 { margin: 0; letter-spacing: 0; }
-    h1 {
-      max-width: 760px;
-      font: 650 54px/1.06 var(--font-display);
-    }
-    h2 { font: 650 24px/1.1 var(--font-display); }
-    h3 {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-    svg { display: block; stroke-width: 1.8; }
-    .app {
-      min-height: 100vh;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .main {
-      width: min(100%, 1600px);
-      margin: 0 auto;
-      padding: 24px clamp(16px, 4vw, 36px) 48px;
-      display: grid;
-      gap: 20px;
-    }
-    .topbar {
-      min-width: 0;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-    }
-    .actions {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .label,
-    .eyebrow,
-    .metric-label,
-    th,
-    .chip {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0;
-      text-transform: uppercase;
-    }
-    .subtle {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 4px;
-    }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      min-height: 30px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-pill);
-      padding: 4px 12px;
-      background: ${model.quality.status === "pass" ? "#eef8f2" : "#fff8ed"};
-      color: ${model.quality.status === "pass" ? "var(--success)" : "var(--warn)"};
-      font-weight: 750;
-      text-transform: uppercase;
-      font-size: 12px;
-    }
-    .tabs {
-      width: max-content;
-      max-width: 100%;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 14%);
-      overflow: auto;
-    }
-    .tab-button {
-      min-height: 34px;
-      border: 1px solid transparent;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--fg-2);
-      font: inherit;
-      font-size: 14px;
-      font-weight: 650;
-      padding: 0 14px;
-      white-space: nowrap;
-      transition:
-        background var(--motion-fast) var(--ease-standard),
-        color var(--motion-fast) var(--ease-standard),
-        transform var(--motion-fast) var(--ease-standard),
-        box-shadow var(--motion-fast) var(--ease-standard);
-    }
-    .tab-button:hover,
-    .segment button:hover {
-      background: var(--accent);
-      color: var(--accent-on);
-      transform: translateY(-1px);
-      box-shadow: var(--shadow-ring);
-    }
-    .tab-button:focus-visible,
-    .segment button:focus-visible,
-    .account-row:focus-visible,
-    .asset-button:focus-visible,
-    input:focus-visible {
-      outline: none;
-      box-shadow: var(--focus-ring);
-    }
-    .tab-button[aria-selected="true"],
-    .segment button[aria-pressed="true"] {
-      background: var(--surface);
-      border-color: var(--border);
-      color: var(--fg);
-      box-shadow: var(--shadow-ring);
-    }
-    .tab-panel[hidden] { display: none; }
-    .summary-strip,
-    .overview {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      align-items: stretch;
-    }
-    .metric {
-      min-width: 0;
-      min-height: 142px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      background: var(--surface);
-      box-shadow: var(--shadow-ring);
-      padding: 16px;
-      display: grid;
-      align-content: space-between;
-      gap: 8px;
-    }
-    .metric.primary {
-      border-color: var(--fg);
-    }
-    .metric-value {
-      display: grid;
-      gap: 2px;
-    }
-    .metric-value strong {
-      display: block;
-      font: 700 28px/1.08 var(--font-display);
-      font-variant-numeric: tabular-nums;
-      overflow-wrap: anywhere;
-    }
-    .metric-breakdown {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 4px;
-    }
-    .metric-breakdown span {
-      min-height: 22px;
-      padding: 3px 7px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-pill);
-      background: var(--bg);
-      color: var(--fg-2);
-      font-size: 12px;
-      line-height: 1.2;
-      white-space: nowrap;
-    }
-    .workspace {
-      display: grid;
-      grid-template-columns: minmax(480px, 0.9fr) minmax(520px, 1.1fr);
-      gap: 20px;
-      align-items: start;
-    }
-    .panel,
-    .detail-panel,
-    .audit-panel {
-      min-width: 0;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      background: var(--surface);
-      box-shadow: var(--shadow-ring);
-      overflow: hidden;
-    }
-    .panel-head,
-    .detail-head,
-    .audit-head {
-      min-height: 64px;
-      padding: 20px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-    }
-    .panel-title,
-    .detail-title {
-      min-width: 0;
-      display: grid;
-      gap: 4px;
-    }
-    .panel-title strong,
-    .detail-title strong {
-      font: 650 24px/1.1 var(--font-display);
-      overflow-wrap: anywhere;
-    }
-    .panel-body,
-    .detail-body {
-      padding: 20px;
-    }
-    .toolbar {
-      display: grid;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-    .segment {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 14%);
-      overflow: auto;
-    }
-    .segment button {
-      min-height: 34px;
-      border: 1px solid transparent;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--fg-2);
-      font-size: 14px;
-      font-weight: 650;
-      padding: 0 12px;
-      white-space: nowrap;
-      transition:
-        background var(--motion-fast) var(--ease-standard),
-        color var(--motion-fast) var(--ease-standard),
-        transform var(--motion-fast) var(--ease-standard),
-        box-shadow var(--motion-fast) var(--ease-standard);
-    }
-    .search {
-      position: relative;
-      min-width: 0;
-    }
-    .search svg {
-      position: absolute;
-      left: 16px;
-      top: 50%;
-      width: 17px;
-      height: 17px;
-      color: var(--muted);
-      transform: translateY(-50%);
-      pointer-events: none;
-    }
-    .search input {
-      width: 100%;
-      min-height: 44px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: var(--surface);
-      color: var(--fg);
-      padding: 0 16px 0 44px;
-      outline: none;
-    }
-    .account-list {
-      display: grid;
-      gap: 8px;
-    }
-    .account-row {
-      width: 100%;
-      min-width: 0;
-      min-height: 78px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: var(--surface);
-      color: var(--fg);
-      padding: 16px;
-      display: grid;
-      grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 1.4fr) minmax(104px, 0.36fr);
-      align-items: center;
-      gap: 12px;
-      text-align: left;
-      transition:
-        background var(--motion-fast) var(--ease-standard),
-        border-color var(--motion-fast) var(--ease-standard),
-        transform var(--motion-fast) var(--ease-standard);
-    }
-    .account-row:hover {
-      transform: translateY(-1px);
-      border-color: var(--accent);
-    }
-    .account-row[aria-pressed="true"],
-    .account-row[data-selected="true"] {
-      border-color: var(--accent);
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 28%);
-    }
-    .account-main,
-    .account-counts {
-      min-width: 0;
-      display: grid;
-      gap: 6px;
-    }
-    .account-label {
-      font: 650 16px/1.18 var(--font-display);
-      overflow-wrap: anywhere;
-    }
-    .account-kind,
-    .account-counts {
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .account-metrics,
-    .detail-metrics,
-    .chip-row {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      min-width: 0;
-    }
-    .metric-chip,
-    .chip {
-      min-height: 24px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border);
-      background: color-mix(in oklab, var(--surface), white 30%);
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 3px 8px;
-      color: var(--fg-2);
-      white-space: nowrap;
-      max-width: 100%;
-    }
-    .metric-chip strong {
-      color: var(--fg);
-      font-weight: 700;
-      overflow-wrap: anywhere;
-    }
-    .chip.asset { color: var(--success); }
-    .chip.liability { color: var(--danger); }
-    .chip.investment { color: var(--warn); }
-    .detail-panel {
-      position: sticky;
-      top: 16px;
-    }
-    .detail-metrics {
-      margin-bottom: 16px;
-    }
-    .detail-section + .detail-section { margin-top: 18px; }
-    .table-wrap {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      overflow: auto;
-      background: var(--surface);
-    }
-    table {
-      width: 100%;
-      min-width: 720px;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    th,
-    td {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border-soft);
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 16%);
-      white-space: nowrap;
-    }
-    tr:last-child td { border-bottom: 0; }
-    tbody tr:hover td {
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 12%);
-    }
-    .asset-button {
-      min-height: 28px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: var(--bg);
-      color: var(--fg);
-      font: inherit;
-      padding: 3px 8px;
-      cursor: pointer;
-      text-align: left;
-      max-width: 100%;
-    }
-    .asset-button[aria-pressed="true"] {
-      border-color: var(--accent);
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 28%);
-    }
-    .num {
-      text-align: right;
-      font-family: var(--font-mono);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
-    .positive { color: var(--success); }
-    .negative { color: var(--danger); }
-    .muted { color: var(--muted); }
-    .audit-panel { margin-top: 4px; }
-    .audit-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      padding: 20px;
-    }
-    .empty {
-      border: 1px dashed var(--border);
-      border-radius: var(--radius-md);
-      padding: 20px;
-      color: var(--muted);
-      background: color-mix(in oklab, var(--surface), var(--surface-warm) 12%);
-    }
-    .empty strong {
-      display: block;
-      margin-bottom: 4px;
-      color: var(--fg);
-      font: 650 16px/1.2 var(--font-display);
-    }
-    .source {
-      color: var(--muted);
-      font-size: 11px;
-      max-width: 260px;
-      overflow-wrap: anywhere;
-    }
-    @media (max-width: 1180px) {
-      h1 { font-size: 44px; }
-      .summary-strip,
-      .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .workspace { grid-template-columns: 1fr; }
-      .detail-panel { position: static; }
-    }
-    @media (max-width: 720px) {
-      h1 { font-size: 36px; }
-      .main { padding: 16px 16px 32px; }
-      .topbar,
-      .panel-head,
-      .detail-head,
-      .audit-head {
-        align-items: stretch;
-        flex-direction: column;
-      }
-      .summary-strip,
-      .overview {
-        grid-template-columns: repeat(6, minmax(188px, 1fr));
-        overflow-x: auto;
-        padding-bottom: 4px;
-        scroll-snap-type: x proximity;
-      }
-      .metric { scroll-snap-align: start; }
-      .account-row {
-        grid-template-columns: 1fr;
-        align-items: start;
-      }
-      .audit-grid { grid-template-columns: 1fr; }
-    }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">Generated ${escapeHtml(generatedAt)}</div>
-          <h1>Financial Dashboard</h1>
-        </div>
-        <div class="actions">
-          <span class="status">${escapeHtml(model.quality.status)}</span>
-        </div>
-      </header>
-
-    <div class="tabs" role="tablist" aria-label="Dashboard views">
-      <button class="tab-button" id="tab-overview" type="button" role="tab" data-tab="overview" aria-controls="overview-panel" aria-selected="true">總覽</button>
-      <button class="tab-button" id="tab-accounts" type="button" role="tab" data-tab="accounts" aria-controls="accounts-panel" aria-selected="false">帳戶</button>
-    </div>
-
-    <section class="tab-panel" id="overview-panel" role="tabpanel" aria-labelledby="tab-overview" data-tab-panel="overview">
-      <div class="summary-strip overview" aria-label="Portfolio value and account counts">
-        ${overviewHtml}
-      </div>
-    </section>
-
-    <section class="tab-panel" id="accounts-panel" role="tabpanel" aria-labelledby="tab-accounts" data-tab-panel="accounts" hidden>
-      <div class="workspace" id="accounts-workspace">
-        <section class="panel account-panel" aria-labelledby="account-list-title">
-          <div class="panel-head">
-            <div class="panel-title">
-              <span class="label">Account list</span>
-              <strong id="account-list-title">帳戶</strong>
-            </div>
-            <span class="subtle" id="account-count" role="status" aria-live="polite">0 帳戶</span>
-          </div>
-          <div class="panel-body">
-            <div class="toolbar">
-              <div class="segment" aria-label="Account type filter">
-                <button type="button" data-account-filter="all" aria-pressed="true">全部</button>
-                <button type="button" data-account-filter="asset" aria-pressed="false">現金</button>
-                <button type="button" data-account-filter="liability" aria-pressed="false">負債</button>
-                <button type="button" data-account-filter="investment" aria-pressed="false">投資</button>
-              </div>
-              <label class="search" aria-label="Search accounts">
-                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
-                  <path d="m21 21-4.35-4.35"></path>
-                  <circle cx="11" cy="11" r="7"></circle>
-                </svg>
-                <input id="account-search" type="search" placeholder="搜尋帳戶、銀行、種類" />
-              </label>
-            </div>
-            <div class="account-list" id="account-list" role="list"></div>
-          </div>
-        </section>
-        <aside class="detail-panel" id="account-detail">
-          <div class="detail-head">
-            <div class="detail-title">
-              <strong id="detail-title">明細</strong>
-              <span class="subtle" id="detail-subtitle"></span>
-            </div>
-          </div>
-          <div class="detail-body" id="detail-body"></div>
-        </aside>
-      </div>
-    </section>
-
-    <section class="audit-panel">
-      <div class="audit-head">
-        <h2>Data Quality</h2>
-        <span class="subtle">${model.counts.normalizedTransactions} transactions / ${model.counts.assetPositions} positions / ${model.counts.unsupportedRows} unsupported</span>
-      </div>
-      <div class="audit-grid">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Source</th><th>Rows</th><th>Parsed</th><th>Audit</th><th>Unsupported</th></tr></thead>
-            <tbody>${coverageRows}</tbody>
-          </table>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Level</th><th>Code</th><th>Message</th><th>Source</th></tr></thead>
-            <tbody>${issueRows}</tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-    </main>
-  </div>
-  <script>
-    const payload = ${jsonForScript(payload)};
-    const accounts = payload.dashboard.institutions.flatMap(function(institution) {
-      return institution.groups.flatMap(function(group) {
-        return group.accounts.map(function(account) {
-          return Object.assign({ institutionLabel: institution.label, groupLabel: group.label }, account);
-        });
-      });
-    });
-    const accountsById = Object.fromEntries(accounts.map(function(account) { return [account.id, account]; }));
-    const positionsById = Object.fromEntries(payload.positions.map(function(position) { return [position.id, position]; }));
-    const transactionsById = Object.fromEntries(payload.transactions.map(function(transaction) { return [transaction.id, transaction]; }));
-    const tabButtons = Array.from(document.querySelectorAll("[data-tab]"));
-    const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
-    const accountList = document.getElementById("account-list");
-    const accountCount = document.getElementById("account-count");
-    const accountSearch = document.getElementById("account-search");
-    const accountFilterButtons = Array.from(document.querySelectorAll("[data-account-filter]"));
-    const accountDetail = document.getElementById("account-detail");
-    const detailTitle = document.getElementById("detail-title");
-    const detailSubtitle = document.getElementById("detail-subtitle");
-    const detailBody = document.getElementById("detail-body");
-    let selectedAccountId = payload.firstAccountId;
-    let accountFilter = "all";
-    const statusLabels = {
-      posted: "已入帳",
-      unbilled: "未結帳",
-      payment: "繳款",
-      detail: "明細",
-      dividend: "配息",
-      unknown: "未知"
-    };
-
-    function showTab(tabName) {
-      for (const button of tabButtons) {
-        const selected = button.dataset.tab === tabName;
-        button.setAttribute("aria-selected", String(selected));
-      }
-      for (const panel of tabPanels) {
-        panel.hidden = panel.dataset.tabPanel !== tabName;
-      }
-    }
-
-    function escapeText(value) {
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    }
-
-    function currencySort(left, right) {
-      const order = ["TWD", "USD", "JPY", "UNKNOWN"];
-      const leftIndex = order.indexOf(left);
-      const rightIndex = order.indexOf(right);
-      if (leftIndex !== -1 || rightIndex !== -1) {
-        return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
-      }
-      return left.localeCompare(right);
-    }
-
-    function formatNumber(value) {
-      return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
-    }
-
-    function formatMoney(value, currency) {
-      return escapeText(currency + " " + formatNumber(value));
-    }
-
-    function formatBucket(bucket) {
-      const entries = Object.entries(bucket || {})
-        .filter(function(entry) { return Number.isFinite(entry[1]); })
-        .sort(function(left, right) { return currencySort(left[0], right[0]); });
-      if (entries.length === 0) return '<span class="muted">-</span>';
-      return entries.map(function(entry) { return formatMoney(entry[1], entry[0]); }).join("<br>");
-    }
-
-    function metricHtml(metrics) {
-      if (!metrics.length) return "";
-      return '<div class="detail-metrics">' + metrics.map(function(metric) {
-        const value = metric.value ? escapeText(metric.value) : formatBucket(metric.amounts);
-        return '<span class="metric-chip"><span>' + escapeText(metric.label) + '</span><strong>' + value + '</strong></span>';
-      }).join("") + "</div>";
-    }
-
-    function accountScope(account) {
-      if (account.kind === "credit_card" || account.kind === "loan") return "liability";
-      if (account.kind === "fund" || account.kind === "brokerage") return "investment";
-      return "asset";
-    }
-
-    function accountScopeLabel(account) {
-      const labels = {
-        asset: "現金",
-        liability: "負債",
-        investment: "投資"
-      };
-      return labels[accountScope(account)] || "帳戶";
-    }
-
-    function accountMatchesFilter(account) {
-      if (accountFilter === "all") return true;
-      return accountScope(account) === accountFilter;
-    }
-
-    function accountMatchesSearch(account) {
-      const query = accountSearch.value.trim().toLowerCase();
-      if (!query) return true;
-      const metricText = account.metrics.map(function(metric) {
-        return [metric.label, metric.value, formatBucket(metric.amounts)].join(" ");
-      }).join(" ");
-      return [
-        account.label,
-        account.institution,
-        account.institutionLabel,
-        account.product,
-        account.groupLabel,
-        account.kind,
-        metricText
-      ].some(function(value) {
-        return String(value || "").toLowerCase().includes(query);
-      });
-    }
-
-    function renderAccountMetricChips(account) {
-      if (!account.metrics.length) return "";
-      return account.metrics.map(function(metric) {
-        const value = metric.value ? escapeText(metric.value) : formatBucket(metric.amounts);
-        return '<span class="metric-chip"><span>' + escapeText(metric.label) + '</span><strong>' + value + '</strong></span>';
-      }).join("");
-    }
-
-    function renderAccounts() {
-      if (!accountList) return;
-      const filtered = accounts.filter(accountMatchesFilter).filter(accountMatchesSearch);
-      if (accountCount) {
-        accountCount.textContent = String(filtered.length) + " / " + String(accounts.length) + " 帳戶";
-      }
-
-      if (!filtered.some(function(account) { return account.id === selectedAccountId; }) && filtered[0]) {
-        selectedAccountId = filtered[0].id;
-        renderDetail(selectedAccountId);
-      }
-
-      if (!filtered.length) {
-        accountList.innerHTML = '<div class="empty" role="status"><strong>找不到符合的帳戶</strong><span>請調整篩選或搜尋字詞。</span></div>';
-        return;
-      }
-
-      accountList.innerHTML = filtered.map(function(account) {
-        const selected = account.id === selectedAccountId;
-        const scope = accountScope(account);
-        return '<button class="account-row" type="button" data-account-id="' + escapeText(account.id) + '" data-selected="' + String(selected) + '" aria-pressed="' + String(selected) + '">' +
-          '<span class="account-main">' +
-            '<span class="account-label">' + escapeText(account.label) + '</span>' +
-            '<span class="account-kind">' + escapeText(account.institutionLabel + " / " + account.groupLabel) + '</span>' +
-          '</span>' +
-          '<span class="account-metrics">' + renderAccountMetricChips(account) + '</span>' +
-          '<span class="account-counts">' +
-            '<span class="chip ' + scope + '">' + escapeText(accountScopeLabel(account)) + '</span>' +
-            '<span>' + String(account.positionIds.length) + ' asset</span>' +
-            '<span>' + String(account.transactionIds.length) + ' tx</span>' +
-          '</span>' +
-        '</button>';
-      }).join("");
-
-      for (const button of Array.from(accountList.querySelectorAll("[data-account-id]"))) {
-        button.addEventListener("click", function() {
-          showTab("accounts");
-          selectedAccountId = button.dataset.accountId;
-          renderDetail(selectedAccountId);
-          renderAccounts();
-          if (accountDetail) accountDetail.scrollIntoView({ block: "start", behavior: "smooth" });
-        });
-      }
-    }
-
-    function rowAmount(transaction) {
-      if (transaction.amountSigned === null || transaction.amountSigned === undefined) {
-        return '<span class="muted">-</span>';
-      }
-      const className = transaction.amountSigned < 0 ? "negative" : "positive";
-      return '<span class="' + className + '">' + formatMoney(transaction.amountSigned, transaction.currency) + "</span>";
-    }
-
-    function positionValue(position) {
-      const className = position.valueSign === "liability" ? "negative" : "positive";
-      return '<span class="' + className + '">' + formatMoney(position.value, position.currency) + "</span>";
-    }
-
-    function sourceText(item) {
-      return escapeText(item.sourceRelativePath + ":" + item.sourceRowIndex);
-    }
-
-    function transactionDateTimeLabel(transaction) {
-      const value = String(transaction.occurredAt || transaction.date || "").trim();
-      if (!value) return "";
-      const normalized = value.replace("T", " ");
-      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(normalized)) return normalized + " 00:00:00";
-      const match = normalized.match(/^(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}:\\d{2})(?::(\\d{2}))?/);
-      if (!match) return normalized;
-      const timeParts = match[2].split(":");
-      const hour = timeParts[0].padStart(2, "0");
-      const minute = timeParts[1].padStart(2, "0");
-      const second = (match[3] || "00").padStart(2, "0");
-      return match[1] + " " + hour + ":" + minute + ":" + second;
-    }
-
-    function relatedTransactions(position, transactions) {
-      if (!position) return transactions;
-      const parts = position.label.split(/\\s+/).filter(Boolean);
-      const symbol = parts[0] || "";
-      const name = parts.length > 1 ? parts.slice(1).join(" ") : position.label;
-      const candidates = [symbol, name, position.label].filter(function(value) {
-        return value && value.length >= 2;
-      });
-      return transactions.filter(function(transaction) {
-        return candidates.some(function(candidate) {
-          return transaction.description.includes(candidate) || position.label.includes(candidate);
-        });
-      });
-    }
-
-    function renderPositions(account, positions, selectedPositionId) {
-      if (positions.length === 0) return '<div class="empty">No asset records.</div>';
-      const rows = positions.map(function(position) {
-        const selected = selectedPositionId === position.id;
-        const label = account.kind === "brokerage"
-          ? '<button class="asset-button" type="button" data-position-id="' + escapeText(position.id) + '" aria-pressed="' + String(selected) + '">' + escapeText(position.label) + '</button>'
-          : escapeText(position.label);
-        return '<tr><td>' + label + '</td><td>' + escapeText(position.assetClass) + '</td><td class="num">' + positionValue(position) + '</td><td>' + escapeText(position.asOfDate || "-") + '</td><td>' + escapeText(position.includeInTotals ? "included" : "audit") + '</td><td class="source">' + sourceText(position) + '</td></tr>';
-      }).join("");
-      return '<div class="table-wrap"><table><thead><tr><th>資產</th><th>種類</th><th>金額</th><th>日期</th><th>Total</th><th>Source</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-    }
-
-    function renderTransactions(transactions) {
-      if (transactions.length === 0) return '<div class="empty">No transaction records.</div>';
-      const rows = transactions
-        .slice()
-        .sort(function(left, right) {
-          return String(right.occurredAt || right.date || "").localeCompare(String(left.occurredAt || left.date || "")) || Number(left.sourceRowIndex || 0) - Number(right.sourceRowIndex || 0);
-        })
-        .map(function(transaction) {
-          return '<tr><td>' + escapeText(transactionDateTimeLabel(transaction) || "-") + '</td><td>' + escapeText(statusLabels[transaction.status] || transaction.status) + '</td><td>' + escapeText(transaction.description || "-") + '</td><td class="num">' + rowAmount(transaction) + '</td><td class="source">' + sourceText(transaction) + '</td></tr>';
-        })
-        .join("");
-      return '<div class="table-wrap"><table><thead><tr><th>日期</th><th>狀態</th><th>描述</th><th>金額</th><th>Source</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-    }
-
-    function renderDetail(accountId, selectedPositionId) {
-      const account = accountsById[accountId];
-      if (!account) return;
-      selectedAccountId = accountId;
-      for (const button of Array.from(document.querySelectorAll("[data-account-id]"))) {
-        button.setAttribute("aria-pressed", String(button.dataset.accountId === accountId));
-        button.setAttribute("data-selected", String(button.dataset.accountId === accountId));
-      }
-      const positions = account.positionIds.map(function(id) { return positionsById[id]; }).filter(Boolean);
-      const transactions = account.transactionIds.map(function(id) { return transactionsById[id]; }).filter(Boolean);
-      const selectedPosition = selectedPositionId ? positionsById[selectedPositionId] : null;
-      const shownTransactions = account.kind === "brokerage"
-        ? relatedTransactions(selectedPosition, transactions)
-        : transactions;
-
-      detailTitle.textContent = account.label;
-      detailSubtitle.textContent = account.institutionLabel + " / " + account.groupLabel;
-      detailBody.innerHTML =
-        metricHtml(account.metrics) +
-        '<div class="detail-section"><h3>資產</h3>' + renderPositions(account, positions, selectedPositionId) + '</div>' +
-        '<div class="detail-section"><h3>交易紀錄</h3>' + renderTransactions(shownTransactions) + '</div>';
-
-      for (const button of Array.from(detailBody.querySelectorAll("[data-position-id]"))) {
-        button.addEventListener("click", function() {
-          renderDetail(accountId, button.dataset.positionId);
-        });
-      }
-    }
-    for (const button of tabButtons) {
-      button.addEventListener("click", function() {
-        showTab(button.dataset.tab);
-      });
-    }
-
-    for (const button of accountFilterButtons) {
-      button.addEventListener("click", function() {
-        accountFilter = button.dataset.accountFilter;
-        for (const item of accountFilterButtons) {
-          item.setAttribute("aria-pressed", String(item === button));
-        }
-        renderAccounts();
-      });
-    }
-
-    accountSearch.addEventListener("input", renderAccounts);
-
-    showTab("overview");
-    renderAccounts();
-    renderDetail(payload.firstAccountId);
-  </script>
-</body>
-</html>`;
-}
 
 type LedgerLensGroup = "asset" | "liability" | "investment";
 
@@ -3519,6 +2812,23 @@ function latestDashboardDate(model: FinancialModel): string {
     model.generatedAt.slice(0, 10),
   ].filter((value): value is string => Boolean(value));
   return dates.sort().at(-1) ?? model.generatedAt.slice(0, 10);
+}
+
+function dailyAccountChangeSummary(changes: DailyAccountChange[]): string {
+  const changed = changes
+    .filter((change) => Math.abs(change.change) > 0.000001)
+    .sort((left, right) => Math.abs(right.change) - Math.abs(left.change))
+    .slice(0, 4);
+  if (changed.length === 0) return "No account changes";
+  return changed
+    .map(
+      (change) =>
+        `${change.institution} ${change.label} ${money(
+          change.change,
+          change.currency,
+        )}`,
+    )
+    .join("\n");
 }
 
 function ledgerLensGroup(account: DashboardAccount): LedgerLensGroup {
@@ -4299,7 +3609,7 @@ function renderLedgerLensStyles(includeSources = false): string {
     }`;
 }
 
-function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): string {
+function renderLedgerLensDashboard(model: FinancialModel): string {
   const accounts = buildLedgerLensAccounts(model);
   const snapshotDate = latestDashboardDate(model);
   const summaryCounts = {
@@ -4366,6 +3676,7 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
           <td>${escapeHtml(currencyBucketText(point.netChange))}</td>
           <td>${escapeHtml(currencyBucketText(point.assets))}</td>
           <td>${escapeHtml(currencyBucketText(point.liabilities))}</td>
+          <td>${escapeHtml(dailyAccountChangeSummary(point.accountChanges)).replace(/\n/g, "<br>")}</td>
           <td class="num">${point.positionCount}</td>
         </tr>`,
     )
@@ -4400,7 +3711,6 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
             <input id="value-visibility" type="checkbox" checked />
             <span id="value-visibility-label">Values visible</span>
           </label>
-          <a class="btn" href="${escapeHtml(sourcesHref)}">Statement sources</a>
         </div>
       </header>
 
@@ -4426,12 +3736,13 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
                   <th>Daily change</th>
                   <th>Assets</th>
                   <th>Liabilities</th>
+                  <th>Account changes</th>
                   <th class="num">Positions</th>
                 </tr>
               </thead>
               <tbody>${
                 historyRows ||
-                '<tr><td colspan="6">No snapshot history yet.</td></tr>'
+                '<tr><td colspan="7">No snapshot history yet.</td></tr>'
               }</tbody>
             </table>
           </div>
@@ -4909,255 +4220,14 @@ function renderLedgerLensDashboard(model: FinancialModel, sourcesHref: string): 
 </html>`;
 }
 
-function sourceStatus(coverage: FinancialModel["parserCoverage"][string]): "ready" | "review" | "unsupported" {
-  if (coverage.unsupportedRows > 0) return "unsupported";
-  if (coverage.auditOnlyRows > 0) return "review";
-  return "ready";
-}
-
-function sourceKeyForFinancialItem(item: { institution: string; product: string }): string {
-  return `${item.institution.toLowerCase()}/${item.product}`;
-}
-
-function isAccountPosition(position: AssetPosition): boolean {
-  return [
-    "cash",
-    "foreign_cash",
-    "loan",
-    "credit_card",
-    "fund",
-    "brokerage",
-  ].includes(position.assetClass);
-}
-
-function buildSourceOutputCounts(model: FinancialModel): Record<
-  string,
-  {
-    transactions: number;
-    modelPositions: number;
-    accountPositions: number;
-  }
-> {
-  const counts: Record<
-    string,
-    {
-      transactions: number;
-      modelPositions: number;
-      accountPositions: number;
-    }
-  > = {};
-
-  for (const transaction of model.normalizedTransactions) {
-    const key = sourceKeyForFinancialItem(transaction);
-    counts[key] ??= { transactions: 0, modelPositions: 0, accountPositions: 0 };
-    counts[key].transactions += 1;
-  }
-
-  for (const position of model.assetPositions) {
-    const key = sourceKeyForFinancialItem(position);
-    counts[key] ??= { transactions: 0, modelPositions: 0, accountPositions: 0 };
-    counts[key].modelPositions += 1;
-    if (isAccountPosition(position)) counts[key].accountPositions += 1;
-  }
-
-  return counts;
-}
-
-function renderLedgerLensSources(model: FinancialModel, dashboardHref: string): string {
-  const snapshotDate = latestDashboardDate(model);
-  const outputCounts = buildSourceOutputCounts(model);
-  const sources = Object.entries(model.parserCoverage)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([source, coverage]) => {
-      const output = outputCounts[source] ?? {
-        transactions: 0,
-        modelPositions: 0,
-        accountPositions: 0,
-      };
-      return {
-        source,
-        ...coverage,
-        outputTransactions: output.transactions,
-        modelPositions: output.modelPositions,
-        accountPositions: output.accountPositions,
-        status: sourceStatus(coverage),
-        parsedPercent: coverage.rows > 0 ? Math.round((coverage.parsedRows / coverage.rows) * 100) : 0,
-      };
-    });
-  const summaryHtml = [
-    renderPlainSummaryMetric({
-      label: "Raw rows",
-      value: new Intl.NumberFormat("en-US").format(model.counts.rawRows),
-      primary: true,
-      breakdown: [`${model.counts.uniqueRows} unique`, `${model.counts.duplicateRows} duplicate`],
-    }),
-    renderPlainSummaryMetric({
-      label: "Parsed data",
-      value: new Intl.NumberFormat("en-US").format(model.counts.normalizedTransactions),
-      breakdown: [
-        `${model.counts.assetPositions} model positions`,
-        `${model.counts.includedPositions} included in totals`,
-      ],
-    }),
-    renderPlainSummaryMetric({
-      label: "Review queue",
-      value: new Intl.NumberFormat("en-US").format(model.counts.auditOnlyRows),
-      breakdown: [`${model.quality.issues.length} quality issues`],
-    }),
-    renderPlainSummaryMetric({
-      label: "Unsupported",
-      value: new Intl.NumberFormat("en-US").format(model.counts.unsupportedRows),
-      breakdown: [`${sources.length} sources`],
-    }),
-  ].join("");
-  const issueRows =
-    model.quality.issues.length === 0
-      ? `<tr><td colspan="4">No quality issues.</td></tr>`
-      : model.quality.issues
-          .map(
-            (issue) => `
-          <tr>
-            <td><span class="chip ${escapeHtml(issue.level)}">${escapeHtml(issue.level)}</span></td>
-            <td><strong>${escapeHtml(issue.code)}</strong><span class="table-meta">${escapeHtml(issue.message)}</span></td>
-            <td>${escapeHtml(issue.sourceRelativePath ?? "-")}</td>
-            <td class="num">${escapeHtml(issue.sourceRowIndex ?? "-")}</td>
-          </tr>`,
-          )
-          .join("");
-  const payload = { sources };
-
-  return `<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LedgerLens Sources</title>
-  <style>${renderLedgerLensStyles(true)}</style>
-</head>
-<body>
-  <div class="app">
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">Snapshot ${escapeHtml(snapshotDate)}</div>
-          <h1>Statement sources</h1>
-        </div>
-        <div class="actions">
-          <a class="btn" href="${escapeHtml(dashboardHref)}">Account overview</a>
-        </div>
-      </header>
-
-      <section class="summary-strip" aria-label="Source parsing summary">
-        ${summaryHtml}
-      </section>
-
-      <section class="sources">
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">
-              <span class="label">Source files</span>
-              <strong id="source-count" role="status" aria-live="polite">0 sources</strong>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="panel-tools">
-              <label class="field">
-                <span>Search</span>
-                <input id="source-search" type="search" placeholder="Search source path" />
-              </label>
-              <label class="field">
-                <span>Status</span>
-                <select id="source-status">
-                  <option value="all">All status</option>
-                  <option value="ready">Ready</option>
-                  <option value="review">Review</option>
-                  <option value="unsupported">Unsupported</option>
-                </select>
-              </label>
-              <span class="result-count" id="source-result-count">0 rows</span>
-            </div>
-            <div class="source-list" id="source-list"></div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">
-              <span class="label">Quality issues</span>
-              <strong>${escapeHtml(model.quality.issues.length)} issues</strong>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="table-wrap">
-              <table class="table">
-                <thead><tr><th>Level</th><th>Issue</th><th>Source</th><th class="num">Row</th></tr></thead>
-                <tbody>${issueRows}</tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      </section>
-    </main>
-  </div>
-
-  <script>
-    const payload = ${jsonForScript(payload)};
-    const sourceList = document.getElementById("source-list");
-    const sourceCount = document.getElementById("source-count");
-    const sourceSearch = document.getElementById("source-search");
-    const sourceStatus = document.getElementById("source-status");
-    const sourceResultCount = document.getElementById("source-result-count");
-    function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, function(char) {
-        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\\"": "&quot;", "'": "&#39;" }[char];
-      });
-    }
-    function matchesSource(source) {
-      const query = sourceSearch.value.trim().toLowerCase();
-      const status = sourceStatus.value;
-      if (status !== "all" && source.status !== status) return false;
-      if (!query) return true;
-      return source.source.toLowerCase().includes(query);
-    }
-    function renderSources() {
-      const visible = payload.sources.filter(matchesSource);
-      sourceCount.textContent = String(visible.length) + " sources";
-      sourceResultCount.textContent = String(visible.length) + " / " + String(payload.sources.length) + " rows";
-      if (!visible.length) {
-        sourceList.innerHTML = '<div class="empty" role="status"><strong>No matching sources</strong><span>Adjust the filter or search.</span></div>';
-        return;
-      }
-      sourceList.innerHTML = visible.map(function(source) {
-        return '<article class="source-card"><div><strong>' + escapeHtml(source.source) + '</strong><span>' + String(source.rows) + ' rows · ' + String(source.parsedRows) + ' parsed rows · ' + String(source.auditOnlyRows) + ' review · ' + String(source.unsupportedRows) + ' unsupported</span><div class="source-meta"><span class="chip ' + source.status + '">' + escapeHtml(source.status) + '</span><span class="chip">' + String(source.outputTransactions) + ' source tx</span><span class="chip">' + String(source.accountPositions) + ' account positions</span></div><div class="progress" aria-label="' + String(source.parsedPercent) + '% parsed"><span style="width:' + String(source.parsedPercent) + '%"></span></div></div><span class="amount">' + String(source.parsedPercent) + '%</span></article>';
-      }).join("");
-    }
-    sourceSearch.addEventListener("input", renderSources);
-    sourceStatus.addEventListener("change", renderSources);
-    renderSources();
-  </script>
-</body>
-</html>`;
-}
-
-async function writeJson(path: string, value: unknown) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
 async function main() {
   const input = inputSchema.parse(parseParams(process.argv.slice(2)));
   const outputDir = resolve(input.outputDir);
   const model = await buildFinancialModel(input);
-  const modelPath = join(outputDir, "financial_model.json");
-  const qualityPath = join(outputDir, "financial_model_quality.json");
   const dashboardPath = join(outputDir, "financial_dashboard.html");
-  const sourcesFileName = "financial_dashboard_sources.html";
-  const sourcesPath = join(outputDir, sourcesFileName);
 
-  await writeJson(modelPath, model);
-  await writeJson(qualityPath, model.quality);
-  await writeFile(dashboardPath, renderLedgerLensDashboard(model, sourcesFileName), "utf8");
-  await writeFile(sourcesPath, renderLedgerLensSources(model, "financial_dashboard.html"), "utf8");
+  await mkdir(dirname(dashboardPath), { recursive: true });
+  await writeFile(dashboardPath, renderLedgerLensDashboard(model), "utf8");
 
   console.log(
     JSON.stringify(
@@ -5167,10 +4237,7 @@ async function main() {
         status: model.quality.status,
         counts: model.counts,
         totals: model.totals,
-        modelPath,
-        qualityPath,
         dashboardPath,
-        sourcesPath,
       },
       null,
       2,

@@ -24,8 +24,8 @@
     "run:cathay-statements": "libretto run src/workflows/cathay-statements.ts --headed",
     "run:cathay-all-statements": "libretto run src/workflows/cathay-all-statements.ts --headed",
     "run:cathay-foreign-statements": "libretto run src/workflows/cathay-foreign-statements.ts --headed",
-    "run:import-downloads-csv": "node --experimental-strip-types src/ledger/import-downloads-csv.ts",
-    "run:build-financial-dashboard": "node --experimental-strip-types src/ledger/build-financial-dashboard.ts",
+    "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
+    "run:build-financial-dashboard": "node --no-warnings --experimental-strip-types src/ledger/build-financial-dashboard.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
