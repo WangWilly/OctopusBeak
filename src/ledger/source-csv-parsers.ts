@@ -146,9 +146,16 @@ function metadataCell(metadata: SourceMetadata | null, key: string): string {
 function sqliteAmount(value: unknown): number | null {
   const raw = cleanTypedCell(value).replace(/\u00a0/g, " ").trim();
   if (!raw || raw === "-" || raw === "--") return null;
+  const amountText = raw.match(/-?\(?\d[\d,]*(?:\.\d+)?\)?-?/)?.[0];
+  if (!amountText) return null;
   const negative =
-    /^\(.*\)$/.test(raw) || raw.startsWith("-") || raw.endsWith("-");
-  const normalized = raw
+    /^\(.*\)$/.test(raw) ||
+    raw.startsWith("-") ||
+    raw.endsWith("-") ||
+    amountText.startsWith("-") ||
+    amountText.endsWith("-") ||
+    /^\(.*\)$/.test(amountText);
+  const normalized = amountText
     .replace(/[,%\s]/g, "")
     .replace(/[()]/g, "")
     .replace(/^-/, "")
