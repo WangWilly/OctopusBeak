@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import XLSX from "xlsx";
 import { z } from "zod";
 
 const inputSchema = z.object({
@@ -67,7 +66,7 @@ type RawTransactionOccurrence = RawRecord & {
   product: string;
   dedupeStatus: "unique" | "duplicate";
   rawPayload: Record<string, string>;
-  sourceAccountHint?: string;
+  typedPayload: Record<string, string>;
 };
 
 type NormalizedTransaction = {
@@ -424,6 +423,23 @@ function readSqliteSourceFiles(db: LedgerDatabase): BatchRecord[] {
   });
 }
 
+const COMMON_TYPED_ROW_COLUMNS = new Set([
+  "statement_row_id",
+  "source_file_id",
+  "import_run_id",
+  "source_relative_path",
+  "source_row_index",
+  "source_hash",
+  "raw_row_hash",
+  "content_hash",
+  "bank",
+  "product",
+  "dedupe_status",
+  "raw_payload_json",
+  "imported_at",
+  "created_at",
+]);
+
 function readTypedStatementRowsFromTable(
   db: LedgerDatabase,
   table: TypedStatementTable,
@@ -433,47 +449,45 @@ function readTypedStatementRowsFromTable(
   const rows = db
     .prepare(
       `SELECT
-        source_file_id,
-        import_run_id,
-        source_relative_path,
-        source_row_index,
-        source_hash,
-        raw_row_hash,
-        content_hash,
-        bank,
-        product,
-        dedupe_status,
-        raw_payload_json
+        *
       FROM ${table}
       ORDER BY imported_at, source_relative_path, source_row_index`,
     )
-    .all() as Array<{
-    source_file_id: string;
-    import_run_id: string;
-    source_relative_path: string;
-    source_row_index: number;
-    source_hash: string;
-    raw_row_hash: string;
-    content_hash: string;
-    bank: string;
-    product: string;
-    dedupe_status: "unique" | "duplicate";
-    raw_payload_json: string;
-  }>;
+    .all() as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    importRunId: row.import_run_id,
-    importBatchId: row.source_file_id,
-    sourceHash: row.source_hash,
-    rawRowHash: row.raw_row_hash,
-    contentHash: row.content_hash,
-    sourceRelativePath: row.source_relative_path,
-    sourceRowIndex: row.source_row_index,
-    bank: row.bank,
-    product: row.product,
-    dedupeStatus: row.dedupe_status,
-    rawPayload: JSON.parse(row.raw_payload_json || "{}") as Record<string, string>,
-  }));
+  return rows.map((row) => {
+    const typedPayload: Record<string, string> = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (
+        COMMON_TYPED_ROW_COLUMNS.has(key) ||
+        value === null ||
+        value === undefined
+      ) {
+        continue;
+      }
+      typedPayload[key] = String(value).trim();
+    }
+
+    return {
+      importRunId: String(row.import_run_id ?? ""),
+      importBatchId: String(row.source_file_id ?? ""),
+      sourceHash: String(row.source_hash ?? ""),
+      rawRowHash: String(row.raw_row_hash ?? ""),
+      contentHash: String(row.content_hash ?? ""),
+      sourceRelativePath: String(row.source_relative_path ?? ""),
+      sourceRowIndex: Number(row.source_row_index ?? 0),
+      bank: String(row.bank ?? ""),
+      product: String(row.product ?? ""),
+      dedupeStatus: String(row.dedupe_status ?? "unique") as
+        | "unique"
+        | "duplicate",
+      rawPayload: JSON.parse(String(row.raw_payload_json ?? "{}")) as Record<
+        string,
+        string
+      >,
+      typedPayload,
+    };
+  });
 }
 
 function readSqliteTypedRows(db: LedgerDatabase): RawTransactionOccurrence[] {
@@ -504,48 +518,6 @@ async function readLedgerRecords(ledgerDir: string): Promise<{
   } finally {
     db.close();
   }
-}
-
-async function buildSourceAccountHints(
-  batches: BatchRecord[],
-): Promise<Map<string, string>> {
-  const hints = new Map<string, string>();
-
-  for (const batch of batches) {
-    const hint = await readSourceAccountHint(batch);
-    if (hint) hints.set(batch.sourceRelativePath, hint);
-  }
-
-  return hints;
-}
-
-async function readSourceAccountHint(batch: BatchRecord): Promise<string | null> {
-  if (!["fubon"].includes(batch.bank)) return null;
-
-  try {
-    const csvText = await readFile(String(batch.sourceFile), "utf8");
-    const workbook = XLSX.read(csvText, { raw: false, type: "string" });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return null;
-
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
-      defval: "",
-      header: 1,
-      raw: false,
-    });
-    const searchRows = rows.slice(0, 12);
-
-    for (const row of searchRows) {
-      const label = String(row[0] ?? "").trim();
-      const value = String(row[1] ?? "").trim();
-      if (!value) continue;
-      if (/^(帳號|貸款帳號)$/.test(label)) return maskIdentifier(value);
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
 }
 
 function stableId(parts: unknown[]): string {
@@ -653,8 +625,8 @@ function parseDateTime(value: unknown): string | null {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
 
-  const timeMatch = raw.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
-  const dateText = raw.replace(/\s+\d{1,2}:\d{2}(?::\d{2})?.*$/, "");
+  const timeMatch = raw.match(/(?:^|[T\s])(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+  const dateText = raw.replace(/[T\s]\d{1,2}:\d{2}(?::\d{2})?.*$/, "");
   const date = parseDate(dateText);
   if (!date) return null;
 
@@ -682,10 +654,10 @@ function parseDateTime(value: unknown): string | null {
 }
 
 function rowDateTime(row: RawTransactionOccurrence, fallbackDate: string | null) {
-  const p = row.rawPayload;
-  const directTime = firstCell(p, [
-    "交易時間",
+  const typed = row.typedPayload;
+  const directTime = firstCell(typed, [
     "transaction_time",
+    "occurred_at",
     "datetime",
     "date_time",
   ]);
@@ -693,21 +665,21 @@ function rowDateTime(row: RawTransactionOccurrence, fallbackDate: string | null)
   if (directDateTime) return directDateTime;
 
   const dateText =
-    firstCell(p, [
-      "帳務日期",
-      "交易日期",
-      "交易日",
-      "記帳日",
-      "消費日期",
-      "入帳日期",
+    firstCell(typed, [
+      "transaction_date",
+      "accounting_date",
+      "trade_date",
       "posting_date",
       "consume_date",
-      "trade_date",
+      "investment_date",
+      "redemption_date",
+      "distribution_date",
+      "deposit_date",
+      "benchmark_date",
+      "conversion_out_date",
+      "conversion_in_date",
       "as_of_date",
-      "投資日期",
-      "轉出日期",
-      "轉入日期",
-      "分配日期",
+      "market_date",
     ]) ||
     fallbackDate ||
     "";
@@ -788,23 +760,17 @@ function maskIdentifier(value: string): string {
 
 function sourceAccount(row: RawTransactionOccurrence, explicit = ""): string {
   if (explicit) return maskIdentifier(explicit);
-  if (row.sourceAccountHint) return row.sourceAccountHint;
-  const sourcePathHint = sourceAccountFromPath(row);
-  if (sourcePathHint) return sourcePathHint;
+  const typedAccount = firstCell(row.typedPayload, [
+    "account_number",
+    "card_number",
+  ]);
+  if (typedAccount) return maskIdentifier(typedAccount);
+  const typedAccountName = firstCell(row.typedPayload, [
+    "account_name",
+    "card_label",
+  ]);
+  if (typedAccountName) return maskIdentifier(typedAccountName);
   return `source:${row.sourceRelativePath}`;
-}
-
-function sourceAccountFromPath(row: RawTransactionOccurrence): string | null {
-  const fileName = row.sourceRelativePath.split("/").pop() ?? "";
-  const stem = fileName.replace(/\.[^.]+$/, "").replace(/-\d{10,}$/, "");
-
-  if (`${row.bank}/${row.product}` === "yuanta/loan-statements") {
-    const accountText = cell(row.rawPayload, "貸款帳戶");
-    if (accountText) return maskIdentifier(accountText);
-  }
-
-  const longDigits = stem.match(/\d{6,}/);
-  return longDigits ? maskIdentifier(longDigits[0]) : null;
 }
 
 function currencyFromSourcePath(row: RawTransactionOccurrence): string | null {
@@ -2598,11 +2564,7 @@ async function buildFinancialModel(input: Input): Promise<FinancialModel> {
   const ledgerRecords = await readLedgerRecords(ledgerDir);
   const { batches, importRuns } = ledgerRecords;
   const importRunTimes = buildImportRunTimes(importRuns, batches);
-  const sourceAccountHints = await buildSourceAccountHints(batches);
-  const rawRows = ledgerRecords.rawRows.map((row) => ({
-    ...row,
-    sourceAccountHint: sourceAccountHints.get(row.sourceRelativePath),
-  }));
+  const rawRows = ledgerRecords.rawRows;
 
   const rows = input.includeDuplicates
     ? rawRows
