@@ -1225,13 +1225,13 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
         ),
         accountLabel: fundLabel,
         description: `申購 ${fundLabel}`,
-        inflow: null,
-        outflow: amount,
-        amountSigned: -amount,
+        inflow: amount,
+        outflow: null,
+        amountSigned: amount,
         balanceAfter: null,
         status: "posted",
-        includeInCashFlow: true,
-        warnings: [],
+        includeInCashFlow: false,
+        warnings: ["fund buy is an asset transfer; not included in cash flow"],
       };
       return { row, transactions: [transaction], positions: [] };
     }
@@ -1253,13 +1253,13 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
         ),
         accountLabel: fundLabel,
         description: `贖回 ${fundLabel}`,
-        inflow: amount,
-        outflow: null,
-        amountSigned: amount,
+        inflow: null,
+        outflow: amount,
+        amountSigned: -amount,
         balanceAfter: null,
         status: "posted",
-        includeInCashFlow: true,
-        warnings: [],
+        includeInCashFlow: false,
+        warnings: ["fund redemption is an asset transfer; not included in cash flow"],
       };
       return { row, transactions: [transaction], positions: [] };
     }
@@ -1306,7 +1306,26 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
     if (amount !== null) {
       const fromLabel = cell(p, "轉出基金");
       const toLabel = cell(p, "轉入基金");
-      const transaction: NormalizedTransaction = {
+      const conversionOut: NormalizedTransaction = {
+        ...baseTransaction(
+          row,
+          "yuanta.fund-conversion-out.v2",
+          "investment",
+          fundAccountId(fromLabel),
+          currencyFromText(amountText),
+          parseDate(cell(p, "轉出日期")),
+        ),
+        accountLabel: fromLabel,
+        description: `轉換轉出 ${fromLabel} -> ${toLabel}`,
+        inflow: null,
+        outflow: amount,
+        amountSigned: -amount,
+        balanceAfter: null,
+        status: "posted",
+        includeInCashFlow: false,
+        warnings: ["fund conversion is informational; not included in cash flow"],
+      };
+      const conversionIn: NormalizedTransaction = {
         ...baseTransaction(
           row,
           "yuanta.fund-conversion-in.v2",
@@ -1325,7 +1344,7 @@ function classifyFundRow(row: RawTransactionOccurrence): Classification | null {
         includeInCashFlow: false,
         warnings: ["fund conversion is informational; not included in cash flow"],
       };
-      return { row, transactions: [transaction], positions: [] };
+      return { row, transactions: [conversionOut, conversionIn], positions: [] };
     }
   }
 
@@ -2456,9 +2475,13 @@ function buildDashboardView(
 function buildQualityIssues(model: Omit<FinancialModel, "quality">): QualityIssue[] {
   const issues: QualityIssue[] = [];
 
-  const seenSourceHashes = new Set<string>();
+  const seenSourceHashes = new Map<string, NormalizedTransaction>();
   for (const transaction of model.normalizedTransactions) {
-    if (seenSourceHashes.has(transaction.sourceHash)) {
+    const previous = seenSourceHashes.get(transaction.sourceHash);
+    const isExpectedFundConversionPair =
+      previous?.parserId.startsWith("yuanta.fund-conversion-") &&
+      transaction.parserId.startsWith("yuanta.fund-conversion-");
+    if (previous && !isExpectedFundConversionPair) {
       issues.push({
         level: "warn",
         code: "transaction-source-reused",
@@ -2467,7 +2490,7 @@ function buildQualityIssues(model: Omit<FinancialModel, "quality">): QualityIssu
         sourceRowIndex: transaction.sourceRowIndex,
       });
     }
-    seenSourceHashes.add(transaction.sourceHash);
+    seenSourceHashes.set(transaction.sourceHash, transaction);
   }
 
   for (const position of model.assetPositions) {
