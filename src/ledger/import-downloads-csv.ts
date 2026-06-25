@@ -4,6 +4,11 @@ import { join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import XLSX from "xlsx";
 import { z } from "zod";
+import {
+  TYPED_STATEMENT_TABLES,
+  createSourceCsvParser,
+  type SourceMetadata,
+} from "./source-csv-parsers.ts";
 
 const inputSchema = z.object({
   downloadsDir: z.string().default("downloads"),
@@ -31,8 +36,6 @@ type SourceContext = {
   bank: string;
   product: string;
 };
-
-type SourceMetadata = Record<string, unknown>;
 
 type CsvLayout = {
   strategy: "first-row-header" | "empty-or-metadata";
@@ -247,37 +250,6 @@ function openLedgerDatabase(outputDir: string): LedgerDatabase {
   applyLedgerMigrations(db);
   return db;
 }
-
-type TypedStatementTable =
-  | "account_transactions"
-  | "foreign_currency_transactions"
-  | "credit_card_statement_lines"
-  | "loan_transactions"
-  | "fund_holdings"
-  | "fund_buy_transactions"
-  | "fund_redemption_transactions"
-  | "fund_cash_dividends"
-  | "fund_conversion_transactions"
-  | "brokerage_holdings"
-  | "brokerage_asset_summaries"
-  | "brokerage_trade_transactions"
-  | "unsupported_statement_rows";
-
-const TYPED_STATEMENT_TABLES: TypedStatementTable[] = [
-  "account_transactions",
-  "foreign_currency_transactions",
-  "credit_card_statement_lines",
-  "loan_transactions",
-  "fund_holdings",
-  "fund_buy_transactions",
-  "fund_redemption_transactions",
-  "fund_cash_dividends",
-  "fund_conversion_transactions",
-  "brokerage_holdings",
-  "brokerage_asset_summaries",
-  "brokerage_trade_transactions",
-  "unsupported_statement_rows",
-];
 
 const COMMON_ROW_COLUMNS = `
   statement_row_id TEXT PRIMARY KEY,
@@ -648,130 +620,6 @@ function insertRecord(db: LedgerDatabase, table: string, record: Record<string, 
   ).run(...columns.map((column) => sqliteValue(record[column])));
 }
 
-function sqliteAmount(value: unknown): number | null {
-  const raw = cleanTypedCell(value).replace(/\u00a0/g, " ").trim();
-  if (!raw || raw === "-" || raw === "--") return null;
-  const negative =
-    /^\(.*\)$/.test(raw) || raw.startsWith("-") || raw.endsWith("-");
-  const normalized = raw
-    .replace(/[,%\s]/g, "")
-    .replace(/[()]/g, "")
-    .replace(/^-/, "")
-    .replace(/-$/, "");
-  if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
-  const amount = Number(normalized);
-  if (!Number.isFinite(amount)) return null;
-  return negative ? -amount : amount;
-}
-
-function cleanTypedCell(value: unknown): string {
-  return String(value ?? "")
-    .replace(/\u00a0/g, " ")
-    .trim()
-    .replace(/^'+/, "")
-    .trim();
-}
-
-function payloadCell(payload: Record<string, unknown>, key: string): string {
-  return cleanTypedCell(payload[key]);
-}
-
-function firstPayloadCell(
-  payload: Record<string, unknown>,
-  keys: string[],
-): string {
-  for (const key of keys) {
-    const value = payloadCell(payload, key);
-    if (value) return value;
-  }
-  return "";
-}
-
-function metadataCell(metadata: SourceMetadata | null, key: string): string {
-  return cleanTypedCell(metadata?.[key]);
-}
-
-function normalizeDateValue(value: unknown): string {
-  const raw = cleanTypedCell(value);
-  if (!raw) return "";
-
-  const compactMatch = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (compactMatch) {
-    return `${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]}`;
-  }
-
-  const separatedMatch = raw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
-  if (separatedMatch) {
-    return [
-      separatedMatch[1],
-      separatedMatch[2].padStart(2, "0"),
-      separatedMatch[3].padStart(2, "0"),
-    ].join("-");
-  }
-
-  const rocDateMatch = raw.match(/^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})/);
-  if (rocDateMatch) {
-    return [
-      String(Number(rocDateMatch[1]) + 1911),
-      rocDateMatch[2].padStart(2, "0"),
-      rocDateMatch[3].padStart(2, "0"),
-    ].join("-");
-  }
-
-  return "";
-}
-
-function normalizeTimePart(value: unknown): string {
-  const raw = cleanTypedCell(value);
-  const match = raw.match(/(?:^|[T\s])(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (!match) return "";
-
-  return [
-    match[1].padStart(2, "0"),
-    match[2],
-    match[3] ?? "00",
-  ].join(":");
-}
-
-function normalizeDateTimeValue(
-  value: unknown,
-  fallbackDate: unknown = "",
-): string {
-  const date = normalizeDateValue(value) || normalizeDateValue(fallbackDate);
-  const time = normalizeTimePart(value);
-  if (!date || !time) return time;
-  return `${date}T${time}`;
-}
-
-function sourceMetadataFromRecord(
-  record: Record<string, unknown>,
-): SourceMetadata | null {
-  const metadata = record.sourceMetadata;
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    return null;
-  }
-  return metadata as SourceMetadata;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function accountNumberFromText(value: string): string {
-  return value.match(/\d{6,}/)?.[0] ?? "";
-}
-
-function accountNameFromMetadataValue(value: string, accountNumber: string): string {
-  let accountName = value;
-  if (accountNumber) {
-    accountName = accountName.replace(
-      new RegExp(`^${escapeRegExp(accountNumber)}\\s*`),
-      "",
-    );
-  }
-  return accountName.replace(/^\((.*)\)$/, "$1").trim();
-}
-
 function sourceFileIdForPath(sourceRelativePath: string): string {
   return hashBytes(stableStringify(["source-file", sourceRelativePath])).slice(0, 24);
 }
@@ -784,51 +632,6 @@ function rowIdForSourceRow(
   return hashBytes(
     stableStringify(["statement-row", sourceRelativePath, sourceRowIndex, rawRowHash]),
   ).slice(0, 32);
-}
-
-function currencyFromRelativePath(sourceRelativePath: string): string {
-  const fileName = sourceRelativePath.split("/").pop() ?? "";
-  const match = fileName.match(/-(USD|JPY|EUR|GBP|AUD|CAD|CHF|HKD|CNY)-/i);
-  return match ? match[1].toUpperCase() : "TWD";
-}
-
-function statementTableForSource(
-  sourceRelativePath: string,
-  context: SourceContext,
-): TypedStatementTable {
-  const bankProduct = `${context.bank}/${context.product}`;
-  const fileName = sourceRelativePath.split("/").pop() ?? "";
-
-  if (bankProduct === "cathay/statements") return "account_transactions";
-  if (bankProduct === "fubon/statements") return "account_transactions";
-  if (bankProduct === "yuanta/statements") return "account_transactions";
-  if (bankProduct === "cathay/foreign-statements") return "foreign_currency_transactions";
-  if (bankProduct === "yuanta/foreign-currency-statements") {
-    return "foreign_currency_transactions";
-  }
-  if (bankProduct.endsWith("/credit-card-statements")) {
-    return "credit_card_statement_lines";
-  }
-  if (bankProduct.endsWith("/loan-statements")) return "loan_transactions";
-  if (bankProduct === "yuanta/fund-statements") {
-    if (fileName.startsWith("fund-holdings-")) return "fund_holdings";
-    if (fileName.startsWith("fund-buy-transactions-")) {
-      return "fund_buy_transactions";
-    }
-    if (fileName.startsWith("fund-redemption-transactions-")) {
-      return "fund_redemption_transactions";
-    }
-    if (fileName.startsWith("fund-cash-dividends-")) return "fund_cash_dividends";
-    if (fileName.startsWith("fund-conversion-transactions-")) {
-      return "fund_conversion_transactions";
-    }
-  }
-  if (bankProduct === "yuanta/trade-statements") {
-    if (fileName.startsWith("holdings-")) return "brokerage_holdings";
-    if (fileName.startsWith("asset-summaries-")) return "brokerage_asset_summaries";
-    if (fileName.startsWith("trade-transactions-")) return "brokerage_trade_transactions";
-  }
-  return "unsupported_statement_rows";
 }
 
 function sourceFileRecordFromBatch(
@@ -913,361 +716,6 @@ function commonTypedRowFields(
   };
 }
 
-type TypedFieldAdapterContext = {
-  table: TypedStatementTable;
-  sourceRelativePath: string;
-  sourceFileRecord: Record<string, unknown>;
-  sourceMetadata: SourceMetadata | null;
-  rawPayload: Record<string, string>;
-  headers: string[];
-};
-
-type TypedFieldAdapter = (
-  context: TypedFieldAdapterContext,
-) => Record<string, unknown>;
-
-function accountIdentity(context: TypedFieldAdapterContext) {
-  const metadataAccount =
-    metadataCell(context.sourceMetadata, "帳號") ||
-    metadataCell(context.sourceMetadata, "貸款帳號");
-  const accountNumber =
-    firstPayloadCell(context.rawPayload, ["帳號", "account_number"]) ||
-    accountNumberFromText(metadataAccount) ||
-    accountNumberFromText(context.sourceRelativePath);
-  const accountName =
-    firstPayloadCell(context.rawPayload, ["帳戶名稱", "account_name"]) ||
-    accountNameFromMetadataValue(metadataAccount, accountNumber) ||
-    metadataCell(context.sourceMetadata, "分行名稱");
-
-  return { accountName, accountNumber };
-}
-
-function bankTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  const { accountName, accountNumber } = accountIdentity(context);
-  const accountingDate = normalizeDateValue(payloadCell(rawPayload, "帳務日期"));
-  const transactionDate = normalizeDateValue(
-    firstPayloadCell(rawPayload, ["交易日期", "帳務日期"]),
-  );
-  return {
-    account_name: accountName,
-    account_number: accountNumber,
-    currency: "TWD",
-    accounting_date: accountingDate,
-    transaction_date: transactionDate,
-    transaction_time: normalizeDateTimeValue(
-      payloadCell(rawPayload, "交易時間"),
-      transactionDate || accountingDate,
-    ),
-    description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
-    withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
-    deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
-    balance_after: sqliteAmount(
-      firstPayloadCell(rawPayload, ["即時餘額", "帳面餘額"]),
-    ),
-    note: firstPayloadCell(rawPayload, ["附註", "備註"]),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
-  };
-}
-
-function foreignCurrencyTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload, sourceMetadata, sourceRelativePath } = context;
-  const { accountName, accountNumber } = accountIdentity(context);
-  const accountingDate = normalizeDateValue(payloadCell(rawPayload, "帳務日期"));
-  const transactionDate = normalizeDateValue(
-    firstPayloadCell(rawPayload, ["交易日期", "帳務日期"]),
-  );
-  const metadataCurrency = metadataCell(sourceMetadata, "幣別");
-  return {
-    account_name: accountName,
-    account_number: accountNumber,
-    query_currency:
-      payloadCell(rawPayload, "查詢幣別") || metadataCurrency || "",
-    currency:
-      firstPayloadCell(rawPayload, ["幣別", "查詢幣別"]) ||
-      metadataCurrency ||
-      currencyFromRelativePath(sourceRelativePath),
-    accounting_date: accountingDate,
-    transaction_date: transactionDate,
-    transaction_time: normalizeDateTimeValue(
-      payloadCell(rawPayload, "交易時間"),
-      transactionDate || accountingDate,
-    ),
-    description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
-    withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
-    deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
-    balance_after: sqliteAmount(
-      firstPayloadCell(rawPayload, ["即時餘額", "帳面餘額"]),
-    ),
-    note: firstPayloadCell(rawPayload, ["附註", "交易資訊", "備註"]),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
-  };
-}
-
-function creditCardStatementLineFields(context: TypedFieldAdapterContext) {
-  const { rawPayload, sourceRelativePath } = context;
-  return {
-    statement_type: sourceRelativePath.includes("unbilled")
-      ? "unbilled"
-      : "billed",
-    statement_period: payloadCell(rawPayload, "statement_period"),
-    card_number: firstPayloadCell(rawPayload, ["card_number", "信用卡號"]),
-    card_label: firstPayloadCell(rawPayload, ["card_label", "信用卡名稱"]),
-    consume_date: normalizeDateValue(
-      firstPayloadCell(rawPayload, ["consume_date", "消費日期"]),
-    ),
-    posting_date: normalizeDateValue(
-      firstPayloadCell(rawPayload, ["posting_date", "入帳日期"]),
-    ),
-    description: firstPayloadCell(rawPayload, ["description", "消費明細"]),
-    country_currency: firstPayloadCell(rawPayload, ["country_currency", "國家/幣別"]),
-    foreign_exchange_date: normalizeDateValue(
-      payloadCell(rawPayload, "外幣折算日"),
-    ),
-    foreign_currency: firstPayloadCell(rawPayload, ["foreign_currency", "國家/幣別"]),
-    foreign_amount: sqliteAmount(
-      firstPayloadCell(rawPayload, ["foreign_amount", "外幣金額"]),
-    ),
-    twd_amount: sqliteAmount(
-      firstPayloadCell(rawPayload, ["twd_amount", "新臺幣金額"]),
-    ),
-    installment_action: payloadCell(rawPayload, "installment_action"),
-    payment_status: firstPayloadCell(rawPayload, ["payment_status", "繳費狀態"]),
-  };
-}
-
-function loanTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload, sourceMetadata } = context;
-  const metadataLoanAccount = metadataCell(sourceMetadata, "貸款帳號");
-  return {
-    account_number:
-      payloadCell(rawPayload, "貸款帳戶") ||
-      accountNumberFromText(metadataLoanAccount) ||
-      accountNameFromMetadataValue(metadataLoanAccount, ""),
-    trade_date: normalizeDateValue(
-      firstPayloadCell(rawPayload, ["交易日期", "交易日"]),
-    ),
-    posting_date: normalizeDateValue(payloadCell(rawPayload, "記帳日")),
-    item: firstPayloadCell(rawPayload, ["交易內容", "繳款項目"]),
-    interest_start_date: normalizeDateValue(
-      firstPayloadCell(rawPayload, ["計息起日", "提息起日"]),
-    ),
-    interest_end_date: normalizeDateValue(
-      firstPayloadCell(rawPayload, ["計息止日", "提息迄日"]),
-    ),
-    amount: sqliteAmount(firstPayloadCell(rawPayload, ["異動金額", "交易金額"])),
-    interest_rate: payloadCell(rawPayload, "利率"),
-    balance_after: sqliteAmount(
-      firstPayloadCell(rawPayload, ["餘額", "交易後餘額"]),
-    ),
-    overpayment: sqliteAmount(payloadCell(rawPayload, "溢繳款")),
-    note: payloadCell(rawPayload, "備註"),
-  };
-}
-
-function fundHoldingFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    data_type: payloadCell(rawPayload, "資料類別"),
-    fund_id: payloadCell(rawPayload, "基金識別"),
-    query_period: payloadCell(rawPayload, "查詢期間"),
-    fund_name: payloadCell(rawPayload, "基金名稱"),
-    fund_type: payloadCell(rawPayload, "基金類型"),
-    currency: payloadCell(rawPayload, "投資幣別"),
-    investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
-    market_value_without_dividend: sqliteAmount(payloadCell(rawPayload, "不含息參考市值")),
-    unrealized_pnl_without_dividend: sqliteAmount(payloadCell(rawPayload, "不含息參考損益")),
-    return_rate_without_dividend: payloadCell(rawPayload, "不含息參考報酬率"),
-    unrealized_pnl_with_dividend: sqliteAmount(payloadCell(rawPayload, "含息參考損益")),
-    return_rate_with_dividend: payloadCell(rawPayload, "含息參考報酬率"),
-    holding_status: payloadCell(rawPayload, "狀態"),
-  };
-}
-
-function fundBuyTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    data_type: payloadCell(rawPayload, "資料類別"),
-    fund_id: payloadCell(rawPayload, "基金識別"),
-    query_period: payloadCell(rawPayload, "查詢期間"),
-    investment_date: normalizeDateValue(payloadCell(rawPayload, "投資日期")),
-    fund_name: payloadCell(rawPayload, "基金名稱"),
-    transaction_number: payloadCell(rawPayload, "交易編號"),
-    investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
-    subscription_fx_rate: sqliteAmount(payloadCell(rawPayload, "申購匯率")),
-    subscription_nav: sqliteAmount(payloadCell(rawPayload, "申購淨值")),
-    subscription_fee: sqliteAmount(payloadCell(rawPayload, "申購手續費")),
-    point_discount: sqliteAmount(payloadCell(rawPayload, "點數折抵")),
-    subscribed_units: sqliteAmount(payloadCell(rawPayload, "申購單位數")),
-  };
-}
-
-function fundRedemptionTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    data_type: payloadCell(rawPayload, "資料類別"),
-    fund_id: payloadCell(rawPayload, "基金識別"),
-    query_period: payloadCell(rawPayload, "查詢期間"),
-    redemption_date: normalizeDateValue(payloadCell(rawPayload, "贖回日期")),
-    distribution_date: normalizeDateValue(payloadCell(rawPayload, "分配日期")),
-    fund_name: payloadCell(rawPayload, "基金名稱"),
-    transaction_number: payloadCell(rawPayload, "交易編號"),
-    redemption_investment_amount: sqliteAmount(payloadCell(rawPayload, "贖回投資金額")),
-    redemption_units: sqliteAmount(payloadCell(rawPayload, "贖回單位數")),
-    redemption_price: sqliteAmount(payloadCell(rawPayload, "贖回價格")),
-    redemption_fx_rate: sqliteAmount(payloadCell(rawPayload, "贖回匯率")),
-    trust_management_fee: sqliteAmount(payloadCell(rawPayload, "信託管理費")),
-    short_term_fee: sqliteAmount(payloadCell(rawPayload, "短線費用")),
-    deferred_fee: sqliteAmount(payloadCell(rawPayload, "遞延手續費")),
-    deposit_account: payloadCell(rawPayload, "入帳帳號"),
-    net_deposit_amount: sqliteAmount(payloadCell(rawPayload, "入帳淨額")),
-    reference_pnl: sqliteAmount(payloadCell(rawPayload, "贖回參考損益")),
-    reference_return_rate: payloadCell(rawPayload, "參考贖回報酬率"),
-    note: payloadCell(rawPayload, "備註"),
-  };
-}
-
-function fundCashDividendFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    data_type: payloadCell(rawPayload, "資料類別"),
-    fund_id: payloadCell(rawPayload, "基金識別"),
-    query_period: payloadCell(rawPayload, "查詢期間"),
-    deposit_date: normalizeDateValue(payloadCell(rawPayload, "入帳日期")),
-    fund_name: payloadCell(rawPayload, "基金名稱"),
-    transaction_number: payloadCell(rawPayload, "交易編號"),
-    benchmark_date: normalizeDateValue(payloadCell(rawPayload, "基準日期")),
-    currency: payloadCell(rawPayload, "計價幣別"),
-    benchmark_units: sqliteAmount(payloadCell(rawPayload, "基準單位數")),
-    distribution_amount: sqliteAmount(payloadCell(rawPayload, "分配金額")),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
-    distribution_rate: payloadCell(rawPayload, "分配率"),
-    deposit_account: payloadCell(rawPayload, "入帳帳號"),
-  };
-}
-
-function fundConversionTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    data_type: payloadCell(rawPayload, "資料類別"),
-    fund_id: payloadCell(rawPayload, "基金識別"),
-    query_period: payloadCell(rawPayload, "查詢期間"),
-    conversion_out_date: normalizeDateValue(payloadCell(rawPayload, "轉出日期")),
-    conversion_in_date: normalizeDateValue(payloadCell(rawPayload, "轉入日期")),
-    transaction_number: payloadCell(rawPayload, "交易編號"),
-    from_fund_name: payloadCell(rawPayload, "轉出基金"),
-    to_fund_name: payloadCell(rawPayload, "轉入基金"),
-    conversion_investment_amount: sqliteAmount(payloadCell(rawPayload, "轉換投資金額")),
-    from_units: sqliteAmount(payloadCell(rawPayload, "轉出單位數")),
-    to_units: sqliteAmount(payloadCell(rawPayload, "轉入單位數")),
-    from_nav: sqliteAmount(payloadCell(rawPayload, "轉出基金淨值")),
-    to_nav: sqliteAmount(payloadCell(rawPayload, "轉入基金淨值")),
-    conversion_fx_rate: sqliteAmount(payloadCell(rawPayload, "轉換匯率")),
-    short_term_fee: sqliteAmount(payloadCell(rawPayload, "短線費用")),
-    bank_conversion_fee: sqliteAmount(payloadCell(rawPayload, "銀行轉換手續費")),
-    fund_company_conversion_fee: sqliteAmount(payloadCell(rawPayload, "基金公司轉換手續費")),
-  };
-}
-
-function brokerageHoldingFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    as_of_date: normalizeDateValue(payloadCell(rawPayload, "as_of_date")),
-    account_number: payloadCell(rawPayload, "account_number"),
-    asset_type: payloadCell(rawPayload, "asset_type"),
-    sub_category: payloadCell(rawPayload, "sub_category"),
-    product_code: payloadCell(rawPayload, "product_code"),
-    product_name: payloadCell(rawPayload, "product_name"),
-    currency: payloadCell(rawPayload, "currency"),
-    quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
-    market_date: normalizeDateValue(payloadCell(rawPayload, "market_date")),
-    market_price: sqliteAmount(payloadCell(rawPayload, "market_price")),
-    market_value_original: sqliteAmount(payloadCell(rawPayload, "market_value_original")),
-    market_value_twd: sqliteAmount(payloadCell(rawPayload, "market_value_twd")),
-    cost_price: sqliteAmount(payloadCell(rawPayload, "cost_price")),
-    cost_amount: sqliteAmount(payloadCell(rawPayload, "cost_amount")),
-    unrealized_pnl_original: sqliteAmount(payloadCell(rawPayload, "unrealized_pnl_original")),
-    unrealized_pnl_twd: sqliteAmount(payloadCell(rawPayload, "unrealized_pnl_twd")),
-    return_rate: payloadCell(rawPayload, "return_rate"),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "fx_rate")),
-  };
-}
-
-function brokerageAssetSummaryFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    as_of_date: normalizeDateValue(payloadCell(rawPayload, "as_of_date")),
-    asset_type: payloadCell(rawPayload, "asset_type"),
-    asset_name: payloadCell(rawPayload, "asset_name"),
-    asset_value_twd: sqliteAmount(payloadCell(rawPayload, "asset_value_twd")),
-    unrealized_pnl_twd: sqliteAmount(payloadCell(rawPayload, "unrealized_pnl_twd")),
-  };
-}
-
-function brokerageTradeTransactionFields(context: TypedFieldAdapterContext) {
-  const { rawPayload } = context;
-  return {
-    trade_date: normalizeDateValue(payloadCell(rawPayload, "trade_date")),
-    account_number: payloadCell(rawPayload, "account_number"),
-    asset_type: payloadCell(rawPayload, "asset_type"),
-    trade_type: payloadCell(rawPayload, "trade_type"),
-    sub_category: payloadCell(rawPayload, "sub_category"),
-    product_code: payloadCell(rawPayload, "product_code"),
-    product_name: payloadCell(rawPayload, "product_name"),
-    currency: payloadCell(rawPayload, "currency"),
-    action: payloadCell(rawPayload, "action"),
-    quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
-    price: sqliteAmount(payloadCell(rawPayload, "price")),
-    gross_amount: sqliteAmount(payloadCell(rawPayload, "gross_amount")),
-    fee: sqliteAmount(payloadCell(rawPayload, "fee")),
-    tax: sqliteAmount(payloadCell(rawPayload, "tax")),
-    settlement_amount: sqliteAmount(payloadCell(rawPayload, "settlement_amount")),
-    settlement_currency: payloadCell(rawPayload, "settlement_currency"),
-    realized_pnl: sqliteAmount(payloadCell(rawPayload, "realized_pnl")),
-    cost_amount: sqliteAmount(payloadCell(rawPayload, "cost_amount")),
-  };
-}
-
-function unsupportedStatementFields(context: TypedFieldAdapterContext) {
-  return {
-    reason: "unsupported source file shape",
-    headers_json: JSON.stringify(context.headers),
-  };
-}
-
-const TYPED_FIELD_ADAPTERS: Record<TypedStatementTable, TypedFieldAdapter> = {
-  account_transactions: bankTransactionFields,
-  foreign_currency_transactions: foreignCurrencyTransactionFields,
-  credit_card_statement_lines: creditCardStatementLineFields,
-  loan_transactions: loanTransactionFields,
-  fund_holdings: fundHoldingFields,
-  fund_buy_transactions: fundBuyTransactionFields,
-  fund_redemption_transactions: fundRedemptionTransactionFields,
-  fund_cash_dividends: fundCashDividendFields,
-  fund_conversion_transactions: fundConversionTransactionFields,
-  brokerage_holdings: brokerageHoldingFields,
-  brokerage_asset_summaries: brokerageAssetSummaryFields,
-  brokerage_trade_transactions: brokerageTradeTransactionFields,
-  unsupported_statement_rows: unsupportedStatementFields,
-};
-
-function typedFieldsForTable(
-  table: TypedStatementTable,
-  sourceRelativePath: string,
-  sourceFileRecord: Record<string, unknown>,
-  rawPayload: Record<string, string>,
-  headers: string[],
-): Record<string, unknown> {
-  return TYPED_FIELD_ADAPTERS[table]({
-    table,
-    sourceRelativePath,
-    sourceFileRecord,
-    sourceMetadata: sourceMetadataFromRecord(sourceFileRecord),
-    rawPayload,
-    headers,
-  });
-}
-
 function insertTypedStatementRow(
   db: LedgerDatabase,
   sourceFileRecord: Record<string, unknown>,
@@ -1281,21 +729,19 @@ function insertTypedStatementRow(
   },
 ) {
   const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
-  const table = statementTableForSource(sourceRelativePath, {
+  const headers = Array.isArray(sourceFileRecord.headers)
+    ? (sourceFileRecord.headers as string[])
+    : [];
+  const parser = createSourceCsvParser({
     bank: String(sourceFileRecord.bank ?? ""),
     product: String(sourceFileRecord.product ?? ""),
+    sourceRelativePath,
+    metadata: (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
+    headers,
   });
-  insertRecord(db, table, {
+  insertRecord(db, parser.table, {
     ...commonTypedRowFields(sourceFileRecord, row),
-    ...typedFieldsForTable(
-      table,
-      sourceRelativePath,
-      sourceFileRecord,
-      row.rawPayload,
-      Array.isArray(sourceFileRecord.headers)
-        ? (sourceFileRecord.headers as string[])
-        : [],
-    ),
+    ...parser.parseRow(row.rawPayload),
   });
 }
 
