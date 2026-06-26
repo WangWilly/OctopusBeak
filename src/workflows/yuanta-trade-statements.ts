@@ -555,6 +555,18 @@ async function acceptDisclaimerIfPresent(page: Page): Promise<void> {
   await settleAfterNavigation(page);
 }
 
+async function dismissPersonalMessageIfPresent(page: Page): Promise<void> {
+  if (!page.url().includes("/NexusWebTrade/RA/PersonalMessage")) return;
+
+  const closeButton = page.locator("button.close").first();
+  if (!(await closeButton.isVisible({ timeout: 5_000 }).catch(() => false))) {
+    return;
+  }
+
+  await closeButton.click();
+  await settleAfterNavigation(page);
+}
+
 async function completeCertificateIfPresent(
   page: Page,
   certificatePath: string,
@@ -1085,6 +1097,7 @@ export default workflow("yuantaTradeStatements", {
           ),
           authSession,
         );
+        await dismissPersonalMessageIfPresent(authPage);
         await acceptDisclaimerIfPresent(authPage);
         await authPage.locator("#btnLogout").waitFor({ timeout: 120_000 });
       },
@@ -1096,6 +1109,7 @@ export default workflow("yuantaTradeStatements", {
         { waitUntil: "domcontentloaded" },
       );
       await settleAfterNavigation(page);
+      await dismissPersonalMessageIfPresent(page);
       await acceptDisclaimerIfPresent(page);
     }
 
