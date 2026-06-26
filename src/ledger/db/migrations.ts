@@ -1,4 +1,8 @@
-import { TYPED_STATEMENT_TABLES } from "../source-csv-parsers.ts";
+import {
+  normalizeCurrencyCode,
+  sqliteAmount,
+  TYPED_STATEMENT_TABLES,
+} from "../source-csv-parsers.ts";
 import type { LedgerDatabase } from "./client.ts";
 
 type LedgerMigration = {
@@ -183,10 +187,12 @@ function createTypedStatementSchema(db: LedgerDatabase) {
       investment_date TEXT,
       fund_name TEXT,
       transaction_number TEXT,
+      currency TEXT,
       investment_amount REAL,
       subscription_fx_rate REAL,
       subscription_nav REAL,
       subscription_fee REAL,
+      subscription_fee_currency TEXT,
       point_discount REAL,
       subscribed_units REAL
     );
@@ -226,6 +232,7 @@ function createTypedStatementSchema(db: LedgerDatabase) {
       currency TEXT,
       benchmark_units REAL,
       distribution_amount REAL,
+      distribution_currency TEXT,
       fx_rate REAL,
       distribution_rate TEXT,
       deposit_account TEXT
@@ -338,6 +345,88 @@ function createDashboardIndexes(db: LedgerDatabase) {
   `);
 }
 
+function tableColumns(db: LedgerDatabase, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
+
+function addColumnIfMissing(
+  db: LedgerDatabase,
+  table: string,
+  column: string,
+  definition: string,
+) {
+  if (tableColumns(db, table).has(column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+function parseRawPayload(rawPayloadJson: string): Record<string, unknown> {
+  try {
+    return JSON.parse(rawPayloadJson) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function addFundTransactionCurrencyColumns(db: LedgerDatabase) {
+  addColumnIfMissing(db, "fund_buy_transactions", "currency", "currency TEXT");
+  addColumnIfMissing(
+    db,
+    "fund_buy_transactions",
+    "subscription_fee_currency",
+    "subscription_fee_currency TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "fund_cash_dividends",
+    "distribution_currency",
+    "distribution_currency TEXT",
+  );
+
+  const fundBuyRows = db
+    .prepare("SELECT statement_row_id, raw_payload_json FROM fund_buy_transactions")
+    .all() as Array<{ statement_row_id: string; raw_payload_json: string }>;
+  const updateFundBuy = db.prepare(`
+    UPDATE fund_buy_transactions
+    SET currency = ?,
+        investment_amount = COALESCE(?, investment_amount),
+        subscription_fee = COALESCE(?, subscription_fee),
+        subscription_fee_currency = ?
+    WHERE statement_row_id = ?
+  `);
+  for (const row of fundBuyRows) {
+    const payload = parseRawPayload(row.raw_payload_json);
+    const currency = normalizeCurrencyCode(payload["投資金額"], "TWD");
+    updateFundBuy.run(
+      currency,
+      sqliteAmount(payload["投資金額"]),
+      sqliteAmount(payload["申購手續費"]),
+      normalizeCurrencyCode(payload["申購手續費"], currency),
+      row.statement_row_id,
+    );
+  }
+
+  const dividendRows = db
+    .prepare("SELECT statement_row_id, raw_payload_json FROM fund_cash_dividends")
+    .all() as Array<{ statement_row_id: string; raw_payload_json: string }>;
+  const updateDividend = db.prepare(`
+    UPDATE fund_cash_dividends
+    SET currency = ?,
+        distribution_amount = COALESCE(?, distribution_amount),
+        distribution_currency = ?
+    WHERE statement_row_id = ?
+  `);
+  for (const row of dividendRows) {
+    const payload = parseRawPayload(row.raw_payload_json);
+    updateDividend.run(
+      normalizeCurrencyCode(payload["計價幣別"]),
+      sqliteAmount(payload["分配金額"]),
+      normalizeCurrencyCode(payload["分配金額"], "TWD"),
+      row.statement_row_id,
+    );
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -348,6 +437,11 @@ const migrations: LedgerMigration[] = [
     version: 2,
     name: "dashboard_indexes",
     up: createDashboardIndexes,
+  },
+  {
+    version: 3,
+    name: "fund_transaction_currency_columns",
+    up: addFundTransactionCurrencyColumns,
   },
 ];
 

@@ -136,7 +136,10 @@ export const fundBuyTransactions = sqliteTable("fund_buy_transactions", {
   investmentDate: text("investment_date"),
   fundName: text("fund_name"),
   transactionNumber: text("transaction_number"),
+  currency: text("currency"),
   investmentAmount: real("investment_amount"),
+  subscriptionFee: real("subscription_fee"),
+  subscriptionFeeCurrency: text("subscription_fee_currency"),
   subscribedUnits: real("subscribed_units"),
 });
 
@@ -161,6 +164,7 @@ export const fundCashDividends = sqliteTable("fund_cash_dividends", {
   transactionNumber: text("transaction_number"),
   currency: text("currency"),
   distributionAmount: real("distribution_amount"),
+  distributionCurrency: text("distribution_currency"),
   fxRate: real("fx_rate"),
 });
 
