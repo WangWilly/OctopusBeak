@@ -52,7 +52,7 @@
       metrics.push({
         label: "Card balance",
         amounts: totalAmounts(cardAccounts),
-        breakdown: cardAccounts.map((account) => account.institution).slice(0, 3),
+        breakdown: [cardAccounts.map((account) => account.institution).slice(0, 3).join(" + ")],
       });
     }
     if (foreignDebtAccounts.length > 0) {
