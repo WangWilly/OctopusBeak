@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LedgerLens Assets</title>
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body class="shell-page">
+  <aside class="sidebar">
+    <div>
+      <a class="brand" href="overview.html" aria-label="LedgerLens home">
+        <span class="brand-mark"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"/></svg></span>
+        <span style="display: grid; gap: 2px;"><strong class="brand-title">LedgerLens</strong><span class="brand-subtitle">Personal portfolio</span></span>
+      </a>
+      <nav class="side-nav" aria-label="Primary">
+        <a class="nav-link" href="overview.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 13h8V3H3v10Zm2-8h4v6H5V5Zm-2 16h8v-6H3v6Zm2-4h4v2H5v-2Zm8 4h8V11h-8v10Zm2-8h4v6h-4v-6Zm-2-10v6h8V3h-8Zm2 2h4v2h-4V5Z"/></svg><span>Overview</span></a>
+        <a class="nav-link active" href="assets.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 7h-2V5c0-1.1-.9-2-2-2H5C3.34 3 2 4.34 2 6v12c0 1.1.9 2 2 2h17c.55 0 1-.45 1-1V8c0-.55-.45-1-1-1ZM5 5h12v2H5c-.55 0-1-.45-1-1s.45-1 1-1Zm15 10h-4c-1.1 0-2-.9-2-2s.9-2 2-2h4v4Zm-4-1.5c.28 0 .5-.22.5-.5s-.22-.5-.5-.5-.5.22-.5.5.22.5.5.5Z"/></svg><span>Assets</span></a>
+        <a class="nav-link" href="liabilities.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"/></svg><span>Liabilities</span></a>
+      </nav>
+    </div>
+    <div class="side-status">
+      <p class="label">Asset value</p>
+      <p class="money" data-hidden="TWD ----">TWD 2,988,870</p>
+      <p class="sub">5 accounts / 3 currencies</p>
+    </div>
+  </aside>
+
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Assets</p>
+        <h1>Asset accounts</h1>
+      </div>
+      <div class="topbar-actions">
+        <input class="search" type="search" data-search placeholder="Search asset accounts" aria-label="Search asset accounts" />
+        <button class="switch" type="button" data-toggle-values aria-pressed="true">
+          <span data-switch-label>Values Visible</span>
+          <span class="switch-track" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="grid metrics">
+        <article class="card metric-card"><span class="label">Asset value</span><strong class="value money" data-hidden="TWD ----">TWD 2,988,870</strong><span class="breakdown"><span>Bank 2</span><span>Fund 1</span><span>Brokerage 1</span><span>Foreign 1</span></span></article>
+        <article class="card metric-card"><span class="label">Largest account</span><strong class="value money" data-hidden="TWD ----">TWD 1,320,400</strong><span class="breakdown"><span>Yuanta Brokerage</span></span></article>
+        <article class="card metric-card"><span class="label">Liquid cash</span><strong class="value money" data-hidden="TWD ----">TWD 625,040</strong><span class="breakdown"><span>Fubon + CTBC</span></span></article>
+        <article class="card metric-card"><span class="label">Foreign balance</span><strong class="value money" data-hidden="USD ----">USD 12,450</strong><span class="breakdown"><span>Shin Kong deposit</span></span></article>
+      </section>
+
+      <div class="toolbar">
+        <div class="filters" aria-label="Asset filters">
+          <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">All Assets</button>
+          <button class="filter-btn" type="button" data-filter="bank" aria-pressed="false">Bank</button>
+          <button class="filter-btn" type="button" data-filter="fund" aria-pressed="false">Fund</button>
+          <button class="filter-btn" type="button" data-filter="brokerage" aria-pressed="false">Brokerage</button>
+          <button class="filter-btn" type="button" data-filter="foreign" aria-pressed="false">Foreign</button>
+        </div>
+      </div>
+
+      <section class="layout-accounts">
+        <div>
+          <div class="account-list card" style="display:block;overflow:hidden">
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Account Name</th>
+                    <th>Institution</th>
+                    <th>Type</th>
+                    <th class="right">Balance</th>
+                    <th class="right">Allocation</th>
+                    <th class="right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="account-card selected" style="display:table-row;cursor:pointer" data-account="fubon" data-type="bank">
+                    <td><strong>Taipei Fubon Savings</strong><br><span class="account-meta">Primary TWD cash account / 12 TX</span></td>
+                    <td>Fubon Commercial</td>
+                    <td><span class="chip">Bank</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 428,200</strong><br><span class="account-meta">Updated today</span></td>
+                    <td class="right"><span class="account-meta">14%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:14%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="fubon">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="ctbc" data-type="bank">
+                    <td><strong>CTBC Payroll</strong><br><span class="account-meta">Salary and bill reserve / 8 TX</span></td>
+                    <td>CTBC Bank</td>
+                    <td><span class="chip">Bank</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 196,840</strong><br><span class="account-meta">Updated today</span></td>
+                    <td class="right"><span class="account-meta">7%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:7%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="ctbc">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="cathayFund" data-type="fund">
+                    <td><strong>Cathay Global Fund</strong><br><span class="account-meta">Multi-asset fund positions / 6 TX</span></td>
+                    <td>Cathay Securities</td>
+                    <td><span class="chip">Fund</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 640,500</strong><br><span class="chip good">+1.1%</span></td>
+                    <td class="right"><span class="account-meta">21%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:21%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="cathayFund">TX</button> <button class="chip" type="button" data-open-positions data-account="cathayFund">Positions</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="yuantaBrokerage" data-type="brokerage">
+                    <td><strong>Yuanta Brokerage</strong><br><span class="account-meta">TW equity and ETF account / 18 TX</span></td>
+                    <td>Yuanta Securities</td>
+                    <td><span class="chip">Brokerage</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 1,320,400</strong><br><span class="chip good">+0.8%</span></td>
+                    <td class="right"><span class="account-meta">44%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:44%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="yuantaBrokerage">TX</button> <button class="chip" type="button" data-open-positions data-account="yuantaBrokerage">Positions</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="shinkongForeign" data-type="foreign">
+                    <td><strong>Shin Kong Foreign Deposit</strong><br><span class="account-meta">USD settlement account / 5 TX</span></td>
+                    <td>Shin Kong Bank</td>
+                    <td><span class="chip">Foreign</span></td>
+                    <td class="right"><strong class="money" data-hidden="USD ----">USD 12,450</strong><br><span class="account-meta">TWD 402,930</span></td>
+                    <td class="right"><span class="account-meta">14%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:14%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="shinkongForeign">TX</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="empty-state" data-empty>No matching asset accounts.</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal" data-modal="transactions" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal-panel">
+      <div class="modal-head"><div><h2 data-modal-title>Transactions</h2><p class="lead" data-modal-subtitle></p></div><button class="modal-close" type="button" data-close-modal aria-label="Close">x</button></div>
+      <div class="modal-body"><table class="table"><thead><tr><th>Date</th><th>Description</th><th>Type</th><th class="right">Amount</th><th class="right">Note</th></tr></thead><tbody data-modal-rows></tbody></table></div>
+    </div>
+  </div>
+  <div class="modal" data-modal="positions" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal-panel">
+      <div class="modal-head"><div><h2 data-modal-title>Positions</h2><p class="lead" data-modal-subtitle></p></div><button class="modal-close" type="button" data-close-modal aria-label="Close">x</button></div>
+      <div class="modal-body"><table class="table"><thead><tr><th>Symbol</th><th>Name</th><th class="right">Units</th><th class="right">Value</th><th class="right">Day</th></tr></thead><tbody data-modal-rows></tbody></table></div>
+    </div>
+  </div>
+
+  <script>
+    window.dashboardAccounts = {
+      fubon: { name: "Taipei Fubon Savings", institution: "Taipei Fubon", typeLabel: "Bank", value: "428,200", currency: "TWD", transactions: [
+        { date: "2026-06-26", label: "ATM cash reserve", type: "Transfer", amount: "-8,000", currency: "TWD", note: "Cash" },
+        { date: "2026-06-24", label: "Dividend deposit", type: "Income", amount: "+12,430", currency: "TWD", note: "TW ETF" },
+        { date: "2026-06-21", label: "Card autopay", type: "Payment", amount: "-38,210", currency: "TWD", note: "Yuanta card" }
+      ], positions: [] },
+      ctbc: { name: "CTBC Payroll", institution: "CTBC", typeLabel: "Bank", value: "196,840", currency: "TWD", transactions: [
+        { date: "2026-06-25", label: "Salary", type: "Income", amount: "+128,000", currency: "TWD", note: "June" },
+        { date: "2026-06-23", label: "Mortgage transfer", type: "Transfer", amount: "-42,000", currency: "TWD", note: "Fubon" }
+      ], positions: [] },
+      cathayFund: { name: "Cathay Global Fund", institution: "Cathay Securities", typeLabel: "Fund", value: "640,500", currency: "TWD", transactions: [
+        { date: "2026-06-20", label: "Monthly contribution", type: "Buy", amount: "-20,000", currency: "TWD", note: "Auto" },
+        { date: "2026-06-12", label: "Rebalance", type: "Switch", amount: "0", currency: "TWD", note: "Balanced" }
+      ], positions: [
+        { symbol: "CATH-GLO", name: "Global Balanced Fund", units: "2,840.62", value: "458,200", currency: "TWD", change: "+0.6%" },
+        { symbol: "CATH-BND", name: "Investment Grade Bond", units: "1,140.20", value: "182,300", currency: "TWD", change: "+0.2%" }
+      ] },
+      yuantaBrokerage: { name: "Yuanta Brokerage", institution: "Yuanta Securities", typeLabel: "Brokerage", value: "1,320,400", currency: "TWD", transactions: [
+        { date: "2026-06-26", label: "0050 buy", type: "Buy", amount: "-52,300", currency: "TWD", note: "20 shares" },
+        { date: "2026-06-18", label: "2330 dividend", type: "Income", amount: "+8,600", currency: "TWD", note: "Cash" }
+      ], positions: [
+        { symbol: "0050", name: "Yuanta Taiwan 50 ETF", units: "640", value: "892,800", currency: "TWD", change: "+0.9%" },
+        { symbol: "2330", name: "TSMC", units: "300", value: "427,600", currency: "TWD", change: "+0.5%" }
+      ] },
+      shinkongForeign: { name: "Shin Kong Foreign Deposit", institution: "Shin Kong Bank", typeLabel: "Foreign", value: "12,450", currency: "USD", transactions: [
+        { date: "2026-06-22", label: "USD conversion", type: "FX", amount: "+2,000", currency: "USD", note: "TWD 64,700" },
+        { date: "2026-06-08", label: "Wire transfer", type: "Transfer", amount: "-700", currency: "USD", note: "Brokerage" }
+      ], positions: [] }
+    };
+  </script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

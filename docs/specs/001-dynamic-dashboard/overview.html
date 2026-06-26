@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LedgerLens Overview</title>
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body class="shell-page">
+  <aside class="sidebar">
+    <div>
+      <a class="brand" href="overview.html" aria-label="LedgerLens home">
+        <span class="brand-mark">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"/></svg>
+        </span>
+        <span style="display: grid; gap: 2px;">
+          <strong class="brand-title">LedgerLens</strong>
+          <span class="brand-subtitle">Personal portfolio</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Primary">
+        <a class="nav-link active" href="overview.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 13h8V3H3v10Zm2-8h4v6H5V5Zm-2 16h8v-6H3v6Zm2-4h4v2H5v-2Zm8 4h8V11h-8v10Zm2-8h4v6h-4v-6Zm-2-10v6h8V3h-8Zm2 2h4v2h-4V5Z"/></svg><span>Overview</span></a>
+        <a class="nav-link" href="assets.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 7h-2V5c0-1.1-.9-2-2-2H5C3.34 3 2 4.34 2 6v12c0 1.1.9 2 2 2h17c.55 0 1-.45 1-1V8c0-.55-.45-1-1-1ZM5 5h12v2H5c-.55 0-1-.45-1-1s.45-1 1-1Zm15 10h-4c-1.1 0-2-.9-2-2s.9-2 2-2h4v4Zm-4-1.5c.28 0 .5-.22.5-.5s-.22-.5-.5-.5-.5.22-.5.5.22.5.5.5Z"/></svg><span>Assets</span></a>
+        <a class="nav-link" href="liabilities.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"/></svg><span>Liabilities</span></a>
+      </nav>
+    </div>
+    <div class="side-status">
+      <p class="label">Net position</p>
+      <p class="money" data-hidden="TWD ----">TWD 1,557,727</p>
+      <p class="sub">USD 10,045 / JPY -68,300</p>
+    </div>
+  </aside>
+
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Overview</p>
+        <h1>Portfolio</h1>
+      </div>
+      <div class="topbar-actions">
+        <span class="chip good">Synced 2 min ago</span>
+        <button class="switch" type="button" data-toggle-values aria-pressed="true">
+          <span data-switch-label>Values Visible</span>
+          <span class="switch-track" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="grid metrics" aria-label="Summary metrics" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));">
+        <article class="card metric-card">
+          <span class="label">Net position</span>
+          <strong class="value money" data-hidden="TWD ----">TWD 1,557,727</strong>
+          <span class="breakdown"><span>5 asset accounts</span><span>5 debt accounts</span></span>
+        </article>
+        <article class="card metric-card">
+          <span class="label">Asset value</span>
+          <strong class="value money" data-hidden="TWD ----">TWD 2,988,870</strong>
+          <span class="breakdown"><span>Bank 2</span><span>Fund 1</span><span>Brokerage 1</span><span>Foreign 1</span></span>
+        </article>
+        <article class="card metric-card">
+          <span class="label">Liabilities</span>
+          <strong class="value money" data-hidden="TWD ----">TWD 1,431,143</strong>
+          <span class="breakdown"><span>Credit card 2</span><span>Loan 2</span><span>Other 1</span></span>
+        </article>
+      </section>
+
+      <section class="grid layout-2">
+        <article class="card">
+          <div class="panel-title">
+            <h2>Snapshot history</h2>
+            <label class="chip" for="snapshot-currency" style="margin-left:auto;">
+              <select id="snapshot-currency" aria-label="Snapshot history currency" style="border:0;background:transparent;color:inherit;font:inherit;font-weight:720;letter-spacing:0.06em;text-transform:uppercase;padding:0;margin:0;">
+                <option>TWD</option>
+                <option>JPY</option>
+                <option>USD</option>
+              </select>
+            </label>
+            <span class="chip">30 days</span>
+          </div>
+          <div class="card pad">
+            <svg class="sparkline" viewBox="0 0 720 220" role="img" aria-label="Net position trend">
+              <path class="sparkline-grid" d="M0 44H720M0 110H720M0 176H720"/>
+              <path class="sparkline-area" d="M0 168L90 150L180 158L270 124L360 130L450 92L540 102L630 70L720 62L720 220L0 220Z"/>
+              <path class="sparkline-line" d="M0 168L90 150L180 158L270 124L360 130L450 92L540 102L630 70L720 62"/>
+            </svg>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th>Date</th><th class="right">Net position</th><th class="right">Assets</th><th class="right">Liabilities</th></tr></thead>
+                <tbody>
+                  <tr><td>2026-06-26</td><td class="right money" data-hidden="----">1,557,727</td><td class="right money" data-hidden="----">2,988,870</td><td class="right money" data-hidden="----">1,431,143</td></tr>
+                  <tr><td>2026-06-25</td><td class="right money" data-hidden="----">1,541,380</td><td class="right money" data-hidden="----">2,970,210</td><td class="right money" data-hidden="----">1,428,830</td></tr>
+                  <tr><td>2026-06-24</td><td class="right money" data-hidden="----">1,548,920</td><td class="right money" data-hidden="----">2,976,900</td><td class="right money" data-hidden="----">1,427,980</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="panel-title">
+            <h2>Asset allocation</h2>
+          </div>
+          <div class="card pad bars">
+            <div><div class="bar-head"><span>Brokerage</span><span class="money" data-hidden="----">44.2%</span></div><div class="bar-track"><div class="bar-fill accent" style="width:44.2%"></div></div></div>
+            <div><div class="bar-head"><span>Fund</span><span class="money" data-hidden="----">21.4%</span></div><div class="bar-track"><div class="bar-fill domain" style="width:21.4%"></div></div></div>
+            <div><div class="bar-head"><span>Bank</span><span class="money" data-hidden="----">20.9%</span></div><div class="bar-track"><div class="bar-fill" style="width:20.9%"></div></div></div>
+            <div><div class="bar-head"><span>Foreign</span><span class="money" data-hidden="----">13.5%</span></div><div class="bar-track"><div class="bar-fill" style="width:13.5%"></div></div></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: var(--space-6)">
+        <div class="panel-title">
+          <h2>Daily asset changes</h2>
+          <label class="chip" for="daily-base-currency">
+            Base
+            <select id="daily-base-currency" aria-label="Daily asset changes base currency" style="border:0;background:transparent;color:inherit;font:inherit;font-weight:720;letter-spacing:0.06em;text-transform:uppercase;padding:0;margin:0;">
+              <option>TWD</option>
+              <option>USD</option>
+              <option>JPY</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Date</th><th class="right">Net assets</th><th class="right">Daily change</th><th class="right">Assets</th><th class="right">Liabilities</th></tr></thead>
+            <tbody>
+              <tr><td>2026-06-26</td><td class="right money" data-hidden="----">1,557,727</td><td class="right good money" data-hidden="----">+16,347</td><td class="right money" data-hidden="----">2,988,870</td><td class="right money" data-hidden="----">1,431,143</td></tr>
+              <tr><td>2026-06-25</td><td class="right money" data-hidden="----">1,541,380</td><td class="right bad money" data-hidden="----">-7,540</td><td class="right money" data-hidden="----">2,970,210</td><td class="right money" data-hidden="----">1,428,830</td></tr>
+              <tr><td>2026-06-24</td><td class="right money" data-hidden="----">1,548,920</td><td class="right good money" data-hidden="----">+11,920</td><td class="right money" data-hidden="----">2,976,900</td><td class="right money" data-hidden="----">1,427,980</td></tr>
+              <tr><td>2026-06-23</td><td class="right money" data-hidden="----">1,537,000</td><td class="right money" data-hidden="----">0</td><td class="right money" data-hidden="----">2,964,980</td><td class="right money" data-hidden="----">1,427,980</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LedgerLens Liabilities</title>
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body class="shell-page">
+  <aside class="sidebar">
+    <div>
+      <a class="brand" href="overview.html" aria-label="LedgerLens home">
+        <span class="brand-mark"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"/></svg></span>
+        <span style="display: grid; gap: 2px;"><strong class="brand-title">LedgerLens</strong><span class="brand-subtitle">Personal portfolio</span></span>
+      </a>
+      <nav class="side-nav" aria-label="Primary">
+        <a class="nav-link" href="overview.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 13h8V3H3v10Zm2-8h4v6H5V5Zm-2 16h8v-6H3v6Zm2-4h4v2H5v-2Zm8 4h8V11h-8v10Zm2-8h4v6h-4v-6Zm-2-10v6h8V3h-8Zm2 2h4v2h-4V5Z"/></svg><span>Overview</span></a>
+        <a class="nav-link" href="assets.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 7h-2V5c0-1.1-.9-2-2-2H5C3.34 3 2 4.34 2 6v12c0 1.1.9 2 2 2h17c.55 0 1-.45 1-1V8c0-.55-.45-1-1-1ZM5 5h12v2H5c-.55 0-1-.45-1-1s.45-1 1-1Zm15 10h-4c-1.1 0-2-.9-2-2s.9-2 2-2h4v4Zm-4-1.5c.28 0 .5-.22.5-.5s-.22-.5-.5-.5-.5.22-.5.5.22.5.5.5Z"/></svg><span>Assets</span></a>
+        <a class="nav-link active" href="liabilities.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"/></svg><span>Liabilities</span></a>
+      </nav>
+    </div>
+    <div class="side-status">
+      <p class="label">Liabilities</p>
+      <p class="money" data-hidden="TWD ----">TWD 1,431,143</p>
+      <p class="sub">5 debt accounts / 3 currencies</p>
+    </div>
+  </aside>
+
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Liabilities</p>
+        <h1>Debt accounts</h1>
+      </div>
+      <div class="topbar-actions">
+        <input class="search" type="search" data-search placeholder="Search liabilities" aria-label="Search liabilities" />
+        <button class="switch" type="button" data-toggle-values aria-pressed="true">
+          <span data-switch-label>Values Visible</span>
+          <span class="switch-track" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="grid metrics">
+        <article class="card metric-card"><span class="label">Total debt</span><strong class="value money" data-hidden="TWD ----">TWD 1,431,143</strong><span class="breakdown"><span>Credit card 2</span><span>Loan 2</span><span>Other 1</span></span></article>
+        <article class="card metric-card"><span class="label">Largest facility</span><strong class="value money" data-hidden="TWD ----">TWD 850,000</strong><span class="breakdown"><span>Fubon Mortgage</span></span></article>
+        <article class="card metric-card"><span class="label">Card balance</span><strong class="value money" data-hidden="TWD ----">TWD 57,540</strong><span class="breakdown"><span>Yuanta + JCB</span></span></article>
+        <article class="card metric-card"><span class="label">Foreign debt</span><strong class="value money" data-hidden="USD ----">USD 2,405</strong><span class="breakdown"><span>Margin payable</span></span></article>
+      </section>
+
+      <div class="toolbar">
+        <div class="filters" aria-label="Debt filters">
+          <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">All Debts</button>
+          <button class="filter-btn" type="button" data-filter="credit-card" aria-pressed="false">Credit Card</button>
+          <button class="filter-btn" type="button" data-filter="loan" aria-pressed="false">Loan</button>
+          <button class="filter-btn" type="button" data-filter="other" aria-pressed="false">Other</button>
+        </div>
+      </div>
+
+      <section class="layout-accounts">
+        <div>
+          <div class="account-list card" style="display:block;overflow:hidden">
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Account Name</th>
+                    <th>Institution</th>
+                    <th>Type</th>
+                    <th class="right">Balance</th>
+                    <th class="right">Exposure</th>
+                    <th class="right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="account-card selected" style="display:table-row;cursor:pointer" data-account="yuantaCard" data-type="credit-card">
+                    <td><strong>Yuanta Credit Card</strong><br><span class="account-meta">yuanta/credit-card-statements / 15 TX</span></td>
+                    <td>Yuanta Bank</td>
+                    <td><span class="chip">Credit Card</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 42,780</strong></td>
+                    <td class="right"><span class="account-meta">3%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:3%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="yuantaCard">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="fubonMortgage" data-type="loan">
+                    <td><strong>Fubon Mortgage</strong><br><span class="account-meta">Primary home facility / 4 TX</span></td>
+                    <td>Fubon Bank</td>
+                    <td><span class="chip">Loan</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 850,000</strong><br><span class="account-meta">Autopay</span></td>
+                    <td class="right"><span class="account-meta">59%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:59%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="fubonMortgage">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="cathayLoan" data-type="loan">
+                    <td><strong>Cathay Auto Loan</strong><br><span class="account-meta">Fixed monthly payment / 3 TX</span></td>
+                    <td>Cathay Bank</td>
+                    <td><span class="chip">Loan</span></td>
+                    <td class="right"><strong class="money" data-hidden="TWD ----">TWD 450,000</strong><br><span class="account-meta">Autopay</span></td>
+                    <td class="right"><span class="account-meta">31%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:31%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="cathayLoan">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="jcbCard" data-type="credit-card">
+                    <td><strong>JCB Travel Card</strong><br><span class="account-meta">JPY travel spend / 6 TX</span></td>
+                    <td>JCB</td>
+                    <td><span class="chip">Credit Card</span></td>
+                    <td class="right"><strong class="money" data-hidden="JPY ----">JPY 68,300</strong><br><span class="account-meta money" data-hidden="TWD ----">TWD 14,760</span></td>
+                    <td class="right"><span class="account-meta">1%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:1%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="jcbCard">TX</button></td>
+                  </tr>
+                  <tr class="account-card" style="display:table-row;cursor:pointer" data-account="marginPayable" data-type="other">
+                    <td><strong>Margin Payable</strong><br><span class="account-meta">Brokerage settlement / 2 TX</span></td>
+                    <td>Brokerage Settlement</td>
+                    <td><span class="chip">Other</span></td>
+                    <td class="right"><strong class="money" data-hidden="USD ----">USD 2,405</strong><br><span class="account-meta money" data-hidden="TWD ----">TWD 73,603</span></td>
+                    <td class="right"><span class="account-meta">5%</span><div style="height:6px;width:110px;margin:6px 0 0 auto;border-radius:999px;background:var(--surface-soft);overflow:hidden"><span style="display:block;width:5%;height:100%;background:var(--fg)"></span></div></td>
+                    <td class="right"><button class="chip" type="button" data-open-transactions data-account="marginPayable">TX</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="empty-state" data-empty>No matching liabilities.</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal" data-modal="transactions" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal-panel">
+      <div class="modal-head"><div><h2 data-modal-title>Transactions</h2><p class="lead" data-modal-subtitle></p></div><button class="modal-close" type="button" data-close-modal aria-label="Close">x</button></div>
+      <div class="modal-body"><table class="table"><thead><tr><th>Date</th><th>Description</th><th>Type</th><th class="right">Amount</th><th class="right">Note</th></tr></thead><tbody data-modal-rows></tbody></table></div>
+    </div>
+  </div>
+
+  <script>
+    window.dashboardAccounts = {
+      yuantaCard: { name: "Yuanta Credit Card", institution: "Yuanta Bank", typeLabel: "Credit Card", value: "42,780", currency: "TWD", transactions: [
+        { date: "2026-06-24", label: "PX Mart", type: "Purchase", amount: "+2,180", currency: "TWD", note: "Groceries" },
+        { date: "2026-06-22", label: "Taipower", type: "Utility", amount: "+3,740", currency: "TWD", note: "June bill" },
+        { date: "2026-06-18", label: "Autopay received", type: "Payment", amount: "-38,210", currency: "TWD", note: "Paid" }
+      ], positions: [] },
+      fubonMortgage: { name: "Fubon Mortgage", institution: "Fubon Bank", typeLabel: "Loan", value: "850,000", currency: "TWD", transactions: [
+        { date: "2026-06-05", label: "Monthly principal", type: "Payment", amount: "-24,000", currency: "TWD", note: "Autopay" },
+        { date: "2026-06-05", label: "Interest", type: "Interest", amount: "+5,800", currency: "TWD", note: "1.72%" }
+      ], positions: [] },
+      cathayLoan: { name: "Cathay Auto Loan", institution: "Cathay United", typeLabel: "Loan", value: "450,000", currency: "TWD", transactions: [
+        { date: "2026-06-10", label: "Monthly payment", type: "Payment", amount: "-12,600", currency: "TWD", note: "Autopay" },
+        { date: "2026-06-10", label: "Interest", type: "Interest", amount: "+1,260", currency: "TWD", note: "2.1%" }
+      ], positions: [] },
+      jcbCard: { name: "JCB Travel Card", institution: "JCB", typeLabel: "Credit Card", value: "68,300", currency: "JPY", transactions: [
+        { date: "2026-06-19", label: "JR Pass", type: "Purchase", amount: "+48,000", currency: "JPY", note: "Travel" },
+        { date: "2026-06-18", label: "Hotel deposit", type: "Purchase", amount: "+20,300", currency: "JPY", note: "Travel" }
+      ], positions: [] },
+      marginPayable: { name: "Margin Payable", institution: "Yuanta Securities", typeLabel: "Other", value: "2,405", currency: "USD", transactions: [
+        { date: "2026-06-21", label: "Settlement debit", type: "Margin", amount: "+2,405", currency: "USD", note: "T+2" },
+        { date: "2026-06-20", label: "Collateral transfer", type: "Transfer", amount: "-700", currency: "USD", note: "Offset" }
+      ], positions: [] }
+    };
+  </script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,8 +1,7 @@
 {
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
     "noEmit": true,
     "strict": true,
     "esModuleInterop": true,
@@ -11,5 +10,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte", "svelte.config.js", "vite.config.ts"]
 }
