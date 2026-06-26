@@ -68,7 +68,7 @@ Current workflows should prefer:
 - rows sorted by time from newest to oldest when the source provides time data
 - no mixed metadata rows inside CSV tables
 
-## Ledger And Dashboard
+## Ledger
 
 Import new CSV files from `downloads/` into the local SQLite ledger:
 
@@ -76,20 +76,11 @@ Import new CSV files from `downloads/` into the local SQLite ledger:
 npm run run:import-downloads-csv
 ```
 
-Build the normalized financial model and dashboard:
-
-```bash
-npm run run:build-financial-dashboard
-```
-
 Generated files:
 
 - `data/ledger/ledger.sqlite`
-- `data/ledger/financial_dashboard.html`
 
 `ledger.sqlite` is the primary local ledger store. It tracks imported source files and only reads a download path once. Statement rows are stored in typed tables such as account transactions, credit card lines, loan transactions, fund records, and brokerage records. Schema changes are applied through SQLite migrations.
-
-The dashboard compares daily asset changes from account balances: for each day, every account uses that day's balance when available, otherwise the closest prior balance.
 
 ## Development
 
