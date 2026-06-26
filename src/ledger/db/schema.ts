@@ -1,0 +1,220 @@
+import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+const commonColumns = () => ({
+  statementRowId: text("statement_row_id").primaryKey(),
+  sourceFileId: text("source_file_id").notNull(),
+  importRunId: text("import_run_id").notNull(),
+  sourceRelativePath: text("source_relative_path").notNull(),
+  sourceRowIndex: integer("source_row_index").notNull(),
+  sourceHash: text("source_hash").notNull(),
+  rawRowHash: text("raw_row_hash").notNull(),
+  contentHash: text("content_hash").notNull(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  dedupeStatus: text("dedupe_status").notNull(),
+  rawPayloadJson: text("raw_payload_json").notNull(),
+  importedAt: text("imported_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const schemaMigrations = sqliteTable("schema_migrations", {
+  version: integer("version").primaryKey(),
+  name: text("name").notNull(),
+  appliedAt: text("applied_at").notNull(),
+});
+
+export const importRuns = sqliteTable("import_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  importRunId: text("import_run_id").notNull(),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  recordJson: text("record_json").notNull(),
+});
+
+export const sourceFiles = sqliteTable("source_files", {
+  sourceFileId: text("source_file_id").primaryKey(),
+  importRunId: text("import_run_id").notNull(),
+  sourceFile: text("source_file"),
+  sourceRelativePath: text("source_relative_path").notNull(),
+  sourceFileHash: text("source_file_hash").notNull(),
+  sourceFileBytes: integer("source_file_bytes").notNull(),
+  sourceFileModifiedAt: text("source_file_modified_at"),
+  importedAt: text("imported_at").notNull(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  rowCount: integer("row_count").notNull(),
+  status: text("status").notNull(),
+  recordJson: text("record_json").notNull(),
+});
+
+export const accountTransactions = sqliteTable("account_transactions", {
+  ...commonColumns(),
+  accountName: text("account_name"),
+  accountNumber: text("account_number"),
+  currency: text("currency").notNull(),
+  accountingDate: text("accounting_date"),
+  transactionDate: text("transaction_date"),
+  transactionTime: text("transaction_time"),
+  description: text("description"),
+  withdrawalAmount: real("withdrawal_amount"),
+  depositAmount: real("deposit_amount"),
+  balanceAfter: real("balance_after"),
+  note: text("note"),
+  fxRate: real("fx_rate"),
+});
+
+export const foreignCurrencyTransactions = sqliteTable("foreign_currency_transactions", {
+  ...commonColumns(),
+  accountName: text("account_name"),
+  accountNumber: text("account_number"),
+  queryCurrency: text("query_currency"),
+  currency: text("currency").notNull(),
+  accountingDate: text("accounting_date"),
+  transactionDate: text("transaction_date"),
+  transactionTime: text("transaction_time"),
+  description: text("description"),
+  withdrawalAmount: real("withdrawal_amount"),
+  depositAmount: real("deposit_amount"),
+  balanceAfter: real("balance_after"),
+  note: text("note"),
+  fxRate: real("fx_rate"),
+});
+
+export const creditCardStatementLines = sqliteTable("credit_card_statement_lines", {
+  ...commonColumns(),
+  statementType: text("statement_type").notNull(),
+  statementPeriod: text("statement_period"),
+  cardNumber: text("card_number"),
+  cardLabel: text("card_label"),
+  consumeDate: text("consume_date"),
+  postingDate: text("posting_date"),
+  description: text("description"),
+  countryCurrency: text("country_currency"),
+  foreignExchangeDate: text("foreign_exchange_date"),
+  foreignCurrency: text("foreign_currency"),
+  foreignAmount: real("foreign_amount"),
+  twdAmount: real("twd_amount"),
+  installmentAction: text("installment_action"),
+  paymentStatus: text("payment_status"),
+});
+
+export const loanTransactions = sqliteTable("loan_transactions", {
+  ...commonColumns(),
+  accountNumber: text("account_number"),
+  tradeDate: text("trade_date"),
+  postingDate: text("posting_date"),
+  item: text("item"),
+  interestStartDate: text("interest_start_date"),
+  interestEndDate: text("interest_end_date"),
+  amount: real("amount"),
+  interestRate: text("interest_rate"),
+  balanceAfter: real("balance_after"),
+  overpayment: real("overpayment"),
+  note: text("note"),
+});
+
+export const fundHoldings = sqliteTable("fund_holdings", {
+  ...commonColumns(),
+  dataType: text("data_type"),
+  fundId: text("fund_id"),
+  queryPeriod: text("query_period"),
+  fundName: text("fund_name"),
+  fundType: text("fund_type"),
+  currency: text("currency"),
+  investmentAmount: real("investment_amount"),
+  marketValueWithoutDividend: real("market_value_without_dividend"),
+  unrealizedPnlWithoutDividend: real("unrealized_pnl_without_dividend"),
+  returnRateWithoutDividend: text("return_rate_without_dividend"),
+  unrealizedPnlWithDividend: real("unrealized_pnl_with_dividend"),
+  returnRateWithDividend: text("return_rate_with_dividend"),
+  holdingStatus: text("holding_status"),
+});
+
+export const fundBuyTransactions = sqliteTable("fund_buy_transactions", {
+  ...commonColumns(),
+  fundId: text("fund_id"),
+  investmentDate: text("investment_date"),
+  fundName: text("fund_name"),
+  transactionNumber: text("transaction_number"),
+  investmentAmount: real("investment_amount"),
+  subscribedUnits: real("subscribed_units"),
+});
+
+export const fundRedemptionTransactions = sqliteTable("fund_redemption_transactions", {
+  ...commonColumns(),
+  fundId: text("fund_id"),
+  redemptionDate: text("redemption_date"),
+  fundName: text("fund_name"),
+  transactionNumber: text("transaction_number"),
+  redemptionInvestmentAmount: real("redemption_investment_amount"),
+  redemptionUnits: real("redemption_units"),
+  netDepositAmount: real("net_deposit_amount"),
+  referencePnl: real("reference_pnl"),
+  note: text("note"),
+});
+
+export const fundCashDividends = sqliteTable("fund_cash_dividends", {
+  ...commonColumns(),
+  fundId: text("fund_id"),
+  depositDate: text("deposit_date"),
+  fundName: text("fund_name"),
+  transactionNumber: text("transaction_number"),
+  currency: text("currency"),
+  distributionAmount: real("distribution_amount"),
+  fxRate: real("fx_rate"),
+});
+
+export const fundConversionTransactions = sqliteTable("fund_conversion_transactions", {
+  ...commonColumns(),
+  queryPeriod: text("query_period"),
+  conversionOutDate: text("conversion_out_date"),
+  conversionInDate: text("conversion_in_date"),
+  transactionNumber: text("transaction_number"),
+  fromFundName: text("from_fund_name"),
+  toFundName: text("to_fund_name"),
+  conversionInvestmentAmount: real("conversion_investment_amount"),
+});
+
+export const brokerageHoldings = sqliteTable("brokerage_holdings", {
+  ...commonColumns(),
+  asOfDate: text("as_of_date"),
+  accountNumber: text("account_number"),
+  assetType: text("asset_type"),
+  subCategory: text("sub_category"),
+  productCode: text("product_code"),
+  productName: text("product_name"),
+  currency: text("currency"),
+  quantity: real("quantity"),
+  marketDate: text("market_date"),
+  marketPrice: real("market_price"),
+  marketValueOriginal: real("market_value_original"),
+  marketValueTwd: real("market_value_twd"),
+  costPrice: real("cost_price"),
+  costAmount: real("cost_amount"),
+  unrealizedPnlOriginal: real("unrealized_pnl_original"),
+  unrealizedPnlTwd: real("unrealized_pnl_twd"),
+  returnRate: text("return_rate"),
+  fxRate: real("fx_rate"),
+});
+
+export const brokerageTradeTransactions = sqliteTable("brokerage_trade_transactions", {
+  ...commonColumns(),
+  tradeDate: text("trade_date"),
+  accountNumber: text("account_number"),
+  assetType: text("asset_type"),
+  tradeType: text("trade_type"),
+  subCategory: text("sub_category"),
+  productCode: text("product_code"),
+  productName: text("product_name"),
+  currency: text("currency"),
+  action: text("action"),
+  quantity: real("quantity"),
+  price: real("price"),
+  grossAmount: real("gross_amount"),
+  fee: real("fee"),
+  tax: real("tax"),
+  settlementAmount: real("settlement_amount"),
+  settlementCurrency: text("settlement_currency"),
+  realizedPnl: real("realized_pnl"),
+  costAmount: real("cost_amount"),
+});

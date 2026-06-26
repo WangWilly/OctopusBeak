@@ -1,0 +1,370 @@
+import { TYPED_STATEMENT_TABLES } from "../source-csv-parsers.ts";
+import type { LedgerDatabase } from "./client.ts";
+
+type LedgerMigration = {
+  version: number;
+  name: string;
+  up: (db: LedgerDatabase) => void;
+};
+
+const COMMON_ROW_COLUMNS = `
+  statement_row_id TEXT PRIMARY KEY,
+  source_file_id TEXT NOT NULL,
+  import_run_id TEXT NOT NULL,
+  source_relative_path TEXT NOT NULL,
+  source_row_index INTEGER NOT NULL,
+  source_hash TEXT NOT NULL,
+  raw_row_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  bank TEXT NOT NULL,
+  product TEXT NOT NULL,
+  dedupe_status TEXT NOT NULL,
+  raw_payload_json TEXT NOT NULL,
+  imported_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+`;
+
+function ensureSchemaMigrationsTable(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+}
+
+function appliedMigrations(db: LedgerDatabase): Set<number> {
+  ensureSchemaMigrationsTable(db);
+  const rows = db.prepare("SELECT version FROM schema_migrations").all() as Array<{
+    version: number;
+  }>;
+  return new Set(rows.map((row) => row.version));
+}
+
+function recordMigration(db: LedgerDatabase, migration: LedgerMigration) {
+  db.prepare(
+    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+  ).run(migration.version, migration.name, new Date().toISOString());
+}
+
+function createTypedStatementSchema(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS import_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_run_id TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_import_runs_run_id ON import_runs(import_run_id);
+
+    CREATE TABLE IF NOT EXISTS import_run_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_run_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      event_at TEXT,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_import_run_events_run_id ON import_run_events(import_run_id);
+
+    CREATE TABLE IF NOT EXISTS source_files (
+      source_file_id TEXT PRIMARY KEY,
+      import_run_id TEXT NOT NULL,
+      source_file TEXT,
+      source_relative_path TEXT NOT NULL UNIQUE,
+      source_file_hash TEXT NOT NULL,
+      source_file_bytes INTEGER NOT NULL,
+      source_file_modified_at TEXT,
+      imported_at TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      source_sheet_name TEXT,
+      csv_layout_json TEXT NOT NULL,
+      headers_json TEXT NOT NULL,
+      record_keys_json TEXT NOT NULL,
+      related_raw_files_json TEXT NOT NULL,
+      related_raw_file_metadata_json TEXT NOT NULL,
+      row_count INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_source_files_import_run_id ON source_files(import_run_id);
+    CREATE INDEX IF NOT EXISTS idx_source_files_bank_product ON source_files(bank, product);
+
+    CREATE TABLE IF NOT EXISTS account_transactions (
+      ${COMMON_ROW_COLUMNS},
+      account_name TEXT,
+      account_number TEXT,
+      currency TEXT NOT NULL DEFAULT 'TWD',
+      accounting_date TEXT,
+      transaction_date TEXT,
+      transaction_time TEXT,
+      description TEXT,
+      withdrawal_amount REAL,
+      deposit_amount REAL,
+      balance_after REAL,
+      note TEXT,
+      fx_rate REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS foreign_currency_transactions (
+      ${COMMON_ROW_COLUMNS},
+      account_name TEXT,
+      account_number TEXT,
+      query_currency TEXT,
+      currency TEXT NOT NULL,
+      accounting_date TEXT,
+      transaction_date TEXT,
+      transaction_time TEXT,
+      description TEXT,
+      withdrawal_amount REAL,
+      deposit_amount REAL,
+      balance_after REAL,
+      note TEXT,
+      fx_rate REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS credit_card_statement_lines (
+      ${COMMON_ROW_COLUMNS},
+      statement_type TEXT NOT NULL,
+      statement_period TEXT,
+      card_number TEXT,
+      card_label TEXT,
+      consume_date TEXT,
+      posting_date TEXT,
+      description TEXT,
+      country_currency TEXT,
+      foreign_exchange_date TEXT,
+      foreign_currency TEXT,
+      foreign_amount REAL,
+      twd_amount REAL,
+      installment_action TEXT,
+      payment_status TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS loan_transactions (
+      ${COMMON_ROW_COLUMNS},
+      account_number TEXT,
+      trade_date TEXT,
+      posting_date TEXT,
+      item TEXT,
+      interest_start_date TEXT,
+      interest_end_date TEXT,
+      amount REAL,
+      interest_rate TEXT,
+      balance_after REAL,
+      overpayment REAL,
+      note TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS fund_holdings (
+      ${COMMON_ROW_COLUMNS},
+      data_type TEXT,
+      fund_id TEXT,
+      query_period TEXT,
+      fund_name TEXT,
+      fund_type TEXT,
+      currency TEXT,
+      investment_amount REAL,
+      market_value_without_dividend REAL,
+      unrealized_pnl_without_dividend REAL,
+      return_rate_without_dividend TEXT,
+      unrealized_pnl_with_dividend REAL,
+      return_rate_with_dividend TEXT,
+      holding_status TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS fund_buy_transactions (
+      ${COMMON_ROW_COLUMNS},
+      data_type TEXT,
+      fund_id TEXT,
+      query_period TEXT,
+      investment_date TEXT,
+      fund_name TEXT,
+      transaction_number TEXT,
+      investment_amount REAL,
+      subscription_fx_rate REAL,
+      subscription_nav REAL,
+      subscription_fee REAL,
+      point_discount REAL,
+      subscribed_units REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS fund_redemption_transactions (
+      ${COMMON_ROW_COLUMNS},
+      data_type TEXT,
+      fund_id TEXT,
+      query_period TEXT,
+      redemption_date TEXT,
+      distribution_date TEXT,
+      fund_name TEXT,
+      transaction_number TEXT,
+      redemption_investment_amount REAL,
+      redemption_units REAL,
+      redemption_price REAL,
+      redemption_fx_rate REAL,
+      trust_management_fee REAL,
+      short_term_fee REAL,
+      deferred_fee REAL,
+      deposit_account TEXT,
+      net_deposit_amount REAL,
+      reference_pnl REAL,
+      reference_return_rate TEXT,
+      note TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS fund_cash_dividends (
+      ${COMMON_ROW_COLUMNS},
+      data_type TEXT,
+      fund_id TEXT,
+      query_period TEXT,
+      deposit_date TEXT,
+      fund_name TEXT,
+      transaction_number TEXT,
+      benchmark_date TEXT,
+      currency TEXT,
+      benchmark_units REAL,
+      distribution_amount REAL,
+      fx_rate REAL,
+      distribution_rate TEXT,
+      deposit_account TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS fund_conversion_transactions (
+      ${COMMON_ROW_COLUMNS},
+      data_type TEXT,
+      fund_id TEXT,
+      query_period TEXT,
+      conversion_out_date TEXT,
+      conversion_in_date TEXT,
+      transaction_number TEXT,
+      from_fund_name TEXT,
+      to_fund_name TEXT,
+      conversion_investment_amount REAL,
+      from_units REAL,
+      to_units REAL,
+      from_nav REAL,
+      to_nav REAL,
+      conversion_fx_rate REAL,
+      short_term_fee REAL,
+      bank_conversion_fee REAL,
+      fund_company_conversion_fee REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS brokerage_holdings (
+      ${COMMON_ROW_COLUMNS},
+      as_of_date TEXT,
+      account_number TEXT,
+      asset_type TEXT,
+      sub_category TEXT,
+      product_code TEXT,
+      product_name TEXT,
+      currency TEXT,
+      quantity REAL,
+      market_date TEXT,
+      market_price REAL,
+      market_value_original REAL,
+      market_value_twd REAL,
+      cost_price REAL,
+      cost_amount REAL,
+      unrealized_pnl_original REAL,
+      unrealized_pnl_twd REAL,
+      return_rate TEXT,
+      fx_rate REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS brokerage_asset_summaries (
+      ${COMMON_ROW_COLUMNS},
+      as_of_date TEXT,
+      asset_type TEXT,
+      asset_name TEXT,
+      asset_value_twd REAL,
+      unrealized_pnl_twd REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS brokerage_trade_transactions (
+      ${COMMON_ROW_COLUMNS},
+      trade_date TEXT,
+      account_number TEXT,
+      asset_type TEXT,
+      trade_type TEXT,
+      sub_category TEXT,
+      product_code TEXT,
+      product_name TEXT,
+      currency TEXT,
+      action TEXT,
+      quantity REAL,
+      price REAL,
+      gross_amount REAL,
+      fee REAL,
+      tax REAL,
+      settlement_amount REAL,
+      settlement_currency TEXT,
+      realized_pnl REAL,
+      cost_amount REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS unsupported_statement_rows (
+      ${COMMON_ROW_COLUMNS},
+      reason TEXT NOT NULL,
+      headers_json TEXT NOT NULL
+    );
+  `);
+
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source_file_id ON ${table}(source_file_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_import_run_id ON ${table}(import_run_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source ON ${table}(source_relative_path, source_row_index)`);
+  }
+}
+
+function createDashboardIndexes(db: LedgerDatabase) {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_account_transactions_account_date
+    ON account_transactions(account_number, transaction_date);
+
+    CREATE INDEX IF NOT EXISTS idx_foreign_currency_transactions_account_date
+    ON foreign_currency_transactions(account_number, currency, transaction_date);
+
+    CREATE INDEX IF NOT EXISTS idx_credit_card_statement_lines_card_date
+    ON credit_card_statement_lines(card_number, consume_date);
+
+    CREATE INDEX IF NOT EXISTS idx_loan_transactions_account_date
+    ON loan_transactions(account_number, trade_date);
+
+    CREATE INDEX IF NOT EXISTS idx_brokerage_holdings_account_date
+    ON brokerage_holdings(account_number, as_of_date);
+  `);
+}
+
+const migrations: LedgerMigration[] = [
+  {
+    version: 1,
+    name: "typed_statement_schema",
+    up: createTypedStatementSchema,
+  },
+  {
+    version: 2,
+    name: "dashboard_indexes",
+    up: createDashboardIndexes,
+  },
+];
+
+export function migrateLedgerDb(db: LedgerDatabase) {
+  const applied = appliedMigrations(db);
+
+  for (const migration of migrations) {
+    if (applied.has(migration.version)) continue;
+
+    db.exec("BEGIN");
+    try {
+      migration.up(db);
+      recordMigration(db, migration);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
