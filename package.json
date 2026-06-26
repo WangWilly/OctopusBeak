@@ -29,7 +29,6 @@
     "run:cathay-foreign-statements": "libretto run src/workflows/cathay-foreign-statements.ts --headed",
     "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",
-    "run:build-financial-dashboard": "node --no-warnings --experimental-strip-types src/ledger/build-financial-dashboard.ts",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
   },
   "dependencies": {
