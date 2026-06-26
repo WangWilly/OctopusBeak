@@ -6,9 +6,9 @@ Target repo: `/Volumes/projects02/libretto-playground`
 
 ## Purpose
 
-Replace the current static dashboard at `data/ledger/financial_dashboard.html` with a live SvelteKit dashboard backed by the existing SQLite ledger.
+Replace the legacy static dashboard with a live SvelteKit dashboard backed by the existing SQLite ledger.
 
-The MVP must match the content already available in `financial_dashboard.html`. It should not expand scope into new product areas.
+The MVP must match the legacy static dashboard scope. It should not expand scope into new product areas.
 
 ## Current Flow
 
@@ -16,12 +16,12 @@ Today the system works like this:
 
 1. `src/workflows/*` downloads bank-provided account statements into `downloads/`.
 2. `src/ledger/import-downloads-csv.ts` parses CSV files and writes normalized source data into `data/ledger/ledger.sqlite`.
-3. `src/ledger/build-financial-dashboard.ts` reads `ledger.sqlite`, calls `buildFinancialModel()`, and writes a static `financial_dashboard.html`.
-4. To see daily changes, the dashboard has to be rebuilt. The static HTML is not a live read model.
+3. `/dashboard` reads `ledger.sqlite` through SvelteKit server load functions.
+4. New imports are visible by reloading the dashboard page.
 
 ## MVP Scope
 
-Build a SvelteKit dashboard that reads `data/ledger/ledger.sqlite` directly and renders the same dashboard concepts currently present in `financial_dashboard.html`.
+Build a SvelteKit dashboard that reads `data/ledger/ledger.sqlite` directly and renders the same dashboard concepts from the legacy static dashboard.
 
 Included:
 
@@ -46,7 +46,7 @@ Explicitly excluded from this MVP:
 - `CashflowPipeline`
 - `SourceHealthPipeline`
 - Separate `/sources` page
-- Runtime dependency on `buildFinancialModel()`
+- Runtime dependency on the removed static financial model builder
 - Drizzle Kit as the owner of existing ledger schema migrations
 - Rewriting the statement download workflows
 - Rewriting the CSV import pipeline unless needed to extract DB/migration helpers
@@ -427,7 +427,7 @@ Browser opens /dashboard
 
 - Implement `load-dashboard.ts`.
 - Implement the four small pipelines.
-- Match the current `financial_dashboard.html` sections before adding anything else.
+- Match the legacy static dashboard sections before adding anything else.
 
 ### Phase 4: Build Svelte components
 
@@ -440,15 +440,15 @@ Browser opens /dashboard
 
 ### Phase 5: Remove static dashboard dependency
 
-- Keep `build-financial-dashboard.ts` available until the dynamic dashboard matches current behavior.
-- Once parity is verified, stop using `financial_dashboard.html` as the primary dashboard.
+- Remove the static dashboard generator after the dynamic dashboard matches current behavior.
+- Keep the dashboard runtime reading `ledger.sqlite` directly.
 
 ## Acceptance Criteria
 
 The MVP is complete when:
 
-- `/dashboard` renders without running `build-financial-dashboard.ts`.
-- The visible content matches current `financial_dashboard.html` scope.
+- `/dashboard` renders from SQLite without a static rebuild step.
+- The visible content matches the legacy static dashboard scope.
 - Summary cards show the same categories.
 - Daily history rows are available from SQLite.
 - `migrateLedgerDb()` creates or upgrades `ledger.sqlite` without clearing existing data.
@@ -460,7 +460,7 @@ The MVP is complete when:
 - Asset modal works.
 - New imports can be reflected by reloading the dashboard page without clearing/rebuilding static HTML.
 - `CashflowPipeline` and `SourceHealthPipeline` are not present.
-- `buildFinancialModel()` is not used by the SvelteKit dashboard runtime.
+- The removed static financial model builder is not used by the SvelteKit dashboard runtime.
 
 ## Open Decisions
 
