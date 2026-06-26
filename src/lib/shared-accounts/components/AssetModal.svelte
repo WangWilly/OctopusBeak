@@ -5,6 +5,11 @@
   export let open = false;
   export let account: AccountRowDto | null = null;
   export let rows: AssetPositionDto[] = [];
+
+  function changeValue(change: string) {
+    const value = Number.parseFloat(change);
+    return Number.isFinite(value) ? value : 0;
+  }
 </script>
 
 {#if open}
@@ -30,7 +35,13 @@
                 <td>{row.name}</td>
                 <td class="right num">{row.units}</td>
                 <td class="right money">{formatMoney({ currency: row.currency, value: row.value })}</td>
-                <td class="right">{row.change}</td>
+                <td
+                  class="right"
+                  class:return-positive={changeValue(row.change) > 0}
+                  class:return-negative={changeValue(row.change) < 0}
+                >
+                  {row.change}
+                </td>
               </tr>
             {:else}
               <tr><td colspan="5">No asset positions for this account.</td></tr>
@@ -41,3 +52,13 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .return-positive {
+    color: var(--success);
+  }
+
+  .return-negative {
+    color: var(--danger);
+  }
+</style>

@@ -29,7 +29,13 @@
                 <td>{row.date}</td>
                 <td>{row.label}</td>
                 <td>{row.type}</td>
-                <td class="right money">{formatMoney({ currency: row.currency, value: row.amount }, { signed: true })}</td>
+                <td
+                  class="right money"
+                  class:amount-positive={row.amount > 0}
+                  class:amount-negative={row.amount < 0}
+                >
+                  {formatMoney({ currency: row.currency, value: row.amount }, { signed: true })}
+                </td>
                 <td class="right">{row.note || "--"}</td>
               </tr>
             {:else}
@@ -41,3 +47,13 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .amount-positive {
+    color: var(--success);
+  }
+
+  .amount-negative {
+    color: var(--danger);
+  }
+</style>

@@ -143,7 +143,7 @@ function metadataCell(metadata: SourceMetadata | null, key: string): string {
   return cleanTypedCell(metadata?.[key]);
 }
 
-function sqliteAmount(value: unknown): number | null {
+export function sqliteAmount(value: unknown): number | null {
   const raw = cleanTypedCell(value).replace(/\u00a0/g, " ").trim();
   if (!raw || raw === "-" || raw === "--") return null;
   const amountText = raw.match(/-?\(?\d[\d,]*(?:\.\d+)?\)?-?/)?.[0];
@@ -164,6 +164,23 @@ function sqliteAmount(value: unknown): number | null {
   const amount = Number(normalized);
   if (!Number.isFinite(amount)) return null;
   return negative ? -amount : amount;
+}
+
+export function normalizeCurrencyCode(value: unknown, fallback = ""): string {
+  const raw = cleanTypedCell(value);
+  if (!raw || raw === "全部") return fallback;
+
+  const normalized = raw.toUpperCase();
+  const candidates = [...normalized.matchAll(/[A-Z]{3}/g)].map((match) => match[0]);
+  const code = candidates.at(-1);
+  if (code) return code === "NTD" ? "TWD" : code;
+
+  if (/台幣|臺幣|新台幣|新臺幣/.test(raw)) return "TWD";
+  if (/美金|美元/.test(raw)) return "USD";
+  if (/日幣|日圓|日元/.test(raw)) return "JPY";
+  if (/人民幣|人民币/.test(raw)) return "CNY";
+  if (/港幣|港元/.test(raw)) return "HKD";
+  return fallback;
 }
 
 function normalizeDateValue(value: unknown): string {
@@ -233,7 +250,7 @@ function accountNameFromMetadataValue(
 function currencyFromRelativePath(sourceRelativePath: string): string {
   const fileName = sourceRelativePath.split("/").pop() ?? "";
   const match = fileName.match(/-(USD|JPY|EUR|GBP|AUD|CAD|CHF|HKD|CNY)-/i);
-  return match ? match[1].toUpperCase() : "TWD";
+  return normalizeCurrencyCode(match?.[1], "TWD");
 }
 
 function accountIdentity(context: ParserContext) {
@@ -262,7 +279,7 @@ function bankTransactionFields(context: ParserContext) {
   return {
     account_name: accountName,
     account_number: accountNumber,
-    currency: "TWD",
+    currency: normalizeCurrencyCode("TWD"),
     accounting_date: accountingDate,
     transaction_date: transactionDate,
     transaction_time: normalizeTimePart(payloadCell(rawPayload, "交易時間")),
@@ -288,12 +305,13 @@ function foreignCurrencyTransactionFields(context: ParserContext) {
   return {
     account_name: accountName,
     account_number: accountNumber,
-    query_currency:
-      payloadCell(rawPayload, "查詢幣別") || metadataCurrency || "",
-    currency:
-      firstPayloadCell(rawPayload, ["幣別", "查詢幣別"]) ||
-      metadataCurrency ||
+    query_currency: normalizeCurrencyCode(
+      payloadCell(rawPayload, "查詢幣別") || metadataCurrency,
+    ),
+    currency: normalizeCurrencyCode(
+      firstPayloadCell(rawPayload, ["幣別", "查詢幣別"]) || metadataCurrency,
       currencyFromRelativePath(sourceRelativePath),
+    ),
     accounting_date: accountingDate,
     transaction_date: transactionDate,
     transaction_time: normalizeTimePart(payloadCell(rawPayload, "交易時間")),
@@ -324,17 +342,15 @@ function creditCardStatementLineFields(context: ParserContext) {
       firstPayloadCell(rawPayload, ["posting_date", "入帳日期"]),
     ),
     description: firstPayloadCell(rawPayload, ["description", "消費明細"]),
-    country_currency: firstPayloadCell(rawPayload, [
-      "country_currency",
-      "國家/幣別",
-    ]),
+    country_currency: normalizeCurrencyCode(
+      firstPayloadCell(rawPayload, ["country_currency", "國家/幣別"]),
+    ),
     foreign_exchange_date: normalizeDateValue(
       payloadCell(rawPayload, "外幣折算日"),
     ),
-    foreign_currency: firstPayloadCell(rawPayload, [
-      "foreign_currency",
-      "國家/幣別",
-    ]),
+    foreign_currency: normalizeCurrencyCode(
+      firstPayloadCell(rawPayload, ["foreign_currency", "國家/幣別"]),
+    ),
     foreign_amount: sqliteAmount(
       firstPayloadCell(rawPayload, ["foreign_amount", "外幣金額"]),
     ),
@@ -386,7 +402,7 @@ function fundHoldingFields(context: ParserContext) {
     query_period: payloadCell(rawPayload, "查詢期間"),
     fund_name: payloadCell(rawPayload, "基金名稱"),
     fund_type: payloadCell(rawPayload, "基金類型"),
-    currency: payloadCell(rawPayload, "投資幣別"),
+    currency: normalizeCurrencyCode(payloadCell(rawPayload, "投資幣別")),
     investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
     market_value_without_dividend: sqliteAmount(
       payloadCell(rawPayload, "不含息參考市值"),
@@ -405,6 +421,7 @@ function fundHoldingFields(context: ParserContext) {
 
 function fundBuyTransactionFields(context: ParserContext) {
   const { rawPayload } = context;
+  const currency = normalizeCurrencyCode(payloadCell(rawPayload, "投資金額"), "TWD");
   return {
     data_type: payloadCell(rawPayload, "資料類別"),
     fund_id: payloadCell(rawPayload, "基金識別"),
@@ -412,10 +429,15 @@ function fundBuyTransactionFields(context: ParserContext) {
     investment_date: normalizeDateValue(payloadCell(rawPayload, "投資日期")),
     fund_name: payloadCell(rawPayload, "基金名稱"),
     transaction_number: payloadCell(rawPayload, "交易編號"),
+    currency,
     investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
     subscription_fx_rate: sqliteAmount(payloadCell(rawPayload, "申購匯率")),
     subscription_nav: sqliteAmount(payloadCell(rawPayload, "申購淨值")),
     subscription_fee: sqliteAmount(payloadCell(rawPayload, "申購手續費")),
+    subscription_fee_currency: normalizeCurrencyCode(
+      payloadCell(rawPayload, "申購手續費"),
+      currency,
+    ),
     point_discount: sqliteAmount(payloadCell(rawPayload, "點數折抵")),
     subscribed_units: sqliteAmount(payloadCell(rawPayload, "申購單位數")),
   };
@@ -450,6 +472,7 @@ function fundRedemptionTransactionFields(context: ParserContext) {
 
 function fundCashDividendFields(context: ParserContext) {
   const { rawPayload } = context;
+  const distributionCurrency = normalizeCurrencyCode(payloadCell(rawPayload, "分配金額"), "TWD");
   return {
     data_type: payloadCell(rawPayload, "資料類別"),
     fund_id: payloadCell(rawPayload, "基金識別"),
@@ -458,9 +481,10 @@ function fundCashDividendFields(context: ParserContext) {
     fund_name: payloadCell(rawPayload, "基金名稱"),
     transaction_number: payloadCell(rawPayload, "交易編號"),
     benchmark_date: normalizeDateValue(payloadCell(rawPayload, "基準日期")),
-    currency: payloadCell(rawPayload, "計價幣別"),
+    currency: normalizeCurrencyCode(payloadCell(rawPayload, "計價幣別")),
     benchmark_units: sqliteAmount(payloadCell(rawPayload, "基準單位數")),
     distribution_amount: sqliteAmount(payloadCell(rawPayload, "分配金額")),
+    distribution_currency: distributionCurrency,
     fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
     distribution_rate: payloadCell(rawPayload, "分配率"),
     deposit_account: payloadCell(rawPayload, "入帳帳號"),
@@ -505,7 +529,7 @@ function brokerageHoldingFields(context: ParserContext) {
     sub_category: payloadCell(rawPayload, "sub_category"),
     product_code: payloadCell(rawPayload, "product_code"),
     product_name: payloadCell(rawPayload, "product_name"),
-    currency: payloadCell(rawPayload, "currency"),
+    currency: normalizeCurrencyCode(payloadCell(rawPayload, "currency")),
     quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
     market_date: normalizeDateValue(payloadCell(rawPayload, "market_date")),
     market_price: sqliteAmount(payloadCell(rawPayload, "market_price")),
@@ -547,7 +571,7 @@ function brokerageTradeTransactionFields(context: ParserContext) {
     sub_category: payloadCell(rawPayload, "sub_category"),
     product_code: payloadCell(rawPayload, "product_code"),
     product_name: payloadCell(rawPayload, "product_name"),
-    currency: payloadCell(rawPayload, "currency"),
+    currency: normalizeCurrencyCode(payloadCell(rawPayload, "currency")),
     action: payloadCell(rawPayload, "action"),
     quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
     price: sqliteAmount(payloadCell(rawPayload, "price")),
@@ -555,7 +579,7 @@ function brokerageTradeTransactionFields(context: ParserContext) {
     fee: sqliteAmount(payloadCell(rawPayload, "fee")),
     tax: sqliteAmount(payloadCell(rawPayload, "tax")),
     settlement_amount: sqliteAmount(payloadCell(rawPayload, "settlement_amount")),
-    settlement_currency: payloadCell(rawPayload, "settlement_currency"),
+    settlement_currency: normalizeCurrencyCode(payloadCell(rawPayload, "settlement_currency")),
     realized_pnl: sqliteAmount(payloadCell(rawPayload, "realized_pnl")),
     cost_amount: sqliteAmount(payloadCell(rawPayload, "cost_amount")),
   };

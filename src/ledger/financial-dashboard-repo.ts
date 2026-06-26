@@ -297,10 +297,12 @@ const FUND_BUY_TRANSACTION_COLUMNS = {
   investment_date: "text",
   fund_name: "text",
   transaction_number: "text",
+  currency: "text",
   investment_amount: "number",
   subscription_fx_rate: "number",
   subscription_nav: "number",
   subscription_fee: "number",
+  subscription_fee_currency: "text",
   point_discount: "number",
   subscribed_units: "number",
 } as const satisfies ColumnSpec;
@@ -312,10 +314,12 @@ export class FundBuyTransactionRow extends TypedStatementRow<"fund_buy_transacti
   declare investment_date: string;
   declare fund_name: string;
   declare transaction_number: string;
+  declare currency: string;
   declare investment_amount: number | null;
   declare subscription_fx_rate: number | null;
   declare subscription_nav: number | null;
   declare subscription_fee: number | null;
+  declare subscription_fee_currency: string;
   declare point_discount: number | null;
   declare subscribed_units: number | null;
 
@@ -385,6 +389,7 @@ const FUND_CASH_DIVIDEND_COLUMNS = {
   currency: "text",
   benchmark_units: "number",
   distribution_amount: "number",
+  distribution_currency: "text",
   fx_rate: "number",
   distribution_rate: "text",
   deposit_account: "text",
@@ -401,6 +406,7 @@ export class FundCashDividendRow extends TypedStatementRow<"fund_cash_dividends"
   declare currency: string;
   declare benchmark_units: number | null;
   declare distribution_amount: number | null;
+  declare distribution_currency: string;
   declare fx_rate: number | null;
   declare distribution_rate: string;
   declare deposit_account: string;

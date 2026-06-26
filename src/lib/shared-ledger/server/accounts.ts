@@ -445,7 +445,7 @@ function fundBuyTransactionDto(row: FundBuyTransaction): [string, TransactionRow
       label: row.fundName?.trim() || "Fund buy",
       type: "Buy",
       amount: -(row.investmentAmount ?? 0),
-      currency: "TWD",
+      currency: currency(row.currency),
       note: row.transactionNumber,
     },
   ];
@@ -473,7 +473,7 @@ function fundCashDividendDto(row: FundCashDividend): [string, TransactionRowDto]
       label: row.fundName?.trim() || "Fund dividend",
       type: "Dividend",
       amount: row.distributionAmount ?? 0,
-      currency: currency(row.currency),
+      currency: currency(row.distributionCurrency ?? row.currency),
       note: row.transactionNumber,
     },
   ];
