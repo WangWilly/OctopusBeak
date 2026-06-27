@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildAccountOverview,
+  buildTransactionsByAccount,
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "./accounts.ts";
@@ -131,7 +132,7 @@ assert.ok(settledCard);
 assert.deepEqual(settledCard.amountLines, [{ currency: "TWD", value: 0 }]);
 assert.equal(settledCard.transactionCount, 2);
 
-function loanRow(sourceRowIndex: number, item: string, balanceAfter: number): LoanTransaction {
+function loanRow(sourceRowIndex: number, item: string, amount: number, balanceAfter: number): LoanTransaction {
   return {
     statementRowId: `loan-${sourceRowIndex}`,
     sourceFileId: "source",
@@ -153,7 +154,7 @@ function loanRow(sourceRowIndex: number, item: string, balanceAfter: number): Lo
     item,
     interestStartDate: "2026-05-16",
     interestEndDate: "2026-06-16",
-    amount: null,
+    amount,
     interestRate: "3.100000",
     balanceAfter,
     overpayment: null,
@@ -163,11 +164,12 @@ function loanRow(sourceRowIndex: number, item: string, balanceAfter: number): Lo
 
 const loanData = emptyLedgerQueryData();
 loanData.loanTransactions = [
-  loanRow(2, "本金", 651587),
-  loanRow(3, "利息", 657459),
+  loanRow(2, "本金", 5872, 651587),
+  loanRow(3, "利息", 1731, 657459),
 ];
 
 const loanAccount = buildAccountOverview(loanData).find((row) => row.kind === "loan");
 
 assert.ok(loanAccount);
 assert.deepEqual(loanAccount.amountLines, [{ currency: "TWD", value: 651587 }]);
+assert.equal(buildTransactionsByAccount(loanData)[loanAccount.id]?.[0]?.amount, -5872);
