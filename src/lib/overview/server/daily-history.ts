@@ -1,28 +1,26 @@
 import {
+  buildAccountOverview,
   bucketToAmounts,
   totalsForAccounts,
   type LedgerQueryData,
 } from "$lib/shared-ledger/server/accounts.ts";
-import type { AccountRowDto, DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 
-export function buildDailyHistory(
-  data: LedgerQueryData,
-  accounts: AccountRowDto[],
-): DailyHistoryRowDto[] {
+export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
   const dates = [
     ...new Set(
       data.sourceFiles
-        .map((source) => source.importedAt.slice(0, 10))
+        .map((source) => sourceFileDate(source))
         .filter(Boolean)
         .sort(),
     ),
   ];
-  const totals = totalsForAccounts(accounts);
   const rows = dates.length > 0 ? dates : [new Date().toISOString().slice(0, 10)];
   let previousNet: Record<string, number> | null = null;
 
-  // ponytail: import-day rows reuse current totals; carry forward per-account snapshots when multi-run history matters.
   return rows.map((date) => {
+    const accounts = buildAccountOverview(snapshotData(data, date));
+    const totals = totalsForAccounts(accounts);
     const dailyChange = previousNet ? subtractBuckets(totals.net, previousNet) : {};
     previousNet = totals.net;
     return {
@@ -35,6 +33,28 @@ export function buildDailyHistory(
       positionCount: accounts.reduce((total, account) => total + account.assetPositionCount, 0),
     };
   });
+}
+
+function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
+  return (source.sourceFileModifiedAt || source.importedAt).slice(0, 10);
+}
+
+function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
+  const sourceFileIds = new Set(
+    data.sourceFiles
+      .filter((source) => sourceFileDate(source) <= date)
+      .map((source) => source.sourceFileId),
+  );
+  return {
+    ...data,
+    sourceFiles: data.sourceFiles.filter((source) => sourceFileIds.has(source.sourceFileId)),
+    accountTransactions: data.accountTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    creditCardStatementLines: data.creditCardStatementLines.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
+  };
 }
 
 function addBuckets(

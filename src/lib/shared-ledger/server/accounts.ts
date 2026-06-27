@@ -121,7 +121,7 @@ export function buildAccountOverview(data: LedgerQueryData): AccountRowDto[] {
         group: first.group,
         kind: first.kind,
         typeLabel: first.typeLabel,
-        amountLines: bucketToAmounts(sumPositions(rows)),
+        amountLines: bucketToAmounts(sumPositions(rows), { includeZero: true }),
         transactionCount: transactionsByAccount[accountId]?.length ?? 0,
         assetPositionCount: details.length,
         lastUpdated: rows.map((row) => row.asOfDate ?? row.importedAt.slice(0, 10)).sort().at(-1) ?? null,
@@ -207,9 +207,12 @@ export function totalsForAccounts(accounts: AccountRowDto[]) {
   };
 }
 
-export function bucketToAmounts(bucket: Record<string, number>): CurrencyAmountDto[] {
+export function bucketToAmounts(
+  bucket: Record<string, number>,
+  options: { includeZero?: boolean } = {},
+): CurrencyAmountDto[] {
   return Object.entries(bucket)
-    .filter(([, value]) => Math.abs(value) > 0.000001)
+    .filter(([, value]) => options.includeZero || Math.abs(value) > 0.000001)
     .sort(([left], [right]) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right))
     .map(([currency, value]) => ({ currency, value }));
 }
@@ -218,7 +221,7 @@ function cashPositions(rows: AccountTransaction[]): RawPosition[] {
   return latestBy(
     rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
     (row) => ["cash", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)].join("|"),
-    (row) => [row.transactionDate ?? "", row.importedAt, String(row.sourceRowIndex)].join("|"),
+    (row) => sortKey(row, row.transactionDate, row.transactionTime),
   ).map((row) => ({
     id: stableId("cash-position", row.bank, row.product, row.accountNumber ?? "", row.currency),
     accountId: accountId("cash", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)),
@@ -240,7 +243,7 @@ function foreignCashPositions(rows: ForeignCurrencyTransaction[]): RawPosition[]
   return latestBy(
     rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
     (row) => ["foreign", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)].join("|"),
-    (row) => [row.transactionDate ?? "", row.importedAt, String(row.sourceRowIndex)].join("|"),
+    (row) => sortKey(row, row.transactionDate, row.transactionTime),
   ).map((row) => ({
     id: stableId("foreign-position", row.bank, row.product, row.accountNumber ?? "", row.currency),
     accountId: accountId("foreign", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)),
@@ -553,8 +556,8 @@ function isUnique(row: CommonRow) {
   return row.dedupeStatus !== "duplicate";
 }
 
-function sortKey(row: CommonRow, date: string | null) {
-  return [date ?? "", row.importedAt, String(row.sourceRowIndex)].join("|");
+function sortKey(row: CommonRow, date: string | null, time?: string | null) {
+  return [date ?? "", time ?? "", row.importedAt, String(row.sourceRowIndex)].join("|");
 }
 
 function accountId(kind: string, bank: string, product: string, account: string, currencyCode: string) {
