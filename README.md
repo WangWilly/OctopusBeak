@@ -25,6 +25,7 @@ npm run run:esun-credit-card-statements
 npm run run:yuanta-all-statements
 npm run run:yuanta-trade-statements
 npm run run:cathay-all-statements
+npm run run:hncb-statements
 ```
 
 When a workflow pauses, complete the requested browser step, then resume the Libretto session:
@@ -58,6 +59,7 @@ npm run libretto:close-all
 | Cathay | `npm run run:cathay-all-statements`              | TWD and foreign-currency statements                       |
 | Cathay | `npm run run:cathay-statements`                  | TWD account statements                                    |
 | Cathay | `npm run run:cathay-foreign-statements`          | foreign-currency statements                               |
+| HNCB   | `npm run run:hncb-statements`                    | TWD account statements                                    |
 
 ## Output Shape
 
