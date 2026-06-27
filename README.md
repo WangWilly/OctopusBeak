@@ -21,6 +21,7 @@ Bank workflows usually require headed mode because CAPTCHA, OTP, email verificat
 
 ```bash
 npm run run:fubon-all-statements
+npm run run:esun-credit-card-statements
 npm run run:yuanta-all-statements
 npm run run:yuanta-trade-statements
 npm run run:cathay-all-statements
@@ -46,6 +47,7 @@ npm run libretto:close-all
 | Fubon  | `npm run run:fubon-statements`                   | deposit statements                                        |
 | Fubon  | `npm run run:fubon-credit-card-statements`       | credit card statements                                    |
 | Fubon  | `npm run run:fubon-loan-statements`              | loan statements                                           |
+| ESun   | `npm run run:esun-credit-card-statements`        | credit card statements                                    |
 | YuanTa | `npm run run:yuanta-all-statements`              | TWD, foreign-currency, loan, credit card, fund statements |
 | YuanTa | `npm run run:yuanta-statements`                  | TWD account statements                                    |
 | YuanTa | `npm run run:yuanta-foreign-currency-statements` | foreign-currency statements                               |
