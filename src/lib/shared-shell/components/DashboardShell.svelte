@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
 
   export let active: "overview" | "assets" | "liabilities" = "overview";
@@ -11,6 +12,27 @@
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
   export let valuesVisible = true;
+
+  const sidebarStorageKey = "ledgerlens-sidebar-collapsed";
+  const valuesStorageKey = "ledgerlens-values-visible";
+  let sidebarCollapsed = false;
+  let valuesStorageLoaded = false;
+
+  onMount(() => {
+    sidebarCollapsed = localStorage.getItem(sidebarStorageKey) === "1";
+    const storedValuesVisible = localStorage.getItem(valuesStorageKey);
+    if (storedValuesVisible) valuesVisible = storedValuesVisible === "1";
+    valuesStorageLoaded = true;
+  });
+
+  $: if (valuesStorageLoaded) {
+    localStorage.setItem(valuesStorageKey, valuesVisible ? "1" : "0");
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem(sidebarStorageKey, sidebarCollapsed ? "1" : "0");
+  }
 
   const nav = [
     {
@@ -34,26 +56,40 @@
   ] as const;
 </script>
 
-<div class:values-hidden={!valuesVisible} class="shell-page">
+<div class:values-hidden={!valuesVisible} class:sidebar-collapsed={sidebarCollapsed} class="shell-page">
   <aside class="sidebar">
     <div>
-      <a class="brand" href="/overview" aria-label="LedgerLens home">
-        <span class="brand-mark">
+      <div class="brand-row">
+        <a class="brand" href="/overview" aria-label="LedgerLens home">
+          <span class="brand-mark">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"
+              />
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <strong class="brand-title">LedgerLens</strong>
+            <span class="brand-subtitle">Personal portfolio</span>
+          </span>
+        </a>
+        <button
+          class="sidebar-toggle"
+          type="button"
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onclick={toggleSidebar}
+        >
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="currentColor"
-              d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"
-            />
+            <path fill="currentColor" d="M15.5 5 8.5 12l7 7-1.4 1.4L5.7 12l8.4-8.4L15.5 5Z" />
           </svg>
-        </span>
-        <span class="brand-copy">
-          <strong class="brand-title">LedgerLens</strong>
-          <span class="brand-subtitle">Personal portfolio</span>
-        </span>
-      </a>
+        </button>
+      </div>
       <nav class="side-nav" aria-label="Primary">
         {#each nav as item}
-          <a class:active={active === item.id} class="nav-link" href={item.href}>
+          <a class:active={active === item.id} class="nav-link" href={item.href} aria-label={item.label}>
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="currentColor" d={item.path} />
             </svg>
