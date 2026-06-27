@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import XLSX from "xlsx";
@@ -8,6 +8,11 @@ import {
   openLedgerDatabase,
   type LedgerDatabase,
 } from "./db/client.ts";
+import {
+  contentHashForRow,
+  hashBytes,
+  stableStringify,
+} from "./content-hash.ts";
 import {
   TYPED_STATEMENT_TABLES,
   createSourceCsvParser,
@@ -107,26 +112,6 @@ function parseParams(argv: string[]): Record<string, unknown> {
       `Invalid --params JSON: ${error instanceof Error ? error.message : error}`,
     );
   }
-}
-
-function hashBytes(value: Buffer | string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`;
 }
 
 function normalizeHeader(value: unknown): string {
@@ -413,6 +398,17 @@ function importedSourceRelativePaths(db: LedgerDatabase): Set<string> {
   return new Set(rows.map((row) => row.source_relative_path));
 }
 
+function importedContentHashes(db: LedgerDatabase): Set<string> {
+  const hashes = new Set<string>();
+  for (const table of TYPED_STATEMENT_TABLES) {
+    const rows = db
+      .prepare(`SELECT content_hash FROM ${table}`)
+      .all() as Array<{ content_hash: string }>;
+    for (const row of rows) hashes.add(row.content_hash);
+  }
+  return hashes;
+}
+
 function hasAnyCell(row: unknown[]): boolean {
   return row.some((value) => normalizeCell(value) !== "");
 }
@@ -499,14 +495,6 @@ function parseCsvRows(csvText: string): ParsedCsv {
   };
 }
 
-function contentHashForRow(
-  bank: string,
-  product: string,
-  row: Record<string, string>,
-): string {
-  return hashBytes(stableStringify({ bank, product, row }));
-}
-
 function sourceHashForOccurrence(
   sourceRelativePath: string,
   sourceFileHash: string,
@@ -547,6 +535,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
 
   try {
     const importedSourceFiles = importedSourceRelativePaths(db);
+    const contentHashes = importedContentHashes(db);
     const sourceFileRecords: Record<string, unknown>[] = [];
     const statementRows: Array<{
       sourceFileRecord: Record<string, unknown>;
@@ -556,7 +545,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         rawRowHash: string;
         sourceHash: string;
         contentHash: string;
-        dedupeStatus: "unique";
+        dedupeStatus: "unique" | "duplicate";
       };
     }> = [];
     const fileSummaries: FileImportSummary[] = [];
@@ -620,11 +609,9 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
           sourceRowIndex,
           rawRowHash,
         );
-        const contentHash = contentHashForRow(
-          context.bank,
-          context.product,
-          rawPayload,
-        );
+        const contentHash = contentHashForRow(context.bank, context.product, rawPayload);
+        const dedupeStatus = contentHashes.has(contentHash) ? "duplicate" : "unique";
+        contentHashes.add(contentHash);
         statementRows.push({
           sourceFileRecord,
           row: {
@@ -633,7 +620,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
             rawRowHash,
             sourceHash,
             contentHash,
-            dedupeStatus: "unique",
+            dedupeStatus,
           },
         });
         importedRows += 1;

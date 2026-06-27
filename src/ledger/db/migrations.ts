@@ -3,6 +3,7 @@ import {
   sqliteAmount,
   TYPED_STATEMENT_TABLES,
 } from "../source-csv-parsers.ts";
+import { contentHashForRow } from "../content-hash.ts";
 import type { LedgerDatabase } from "./client.ts";
 
 type LedgerMigration = {
@@ -427,6 +428,61 @@ function addFundTransactionCurrencyColumns(db: LedgerDatabase) {
   }
 }
 
+function normalizeContentHashesAndDedupe(db: LedgerDatabase) {
+  const rows: Array<{
+    table_name: string;
+    statement_row_id: string;
+    bank: string;
+    product: string;
+    raw_payload_json: string;
+    imported_at: string;
+    source_relative_path: string;
+    source_row_index: number;
+  }> = [];
+
+  for (const table of TYPED_STATEMENT_TABLES) {
+    rows.push(
+      ...(db
+        .prepare(`
+          SELECT
+            '${table}' AS table_name,
+            statement_row_id,
+            bank,
+            product,
+            raw_payload_json,
+            imported_at,
+            source_relative_path,
+            source_row_index
+          FROM ${table}
+        `)
+        .all() as typeof rows),
+    );
+  }
+
+  rows.sort((left, right) =>
+    left.imported_at.localeCompare(right.imported_at) ||
+    left.source_relative_path.localeCompare(right.source_relative_path) ||
+    left.source_row_index - right.source_row_index ||
+    left.statement_row_id.localeCompare(right.statement_row_id),
+  );
+
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const contentHash = contentHashForRow(
+      row.bank,
+      row.product,
+      parseRawPayload(row.raw_payload_json),
+    );
+    const dedupeStatus = seen.has(contentHash) ? "duplicate" : "unique";
+    seen.add(contentHash);
+    db.prepare(`
+      UPDATE ${row.table_name}
+      SET content_hash = ?, dedupe_status = ?
+      WHERE statement_row_id = ?
+    `).run(contentHash, dedupeStatus, row.statement_row_id);
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -442,6 +498,11 @@ const migrations: LedgerMigration[] = [
     version: 3,
     name: "fund_transaction_currency_columns",
     up: addFundTransactionCurrencyColumns,
+  },
+  {
+    version: 4,
+    name: "normalized_content_hash_dedupe",
+    up: normalizeContentHashesAndDedupe,
   },
 ];
 
