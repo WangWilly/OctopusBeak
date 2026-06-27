@@ -151,7 +151,7 @@ export function buildTransactionsByAccount(
   const transactions: Array<[string, TransactionRowDto]> = [
     ...data.accountTransactions.filter(isUnique).map(bankTransactionDto),
     ...data.foreignCurrencyTransactions.filter(isUnique).map(foreignTransactionDto),
-    ...data.creditCardStatementLines.filter(isUnique).map(creditCardTransactionDto),
+    ...latestCreditCardTransactionRows(data.creditCardStatementLines).map(creditCardTransactionDto),
     ...data.loanTransactions.filter(isUnique).map(loanTransactionDto),
     ...data.fundBuyTransactions.filter(isUnique).map(fundBuyTransactionDto),
     ...data.fundRedemptionTransactions.filter(isUnique).map(fundRedemptionTransactionDto),
@@ -263,11 +263,11 @@ function foreignCashPositions(rows: ForeignCurrencyTransaction[]): RawPosition[]
 
 function creditCardPositions(rows: CreditCardStatementLine[]): RawPosition[] {
   const groups = new Map<string, { row: CreditCardStatementLine; value: number }>();
-  for (const row of rows) {
-    if (!isUnique(row) || row.statementType !== "unbilled") continue;
+  for (const row of latestCreditCardStatementRows(rows)) {
+    if (row.statementType !== "unbilled") continue;
     const value = row.twdAmount ?? 0;
     if (value <= 0) continue;
-    const key = ["card", row.bank, row.product, row.cardNumber ?? ""].join("|");
+    const key = creditCardAccountKey(row);
     const previous = groups.get(key);
     if (!previous) {
       groups.set(key, { row, value });
@@ -280,8 +280,8 @@ function creditCardPositions(rows: CreditCardStatementLine[]): RawPosition[] {
   }
 
   return [...groups.values()].map(({ row, value }) => ({
-    id: stableId("card-position", row.bank, row.product, row.cardNumber ?? ""),
-    accountId: accountId("card", row.bank, row.product, row.cardNumber ?? "", "TWD"),
+    id: stableId("card-position", row.bank, row.product, creditCardNumberKey(row)),
+    accountId: accountId("card", row.bank, row.product, creditCardNumberKey(row), "TWD"),
     label: row.cardLabel?.trim() || maskAccount(row.cardNumber),
     institution: bankLabel(row.bank),
     product: row.product,
@@ -414,7 +414,7 @@ function foreignTransactionDto(row: ForeignCurrencyTransaction): [string, Transa
 
 function creditCardTransactionDto(row: CreditCardStatementLine): [string, TransactionRowDto] {
   return [
-    accountId("card", row.bank, row.product, row.cardNumber ?? "", "TWD"),
+    accountId("card", row.bank, row.product, creditCardNumberKey(row), "TWD"),
     {
       date: row.consumeDate ?? row.postingDate ?? row.importedAt.slice(0, 10),
       label: row.description?.trim() || "Credit-card line",
@@ -563,6 +563,64 @@ function sortKey(row: CommonRow, date: string | null, time?: string | null) {
 function loanSortKey(row: LoanTransaction) {
   const principalPriority = /本金|principal/i.test(row.item ?? "") ? "1" : "0";
   return [row.tradeDate ?? "", row.importedAt, principalPriority, String(row.sourceRowIndex)].join("|");
+}
+
+function latestCreditCardStatementRows(rows: CreditCardStatementLine[]) {
+  const latestSnapshotByCard = new Map<string, { snapshotKey: string; sortKey: string }>();
+  for (const row of rows) {
+    const key = creditCardAccountKey(row);
+    const previous = latestSnapshotByCard.get(key);
+    const snapshotKey = creditCardSnapshotKey(row);
+    const sortKey = creditCardSnapshotSortKey(row);
+    if (!previous || sortKey > previous.sortKey) {
+      latestSnapshotByCard.set(key, { snapshotKey, sortKey });
+    }
+  }
+
+  return rows.filter(
+    (row) => latestSnapshotByCard.get(creditCardAccountKey(row))?.snapshotKey === creditCardSnapshotKey(row),
+  );
+}
+
+function latestCreditCardTransactionRows(rows: CreditCardStatementLine[]) {
+  const latestSnapshotByCardType = new Map<string, { snapshotKey: string; sortKey: string }>();
+  for (const row of rows) {
+    const key = [creditCardAccountKey(row), row.statementType].join("|");
+    const previous = latestSnapshotByCardType.get(key);
+    const snapshotKey = creditCardSnapshotKey(row);
+    const sortKey = creditCardSnapshotSortKey(row);
+    if (!previous || sortKey > previous.sortKey) {
+      latestSnapshotByCardType.set(key, { snapshotKey, sortKey });
+    }
+  }
+
+  return rows.filter((row) => {
+    const key = [creditCardAccountKey(row), row.statementType].join("|");
+    return latestSnapshotByCardType.get(key)?.snapshotKey === creditCardSnapshotKey(row);
+  });
+}
+
+function creditCardAccountKey(row: CreditCardStatementLine) {
+  return [row.bank, row.product, creditCardNumberKey(row)].join("|");
+}
+
+function creditCardNumberKey(row: CreditCardStatementLine) {
+  const value = row.cardNumber?.trim() || row.cardLabel?.trim() || "";
+  return cardLast4(value) || value;
+}
+
+function cardLast4(value: string) {
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : "";
+}
+
+function creditCardSnapshotKey(row: CreditCardStatementLine) {
+  return [row.importedAt, row.sourceRelativePath, row.statementType].join("|");
+}
+
+function creditCardSnapshotSortKey(row: CreditCardStatementLine) {
+  const unbilledPriority = row.statementType === "unbilled" ? "1" : "0";
+  return [row.importedAt, unbilledPriority, row.sourceRelativePath].join("|");
 }
 
 function accountId(kind: string, bank: string, product: string, account: string, currencyCode: string) {
