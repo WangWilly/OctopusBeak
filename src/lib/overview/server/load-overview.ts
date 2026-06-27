@@ -45,7 +45,7 @@ export async function loadOverview(ledgerDir = "data/ledger"): Promise<OverviewP
     return {
       importedAt: latestImportedAt(data),
       summary: buildSummaryMetrics(accounts),
-      dailyHistory: buildDailyHistory(data, accounts),
+      dailyHistory: buildDailyHistory(data),
       accounts,
     };
   } finally {
