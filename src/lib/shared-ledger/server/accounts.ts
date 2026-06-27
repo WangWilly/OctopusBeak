@@ -441,7 +441,7 @@ function loanTransactionDto(row: LoanTransaction): [string, TransactionRowDto] {
       date: row.tradeDate ?? row.postingDate ?? row.importedAt.slice(0, 10),
       label: row.item?.trim() || "Loan transaction",
       type: "Loan",
-      amount: row.amount ?? 0,
+      amount: -(row.amount ?? 0),
       currency: "TWD",
       note: row.note || row.interestRate,
     },
