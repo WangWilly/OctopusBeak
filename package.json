@@ -17,6 +17,7 @@
     "run:fubon-all-statements": "libretto run src/workflows/fubon-all-statements.ts --headed",
     "run:fubon-credit-card-statements": "libretto run src/workflows/fubon-credit-card-statements.ts --headed",
     "run:fubon-loan-statements": "libretto run src/workflows/fubon-loan-statements.ts --headed",
+    "run:esun-credit-card-statements": "libretto run src/workflows/esun-credit-card-statements.ts --headed",
     "run:yuanta-statements": "libretto run src/workflows/yuanta-statements.ts --headed",
     "run:yuanta-all-statements": "libretto run src/workflows/yuanta-all-statements.ts --headed",
     "run:yuanta-trade-statements": "libretto run src/workflows/yuanta-trade-statements.ts --headed",
