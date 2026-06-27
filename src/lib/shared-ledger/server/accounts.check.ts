@@ -125,7 +125,11 @@ settledCardData.creditCardStatementLines = [
   creditCardRow(2, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
 ];
 
-assert.equal(buildAccountOverview(settledCardData).some((row) => row.kind === "credit-card"), false);
+const settledCard = buildAccountOverview(settledCardData).find((row) => row.kind === "credit-card");
+
+assert.ok(settledCard);
+assert.deepEqual(settledCard.amountLines, [{ currency: "TWD", value: 0 }]);
+assert.equal(settledCard.transactionCount, 2);
 
 function loanRow(sourceRowIndex: number, item: string, balanceAfter: number): LoanTransaction {
   return {
