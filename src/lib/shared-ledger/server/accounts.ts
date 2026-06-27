@@ -300,7 +300,7 @@ function loanPositions(rows: LoanTransaction[]): RawPosition[] {
   return latestBy(
     rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
     (row) => ["loan", row.bank, row.product, row.accountNumber ?? ""].join("|"),
-    (row) => [row.tradeDate ?? "", row.importedAt, String(row.sourceRowIndex)].join("|"),
+    (row) => loanSortKey(row),
   ).map((row) => ({
     id: stableId("loan-position", row.bank, row.product, row.accountNumber ?? ""),
     accountId: accountId("loan", row.bank, row.product, row.accountNumber ?? "", "TWD"),
@@ -558,6 +558,11 @@ function isUnique(row: CommonRow) {
 
 function sortKey(row: CommonRow, date: string | null, time?: string | null) {
   return [date ?? "", time ?? "", row.importedAt, String(row.sourceRowIndex)].join("|");
+}
+
+function loanSortKey(row: LoanTransaction) {
+  const principalPriority = /本金|principal/i.test(row.item ?? "") ? "1" : "0";
+  return [row.tradeDate ?? "", row.importedAt, principalPriority, String(row.sourceRowIndex)].join("|");
 }
 
 function accountId(kind: string, bank: string, product: string, account: string, currencyCode: string) {

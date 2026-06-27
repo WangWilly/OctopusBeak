@@ -6,6 +6,7 @@ import {
 } from "./accounts.ts";
 
 type ForeignCurrencyTransaction = LedgerQueryData["foreignCurrencyTransactions"][number];
+type LoanTransaction = LedgerQueryData["loanTransactions"][number];
 
 function foreignRow(
   sourceRowIndex: number,
@@ -53,3 +54,44 @@ const account = buildAccountOverview(data).find((row) => row.kind === "foreign")
 
 assert.ok(account);
 assert.deepEqual(account.amountLines, [{ currency: "USD", value: 0 }]);
+
+function loanRow(sourceRowIndex: number, item: string, balanceAfter: number): LoanTransaction {
+  return {
+    statementRowId: `loan-${sourceRowIndex}`,
+    sourceFileId: "source",
+    importRunId: "run",
+    sourceRelativePath: "fubon-loan-statements/example.csv",
+    sourceRowIndex,
+    sourceHash: "source-hash",
+    rawRowHash: `loan-raw-${sourceRowIndex}`,
+    contentHash: `loan-content-${sourceRowIndex}`,
+    bank: "fubon",
+    product: "loan-statements",
+    dedupeStatus: "unique",
+    rawPayloadJson: "{}",
+    importedAt: "2026-06-27T09:45:09.910Z",
+    createdAt: "2026-06-27T09:45:09.910Z",
+    accountNumber: "TEST-LOAN-9498",
+    tradeDate: "2026-06-16",
+    postingDate: null,
+    item,
+    interestStartDate: "2026-05-16",
+    interestEndDate: "2026-06-16",
+    amount: null,
+    interestRate: "3.100000",
+    balanceAfter,
+    overpayment: null,
+    note: null,
+  };
+}
+
+const loanData = emptyLedgerQueryData();
+loanData.loanTransactions = [
+  loanRow(2, "本金", 651587),
+  loanRow(3, "利息", 657459),
+];
+
+const loanAccount = buildAccountOverview(loanData).find((row) => row.kind === "loan");
+
+assert.ok(loanAccount);
+assert.deepEqual(loanAccount.amountLines, [{ currency: "TWD", value: 651587 }]);
