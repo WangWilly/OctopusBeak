@@ -631,6 +631,19 @@ a {
   stroke-width: 1;
 }
 
+.sparkline-axis-line,
+.sparkline-tick path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.sparkline-tick text {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .sparkline-area {
   fill: color-mix(in oklch, var(--accent) 14%, white);
 }
@@ -645,6 +658,43 @@ a {
 
 .sparkline-dot {
   fill: var(--accent);
+  stroke: white;
+  stroke-width: 3;
+}
+
+.sparkline-point {
+  outline: none;
+}
+
+.sparkline-point-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.sparkline-point:hover .sparkline-dot {
+  r: 7;
+}
+
+.sparkline-tooltip rect {
+  fill: var(--fg);
+  opacity: 0.92;
+}
+
+.sparkline-tooltip {
+  pointer-events: none;
+}
+
+.sparkline-tooltip text {
+  fill: white;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sparkline-axis {
+  fill: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .sparkline-empty {
