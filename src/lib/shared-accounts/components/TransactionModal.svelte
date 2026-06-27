@@ -33,6 +33,7 @@
                   class="right money"
                   class:amount-positive={row.amount > 0}
                   class:amount-negative={row.amount < 0}
+                  class:amount-settled={account?.kind === "credit-card" && row.type.toLowerCase() === "billed"}
                 >
                   {formatMoney({ currency: row.currency, value: row.amount }, { signed: true })}
                 </td>
@@ -55,5 +56,10 @@
 
   .amount-negative {
     color: var(--danger);
+  }
+
+  .amount-settled {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
   }
 </style>
