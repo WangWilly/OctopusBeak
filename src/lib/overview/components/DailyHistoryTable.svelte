@@ -11,6 +11,10 @@
     const amount = amounts.find((item) => item.currency === currency);
     return amount ? formatMoney(amount, { signed }) : "--";
   }
+
+  function currencyValue(amounts: DailyHistoryRowDto["netAssets"]) {
+    return amounts.find((item) => item.currency === currency)?.value ?? 0;
+  }
 </script>
 
 <div class="table-wrap">
@@ -35,7 +39,14 @@
           <td>{row.date}</td>
           <td class="right money">{formatCurrencyAmount(row.netAssets)}</td>
           {#if !compact}
-            <td class="right money">{formatCurrencyAmount(row.dailyChange, true)}</td>
+            {@const dailyChange = currencyValue(row.dailyChange)}
+            <td
+              class="right money"
+              class:amount-positive={dailyChange > 0}
+              class:amount-negative={dailyChange < 0}
+            >
+              {formatCurrencyAmount(row.dailyChange, true)}
+            </td>
             <td class="right money">{formatCurrencyAmount(row.assets)}</td>
             <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
           {:else}
@@ -51,3 +62,13 @@
     </tbody>
   </table>
 </div>
+
+<style>
+  .amount-positive {
+    color: var(--success);
+  }
+
+  .amount-negative {
+    color: var(--danger);
+  }
+</style>
