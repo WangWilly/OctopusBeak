@@ -263,6 +263,14 @@ function foreignCashPositions(rows: ForeignCurrencyTransaction[]): RawPosition[]
 
 function creditCardPositions(rows: CreditCardStatementLine[]): RawPosition[] {
   const groups = new Map<string, { row: CreditCardStatementLine; value: number }>();
+  for (const row of latestCreditCardTransactionRows(rows)) {
+    const key = creditCardAccountKey(row);
+    const previous = groups.get(key);
+    if (!previous || sortKey(row, row.consumeDate) > sortKey(previous.row, previous.row.consumeDate)) {
+      groups.set(key, { row, value: 0 });
+    }
+  }
+
   for (const row of latestCreditCardStatementRows(rows)) {
     if (row.statementType !== "unbilled") continue;
     const value = row.twdAmount ?? 0;
