@@ -27,7 +27,7 @@ type StatementRow = {
   foreignAmount: string;
   paymentCurrency: string;
   twdAmount: string;
-  paymentStatus: string;
+  paymentStatus: StatementKind;
 };
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
@@ -142,10 +142,10 @@ function compareRowsByConsumeDateDesc(
 }
 
 export function esunCreditCardStatementKind(
-  paymentStatus: string,
+  bankPaymentStatus: string,
 ): StatementKind | null {
-  if (paymentStatus === "未入帳") return "unbilled";
-  if (paymentStatus === "已入帳") return "billed";
+  if (bankPaymentStatus === "未入帳") return "unbilled";
+  if (bankPaymentStatus === "已入帳") return "billed";
   return null;
 }
 
@@ -286,8 +286,8 @@ async function readStatementRows(
   for (const row of rows.slice(1)) {
     const cells = (await row.locator("th, td").allTextContents()).map(cleanText);
     if (cells.length < 6 || cells[0] === "消費日期") continue;
-    const paymentStatus = cells[5] ?? "";
-    if (!esunCreditCardStatementKind(paymentStatus)) continue;
+    const paymentStatus = esunCreditCardStatementKind(cells[5] ?? "");
+    if (!paymentStatus) continue;
 
     const charge = splitCurrencyAmount(cells[2] ?? "");
     const payment = splitCurrencyAmount(cells[3] ?? "");
@@ -327,9 +327,7 @@ function statementRowsToCsv(rows: StatementRow[]): string {
 }
 
 function statementKind(row: StatementRow): StatementKind {
-  const kind = esunCreditCardStatementKind(row.paymentStatus);
-  if (!kind) throw new Error(`Unsupported ESun payment status: ${row.paymentStatus}`);
-  return kind;
+  return row.paymentStatus;
 }
 
 function downloadsDir(): string {
