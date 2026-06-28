@@ -8,6 +8,6 @@
   aria-pressed={visible}
   on:click={() => (visible = !visible)}
 >
-  <span>{visible ? "Values Visible" : "Values Hidden"}</span>
+  <span>Values Visible</span>
   <span class="switch-track" aria-hidden="true"></span>
 </button>
