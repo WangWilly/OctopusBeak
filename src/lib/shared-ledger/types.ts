@@ -26,6 +26,7 @@ export type AccountKind =
   | "foreign"
   | "fund"
   | "brokerage"
+  | "crypto"
   | "credit-card"
   | "loan"
   | "other";
@@ -60,4 +61,5 @@ export type AssetPositionDto = {
   value: number;
   currency: string;
   change: string;
+  metricLabel?: string;
 };

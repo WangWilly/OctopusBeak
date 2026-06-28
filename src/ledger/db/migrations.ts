@@ -483,6 +483,73 @@ function normalizeContentHashesAndDedupe(db: LedgerDatabase) {
   }
 }
 
+function createMaicoinSchema(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS maicoin_sync_runs (
+      sync_run_id TEXT PRIMARY KEY,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      sub_account TEXT NOT NULL,
+      wallet_types_json TEXT NOT NULL,
+      statement_enabled INTEGER NOT NULL,
+      statement_limit INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS maicoin_account_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      sync_run_id TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      sub_account TEXT NOT NULL,
+      wallet_type TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      balance REAL NOT NULL,
+      locked REAL NOT NULL,
+      staked REAL,
+      principal REAL,
+      interest REAL,
+      total_quantity REAL NOT NULL,
+      price_market TEXT,
+      price_currency TEXT,
+      price REAL,
+      value_twd REAL,
+      price_at TEXT,
+      raw_account_json TEXT NOT NULL,
+      raw_price_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_maicoin_account_snapshots_run
+    ON maicoin_account_snapshots(sync_run_id);
+    CREATE INDEX IF NOT EXISTS idx_maicoin_account_snapshots_latest
+    ON maicoin_account_snapshots(sub_account, wallet_type, currency, captured_at);
+
+    CREATE TABLE IF NOT EXISTS maicoin_statement_rows (
+      statement_id TEXT PRIMARY KEY,
+      sync_run_id TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      wallet_type TEXT,
+      row_type TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      occurred_at TEXT,
+      currency TEXT,
+      amount REAL,
+      fee REAL,
+      fee_currency TEXT,
+      market TEXT,
+      side TEXT,
+      price REAL,
+      raw_payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_maicoin_statement_rows_run
+    ON maicoin_statement_rows(sync_run_id);
+    CREATE INDEX IF NOT EXISTS idx_maicoin_statement_rows_time
+    ON maicoin_statement_rows(row_type, occurred_at);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -503,6 +570,11 @@ const migrations: LedgerMigration[] = [
     version: 4,
     name: "normalized_content_hash_dedupe",
     up: normalizeContentHashesAndDedupe,
+  },
+  {
+    version: 5,
+    name: "maicoin_api_snapshots",
+    up: createMaicoinSchema,
   },
 ];
 

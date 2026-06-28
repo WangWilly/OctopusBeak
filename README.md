@@ -86,6 +86,35 @@ Generated files:
 
 `ledger.sqlite` is the primary local ledger store. It tracks imported source files and only reads a download path once. Statement rows are stored in typed tables such as account transactions, credit card lines, loan transactions, fund records, and brokerage records. Schema changes are applied through SQLite migrations.
 
+Sync current MAX/MaiCoin balances and TWD values into the local ledger:
+
+`.env`:
+
+```bash
+MAX_ACCESS_KEY=...
+MAX_SECRET_KEY=...
+MAX_SUB_ACCOUNT=main
+```
+
+```bash
+npm run run:sync-maicoin
+```
+
+By default this writes to `data/ledger/ledger.sqlite`. To also keep the latest trade/deposit/withdraw/transfer/reward/convert statement rows:
+
+```bash
+npm run run:sync-maicoin -- --statement --statement-json data/ledger/maicoin-statement.json
+```
+
+To backfill all available MAX transaction rows:
+
+```bash
+npm run run:sync-maicoin -- --statement-full --limit 1000
+```
+
+MAX rows are stored in `maicoin_account_snapshots`, `maicoin_statement_rows`, and `maicoin_sync_runs`.
+Crypto return rates are calculated from trade/convert rows when the open quantity can be matched to known cost basis. External deposits and rewards keep return as `--` unless cost basis is added later.
+
 ## Development
 
 ```bash

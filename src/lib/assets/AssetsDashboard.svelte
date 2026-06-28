@@ -20,6 +20,7 @@
     { kind: "bank", label: "Bank" },
     { kind: "fund", label: "Fund" },
     { kind: "brokerage", label: "Brokerage" },
+    { kind: "crypto", label: "Crypto" },
     { kind: "foreign", label: "Foreign" },
   ];
 

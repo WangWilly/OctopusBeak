@@ -6,14 +6,15 @@ import * as schema from "./schema.ts";
 import { migrateLedgerDb } from "./migrations.ts";
 
 export const SQLITE_LEDGER_FILE = "ledger.sqlite";
+export const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 export type LedgerDatabase = InstanceType<typeof DatabaseSync>;
 
-export function ledgerSqlitePath(ledgerDir = "data/ledger") {
+export function ledgerSqlitePath(ledgerDir = DEFAULT_LEDGER_DIR) {
   return join(ledgerDir, SQLITE_LEDGER_FILE);
 }
 
 export function openLedgerDatabase(
-  ledgerDir = "data/ledger",
+  ledgerDir = DEFAULT_LEDGER_DIR,
   options: { migrate?: boolean; readOnly?: boolean } = {},
 ): LedgerDatabase {
   const sqlitePath = ledgerSqlitePath(ledgerDir);
@@ -33,7 +34,7 @@ export function openLedgerDatabase(
   return db;
 }
 
-export function openLedgerDrizzle(ledgerDir = "data/ledger") {
+export function openLedgerDrizzle(ledgerDir = DEFAULT_LEDGER_DIR) {
   const sqlite = openLedgerDatabase(ledgerDir);
   return {
     sqlite,
