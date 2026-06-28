@@ -25,6 +25,7 @@
     const largest = largestAccount(accounts);
     const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
     const loanAccounts = accounts.filter((account) => account.kind === "loan");
+    const cryptoAccounts = accounts.filter((account) => account.kind === "crypto");
     const otherAccounts = accounts.filter((account) => account.kind === "other");
     const foreignDebtAccounts = accounts.filter((account) =>
       account.amountLines.some((amount) => amount.currency !== "TWD"),
@@ -36,6 +37,7 @@
         breakdown: [
           cardAccounts.length ? `Credit card ${cardAccounts.length}` : null,
           loanAccounts.length ? `Loan ${loanAccounts.length}` : null,
+          cryptoAccounts.length ? `Crypto ${cryptoAccounts.length}` : null,
           otherAccounts.length ? `Other ${otherAccounts.length}` : null,
         ].filter(Boolean) as string[],
       },

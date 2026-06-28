@@ -25,12 +25,14 @@
     { id: "bank", label: "Bank" },
     { id: "fund", label: "Fund" },
     { id: "brokerage", label: "Brokerage" },
+    { id: "crypto", label: "Crypto" },
     { id: "foreign", label: "Foreign" },
   ];
   const liabilityFilters: Filter[] = [
     { id: "all", label: "All Debts" },
     { id: "credit-card", label: "Credit Card" },
     { id: "loan", label: "Loan" },
+    { id: "crypto", label: "Crypto" },
     { id: "other", label: "Other" },
   ];
 

@@ -11,6 +11,7 @@ export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
     ...new Set(
       data.sourceFiles
         .map((source) => sourceFileDate(source))
+        .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
         .filter(Boolean)
         .sort(),
     ),
@@ -54,6 +55,7 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
     brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    maicoinAccountSnapshots: data.maicoinAccountSnapshots.filter((row) => row.capturedAt.slice(0, 10) <= date),
   };
 }
 

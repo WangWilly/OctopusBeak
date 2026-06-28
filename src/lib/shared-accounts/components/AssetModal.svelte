@@ -10,6 +10,13 @@
     const value = Number.parseFloat(change);
     return Number.isFinite(value) ? value : 0;
   }
+
+  $: metricLabels = [...new Set(rows.map((row) => row.metricLabel ?? "Return"))];
+  $: metricLabel = metricLabels.length === 1 ? metricLabels[0] : "Metric";
+
+  function isReturnMetric(row: AssetPositionDto) {
+    return (row.metricLabel ?? "Return") === "Return";
+  }
 </script>
 
 {#if open}
@@ -26,7 +33,7 @@
       <div class="modal-body">
         <table class="table">
           <thead>
-            <tr><th>Symbol</th><th>Name</th><th class="right">Units</th><th class="right">Value</th><th class="right">Return</th></tr>
+            <tr><th>Symbol</th><th>Name</th><th class="right">Units</th><th class="right">Value</th><th class="right">{metricLabel}</th></tr>
           </thead>
           <tbody>
             {#each rows as row}
@@ -37,8 +44,8 @@
                 <td class="right money">{formatMoney({ currency: row.currency, value: row.value })}</td>
                 <td
                   class="right"
-                  class:return-positive={changeValue(row.change) > 0}
-                  class:return-negative={changeValue(row.change) < 0}
+                  class:return-positive={isReturnMetric(row) && changeValue(row.change) > 0}
+                  class:return-negative={isReturnMetric(row) && changeValue(row.change) < 0}
                 >
                   {row.change}
                 </td>

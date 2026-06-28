@@ -1,4 +1,4 @@
-import { openLedgerDrizzle } from "../../../ledger/db/client.ts";
+import { DEFAULT_LEDGER_DIR, openLedgerDrizzle } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
 import type { AssetsPageDto } from "../types.ts";
 import {
@@ -9,7 +9,7 @@ import {
   type LedgerQueryData,
 } from "$lib/shared-ledger/server/accounts.ts";
 
-export async function loadAssets(ledgerDir = "data/ledger"): Promise<AssetsPageDto> {
+export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<AssetsPageDto> {
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);
   try {
     const [
@@ -22,6 +22,8 @@ export async function loadAssets(ledgerDir = "data/ledger"): Promise<AssetsPageD
       fundConversionTransactions,
       brokerageHoldings,
       brokerageTradeTransactions,
+      maicoinAccountSnapshots,
+      maicoinStatementRows,
     ] = await Promise.all([
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
@@ -32,6 +34,8 @@ export async function loadAssets(ledgerDir = "data/ledger"): Promise<AssetsPageD
       db.select().from(schema.fundConversionTransactions).all(),
       db.select().from(schema.brokerageHoldings).all(),
       db.select().from(schema.brokerageTradeTransactions).all(),
+      db.select().from(schema.maicoinAccountSnapshots).all(),
+      db.select().from(schema.maicoinStatementRows).all(),
     ]);
 
     const data: LedgerQueryData = {
@@ -45,10 +49,13 @@ export async function loadAssets(ledgerDir = "data/ledger"): Promise<AssetsPageD
       fundConversionTransactions,
       brokerageHoldings,
       brokerageTradeTransactions,
+      maicoinAccountSnapshots,
+      maicoinStatementRows,
     };
+    const accounts = buildAccountOverview(data).filter((account) => account.group !== "liability");
 
     return {
-      accounts: buildAccountOverview(data),
+      accounts,
       positionsByAccount: buildPositionsByAccount(data),
       transactionsByAccount: buildTransactionsByAccount(data),
     };
