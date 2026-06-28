@@ -2,12 +2,59 @@
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
+  type SortKey = "date" | "label" | "type" | "amount" | "note";
+  type SortDirection = "asc" | "desc";
+  type SortColumn = { key: SortKey; label: string; right?: boolean };
+
   export let open = false;
   export let account: AccountRowDto | null = null;
   export let rows: TransactionRowDto[] = [];
 
+  let sortKey: SortKey | null = null;
+  let sortDirection: SortDirection = "asc";
+
+  const sortColumns: SortColumn[] = [
+    { key: "date", label: "Date" },
+    { key: "label", label: "Description" },
+    { key: "type", label: "Type" },
+    { key: "amount", label: "Amount", right: true },
+    { key: "note", label: "Note", right: true },
+  ];
+
+  $: sortedRows = sortRows(rows, sortKey, sortDirection);
+
   function closeOnEscape(event: KeyboardEvent) {
     if (open && event.key === "Escape") open = false;
+  }
+
+  function sortRows(sourceRows: TransactionRowDto[], key: SortKey | null, direction: SortDirection) {
+    if (!key) return sourceRows;
+    return [...sourceRows].sort((left, right) => compareRows(left, right, key, direction));
+  }
+
+  function compareRows(left: TransactionRowDto, right: TransactionRowDto, key: SortKey, direction: SortDirection) {
+    const leftValue = sortValue(left, key);
+    const rightValue = sortValue(right, key);
+    const result =
+      typeof leftValue === "number" && typeof rightValue === "number"
+        ? leftValue - rightValue
+        : String(leftValue).localeCompare(String(rightValue));
+    return direction === "asc" ? result : -result;
+  }
+
+  function sortValue(row: TransactionRowDto, key: SortKey) {
+    if (key === "amount") return row.amount;
+    if (key === "note") return row.note ?? "";
+    return row[key];
+  }
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      sortDirection = sortDirection === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDirection = key === "amount" ? "desc" : "asc";
+    }
   }
 </script>
 
@@ -27,10 +74,33 @@
       <div class="modal-body">
         <table class="table">
           <thead>
-            <tr><th>Date</th><th>Description</th><th>Type</th><th class="right">Amount</th><th class="right">Note</th></tr>
+            <tr>
+              {#each sortColumns as column}
+                <th
+                  class:right={column.right}
+                  aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+                >
+                  <button
+                    class="sort-button"
+                    class:right={column.right}
+                    class:sorted={sortKey === column.key}
+                    type="button"
+                    on:click={() => toggleSort(column.key)}
+                  >
+                    <span>{column.label}</span>
+                    <span
+                      class:active={sortKey === column.key}
+                      class:asc={sortKey === column.key && sortDirection === "asc"}
+                      class="sort-mark"
+                      aria-hidden="true"
+                    ></span>
+                  </button>
+                </th>
+              {/each}
+            </tr>
           </thead>
           <tbody>
-            {#each rows as row}
+            {#each sortedRows as row}
               <tr>
                 <td>{row.date}</td>
                 <td>{row.label}</td>
@@ -56,6 +126,59 @@
 {/if}
 
 <style>
+  .sort-button {
+    width: 100%;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+  }
+
+  .sort-button.right {
+    justify-content: flex-end;
+  }
+
+  .sort-button:hover,
+  .sort-button:focus-visible,
+  .sort-button.sorted {
+    color: var(--fg);
+    outline: none;
+  }
+
+  .sort-mark {
+    width: 10px;
+    height: 10px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--accent);
+  }
+
+  .sort-mark::before {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid currentColor;
+    opacity: 0;
+  }
+
+  .sort-mark.active::before {
+    opacity: 1;
+  }
+
+  .sort-mark.asc::before {
+    transform: rotate(180deg);
+  }
+
   .amount-positive {
     color: var(--success);
   }

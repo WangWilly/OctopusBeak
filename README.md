@@ -1,5 +1,7 @@
 # Octopus Beak
 
+
+
 Personal banking automation built on Libretto. Workflows open supported Taiwan online banking portals in a headed browser, pause for required manual steps, and save clean local statement files under `downloads/`.
 
 Downloaded financial data, browser sessions, and credentials are sensitive local data. Do not commit or share them.

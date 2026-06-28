@@ -2,6 +2,10 @@
   import type { AccountRowDto, AssetPositionDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
+  type SortKey = "symbol" | "name" | "units" | "value" | "change";
+  type SortDirection = "asc" | "desc";
+  type SortColumn = { key: SortKey; label: string; right?: boolean };
+
   export let open = false;
   export let account: AccountRowDto | null = null;
   export let rows: AssetPositionDto[] = [];
@@ -16,6 +20,9 @@
 
   let selectedReturns: ReturnSelection = { trade: true, deposit: true, reward: true };
   let expandedSymbols: Record<string, boolean> = {};
+  let sortKey: SortKey | null = null;
+  let sortDirection: SortDirection = "asc";
+  let sortColumns: SortColumn[] = [];
 
   function closeOnEscape(event: KeyboardEvent) {
     if (open && event.key === "Escape") open = false;
@@ -55,6 +62,64 @@
     expandedSymbols = { ...expandedSymbols, [symbol]: !expandedSymbols[symbol] };
   }
 
+  function rowChange(row: AssetPositionDto, childRows: AssetPositionDto[], selection: ReturnSelection) {
+    return childRows.length > 0 ? categoryReturn(childRows, selection) : row.change;
+  }
+
+  function numericText(value: string) {
+    const parsed = Number.parseFloat(value.replace(/,/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function sortPositions(
+    sourceRows: AssetPositionDto[],
+    key: SortKey | null,
+    direction: SortDirection,
+    childrenBySymbol: Record<string, AssetPositionDto[]>,
+    selection: ReturnSelection,
+  ) {
+    if (!key) return sourceRows;
+    return [...sourceRows].sort((left, right) => comparePositions(left, right, key, direction, childrenBySymbol, selection));
+  }
+
+  function comparePositions(
+    left: AssetPositionDto,
+    right: AssetPositionDto,
+    key: SortKey,
+    direction: SortDirection,
+    childrenBySymbol: Record<string, AssetPositionDto[]>,
+    selection: ReturnSelection,
+  ) {
+    const leftValue = positionSortValue(left, key, childrenBySymbol, selection);
+    const rightValue = positionSortValue(right, key, childrenBySymbol, selection);
+    const result =
+      typeof leftValue === "number" && typeof rightValue === "number"
+        ? leftValue - rightValue
+        : String(leftValue).localeCompare(String(rightValue));
+    return direction === "asc" ? result : -result;
+  }
+
+  function positionSortValue(
+    row: AssetPositionDto,
+    key: SortKey,
+    childrenBySymbol: Record<string, AssetPositionDto[]>,
+    selection: ReturnSelection,
+  ) {
+    if (key === "units") return numericText(row.units);
+    if (key === "value") return row.value;
+    if (key === "change") return changeValue(rowChange(row, childrenBySymbol[row.symbol] ?? [], selection));
+    return row[key];
+  }
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      sortDirection = sortDirection === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDirection = key === "units" || key === "value" || key === "change" ? "desc" : "asc";
+    }
+  }
+
   $: returnRows = rows.filter((row) => row.returnCategory);
   $: hasReturnBreakdown = returnRows.length > 0;
   $: parentRows = rows.filter((row) => !row.returnCategory);
@@ -62,6 +127,14 @@
     bucket[row.symbol] = [...(bucket[row.symbol] ?? []), row];
     return bucket;
   }, {});
+  $: sortedParentRows = sortPositions(parentRows, sortKey, sortDirection, childRowsBySymbol, selectedReturns);
+  $: sortColumns = [
+    { key: "symbol", label: "Symbol" },
+    { key: "name", label: "Name" },
+    { key: "units", label: "Units", right: true },
+    { key: "value", label: "Value", right: true },
+    { key: "change", label: metricLabel, right: true },
+  ];
 </script>
 
 <svelte:window on:keydown={closeOnEscape} />
@@ -96,13 +169,36 @@
         {/if}
         <table class="table">
           <thead>
-            <tr><th>Symbol</th><th>Name</th><th class="right">Units</th><th class="right">Value</th><th class="right">{metricLabel}</th></tr>
+            <tr>
+              {#each sortColumns as column}
+                <th
+                  class:right={column.right}
+                  aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+                >
+                  <button
+                    class="sort-button"
+                    class:right={column.right}
+                    class:sorted={sortKey === column.key}
+                    type="button"
+                    on:click={() => toggleSort(column.key)}
+                  >
+                    <span>{column.label}</span>
+                    <span
+                      class:active={sortKey === column.key}
+                      class:asc={sortKey === column.key && sortDirection === "asc"}
+                      class="sort-mark"
+                      aria-hidden="true"
+                    ></span>
+                  </button>
+                </th>
+              {/each}
+            </tr>
           </thead>
           <tbody>
-            {#each parentRows as row}
+            {#each sortedParentRows as row}
               {@const childRows = childRowsBySymbol[row.symbol] ?? []}
               {@const expanded = expandedSymbols[row.symbol] ?? false}
-              {@const change = childRows.length > 0 ? categoryReturn(childRows, selectedReturns) : row.change}
+              {@const change = rowChange(row, childRows, selectedReturns)}
               <tr>
                 <td>{row.symbol}</td>
                 <td>
@@ -161,6 +257,59 @@
 {/if}
 
 <style>
+  .sort-button {
+    width: 100%;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+  }
+
+  .sort-button.right {
+    justify-content: flex-end;
+  }
+
+  .sort-button:hover,
+  .sort-button:focus-visible,
+  .sort-button.sorted {
+    color: var(--fg);
+    outline: none;
+  }
+
+  .sort-mark {
+    width: 10px;
+    height: 10px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--accent);
+  }
+
+  .sort-mark::before {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid currentColor;
+    opacity: 0;
+  }
+
+  .sort-mark.active::before {
+    opacity: 1;
+  }
+
+  .sort-mark.asc::before {
+    transform: rotate(180deg);
+  }
+
   .return-positive {
     color: var(--success);
   }
