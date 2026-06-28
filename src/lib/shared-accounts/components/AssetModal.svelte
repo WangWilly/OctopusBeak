@@ -17,6 +17,10 @@
   let selectedReturns: ReturnSelection = { trade: true, deposit: true, reward: true };
   let expandedSymbols: Record<string, boolean> = {};
 
+  function closeOnEscape(event: KeyboardEvent) {
+    if (open && event.key === "Escape") open = false;
+  }
+
   function changeValue(change: string) {
     const value = Number.parseFloat(change);
     return Number.isFinite(value) ? value : 0;
@@ -59,6 +63,8 @@
     return bucket;
   }, {});
 </script>
+
+<svelte:window on:keydown={closeOnEscape} />
 
 {#if open}
   <div class="modal open">
