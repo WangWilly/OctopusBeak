@@ -104,16 +104,10 @@ MAX_SUB_ACCOUNT=main
 npm run run:sync-maicoin
 ```
 
-By default this writes to `data/ledger/ledger.sqlite`. To also keep the latest trade/deposit/withdraw/transfer/reward/convert statement rows:
+By default this writes to `data/ledger/ledger.sqlite`, stores current MAX/MaiCoin snapshots, and backfills all available trade/deposit/withdraw/transfer/reward/convert statement rows with page size 1000 and retry/backoff for transient API failures. To also export the fetched statement rows as JSON:
 
 ```bash
-npm run run:sync-maicoin -- --statement --statement-json data/ledger/maicoin-statement.json
-```
-
-To backfill all available MAX transaction rows:
-
-```bash
-npm run run:sync-maicoin -- --statement-full --limit 1000
+npm run run:sync-maicoin -- --statement-json data/ledger/maicoin-statement.json
 ```
 
 MAX rows are stored in `maicoin_account_snapshots`, `maicoin_statement_rows`, and `maicoin_sync_runs`. `maicoin_statement_rows.value_twd` stores the statement row's estimated TWD value at the event date when a MAX historical close is available.

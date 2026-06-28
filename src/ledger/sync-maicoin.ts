@@ -10,7 +10,9 @@ import {
 } from "./db/client.ts";
 
 const API_BASE_URL = "https://max-api.maicoin.com";
-const DEFAULT_STATEMENT_LIMIT = 100;
+const DEFAULT_STATEMENT_LIMIT = 1000;
+const FETCH_TIMEOUT_MS = 30_000;
+const FETCH_RETRY_DELAYS_MS = [500, 1_000, 2_000];
 const WALLET_TYPES = ["spot", "m"] as const;
 
 type WalletType = typeof WALLET_TYPES[number];
@@ -19,8 +21,6 @@ type QueryParams = Record<string, string | number | boolean | undefined>;
 type CliParams = {
   ledgerDir: string;
   walletTypes: WalletType[];
-  statement: boolean;
-  statementFull: boolean;
   statementJson: string | null;
   statementLimit: number;
   subAccount: string;
@@ -94,28 +94,32 @@ class MaxClient {
   }
 
   async publicGet<T>(path: string, params: QueryParams = {}): Promise<T> {
-    const url = new URL(path, API_BASE_URL);
-    appendQuery(url, params);
-    return fetchJson<T>(url);
+    return fetchWithRetry(() => {
+      const url = new URL(path, API_BASE_URL);
+      appendQuery(url, params);
+      return fetchJson<T>(url);
+    });
   }
 
   async privateGet<T>(path: string, params: QueryParams = {}): Promise<T> {
-    const signedParams = { nonce: this.nextNonce(), ...params };
-    const { payload, signature } = signPayload(
-      path,
-      signedParams,
-      this.credentials.secretKey,
-    );
-    const url = new URL(path, API_BASE_URL);
-    appendQuery(url, signedParams);
-    return fetchJson<T>(url, {
-      headers: {
-        "Content-Type": "application/json",
-        "X-MAX-ACCESSKEY": this.credentials.accessKey,
-        "X-MAX-PAYLOAD": payload,
-        "X-MAX-SIGNATURE": signature,
-        "X-Sub-Account": this.credentials.subAccount,
-      },
+    return fetchWithRetry(() => {
+      const signedParams = { nonce: this.nextNonce(), ...params };
+      const { payload, signature } = signPayload(
+        path,
+        signedParams,
+        this.credentials.secretKey,
+      );
+      const url = new URL(path, API_BASE_URL);
+      appendQuery(url, signedParams);
+      return fetchJson<T>(url, {
+        headers: {
+          "Content-Type": "application/json",
+          "X-MAX-ACCESSKEY": this.credentials.accessKey,
+          "X-MAX-PAYLOAD": payload,
+          "X-MAX-SIGNATURE": signature,
+          "X-Sub-Account": this.credentials.subAccount,
+        },
+      });
     });
   }
 
@@ -128,16 +132,13 @@ class MaxClient {
 function usage() {
   return `Usage:
   npm run run:sync-maicoin
-  npm run run:sync-maicoin -- --statement --statement-json data/ledger/maicoin-statement.json
-  npm run run:sync-maicoin -- --statement-full
+  npm run run:sync-maicoin -- --statement-json data/ledger/maicoin-statement.json
 
 Options:
   --ledger-dir <dir>       SQLite ledger directory. Default: ${DEFAULT_LEDGER_DIR}
   --wallet-types <list>    Comma list: spot,m. Default: spot,m
-  --statement              Also store latest trade/deposit/withdraw/transfer/reward/convert rows
-  --statement-full         Page through all supported transaction statement rows
-  --statement-json <file>  Export statement rows as JSON
-  --limit <n>              Statement row limit per endpoint. Default: ${DEFAULT_STATEMENT_LIMIT}
+  --statement-json <file>  Export full statement rows as JSON
+  --limit <n>              Statement page size per endpoint. Max/default: ${DEFAULT_STATEMENT_LIMIT}
   --sub-account <name>     MAX sub-account header. Default: main
   --self-test              Run local checks only
 `;
@@ -147,8 +148,6 @@ function parseCli(argv: string[]): CliParams {
   const params: CliParams = {
     ledgerDir: process.env.LEDGER_DIR ?? DEFAULT_LEDGER_DIR,
     walletTypes: [...WALLET_TYPES],
-    statement: false,
-    statementFull: false,
     statementJson: null,
     statementLimit: DEFAULT_STATEMENT_LIMIT,
     subAccount: process.env.MAX_SUB_ACCOUNT ?? "main",
@@ -166,15 +165,12 @@ function parseCli(argv: string[]): CliParams {
       params.ledgerDir = requireValue(argv, ++index, arg);
     } else if (arg === "--wallet-types" || arg === "--wallet-type") {
       params.walletTypes = parseWalletTypes(requireValue(argv, ++index, arg));
-    } else if (arg === "--statement") {
-      params.statement = true;
-    } else if (arg === "--statement-full") {
-      params.statement = true;
-      params.statementFull = true;
     } else if (arg === "--statement-json") {
       params.statementJson = requireValue(argv, ++index, arg);
     } else if (arg === "--limit") {
-      params.statementLimit = parsePositiveInt(requireValue(argv, ++index, arg), arg);
+      const limit = parsePositiveInt(requireValue(argv, ++index, arg), arg);
+      if (limit > DEFAULT_STATEMENT_LIMIT) throw new Error(`${arg} must be <= ${DEFAULT_STATEMENT_LIMIT}`);
+      params.statementLimit = limit;
     } else if (arg === "--sub-account") {
       params.subAccount = requireValue(argv, ++index, arg);
     } else {
@@ -182,7 +178,6 @@ function parseCli(argv: string[]): CliParams {
     }
   }
 
-  if (params.statementJson) params.statement = true;
   return params;
 }
 
@@ -230,13 +225,48 @@ function appendQuery(url: URL, params: QueryParams) {
 }
 
 async function fetchJson<T>(url: URL, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   const body = await response.text();
-  const data = body ? JSON.parse(body) : null;
   if (!response.ok) {
-    throw new Error(`${init.method ?? "GET"} ${url.pathname} failed ${response.status}: ${body}`);
+    const error = new Error(`${init.method ?? "GET"} ${url.pathname} failed ${response.status}: ${body}`) as Error & {
+      status: number;
+    };
+    error.status = response.status;
+    throw error;
   }
+  const data = body ? JSON.parse(body) : null;
   return data as T;
+}
+
+async function fetchWithRetry<T>(
+  request: () => Promise<T>,
+  delays = FETCH_RETRY_DELAYS_MS,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      lastError = error;
+      if (attempt === delays.length || !isRetryableFetchError(error)) throw error;
+      await sleep(delays[attempt]);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isRetryableFetchError(error: unknown) {
+  const status = typeof error === "object" && error !== null && "status" in error
+    ? (error as { status: unknown }).status
+    : null;
+  return typeof status !== "number" || status === 408 || status === 429 || status >= 500;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function signPayload(path: string, params: QueryParams, secretKey: string) {
@@ -492,7 +522,6 @@ async function fetchStatement(
   client: MaxClient,
   walletTypes: WalletType[],
   limit: number,
-  full: boolean,
 ) {
   const specs: StatementSpec[] = [
     ...walletTypes.map((walletType) => ({
@@ -529,12 +558,7 @@ async function fetchStatement(
 
   const batches: StatementBatch[] = [];
   for (const spec of specs) {
-    const rows = full
-      ? await fetchFullStatementRows(client, spec.endpoint, limit)
-      : await client.privateGet<Record<string, unknown>[]>(spec.endpoint, {
-        order: "desc",
-        limit,
-      });
+    const rows = await fetchFullStatementRows(client, spec.endpoint, limit);
     batches.push({ ...spec, rows });
   }
   return batches;
@@ -597,7 +621,7 @@ function insertSyncRun(db: LedgerDatabase, params: CliParams, syncRunId: string,
     startedAt,
     params.subAccount,
     JSON.stringify(params.walletTypes),
-    params.statement ? 1 : 0,
+    1,
     params.statementLimit,
     JSON.stringify({ status: "started", params }),
   );
@@ -768,12 +792,8 @@ async function syncMaicoin(params: CliParams) {
     const tickers = await fetchTickers(client, tickerMarketsForAccounts(accounts, markets));
     const snapshots = buildSnapshots(accountBatches, tickers);
     const capturedAt = new Date().toISOString();
-    const statement = params.statement
-      ? await fetchStatement(client, walletTypes, params.statementLimit, params.statementFull)
-      : [];
-    const statementValues = params.statement
-      ? await statementValueMap(client, statement, markets)
-      : new Map();
+    const statement = await fetchStatement(client, walletTypes, params.statementLimit);
+    const statementValues = await statementValueMap(client, statement, markets);
     const statementJsonPath = params.statementJson
       ? await writeStatementJson(params.statementJson, statement)
       : null;
@@ -781,7 +801,7 @@ async function syncMaicoin(params: CliParams) {
     db.exec("BEGIN");
     try {
       insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
-      if (params.statement) insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
+      insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -795,7 +815,7 @@ async function syncMaicoin(params: CliParams) {
       capturedAt,
       walletTypes,
       accountSnapshots: snapshots.length,
-      statementFull: params.statementFull,
+      statementMode: "full",
       statementRows: statement.reduce((sum, batch) => sum + batch.rows.length, 0),
       statementJsonPath,
       missingPrices: snapshots
@@ -819,6 +839,11 @@ async function syncMaicoin(params: CliParams) {
 }
 
 async function selfTest() {
+  assert.equal(parseCli([]).statementLimit, DEFAULT_STATEMENT_LIMIT);
+  assert.throws(() => parseCli(["--statement"]), /Unknown option/);
+  assert.throws(() => parseCli(["--statement-full"]), /Unknown option/);
+  assert.throws(() => parseCli(["--limit", "1001"]), /--limit must be <= 1000/);
+
   const signed = signPayload("/api/v3/info", { nonce: 123 }, "secret");
   assert.equal(
     signed.signature,
@@ -828,6 +853,25 @@ async function selfTest() {
     nonce: 123,
     path: "/api/v3/info",
   });
+
+  const originalFetch = globalThis.fetch;
+  try {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ ok: calls === 2 }), {
+        status: calls === 1 ? 503 : 200,
+      });
+    }) as typeof fetch;
+
+    assert.deepEqual(
+      await fetchWithRetry(() => fetchJson<{ ok: boolean }>(new URL("https://example.test/retry")), [0]),
+      { ok: true },
+    );
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 
   const tickers = new Map<string, Ticker>([
     ["usdttwd", { market: "usdttwd", at: 1_700_000_000, last: "31" }],
