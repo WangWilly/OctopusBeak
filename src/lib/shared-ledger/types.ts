@@ -54,6 +54,8 @@ export type TransactionRowDto = {
   note: string | null;
 };
 
+export type ReturnCategoryDto = "trade" | "deposit" | "reward";
+
 export type AssetPositionDto = {
   symbol: string;
   name: string;
@@ -62,4 +64,6 @@ export type AssetPositionDto = {
   currency: string;
   change: string;
   metricLabel?: string;
+  returnCategory?: ReturnCategoryDto;
+  returnCostTwd?: number;
 };

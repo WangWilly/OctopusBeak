@@ -273,6 +273,7 @@ export const maicoinStatementRows = sqliteTable("maicoin_statement_rows", {
   market: text("market"),
   side: text("side"),
   price: real("price"),
+  valueTwd: real("value_twd"),
   rawPayloadJson: text("raw_payload_json").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
