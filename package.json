@@ -33,6 +33,7 @@
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",
     "privacy-check": ".githooks/pre-commit",
+    "secrets-check": "gitleaks dir . --config .gitleaks.toml --redact --verbose",
     "hooks:install": "git config core.hooksPath .githooks",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
   },

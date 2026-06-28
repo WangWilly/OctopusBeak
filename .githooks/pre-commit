@@ -7,6 +7,27 @@ function git(args) {
   return execFileSync("git", args, { encoding: "utf8" });
 }
 
+function runGitleaks() {
+  if (process.env.SKIP_GITLEAKS === "1") return;
+
+  try {
+    execFileSync("gitleaks", [
+      "git",
+      "--pre-commit",
+      "--redact",
+      "--staged",
+      "--verbose",
+      "--config",
+      ".gitleaks.toml",
+    ], { stdio: "inherit" });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      console.error("privacy-check failed: gitleaks is not installed. Install it with `brew install gitleaks`.");
+    }
+    process.exit(error.status ?? 1);
+  }
+}
+
 function mask(value) {
   return value.length <= 8
     ? "*".repeat(value.length)
@@ -14,6 +35,8 @@ function mask(value) {
 }
 
 const findings = [];
+runGitleaks();
+
 const staged = git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
   .split("\n")
   .filter(Boolean);
