@@ -234,6 +234,7 @@ maicoinData.maicoinStatementRows = [{
   market: "btctwd",
   side: "bid",
   price: 50,
+  valueTwd: 100,
   rawPayloadJson: JSON.stringify({
     id: 1,
     market: "btctwd",
@@ -277,6 +278,7 @@ maicoinRewardData.maicoinStatementRows = [{
   market: null,
   side: null,
   price: null,
+  valueTwd: 5,
   rawPayloadJson: JSON.stringify({
     id: 1,
     currency: "btc",

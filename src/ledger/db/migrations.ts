@@ -539,6 +539,7 @@ function createMaicoinSchema(db: LedgerDatabase) {
       market TEXT,
       side TEXT,
       price REAL,
+      value_twd REAL,
       raw_payload_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -548,6 +549,10 @@ function createMaicoinSchema(db: LedgerDatabase) {
     CREATE INDEX IF NOT EXISTS idx_maicoin_statement_rows_time
     ON maicoin_statement_rows(row_type, occurred_at);
   `);
+}
+
+function addMaicoinStatementValueTwd(db: LedgerDatabase) {
+  addColumnIfMissing(db, "maicoin_statement_rows", "value_twd", "value_twd REAL");
 }
 
 const migrations: LedgerMigration[] = [
@@ -575,6 +580,11 @@ const migrations: LedgerMigration[] = [
     version: 5,
     name: "maicoin_api_snapshots",
     up: createMaicoinSchema,
+  },
+  {
+    version: 6,
+    name: "maicoin_statement_value_twd",
+    up: addMaicoinStatementValueTwd,
   },
 ];
 
