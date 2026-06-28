@@ -26,6 +26,7 @@ npm run run:yuanta-all-statements
 npm run run:yuanta-trade-statements
 npm run run:cathay-all-statements
 npm run run:hncb-statements
+npm run run:sync-maicoin
 ```
 
 When a workflow pauses, complete the requested browser step, then resume the Libretto session:
@@ -60,6 +61,7 @@ npm run libretto:close-all
 | Cathay | `npm run run:cathay-statements`                  | TWD account statements                                    |
 | Cathay | `npm run run:cathay-foreign-statements`          | foreign-currency statements                               |
 | HNCB   | `npm run run:hncb-statements`                    | TWD account statements                                    |
+| MAX    | `npm run run:sync-maicoin`                       | crypto account snapshots and statement rows               |
 
 ## Output Shape
 
@@ -86,7 +88,7 @@ Generated files:
 
 `ledger.sqlite` is the primary local ledger store. It tracks imported source files and only reads a download path once. Statement rows are stored in typed tables such as account transactions, credit card lines, loan transactions, fund records, and brokerage records. Schema changes are applied through SQLite migrations.
 
-Sync current MAX/MaiCoin balances and TWD values into the local ledger:
+Sync current MAX/MaiCoin balances, M-wallet debt, and TWD values into the local ledger:
 
 `.env`:
 
@@ -112,8 +114,8 @@ To backfill all available MAX transaction rows:
 npm run run:sync-maicoin -- --statement-full --limit 1000
 ```
 
-MAX rows are stored in `maicoin_account_snapshots`, `maicoin_statement_rows`, and `maicoin_sync_runs`.
-Crypto return rates are calculated from trade/convert rows when the open quantity can be matched to known cost basis. External deposits and rewards keep return as `--` unless cost basis is added later.
+MAX rows are stored in `maicoin_account_snapshots`, `maicoin_statement_rows`, and `maicoin_sync_runs`. `maicoin_statement_rows.value_twd` stores the statement row's estimated TWD value at the event date when a MAX historical close is available.
+Crypto return is split into trade, deposit, and reward components. Trade cost uses the recorded historical `value_twd`; deposit and reward cost use their event-date value when available. Components with missing historical value are omitted from return until a cost basis is available.
 
 ## Development
 

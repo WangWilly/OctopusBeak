@@ -26,16 +26,30 @@ This normalization only establishes the row/header boundary. It does not rename 
 
 ## Outputs
 
-The import appends JSONL files under `data/ledger/`:
+The current importer writes to `data/ledger/ledger.sqlite`.
 
-- `import_run_events.jsonl`
-- `import_runs.jsonl`
-- `import_batches.jsonl`
-- `raw_transaction_occurrences.jsonl`
+Core import metadata is stored in:
 
-`data/` is ignored by git because it can contain personal financial data.
+- `import_run_events`
+- `import_runs`
+- `source_files`
 
-All records carry `schemaVersion: "raw-ledger.v1"` so future import format changes can be handled explicitly. JSONL records also carry `recordType`, `importerName`, and `importerVersion` so their purpose and producer remain clear outside the original filename.
+Typed statement rows are stored in tables such as:
+
+- `account_transactions`
+- `foreign_currency_transactions`
+- `credit_card_statement_lines`
+- `loan_transactions`
+- `fund_*`
+- `brokerage_*`
+
+MAX/MaiCoin API sync writes:
+
+- `maicoin_sync_runs`
+- `maicoin_account_snapshots`
+- `maicoin_statement_rows`
+
+`data/` is ignored by git because it can contain personal financial data. Schema changes are applied through SQLite migrations.
 
 ## Replay Semantics
 
