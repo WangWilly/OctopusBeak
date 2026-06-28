@@ -1,0 +1,58 @@
+#!/usr/bin/env node
+
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+function git(args) {
+  return execFileSync("git", args, { encoding: "utf8" });
+}
+
+function mask(value) {
+  return value.length <= 8
+    ? "*".repeat(value.length)
+    : `${value.slice(0, 4)}${"*".repeat(Math.min(8, value.length - 8))}${value.slice(-4)}`;
+}
+
+const findings = [];
+const staged = git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+  .split("\n")
+  .filter(Boolean);
+
+if (staged.includes(".env")) {
+  findings.push(".env is staged; unstage it with `git restore --staged .env`.");
+}
+
+const taiwanId = /\b[A-Z][12]\d{8}\b/g;
+const longNumber = /\b\d{10,19}\b/g;
+const accountContext =
+  /\b(account(?:name|number|no|id)?|acct|card(?:number|no)?|loan|customer(?:id|no)?|cust(?:id|no)|user[_-]?id)\b/i;
+const timestampContext = /\b(timestamp|created_?at|updated_?at|imported_?at|date|time)\b/i;
+
+for (const file of git(["ls-files", "-z"]).split("\0").filter(Boolean)) {
+  let buffer;
+  try {
+    buffer = readFileSync(file);
+  } catch {
+    continue;
+  }
+  if (buffer.includes(0)) continue;
+
+  const lines = buffer.toString("utf8").split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    for (const match of line.matchAll(taiwanId)) {
+      findings.push(`${file}:${index + 1}: Taiwan ID-like value ${mask(match[0])}`);
+    }
+
+    for (const match of line.matchAll(longNumber)) {
+      if (!accountContext.test(line)) continue;
+      if (timestampContext.test(line)) continue;
+      findings.push(`${file}:${index + 1}: long account-like number ${mask(match[0])}`);
+    }
+  }
+}
+
+if (findings.length) {
+  console.error("privacy-check failed:");
+  for (const finding of findings) console.error(`- ${finding}`);
+  process.exit(1);
+}
