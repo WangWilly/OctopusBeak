@@ -37,12 +37,23 @@ function mask(value) {
 const findings = [];
 runGitleaks();
 
+const allowedPrivacyFindings = new Set([
+  "src/lib/shared-ledger/server/mock-data.ts:127: long account-like number 0132****8900",
+  "src/lib/shared-ledger/server/mock-data.ts:142: long account-like number 0132****8900",
+  "src/lib/shared-ledger/server/mock-data.ts:160: long account-like number 9988**6600",
+  "src/lib/shared-ledger/server/mock-data.ts:176: long account-like number 9988**6600",
+]);
+
+function addFinding(finding) {
+  if (!allowedPrivacyFindings.has(finding)) findings.push(finding);
+}
+
 const staged = git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
   .split("\n")
   .filter(Boolean);
 
 if (staged.includes(".env")) {
-  findings.push(".env is staged; unstage it with `git restore --staged .env`.");
+  addFinding(".env is staged; unstage it with `git restore --staged .env`.");
 }
 
 const taiwanId = /\b[A-Z][12]\d{8}\b/g;
@@ -63,13 +74,13 @@ for (const file of git(["ls-files", "-z"]).split("\0").filter(Boolean)) {
   const lines = buffer.toString("utf8").split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     for (const match of line.matchAll(taiwanId)) {
-      findings.push(`${file}:${index + 1}: Taiwan ID-like value ${mask(match[0])}`);
+      addFinding(`${file}:${index + 1}: Taiwan ID-like value ${mask(match[0])}`);
     }
 
     for (const match of line.matchAll(longNumber)) {
       if (!accountContext.test(line)) continue;
       if (timestampContext.test(line)) continue;
-      findings.push(`${file}:${index + 1}: long account-like number ${mask(match[0])}`);
+      addFinding(`${file}:${index + 1}: long account-like number ${mask(match[0])}`);
     }
   }
 }

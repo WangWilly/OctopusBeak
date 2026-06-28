@@ -105,6 +105,24 @@ Run schema migrations directly when needed:
 npm run run:migrate-ledger-db
 ```
 
+## Mock Demo Ledger
+
+Generate a local demo SQLite ledger with fake data:
+
+```bash
+npm run run:seed-mock-ledger-db
+```
+
+This rewrites `data/mock-ledger/ledger.sqlite`. The generated database includes mock rows for the dashboard's bank, foreign-currency, credit-card, loan, fund, brokerage, and MAX/MaiCoin views. `data/` is gitignored, so the generated SQLite file is not committed.
+
+Start the dashboard against the mock ledger:
+
+```bash
+npm run dev:mock
+```
+
+Open `http://localhost:5173/overview`, `/assets`, or `/liabilities`.
+
 ## MAX/MaiCoin Sync
 
 Add the required keys to `.env`:
