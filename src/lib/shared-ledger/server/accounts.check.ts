@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildAccountOverview,
+  buildPositionsByAccount,
   buildTransactionsByAccount,
   emptyLedgerQueryData,
   type LedgerQueryData,
@@ -9,6 +10,8 @@ import {
 type ForeignCurrencyTransaction = LedgerQueryData["foreignCurrencyTransactions"][number];
 type CreditCardStatementLine = LedgerQueryData["creditCardStatementLines"][number];
 type LoanTransaction = LedgerQueryData["loanTransactions"][number];
+type MaicoinAccountSnapshot = LedgerQueryData["maicoinAccountSnapshots"][number];
+type MaicoinStatementRow = LedgerQueryData["maicoinStatementRows"][number];
 
 function foreignRow(
   sourceRowIndex: number,
@@ -173,3 +176,118 @@ const loanAccount = buildAccountOverview(loanData).find((row) => row.kind === "l
 assert.ok(loanAccount);
 assert.deepEqual(loanAccount.amountLines, [{ currency: "TWD", value: 651587 }]);
 assert.equal(buildTransactionsByAccount(loanData)[loanAccount.id]?.[0]?.amount, -5872);
+
+function maicoinSnapshot(): MaicoinAccountSnapshot {
+  return {
+    snapshotId: "max-btc",
+    syncRunId: "run",
+    capturedAt: "2026-06-27T12:00:00.000Z",
+    subAccount: "main",
+    walletType: "m",
+    currency: "btc",
+    balance: 1,
+    locked: 1,
+    staked: null,
+    principal: 0.5,
+    interest: 0.25,
+    totalQuantity: 2,
+    priceMarket: "btctwd",
+    priceCurrency: "TWD",
+    price: 100,
+    valueTwd: 200,
+    priceAt: "2026-06-27T12:00:00.000Z",
+    rawAccountJson: "{}",
+    rawPriceJson: "{}",
+    createdAt: "2026-06-27T12:00:00.000Z",
+  };
+}
+
+function maicoinSpotSnapshot(): MaicoinAccountSnapshot {
+  return {
+    ...maicoinSnapshot(),
+    snapshotId: "max-spot-btc",
+    walletType: "spot",
+    balance: 0.1,
+    locked: 0,
+    principal: null,
+    interest: null,
+    totalQuantity: 0.1,
+    valueTwd: 10,
+  };
+}
+
+const maicoinData = emptyLedgerQueryData();
+maicoinData.maicoinAccountSnapshots = [maicoinSnapshot()];
+maicoinData.maicoinStatementRows = [{
+  statementId: "max-trade",
+  syncRunId: "run",
+  capturedAt: "2026-06-27T12:00:00.000Z",
+  endpoint: "/api/v3/wallet/spot/trades",
+  walletType: "m",
+  rowType: "trade",
+  externalId: "trade-1",
+  occurredAt: "2026-06-27T11:00:00.000Z",
+  currency: null,
+  amount: 2,
+  fee: null,
+  feeCurrency: null,
+  market: "btctwd",
+  side: "bid",
+  price: 50,
+  rawPayloadJson: JSON.stringify({
+    id: 1,
+    market: "btctwd",
+    side: "bid",
+    volume: "2",
+    funds: "100",
+    price: "50",
+    created_at: 1792926000000,
+  }),
+  createdAt: "2026-06-27T12:00:00.000Z",
+  updatedAt: "2026-06-27T12:00:00.000Z",
+} satisfies MaicoinStatementRow];
+const maicoinAccounts = buildAccountOverview(maicoinData);
+const maicoinAsset = maicoinAccounts.find((row) => row.kind === "crypto" && row.group === "investment");
+const maicoinLiability = maicoinAccounts.find((row) => row.kind === "crypto" && row.group === "liability");
+
+assert.ok(maicoinAsset);
+assert.deepEqual(maicoinAsset.amountLines, [{ currency: "TWD", value: 200 }]);
+assert.ok(maicoinLiability);
+assert.deepEqual(maicoinLiability.amountLines, [{ currency: "TWD", value: 75 }]);
+
+const maicoinPosition = buildPositionsByAccount(maicoinData)[maicoinAsset.id]?.[0];
+assert.equal(maicoinPosition?.metricLabel, "Return");
+assert.equal(maicoinPosition?.change, "100.00%");
+
+const maicoinRewardData = emptyLedgerQueryData();
+maicoinRewardData.maicoinAccountSnapshots = [maicoinSnapshot(), maicoinSpotSnapshot()];
+maicoinRewardData.maicoinStatementRows = [{
+  statementId: "max-reward",
+  syncRunId: "run",
+  capturedAt: "2026-06-27T12:00:00.000Z",
+  endpoint: "/api/v3/rewards",
+  walletType: null,
+  rowType: "reward",
+  externalId: "reward-1",
+  occurredAt: "2026-06-27T11:00:00.000Z",
+  currency: "btc",
+  amount: 0.1,
+  fee: null,
+  feeCurrency: null,
+  market: null,
+  side: null,
+  price: null,
+  rawPayloadJson: JSON.stringify({
+    id: 1,
+    currency: "btc",
+    amount: "0.1",
+    created_at: 1792926000000,
+  }),
+  createdAt: "2026-06-27T12:00:00.000Z",
+  updatedAt: "2026-06-27T12:00:00.000Z",
+} satisfies MaicoinStatementRow];
+
+const maicoinRewardAccount = buildAccountOverview(maicoinRewardData).find((row) => (
+  row.kind === "crypto" && row.group === "investment" && row.product === "Spot wallet"
+));
+assert.equal(maicoinRewardAccount?.transactionCount, 1);

@@ -12,6 +12,8 @@ import type {
   fundRedemptionTransactions,
   importRuns,
   loanTransactions,
+  maicoinAccountSnapshots,
+  maicoinStatementRows,
   sourceFiles,
 } from "../../../ledger/db/schema.ts";
 import type {
@@ -34,6 +36,8 @@ type FundCashDividend = typeof fundCashDividends.$inferSelect;
 type FundConversionTransaction = typeof fundConversionTransactions.$inferSelect;
 type BrokerageHolding = typeof brokerageHoldings.$inferSelect;
 type BrokerageTradeTransaction = typeof brokerageTradeTransactions.$inferSelect;
+type MaicoinAccountSnapshot = typeof maicoinAccountSnapshots.$inferSelect;
+type MaicoinStatementRow = typeof maicoinStatementRows.$inferSelect;
 type ImportRun = typeof importRuns.$inferSelect;
 type SourceFile = typeof sourceFiles.$inferSelect;
 
@@ -59,6 +63,8 @@ export type LedgerQueryData = {
   fundConversionTransactions: FundConversionTransaction[];
   brokerageHoldings: BrokerageHolding[];
   brokerageTradeTransactions: BrokerageTradeTransaction[];
+  maicoinAccountSnapshots: MaicoinAccountSnapshot[];
+  maicoinStatementRows: MaicoinStatementRow[];
 };
 
 export function emptyLedgerQueryData(): LedgerQueryData {
@@ -76,6 +82,8 @@ export function emptyLedgerQueryData(): LedgerQueryData {
     fundConversionTransactions: [],
     brokerageHoldings: [],
     brokerageTradeTransactions: [],
+    maicoinAccountSnapshots: [],
+    maicoinStatementRows: [],
   };
 }
 
@@ -142,6 +150,7 @@ export function buildRawPositions(data: LedgerQueryData): RawPosition[] {
     ...loanPositions(data.loanTransactions),
     ...fundPositions(data.fundHoldings),
     ...brokeragePositions(data.brokerageHoldings),
+    ...maicoinPositions(data.maicoinAccountSnapshots, data.maicoinStatementRows),
   ];
 }
 
@@ -158,6 +167,7 @@ export function buildTransactionsByAccount(
     ...data.fundCashDividends.filter(isUnique).map(fundCashDividendDto),
     ...data.fundConversionTransactions.filter(isUnique).map(fundConversionTransactionDto),
     ...data.brokerageTradeTransactions.filter(isUnique).map(brokerageTransactionDto),
+    ...maicoinTransactionDtos(data.maicoinStatementRows, data.maicoinAccountSnapshots),
   ];
 
   const byAccount: Record<string, TransactionRowDto[]> = {};
@@ -390,6 +400,233 @@ function brokeragePositions(rows: BrokerageHolding[]): RawPosition[] {
   });
 }
 
+function maicoinPositions(
+  rows: MaicoinAccountSnapshot[],
+  statementRows: MaicoinStatementRow[],
+): RawPosition[] {
+  const latestRows = latestBy(
+    rows.filter((row) => row.totalQuantity > 0 || maicoinDebtQuantity(row) > 0),
+    (row) => ["maicoin", row.subAccount, row.walletType, currency(row.currency)].join("|"),
+    (row) => row.capturedAt,
+  );
+  const returns = maicoinReturnRates(latestRows, statementRows);
+  return latestRows.flatMap((row) => {
+    const product = row.walletType === "m" ? "M-wallet" : "Spot wallet";
+    const currencyCode = currency(row.currency);
+    const returnRate = returns.get(currencyCode);
+    const positions: RawPosition[] = [];
+    if (row.totalQuantity > 0) {
+      const valued = row.valueTwd !== null;
+      const value = row.valueTwd ?? row.totalQuantity;
+      positions.push({
+        id: stableId("maicoin-asset", row.subAccount, row.walletType, currencyCode),
+        accountId: accountId("maicoin-asset", "maicoin", product, row.subAccount, "TWD"),
+        label: `MAX ${product}`,
+        institution: "MaiCoin MAX",
+        product,
+        group: "investment",
+        kind: "crypto",
+        typeLabel: "Crypto",
+        currency: valued ? "TWD" : currencyCode,
+        value,
+        asOfDate: row.capturedAt.slice(0, 10),
+        importedAt: row.capturedAt,
+        positionDetail: {
+          symbol: currencyCode,
+          name: `${currencyCode} ${product}`,
+          units: formatUnits(row.totalQuantity),
+          value,
+          currency: valued ? "TWD" : currencyCode,
+          change: returnRate ?? "--",
+          metricLabel: "Return",
+        },
+      });
+    }
+
+    const debtQuantity = maicoinDebtQuantity(row);
+    if (debtQuantity > 0) {
+      const valued = row.price !== null;
+      positions.push({
+        id: stableId("maicoin-liability", row.subAccount, row.walletType, currencyCode),
+        accountId: accountId("maicoin-liability", "maicoin", product, row.subAccount, "TWD"),
+        label: `MAX ${product} debt`,
+        institution: "MaiCoin MAX",
+        product,
+        group: "liability",
+        kind: "crypto",
+        typeLabel: "Crypto debt",
+        currency: valued ? "TWD" : currencyCode,
+        value: valued ? debtQuantity * (row.price ?? 0) : debtQuantity,
+        asOfDate: row.capturedAt.slice(0, 10),
+        importedAt: row.capturedAt,
+        positionDetail: null,
+      });
+    }
+    return positions;
+  });
+}
+
+function maicoinDebtQuantity(row: MaicoinAccountSnapshot) {
+  return (row.principal ?? 0) + (row.interest ?? 0);
+}
+
+type CostState = {
+  quantity: number;
+  costTwd: number;
+  incomplete: boolean;
+};
+
+const SPOT_STATEMENT_ROW_TYPES = new Set(["convert", "deposit", "reward", "withdrawal"]);
+
+function maicoinReturnRates(
+  snapshots: MaicoinAccountSnapshot[],
+  rows: MaicoinStatementRow[],
+) {
+  const states = new Map<string, CostState>();
+  const twdRates = maicoinTwdRates(snapshots);
+  for (const row of [...rows].sort((left, right) => (left.occurredAt ?? "").localeCompare(right.occurredAt ?? ""))) {
+    const raw = parseJson(row.rawPayloadJson);
+    if (row.rowType === "trade") applyMaicoinTrade(states, raw, twdRates);
+    if (row.rowType === "convert") applyMaicoinConvert(states, raw, twdRates);
+    if (row.rowType === "withdrawal") reduceMaicoinCost(states, currency(stringValue(raw.currency)), amount(raw.amount));
+    if (row.rowType === "deposit" || row.rowType === "reward") {
+      maicoinCostState(states, currency(stringValue(raw.currency))).incomplete = true;
+    }
+  }
+
+  const returns = new Map<string, string>();
+  for (const snapshot of snapshots) {
+    const currencyCode = currency(snapshot.currency);
+    const state = states.get(currencyCode);
+    if (!state || state.incomplete || state.costTwd <= 0 || snapshot.valueTwd === null) continue;
+    if (Math.abs(snapshot.totalQuantity - state.quantity) > 0.000001) continue;
+    returns.set(currencyCode, `${(((snapshot.valueTwd - state.costTwd) / state.costTwd) * 100).toFixed(2)}%`);
+  }
+  return returns;
+}
+
+function maicoinTwdRates(snapshots: MaicoinAccountSnapshot[]) {
+  const rates = new Map<string, number>();
+  rates.set("TWD", 1);
+  for (const snapshot of snapshots) {
+    if (snapshot.price !== null) rates.set(currency(snapshot.currency), snapshot.price);
+  }
+  return rates;
+}
+
+function applyMaicoinTrade(
+  states: Map<string, CostState>,
+  raw: Record<string, unknown>,
+  twdRates: Map<string, number>,
+) {
+  const market = stringValue(raw.market);
+  const units = market ? marketUnits(market) : null;
+  if (!units) return;
+
+  const base = currency(units.base);
+  const quote = currency(units.quote);
+  const volume = amount(raw.volume);
+  const funds = amount(raw.funds);
+  const quoteRate = twdRates.get(quote);
+  if (!volume || !funds || !quoteRate) return;
+
+  if (raw.side === "bid") {
+    addMaicoinCost(states, base, volume - feeIn(raw, base), funds * quoteRate + feeIn(raw, quote) * quoteRate);
+  } else if (raw.side === "ask") {
+    reduceMaicoinCost(states, base, volume);
+  }
+}
+
+function applyMaicoinConvert(
+  states: Map<string, CostState>,
+  raw: Record<string, unknown>,
+  twdRates: Map<string, number>,
+) {
+  const from = currency(raw.from_currency as string | null);
+  const to = currency(raw.to_currency as string | null);
+  const fromAmount = amount(raw.from_amount);
+  const toAmount = amount(raw.to_amount);
+  if (!fromAmount || !toAmount) return;
+
+  const removedCost = reduceMaicoinCost(states, from, fromAmount);
+  const fallbackCost = fromAmount * (twdRates.get(from) ?? 0);
+  const feeTwd = amount(raw.fee_in_twd);
+  addMaicoinCost(states, to, toAmount, (removedCost || fallbackCost) + feeTwd);
+}
+
+function addMaicoinCost(
+  states: Map<string, CostState>,
+  currencyCode: string,
+  quantity: number,
+  costTwd: number,
+) {
+  if (quantity <= 0 || costTwd <= 0) return;
+  const state = maicoinCostState(states, currencyCode);
+  state.quantity += quantity;
+  state.costTwd += costTwd;
+}
+
+function reduceMaicoinCost(
+  states: Map<string, CostState>,
+  currencyCode: string,
+  quantity: number,
+) {
+  if (quantity <= 0) return 0;
+  const state = maicoinCostState(states, currencyCode);
+  if (state.quantity <= 0) {
+    state.incomplete = true;
+    return 0;
+  }
+  const removedQuantity = Math.min(quantity, state.quantity);
+  const removedCost = state.costTwd * (removedQuantity / state.quantity);
+  state.quantity -= removedQuantity;
+  state.costTwd -= removedCost;
+  if (quantity > removedQuantity + 0.000001) state.incomplete = true;
+  return removedCost;
+}
+
+function maicoinCostState(states: Map<string, CostState>, currencyCode: string) {
+  const key = currency(currencyCode);
+  const state = states.get(key) ?? { quantity: 0, costTwd: 0, incomplete: false };
+  states.set(key, state);
+  return state;
+}
+
+function marketUnits(market: string) {
+  for (const quote of ["usdt", "usdc", "twd", "btc", "eth"]) {
+    if (market.endsWith(quote) && market.length > quote.length) {
+      return { base: market.slice(0, -quote.length), quote };
+    }
+  }
+  return null;
+}
+
+function feeIn(raw: Record<string, unknown>, currencyCode: string) {
+  return currency(raw.fee_currency as string | null) === currencyCode ? amount(raw.fee) : 0;
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numeric(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function amount(value: unknown) {
+  return numeric(value) ?? 0;
+}
+
 function bankTransactionDto(row: AccountTransaction): [string, TransactionRowDto] {
   const amount = (row.depositAmount ?? 0) - (row.withdrawalAmount ?? 0);
   return [
@@ -516,6 +753,98 @@ function brokerageTransactionDto(row: BrokerageTradeTransaction): [string, Trans
       note: row.subCategory,
     },
   ];
+}
+
+function maicoinTransactionDtos(
+  rows: MaicoinStatementRow[],
+  snapshots: MaicoinAccountSnapshot[],
+): Array<[string, TransactionRowDto]> {
+  const accountIds = maicoinAccountIds(snapshots);
+  return rows.flatMap((row) => {
+    const raw = parseJson(row.rawPayloadJson);
+    const account = maicoinStatementAccount(row, accountIds);
+    const date = row.occurredAt?.slice(0, 10) ?? row.capturedAt.slice(0, 10);
+
+    if (row.rowType === "trade") {
+      const units = row.market ? marketUnits(row.market) : null;
+      const base = currency(units?.base);
+      const volume = amount(raw.volume);
+      const signedVolume = row.side === "ask" ? -volume : volume;
+      return [[account, {
+        date,
+        label: row.market ?? "MAX trade",
+        type: row.side === "ask" ? "Sell" : row.side === "bid" ? "Buy" : "Trade",
+        amount: signedVolume,
+        currency: base,
+        note: row.price === null ? null : `${row.price} ${currency(units?.quote)}`,
+      }]];
+    }
+
+    if (row.rowType === "convert") {
+      return [
+        [account, {
+          date,
+          label: "MAX convert",
+          type: "Convert out",
+          amount: -amount(raw.from_amount),
+          currency: currency(raw.from_currency as string | null),
+          note: null,
+        }],
+        [account, {
+          date,
+          label: "MAX convert",
+          type: "Convert in",
+          amount: amount(raw.to_amount),
+          currency: currency(raw.to_currency as string | null),
+          note: null,
+        }],
+      ];
+    }
+
+    const value = amount(raw.amount);
+    const signed = row.rowType === "withdrawal" ? -value : value;
+    return [[account, {
+      date,
+      label: `MAX ${row.rowType}`,
+      type: row.rowType,
+      amount: signed,
+      currency: currency(row.currency),
+      note: stringValue(raw.note) ?? stringValue(raw.state),
+    }]];
+  });
+}
+
+function maicoinAccountIds(snapshots: MaicoinAccountSnapshot[]) {
+  const byWalletType = new Map<string, string>();
+  const byCurrency = new Map<string, string | null>();
+  for (const snapshot of snapshots) {
+    const product = snapshot.walletType === "m" ? "M-wallet" : "Spot wallet";
+    const id = accountId("maicoin-asset", "maicoin", product, snapshot.subAccount, "TWD");
+    byWalletType.set(snapshot.walletType, id);
+    const currencyCode = currency(snapshot.currency);
+    const existing = byCurrency.get(currencyCode);
+    if (existing === undefined) byCurrency.set(currencyCode, id);
+    else if (existing !== id) byCurrency.set(currencyCode, null);
+  }
+  return { byWalletType, byCurrency };
+}
+
+function maicoinStatementAccount(
+  row: MaicoinStatementRow,
+  accountIds: ReturnType<typeof maicoinAccountIds>,
+) {
+  if (row.walletType) {
+    return accountIds.byWalletType.get(row.walletType)
+      ?? accountId("maicoin-asset", "maicoin", row.walletType, "main", "TWD");
+  }
+  if (SPOT_STATEMENT_ROW_TYPES.has(row.rowType)) {
+    return accountIds.byWalletType.get("spot") ?? accountId("maicoin-asset", "maicoin", "spot", "main", "TWD");
+  }
+
+  const currencies = [currency(row.currency)];
+  const ids = [...new Set(currencies.map((currencyCode) => accountIds.byCurrency.get(currencyCode)).filter(Boolean))];
+  if (ids.length === 1) return ids[0]!;
+  return accountIds.byWalletType.get("spot") ?? accountId("maicoin-asset", "maicoin", "spot", "main", "TWD");
 }
 
 function latestBy<T>(rows: T[], keyFor: (row: T) => string, sortFor: (row: T) => string): T[] {

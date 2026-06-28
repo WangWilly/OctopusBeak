@@ -222,3 +222,58 @@ export const brokerageTradeTransactions = sqliteTable("brokerage_trade_transacti
   realizedPnl: real("realized_pnl"),
   costAmount: real("cost_amount"),
 });
+
+export const maicoinSyncRuns = sqliteTable("maicoin_sync_runs", {
+  syncRunId: text("sync_run_id").primaryKey(),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  subAccount: text("sub_account").notNull(),
+  walletTypesJson: text("wallet_types_json").notNull(),
+  statementEnabled: integer("statement_enabled").notNull(),
+  statementLimit: integer("statement_limit").notNull(),
+  recordJson: text("record_json").notNull(),
+});
+
+export const maicoinAccountSnapshots = sqliteTable("maicoin_account_snapshots", {
+  snapshotId: text("snapshot_id").primaryKey(),
+  syncRunId: text("sync_run_id").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  subAccount: text("sub_account").notNull(),
+  walletType: text("wallet_type").notNull(),
+  currency: text("currency").notNull(),
+  balance: real("balance").notNull(),
+  locked: real("locked").notNull(),
+  staked: real("staked"),
+  principal: real("principal"),
+  interest: real("interest"),
+  totalQuantity: real("total_quantity").notNull(),
+  priceMarket: text("price_market"),
+  priceCurrency: text("price_currency"),
+  price: real("price"),
+  valueTwd: real("value_twd"),
+  priceAt: text("price_at"),
+  rawAccountJson: text("raw_account_json").notNull(),
+  rawPriceJson: text("raw_price_json"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const maicoinStatementRows = sqliteTable("maicoin_statement_rows", {
+  statementId: text("statement_id").primaryKey(),
+  syncRunId: text("sync_run_id").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  endpoint: text("endpoint").notNull(),
+  walletType: text("wallet_type"),
+  rowType: text("row_type").notNull(),
+  externalId: text("external_id").notNull(),
+  occurredAt: text("occurred_at"),
+  currency: text("currency"),
+  amount: real("amount"),
+  fee: real("fee"),
+  feeCurrency: text("fee_currency"),
+  market: text("market"),
+  side: text("side"),
+  price: real("price"),
+  rawPayloadJson: text("raw_payload_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
