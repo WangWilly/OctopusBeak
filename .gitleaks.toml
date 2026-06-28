@@ -1,0 +1,38 @@
+title = "Octopus Beak Gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  '''^\.env$''',
+  '''^\.svelte-kit/''',
+  '''^node_modules/''',
+  '''^build/''',
+  '''^downloads/''',
+  '''^data/''',
+  '''^\.libretto/sessions/''',
+  '''^\.libretto/profiles/''',
+]
+
+[[rules]]
+id = "libretto-cloud-credential"
+description = "Libretto workflow credential pasted into source or docs"
+regex = '''(?i)\b(LIBRETTO_CLOUD_[A-Z0-9_]*(?:PASSWORD|ACCOUNT|USER_ID|SECRET|TOKEN|CA_PASSWORD|CA_PATH)[ \t]*[:=][ \t]*["']?)([^"'\s,#]+)'''
+secretGroup = 2
+keywords = ["LIBRETTO_CLOUD_"]
+
+[[rules.allowlists]]
+description = "ignore placeholders"
+stopwords = ["...", "example", "changeme", "redacted", "string", "<redacted>", "<secret>", "<password>", "<token>"]
+
+[[rules]]
+id = "max-api-credential"
+description = "MAX/MaiCoin API credential pasted into source or docs"
+regex = '''(?i)\b(MAX_(?:ACCESS_KEY|SECRET_KEY)[ \t]*[:=][ \t]*["']?)([^"'\s,#]+)'''
+secretGroup = 2
+keywords = ["MAX_ACCESS_KEY", "MAX_SECRET_KEY"]
+
+[[rules.allowlists]]
+description = "ignore placeholders"
+stopwords = ["...", "example", "changeme", "redacted", "string", "<redacted>", "<secret>", "<password>", "<token>"]
