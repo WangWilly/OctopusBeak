@@ -6,7 +6,7 @@
 </script>
 
 <svelte:head>
-  <title>LedgerLens Overview</title>
+  <title>OctopusBeak Overview</title>
 </svelte:head>
 
 <OverviewDashboard overview={data.overview} />

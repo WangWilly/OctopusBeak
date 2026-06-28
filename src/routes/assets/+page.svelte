@@ -6,7 +6,7 @@
 </script>
 
 <svelte:head>
-  <title>LedgerLens Assets</title>
+  <title>OctopusBeak Assets</title>
 </svelte:head>
 
 <AssetsDashboard assets={data.assets} />

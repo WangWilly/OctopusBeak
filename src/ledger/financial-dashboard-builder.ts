@@ -54,15 +54,15 @@ function jsonForScript(value: unknown): string {
 }
 
 
-type LedgerLensGroup = "asset" | "liability" | "investment";
+type OctopusBeakGroup = "asset" | "liability" | "investment";
 
-type LedgerLensAccount = {
+type OctopusBeakAccount = {
   id: string;
   label: string;
   institution: string;
   kind: DashboardAccount["kind"];
   kindLabel: string;
-  group: LedgerLensGroup;
+  group: OctopusBeakGroup;
   source: string;
   amounts: CurrencyBucket;
   positionIds: string[];
@@ -144,7 +144,7 @@ function dailyAccountChangeSummary(changes: DailyAccountChange[]): string {
     .join("\n");
 }
 
-function ledgerLensGroup(account: DashboardAccount): LedgerLensGroup {
+function octopusBeakGroup(account: DashboardAccount): OctopusBeakGroup {
   if (account.kind === "credit_card" || account.kind === "loan") return "liability";
   if (account.kind === "fund" || account.kind === "brokerage") return "investment";
   return "asset";
@@ -177,11 +177,11 @@ function signedAccountAmounts(
   if (hasCurrencyAmounts(bucket)) return bucket;
 
   const fallbackMetric = account.metrics.find((item) => hasCurrencyAmounts(item.amounts));
-  const fallbackScale = ledgerLensGroup(account) === "liability" ? -1 : 1;
+  const fallbackScale = octopusBeakGroup(account) === "liability" ? -1 : 1;
   return scaledCurrencyBucket(fallbackMetric?.amounts, fallbackScale);
 }
 
-function buildLedgerLensAccounts(model: FinancialModel): LedgerLensAccount[] {
+function buildOctopusBeakAccounts(model: FinancialModel): OctopusBeakAccount[] {
   const positionsById = new Map(model.assetPositions.map((position) => [position.id, position]));
   const transactionsById = new Map(
     model.normalizedTransactions.map((transaction) => [transaction.id, transaction]),
@@ -194,7 +194,7 @@ function buildLedgerLensAccounts(model: FinancialModel): LedgerLensAccount[] {
         institution: institution.label,
         kind: account.kind,
         kindLabel: accountKindLabel(account.kind),
-        group: ledgerLensGroup(account),
+        group: octopusBeakGroup(account),
         source: accountSourceLabel(account, positionsById, transactionsById),
         amounts: signedAccountAmounts(account, positionsById),
         positionIds: account.positionIds,
@@ -228,7 +228,7 @@ function renderSummaryMetric(input: {
         </div>`;
 }
 
-function renderLedgerLensStyles(includeSources = false): string {
+function renderOctopusBeakStyles(includeSources = false): string {
   return `
     :root {
       color-scheme: light;
@@ -900,8 +900,8 @@ function renderLedgerLensStyles(includeSources = false): string {
     }`;
 }
 
-export function renderLedgerLensDashboard(model: FinancialModel): string {
-  const accounts = buildLedgerLensAccounts(model);
+export function renderOctopusBeakDashboard(model: FinancialModel): string {
+  const accounts = buildOctopusBeakAccounts(model);
   const snapshotDate = latestDashboardDate(model);
   const summaryCounts = {
     all: accounts.length,
@@ -986,8 +986,8 @@ export function renderLedgerLensDashboard(model: FinancialModel): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LedgerLens Accounts</title>
-  <style>${renderLedgerLensStyles()}</style>
+  <title>OctopusBeak Accounts</title>
+  <style>${renderOctopusBeakStyles()}</style>
 </head>
 <body>
   <div class="app">
@@ -1510,4 +1510,3 @@ export function renderLedgerLensDashboard(model: FinancialModel): string {
 </body>
 </html>`;
 }
-

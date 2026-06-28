@@ -6,7 +6,7 @@
 </script>
 
 <svelte:head>
-  <title>LedgerLens Liabilities</title>
+  <title>OctopusBeak Liabilities</title>
 </svelte:head>
 
 <LiabilitiesDashboard liabilities={data.liabilities} />

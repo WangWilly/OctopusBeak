@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
 
   export let active: "overview" | "assets" | "liabilities" = "overview";
@@ -13,8 +14,8 @@
   export let syncLabel: string | null = null;
   export let valuesVisible = true;
 
-  const sidebarStorageKey = "ledgerlens-sidebar-collapsed";
-  const valuesStorageKey = "ledgerlens-values-visible";
+  const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
+  const valuesStorageKey = "octopusbeak-values-visible";
   let sidebarCollapsed = false;
   let valuesStorageLoaded = false;
 
@@ -60,17 +61,12 @@
   <aside class="sidebar">
     <div>
       <div class="brand-row">
-        <a class="brand" href="/overview" aria-label="LedgerLens home">
+        <a class="brand" href="/overview" aria-label="OctopusBeak home">
           <span class="brand-mark">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M4 10v7h3v-7H4Zm6 0v7h3v-7h-3Zm6 0v7h3v-7h-3ZM3 21h18v-2H3v2ZM12 3 3 8v1h18V8l-9-5Z"
-              />
-            </svg>
+            <img class="brand-icon" src={projectIcon} alt="" width="32" height="32" aria-hidden="true" />
           </span>
           <span class="brand-copy">
-            <strong class="brand-title">LedgerLens</strong>
+            <strong class="brand-title">OctopusBeak</strong>
             <span class="brand-subtitle">Personal portfolio</span>
           </span>
         </a>

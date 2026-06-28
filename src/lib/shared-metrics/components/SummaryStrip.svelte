@@ -10,11 +10,7 @@
     <article class="card metric-card">
       <span class="label">{metric.label}</span>
       <strong class="value money">{formatAmountLines(metric.amounts)}</strong>
-      <span class="breakdown">
-        {#each metric.breakdown as item}
-          <span>{item}</span>
-        {/each}
-      </span>
+      <span class="breakdown">{metric.breakdown.join(" + ")}</span>
     </article>
   {/each}
 </div>
