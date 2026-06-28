@@ -62,6 +62,10 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+.money {
+  transition: filter 160ms ease, opacity 160ms ease;
+}
+
 .values-hidden .money {
   filter: blur(6px);
   opacity: 0.72;
