@@ -22,6 +22,7 @@ import type {
   AccountRowDto,
   AssetPositionDto,
   CurrencyAmountDto,
+  ReturnCategoryDto,
   TransactionRowDto,
 } from "../types.ts";
 
@@ -409,18 +410,20 @@ function maicoinPositions(
     (row) => ["maicoin", row.subAccount, row.walletType, currency(row.currency)].join("|"),
     (row) => row.capturedAt,
   );
-  const returns = maicoinReturnRates(latestRows, statementRows);
+  const returns = maicoinReturnComponents(latestRows, statementRows);
   return latestRows.flatMap((row) => {
     const product = row.walletType === "m" ? "M-wallet" : "Spot wallet";
     const currencyCode = currency(row.currency);
-    const returnRate = returns.get(currencyCode);
+    const returnComponents = returns.get(currencyCode) ?? [];
+    const returnRate = aggregateReturn(returnComponents);
     const positions: RawPosition[] = [];
     if (row.totalQuantity > 0) {
       const valued = row.valueTwd !== null;
       const value = row.valueTwd ?? row.totalQuantity;
+      const account = accountId("maicoin-asset", "maicoin", product, row.subAccount, "TWD");
       positions.push({
         id: stableId("maicoin-asset", row.subAccount, row.walletType, currencyCode),
-        accountId: accountId("maicoin-asset", "maicoin", product, row.subAccount, "TWD"),
+        accountId: account,
         label: `MAX ${product}`,
         institution: "MaiCoin MAX",
         product,
@@ -441,6 +444,33 @@ function maicoinPositions(
           metricLabel: "Return",
         },
       });
+      for (const component of returnComponents) {
+        positions.push({
+          id: stableId("maicoin-return", row.subAccount, row.walletType, currencyCode, component.category),
+          accountId: account,
+          label: `MAX ${product}`,
+          institution: "MaiCoin MAX",
+          product,
+          group: "investment",
+          kind: "crypto",
+          typeLabel: "Crypto",
+          currency: "TWD",
+          value: 0,
+          asOfDate: row.capturedAt.slice(0, 10),
+          importedAt: row.capturedAt,
+          positionDetail: {
+            symbol: currencyCode,
+            name: `${currencyCode} ${returnCategoryLabel(component.category)}`,
+            units: formatUnits(component.quantity),
+            value: component.currentValueTwd,
+            currency: "TWD",
+            change: returnPercent(component.currentValueTwd, component.costTwd) ?? "--",
+            metricLabel: "Return",
+            returnCategory: component.category,
+            returnCostTwd: component.costTwd,
+          },
+        });
+      }
     }
 
     const debtQuantity = maicoinDebtQuantity(row);
@@ -471,14 +501,26 @@ function maicoinDebtQuantity(row: MaicoinAccountSnapshot) {
 }
 
 type CostState = {
+  buckets: Record<ReturnCategoryDto, CostBucket>;
+};
+
+type CostBucket = {
   quantity: number;
   costTwd: number;
   incomplete: boolean;
 };
 
+type ReturnComponent = {
+  category: ReturnCategoryDto;
+  quantity: number;
+  costTwd: number;
+  currentValueTwd: number;
+};
+
+const RETURN_CATEGORIES: ReturnCategoryDto[] = ["trade", "deposit", "reward"];
 const SPOT_STATEMENT_ROW_TYPES = new Set(["convert", "deposit", "reward", "withdrawal"]);
 
-function maicoinReturnRates(
+function maicoinReturnComponents(
   snapshots: MaicoinAccountSnapshot[],
   rows: MaicoinStatementRow[],
 ) {
@@ -487,20 +529,33 @@ function maicoinReturnRates(
   for (const row of [...rows].sort((left, right) => (left.occurredAt ?? "").localeCompare(right.occurredAt ?? ""))) {
     const raw = parseJson(row.rawPayloadJson);
     if (row.rowType === "trade") applyMaicoinTrade(states, raw, twdRates);
-    if (row.rowType === "convert") applyMaicoinConvert(states, raw, twdRates);
+    if (row.rowType === "convert") applyMaicoinConvert(states, raw);
     if (row.rowType === "withdrawal") reduceMaicoinCost(states, currency(stringValue(raw.currency)), amount(raw.amount));
-    if (row.rowType === "deposit" || row.rowType === "reward") {
-      maicoinCostState(states, currency(stringValue(raw.currency))).incomplete = true;
-    }
+    if (row.rowType === "deposit") addMaicoinStatementCost(states, "deposit", currency(row.currency), amount(raw.amount), row.valueTwd);
+    if (row.rowType === "reward") addMaicoinStatementCost(states, "reward", currency(row.currency), amount(raw.amount), row.valueTwd);
   }
 
-  const returns = new Map<string, string>();
+  const returns = new Map<string, ReturnComponent[]>();
   for (const snapshot of snapshots) {
     const currencyCode = currency(snapshot.currency);
     const state = states.get(currencyCode);
-    if (!state || state.incomplete || state.costTwd <= 0 || snapshot.valueTwd === null) continue;
-    if (Math.abs(snapshot.totalQuantity - state.quantity) > 0.000001) continue;
-    returns.set(currencyCode, `${(((snapshot.valueTwd - state.costTwd) / state.costTwd) * 100).toFixed(2)}%`);
+    if (!state || snapshot.price === null) continue;
+    const trackedQuantity = RETURN_CATEGORIES.reduce((sum, category) => sum + state.buckets[category].quantity, 0);
+    const scale = trackedQuantity > snapshot.totalQuantity && trackedQuantity > 0
+      ? snapshot.totalQuantity / trackedQuantity
+      : 1;
+    const components = RETURN_CATEGORIES.flatMap((category) => {
+      const bucket = state.buckets[category];
+      if (bucket.incomplete || bucket.quantity <= 0 || bucket.costTwd <= 0) return [];
+      const quantity = bucket.quantity * scale;
+      return [{
+        category,
+        quantity,
+        costTwd: bucket.costTwd * scale,
+        currentValueTwd: quantity * snapshot.price!,
+      }];
+    });
+    if (components.length > 0) returns.set(currencyCode, components);
   }
   return returns;
 }
@@ -531,7 +586,7 @@ function applyMaicoinTrade(
   if (!volume || !funds || !quoteRate) return;
 
   if (raw.side === "bid") {
-    addMaicoinCost(states, base, volume - feeIn(raw, base), funds * quoteRate + feeIn(raw, quote) * quoteRate);
+    addMaicoinCost(states, base, "trade", volume - feeIn(raw, base), funds * quoteRate + feeIn(raw, quote) * quoteRate);
   } else if (raw.side === "ask") {
     reduceMaicoinCost(states, base, volume);
   }
@@ -540,7 +595,6 @@ function applyMaicoinTrade(
 function applyMaicoinConvert(
   states: Map<string, CostState>,
   raw: Record<string, unknown>,
-  twdRates: Map<string, number>,
 ) {
   const from = currency(raw.from_currency as string | null);
   const to = currency(raw.to_currency as string | null);
@@ -548,22 +602,44 @@ function applyMaicoinConvert(
   const toAmount = amount(raw.to_amount);
   if (!fromAmount || !toAmount) return;
 
-  const removedCost = reduceMaicoinCost(states, from, fromAmount);
-  const fallbackCost = fromAmount * (twdRates.get(from) ?? 0);
+  const removed = reduceMaicoinCost(states, from, fromAmount);
+  const removedCost = removed.reduce((sum, item) => sum + item.costTwd, 0);
   const feeTwd = amount(raw.fee_in_twd);
-  addMaicoinCost(states, to, toAmount, (removedCost || fallbackCost) + feeTwd);
+  for (const item of removed) {
+    const quantity = toAmount * (item.quantity / fromAmount);
+    const cost = item.costTwd + (removedCost > 0 ? feeTwd * (item.costTwd / removedCost) : 0);
+    addMaicoinCost(states, to, item.category, quantity, cost);
+  }
 }
 
 function addMaicoinCost(
   states: Map<string, CostState>,
   currencyCode: string,
+  category: ReturnCategoryDto,
   quantity: number,
   costTwd: number,
 ) {
   if (quantity <= 0 || costTwd <= 0) return;
-  const state = maicoinCostState(states, currencyCode);
-  state.quantity += quantity;
-  state.costTwd += costTwd;
+  const bucket = maicoinCostState(states, currencyCode).buckets[category];
+  bucket.quantity += quantity;
+  bucket.costTwd += costTwd;
+}
+
+function addMaicoinStatementCost(
+  states: Map<string, CostState>,
+  category: ReturnCategoryDto,
+  currencyCode: string,
+  quantity: number,
+  costTwd: number | null,
+) {
+  const bucket = maicoinCostState(states, currencyCode).buckets[category];
+  if (quantity <= 0) return;
+  if (costTwd === null || costTwd <= 0) {
+    bucket.incomplete = true;
+    return;
+  }
+  bucket.quantity += quantity;
+  bucket.costTwd += costTwd;
 }
 
 function reduceMaicoinCost(
@@ -571,25 +647,57 @@ function reduceMaicoinCost(
   currencyCode: string,
   quantity: number,
 ) {
-  if (quantity <= 0) return 0;
+  if (quantity <= 0) return [];
   const state = maicoinCostState(states, currencyCode);
-  if (state.quantity <= 0) {
-    state.incomplete = true;
-    return 0;
+  const totalQuantity = RETURN_CATEGORIES.reduce((sum, category) => sum + state.buckets[category].quantity, 0);
+  if (totalQuantity <= 0) {
+    for (const category of RETURN_CATEGORIES) state.buckets[category].incomplete = true;
+    return [];
   }
-  const removedQuantity = Math.min(quantity, state.quantity);
-  const removedCost = state.costTwd * (removedQuantity / state.quantity);
-  state.quantity -= removedQuantity;
-  state.costTwd -= removedCost;
-  if (quantity > removedQuantity + 0.000001) state.incomplete = true;
-  return removedCost;
+  const removedTotal = Math.min(quantity, totalQuantity);
+  const removed = RETURN_CATEGORIES.flatMap((category) => {
+    const bucket = state.buckets[category];
+    if (bucket.quantity <= 0) return [];
+    const removedQuantity = bucket.quantity * (removedTotal / totalQuantity);
+    const removedCost = bucket.costTwd * (removedQuantity / bucket.quantity);
+    bucket.quantity -= removedQuantity;
+    bucket.costTwd -= removedCost;
+    return [{ category, quantity: removedQuantity, costTwd: removedCost }];
+  });
+  if (quantity > removedTotal + 0.000001) {
+    for (const category of RETURN_CATEGORIES) state.buckets[category].incomplete = true;
+  }
+  return removed;
 }
 
 function maicoinCostState(states: Map<string, CostState>, currencyCode: string) {
   const key = currency(currencyCode);
-  const state = states.get(key) ?? { quantity: 0, costTwd: 0, incomplete: false };
+  const state = states.get(key) ?? {
+    buckets: {
+      trade: { quantity: 0, costTwd: 0, incomplete: false },
+      deposit: { quantity: 0, costTwd: 0, incomplete: false },
+      reward: { quantity: 0, costTwd: 0, incomplete: false },
+    },
+  };
   states.set(key, state);
   return state;
+}
+
+function aggregateReturn(components: ReturnComponent[]) {
+  return returnPercent(
+    components.reduce((sum, component) => sum + component.currentValueTwd, 0),
+    components.reduce((sum, component) => sum + component.costTwd, 0),
+  );
+}
+
+function returnPercent(valueTwd: number, costTwd: number) {
+  return costTwd > 0 ? `${(((valueTwd - costTwd) / costTwd) * 100).toFixed(2)}%` : null;
+}
+
+function returnCategoryLabel(category: ReturnCategoryDto) {
+  if (category === "trade") return "Trade return";
+  if (category === "deposit") return "Deposit return";
+  return "Reward return";
 }
 
 function marketUnits(market: string) {

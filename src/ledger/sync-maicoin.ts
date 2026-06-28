@@ -82,6 +82,8 @@ type StatementBatch = {
 };
 
 type StatementSpec = Omit<StatementBatch, "rows">;
+type StatementValueMap = Map<string, number | null>;
+type KLine = [number, number | string, number | string, number | string, number | string, number | string];
 
 class MaxClient {
   #lastNonce = 0;
@@ -273,6 +275,14 @@ function hashId(...parts: unknown[]) {
   return hash.digest("hex");
 }
 
+function statementExternalId(row: Record<string, unknown>) {
+  return String(row.id ?? row.sn ?? row.uuid ?? hashId(row));
+}
+
+function statementIdFor(batch: StatementSpec, row: Record<string, unknown>) {
+  return hashId(batch.endpoint, batch.walletType ?? "", batch.rowType, statementExternalId(row));
+}
+
 function accountHasValue(account: Account) {
   return (
     amount(account.balance) !== 0 ||
@@ -351,6 +361,115 @@ async function fetchTickers(client: MaxClient, markets: Set<string>) {
   }
   const tickers = await fetchJson<Ticker[]>(url);
   return new Map(tickers.map((ticker) => [ticker.market, ticker]));
+}
+
+async function statementValueMap(
+  client: MaxClient,
+  statement: StatementBatch[],
+  markets: Set<string>,
+): Promise<StatementValueMap> {
+  const cache = new Map<string, Promise<number | null>>();
+  const values: StatementValueMap = new Map();
+  for (const batch of statement) {
+    for (const row of batch.rows) {
+      values.set(statementIdFor(batch, row), await statementValueTwd(client, markets, cache, batch.rowType, row));
+    }
+  }
+  return values;
+}
+
+async function statementValueTwd(
+  client: MaxClient,
+  markets: Set<string>,
+  cache: Map<string, Promise<number | null>>,
+  rowType: string,
+  row: Record<string, unknown>,
+) {
+  const timestamp = createdAtMillis(row);
+  if (!timestamp) return null;
+
+  if (rowType === "trade") {
+    const units = marketUnits(stringValue(row.market));
+    const quotePrice = units ? await historicalPriceTwd(client, markets, cache, units.quote, timestamp) : null;
+    return quotePrice === null ? null : amount(row.funds) * quotePrice;
+  }
+
+  if (rowType === "convert") {
+    const price = await historicalPriceTwd(client, markets, cache, stringValue(row.from_currency), timestamp);
+    return price === null ? null : amount(row.from_amount) * price;
+  }
+
+  if (rowType === "deposit" || rowType === "reward" || rowType === "withdrawal") {
+    const price = await historicalPriceTwd(client, markets, cache, stringValue(row.currency), timestamp);
+    return price === null ? null : amount(row.amount) * price;
+  }
+
+  return null;
+}
+
+async function historicalPriceTwd(
+  client: MaxClient,
+  markets: Set<string>,
+  cache: Map<string, Promise<number | null>>,
+  currency: string | null,
+  timestamp: number,
+) {
+  const normalized = currency?.toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "twd") return 1;
+  const day = dayStartSeconds(timestamp);
+  const key = `${normalized}:${day}`;
+  if (!cache.has(key)) {
+    cache.set(key, historicalPriceTwdUncached(client, markets, normalized, day));
+  }
+  return cache.get(key)!;
+}
+
+async function historicalPriceTwdUncached(
+  client: MaxClient,
+  markets: Set<string>,
+  normalized: string,
+  dayStart: number,
+) {
+  const directMarket = `${normalized}twd`;
+  if (markets.has(directMarket)) return historicalMarketClose(client, directMarket, dayStart);
+
+  const viaUsdtMarket = `${normalized}usdt`;
+  if (!markets.has(viaUsdtMarket) || !markets.has("usdttwd")) return null;
+  const [viaUsdt, usdtTwd] = await Promise.all([
+    historicalMarketClose(client, viaUsdtMarket, dayStart),
+    historicalMarketClose(client, "usdttwd", dayStart),
+  ]);
+  return viaUsdt === null || usdtTwd === null ? null : viaUsdt * usdtTwd;
+}
+
+async function historicalMarketClose(client: MaxClient, market: string, dayStart: number) {
+  try {
+    const rows = await client.publicGet<KLine[]>("/api/v3/k", {
+      market,
+      period: 1440,
+      limit: 2,
+      timestamp: dayStart,
+    });
+    const row = rows.find((item) => Number(item[0]) >= dayStart && Number(item[0]) < dayStart + 86400) ?? rows[0];
+    return numeric(row?.[4]);
+  } catch {
+    return null;
+  }
+}
+
+function dayStartSeconds(timestamp: number) {
+  return Math.floor(timestamp / 86_400_000) * 86_400;
+}
+
+function marketUnits(market: string | null) {
+  if (!market) return null;
+  for (const quote of ["usdt", "usdc", "twd", "btc", "eth"]) {
+    if (market.endsWith(quote) && market.length > quote.length) {
+      return { base: market.slice(0, -quote.length), quote };
+    }
+  }
+  return null;
 }
 
 async function fetchWalletTypes(client: MaxClient, requested: WalletType[]) {
@@ -554,6 +673,7 @@ function insertStatementRows(
   syncRunId: string,
   capturedAt: string,
   statement: StatementBatch[],
+  statementValues: StatementValueMap = new Map(),
 ) {
   const insert = db.prepare(`
     INSERT INTO maicoin_statement_rows (
@@ -572,9 +692,10 @@ function insertStatementRows(
       market,
       side,
       price,
+      value_twd,
       raw_payload_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(statement_id) DO UPDATE SET
       sync_run_id = excluded.sync_run_id,
       captured_at = excluded.captured_at,
@@ -586,15 +707,17 @@ function insertStatementRows(
       market = excluded.market,
       side = excluded.side,
       price = excluded.price,
+      value_twd = excluded.value_twd,
       raw_payload_json = excluded.raw_payload_json,
       updated_at = CURRENT_TIMESTAMP
   `);
 
   for (const batch of statement) {
     for (const row of batch.rows) {
-      const externalId = String(row.id ?? row.sn ?? row.uuid ?? hashId(row));
+      const externalId = statementExternalId(row);
+      const statementId = statementIdFor(batch, row);
       insert.run(
-        hashId(batch.endpoint, batch.walletType ?? "", batch.rowType, externalId),
+        statementId,
         syncRunId,
         capturedAt,
         batch.endpoint,
@@ -609,6 +732,7 @@ function insertStatementRows(
         stringValue(row.market),
         stringValue(row.side),
         numeric(row.price),
+        statementValues.get(statementId) ?? null,
         JSON.stringify(row),
       );
     }
@@ -647,6 +771,9 @@ async function syncMaicoin(params: CliParams) {
     const statement = params.statement
       ? await fetchStatement(client, walletTypes, params.statementLimit, params.statementFull)
       : [];
+    const statementValues = params.statement
+      ? await statementValueMap(client, statement, markets)
+      : new Map();
     const statementJsonPath = params.statementJson
       ? await writeStatementJson(params.statementJson, statement)
       : null;
@@ -654,7 +781,7 @@ async function syncMaicoin(params: CliParams) {
     db.exec("BEGIN");
     try {
       insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
-      if (params.statement) insertStatementRows(db, syncRunId, capturedAt, statement);
+      if (params.statement) insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
