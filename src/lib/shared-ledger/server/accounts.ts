@@ -525,10 +525,9 @@ function maicoinReturnComponents(
   rows: MaicoinStatementRow[],
 ) {
   const states = new Map<string, CostState>();
-  const twdRates = maicoinTwdRates(snapshots);
   for (const row of [...rows].sort((left, right) => (left.occurredAt ?? "").localeCompare(right.occurredAt ?? ""))) {
     const raw = parseJson(row.rawPayloadJson);
-    if (row.rowType === "trade") applyMaicoinTrade(states, raw, twdRates);
+    if (row.rowType === "trade") applyMaicoinTrade(states, row, raw);
     if (row.rowType === "convert") applyMaicoinConvert(states, raw);
     if (row.rowType === "withdrawal") reduceMaicoinCost(states, currency(stringValue(raw.currency)), amount(raw.amount));
     if (row.rowType === "deposit") addMaicoinStatementCost(states, "deposit", currency(row.currency), amount(raw.amount), row.valueTwd);
@@ -560,19 +559,10 @@ function maicoinReturnComponents(
   return returns;
 }
 
-function maicoinTwdRates(snapshots: MaicoinAccountSnapshot[]) {
-  const rates = new Map<string, number>();
-  rates.set("TWD", 1);
-  for (const snapshot of snapshots) {
-    if (snapshot.price !== null) rates.set(currency(snapshot.currency), snapshot.price);
-  }
-  return rates;
-}
-
 function applyMaicoinTrade(
   states: Map<string, CostState>,
+  row: MaicoinStatementRow,
   raw: Record<string, unknown>,
-  twdRates: Map<string, number>,
 ) {
   const market = stringValue(raw.market);
   const units = market ? marketUnits(market) : null;
@@ -582,11 +572,15 @@ function applyMaicoinTrade(
   const quote = currency(units.quote);
   const volume = amount(raw.volume);
   const funds = amount(raw.funds);
-  const quoteRate = twdRates.get(quote);
-  if (!volume || !funds || !quoteRate) return;
 
   if (raw.side === "bid") {
-    addMaicoinCost(states, base, "trade", volume - feeIn(raw, base), funds * quoteRate + feeIn(raw, quote) * quoteRate);
+    const bucket = maicoinCostState(states, base).buckets.trade;
+    if (!volume || !funds || row.valueTwd === null || row.valueTwd <= 0) {
+      bucket.incomplete = true;
+      return;
+    }
+    const costTwd = row.valueTwd * ((funds + feeIn(raw, quote)) / funds);
+    addMaicoinCost(states, base, "trade", volume - feeIn(raw, base), costTwd);
   } else if (raw.side === "ask") {
     reduceMaicoinCost(states, base, volume);
   }

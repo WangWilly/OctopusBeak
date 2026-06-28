@@ -260,6 +260,61 @@ const maicoinPosition = buildPositionsByAccount(maicoinData)[maicoinAsset.id]?.[
 assert.equal(maicoinPosition?.metricLabel, "Return");
 assert.equal(maicoinPosition?.change, "100.00%");
 
+const maicoinHistoricalTradeData = emptyLedgerQueryData();
+maicoinHistoricalTradeData.maicoinAccountSnapshots = [
+  {
+    ...maicoinSpotSnapshot(),
+    snapshotId: "max-spot-btc-usdt-quote",
+    currency: "btc",
+    balance: 1,
+    totalQuantity: 1,
+    price: 4000,
+    valueTwd: 4000,
+  },
+  {
+    ...maicoinSpotSnapshot(),
+    snapshotId: "max-spot-usdt",
+    currency: "usdt",
+    balance: 100,
+    totalQuantity: 100,
+    price: 40,
+    valueTwd: 4000,
+  },
+];
+maicoinHistoricalTradeData.maicoinStatementRows = [{
+  statementId: "max-trade-usdt-quote",
+  syncRunId: "run",
+  capturedAt: "2026-06-27T12:00:00.000Z",
+  endpoint: "/api/v3/wallet/spot/trades",
+  walletType: "spot",
+  rowType: "trade",
+  externalId: "trade-2",
+  occurredAt: "2026-06-27T11:00:00.000Z",
+  currency: null,
+  amount: 1,
+  fee: null,
+  feeCurrency: null,
+  market: "btcusdt",
+  side: "bid",
+  price: 100,
+  valueTwd: 3000,
+  rawPayloadJson: JSON.stringify({
+    id: 2,
+    market: "btcusdt",
+    side: "bid",
+    volume: "1",
+    funds: "100",
+    price: "100",
+    created_at: 1792926000000,
+  }),
+  createdAt: "2026-06-27T12:00:00.000Z",
+  updatedAt: "2026-06-27T12:00:00.000Z",
+} satisfies MaicoinStatementRow];
+const historicalTradePosition = Object.values(buildPositionsByAccount(maicoinHistoricalTradeData))
+  .flat()
+  .find((row) => row.symbol === "BTC" && row.name === "BTC Spot wallet");
+assert.equal(historicalTradePosition?.change, "33.33%");
+
 const maicoinRewardData = emptyLedgerQueryData();
 maicoinRewardData.maicoinAccountSnapshots = [maicoinSnapshot(), maicoinSpotSnapshot()];
 maicoinRewardData.maicoinStatementRows = [{
