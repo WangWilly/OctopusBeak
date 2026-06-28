@@ -5,7 +5,13 @@
   export let open = false;
   export let account: AccountRowDto | null = null;
   export let rows: TransactionRowDto[] = [];
+
+  function closeOnEscape(event: KeyboardEvent) {
+    if (open && event.key === "Escape") open = false;
+  }
 </script>
+
+<svelte:window on:keydown={closeOnEscape} />
 
 {#if open}
   <div class="modal open">
