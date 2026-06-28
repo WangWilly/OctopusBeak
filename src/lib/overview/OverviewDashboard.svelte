@@ -29,7 +29,8 @@
     `Imported ${formatImportedAt(overview.importedAt)}`;
   $: assetAccounts = overview.accounts.filter((account) => account.group !== "liability");
   $: allocation = buildAllocation(assetAccounts);
-  $: history = overview.dailyHistory.slice(0, 30);
+  $: history = overview.dailyHistory;
+  $: snapshotHistory = [...history].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
 
   function buildAllocation(accounts: AccountRowDto[]) {
     const total = accounts.reduce((sum, account) => sum + amountValue(account.amountLines), 0);
@@ -90,9 +91,9 @@
           <span class="chip">30 days</span>
         </div>
         <div class="card pad">
-          <SnapshotSparkline rows={history} currency={snapshotCurrency} />
+          <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} />
           {#key snapshotCurrency}
-            <DailyHistoryTable rows={history.slice(0, 3)} compact netLabel="Net position" currency={snapshotCurrency} />
+            <DailyHistoryTable rows={snapshotHistory} compact netLabel="Net position" currency={snapshotCurrency} />
           {/key}
         </div>
       </article>
@@ -138,7 +139,7 @@
         </label>
       </div>
       {#key dailyCurrency}
-        <DailyHistoryTable rows={history} currency={dailyCurrency} />
+        <DailyHistoryTable rows={history} currency={dailyCurrency} paginate />
       {/key}
     </section>
   </div>

@@ -2,10 +2,43 @@
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
+  type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
+  type SortDirection = "asc" | "desc";
+  type Column = { key: SortKey; label: string; right: boolean };
+
   export let rows: DailyHistoryRowDto[] = [];
   export let compact = false;
   export let netLabel = "Net assets";
   export let currency = "TWD";
+  export let paginate = false;
+  export let pageSize = 30;
+  export let visibleRows = 4;
+
+  let sortKey: SortKey = "date";
+  let sortDirection: SortDirection = "desc";
+  let page = 0;
+  let columns: Column[] = [];
+
+  $: columns = compact
+    ? [
+        { key: "date", label: "Date", right: false },
+        { key: "netAssets", label: netLabel, right: true },
+        { key: "assets", label: "Assets", right: true },
+        { key: "liabilities", label: "Liabilities", right: true },
+      ]
+    : [
+        { key: "date", label: "Date", right: false },
+        { key: "netAssets", label: netLabel, right: true },
+        { key: "dailyChange", label: "Daily change", right: true },
+        { key: "assets", label: "Assets", right: true },
+        { key: "liabilities", label: "Liabilities", right: true },
+      ];
+  $: sortedRows = sortRows(rows, sortKey, sortDirection);
+  $: totalPages = paginate ? Math.max(1, Math.ceil(sortedRows.length / pageSize)) : 1;
+  $: if (page >= totalPages) page = totalPages - 1;
+  $: pageRows = paginate ? sortedRows.slice(page * pageSize, (page + 1) * pageSize) : sortedRows;
+  $: rangeStart = sortedRows.length === 0 ? 0 : page * pageSize + 1;
+  $: rangeEnd = Math.min((page + 1) * pageSize, sortedRows.length);
 
   function formatCurrencyAmount(amounts: DailyHistoryRowDto["netAssets"], signed = false) {
     const amount = amounts.find((item) => item.currency === currency);
@@ -15,55 +48,255 @@
   function currencyValue(amounts: DailyHistoryRowDto["netAssets"]) {
     return amounts.find((item) => item.currency === currency)?.value ?? 0;
   }
+
+  function sortValue(row: DailyHistoryRowDto, key: SortKey) {
+    if (key === "date") return row.date;
+    return currencyValue(row[key]);
+  }
+
+  function sortRows(sourceRows: DailyHistoryRowDto[], key: SortKey, direction: SortDirection) {
+    return [...sourceRows].sort((left, right) => compareRows(left, right, key, direction));
+  }
+
+  function compareRows(left: DailyHistoryRowDto, right: DailyHistoryRowDto, key: SortKey, direction: SortDirection) {
+    const leftValue = sortValue(left, key);
+    const rightValue = sortValue(right, key);
+    const result =
+      typeof leftValue === "number" && typeof rightValue === "number"
+        ? leftValue - rightValue
+        : String(leftValue).localeCompare(String(rightValue));
+    return direction === "asc" ? result : -result;
+  }
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      sortDirection = sortDirection === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDirection = "desc";
+    }
+    page = 0;
+  }
+
 </script>
 
-<div class="table-wrap">
-  <table class="table">
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th class="right">{netLabel}</th>
-        {#if !compact}
-          <th class="right">Daily change</th>
-          <th class="right">Assets</th>
-          <th class="right">Liabilities</th>
-        {:else}
-          <th class="right">Assets</th>
-          <th class="right">Liabilities</th>
-        {/if}
-      </tr>
-    </thead>
-    <tbody>
-      {#each rows as row}
+<div class="history-table-shell" style={`--history-visible-rows:${visibleRows}`}>
+  <div class="table-wrap history-table-wrap">
+    <table class="table history-table" class:compact>
+      <thead>
         <tr>
-          <td>{row.date}</td>
-          <td class="right money">{formatCurrencyAmount(row.netAssets)}</td>
-          {#if !compact}
-            {@const dailyChange = currencyValue(row.dailyChange)}
-            <td
-              class="right money"
-              class:amount-positive={dailyChange > 0}
-              class:amount-negative={dailyChange < 0}
+          {#each columns as column}
+            <th
+              class:right={column.right}
+              aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
             >
-              {formatCurrencyAmount(row.dailyChange, true)}
-            </td>
-            <td class="right money">{formatCurrencyAmount(row.assets)}</td>
-            <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
-          {:else}
-            <td class="right money">{formatCurrencyAmount(row.assets)}</td>
-            <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
-          {/if}
+              <button
+                class="sort-button"
+                class:right={column.right}
+                class:sorted={sortKey === column.key}
+                type="button"
+                onclick={() => toggleSort(column.key)}
+              >
+                <span>{column.label}</span>
+                <span
+                  class:active={sortKey === column.key}
+                  class:asc={sortKey === column.key && sortDirection === "asc"}
+                  class="sort-mark"
+                  aria-hidden="true"
+                ></span>
+              </button>
+            </th>
+          {/each}
         </tr>
-      {:else}
-        <tr>
-          <td colspan={compact ? 4 : 5}>No snapshot history yet.</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {#each pageRows as row}
+          <tr>
+            <td>{row.date}</td>
+            <td class="right money">{formatCurrencyAmount(row.netAssets)}</td>
+            {#if !compact}
+              {@const dailyChange = currencyValue(row.dailyChange)}
+              <td
+                class="right money"
+                class:amount-positive={dailyChange > 0}
+                class:amount-negative={dailyChange < 0}
+              >
+                {formatCurrencyAmount(row.dailyChange, true)}
+              </td>
+              <td class="right money">{formatCurrencyAmount(row.assets)}</td>
+              <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
+            {:else}
+              <td class="right money">{formatCurrencyAmount(row.assets)}</td>
+              <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
+            {/if}
+          </tr>
+        {:else}
+          <tr>
+            <td colspan={compact ? 4 : 5}>No snapshot history yet.</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+
+  {#if paginate}
+    <div class="table-pager" aria-label="Daily history pagination">
+      <span class="pager-count">{rangeStart}-{rangeEnd} of {sortedRows.length}</span>
+      <div class="pager-actions">
+        <button class="button pager-button" type="button" disabled={page === 0} onclick={() => (page -= 1)}>
+          Prev
+        </button>
+        <span class="chip">Page {page + 1} / {totalPages}</span>
+        <button
+          class="button pager-button"
+          type="button"
+          disabled={page >= totalPages - 1}
+          onclick={() => (page += 1)}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
+  .history-table-shell {
+    --history-header-height: 56px;
+    --history-row-height: 72px;
+  }
+
+  .history-table-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .history-table {
+    min-width: 820px;
+    table-layout: fixed;
+  }
+
+  .history-table.compact {
+    min-width: 680px;
+  }
+
+  .history-table thead {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+    background: var(--surface);
+  }
+
+  .history-table th {
+    height: var(--history-header-height);
+    padding: 0;
+    background: var(--surface);
+  }
+
+  .history-table tbody {
+    display: block;
+    max-height: calc((var(--history-row-height) + 1px) * var(--history-visible-rows));
+    overflow-y: auto;
+  }
+
+  .history-table tbody tr {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .history-table td {
+    height: var(--history-row-height);
+    white-space: nowrap;
+  }
+
+  .sort-button {
+    width: 100%;
+    min-height: var(--history-header-height);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-5);
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+  }
+
+  .sort-button.right {
+    justify-content: flex-end;
+  }
+
+  .sort-button:hover,
+  .sort-button:focus-visible,
+  .sort-button.sorted {
+    color: var(--fg);
+    background: var(--surface-soft);
+    outline: none;
+  }
+
+  .sort-mark {
+    width: 10px;
+    height: 10px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--accent);
+  }
+
+  .sort-mark::before {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid currentColor;
+    opacity: 0;
+  }
+
+  .sort-mark.active::before {
+    opacity: 1;
+  }
+
+  .sort-mark.asc::before {
+    transform: rotate(180deg);
+  }
+
+  .table-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-5);
+    border-top: 1px solid var(--border);
+  }
+
+  .pager-count {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 720;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+  }
+
+  .pager-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .pager-button {
+    min-height: 32px;
+    padding: 0 var(--space-3);
+  }
+
+  .pager-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
   .amount-positive {
     color: var(--success);
   }
