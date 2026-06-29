@@ -319,7 +319,6 @@ function buildHtml() {
   const payload = JSON.stringify(sceneStory).replaceAll("</", "<\\/");
   const cursorPayload = JSON.stringify(expandedCursor).replaceAll("</", "<\\/");
   const defaultCaption = sceneStory[0].caption;
-  const defaultRoute = `01 / ${String(sceneStory.length).padStart(2, "0")}  ${sceneStory[0].route}`;
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -344,6 +343,10 @@ function buildHtml() {
     .caption-text { max-width:900px; font-size:38px; font-weight:740; line-height:1.2; }
     .progress { position:absolute; z-index:15; left:60px; right:60px; bottom:36px; height:5px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.2); }
     .progress-fill { width:100%; height:100%; transform:scaleX(0); transform-origin:left center; background:var(--accent); }
+    .brand-overlay { position:absolute; z-index:24; inset:0; display:grid; place-items:center; pointer-events:none; opacity:0; background:radial-gradient(circle at 50% 47%, rgba(255,255,255,.98) 0%, rgba(249,250,252,.96) 42%, rgba(14,18,23,.9) 100%); }
+    .brand-lockup { display:grid; justify-items:center; gap:32px; will-change:transform,opacity; }
+    .brand-icon { width:308px; height:308px; border-radius:68px; box-shadow:0 30px 90px rgba(14,18,23,.2); }
+    .brand-name { color:var(--ink); font-size:72px; font-weight:800; line-height:1; }
   </style>
 </head>
 <body>
@@ -351,6 +354,7 @@ function buildHtml() {
     <div id="screen-wrap" data-layout-allow-overflow>
       <video id="screen-video" data-start="0" data-duration="${duration}" data-track-index="1" src="./assets/captures/screen-tour.mp4" muted playsinline></video>
     </div>
+    <audio id="bg-music" data-start="0" data-duration="${duration}" data-track-index="2" src="./assets/audio/deep-urban-mixkit.mp3" data-volume="0.18"></audio>
     <div class="shade"></div>
     <div id="cursor-layer" data-layout-ignore>
       <div id="cursor-pulse"></div>
@@ -358,6 +362,7 @@ function buildHtml() {
     </div>
     <div class="caption" id="caption"><div class="caption-route" id="caption-route"></div><div class="caption-text" id="caption-text">${defaultCaption}</div></div>
     <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="brand-overlay" id="brand-overlay" data-layout-ignore><div class="brand-lockup"><img class="brand-icon" src="./assets/ui/octopusbeak-icon.png" alt=""><div class="brand-name">OctopusBeak</div></div></div>
   </div>
   <script>
     window.__timelines = window.__timelines || {};
@@ -376,6 +381,13 @@ function buildHtml() {
     }
     const tl = gsap.timeline({ paused:true });
     tl.to("#progress-fill", { scaleX:1, duration, ease:"none" }, 0);
+    tl.fromTo("#brand-overlay", { opacity:0 }, { opacity:1, duration:.75, ease:"power2.out" }, .15);
+    tl.fromTo("#brand-overlay .brand-lockup", { opacity:0, y:34, scale:.96 }, { opacity:1, y:0, scale:1, duration:.85, ease:"power3.out" }, .25);
+    tl.to("#brand-overlay", { opacity:0, duration:1, ease:"power2.inOut" }, 3.4);
+    tl.fromTo("#brand-overlay", { opacity:0 }, { opacity:1, duration:1, ease:"power2.out" }, 115.2);
+    tl.fromTo("#brand-overlay .brand-lockup", { opacity:0, y:30, scale:.97 }, { opacity:1, y:0, scale:1, duration:.9, ease:"power3.out" }, 115.45);
+    tl.to("#brand-overlay .brand-lockup", { opacity:0, y:-18, scale:.985, duration:.85, ease:"power2.in" }, 119);
+    tl.to("#brand-overlay", { opacity:0, duration:.95, ease:"power2.in" }, 119.05);
     const firstCursor = cursorLog[0] || story[0].focus;
     const firstCursorPosition = cursorPosition(firstCursor);
     tl.set("#tour-cursor", { x:firstCursorPosition.x, y:firstCursorPosition.y }, 0);

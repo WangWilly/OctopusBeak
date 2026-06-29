@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=1080, height=1920">
-  <link rel="icon" href="data:,">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <link rel="icon" href="data:," />
   <script src="./node_modules/gsap/dist/gsap.min.js"></script>
   <style>
     :root { --ink:#0e1217; --accent:#006bbb; --caption:#0e1217; --muted:#b9dfff; }
@@ -22,20 +22,26 @@
     .caption-text { max-width:900px; font-size:38px; font-weight:740; line-height:1.2; }
     .progress { position:absolute; z-index:15; left:60px; right:60px; bottom:36px; height:5px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.2); }
     .progress-fill { width:100%; height:100%; transform:scaleX(0); transform-origin:left center; background:var(--accent); }
+    .brand-overlay { position:absolute; z-index:24; inset:0; display:grid; place-items:center; pointer-events:none; opacity:0; background:radial-gradient(circle at 50% 47%, rgba(255,255,255,.98) 0%, rgba(249,250,252,.96) 42%, rgba(14,18,23,.9) 100%); }
+    .brand-lockup { display:grid; justify-items:center; gap:32px; will-change:transform,opacity; }
+    .brand-icon { width:308px; height:308px; border-radius:68px; box-shadow:0 30px 90px rgba(14,18,23,.2); }
+    .brand-name { color:var(--ink); font-size:72px; font-weight:800; line-height:1; }
   </style>
 </head>
 <body>
   <div id="octopus-beak-site-tour" data-composition-id="octopus-beak-site-tour" data-start="0" data-duration="120" data-width="1080" data-height="1920" data-track-index="0">
-    <div id="screen-wrap" data-layout-allow-overflow="">
+    <div id="screen-wrap" data-layout-allow-overflow>
       <video id="screen-video" data-start="0" data-duration="120" data-track-index="1" src="./assets/captures/screen-tour.mp4" muted playsinline></video>
     </div>
+    <audio id="bg-music" data-start="0" data-duration="120" data-track-index="2" src="./assets/audio/deep-urban-mixkit.mp3" data-volume="0.18"></audio>
     <div class="shade"></div>
-    <div id="cursor-layer" data-layout-ignore="">
+    <div id="cursor-layer" data-layout-ignore>
       <div id="cursor-pulse"></div>
-      <div id="tour-cursor" aria-hidden="true"><svg viewBox="0 0 56 72" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 7L47 43L29 47L20 66L10 7Z" fill="white" stroke="#0E1217" stroke-width="4" stroke-linejoin="round" /><path d="M29 47L40 64" stroke="#0E1217" stroke-width="5" stroke-linecap="round" /></svg></div>
+      <div id="tour-cursor" aria-hidden="true"><svg viewBox="0 0 56 72" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 7L47 43L29 47L20 66L10 7Z" fill="white" stroke="#0E1217" stroke-width="4" stroke-linejoin="round"/><path d="M29 47L40 64" stroke="#0E1217" stroke-width="5" stroke-linecap="round"/></svg></div>
     </div>
-    <div class="caption" id="caption"><div class="caption-route" id="caption-route"></div><div class="caption-text" id="caption-text">最酷的是，高波動資產不用另外查交易所；能直接看帳戶的交易狀態。</div></div>
+    <div class="caption" id="caption"><div class="caption-route" id="caption-route"></div><div class="caption-text" id="caption-text">OctopusBeak 幫助使用者自動抓取帳戶資料，先把資產、負債與淨值整理到同一個總覽。</div></div>
     <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="brand-overlay" id="brand-overlay" data-layout-ignore><div class="brand-lockup"><img class="brand-icon" src="./assets/ui/octopusbeak-icon.png" alt=""><div class="brand-name">OctopusBeak</div></div></div>
   </div>
   <script>
     window.__timelines = window.__timelines || {};
@@ -54,6 +60,13 @@
     }
     const tl = gsap.timeline({ paused:true });
     tl.to("#progress-fill", { scaleX:1, duration, ease:"none" }, 0);
+    tl.fromTo("#brand-overlay", { opacity:0 }, { opacity:1, duration:.75, ease:"power2.out" }, .15);
+    tl.fromTo("#brand-overlay .brand-lockup", { opacity:0, y:34, scale:.96 }, { opacity:1, y:0, scale:1, duration:.85, ease:"power3.out" }, .25);
+    tl.to("#brand-overlay", { opacity:0, duration:1, ease:"power2.inOut" }, 3.4);
+    tl.fromTo("#brand-overlay", { opacity:0 }, { opacity:1, duration:1, ease:"power2.out" }, 115.2);
+    tl.fromTo("#brand-overlay .brand-lockup", { opacity:0, y:30, scale:.97 }, { opacity:1, y:0, scale:1, duration:.9, ease:"power3.out" }, 115.45);
+    tl.to("#brand-overlay .brand-lockup", { opacity:0, y:-18, scale:.985, duration:.85, ease:"power2.in" }, 119);
+    tl.to("#brand-overlay", { opacity:0, duration:.95, ease:"power2.in" }, 119.05);
     const firstCursor = cursorLog[0] || story[0].focus;
     const firstCursorPosition = cursorPosition(firstCursor);
     tl.set("#tour-cursor", { x:firstCursorPosition.x, y:firstCursorPosition.y }, 0);

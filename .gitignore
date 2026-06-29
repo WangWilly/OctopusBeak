@@ -10,3 +10,6 @@ data/*
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/
 .libretto/profiles/
+
+# HyperFrames generated audio waveform cache.
+docs/hyperframes/.waveform-cache/
