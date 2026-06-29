@@ -2,8 +2,10 @@ node_modules/
 .svelte-kit/
 build/
 .env
+.DS_Store
+*.log
 downloads/
-data/
+data/*
 
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/

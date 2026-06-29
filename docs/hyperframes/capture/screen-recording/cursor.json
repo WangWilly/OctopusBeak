@@ -1,0 +1,397 @@
+[
+  {
+    "t": 0,
+    "x": 470,
+    "y": 235,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "自動整理"
+  },
+  {
+    "t": 10,
+    "x": 840,
+    "y": 235,
+    "duration": 0.9,
+    "kind": "move",
+    "label": "net worth summary"
+  },
+  {
+    "t": 11.09,
+    "x": 840,
+    "y": 235,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "淨值總覽"
+  },
+  {
+    "t": 20,
+    "x": 690,
+    "y": 560,
+    "duration": 0.9,
+    "kind": "move",
+    "label": "snapshot history"
+  },
+  {
+    "t": 21.09,
+    "x": 690,
+    "y": 560,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "歷史追蹤"
+  },
+  {
+    "t": 24.04,
+    "x": 370,
+    "y": 484,
+    "duration": 0.7,
+    "kind": "move"
+  },
+  {
+    "t": 24.99,
+    "x": 370,
+    "y": 484,
+    "duration": 0.2,
+    "kind": "click"
+  },
+  {
+    "t": 27.01,
+    "x": 993,
+    "y": 609,
+    "duration": 0.85,
+    "kind": "move"
+  },
+  {
+    "t": 28.05,
+    "x": 993,
+    "y": 609,
+    "duration": 0.2,
+    "kind": "click"
+  },
+  {
+    "t": 32,
+    "x": 861,
+    "y": 398,
+    "duration": 0.65,
+    "kind": "move",
+    "label": "currency filter"
+  },
+  {
+    "t": 34.06,
+    "x": 861,
+    "y": 398,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "幣別視角"
+  },
+  {
+    "t": 42,
+    "x": 840,
+    "y": 700,
+    "duration": 0.9,
+    "kind": "move",
+    "label": "daily changes"
+  },
+  {
+    "t": 44.4,
+    "x": 840,
+    "y": 700,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "每日變動"
+  },
+  {
+    "t": 52,
+    "x": 128,
+    "y": 182,
+    "duration": 0.76,
+    "kind": "move",
+    "label": "http://localhost:5175/assets"
+  },
+  {
+    "t": 52.95,
+    "x": 128,
+    "y": 182,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "http://localhost:5175/assets"
+  },
+  {
+    "t": 53.79,
+    "x": 128,
+    "y": 182,
+    "duration": 0.22,
+    "kind": "move",
+    "label": "http://localhost:5175/assets"
+  },
+  {
+    "t": 55.6,
+    "x": 840,
+    "y": 278,
+    "duration": 0.9,
+    "kind": "move",
+    "label": "asset account summary"
+  },
+  {
+    "t": 56.7,
+    "x": 840,
+    "y": 278,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "資產帳戶"
+  },
+  {
+    "t": 62,
+    "x": 748,
+    "y": 475,
+    "duration": 0.65,
+    "kind": "move",
+    "label": "CRYPTO"
+  },
+  {
+    "t": 62.84,
+    "x": 748,
+    "y": 475,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "CRYPTO"
+  },
+  {
+    "t": 63.5,
+    "x": 848,
+    "y": 640,
+    "duration": 0.7,
+    "kind": "move",
+    "label": "crypto account row"
+  },
+  {
+    "t": 64.38,
+    "x": 848,
+    "y": 640,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "高波動資產"
+  },
+  {
+    "t": 72,
+    "x": 1252,
+    "y": 640,
+    "duration": 0.65,
+    "kind": "move",
+    "label": "TX"
+  },
+  {
+    "t": 72.85,
+    "x": 1252,
+    "y": 640,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "TX"
+  },
+  {
+    "t": 73.5,
+    "x": 720,
+    "y": 405,
+    "duration": 0.7,
+    "kind": "move",
+    "label": "asset transactions"
+  },
+  {
+    "t": 74.39,
+    "x": 720,
+    "y": 405,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "交易明細"
+  },
+  {
+    "t": 82.01,
+    "x": 720,
+    "y": 450,
+    "duration": 0.42,
+    "kind": "move",
+    "label": "close"
+  },
+  {
+    "t": 82.62,
+    "x": 720,
+    "y": 450,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "close"
+  },
+  {
+    "t": 84.36,
+    "x": 748,
+    "y": 475,
+    "duration": 0.42,
+    "kind": "move",
+    "label": "CRYPTO"
+  },
+  {
+    "t": 84.97,
+    "x": 748,
+    "y": 475,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "CRYPTO"
+  },
+  {
+    "t": 85.63,
+    "x": 1329,
+    "y": 640,
+    "duration": 0.65,
+    "kind": "move",
+    "label": "POSITIONS"
+  },
+  {
+    "t": 86.49,
+    "x": 1329,
+    "y": 640,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "POSITIONS"
+  },
+  {
+    "t": 87.14,
+    "x": 720,
+    "y": 405,
+    "duration": 0.7,
+    "kind": "move",
+    "label": "asset positions"
+  },
+  {
+    "t": 88.03,
+    "x": 720,
+    "y": 405,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "持倉報酬"
+  },
+  {
+    "t": 90,
+    "x": 1128,
+    "y": 572,
+    "duration": 0.9,
+    "kind": "move"
+  },
+  {
+    "t": 94,
+    "x": 128,
+    "y": 234,
+    "duration": 0.76,
+    "kind": "move",
+    "label": "http://localhost:5175/liabilities"
+  },
+  {
+    "t": 94.95,
+    "x": 128,
+    "y": 234,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "http://localhost:5175/liabilities"
+  },
+  {
+    "t": 95.77,
+    "x": 128,
+    "y": 234,
+    "duration": 0.22,
+    "kind": "move",
+    "label": "http://localhost:5175/liabilities"
+  },
+  {
+    "t": 97.58,
+    "x": 850,
+    "y": 200,
+    "duration": 0.9,
+    "kind": "move",
+    "label": "liability overview"
+  },
+  {
+    "t": 98.66,
+    "x": 850,
+    "y": 200,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "負債總覽"
+  },
+  {
+    "t": 102,
+    "x": 580,
+    "y": 316,
+    "duration": 0.62,
+    "kind": "move",
+    "label": "LOAN"
+  },
+  {
+    "t": 102.81,
+    "x": 580,
+    "y": 316,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "LOAN"
+  },
+  {
+    "t": 106.01,
+    "x": 1357,
+    "y": 481,
+    "duration": 0.65,
+    "kind": "move",
+    "label": "TX"
+  },
+  {
+    "t": 106.85,
+    "x": 1357,
+    "y": 481,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "TX"
+  },
+  {
+    "t": 107.51,
+    "x": 850,
+    "y": 480,
+    "duration": 0.7,
+    "kind": "move",
+    "label": "loan transactions"
+  },
+  {
+    "t": 108.39,
+    "x": 850,
+    "y": 480,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "曝險主因"
+  },
+  {
+    "t": 112.01,
+    "x": 720,
+    "y": 450,
+    "duration": 0.42,
+    "kind": "move",
+    "label": "close"
+  },
+  {
+    "t": 112.63,
+    "x": 720,
+    "y": 450,
+    "duration": 0.2,
+    "kind": "click",
+    "label": "close"
+  },
+  {
+    "t": 113.83,
+    "x": 840,
+    "y": 235,
+    "duration": 0.7,
+    "kind": "move",
+    "label": "final overview"
+  },
+  {
+    "t": 114.72,
+    "x": 840,
+    "y": 235,
+    "duration": 0.8,
+    "kind": "focus",
+    "label": "無痛檢查"
+  }
+]

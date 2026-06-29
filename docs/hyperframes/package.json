@@ -1,0 +1,27 @@
+{
+  "name": "@octopus-beak/video-hyperframes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ensure:deps": "node scripts/ensure-deps.mjs",
+    "prepreview": "npm run ensure:deps",
+    "preview": "hyperframes preview --port 3004 --no-open",
+    "dev": "npm run preview",
+    "prelint": "npm run ensure:deps",
+    "lint": "hyperframes lint",
+    "prevalidate": "npm run ensure:deps",
+    "validate": "hyperframes validate",
+    "preinspect": "npm run ensure:deps",
+    "inspect": "hyperframes inspect --samples 15",
+    "precheck": "npm run ensure:deps",
+    "check": "hyperframes lint && hyperframes validate && hyperframes inspect --samples 15",
+    "prerender": "npm run ensure:deps",
+    "render": "hyperframes render --output renders/octopus-beak-dashboard.mp4",
+    "prerender:draft": "npm run ensure:deps",
+    "render:draft": "hyperframes render --quality draft --output renders/octopus-beak-dashboard.mp4"
+  },
+  "devDependencies": {
+    "gsap": "3.14.2",
+    "hyperframes": "0.6.69"
+  }
+}

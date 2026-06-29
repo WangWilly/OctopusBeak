@@ -1,0 +1,9 @@
+.hyperframes/
+.thumbnails/
+snapshots/
+renders/*
+!renders/.gitkeep
+assets/captures/*.webm
+capture/*
+!capture/screen-recording/
+!capture/screen-recording/*.json
