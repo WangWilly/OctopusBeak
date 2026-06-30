@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 
@@ -151,8 +152,7 @@ async function findScopeWithSelector(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(scope.locator(selector))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -168,8 +168,7 @@ async function findScopeWithLocator(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -426,11 +425,10 @@ async function waitForCreditCardBillsReady(
   while (Date.now() < deadline) {
     const scope = await findCreditCardBillsScope(page, 3_000).catch(() => null);
     if (scope) {
-      const monthCount = await scope
-        .locator('a[onclick*="queryMonth("]')
-        .count()
-        .catch(() => 0);
-      const tableCount = await scope.locator("table.rwdTable").count().catch(() => 0);
+      const hasMonthLink = await hasAttachedLocator(
+        scope.locator('a[onclick*="queryMonth("]'),
+      );
+      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
       const hasPeriod =
         !period ||
         (await scope
@@ -439,7 +437,7 @@ async function waitForCreditCardBillsReady(
           .count()
           .catch(() => 0)) > 0;
 
-      if (monthCount > 0 && tableCount > 0 && hasPeriod) return scope;
+      if (hasMonthLink && hasTable && hasPeriod) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -740,7 +738,7 @@ async function findStatementScope(page: Page): Promise<BrowserScope | null> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      if ((await scope.locator(".cardBx").count().catch(() => 0)) > 0) {
+      if (await hasAttachedLocator(scope.locator(".cardBx"))) {
         return scope;
       }
       const noRecordText = await scope

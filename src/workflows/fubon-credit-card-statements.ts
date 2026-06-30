@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { activateControlWithoutPointer } from "./browser-interaction.js";
+import {
+  activateControlWithoutPointer,
+  hasAttachedLocator,
+} from "./browser-interaction.js";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -338,7 +341,7 @@ async function findScopeWithSelector(
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
       const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locator)) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -355,7 +358,7 @@ async function findScopeWithLocator(
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
       const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locator)) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -401,7 +404,7 @@ async function clickLinkByClassOrText(
       const textLink = scope.locator("a").filter({ hasText: text }).first();
 
       for (const link of [classLink, textLink]) {
-        if ((await link.count().catch(() => 0)) === 0) continue;
+        if (!(await hasAttachedLocator(link))) continue;
 
         const href = await link.getAttribute("href");
         if (href && href !== "#" && !href.startsWith("javascript:")) {

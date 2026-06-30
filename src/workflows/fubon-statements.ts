@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { workflow, pause, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { activateControlWithoutPointer } from "./browser-interaction.js";
+import {
+  activateControlWithoutPointer,
+  selectOptionWithoutPointer,
+} from "./browser-interaction.js";
 import {
   fetchFormPostbackHtml,
   replaceDocumentHtml,
@@ -313,11 +316,12 @@ async function fillLoginForm(page: Page, credentials: FubonCredentials) {
 }
 
 async function waitForSignedInState(page: Page) {
-  const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#header_form\\:header_logout").waitFor({
-    state: "visible",
-    timeout: 120_000,
-  });
+  await findScopeWithLocator(
+    page,
+    depositRows,
+    "Fubon deposit account list after login",
+    120_000,
+  );
 }
 
 function depositRows(scope: BrowserScope): Locator {
@@ -374,7 +378,10 @@ async function selectDepositAccount(
   account: DepositAccountOption,
 ): Promise<void> {
   const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
-  await scope.locator(depositAccountSelectSelector).selectOption(account.value);
+  await selectOptionWithoutPointer(
+    scope.locator(depositAccountSelectSelector),
+    account.value,
+  );
 }
 
 async function findScopeWithSelector(

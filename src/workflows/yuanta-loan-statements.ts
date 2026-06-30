@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -307,8 +308,7 @@ async function findScopeWithSelector(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(scope.locator(selector))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -324,8 +324,7 @@ async function findScopeWithLocator(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -514,13 +513,10 @@ async function findLoanStatementForm(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const hasAccount = (await scope.locator("#acctno").count().catch(() => 0)) > 0;
-      const hasLoanRange =
-        (await scope
-          .locator("#duration a")
-          .filter({ hasText: "一年" })
-          .count()
-          .catch(() => 0)) > 0;
+      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
+      const hasLoanRange = await hasAttachedLocator(
+        scope.locator("#duration a").filter({ hasText: "一年" }),
+      );
       if (hasAccount && hasLoanRange) return scope;
     }
     await page.waitForTimeout(500);

@@ -1,5 +1,23 @@
 import type { Locator, Page } from "playwright";
 
+type AttachedLocatorProbe = {
+  first(): {
+    waitFor(options: { state: "attached"; timeout: number }): Promise<void>;
+  };
+};
+
+export async function hasAttachedLocator(
+  locator: AttachedLocatorProbe,
+  timeoutMs = 250,
+): Promise<boolean> {
+  try {
+    await locator.first().waitFor({ state: "attached", timeout: timeoutMs });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function activateControlWithoutPointer(
   locator: Locator,
 ): Promise<void> {
@@ -60,25 +78,64 @@ export async function selectOptionWithoutPointer(
   }, value);
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms.`)),
+      timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export async function keepBrowserWindowOutOfForeground(
   page: Page,
+  timeoutMs = 1_500,
 ): Promise<void> {
-  const client = await page.context().newCDPSession(page).catch(() => null);
+  void moveBrowserWindowOutOfForeground(page, timeoutMs).catch(() => undefined);
+}
+
+async function moveBrowserWindowOutOfForeground(
+  page: Page,
+  timeoutMs: number,
+): Promise<void> {
+  const client = await withTimeout(
+    page.context().newCDPSession(page),
+    timeoutMs,
+  ).catch(() => null);
   if (!client) return;
 
   try {
-    const { windowId } = await client.send("Browser.getWindowForTarget");
-    await client.send("Browser.setWindowBounds", {
-      windowId,
-      bounds: { windowState: "normal" },
-    });
-    await client.send("Browser.setWindowBounds", {
-      windowId,
-      bounds: { left: -10_000, top: 0, width: 1280, height: 900 },
-    });
+    const { windowId } = await withTimeout(
+      client.send("Browser.getWindowForTarget"),
+      timeoutMs,
+    );
+    await withTimeout(
+      client.send("Browser.setWindowBounds", {
+        windowId,
+        bounds: { windowState: "normal" },
+      }),
+      timeoutMs,
+    );
+    await withTimeout(
+      client.send("Browser.setWindowBounds", {
+        windowId,
+        bounds: { left: -10_000, top: 0, width: 1280, height: 900 },
+      }),
+      timeoutMs,
+    );
   } catch {
     // Keeping the headed browser out of the foreground is a best-effort UX guard.
   } finally {
-    await client.detach().catch(() => undefined);
+    await withTimeout(client.detach(), timeoutMs).catch(() => undefined);
   }
 }
