@@ -10,4 +10,5 @@ export type AssetsPageDto = {
   positionsByAccount: Record<string, AssetPositionDto[]>;
   transactionsByAccount: Record<string, TransactionRowDto[]>;
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;
+  dailyHistory: DailyHistoryRowDto[];
 };

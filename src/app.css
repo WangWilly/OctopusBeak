@@ -425,6 +425,18 @@ a {
   margin-top: var(--space-6);
 }
 
+.balance-history {
+  margin-bottom: var(--space-6);
+}
+
+.balance-chart {
+  overflow: hidden;
+}
+
+.balance-chart .sparkline {
+  margin-bottom: 0;
+}
+
 .toolbar {
   display: flex;
   align-items: center;

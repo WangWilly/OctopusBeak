@@ -56,7 +56,7 @@
       </div>
       <div class="modal-body history-modal-body">
         <div class="history-chart">
-          <SnapshotSparkline rows={chartRows} {currency} />
+          <SnapshotSparkline rows={chartRows} {currency} label="Balance" />
         </div>
         {#key currency}
           <DailyHistoryTable rows={rows} {currency} netLabel="Balance" paginate pageSize={20} visibleRows={6} />

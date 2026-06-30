@@ -4,4 +4,5 @@ export type LiabilitiesPageDto = {
   accounts: AccountRowDto[];
   transactionsByAccount: Record<string, TransactionRowDto[]>;
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;
+  dailyHistory: DailyHistoryRowDto[];
 };

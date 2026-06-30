@@ -1,7 +1,7 @@
 import { DEFAULT_LEDGER_DIR, openLedgerDrizzle } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
 import type { AssetsPageDto } from "../types.ts";
-import { buildDailyHistoryByAccount } from "$lib/overview/server/daily-history.ts";
+import { buildDailyHistory, buildDailyHistoryByAccount } from "$lib/overview/server/daily-history.ts";
 import {
   buildAccountOverview,
   buildPositionsByAccount,
@@ -63,6 +63,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
       positionsByAccount: buildPositionsByAccount(data),
       transactionsByAccount: buildTransactionsByAccount(data),
       dailyHistoryByAccount: buildDailyHistoryByAccount(data),
+      dailyHistory: buildDailyHistory(data),
     };
   } finally {
     sqlite.close();

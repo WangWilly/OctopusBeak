@@ -8,9 +8,12 @@
     x: number;
     y: number;
   };
+  type HistoryAmountKey = "netAssets" | "assets" | "liabilities";
 
   export let rows: DailyHistoryRowDto[] = [];
   export let currency = "TWD";
+  export let amountKey: HistoryAmountKey = "netAssets";
+  export let label = "Net position";
   let activePoint: SparklinePoint | null = null;
   let points: SparklinePoint[] = [];
 
@@ -23,7 +26,7 @@
 
   $: items = rows
     .map((row) => {
-      const amount = row.netAssets.find((item) => item.currency === currency);
+      const amount = row[amountKey].find((item) => item.currency === currency);
       return amount ? { date: row.date, value: amount.value } : null;
     })
     .filter((item): item is { date: string; value: number } => item !== null);
@@ -73,11 +76,11 @@
   }
 
   function pointLabel(point: { date: string; value: number }) {
-    return `Date: ${point.date}; Net position: ${formatMoney({ currency, value: point.value })}`;
+    return `Date: ${point.date}; ${label}: ${formatMoney({ currency, value: point.value })}`;
   }
 </script>
 
-<svg class="sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Net position trend ${currency}`}>
+<svg class="sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label} trend ${currency}`}>
   <text class="sparkline-axis" x="16" y={(top + bottom) / 2} text-anchor="middle" transform={`rotate(-90 16 ${(top + bottom) / 2})`}>
     {currency}
   </text>

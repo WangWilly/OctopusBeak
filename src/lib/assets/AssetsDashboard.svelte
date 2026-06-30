@@ -10,11 +10,13 @@
   import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
 
   export let assets: AssetsPageDto;
 
   let valuesVisible = true;
   let search = "";
+  let chartCurrency = "TWD";
 
   const assetBreakdown: Array<{ kind: AccountKind; label: string }> = [
     { kind: "bank", label: "Bank" },
@@ -29,6 +31,11 @@
   $: assetValue = metrics[0]?.amounts ?? [];
   $: sideValue = formatAmountLines(assetValue.slice(0, 1));
   $: sideSub = `${assetAccounts.length} accounts / ${currencyCount(assetAccounts.map((account) => account.amountLines))} currencies`;
+  $: chartRows = [...assets.dailyHistory].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
+  $: chartCurrencies = [
+    ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
+  ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
+  $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
 
   function buildMetrics(accounts: AccountRowDto[]): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
@@ -95,6 +102,10 @@
   function currencyOrder(value: string) {
     return value === "TWD" ? 0 : value === "USD" ? 1 : value === "JPY" ? 2 : 3;
   }
+
+  function selectValue(event: Event) {
+    return (event.currentTarget as HTMLSelectElement).value;
+  }
 </script>
 
 <DashboardShell
@@ -109,6 +120,31 @@
   bind:valuesVisible
 >
   <div class="content">
+    <section class="card balance-history" aria-label="Asset balance history">
+      <div class="panel-title">
+        <h2>Asset balance</h2>
+        {#if chartCurrencies.length > 0}
+          <label class="chip select-chip" for="asset-balance-currency">
+            <select
+              id="asset-balance-currency"
+              aria-label="Asset balance currency"
+              bind:value={chartCurrency}
+              onchange={(event) => (chartCurrency = selectValue(event))}
+              oninput={(event) => (chartCurrency = selectValue(event))}
+            >
+              {#each chartCurrencies as option}
+                <option>{option}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        <span class="chip">30 days</span>
+      </div>
+      <div class="pad balance-chart">
+        <SnapshotSparkline rows={chartRows} currency={chartCurrency} amountKey="assets" label="Asset balance" />
+      </div>
+    </section>
+
     <section aria-label="Asset metrics">
       <SummaryStrip {metrics} />
     </section>
