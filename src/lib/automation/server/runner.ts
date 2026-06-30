@@ -22,7 +22,7 @@ import {
 const activeTaskRunIds = new Map<string, string>();
 
 export function shouldMarkWaitingForHuman(output: string) {
-  return /resume --session|paused|captcha|otp|verification|certificate/i.test(output);
+  return /manual-(?:auth|otp)-required|workflow paused|resume --session|\benter\b[^\r\n]*(?:captcha|otp|verification|certificate)/i.test(output);
 }
 
 export function resumeSessionFromLog(output: string) {
