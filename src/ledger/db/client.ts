@@ -7,6 +7,7 @@ import { migrateLedgerDb } from "./migrations.ts";
 
 export const SQLITE_LEDGER_FILE = "ledger.sqlite";
 export const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
 export type LedgerDatabase = InstanceType<typeof DatabaseSync>;
 
 export function ledgerSqlitePath(ledgerDir = DEFAULT_LEDGER_DIR) {
@@ -26,6 +27,7 @@ export function openLedgerDatabase(
   const db = options.readOnly
     ? new DatabaseSync(sqlitePath, { readOnly: true })
     : new DatabaseSync(sqlitePath);
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
   db.exec("PRAGMA foreign_keys = ON");
   if (!options.readOnly) {
     db.exec("PRAGMA journal_mode = WAL");
