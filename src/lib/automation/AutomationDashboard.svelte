@@ -20,6 +20,7 @@
   let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let groupEnabled: Record<string, boolean> = {};
+  let credentialDrafts: Record<string, string> = {};
 
   $: sideValue = automation.active ? `${automation.activeTaskCount} running` : automation.importGate.locked ? "Import locked" : "Ready";
   $: sideSub = `Business day ${automation.businessDate}`;
@@ -33,7 +34,9 @@
     : automation.importGate.locked
       ? "bad"
       : "good";
-  $: groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
+  $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
+  $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
+  $: credentialsDirty = credentialInputDirty || credentialToggleDirty;
 
   onMount(() => {
     if (automation.active) {
@@ -71,13 +74,44 @@
     return "run";
   }
 
+  function resetCredentialChanges() {
+    credentialDrafts = {};
+    groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
+  }
+
+  function openCredentials() {
+    resetCredentialChanges();
+    credentialsOpen = true;
+  }
+
+  function closeCredentials() {
+    if (credentialsDirty && !confirm("Discard unsaved credential changes?")) return;
+    resetCredentialChanges();
+    credentialsOpen = false;
+  }
+
+  function closeCredentialsOnEscape(event: KeyboardEvent) {
+    if (!credentialsOpen || event.key !== "Escape") return;
+    event.preventDefault();
+    closeCredentials();
+  }
+
   function toggleGroup(groupId: string) {
     groupEnabled = {
       ...groupEnabled,
       [groupId]: !(groupEnabled[groupId] !== false),
     };
   }
+
+  function updateCredentialDraft(key: string, event: Event) {
+    credentialDrafts = {
+      ...credentialDrafts,
+      [key]: (event.currentTarget as HTMLInputElement).value,
+    };
+  }
 </script>
+
+<svelte:window onkeydown={closeCredentialsOnEscape} />
 
 <DashboardShell
   active="automation"
@@ -90,7 +124,7 @@
 >
   <svelte:fragment slot="topbar-actions">
     <span class={`chip ${topStatusClass}`}>{topStatus}</span>
-    <button class="button secondary fixed-action" type="button" onclick={() => (credentialsOpen = true)}>Credentials</button>
+    <button class="button secondary fixed-action" type="button" onclick={openCredentials}>Credentials</button>
   </svelte:fragment>
 
   <div class="content">
@@ -159,14 +193,17 @@
 
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
-    <button class="modal-backdrop" type="button" aria-label="Close credentials" onclick={() => (credentialsOpen = false)}></button>
+    <button class="modal-backdrop" type="button" aria-label="Close credentials" onclick={closeCredentials}></button>
     <form class="modal-panel credential-modal" method="POST" action="?/saveCredentials">
       <div class="modal-head">
         <div>
           <h2 id="credentials-title">Credentials</h2>
           <p>Saved to local .env. Existing secret values are shown only as saved or missing.</p>
         </div>
-        <button class="modal-close" type="button" aria-label="Close" onclick={() => (credentialsOpen = false)}>x</button>
+        <div class="credential-head-actions">
+          <button class="button fixed-action" type="button" onclick={closeCredentials}>Cancel</button>
+          <button class="button primary fixed-action" type="submit">Save .env</button>
+        </div>
       </div>
       <div class="modal-body credential-body">
         <div class="credential-sections">
@@ -177,6 +214,7 @@
                 <input type="hidden" name={group.enabledKey} value={groupEnabled[group.id] !== false ? "true" : "false"} />
                 <button
                   class="switch credential-switch"
+                  class:dirty={(groupEnabled[group.id] !== false) !== group.enabled}
                   type="button"
                   aria-pressed={groupEnabled[group.id] !== false}
                   onclick={() => toggleGroup(group.id)}
@@ -192,6 +230,9 @@
                     <input
                       name={key}
                       type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
+                      value={credentialDrafts[key] ?? ""}
+                      class:dirty={Boolean(credentialDrafts[key]?.trim())}
+                      oninput={(event) => updateCredentialDraft(key, event)}
                       placeholder={automation.credentials[key] ? "saved" : "missing"}
                       autocomplete="off"
                     />
@@ -200,10 +241,6 @@
               </div>
             </section>
           {/each}
-        </div>
-        <div class="modal-actions">
-          <button class="button fixed-action" type="button" onclick={() => (credentialsOpen = false)}>Cancel</button>
-          <button class="button primary fixed-action" type="submit">Save .env</button>
         </div>
       </div>
     </form>
@@ -336,6 +373,12 @@
     padding: var(--space-5);
   }
 
+  .credential-head-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
   .credential-sections {
     display: grid;
     gap: var(--space-4);
@@ -368,6 +411,11 @@
 
   .credential-switch {
     min-width: 132px;
+  }
+
+  .credential-switch.dirty {
+    border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
+    background: var(--accent-soft);
   }
 
   .credential-switch .switch-track {
@@ -421,11 +469,9 @@
     box-shadow: 0 0 0 3px var(--surface-soft);
   }
 
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-3);
-    margin-top: var(--space-5);
+  .credential-field input.dirty {
+    border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
+    background: var(--accent-soft);
   }
 
   .log-output {
