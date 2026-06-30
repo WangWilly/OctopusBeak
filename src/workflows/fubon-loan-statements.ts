@@ -1,10 +1,17 @@
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
-import XLSX from "xlsx";
 import { z } from "zod";
+import {
+  activateControlWithoutPointer,
+  fillInputWithoutPointer,
+  selectOptionWithoutPointer,
+} from "./browser-interaction.js";
+import {
+  fetchFormPostbackHtml,
+  replaceDocumentHtml,
+} from "./form-postback.js";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -160,43 +167,6 @@ function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
-function readFirstSheetRows(path: string): string[][] {
-  const workbook = XLSX.readFile(path);
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
-    throw new Error(`Downloaded Excel file has no worksheets: ${path}`);
-  }
-
-  const worksheet = workbook.Sheets[sheetName];
-  return XLSX.utils
-    .sheet_to_json<unknown[]>(worksheet, {
-      header: 1,
-      raw: false,
-      blankrows: false,
-    })
-    .map((row) => row.map((cell) => cleanText(String(cell ?? ""))));
-}
-
-function metadataValue(rows: string[][], label: string): string {
-  for (const row of rows) {
-    for (let index = 0; index < row.length - 1; index += 1) {
-      if (cleanText(row[index]) === label) return cleanText(row[index + 1]);
-    }
-  }
-
-  return "";
-}
-
-function findHeaderRowIndex(rows: string[][], headers: string[]): number {
-  const index = rows.findIndex((row) =>
-    headers.every((header, headerIndex) => cleanText(row[headerIndex]) === header),
-  );
-  if (index === -1) {
-    throw new Error(`Downloaded loan table is missing headers: ${headers.join(",")}`);
-  }
-  return index;
-}
-
 function loanAccountIdFor(loanAccount: string, fallback: string): string {
   const loanAccountPrefix = loanAccount.split(/[（(]/)[0] ?? loanAccount;
   const fallbackPrefix = fallback.split(/[（(]/)[0] ?? fallback;
@@ -205,26 +175,6 @@ function loanAccountIdFor(loanAccount: string, fallback: string): string {
     digitsOnly(fallbackPrefix) ||
     safeFilename(fallback)
   );
-}
-
-function parseLoanStatement(path: string, fallbackLoanAccount: string): ParsedLoanStatement {
-  const rows = readFirstSheetRows(path);
-  const loanAccount = metadataValue(rows, "貸款帳號") || fallbackLoanAccount;
-  const headerRowIndex = findHeaderRowIndex(rows, loanHeaders);
-  const dataRows = rows
-    .slice(headerRowIndex + 1)
-    .map((row) => loanHeaders.map((_, index) => cleanText(row[index])))
-    .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
-
-  return {
-    loanAccount,
-    loanAccountId: loanAccountIdFor(loanAccount, fallbackLoanAccount),
-    queryPeriod: metadataValue(rows, "查詢期間"),
-    branchName: metadataValue(rows, "分行名稱"),
-    accountType: metadataValue(rows, "帳號類別"),
-    currency: metadataValue(rows, "幣別"),
-    rows: dataRows,
-  };
 }
 
 function loanRowSortTime(row: string[]): number | null {
@@ -344,7 +294,7 @@ async function fillLoanLoginForm(page: Page, credentials: FubonCredentials) {
   await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#menu_CLN").click({ force: true });
+  await activateControlWithoutPointer(headerFrame.locator("#menu_CLN"));
 
   const landingFrame = await waitForFrame(page, "txnFrame");
   let loanStatementHref = await landingFrame
@@ -369,11 +319,9 @@ async function fillLoanLoginForm(page: Page, credentials: FubonCredentials) {
   let loginFrame = await waitForFrame(page, "txnFrame");
   let visiblePasswordFields = loginFrame.locator('input[type="password"]:visible');
   if ((await visiblePasswordFields.count().catch(() => 0)) === 0) {
-    await headerFrame
-      .locator("a")
-      .filter({ hasText: "登入" })
-      .first()
-      .click({ force: true });
+    await activateControlWithoutPointer(
+      headerFrame.locator("a").filter({ hasText: "登入" }).first(),
+    );
     loginFrame = await waitForFrame(page, "txnFrame");
     visiblePasswordFields = loginFrame.locator('input[type="password"]:visible');
   }
@@ -407,64 +355,6 @@ function loanResultTable(scope: BrowserScope): Locator {
     .first();
 }
 
-function loanDownloadLink(scope: BrowserScope): Locator {
-  return scope.locator('a[title="下載"], a.download').first();
-}
-
-async function readLoanFormToken(scope: BrowserScope): Promise<string | null> {
-  return await scope
-    .locator('input[name="uniqueToken"]')
-    .first()
-    .getAttribute("value")
-    .catch(() => null);
-}
-
-async function waitForLoanQueryResult(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if ((await loanDownloadLink(scope).count().catch(() => 0)) > 0) {
-        return scope;
-      }
-
-      if ((await loanResultTable(scope).count().catch(() => 0)) > 0) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Timed out waiting for loan query results.");
-}
-
-async function waitForLoanQueryPostback(
-  page: Page,
-  previousToken: string | null,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  if (!previousToken) return await waitForLoanQueryResult(page, timeoutMs);
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const currentToken = await readLoanFormToken(scope);
-      if (!currentToken || currentToken === previousToken) continue;
-
-      const hasDownloadLink =
-        (await loanDownloadLink(scope).count().catch(() => 0)) > 0;
-      const hasResultTable =
-        (await loanResultTable(scope)
-          .count()
-          .catch(() => 0)) > 0;
-      if (hasDownloadLink || hasResultTable) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Timed out waiting for loan query postback.");
-}
-
 async function navigateToLoanStatementsPage(page: Page): Promise<BrowserScope> {
   try {
     return await findScopeWithSelector(page, "#form1\\:loanAccountCombo", 5_000);
@@ -473,7 +363,7 @@ async function navigateToLoanStatementsPage(page: Page): Promise<BrowserScope> {
   }
 
   const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#menu_CLN").click({ force: true });
+  await activateControlWithoutPointer(headerFrame.locator("#menu_CLN"));
 
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
@@ -493,7 +383,7 @@ async function navigateToLoanStatementsPage(page: Page): Promise<BrowserScope> {
             waitUntil: "domcontentloaded",
           });
         } else {
-          await link.click({ force: true });
+          await activateControlWithoutPointer(link);
         }
 
         return await findScopeWithSelector(
@@ -559,6 +449,39 @@ function describeLoanPeriod(input: FubonLoanStatementsInput): LoanPeriod {
       };
 }
 
+function formatDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+function addMonthsClamped(date: Date, months: number): Date {
+  const targetYear = date.getFullYear();
+  const targetMonth = date.getMonth() + months;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(
+    targetYear,
+    targetMonth,
+    Math.min(date.getDate(), lastDay),
+  );
+}
+
+function loanQueryPeriod(input: FubonLoanStatementsInput): string {
+  if (input.dateRange) {
+    return `${input.dateRange.startDate}~${input.dateRange.endDate}`;
+  }
+
+  const today = new Date();
+  const endDate = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  );
+  const startDate = addMonthsClamped(endDate, -Number(input.quickMonths));
+  return `${formatDate(startDate)}~${formatDate(endDate)}`;
+}
+
 async function readLoanAccountOptions(
   scope: BrowserScope,
   filters: string[],
@@ -596,9 +519,10 @@ async function selectLoanAccount(
   let scope = await findScopeWithSelector(page, "#form1\\:loanAccountCombo");
   await waitForNoVisibleBankMask(page);
 
-  await scope
-    .locator("#form1\\:loanAccountCombo")
-    .selectOption(account.value, { force: true });
+  await selectOptionWithoutPointer(
+    scope.locator("#form1\\:loanAccountCombo"),
+    account.value,
+  );
   await waitForNoVisibleBankMask(page);
 
   return await findScopeWithSelector(page, "#form1\\:queryItemCombo");
@@ -639,69 +563,136 @@ async function configureLoanQuery(
     throw new Error(`Loan query item is not available for this account: ${queryItem}`);
   }
 
-  await scope
-    .locator("#form1\\:queryItemCombo")
-    .selectOption(queryItem, { force: true });
+  await selectOptionWithoutPointer(
+    scope.locator("#form1\\:queryItemCombo"),
+    queryItem,
+  );
   await waitForNoVisibleBankMask(page);
 
   if (input.dateRange) {
-    await scope
-      .locator('input.queryPeriod[value="custom"]')
-      .check({ force: true });
-    await scope.locator("#form1\\:startDate").fill(input.dateRange.startDate);
-    await scope.locator("#form1\\:endDate").fill(input.dateRange.endDate);
+    await activateControlWithoutPointer(
+      scope.locator('input.queryPeriod[value="custom"]'),
+    );
+    await fillInputWithoutPointer(
+      scope.locator("#form1\\:startDate"),
+      input.dateRange.startDate,
+    );
+    await fillInputWithoutPointer(
+      scope.locator("#form1\\:endDate"),
+      input.dateRange.endDate,
+    );
   } else {
-    await scope.locator('input.queryPeriod[value="quick"]').check({
-      force: true,
-    });
-    await scope
-      .locator(`input.quickKind[value="${input.quickMonths}"]`)
-      .check({ force: true });
+    await activateControlWithoutPointer(
+      scope.locator('input.queryPeriod[value="quick"]'),
+    );
+    await activateControlWithoutPointer(
+      scope.locator(`input.quickKind[value="${input.quickMonths}"]`),
+    );
   }
 
   return scope;
 }
 
-async function runLoanQuery(page: Page): Promise<BrowserScope> {
-  const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
-  const previousToken = await readLoanFormToken(scope);
-  await scope.locator("#form1\\:doValidate").click({ force: true });
+async function parseLoanStatementHtml(
+  page: Page,
+  html: string,
+  fallbackLoanAccount: string,
+  input: FubonLoanStatementsInput,
+): Promise<ParsedLoanStatement> {
+  const parsed = (await page.evaluate(
+    ({ html: sourceHtml, headers }) => {
+      const clean = (value: string | null | undefined) =>
+        (value ?? "")
+          .replace(/[\u00a0\u3000]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      const cellsFor = (row: Element) =>
+        Array.from(row.querySelectorAll("th,td")).map((cell) =>
+          clean(cell.textContent),
+        );
+      const doc = new DOMParser().parseFromString(sourceHtml, "text/html");
+      const tableRows = Array.from(doc.querySelectorAll("table"))
+        .map((table) =>
+          Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
+        )
+        .find((rows) =>
+          rows.some((row) =>
+            headers.every((header, index) => clean(row[index]).includes(header)),
+          ),
+        );
+      if (!tableRows) {
+        throw new Error("Loan query response is missing the result table.");
+      }
 
-  return await waitForLoanQueryPostback(page, previousToken);
+      const headerRowIndex = tableRows.findIndex((row) =>
+        headers.every((header, index) => clean(row[index]).includes(header)),
+      );
+      const rows = tableRows
+        .slice(headerRowIndex + 1)
+        .map((row) => headers.map((_, index) => clean(row[index])))
+        .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+      const metadataRows = Array.from(doc.querySelectorAll("table"))
+        .map((table) =>
+          Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
+        )
+        .find((rows) =>
+          rows.some((row) => row.includes("分行名稱")) &&
+          rows.some((row) => row.includes("幣別")),
+        );
+      const metadataValue = (label: string) => {
+        for (const row of metadataRows ?? []) {
+          const index = row.findIndex((cell) => clean(cell) === label);
+          if (index !== -1) return clean(row[index + 1]);
+        }
+        return "";
+      };
+
+      return {
+        accountType: metadataValue("帳號類別"),
+        branchName: metadataValue("分行名稱"),
+        currency: metadataValue("幣別"),
+        rows,
+      };
+    },
+    { html, headers: loanHeaders },
+  )) as {
+    accountType: string;
+    branchName: string;
+    currency: string;
+    rows: string[][];
+  };
+
+  return {
+    loanAccount: fallbackLoanAccount,
+    loanAccountId: loanAccountIdFor(fallbackLoanAccount, fallbackLoanAccount),
+    queryPeriod: loanQueryPeriod(input),
+    branchName: parsed.branchName,
+    accountType: parsed.accountType,
+    currency: parsed.currency,
+    rows: parsed.rows,
+  };
 }
 
-async function downloadLoanStatement(
+async function fetchLoanQueryHtml(page: Page): Promise<string> {
+  const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
+  const html = await fetchFormPostbackHtml(
+    scope.locator("form").first(),
+    "form1:doValidate",
+  );
+  await replaceDocumentHtml(scope, html);
+  await findScopeWithLocator(page, loanResultTable, "loan result table");
+
+  return html;
+}
+
+async function writeLoanStatementFiles(
   page: Page,
+  html: string,
   loanAccount: string,
   queryItem: z.infer<typeof queryItemSchema>,
-  downloadFormat: "TXT" | "EXCEL" | "PDF",
+  input: FubonLoanStatementsInput,
 ): Promise<FubonLoanStatementsOutput["downloads"][number]> {
-  const scope = await findScopeWithSelector(page, 'a[title="下載"], a.download');
-  await loanDownloadLink(scope).click({ force: true });
-
-  const formatOption = scope.locator(
-    `input[name="download_format"][value="${downloadFormat}"]`,
-  );
-  await formatOption.waitFor({ state: "attached", timeout: 30_000 });
-  await formatOption.check({ force: true });
-
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  await scope.locator("a.confirm").first().click({ force: true });
-  const download = await downloadPromise;
-
-  const filename = download.suggestedFilename();
-  const tempPath = join(
-    tmpdir(),
-    `fubon-loan-statements-${nextTimestamp()}-${safeFilename(filename)}`,
-  );
-  await download.saveAs(tempPath);
-
-  let parsed: ParsedLoanStatement;
-  try {
-    parsed = parseLoanStatement(tempPath, loanAccount);
-  } finally {
-    await rm(tempPath, { force: true }).catch(() => undefined);
-  }
+  const parsed = await parseLoanStatementHtml(page, html, loanAccount, input);
 
   const downloadsDir = join(process.cwd(), "downloads", "fubon-loan-statements");
   await mkdir(downloadsDir, { recursive: true });
@@ -757,7 +748,7 @@ export async function runFubonLoanStatements(
 ): Promise<FubonLoanStatementsOutput> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
-      "fubon-loan-statements normalized output requires EXCEL downloadFormat.",
+      'fubon-loan-statements normalized output currently supports downloadFormat="EXCEL" only.',
     );
   }
 
@@ -818,16 +809,13 @@ export async function runFubonLoanStatements(
     for (const queryItem of accountQueryItems) {
       try {
         scope = await configureLoanQuery(page, input, queryItem);
-        scope = await runLoanQuery(page);
-        await loanDownloadLink(scope).waitFor({
-          state: "attached",
-          timeout: 60_000,
-        });
-        const download = await downloadLoanStatement(
+        const html = await fetchLoanQueryHtml(page);
+        const download = await writeLoanStatementFiles(
           page,
+          html,
           account.label,
           queryItem,
-          input.downloadFormat,
+          input,
         );
         downloads.push(download);
       } catch (error) {
@@ -885,7 +873,7 @@ export default workflow("fubonLoanStatements", {
     await pause(session);
 
     const loginFrame = await waitForFrame(page, "txnFrame");
-    await loginFrame.locator("#btnLogin2").click();
+    await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
 
     if (
       await loginFrame

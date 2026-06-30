@@ -1,10 +1,13 @@
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, pause, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
-import XLSX from "xlsx";
 import { z } from "zod";
+import { activateControlWithoutPointer } from "./browser-interaction.js";
+import {
+  fetchFormPostbackHtml,
+  replaceDocumentHtml,
+} from "./form-postback.js";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -75,6 +78,16 @@ type ParsedDepositStatement = {
   rows: string[][];
 };
 
+type ParsedDepositStatementPage = {
+  account: string;
+  accountId: string;
+  branchName: string;
+  queryPeriod: string;
+  rows: string[][];
+  nextPage: string | null;
+  pageFieldName: string | null;
+};
+
 let lastTimestamp = 0;
 
 const depositHeaders = [
@@ -127,49 +140,85 @@ function nextTimestamp(): string {
   return String(lastTimestamp);
 }
 
+function formatDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function addMonthsClamped(date: Date, months: number): Date {
+  const targetYear = date.getFullYear();
+  const targetMonth = date.getMonth() + months;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(
+    targetYear,
+    targetMonth,
+    Math.min(date.getDate(), lastDay),
+  );
+}
+
+function depositDateRangeFields(
+  dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
+): Record<string, string> {
+  const today = new Date();
+  const endDate = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  );
+  const dayOffsets: Partial<
+    Record<z.infer<typeof fubonStatementDateRangeSchema>, number>
+  > = {
+    "1": 0,
+    "3": 2,
+    "7": 6,
+    "14": 13,
+    "21": 20,
+  };
+  const monthOffsets: Partial<
+    Record<z.infer<typeof fubonStatementDateRangeSchema>, number>
+  > = {
+    "30": 1,
+    "60": 2,
+    "90": 3,
+    "180": 6,
+  };
+
+  if (dateRange === "180_365") {
+    return {
+      "form1:rdoGroup3": dateRange,
+      "form1:startDate": formatDate(addMonthsClamped(endDate, -12)),
+      "form1:endDate": formatDate(addMonthsClamped(endDate, -6)),
+      "resultGrid:dataGridCurrentPage": "1",
+    };
+  }
+
+  const dayOffset = dayOffsets[dateRange];
+  const monthOffset = monthOffsets[dateRange];
+  const startDate =
+    dayOffset !== undefined
+      ? addDays(endDate, -dayOffset)
+      : addMonthsClamped(endDate, -(monthOffset ?? 0));
+
+  return {
+    "form1:rdoGroup3": dateRange,
+    "form1:startDate": formatDate(startDate),
+    "form1:endDate": formatDate(endDate),
+    "resultGrid:dataGridCurrentPage": "1",
+  };
+}
+
 function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
 function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function readFirstSheetRows(path: string): string[][] {
-  const workbook = XLSX.readFile(path);
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
-    throw new Error(`Downloaded Excel file has no worksheets: ${path}`);
-  }
-
-  const worksheet = workbook.Sheets[sheetName];
-  return XLSX.utils
-    .sheet_to_json<unknown[]>(worksheet, {
-      header: 1,
-      raw: false,
-      blankrows: false,
-    })
-    .map((row) => row.map((cell) => cleanText(String(cell ?? ""))));
-}
-
-function metadataValue(rows: string[][], label: string): string {
-  for (const row of rows) {
-    for (let index = 0; index < row.length - 1; index += 1) {
-      if (cleanText(row[index]) === label) return cleanText(row[index + 1]);
-    }
-  }
-
-  return "";
-}
-
-function findHeaderRowIndex(rows: string[][], headers: string[]): number {
-  const index = rows.findIndex((row) =>
-    headers.every((header, headerIndex) => cleanText(row[headerIndex]) === header),
-  );
-  if (index === -1) {
-    throw new Error(`Downloaded statement table is missing headers: ${headers.join(",")}`);
-  }
-  return index;
 }
 
 function branchNameFromAccount(account: string): string {
@@ -184,25 +233,6 @@ function accountIdFor(account: string, fallback: string): string {
     digitsOnly(fallbackPrefix) ||
     safeFilename(fallback)
   );
-}
-
-function parseDepositStatement(path: string, fallbackAccount: string): ParsedDepositStatement {
-  const rows = readFirstSheetRows(path);
-  const account = metadataValue(rows, "帳號") || fallbackAccount;
-  const queryPeriod = metadataValue(rows, "查詢期間");
-  const headerRowIndex = findHeaderRowIndex(rows, depositHeaders);
-  const dataRows = rows
-    .slice(headerRowIndex + 1)
-    .map((row) => depositHeaders.map((_, index) => cleanText(row[index])))
-    .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
-
-  return {
-    account,
-    accountId: accountIdFor(account, fallbackAccount),
-    queryPeriod,
-    branchName: branchNameFromAccount(account),
-    rows: dataRows,
-  };
 }
 
 function uniqueValues(values: string[]): string[] {
@@ -242,7 +272,7 @@ async function fillLoginForm(page: Page, credentials: FubonCredentials) {
   await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#menu_CDS").click({ force: true });
+  await activateControlWithoutPointer(headerFrame.locator("#menu_CDS"));
 
   const landingFrame = await waitForFrame(page, "txnFrame");
   const myDepositsHref = await landingFrame
@@ -256,11 +286,12 @@ async function fillLoginForm(page: Page, credentials: FubonCredentials) {
     waitUntil: "domcontentloaded",
   });
 
-  await headerFrame
-    .locator("a")
-    .filter({ hasText: "登入" })
-    .first()
-    .click({ force: true });
+  await activateControlWithoutPointer(
+    headerFrame
+      .locator("a")
+      .filter({ hasText: "登入" })
+      .first(),
+  );
 
   const loginFrame = await waitForFrame(page, "txnFrame");
   const visiblePasswordFields = loginFrame.locator(
@@ -333,6 +364,34 @@ async function findScopeWithSelector(
   throw new Error(`Timed out waiting for selector ${selector}.`);
 }
 
+async function findScopeWithLocator(
+  page: Page,
+  locatorFor: (scope: BrowserScope) => Locator,
+  description: string,
+  timeoutMs = 60_000,
+): Promise<BrowserScope> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if ((await locatorFor(scope).count().catch(() => 0)) > 0) {
+        return scope;
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(`Could not find ${description} in any frame.`);
+}
+
+function depositResultTable(scope: BrowserScope): Locator {
+  return scope
+    .locator("table")
+    .filter({ hasText: "帳務日期" })
+    .filter({ hasText: "交易時間" })
+    .filter({ hasText: "即時餘額" })
+    .first();
+}
+
 async function clickFirstLinkByText(
   page: Page,
   text: string,
@@ -349,7 +408,7 @@ async function clickFirstLinkByText(
             waitUntil: "domcontentloaded",
           });
         } else {
-          await link.click({ force: true });
+          await activateControlWithoutPointer(link);
         }
         return;
       }
@@ -390,63 +449,163 @@ async function openTransactionDetailForAccountIndex(
   const maskedAccount = await readMaskedAccountLabel(accountRow);
   const fastFunctionLink = accountRow.locator("a.input_sel.fastFunctionLinks");
   if ((await fastFunctionLink.count()) > 0) {
-    await fastFunctionLink.click({ force: true }).catch(() => undefined);
+    await activateControlWithoutPointer(fastFunctionLink).catch(() => undefined);
   }
 
   const transactionDetails = accountRow
     .locator("a.btn_sel")
     .filter({ hasText: "交易明細查詢" });
   await transactionDetails.waitFor({ state: "attached", timeout: 30_000 });
-  await transactionDetails.dispatchEvent("click");
+  await activateControlWithoutPointer(transactionDetails);
 
   return maskedAccount;
 }
 
-async function queryStatements(
+async function parseDepositStatementHtml(
+  page: Page,
+  html: string,
+): Promise<ParsedDepositStatementPage> {
+  const parsed = (await page.evaluate(
+    ({ html: sourceHtml, headers }) => {
+      const clean = (value: string | null | undefined) =>
+        (value ?? "")
+          .replace(/[\u00a0\u3000]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      const cellsFor = (row: Element) =>
+        Array.from(row.querySelectorAll("th,td")).map((cell) =>
+          clean(cell.textContent),
+        );
+      const doc = new DOMParser().parseFromString(sourceHtml, "text/html");
+      const tables = Array.from(doc.querySelectorAll("table"));
+      const tableRows = tables
+        .map((table) =>
+          Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
+        )
+        .find((rows) =>
+          rows.some((row) =>
+            headers.every((header, index) => clean(row[index]).includes(header)),
+          ),
+        );
+      if (!tableRows) {
+        throw new Error("Deposit query response is missing the result table.");
+      }
+
+      const headerRowIndex = tableRows.findIndex((row) =>
+        headers.every((header, index) => clean(row[index]).includes(header)),
+      );
+      const rows = tableRows
+        .slice(headerRowIndex + 1)
+        .map((row) => headers.map((_, index) => clean(row[index])))
+        .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+      const startDate = clean(
+        (doc.getElementById("form1:startDate") as HTMLInputElement | null)
+          ?.value,
+      );
+      const endDate = clean(
+        (doc.getElementById("form1:endDate") as HTMLInputElement | null)?.value,
+      );
+      const nextLink = Array.from(doc.querySelectorAll("a")).find(
+        (link) =>
+          clean(link.textContent) === "下一頁" &&
+          /setDataGridCurrentPage/.test(link.getAttribute("onclick") ?? ""),
+      );
+      const nextMatch = (nextLink?.getAttribute("onclick") ?? "").match(
+        /setDataGridCurrentPage\([^,]+,\s*(\d+),\s*['"]([^'"]+)['"]/,
+      );
+      const selectedAccountValue =
+        Array.from(
+          sourceHtml.matchAll(
+            /setupComboBox\("form1:comboAccount",\s*"[^"]*",\s*"([^"]+)"/g,
+          ),
+        )
+          .map((match) => clean(match[1]))
+          .filter(Boolean)
+          .at(-1) ?? "";
+      const accountItems = Array.from(
+        sourceHtml.matchAll(
+          /comboAccountItems\[\d+\]\s*=\s*new Array\("([^"]*)",\s*"([^"]*)"/g,
+        ),
+      ).map((match) => ({
+        label: clean(match[1]),
+        value: clean(match[2]),
+      }));
+      const selectedAccount = accountItems.find(
+        (item) => item.value === selectedAccountValue,
+      );
+      const account = selectedAccount?.label ?? "";
+      const accountId = clean(account.split(/[（(]/)[0]);
+      const branchName = clean(account.match(/[（(]([^()（）]+)[）)]/)?.[1]);
+
+      return {
+        account,
+        accountId,
+        branchName,
+        nextPage: nextMatch?.[1] ?? null,
+        pageFieldName: nextMatch?.[2] ?? null,
+        queryPeriod: startDate && endDate ? `${startDate}~${endDate}` : "",
+        rows,
+      };
+    },
+    { html, headers: depositHeaders },
+  )) as ParsedDepositStatementPage;
+
+  return parsed;
+}
+
+async function fetchDepositStatement(
   page: Page,
   dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
-) {
+  fallbackAccount: string,
+): Promise<ParsedDepositStatement> {
   const scope = await findScopeWithSelector(
     page,
     'a[id="form1:doValidateAndSubmit"]',
   );
   const dateRangeId = `input[id="form1:rdoDay${dateRange}"]`;
-  await scope.locator(dateRangeId).check({ force: true });
-  await scope.locator('a[id="form1:doValidateAndSubmit"]').click();
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // The bank keeps background frames alive; a short settle wait below is enough.
-  });
-  await page.waitForTimeout(1_000);
-  await findScopeWithSelector(page, "#multipleDownload");
-}
+  await activateControlWithoutPointer(scope.locator(dateRangeId));
+  await page.waitForTimeout(500);
 
-async function downloadStatements(
-  page: Page,
-  downloadFormat: "TXT" | "EXCEL" | "PDF",
-  fallbackAccount: string,
-): Promise<ParsedDepositStatement> {
-  const scope = await findScopeWithSelector(page, "#multipleDownload");
-  await scope.locator("#multipleDownload").click();
-  await scope
-    .locator(`input[name="download_format"][value="${downloadFormat}"]`)
-    .check({ force: true });
-
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  await scope.locator("a.confirm").click();
-  const download = await downloadPromise;
-
-  const filename = download.suggestedFilename();
-  const tempPath = join(
-    tmpdir(),
-    `fubon-statements-${nextTimestamp()}-${safeFilename(filename)}`,
+  const html = await fetchFormPostbackHtml(
+    scope.locator("form").first(),
+    "form1:doValidateAndSubmit",
+    depositDateRangeFields(dateRange),
   );
-  await download.saveAs(tempPath);
+  const pages = [await parseDepositStatementHtml(page, html)];
+  await replaceDocumentHtml(scope, html);
 
-  try {
-    return parseDepositStatement(tempPath, fallbackAccount);
-  } finally {
-    await rm(tempPath, { force: true }).catch(() => undefined);
+  let nextPage = pages[0].nextPage;
+  let pageFieldName = pages[0].pageFieldName;
+  while (nextPage && pageFieldName) {
+    const nextHtml = await fetchFormPostbackHtml(
+      scope.locator("form").first(),
+      undefined,
+      { [pageFieldName]: nextPage },
+    );
+    const nextParsed = await parseDepositStatementHtml(page, nextHtml);
+    pages.push(nextParsed);
+    await replaceDocumentHtml(scope, nextHtml);
+    nextPage = nextParsed.nextPage;
+    pageFieldName = nextParsed.pageFieldName;
   }
+
+  await findScopeWithLocator(
+    page,
+    depositResultTable,
+    "deposit statement result table",
+  );
+
+  const firstPage = pages[0];
+  return {
+    account: firstPage.account || fallbackAccount,
+    accountId:
+      firstPage.accountId ||
+      accountIdFor(firstPage.account || fallbackAccount, fallbackAccount),
+    queryPeriod: firstPage.queryPeriod,
+    branchName:
+      firstPage.branchName || branchNameFromAccount(firstPage.account || fallbackAccount),
+    rows: pages.flatMap((page) => page.rows),
+  };
 }
 
 async function writeDepositStatementFiles(
@@ -521,7 +680,7 @@ export async function signInFubon(
   await pause(session);
 
   const loginFrame = await waitForFrame(page, "txnFrame");
-  await loginFrame.locator("#btnLogin2").click();
+  await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
 
   if (
     await loginFrame
@@ -545,7 +704,9 @@ export async function runFubonStatements(
   input: FubonStatementsInput,
 ): Promise<FubonStatementsOutput> {
   if (input.downloadFormat !== "EXCEL") {
-    throw new Error("fubon-statements normalized output requires EXCEL downloadFormat.");
+    throw new Error(
+      'fubon-statements normalized output currently supports downloadFormat="EXCEL" only.',
+    );
   }
 
   const depositScope = await openMyDepositsPage(page);
@@ -560,9 +721,8 @@ export async function runFubonStatements(
         page,
         accountIndex,
       );
-      await queryStatements(page, dateRange);
       accountStatements.push(
-        await downloadStatements(page, input.downloadFormat, account),
+        await fetchDepositStatement(page, dateRange, account),
       );
     }
 
