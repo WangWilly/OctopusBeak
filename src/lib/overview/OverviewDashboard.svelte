@@ -27,6 +27,7 @@
   $: sideSub =
     netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") ||
     `Imported ${formatImportedAt(overview.importedAt)}`;
+  $: sideSubSensitive = netAmounts.length > 1;
   $: assetAccounts = overview.accounts.filter((account) => account.group !== "liability");
   $: allocation = buildAllocation(assetAccounts);
   $: history = overview.dailyHistory;
@@ -63,6 +64,7 @@
   sideLabel="Net position"
   {sideValue}
   {sideSub}
+  {sideSubSensitive}
   syncLabel={`Imported ${formatImportedAt(overview.importedAt)}`}
   bind:valuesVisible
 >

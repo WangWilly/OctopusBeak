@@ -9,6 +9,7 @@
   export let sideLabel = "Net position";
   export let sideValue = "--";
   export let sideSub = "";
+  export let sideSubSensitive = false;
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
@@ -103,7 +104,7 @@
     <div class="side-status">
       <p class="label">{sideLabel}</p>
       <p class="money">{sideValue}</p>
-      <p class="sub">{sideSub}</p>
+      <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
     </div>
   </aside>
 
