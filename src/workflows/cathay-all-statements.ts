@@ -89,6 +89,7 @@ export function createCathayAllStatementsWorkflow(
         credentials: CathayCredentials;
       };
       const { page } = ctx;
+      console.log("automation-progress: 0");
 
       page.on("dialog", async (dialog) => {
         console.warn("bank-dialog", { type: dialog.type() });
@@ -103,6 +104,7 @@ export function createCathayAllStatementsWorkflow(
       const cathaySession = await createCathaySession(page);
       const statementTypes = Array.from(new Set(input.statementTypes));
       const downloads = [];
+      console.log("automation-progress: 25");
 
       if (statementTypes.includes("domestic")) {
         console.log("combined-workflow-section-start", { section: "domestic" });
@@ -119,6 +121,7 @@ export function createCathayAllStatementsWorkflow(
           })),
         );
       }
+      console.log("automation-progress: 60");
 
       if (statementTypes.includes("foreign")) {
         console.log("combined-workflow-section-start", { section: "foreign" });
@@ -136,6 +139,7 @@ export function createCathayAllStatementsWorkflow(
           })),
         );
       }
+      console.log("automation-progress: 100");
 
       return {
         dateRange: input.dateRange,

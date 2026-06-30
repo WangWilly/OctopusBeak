@@ -514,6 +514,7 @@ export default workflow("yuantaAllStatements", {
     const credentials = input.credentials;
     const include = input.include;
     const prepare = input.prepareBetweenComponents;
+    console.log("automation-progress: 0");
 
     const statements = await runComponent(
       ctx,
@@ -523,6 +524,7 @@ export default workflow("yuantaAllStatements", {
       credentials,
       input.continueOnError,
     );
+    console.log("automation-progress: 20");
     if (prepare && (include.foreignCurrency ?? true)) {
       await prepareForComponent(ctx, "foreignCurrency");
     }
@@ -534,6 +536,7 @@ export default workflow("yuantaAllStatements", {
       credentials,
       input.continueOnError,
     );
+    console.log("automation-progress: 40");
     if (prepare && (include.loan ?? true)) {
       await prepareForComponent(ctx, "loan");
     }
@@ -545,6 +548,7 @@ export default workflow("yuantaAllStatements", {
       credentials,
       input.continueOnError,
     );
+    console.log("automation-progress: 60");
     if (prepare && (include.creditCard ?? true)) {
       await prepareForComponent(ctx, "creditCard");
     }
@@ -556,6 +560,7 @@ export default workflow("yuantaAllStatements", {
       credentials,
       input.continueOnError,
     );
+    console.log("automation-progress: 75");
 
     // The existing fund workflow logs out in its finally block, so keep it last.
     if (prepare && (include.fund ?? true)) {
@@ -569,6 +574,7 @@ export default workflow("yuantaAllStatements", {
       credentials,
       input.continueOnError,
     );
+    console.log("automation-progress: 100");
 
     const runs = [statements, foreignCurrency, loan, creditCard, fund];
     const succeeded = runs.filter((run) => run.status === "success").length;

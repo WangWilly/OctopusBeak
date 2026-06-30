@@ -512,6 +512,7 @@ function sourceHashForOccurrence(
 }
 
 async function importDownloadsCsv(rawInput: Record<string, unknown>) {
+  console.log("automation-progress: 0");
   const input = inputSchema.parse(rawInput);
   const downloadsDir = resolve(input.downloadsDir);
   const outputDir = resolve(input.outputDir);
@@ -532,6 +533,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     bankFilters: input.bankFilters,
     productFilters: input.productFilters,
   });
+  console.log("automation-progress: 20");
 
   try {
     const importedSourceFiles = importedSourceRelativePaths(db);
@@ -640,6 +642,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         rows: rows.length,
       });
     }
+    console.log("automation-progress: 70");
 
     if (scannedCsvFiles === 0) {
       throw new Error(
@@ -691,6 +694,7 @@ async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       db.exec("ROLLBACK");
       throw error;
     }
+    console.log("automation-progress: 100");
 
     const result = {
       ...baseRecord("import_result"),

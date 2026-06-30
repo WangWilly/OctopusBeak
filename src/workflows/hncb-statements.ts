@@ -646,6 +646,7 @@ export default workflow("hncbStatements", {
     const { page } = ctx;
     const credentials = (input as typeof input & { credentials: HncbCredentials })
       .credentials;
+    console.log("automation-progress: 0");
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
@@ -659,6 +660,7 @@ export default workflow("hncbStatements", {
         await signInHncb(authCtx, signInCredentials as HncbCredentials);
       },
     });
+    console.log("automation-progress: 30");
 
     try {
       const dateRange = resolveDateRange(input);
@@ -673,7 +675,11 @@ export default workflow("hncbStatements", {
         await queryAccountStatements(page, account, dateRange);
         const statement = await downloadCurrentStatement(page, account.label);
         downloads.push(await writeStatementFile(input.outputDir, statement));
+        console.log(
+          `automation-progress: ${40 + Math.round((downloads.length / accounts.length) * 55)}`,
+        );
       }
+      console.log("automation-progress: 100");
 
       return {
         dateRange,

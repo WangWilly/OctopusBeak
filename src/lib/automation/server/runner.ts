@@ -34,6 +34,13 @@ export function parseAutomationProgress(output: string) {
   return progress;
 }
 
+export function liveTaskRunUpdate(logTail: string) {
+  if (shouldMarkWaitingForHuman(logTail)) {
+    return { status: "waiting_for_human" as const, logTail };
+  }
+  return { logTail };
+}
+
 export function nextAttemptStatus(input: {
   kind: AutomationTaskKind;
   attempt: number;
@@ -157,9 +164,7 @@ export async function runAutomationTask(
           const text = chunk.toString("utf8");
           appendLog(logPath, text);
           logTail = tail(logTail + text);
-          if (shouldMarkWaitingForHuman(logTail)) {
-            updateTaskRun(taskDb, run.taskRunId, { status: "waiting_for_human", logTail });
-          }
+          updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
         };
         child.stdout.on("data", onOutput);
         child.stderr.on("data", onOutput);

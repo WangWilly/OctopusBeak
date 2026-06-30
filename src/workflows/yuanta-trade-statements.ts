@@ -1055,6 +1055,7 @@ export default workflow("yuantaTradeStatements", {
       credentials: YuantaTradeCredentials;
     }).credentials;
     let lastBankDialogMessage = "";
+    console.log("automation-progress: 0");
 
     await grantYuantaBrowserPermissions(page);
 
@@ -1102,6 +1103,7 @@ export default workflow("yuantaTradeStatements", {
         await authPage.locator("#btnLogout").waitFor({ timeout: 120_000 });
       },
     });
+    console.log("automation-progress: 25");
 
     if (!(await isSignedIn(page))) {
       await page.goto(
@@ -1116,6 +1118,7 @@ export default workflow("yuantaTradeStatements", {
     const dateRange = resolveDateRange(input);
     const holdings: ReportPage[] = [];
     const trades: ReportPage[] = [];
+    console.log("automation-progress: 40");
 
     if (input.includeHoldings) {
       for (const holdingType of input.holdingTypes as HoldingType[]) {
@@ -1126,6 +1129,7 @@ export default workflow("yuantaTradeStatements", {
         );
       }
     }
+    console.log("automation-progress: 60");
 
     if (input.includeTrades) {
       for (const tradeType of input.tradeTypes as TradeType[]) {
@@ -1138,6 +1142,7 @@ export default workflow("yuantaTradeStatements", {
         );
       }
     }
+    console.log("automation-progress: 80");
 
     const tradeRows = normalizeTradeRows(trades, dateRange);
     const holdingRows = normalizeHoldingRows(holdings, dateRange);
@@ -1147,6 +1152,7 @@ export default workflow("yuantaTradeStatements", {
       trades: tradeRows,
       summaries: summaryRows,
     });
+    console.log("automation-progress: 100");
 
     return {
       dateRange,
