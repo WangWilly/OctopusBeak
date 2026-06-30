@@ -1,5 +1,7 @@
 import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Page } from "playwright";
 import { z } from "zod";
+import { keepBrowserWindowOutOfForeground } from "./browser-interaction.js";
 import {
   fubonCreditCardStatementsInputSchema,
   fubonCreditCardStatementsOutputSchema,
@@ -40,6 +42,25 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: FubonCredentials;
 };
 
+async function runSectionOutOfForeground<T>(
+  page: Page,
+  section: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  console.log("combined-workflow-section-start", { section });
+  await keepBrowserWindowOutOfForeground(page);
+
+  const keepOutOfForeground = setInterval(() => {
+    void keepBrowserWindowOutOfForeground(page).catch(() => undefined);
+  }, 1_000);
+  try {
+    return await run();
+  } finally {
+    clearInterval(keepOutOfForeground);
+    await keepBrowserWindowOutOfForeground(page).catch(() => undefined);
+  }
+}
+
 export default workflow("fubonAllStatements", {
   credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
   input: inputSchema,
@@ -54,20 +75,23 @@ export default workflow("fubonAllStatements", {
     });
 
     await signInFubon(page, session, input.credentials);
+    await keepBrowserWindowOutOfForeground(page);
 
-    console.log("combined-workflow-section-start", { section: "statements" });
-    const statements = await runFubonStatements(page, input.statements);
-
-    console.log("combined-workflow-section-start", {
-      section: "creditCards",
-    });
-    const creditCards = await runFubonCreditCardStatements(
+    const statements = await runSectionOutOfForeground(
       page,
-      input.creditCards,
+      "statements",
+      () => runFubonStatements(page, input.statements),
     );
 
-    console.log("combined-workflow-section-start", { section: "loans" });
-    const loans = await runFubonLoanStatements(page, input.loans);
+    const creditCards = await runSectionOutOfForeground(
+      page,
+      "creditCards",
+      () => runFubonCreditCardStatements(page, input.creditCards),
+    );
+
+    const loans = await runSectionOutOfForeground(page, "loans", () =>
+      runFubonLoanStatements(page, input.loans),
+    );
 
     return {
       statements,

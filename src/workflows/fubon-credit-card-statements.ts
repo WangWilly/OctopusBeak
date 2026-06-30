@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { activateControlWithoutPointer } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -408,7 +409,7 @@ async function clickLinkByClassOrText(
             waitUntil: "domcontentloaded",
           });
         } else {
-          await link.click({ force: true });
+          await activateControlWithoutPointer(link);
         }
         return;
       }
@@ -433,7 +434,7 @@ async function openCreditCardFunctionPage(
   }
 
   const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#menu_CCC").click({ force: true });
+  await activateControlWithoutPointer(headerFrame.locator("#menu_CCC"));
   await clickLinkByClassOrText(page, classSelector, text);
 }
 
@@ -448,7 +449,7 @@ async function fillCreditCardLoginForm(
   await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame.locator("#menu_CCC").click({ force: true });
+  await activateControlWithoutPointer(headerFrame.locator("#menu_CCC"));
 
   const landingFrame = await waitForFrame(page, "txnFrame");
   const creditCardHref = await landingFrame
@@ -463,11 +464,9 @@ async function fillCreditCardLoginForm(
     waitUntil: "domcontentloaded",
   });
 
-  await headerFrame
-    .locator("a")
-    .filter({ hasText: "登入" })
-    .first()
-    .click({ force: true });
+  await activateControlWithoutPointer(
+    headerFrame.locator("a").filter({ hasText: "登入" }).first(),
+  );
 
   const loginFrame = await waitForFrame(page, "txnFrame");
   const visiblePasswordFields = loginFrame.locator(
@@ -604,7 +603,7 @@ async function selectStatementPeriod(
   if (currentValue !== String(periodOffset)) {
     const tab = scope.locator("a").filter({ hasText: period.label }).first();
     await tab.waitFor({ state: "attached", timeout: 60_000 });
-    await tab.click({ timeout: 30_000 });
+    await activateControlWithoutPointer(tab);
 
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
@@ -813,7 +812,7 @@ export default workflow("fubonCreditCardStatements", {
     await pause(session);
 
     const loginFrame = await waitForFrame(page, "txnFrame");
-    await loginFrame.locator("#btnLogin2").click();
+    await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
 
     if (
       await loginFrame
