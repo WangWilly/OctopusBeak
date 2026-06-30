@@ -495,7 +495,11 @@ async function waitForSignedInState(
   let replacedActiveSession = false;
   while (Date.now() < deadline) {
     if (page.frame({ name: "fmenu" }) && page.frame({ name: "fmain" })) {
-      await findScopeWithSelector(page, "#menu_transactiondetails", 10_000);
+      await findScopeWithSelector(
+        page,
+        '#menu_transactiondetails, input[name="cid"]',
+        10_000,
+      );
       return replacedActiveSession;
     }
 
