@@ -107,6 +107,36 @@ assert.equal(activeFubonRow?.progressPercent, 42);
 assert.equal(activeFubonRow?.progressText, "42%");
 assert.equal(activeEsunRow?.canRun, true);
 
+const staleRunningModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "yuanta-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      taskRunId: "run-stale",
+      taskId: "yuanta-all-statements",
+      script: "npx libretto resume --session ses-xuzf",
+      status: "running",
+      finishedAt: null,
+      exitCode: null,
+      logTail: 'Resume requested for session "ses-xuzf".',
+    },
+  },
+  activeTaskIds: [],
+  credentials: {},
+  importGate: {
+    locked: true,
+    missingTaskIds: [],
+  },
+  active: false,
+  businessDate: "2026-06-30",
+});
+
+const staleRunningRow = staleRunningModel.tasks.find(
+  (task) => task.id === "yuanta-all-statements",
+);
+assert.equal(staleRunningRow?.status, "failed");
+assert.equal(staleRunningRow?.primaryAction, "Retry");
+
 const failedResumeModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {

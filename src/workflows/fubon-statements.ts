@@ -11,6 +11,7 @@ import {
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
+const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
 
 type BrowserScope = Page | Frame;
 
@@ -86,6 +87,11 @@ type ParsedDepositStatementPage = {
   rows: string[][];
   nextPage: string | null;
   pageFieldName: string | null;
+};
+
+type DepositAccountOption = {
+  label: string;
+  value: string;
 };
 
 let lastTimestamp = 0;
@@ -339,6 +345,36 @@ async function readMaskedAccountLabel(row: Locator): Promise<string> {
     .innerText()
     .catch(async () => await row.innerText());
   return maskAccount(raw);
+}
+
+async function readDepositAccountOptions(
+  page: Page,
+): Promise<DepositAccountOption[]> {
+  const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
+  const options = scope.locator(`${depositAccountSelectSelector} option`);
+  const count = await options.count();
+  const accounts: DepositAccountOption[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const option = options.nth(index);
+    const value = cleanText(await option.getAttribute("value"));
+    const label = cleanText(await option.textContent());
+    if (value && label) accounts.push({ label, value });
+  }
+
+  if (accounts.length === 0) {
+    throw new Error("No Fubon deposit account options matched the page.");
+  }
+
+  return accounts;
+}
+
+async function selectDepositAccount(
+  page: Page,
+  account: DepositAccountOption,
+): Promise<void> {
+  const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
+  await scope.locator(depositAccountSelectSelector).selectOption(account.value);
 }
 
 async function findScopeWithSelector(
@@ -709,20 +745,17 @@ export async function runFubonStatements(
     );
   }
 
-  const depositScope = await openMyDepositsPage(page);
-  const accountCount = await countDepositRows(depositScope);
+  await openTransactionDetailForAccountIndex(page, 0);
+  const accounts = await readDepositAccountOptions(page);
   const downloads: FubonStatementsOutput["downloads"] = [];
 
-  for (let accountIndex = 0; accountIndex < accountCount; accountIndex += 1) {
+  for (const account of accounts) {
+    await selectDepositAccount(page, account);
     const accountStatements: ParsedDepositStatement[] = [];
-    const account = await openTransactionDetailForAccountIndex(
-      page,
-      accountIndex,
-    );
 
     for (const dateRange of input.dateRanges) {
       accountStatements.push(
-        await fetchDepositStatement(page, dateRange, account),
+        await fetchDepositStatement(page, dateRange, account.label),
       );
     }
 

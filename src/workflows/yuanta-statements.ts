@@ -6,6 +6,7 @@ import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
+const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
@@ -358,6 +359,19 @@ async function waitForFrame(
   throw new Error(`Timed out waiting for frame "${name}".`);
 }
 
+function cidFromUrl(url: string): string | null {
+  const match = url.match(/[?&]cid=([^&]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function currentCidFromFrameUrls(page: Page): string | null {
+  for (const frame of page.frames()) {
+    const cid = cidFromUrl(frame.url());
+    if (cid) return cid;
+  }
+  return cidFromUrl(page.url());
+}
+
 async function findScopeWithSelector(
   page: Page,
   selector: string,
@@ -494,12 +508,12 @@ async function waitForSignedInState(
   const deadline = Date.now() + 120_000;
   let replacedActiveSession = false;
   while (Date.now() < deadline) {
-    if (page.frame({ name: "fmenu" }) && page.frame({ name: "fmain" })) {
-      await findScopeWithSelector(
-        page,
-        '#menu_transactiondetails, input[name="cid"]',
-        10_000,
-      );
+    const fmain = page.frame({ name: "fmain" });
+    if (
+      page.frame({ name: "fmenu" }) &&
+      fmain &&
+      currentCidFromFrameUrls(page)
+    ) {
       return replacedActiveSession;
     }
 
@@ -557,6 +571,23 @@ async function openTransactionDetailsPage(page: Page): Promise<BrowserScope> {
     () => null,
   );
   if (existing) return existing;
+
+  const fmain = page.frame({ name: "fmain" });
+  const cid = currentCidFromFrameUrls(page);
+  if (fmain && cid) {
+    await fmain.goto(
+      `${BANK_ORIGIN}/nib/tx/transactiondetails?type=page&cid=${encodeURIComponent(
+        cid,
+      )}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await settleAfterNavigation(page);
+
+    const direct = await findScopeWithSelector(page, "#acctno", 15_000).catch(
+      () => null,
+    );
+    if (direct) return direct;
+  }
 
   const menuScope = await findScopeWithLocator(
     page,

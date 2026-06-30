@@ -41,6 +41,13 @@ function rowStatus(
   if (task.kind === "import" && gate.locked) return "locked";
   if (run && resumeFailureMessage(run.logTail)) return "failed";
   if (isActive && !run) return "running";
+  if (
+    run &&
+    !isActive &&
+    (run.status === "running" || run.status === "retrying")
+  ) {
+    return "failed";
+  }
   return run?.status ?? "queued";
 }
 
