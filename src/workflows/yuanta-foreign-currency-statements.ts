@@ -9,6 +9,7 @@ import {
 } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const big5Decoder = new TextDecoder("big5");
@@ -448,8 +449,7 @@ async function findScopeWithSelector(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(scope.locator(selector))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -465,8 +465,7 @@ async function findScopeWithLocator(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -698,10 +697,10 @@ async function findForeignCurrencyDetailsForm(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const hasAccount = (await scope.locator("#acctno").count().catch(() => 0)) > 0;
-      const hasCurrency =
-        (await scope.locator('select[name="currency"]').count().catch(() => 0)) >
-        0;
+      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
+      const hasCurrency = await hasAttachedLocator(
+        scope.locator('select[name="currency"]'),
+      );
       if (hasAccount && hasCurrency) return scope;
     }
     await page.waitForTimeout(500);
@@ -768,11 +767,11 @@ async function waitForCurrencyOptions(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const count = await scope
-      .locator('select[name="currency"] option')
-      .count()
-      .catch(() => 0);
-    if (count > 0) return;
+    if (
+      await hasAttachedLocator(scope.locator('select[name="currency"] option'))
+    ) {
+      return;
+    }
     await page.waitForTimeout(250);
   }
   throw new Error("Timed out waiting for YuanTa currency options.");

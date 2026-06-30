@@ -6,6 +6,7 @@ import {
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 
+import { hasAttachedLocator } from "./browser-interaction.js";
 import yuantaCreditCardStatements from "./yuanta-credit-card-statements.js";
 import yuantaForeignCurrencyStatements from "./yuanta-foreign-currency-statements.js";
 import yuantaFundStatements from "./yuanta-fund-statements.js";
@@ -94,8 +95,7 @@ async function findScopeWithLocator(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(250);
   }
@@ -208,72 +208,14 @@ async function gotoTransactionPage(
   }
 }
 
-async function runMenuAction(
-  page: Page,
-  action: string,
-  menuId: string,
-): Promise<boolean> {
-  const scope = await findMenuActionScope(page, 5_000);
-  if (!scope) {
-    console.warn("yuanta-all-menuaction-not-found", { action, menuId });
-    return false;
-  }
-
-  try {
-    await scope.evaluate(
-      ({ menuAction, id }) => {
-        const yuanTaWindow = window as typeof window & {
-          menuaction?: (action: string, menuId: string, flag?: string) => void;
-        };
-        if (typeof yuanTaWindow.menuaction !== "function") {
-          throw new Error("YuanTa page did not expose menuaction().");
-        }
-        yuanTaWindow.menuaction(menuAction, id, "N");
-      },
-      { menuAction: action, id: menuId },
-    );
-    await settleAfterMenuSwitch(page);
-    return true;
-  } catch (error: unknown) {
-    console.warn("yuanta-all-menuaction-failed", {
-      action,
-      menuId,
-      message: errorMessage(error),
-    });
-    return false;
-  }
-}
-
-async function findMenuActionScope(
-  page: Page,
-  timeoutMs = 10_000,
-): Promise<BrowserScope | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasMenuAction = await scope
-        .evaluate(() => {
-          const yuanTaWindow = window as typeof window & {
-            menuaction?: unknown;
-          };
-          return typeof yuanTaWindow.menuaction === "function";
-        })
-        .catch(() => false);
-      if (hasMenuAction) return scope;
-    }
-    await page.waitForTimeout(250);
-  }
-  return null;
-}
-
 async function hasForeignCurrencyDetailsForm(page: Page): Promise<boolean> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const hasAccount = (await scope.locator("#acctno").count().catch(() => 0)) > 0;
-      const hasCurrency =
-        (await scope.locator('select[name="currency"]').count().catch(() => 0)) >
-        0;
+      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
+      const hasCurrency = await hasAttachedLocator(
+        scope.locator('select[name="currency"]'),
+      );
       if (hasAccount && hasCurrency) return true;
     }
     await page.waitForTimeout(250);
@@ -285,13 +227,10 @@ async function hasLoanStatementForm(page: Page): Promise<boolean> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const hasAccount = (await scope.locator("#acctno").count().catch(() => 0)) > 0;
-      const hasOneYear =
-        (await scope
-          .locator("#duration a")
-          .filter({ hasText: "一年" })
-          .count()
-          .catch(() => 0)) > 0;
+      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
+      const hasOneYear = await hasAttachedLocator(
+        scope.locator("#duration a").filter({ hasText: "一年" }),
+      );
       if (hasAccount && hasOneYear) return true;
     }
     await page.waitForTimeout(250);
@@ -456,14 +395,6 @@ async function prepareForComponent(
   console.log("yuanta-all-component-prepare", {
     workflow: "yuantaFundStatements",
   });
-  if (await runMenuAction(page, "fundsummary?TxnType=FundSummary", "menu_fundSummary")) {
-    console.log("yuanta-all-component-page-ready", {
-      workflow: "yuantaFundStatements",
-      via: "menuaction",
-    });
-    return;
-  }
-
   await revealYuanTaArea(page, "fund", {
     menuSelectors: [
       'a[onclick*="doAction"][onclick*="FUND"]',

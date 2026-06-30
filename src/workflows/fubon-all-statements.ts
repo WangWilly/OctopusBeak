@@ -42,6 +42,32 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: FubonCredentials;
 };
 
+async function keepFubonSessionAlive(page: Page): Promise<void> {
+  const headerFrame = page.frame({ name: "frame1" });
+  if (!headerFrame) return;
+
+  await headerFrame.evaluate(() => {
+    const bankWindow = globalThis as typeof globalThis & {
+      doResume?: (forceCheck?: boolean) => unknown;
+      loggedIn?: boolean;
+    };
+    if (bankWindow.loggedIn && typeof bankWindow.doResume === "function") {
+      bankWindow.doResume(true);
+    }
+  });
+}
+
+function startFubonSessionKeepAlive(page: Page): () => void {
+  void keepFubonSessionAlive(page).catch(() => undefined);
+  const interval = setInterval(() => {
+    void keepFubonSessionAlive(page).catch(() => undefined);
+  }, 60_000);
+
+  return () => {
+    clearInterval(interval);
+  };
+}
+
 async function runSectionOutOfForeground<T>(
   page: Page,
   section: string,
@@ -79,29 +105,34 @@ export default workflow("fubonAllStatements", {
     await keepBrowserWindowOutOfForeground(page);
     console.log("automation-progress: 20");
 
-    const statements = await runSectionOutOfForeground(
-      page,
-      "statements",
-      () => runFubonStatements(page, input.statements),
-    );
-    console.log("automation-progress: 45");
+    const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
+    try {
+      const statements = await runSectionOutOfForeground(
+        page,
+        "statements",
+        () => runFubonStatements(page, input.statements),
+      );
+      console.log("automation-progress: 45");
 
-    const creditCards = await runSectionOutOfForeground(
-      page,
-      "creditCards",
-      () => runFubonCreditCardStatements(page, input.creditCards),
-    );
-    console.log("automation-progress: 70");
+      const creditCards = await runSectionOutOfForeground(
+        page,
+        "creditCards",
+        () => runFubonCreditCardStatements(page, input.creditCards),
+      );
+      console.log("automation-progress: 70");
 
-    const loans = await runSectionOutOfForeground(page, "loans", () =>
-      runFubonLoanStatements(page, input.loans),
-    );
-    console.log("automation-progress: 100");
+      const loans = await runSectionOutOfForeground(page, "loans", () =>
+        runFubonLoanStatements(page, input.loans),
+      );
+      console.log("automation-progress: 100");
 
-    return {
-      statements,
-      creditCards,
-      loans,
-    };
+      return {
+        statements,
+        creditCards,
+        loans,
+      };
+    } finally {
+      stopSessionKeepAlive();
+    }
   },
 });

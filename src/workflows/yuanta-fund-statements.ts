@@ -8,9 +8,11 @@ import {
 } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_LOGOUT_URL = "https://ebank.yuantabank.com.tw/nib/tx/logout";
+const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const FUND_TABLE_SELECTOR = "table.rwdTable, table.normalTable, table.formTable";
 
 type BrowserScope = Page | Frame;
@@ -688,8 +690,7 @@ async function findScopeWithSelector(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(scope.locator(selector))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -705,8 +706,7 @@ async function findScopeWithLocator(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(500);
   }
@@ -736,6 +736,50 @@ async function settleAfterNavigation(page: Page): Promise<void> {
     // YuanTa keeps frames and timers alive; selector waits below confirm readiness.
   });
   await page.waitForTimeout(750);
+}
+
+async function readCurrentCid(page: Page): Promise<string | null> {
+  const scope = await findScopeWithLocator(
+    page,
+    (candidate) => candidate.locator('input[name="cid"]').first(),
+    "YuanTa cid field",
+    3_000,
+  ).catch(() => null);
+  if (scope) {
+    const cid = await scope
+      .locator('input[name="cid"]')
+      .first()
+      .inputValue()
+      .catch(() => "");
+    if (cid) return cid;
+  }
+
+  for (const frame of page.frames()) {
+    const match = frame.url().match(/[?&]cid=([^&]+)/);
+    if (match?.[1]) return decodeURIComponent(match[1]);
+  }
+
+  const pageMatch = page.url().match(/[?&]cid=([^&]+)/);
+  return pageMatch?.[1] ? decodeURIComponent(pageMatch[1]) : null;
+}
+
+async function gotoFundTransactionPage(
+  page: Page,
+  actionFragment: string,
+): Promise<boolean> {
+  const cid = await readCurrentCid(page);
+  const fmain = page.frame({ name: "fmain" });
+  if (!cid || !fmain) return false;
+
+  const separator = actionFragment.includes("?") ? "&" : "?";
+  await fmain.goto(
+    `${BANK_ORIGIN}/nib/tx/${actionFragment}${separator}type=page&cid=${encodeURIComponent(
+      cid,
+    )}`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await settleAfterNavigation(page);
+  return true;
 }
 
 async function fillLoginForm(
@@ -909,23 +953,7 @@ async function clickFundMenuLink(
   menuId: string,
   description: string,
 ): Promise<void> {
-  const menuActionScope = await findMenuActionScope(page, 10_000).catch(
-    () => null,
-  );
-  if (menuActionScope) {
-    await menuActionScope.evaluate(
-      ({ action, id }) => {
-        const yuanTaWindow = window as typeof window & {
-          menuaction?: (menuAction: string, menuId: string, flag?: string) => void;
-        };
-        if (typeof yuanTaWindow.menuaction !== "function") {
-          throw new Error("YuanTa page did not expose menuaction().");
-        }
-        yuanTaWindow.menuaction(action, id, "N");
-      },
-      { action: actionFragment, id: menuId },
-    );
-    await settleAfterNavigation(page);
+  if (await gotoFundTransactionPage(page, actionFragment).catch(() => false)) {
     return;
   }
 
@@ -962,14 +990,43 @@ async function clickFundMenuLink(
         .locator(`a[onclick*="${actionFragment}"]`)
         .filter({ hasText: label }),
     description,
-  );
+    10_000,
+  ).catch(() => null);
 
-  const link = await firstVisibleLocator(
-    scope.locator(`a[onclick*="${actionFragment}"]`).filter({ hasText: label }),
-    description,
+  const link =
+    scope &&
+    (await firstVisibleLocator(
+      scope.locator(`a[onclick*="${actionFragment}"]`).filter({ hasText: label }),
+      description,
+      5_000,
+    ).catch(() => null));
+  if (link) {
+    await link.click({ force: true });
+    await settleAfterNavigation(page);
+    return;
+  }
+
+  const menuActionScope = await findMenuActionScope(page, 10_000).catch(
+    () => null,
   );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
+  if (menuActionScope) {
+    await menuActionScope.evaluate(
+      ({ action, id }) => {
+        const yuanTaWindow = window as typeof window & {
+          menuaction?: (menuAction: string, menuId: string, flag?: string) => void;
+        };
+        if (typeof yuanTaWindow.menuaction !== "function") {
+          throw new Error("YuanTa page did not expose menuaction().");
+        }
+        yuanTaWindow.menuaction(action, id, "N");
+      },
+      { action: actionFragment, id: menuId },
+    );
+    await settleAfterNavigation(page);
+    return;
+  }
+
+  throw new Error(`Could not click ${description}.`);
 }
 
 async function findMenuActionScope(
@@ -1025,7 +1082,9 @@ async function waitForFundTables(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
-      const hasTable = (await scope.locator(FUND_TABLE_SELECTOR).count()) > 0;
+      const hasTable = await hasAttachedLocator(
+        scope.locator(FUND_TABLE_SELECTOR),
+      );
       if (!hasTable) continue;
 
       const bodyText = cleanText(
@@ -1156,17 +1215,6 @@ async function openFundDetail(
     page,
     /fundDetail|基金明細查詢|交易編號/,
     "YuanTa fund investment detail tables",
-  );
-  await firstVisibleLocator(
-    scope
-      .locator('a[onclick*="fundDetail("]')
-      .filter({ hasText: new RegExp(position.paperNo) })
-      .or(
-        scope.locator(
-          `a[onclick*="${position.txnType}"][onclick*="${position.paperNo}"][onclick*="${position.trustNo}"]`,
-        ),
-      ),
-    `YuanTa fund detail link for ${position.paperNo}`,
   );
 
   const responsePromise = page

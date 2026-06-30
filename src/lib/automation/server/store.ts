@@ -73,6 +73,11 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
   };
 }
 
+function taskRunRecordJson(run: AutomationTaskRun) {
+  const { recordJson: _recordJson, ...record } = run;
+  return JSON.stringify(record);
+}
+
 export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
   const taskRunId = randomUUID();
   const record = { taskRunId, ...input };
@@ -127,7 +132,7 @@ export function updateTaskRun(
     next.signal,
     next.errorMessage,
     next.logTail,
-    JSON.stringify(next),
+    taskRunRecordJson(next),
     taskRunId,
   );
 }
