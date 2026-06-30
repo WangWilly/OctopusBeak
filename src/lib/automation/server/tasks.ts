@@ -119,6 +119,10 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   },
 ];
 
+export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
+  new Set(AUTOMATION_TASKS.flatMap((task) => task.credentialKeys)),
+);
+
 export function taskById(taskId: string) {
   return AUTOMATION_TASKS.find((task) => task.id === taskId) ?? null;
 }
