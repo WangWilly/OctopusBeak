@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
+  import { buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
 
   type SparklinePoint = {
     date: string;
@@ -31,11 +32,10 @@
     })
     .filter((item): item is { date: string; value: number } => item !== null);
   $: values = items.map((item) => item.value);
-  $: min = Math.min(...values);
-  $: max = Math.max(...values);
+  $: yAxis = buildSparklineYAxis(values);
   $: points = items.map((item, index) => {
     const x = values.length === 1 ? (left + right) / 2 : left + (index / (values.length - 1)) * (right - left);
-    const y = min === max ? (top + bottom) / 2 : bottom - ((item.value - min) / (max - min)) * (bottom - top);
+    const y = bottom - ((item.value - yAxis.min) / (yAxis.max - yAxis.min)) * (bottom - top);
     return { ...item, x, y };
   });
   $: linePath = points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join("");
@@ -44,24 +44,14 @@
       ? `${linePath}L${points[points.length - 1].x} ${bottom}L${points[0].x} ${bottom}Z`
       : "";
   $: gridPath = [`M${left} ${top}H${right}`, `M${left} ${(top + bottom) / 2}H${right}`, `M${left} ${bottom}H${right}`].join("");
-  $: yTicks = values.length
-    ? [
-        { value: max, y: top },
-        { value: (min + max) / 2, y: (top + bottom) / 2 },
-        { value: min, y: bottom },
-      ]
-    : [];
+  $: yTicks = yAxis.ticks.map((value) => ({
+    value,
+    y: bottom - ((value - yAxis.min) / (yAxis.max - yAxis.min)) * (bottom - top),
+  }));
   $: xTicks =
     points.length <= 3
       ? points
       : [points[0], points[Math.floor((points.length - 1) / 2)], points[points.length - 1]];
-
-  function shortAmount(value: number) {
-    return new Intl.NumberFormat("en-US", {
-      maximumFractionDigits: 0,
-      notation: "compact",
-    }).format(value);
-  }
 
   function shortDate(value: string) {
     return value.slice(5);
@@ -89,7 +79,7 @@
   {#each yTicks as tick}
     <g class="sparkline-tick">
       <path d={`M${left - 6} ${tick.y}H${left}`} />
-      <text data-sensitive x={left - 10} y={tick.y + 4} text-anchor="end">{shortAmount(tick.value)}</text>
+      <text data-sensitive x={left - 10} y={tick.y + 4} text-anchor="end">{formatSparklineTick(tick.value, yAxis.step)}</text>
     </g>
   {/each}
   {#each xTicks as tick}
