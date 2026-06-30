@@ -9,4 +9,4 @@
   <title>OctopusBeak Automation</title>
 </svelte:head>
 
-<AutomationDashboard automation={data.automation} credentialKeys={data.credentialKeys} />
+<AutomationDashboard automation={data.automation} credentialGroups={data.credentialGroups} />
