@@ -83,7 +83,6 @@
           <h2>Task queue</h2>
           <p>Tasks can run in parallel. CSV import unlocks from today's persisted crawler history, not page state.</p>
         </div>
-        <span class="chip">UTC history</span>
       </div>
 
       <div class="table-wrap">
@@ -95,7 +94,6 @@
               <th>Progress</th>
               <th>Attempt</th>
               <th>Latest UTC</th>
-              <th>Latest log</th>
               <th class="right">Controls</th>
             </tr>
           </thead>
@@ -119,13 +117,13 @@
                 </td>
                 <td class="mono">{task.attempt}/{task.maxAttempts}</td>
                 <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
-                <td class="mono log-tail">{task.errorMessage ?? (task.logTail || "--")}</td>
                 <td class="right">
                   <div class="task-actions">
                     <form method="POST" action={`?/${actionName(task)}`}>
                       <input type="hidden" name="taskId" value={task.id} />
                       <button class="button primary task-control" type="submit" disabled={!task.canRun} aria-busy={task.isActive}>
-                        {task.primaryAction}
+                        {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
+                        <span>{task.primaryAction}</span>
                       </button>
                     </form>
                     <button class="button secondary task-control" type="button" onclick={() => (logTask = task)}>
@@ -227,13 +225,6 @@
     font-size: 12px;
   }
 
-  .log-tail {
-    max-width: 360px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
   .progress-cell {
     min-width: 150px;
     display: grid;
@@ -265,6 +256,28 @@
   .fixed-action {
     width: 112px;
     min-width: 112px;
+  }
+
+  .task-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+  }
+
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid color-mix(in oklch, currentColor 25%, transparent);
+    border-top-color: currentColor;
+    border-radius: 999px;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .chip.warn {
