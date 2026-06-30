@@ -11,8 +11,8 @@ export const POST: RequestHandler = async ({ request }) => {
   let rawBody: unknown;
   try {
     rawBody = await request.json();
-  } catch (error) {
-    return new Response(message(error), { status: 409 });
+  } catch {
+    return new Response("Malformed JSON.", { status: 400 });
   }
 
   const body = rawBody && typeof rawBody === "object"

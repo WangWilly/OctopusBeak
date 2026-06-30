@@ -8,6 +8,17 @@ export type ViewerInput =
   | { type: "press"; key: string };
 
 const unsupportedInputError = "Unsupported viewer input.";
+const allowedPressKeys = new Set([
+  "Enter",
+  "Tab",
+  "Backspace",
+  "Delete",
+  "Escape",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
 
 function pixel(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(unsupportedInputError);
@@ -29,22 +40,33 @@ export function normalizeViewerInput(raw: unknown): ViewerInput {
       toY: pixel(input.toY),
     };
   }
-  if (input.type === "type" && typeof input.text === "string" && input.text.length > 0) {
+  if (
+    input.type === "type" &&
+    typeof input.text === "string" &&
+    input.text.length > 0 &&
+    input.text.length <= 128
+  ) {
     return { type: "type", text: input.text };
   }
-  if (input.type === "press" && typeof input.key === "string" && input.key.length > 0) {
+  if (input.type === "press" && typeof input.key === "string" && allowedPressKeys.has(input.key)) {
     return { type: "press", key: input.key };
   }
   throw new Error(unsupportedInputError);
 }
 
+export function selectViewerPage<T extends { url(): string }>(pages: T[]) {
+  const eligiblePages = pages.filter((candidate) => {
+    const url = candidate.url();
+    return url !== "about:blank" &&
+      !url.startsWith("chrome://") &&
+      !url.startsWith("devtools://") &&
+      !url.startsWith("chrome-error://");
+  });
+  return eligiblePages[eligiblePages.length - 1] ?? null;
+}
+
 function visiblePage(browser: Browser, session: string) {
-  const page = browser.contexts()
-    .flatMap((context) => context.pages())
-    .find((candidate) => {
-      const url = candidate.url();
-      return !url.startsWith("devtools://") && !url.startsWith("chrome-error://");
-    });
+  const page = selectViewerPage(browser.contexts().flatMap((context) => context.pages()));
   if (!page) throw new Error(`No browser page available for Libretto session ${session}.`);
   return page;
 }
