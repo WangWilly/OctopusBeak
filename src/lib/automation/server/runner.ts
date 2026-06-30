@@ -2,12 +2,18 @@ import { spawn } from "node:child_process";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { businessDayUtcRange } from "./business-day.ts";
 import {
   createTaskRun,
+  importGateStatus,
   updateTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
-import { taskById, type AutomationTaskKind } from "./tasks.ts";
+import {
+  CSV_IMPORT_DEPENDENCY_IDS,
+  taskById,
+  type AutomationTaskKind,
+} from "./tasks.ts";
 
 let activeTaskRunId: string | null = null;
 
@@ -24,6 +30,14 @@ export function nextAttemptStatus(input: {
   if (input.exitCode === 0) return "completed";
   if (input.kind === "crawler" && input.attempt < input.maxAttempts) return "retrying";
   return "failed";
+}
+
+export function shouldAutoRunImport(input: {
+  kind: AutomationTaskKind;
+  status: AutomationTaskStatus;
+  importLocked: boolean;
+}) {
+  return input.kind === "crawler" && input.status === "completed" && !input.importLocked;
 }
 
 export function hasActiveAutomationTask() {
@@ -43,8 +57,11 @@ export function startAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
   if (activeTaskRunId) throw new Error("Another automation task is already running.");
-  void runAutomationTask(taskId, ledgerDir);
+  void runAutomationTask(taskId, ledgerDir).catch((error) => {
+    console.error("automation-task-run-failed", error);
+  });
 }
 
 export async function runAutomationTask(
@@ -123,7 +140,22 @@ export async function runAutomationTask(
           ?? (status === "failed" ? `Task exited with code ${result.exitCode}` : null),
       });
       activeTaskRunId = null;
-      if (status === "completed") return { status };
+      if (status === "completed") {
+        const range = businessDayUtcRange();
+        const gate = importGateStatus(db, {
+          dependencyIds: CSV_IMPORT_DEPENDENCY_IDS,
+          startUtc: range.startUtc,
+          endUtc: range.endUtc,
+        });
+        if (shouldAutoRunImport({
+          kind: task.kind,
+          status,
+          importLocked: gate.locked,
+        })) {
+          await runAutomationTask("import-downloads-csv", ledgerDir);
+        }
+        return { status };
+      }
     }
     return { status: "failed" as const };
   } finally {

@@ -3,7 +3,7 @@
   import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
 
-  export let active: "overview" | "assets" | "liabilities" = "overview";
+  export let active: "overview" | "assets" | "liabilities" | "automation" = "overview";
   export let eyebrow = "Overview";
   export let title = "Portfolio";
   export let sideLabel = "Net position";
@@ -53,6 +53,12 @@
       label: "Liabilities",
       href: "/liabilities",
       path: "M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z",
+    },
+    {
+      id: "automation",
+      label: "Automation",
+      href: "/automation",
+      path: "M5 4h14v2H5V4Zm2 4h10v2H7V8Zm-2 4h14v8H5v-8Zm2 2v4h10v-4H7Z",
     },
   ] as const;
 </script>
@@ -108,12 +114,14 @@
         <h1>{title}</h1>
       </div>
       <div class="topbar-actions">
-        {#if searchPlaceholder}
-          <input class="search" type="search" bind:value={search} placeholder={searchPlaceholder} aria-label={searchPlaceholder} />
-        {:else if syncLabel}
-          <span class="chip good">{syncLabel}</span>
-        {/if}
-        <ValueVisibilityToggle bind:visible={valuesVisible} />
+        <slot name="topbar-actions">
+          {#if searchPlaceholder}
+            <input class="search" type="search" bind:value={search} placeholder={searchPlaceholder} aria-label={searchPlaceholder} />
+          {:else if syncLabel}
+            <span class="chip good">{syncLabel}</span>
+          {/if}
+          <ValueVisibilityToggle bind:visible={valuesVisible} />
+        </slot>
       </div>
     </header>
 
