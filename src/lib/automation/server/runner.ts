@@ -3,6 +3,7 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { businessDayUtcRange } from "./business-day.ts";
+import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.ts";
 import {
   createTaskRun,
   importGateStatus,
@@ -10,7 +11,7 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import {
-  CSV_IMPORT_DEPENDENCY_IDS,
+  enabledCsvImportDependencyIds,
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
@@ -197,8 +198,9 @@ export async function runAutomationTask(
       if (status !== "retrying") {
         if (status !== "completed") return { status };
         const range = businessDayUtcRange();
+        const enabledGroups = automationGroupEnabledStatus(readAutomationEnvText());
         const gate = importGateStatus(taskDb, {
-          dependencyIds: CSV_IMPORT_DEPENDENCY_IDS,
+          dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
           startUtc: range.startUtc,
           endUtc: range.endUtc,
         });

@@ -4,13 +4,22 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AutomationPageModel, AutomationTaskRow } from "./server/page-model.ts";
 
+  type CredentialGroup = {
+    id: string;
+    label: string;
+    enabledKey: string;
+    enabled: boolean;
+    credentialKeys: readonly string[];
+  };
+
   export let automation: AutomationPageModel;
-  export let credentialKeys: string[];
+  export let credentialGroups: CredentialGroup[];
 
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
   let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let groupEnabled: Record<string, boolean> = {};
 
   $: sideValue = automation.active ? `${automation.activeTaskCount} running` : automation.importGate.locked ? "Import locked" : "Ready";
   $: sideSub = `Business day ${automation.businessDate}`;
@@ -24,6 +33,7 @@
     : automation.importGate.locked
       ? "bad"
       : "good";
+  $: groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
 
   onMount(() => {
     if (automation.active) {
@@ -59,6 +69,13 @@
     if (task.primaryAction === "Retry") return "retry";
     if (task.primaryAction === "Resume") return "resume";
     return "run";
+  }
+
+  function toggleGroup(groupId: string) {
+    groupEnabled = {
+      ...groupEnabled,
+      [groupId]: !(groupEnabled[groupId] !== false),
+    };
   }
 </script>
 
@@ -152,17 +169,36 @@
         <button class="modal-close" type="button" aria-label="Close" onclick={() => (credentialsOpen = false)}>x</button>
       </div>
       <div class="modal-body credential-body">
-        <div class="credential-grid">
-          {#each credentialKeys as key}
-            <label class="credential-field">
-              <span>{credentialLabel(key)}</span>
-              <input
-                name={key}
-                type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
-                placeholder={automation.credentials[key] ? "saved" : "missing"}
-                autocomplete="off"
-              />
-            </label>
+        <div class="credential-sections">
+          {#each credentialGroups as group}
+            <section class="credential-section" aria-labelledby={`${group.id}-credentials-title`}>
+              <div class="credential-section-head">
+                <h3 id={`${group.id}-credentials-title`}>{group.label}</h3>
+                <input type="hidden" name={group.enabledKey} value={groupEnabled[group.id] !== false ? "true" : "false"} />
+                <button
+                  class="switch credential-switch"
+                  type="button"
+                  aria-pressed={groupEnabled[group.id] !== false}
+                  onclick={() => toggleGroup(group.id)}
+                >
+                  <span>Enabled</span>
+                  <span class="switch-track" aria-hidden="true"></span>
+                </button>
+              </div>
+              <div class="credential-grid">
+                {#each group.credentialKeys as key}
+                  <label class="credential-field">
+                    <span>{credentialLabel(key)}</span>
+                    <input
+                      name={key}
+                      type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
+                      placeholder={automation.credentials[key] ? "saved" : "missing"}
+                      autocomplete="off"
+                    />
+                  </label>
+                {/each}
+              </div>
+            </section>
           {/each}
         </div>
         <div class="modal-actions">
@@ -300,6 +336,57 @@
     padding: var(--space-5);
   }
 
+  .credential-sections {
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .credential-section {
+    display: grid;
+    gap: var(--space-4);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .credential-section:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .credential-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .credential-section h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 760;
+  }
+
+  .credential-switch {
+    min-width: 132px;
+  }
+
+  .credential-switch .switch-track {
+    background: var(--border);
+  }
+
+  .credential-switch .switch-track::after {
+    right: auto;
+    left: 3px;
+  }
+
+  .credential-switch[aria-pressed="true"] .switch-track {
+    background: var(--fg);
+  }
+
+  .credential-switch[aria-pressed="true"] .switch-track::after {
+    transform: translateX(16px);
+  }
+
   .credential-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -354,6 +441,11 @@
   }
 
   @media (max-width: 820px) {
+    .credential-section-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
     .credential-grid {
       grid-template-columns: 1fr;
     }

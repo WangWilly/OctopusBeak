@@ -1,11 +1,21 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync } from "node:fs";
 import { fail } from "@sveltejs/kit";
 import type { Actions } from "./$types";
-import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS, taskById } from "$lib/automation/server/tasks.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  AUTOMATION_CREDENTIAL_KEYS,
+  enabledAutomationTasks,
+  enabledCsvImportDependencyIds,
+  taskById,
+} from "$lib/automation/server/tasks.ts";
 import { credentialStatus, updateEnvText } from "$lib/automation/server/env-file.ts";
 import { businessDayUtcRange } from "$lib/automation/server/business-day.ts";
 import { buildAutomationPageModel } from "$lib/automation/server/page-model.ts";
+import {
+  AUTOMATION_ENV_PATH,
+  automationGroupEnabledStatus,
+  readAutomationEnvText,
+} from "$lib/automation/server/settings.ts";
 import {
   activeAutomationTaskIds,
   hasActiveAutomationTask,
@@ -16,12 +26,7 @@ import {
 import { importGateStatus, latestTaskRuns } from "$lib/automation/server/store.ts";
 import { openLedgerDatabase } from "../../ledger/db/client.ts";
 
-const envPath = resolve(".env");
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
-
-function readEnvText() {
-  return existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-}
 
 function currentCredentialStatus(envText: string) {
   const status = credentialStatus(envText, AUTOMATION_CREDENTIAL_KEYS);
@@ -32,18 +37,19 @@ function currentCredentialStatus(envText: string) {
 }
 
 function currentAutomationModel() {
-  const envText = readEnvText();
+  const envText = readAutomationEnvText();
+  const enabledGroups = automationGroupEnabledStatus(envText);
   const db = openLedgerDatabase();
   try {
     const activeTaskIds = activeAutomationTaskIds();
     const range = businessDayUtcRange();
     const importGate = importGateStatus(db, {
-      dependencyIds: taskById("import-downloads-csv")?.dependencies ?? [],
+      dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
       startUtc: range.startUtc,
       endUtc: range.endUtc,
     });
     return buildAutomationPageModel({
-      tasks: AUTOMATION_TASKS,
+      tasks: enabledAutomationTasks(enabledGroups),
       latestRuns: latestTaskRuns(db),
       activeTaskIds,
       credentials: currentCredentialStatus(envText),
@@ -59,7 +65,7 @@ function currentAutomationModel() {
 function missingCredentialKeys(taskId: string) {
   const task = taskById(taskId);
   if (!task) return [];
-  const status = currentCredentialStatus(readEnvText());
+  const status = currentCredentialStatus(readAutomationEnvText());
   return task.credentialKeys.filter((key) => (
     !optionalCredentialKeys.has(key) && !status[key]
   ));
@@ -77,6 +83,9 @@ function startTask(taskId: string) {
 
   const model = currentAutomationModel();
   const row = model.tasks.find((item) => item.id === taskId);
+  if (!row) {
+    return fail(409, { message: "Task is disabled." });
+  }
   if (row?.status === "locked") {
     return fail(409, {
       message: "Import is locked until all crawler dependencies complete for the business day.",
@@ -106,6 +115,9 @@ function resumeTask(taskId: string) {
 
   const model = currentAutomationModel();
   const row = model.tasks.find((item) => item.id === taskId);
+  if (!row) {
+    return fail(409, { message: "Task is disabled." });
+  }
   if (row?.status !== "waiting_for_human") {
     return fail(409, { message: "Task is not waiting for human input." });
   }
@@ -126,9 +138,14 @@ function resumeTask(taskId: string) {
 }
 
 export function load() {
+  const envText = readAutomationEnvText();
+  const enabledGroups = automationGroupEnabledStatus(envText);
   return {
     automation: currentAutomationModel(),
-    credentialKeys: AUTOMATION_CREDENTIAL_KEYS,
+    credentialGroups: AUTOMATION_CREDENTIAL_GROUPS.map((group) => ({
+      ...group,
+      enabled: enabledGroups[group.id] !== false,
+    })),
   };
 }
 
@@ -136,14 +153,14 @@ export const actions: Actions = {
   saveCredentials: async ({ request }) => {
     const formData = await request.formData();
     const updates: Record<string, string> = {};
+    for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
+      updates[group.enabledKey] = formData.getAll(group.enabledKey).includes("true") ? "true" : "false";
+    }
     for (const key of AUTOMATION_CREDENTIAL_KEYS) {
       const value = String(formData.get(key) ?? "").trim();
       if (value) updates[key] = value;
     }
-    if (Object.keys(updates).length === 0) {
-      return { saved: false };
-    }
-    writeFileSync(envPath, updateEnvText(readEnvText(), updates), "utf8");
+    writeFileSync(AUTOMATION_ENV_PATH, updateEnvText(readAutomationEnvText(), updates), "utf8");
     return { saved: true };
   },
   run: async ({ request }) => {
