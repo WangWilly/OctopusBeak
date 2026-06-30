@@ -119,6 +119,7 @@
       bind:search
       positionsByAccount={assets.positionsByAccount}
       transactionsByAccount={assets.transactionsByAccount}
+      dailyHistoryByAccount={assets.dailyHistoryByAccount}
     />
   </div>
 </DashboardShell>

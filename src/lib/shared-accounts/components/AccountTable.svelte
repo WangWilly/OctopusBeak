@@ -1,6 +1,13 @@
 <script lang="ts">
-  import type { AccountKind, AccountRowDto, AssetPositionDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
+  import type {
+    AccountKind,
+    AccountRowDto,
+    AssetPositionDto,
+    DailyHistoryRowDto,
+    TransactionRowDto,
+  } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
+  import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
   import TransactionModal from "./TransactionModal.svelte";
 
@@ -15,6 +22,7 @@
   export let accounts: AccountRowDto[] = [];
   export let positionsByAccount: Record<string, AssetPositionDto[]> = {};
   export let transactionsByAccount: Record<string, TransactionRowDto[]> = {};
+  export let dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]> = {};
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
 
@@ -22,6 +30,7 @@
   let selectedAccountId: string | null = null;
   let transactionsOpen = false;
   let positionsOpen = false;
+  let historyOpen = false;
   let sortKey: SortKey | null = null;
   let sortDirection: SortDirection = "asc";
   let sortColumns: SortColumn[] = [];
@@ -71,6 +80,8 @@
     selectedAccount ? transactionsByAccount[selectedAccount.id] ?? [] : [];
   $: selectedPositions =
     selectedAccount ? positionsByAccount[selectedAccount.id] ?? [] : [];
+  $: selectedDailyHistory =
+    selectedAccount ? dailyHistoryByAccount[selectedAccount.id] ?? [] : [];
   $: sortColumns = [
     { key: "label", label: "Account Name" },
     { key: "institution", label: "Institution" },
@@ -198,6 +209,14 @@
                       transactionsOpen = true;
                     }}>TX</button
                   >
+                  <button
+                    class="chip"
+                    type="button"
+                    on:click|stopPropagation={() => {
+                      selectedAccountId = account.id;
+                      historyOpen = true;
+                    }}>History</button
+                  >
                   {#if mode === "asset" && account.assetPositionCount > 0}
                     <button
                       class="chip"
@@ -224,6 +243,7 @@
 
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
 <AssetModal bind:open={positionsOpen} account={selectedAccount} rows={selectedPositions} />
+<AccountHistoryModal bind:open={historyOpen} account={selectedAccount} rows={selectedDailyHistory} />
 
 <style>
   .sort-button {

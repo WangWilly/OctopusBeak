@@ -3,20 +3,11 @@ import {
   bucketToAmounts,
   totalsForAccounts,
   type LedgerQueryData,
-} from "$lib/shared-ledger/server/accounts.ts";
-import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+} from "../../shared-ledger/server/accounts.ts";
+import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "../../shared-ledger/types.ts";
 
 export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
-  const dates = [
-    ...new Set(
-      data.sourceFiles
-        .map((source) => sourceFileDate(source))
-        .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
-        .filter(Boolean)
-        .sort(),
-    ),
-  ];
-  const rows = dates.length > 0 ? dates : [new Date().toISOString().slice(0, 10)];
+  const rows = dailyHistoryDates(data);
   let previousNet: Record<string, number> | null = null;
 
   return rows.map((date) => {
@@ -34,6 +25,61 @@ export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
       positionCount: accounts.reduce((total, account) => total + account.assetPositionCount, 0),
     };
   });
+}
+
+export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string, DailyHistoryRowDto[]> {
+  const histories: Record<string, DailyHistoryRowDto[]> = {};
+  const previousByAccount = new Map<string, Record<string, number>>();
+
+  for (const date of dailyHistoryDates(data)) {
+    const accounts = buildAccountOverview(snapshotData(data, date));
+    for (const account of accounts) {
+      const balance = amountBucket(account.amountLines);
+      const previous = previousByAccount.get(account.id);
+      const dailyChange = previous ? subtractBuckets(balance, previous) : {};
+      previousByAccount.set(account.id, balance);
+      histories[account.id] = [...(histories[account.id] ?? []), accountHistoryRow(date, account, balance, dailyChange)];
+    }
+  }
+
+  return histories;
+}
+
+function dailyHistoryDates(data: LedgerQueryData) {
+  const dates = [
+    ...new Set(
+      data.sourceFiles
+        .map((source) => sourceFileDate(source))
+        .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
+        .filter(Boolean)
+        .sort(),
+    ),
+  ];
+  return dates.length > 0 ? dates : [new Date().toISOString().slice(0, 10)];
+}
+
+function accountHistoryRow(
+  date: string,
+  account: AccountRowDto,
+  balance: Record<string, number>,
+  dailyChange: Record<string, number>,
+): DailyHistoryRowDto {
+  const amounts = bucketToAmounts(balance, { includeZero: true });
+  return {
+    date,
+    netAssets: amounts,
+    dailyChange: bucketToAmounts(dailyChange),
+    assets: account.group === "liability" ? [] : amounts,
+    liabilities: account.group === "liability" ? amounts : [],
+    accountChanges: [account.label],
+    positionCount: account.assetPositionCount,
+  };
+}
+
+function amountBucket(amounts: CurrencyAmountDto[]) {
+  const bucket: Record<string, number> = {};
+  for (const amount of amounts) bucket[amount.currency] = amount.value;
+  return bucket;
 }
 
 function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
