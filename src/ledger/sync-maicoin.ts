@@ -775,6 +775,7 @@ async function writeStatementJson(filePath: string, statement: StatementBatch[])
 }
 
 async function syncMaicoin(params: CliParams) {
+  console.log("automation-progress: 0");
   const credentials = credentialsFromEnv(params.subAccount);
   const client = new MaxClient(credentials);
   const syncRunId = randomUUID();
@@ -786,17 +787,20 @@ async function syncMaicoin(params: CliParams) {
     const walletTypes = await fetchWalletTypes(client, params.walletTypes);
     const accountBatches = await fetchAccounts(client, walletTypes);
     const accounts = accountBatches.flatMap((batch) => batch.accounts);
+    console.log("automation-progress: 25");
     const markets = new Set(
       (await client.publicGet<Market[]>("/api/v3/markets")).map((market) => market.id),
     );
     const tickers = await fetchTickers(client, tickerMarketsForAccounts(accounts, markets));
     const snapshots = buildSnapshots(accountBatches, tickers);
     const capturedAt = new Date().toISOString();
+    console.log("automation-progress: 50");
     const statement = await fetchStatement(client, walletTypes, params.statementLimit);
     const statementValues = await statementValueMap(client, statement, markets);
     const statementJsonPath = params.statementJson
       ? await writeStatementJson(params.statementJson, statement)
       : null;
+    console.log("automation-progress: 80");
 
     db.exec("BEGIN");
     try {
@@ -824,6 +828,7 @@ async function syncMaicoin(params: CliParams) {
       totalValueTwd: snapshots.reduce((sum, snapshot) => sum + (snapshot.valueTwd ?? 0), 0),
     };
     finishSyncRun(db, syncRunId, result);
+    console.log("automation-progress: 100");
     return result;
   } catch (error) {
     finishSyncRun(db, syncRunId, {

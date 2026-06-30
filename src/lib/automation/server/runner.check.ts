@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
   resumeSessionFromLog,
@@ -21,6 +22,13 @@ assert.equal(parseAutomationProgress("automation-progress: 35"), 35);
 assert.equal(parseAutomationProgress("automation-progress: 20\nautomation-progress: 67"), 67);
 assert.equal(parseAutomationProgress("automation-progress: 105"), 100);
 assert.equal(parseAutomationProgress("download completed"), null);
+assert.deepEqual(liveTaskRunUpdate("download in progress"), {
+  logTail: "download in progress",
+});
+assert.deepEqual(liveTaskRunUpdate("Workflow paused. resume --session ses-1p4q"), {
+  status: "waiting_for_human",
+  logTail: "Workflow paused. resume --session ses-1p4q",
+});
 
 assert.equal(
   nextAttemptStatus({

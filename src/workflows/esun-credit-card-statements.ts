@@ -401,6 +401,7 @@ export default workflow("esunCreditCardStatements", {
     const { page } = ctx;
     const credentials = (input as typeof input & { credentials: EsunCredentials })
       .credentials;
+    console.log("automation-progress: 0");
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
@@ -408,6 +409,7 @@ export default workflow("esunCreditCardStatements", {
     });
 
     await page.goto(BANK_ENTRY_URL);
+    console.log("automation-progress: 20");
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
@@ -415,10 +417,13 @@ export default workflow("esunCreditCardStatements", {
         await fillLoginForm(authPage, signInCredentials as EsunCredentials);
       },
     });
+    console.log("automation-progress: 40");
 
     const { frame, startDate, endDate } = await queryStatements(page, input);
+    console.log("automation-progress: 60");
     const period = `${startDate} ~ ${endDate}`;
     const rows = await readStatementRows(frame, period);
+    console.log("automation-progress: 80");
     const nextTimestamp = createTimestampGenerator();
     const files = [
       await writeStatementFile(
@@ -432,6 +437,7 @@ export default workflow("esunCreditCardStatements", {
         rows.filter((row) => statementKind(row) === "billed"),
       ),
     ];
+    console.log("automation-progress: 100");
 
     return {
       usedExistingSession: authResult.usedProfile,

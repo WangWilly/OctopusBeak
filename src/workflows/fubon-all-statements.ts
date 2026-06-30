@@ -68,6 +68,7 @@ export default workflow("fubonAllStatements", {
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
     const { page, session } = ctx;
+    console.log("automation-progress: 0");
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
@@ -76,22 +77,26 @@ export default workflow("fubonAllStatements", {
 
     await signInFubon(page, session, input.credentials);
     await keepBrowserWindowOutOfForeground(page);
+    console.log("automation-progress: 20");
 
     const statements = await runSectionOutOfForeground(
       page,
       "statements",
       () => runFubonStatements(page, input.statements),
     );
+    console.log("automation-progress: 45");
 
     const creditCards = await runSectionOutOfForeground(
       page,
       "creditCards",
       () => runFubonCreditCardStatements(page, input.creditCards),
     );
+    console.log("automation-progress: 70");
 
     const loans = await runSectionOutOfForeground(page, "loans", () =>
       runFubonLoanStatements(page, input.loans),
     );
+    console.log("automation-progress: 100");
 
     return {
       statements,
