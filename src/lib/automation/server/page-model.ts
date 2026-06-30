@@ -1,6 +1,6 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun, AutomationTaskStatus } from "./store.ts";
-import { parseAutomationProgress, resumeFailureMessage } from "./runner.ts";
+import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 
 type ImportGate = {
   locked: boolean;
@@ -17,6 +17,7 @@ export type AutomationTaskRow = AutomationTask & {
   logPath: string | null;
   progressPercent: number | null;
   progressText: string;
+  humanSession: string | null;
   isActive: boolean;
   primaryAction: "Run" | "Resume" | "Retry" | "Locked" | "Running" | "Retrying";
   canRun: boolean;
@@ -97,6 +98,7 @@ export function buildAutomationPageModel(input: {
         logPath: run?.logPath ?? null,
         progressPercent,
         progressText: progressText(status, attempt, run?.maxAttempts ?? task.maxAttempts, progressPercent),
+        humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
         isActive,
         primaryAction: action,
         canRun: !isActive && action !== "Locked",
