@@ -114,6 +114,7 @@
       mode="liability"
       bind:search
       transactionsByAccount={liabilities.transactionsByAccount}
+      dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
     />
   </div>
 </DashboardShell>

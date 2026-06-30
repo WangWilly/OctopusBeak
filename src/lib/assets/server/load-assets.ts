@@ -1,6 +1,7 @@
 import { DEFAULT_LEDGER_DIR, openLedgerDrizzle } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
 import type { AssetsPageDto } from "../types.ts";
+import { buildDailyHistoryByAccount } from "$lib/overview/server/daily-history.ts";
 import {
   buildAccountOverview,
   buildPositionsByAccount,
@@ -13,6 +14,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);
   try {
     const [
+      sourceFiles,
       accountTransactions,
       foreignCurrencyTransactions,
       fundHoldings,
@@ -25,6 +27,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
       maicoinAccountSnapshots,
       maicoinStatementRows,
     ] = await Promise.all([
+      db.select().from(schema.sourceFiles).all(),
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
       db.select().from(schema.fundHoldings).all(),
@@ -40,6 +43,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
 
     const data: LedgerQueryData = {
       ...emptyLedgerQueryData(),
+      sourceFiles,
       accountTransactions,
       foreignCurrencyTransactions,
       fundHoldings,
@@ -58,6 +62,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
       accounts,
       positionsByAccount: buildPositionsByAccount(data),
       transactionsByAccount: buildTransactionsByAccount(data),
+      dailyHistoryByAccount: buildDailyHistoryByAccount(data),
     };
   } finally {
     sqlite.close();
