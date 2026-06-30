@@ -4,6 +4,7 @@ build/
 .env
 downloads/
 data/
+.superpowers/
 
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/
