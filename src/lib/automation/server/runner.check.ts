@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   nextAttemptStatus,
+  parseAutomationProgress,
   resumeSessionFromLog,
   shouldAutoRunImport,
   shouldMarkWaitingForHuman,
@@ -16,6 +17,10 @@ assert.equal(
   "ses-1p4q",
 );
 assert.equal(resumeSessionFromLog("download completed"), null);
+assert.equal(parseAutomationProgress("automation-progress: 35"), 35);
+assert.equal(parseAutomationProgress("automation-progress: 20\nautomation-progress: 67"), 67);
+assert.equal(parseAutomationProgress("automation-progress: 105"), 100);
+assert.equal(parseAutomationProgress("download completed"), null);
 
 assert.equal(
   nextAttemptStatus({

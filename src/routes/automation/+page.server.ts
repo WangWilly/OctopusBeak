@@ -7,6 +7,7 @@ import { credentialStatus, updateEnvText } from "$lib/automation/server/env-file
 import { businessDayUtcRange } from "$lib/automation/server/business-day.ts";
 import { buildAutomationPageModel } from "$lib/automation/server/page-model.ts";
 import {
+  activeAutomationTaskIds,
   hasActiveAutomationTask,
   resumeSessionFromLog,
   startAutomationResume,
@@ -34,6 +35,7 @@ function currentAutomationModel() {
   const envText = readEnvText();
   const db = openLedgerDatabase();
   try {
+    const activeTaskIds = activeAutomationTaskIds();
     const range = businessDayUtcRange();
     const importGate = importGateStatus(db, {
       dependencyIds: taskById("import-downloads-csv")?.dependencies ?? [],
@@ -43,9 +45,10 @@ function currentAutomationModel() {
     return buildAutomationPageModel({
       tasks: AUTOMATION_TASKS,
       latestRuns: latestTaskRuns(db),
+      activeTaskIds,
       credentials: currentCredentialStatus(envText),
       importGate,
-      active: hasActiveAutomationTask(),
+      active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
       businessDate: range.businessDate,
     });
   } finally {

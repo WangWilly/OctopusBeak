@@ -15,7 +15,7 @@ import {
   type AutomationTaskKind,
 } from "./tasks.ts";
 
-let activeTaskRunId: string | null = null;
+const activeTaskRunIds = new Map<string, string>();
 
 export function shouldMarkWaitingForHuman(output: string) {
   return /resume --session|paused|captcha|otp|verification|certificate/i.test(output);
@@ -23,6 +23,15 @@ export function shouldMarkWaitingForHuman(output: string) {
 
 export function resumeSessionFromLog(output: string) {
   return output.match(/libretto resume --session\s+([\w-]+)/i)?.[1] ?? null;
+}
+
+export function parseAutomationProgress(output: string) {
+  let progress: number | null = null;
+  for (const match of output.matchAll(/automation-progress:\s*(\d+(?:\.\d+)?)/gi)) {
+    const value = Math.round(Number(match[1]));
+    progress = Math.max(0, Math.min(100, value));
+  }
+  return progress;
 }
 
 export function nextAttemptStatus(input: {
@@ -47,7 +56,18 @@ export function shouldAutoRunImport(input: {
 }
 
 export function hasActiveAutomationTask() {
-  return activeTaskRunId !== null;
+  return activeTaskRunIds.size > 0;
+}
+
+export function activeAutomationTaskIds() {
+  return Array.from(activeTaskRunIds.keys());
+}
+
+function claimTask(taskId: string) {
+  if (activeTaskRunIds.has(taskId)) {
+    throw new Error(`Automation task is already running: ${taskId}`);
+  }
+  activeTaskRunIds.set(taskId, "pending");
 }
 
 function appendLog(logPath: string, chunk: string) {
@@ -64,8 +84,8 @@ export function startAutomationTask(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-  if (activeTaskRunId) throw new Error("Another automation task is already running.");
-  void runAutomationTask(taskId, ledgerDir).catch((error) => {
+  claimTask(taskId);
+  void runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
     console.error("automation-task-run-failed", error);
   });
 }
@@ -77,8 +97,8 @@ export function startAutomationResume(
 ) {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
   if (!session.match(/^[\w-]+$/)) throw new Error(`Invalid Libretto session: ${session}`);
-  if (activeTaskRunId) throw new Error("Another automation task is already running.");
-  void runAutomationTask(taskId, ledgerDir, { resumeSession: session }).catch((error) => {
+  claimTask(taskId);
+  void runAutomationTask(taskId, ledgerDir, { claimed: true, resumeSession: session }).catch((error) => {
     console.error("automation-task-resume-failed", error);
   });
 }
@@ -86,14 +106,16 @@ export function startAutomationResume(
 export async function runAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  options: { resumeSession?: string } = {},
+  options: { claimed?: boolean; resumeSession?: string } = {},
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  if (activeTaskRunId) throw new Error("Another automation task is already running.");
+  if (!options.claimed) claimTask(taskId);
 
-  const db = openLedgerDatabase(ledgerDir);
+  let db: ReturnType<typeof openLedgerDatabase> | null = null;
   try {
+    db = openLedgerDatabase(ledgerDir);
+    const taskDb = db;
     const maxAttempts = options.resumeSession ? 1 : task.maxAttempts;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const startedAt = new Date().toISOString();
@@ -106,7 +128,7 @@ export async function runAutomationTask(
       const script = options.resumeSession
         ? `npx libretto resume --session ${options.resumeSession}`
         : task.script;
-      const run = createTaskRun(db, {
+      const run = createTaskRun(taskDb, {
         taskId: task.id,
         script,
         kind: task.kind,
@@ -116,7 +138,7 @@ export async function runAutomationTask(
         startedAt,
         logPath,
       });
-      activeTaskRunId = run.taskRunId;
+      activeTaskRunIds.set(task.id, run.taskRunId);
       let logTail = "";
 
       const result = await new Promise<{
@@ -136,7 +158,7 @@ export async function runAutomationTask(
           appendLog(logPath, text);
           logTail = tail(logTail + text);
           if (shouldMarkWaitingForHuman(logTail)) {
-            updateTaskRun(db, run.taskRunId, { status: "waiting_for_human", logTail });
+            updateTaskRun(taskDb, run.taskRunId, { status: "waiting_for_human", logTail });
           }
         };
         child.stdout.on("data", onOutput);
@@ -158,7 +180,7 @@ export async function runAutomationTask(
           exitCode: result.exitCode,
           waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
-      updateTaskRun(db, run.taskRunId, {
+      updateTaskRun(taskDb, run.taskRunId, {
         status,
         finishedAt: new Date().toISOString(),
         exitCode: result.exitCode,
@@ -167,11 +189,10 @@ export async function runAutomationTask(
         errorMessage: result.error?.message
           ?? (status === "failed" ? `Task exited with code ${result.exitCode}` : null),
       });
-      activeTaskRunId = null;
       if (status !== "retrying") {
         if (status !== "completed") return { status };
         const range = businessDayUtcRange();
-        const gate = importGateStatus(db, {
+        const gate = importGateStatus(taskDb, {
           dependencyIds: CSV_IMPORT_DEPENDENCY_IDS,
           startUtc: range.startUtc,
           endUtc: range.endUtc,
@@ -180,7 +201,7 @@ export async function runAutomationTask(
           kind: task.kind,
           status,
           importLocked: gate.locked,
-        })) {
+        }) && !activeTaskRunIds.has("import-downloads-csv")) {
           await runAutomationTask("import-downloads-csv", ledgerDir);
         }
         return { status };
@@ -188,7 +209,7 @@ export async function runAutomationTask(
     }
     return { status: "failed" as const };
   } finally {
-    activeTaskRunId = null;
-    db.close();
+    activeTaskRunIds.delete(taskId);
+    db?.close();
   }
 }

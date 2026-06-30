@@ -26,6 +26,7 @@ const latestRuns: Record<string, AutomationTaskRun> = {
 const model = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns,
+  activeTaskIds: [],
   credentials: {
     LIBRETTO_CLOUD_FUBON_USER_ID: true,
     MAX_ACCESS_KEY: false,
@@ -61,6 +62,7 @@ const failedModel = buildAutomationPageModel({
       errorMessage: "Task exited with code 1",
     },
   },
+  activeTaskIds: [],
   credentials: {},
   importGate: {
     locked: true,
@@ -73,3 +75,34 @@ const failedModel = buildAutomationPageModel({
 const failedRow = failedModel.tasks.find((task) => task.id === "hncb-statements");
 assert.equal(failedRow?.primaryAction, "Retry");
 assert.equal(failedRow?.canRun, true);
+
+const activeModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      taskRunId: "run-3",
+      status: "running",
+      finishedAt: null,
+      logTail: "automation-progress: 42\nDownloading statements",
+    },
+  },
+  activeTaskIds: ["fubon-all-statements"],
+  credentials: {},
+  importGate: {
+    locked: true,
+    missingTaskIds: [],
+  },
+  active: true,
+  businessDate: "2026-06-30",
+});
+
+const activeFubonRow = activeModel.tasks.find((task) => task.id === "fubon-all-statements");
+const activeEsunRow = activeModel.tasks.find((task) => task.id === "esun-credit-card-statements");
+assert.equal(activeModel.activeTaskCount, 1);
+assert.equal(activeFubonRow?.isActive, true);
+assert.equal(activeFubonRow?.canRun, false);
+assert.equal(activeFubonRow?.primaryAction, "Running");
+assert.equal(activeFubonRow?.progressPercent, 42);
+assert.equal(activeFubonRow?.progressText, "42%");
+assert.equal(activeEsunRow?.canRun, true);
