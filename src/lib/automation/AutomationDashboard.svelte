@@ -56,7 +56,9 @@
   }
 
   function actionName(task: AutomationTaskRow) {
-    return task.primaryAction === "Retry" ? "retry" : "run";
+    if (task.primaryAction === "Retry") return "retry";
+    if (task.primaryAction === "Resume") return "resume";
+    return "run";
   }
 </script>
 

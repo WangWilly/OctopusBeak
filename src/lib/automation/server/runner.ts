@@ -21,6 +21,10 @@ export function shouldMarkWaitingForHuman(output: string) {
   return /resume --session|paused|captcha|otp|verification|certificate/i.test(output);
 }
 
+export function resumeSessionFromLog(output: string) {
+  return output.match(/libretto resume --session\s+([\w-]+)/i)?.[1] ?? null;
+}
+
 export function nextAttemptStatus(input: {
   kind: AutomationTaskKind;
   attempt: number;
@@ -66,9 +70,23 @@ export function startAutomationTask(
   });
 }
 
+export function startAutomationResume(
+  taskId: string,
+  session: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!session.match(/^[\w-]+$/)) throw new Error(`Invalid Libretto session: ${session}`);
+  if (activeTaskRunId) throw new Error("Another automation task is already running.");
+  void runAutomationTask(taskId, ledgerDir, { resumeSession: session }).catch((error) => {
+    console.error("automation-task-resume-failed", error);
+  });
+}
+
 export async function runAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  options: { resumeSession?: string } = {},
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
@@ -76,7 +94,8 @@ export async function runAutomationTask(
 
   const db = openLedgerDatabase(ledgerDir);
   try {
-    for (let attempt = 1; attempt <= task.maxAttempts; attempt += 1) {
+    const maxAttempts = options.resumeSession ? 1 : task.maxAttempts;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const startedAt = new Date().toISOString();
       const logPath = join(
         "data",
@@ -84,13 +103,16 @@ export async function runAutomationTask(
         "logs",
         `${task.id}-${Date.now()}-${attempt}.log`,
       );
+      const script = options.resumeSession
+        ? `npx libretto resume --session ${options.resumeSession}`
+        : task.script;
       const run = createTaskRun(db, {
         taskId: task.id,
-        script: task.script,
+        script,
         kind: task.kind,
         status: attempt > 1 ? "retrying" : "running",
         attempt,
-        maxAttempts: task.maxAttempts,
+        maxAttempts,
         startedAt,
         logPath,
       });
@@ -102,7 +124,10 @@ export async function runAutomationTask(
         signal: NodeJS.Signals | null;
         error: Error | null;
       }>((resolve) => {
-        const child = spawn("npm", ["run", task.script], {
+        const command = options.resumeSession
+          ? ["npx", "libretto", "resume", "--session", options.resumeSession]
+          : ["npm", "run", task.script];
+        const child = spawn(command[0], command.slice(1), {
           stdio: ["ignore", "pipe", "pipe"],
           env: process.env,
         });
@@ -129,7 +154,7 @@ export async function runAutomationTask(
         : nextAttemptStatus({
           kind: task.kind,
           attempt,
-          maxAttempts: task.maxAttempts,
+          maxAttempts,
           exitCode: result.exitCode,
           waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
