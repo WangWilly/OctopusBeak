@@ -26,6 +26,12 @@ assert.deepEqual(
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
+assert.equal(
+  shouldMarkWaitingForHuman(
+    "hncb-login-account-refilled-after-captcha\nautomation-progress: 100\nIntegration completed.",
+  ),
+  false,
+);
 assert.equal(shouldMarkWaitingForHuman("download completed"), false);
 assert.equal(
   resumeSessionFromLog(
