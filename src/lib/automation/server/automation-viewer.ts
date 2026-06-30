@@ -84,7 +84,7 @@ async function withPausedPage<T>(session: string, action: (page: Page) => Promis
   try {
     return await action(visiblePage(browser, session));
   } finally {
-    (browser as unknown as { _connection?: { close(): void } })._connection?.close();
+    await browser.close();
   }
 }
 
