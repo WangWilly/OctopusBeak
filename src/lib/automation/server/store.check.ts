@@ -39,8 +39,16 @@ try {
   const latest = latestTaskRuns(db);
   assert.equal(latest["fubon-all-statements"]?.status, "completed");
   assert.equal(latest["fubon-all-statements"]?.finishedAt, finishedAt);
-  assert.equal(taskRunById(db, run.taskRunId)?.status, "completed");
+  const completedRun = taskRunById(db, run.taskRunId);
+  assert.equal(completedRun?.status, "completed");
+  assert.equal(JSON.parse(completedRun?.recordJson ?? "{}").recordJson, undefined);
   assert.equal(taskRunById(db, "missing"), null);
+
+  const recordJsonBytes = completedRun?.recordJson.length ?? 0;
+  updateTaskRun(db, run.taskRunId, { logTail: "ok\nagain" });
+  const updatedRun = taskRunById(db, run.taskRunId);
+  assert.equal(JSON.parse(updatedRun?.recordJson ?? "{}").recordJson, undefined);
+  assert.ok((updatedRun?.recordJson.length ?? 0) < recordJsonBytes + 100);
 
   const lockedGate = importGateStatus(db, {
     dependencyIds: [
