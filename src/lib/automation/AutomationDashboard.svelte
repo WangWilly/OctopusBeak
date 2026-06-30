@@ -17,8 +17,13 @@
 
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
+  let humanTask: AutomationTaskRow | null = null;
   let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let viewerTimer: ReturnType<typeof setInterval> | null = null;
+  let viewerImageUrl = "";
+  let viewerError = "";
+  let dragStart: { x: number; y: number; pointerId: number } | null = null;
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
 
@@ -48,6 +53,7 @@
 
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
+    if (viewerTimer) clearInterval(viewerTimer);
   });
 
   function statusClass(status: string) {
@@ -108,6 +114,92 @@
       ...credentialDrafts,
       [key]: (event.currentTarget as HTMLInputElement).value,
     };
+  }
+
+  function refreshViewerImage() {
+    if (!humanTask) return;
+    viewerImageUrl = `/automation/viewer/screenshot?taskId=${encodeURIComponent(humanTask.id)}&t=${Date.now()}`;
+  }
+
+  function openHumanViewer(task: AutomationTaskRow) {
+    humanTask = task;
+    viewerError = "";
+    dragStart = null;
+    refreshViewerImage();
+    if (viewerTimer) clearInterval(viewerTimer);
+    viewerTimer = setInterval(refreshViewerImage, 750);
+  }
+
+  function closeHumanViewer() {
+    if (viewerTimer) clearInterval(viewerTimer);
+    viewerTimer = null;
+    humanTask = null;
+    viewerImageUrl = "";
+    viewerError = "";
+    dragStart = null;
+  }
+
+  async function sendViewerInput(input: unknown) {
+    if (!humanTask) return;
+    const response = await fetch("/automation/viewer/input", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId: humanTask.id, input }),
+    });
+
+    if (!response.ok) {
+      viewerError = await response.text();
+      return;
+    }
+
+    viewerError = "";
+    refreshViewerImage();
+  }
+
+  function pointerPoint(event: PointerEvent) {
+    const image = event.currentTarget as HTMLImageElement;
+    const rect = image.getBoundingClientRect();
+    if (!image.naturalWidth || !image.naturalHeight || !rect.width || !rect.height) return null;
+    return {
+      x: (event.clientX - rect.left) * (image.naturalWidth / rect.width),
+      y: (event.clientY - rect.top) * (image.naturalHeight / rect.height),
+    };
+  }
+
+  function handleViewerPointerDown(event: PointerEvent) {
+    const point = pointerPoint(event);
+    if (!point) return;
+    dragStart = { ...point, pointerId: event.pointerId };
+    (event.currentTarget as HTMLImageElement).setPointerCapture(event.pointerId);
+  }
+
+  function handleViewerPointerUp(event: PointerEvent) {
+    if (!dragStart || dragStart.pointerId !== event.pointerId) return;
+    const image = event.currentTarget as HTMLImageElement;
+    const point = pointerPoint(event);
+    const start = dragStart;
+    dragStart = null;
+    if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
+    if (!point) return;
+
+    const moved = Math.hypot(point.x - start.x, point.y - start.y);
+    void sendViewerInput(
+      moved <= 8
+        ? { type: "click", x: point.x, y: point.y }
+        : { type: "drag", x: start.x, y: start.y, toX: point.x, toY: point.y },
+    );
+  }
+
+  function handleViewerPointerCancel(event: PointerEvent) {
+    if (dragStart?.pointerId === event.pointerId) dragStart = null;
+  }
+
+  function handleViewerType(event: KeyboardEvent) {
+    const input = event.currentTarget as HTMLInputElement;
+    if (event.key !== "Enter" || !input.value) return;
+    event.preventDefault();
+    void sendViewerInput({ type: "type", text: input.value });
+    input.value = "";
   }
 </script>
 
@@ -177,6 +269,11 @@
                         <span>{task.primaryAction}</span>
                       </button>
                     </form>
+                    {#if task.status === "waiting_for_human" && task.humanSession}
+                      <button class="button secondary task-control" type="button" onclick={() => openHumanViewer(task)}>
+                        Assist
+                      </button>
+                    {/if}
                     <button class="button secondary task-control" type="button" onclick={() => (logTask = task)}>
                       Logs
                     </button>
@@ -260,6 +357,53 @@
       </div>
       <div class="modal-body">
         <pre class="log-output">{logTask.errorMessage ?? (logTask.logTail || "No logs yet.")}</pre>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if humanTask}
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
+    <button class="modal-backdrop" type="button" aria-label="Close assist" onclick={closeHumanViewer}></button>
+    <div class="modal-panel human-viewer-modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="human-viewer-title">{humanTask.label} Assist</h2>
+          <p>{humanTask.humanSession ?? "No session"}</p>
+        </div>
+        <div class="viewer-actions">
+          <form method="POST" action="?/resume">
+            <input type="hidden" name="taskId" value={humanTask.id} />
+            <button class="button primary fixed-action" type="submit">Resume</button>
+          </form>
+          <button class="modal-close" type="button" aria-label="Close" onclick={closeHumanViewer}>x</button>
+        </div>
+      </div>
+      <div class="modal-body viewer-body">
+        <img
+          class="viewer-image"
+          src={viewerImageUrl}
+          alt="Paused browser"
+          draggable="false"
+          onload={() => (viewerError = "")}
+          onerror={() => (viewerError = "Viewer screenshot is not available yet.")}
+          onpointerdown={handleViewerPointerDown}
+          onpointerup={handleViewerPointerUp}
+          onpointercancel={handleViewerPointerCancel}
+        />
+        <div class="viewer-keyboard">
+          <input
+            class="viewer-text-input"
+            type="text"
+            maxlength="128"
+            autocomplete="off"
+            onkeydown={handleViewerType}
+          />
+          <button class="button secondary fixed-action" type="button" onclick={() => void sendViewerInput({ type: "press", key: "Enter" })}>
+            Enter
+          </button>
+        </div>
+        {#if viewerError}<p class="viewer-error">{viewerError}</p>{/if}
       </div>
     </div>
   </div>
@@ -472,6 +616,63 @@
   .credential-field input.dirty {
     border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
     background: var(--accent-soft);
+  }
+
+  .human-viewer-modal {
+    width: min(1040px, 100%);
+  }
+
+  .viewer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
+  .viewer-body {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .viewer-image {
+    display: block;
+    width: 100%;
+    max-height: min(68vh, 720px);
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    touch-action: none;
+    user-select: none;
+  }
+
+  .viewer-keyboard {
+    display: flex;
+    gap: var(--space-3);
+  }
+
+  .viewer-text-input {
+    min-width: 0;
+    min-height: 44px;
+    flex: 1;
+    padding: 0 var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    outline: none;
+  }
+
+  .viewer-text-input:focus {
+    border-color: var(--fg);
+    box-shadow: 0 0 0 3px var(--surface-soft);
+  }
+
+  .viewer-error {
+    margin: 0;
+    color: var(--danger);
+    font-size: 13px;
   }
 
   .log-output {
