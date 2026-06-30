@@ -6,7 +6,12 @@ import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS, taskById } from "$lib/aut
 import { credentialStatus, updateEnvText } from "$lib/automation/server/env-file.ts";
 import { businessDayUtcRange } from "$lib/automation/server/business-day.ts";
 import { buildAutomationPageModel } from "$lib/automation/server/page-model.ts";
-import { hasActiveAutomationTask, startAutomationTask } from "$lib/automation/server/runner.ts";
+import {
+  hasActiveAutomationTask,
+  resumeSessionFromLog,
+  startAutomationResume,
+  startAutomationTask,
+} from "$lib/automation/server/runner.ts";
 import { importGateStatus, latestTaskRuns } from "$lib/automation/server/store.ts";
 import { openLedgerDatabase } from "../../ledger/db/client.ts";
 
@@ -92,6 +97,31 @@ function startTask(taskId: string) {
   }
 }
 
+function resumeTask(taskId: string) {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+
+  const model = currentAutomationModel();
+  const row = model.tasks.find((item) => item.id === taskId);
+  if (row?.status !== "waiting_for_human") {
+    return fail(409, { message: "Task is not waiting for human input." });
+  }
+
+  const session = resumeSessionFromLog(row.logTail);
+  if (!session) {
+    return fail(409, { message: "Missing Libretto resume session in latest log." });
+  }
+
+  try {
+    startAutomationResume(task.id, session);
+    return { resumed: task.id };
+  } catch (error) {
+    return fail(409, {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export function load() {
   return {
     automation: currentAutomationModel(),
@@ -120,5 +150,9 @@ export const actions: Actions = {
   retry: async ({ request }) => {
     const formData = await request.formData();
     return startTask(formTaskId(formData));
+  },
+  resume: async ({ request }) => {
+    const formData = await request.formData();
+    return resumeTask(formTaskId(formData));
   },
 };

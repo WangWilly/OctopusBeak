@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   nextAttemptStatus,
+  resumeSessionFromLog,
   shouldAutoRunImport,
   shouldMarkWaitingForHuman,
 } from "./runner.ts";
@@ -8,6 +9,13 @@ import {
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
 assert.equal(shouldMarkWaitingForHuman("download completed"), false);
+assert.equal(
+  resumeSessionFromLog(
+    "Workflow paused. run `npx libretto resume --session ses-1p4q`.",
+  ),
+  "ses-1p4q",
+);
+assert.equal(resumeSessionFromLog("download completed"), null);
 
 assert.equal(
   nextAttemptStatus({
