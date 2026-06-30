@@ -1157,7 +1157,7 @@ async function openFundDetail(
     /fundDetail|基金明細查詢|交易編號/,
     "YuanTa fund investment detail tables",
   );
-  const link = await firstVisibleLocator(
+  await firstVisibleLocator(
     scope
       .locator('a[onclick*="fundDetail("]')
       .filter({ hasText: new RegExp(position.paperNo) })
@@ -1169,7 +1169,20 @@ async function openFundDetail(
     `YuanTa fund detail link for ${position.paperNo}`,
   );
 
-  await link.click({ force: true });
+  const responsePromise = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/nib/tx/fundsummary"),
+      { timeout: 30_000 },
+    )
+    .catch(() => null);
+  await submitForm(scope, "fundsummary", {
+    TxnType: position.txnType,
+    PapernNo: position.paperNo,
+    TrustNo: position.trustNo,
+  });
+  await responsePromise;
   await settleAfterNavigation(page);
   return await waitForFundTables(
     page,

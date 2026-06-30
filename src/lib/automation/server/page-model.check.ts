@@ -106,3 +106,35 @@ assert.equal(activeFubonRow?.primaryAction, "Running");
 assert.equal(activeFubonRow?.progressPercent, 42);
 assert.equal(activeFubonRow?.progressText, "42%");
 assert.equal(activeEsunRow?.canRun, true);
+
+const failedResumeModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "yuanta-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      taskRunId: "run-4",
+      taskId: "yuanta-all-statements",
+      script: "npx libretto resume --session ses-1p4q",
+      status: "running",
+      finishedAt: null,
+      exitCode: null,
+      logTail:
+        'Workflow failed after resume: Could not find selector "input[name=\\"qry_option\\"]".',
+    },
+  },
+  activeTaskIds: [],
+  credentials: {},
+  importGate: {
+    locked: true,
+    missingTaskIds: [],
+  },
+  active: false,
+  businessDate: "2026-06-30",
+});
+
+const failedResumeRow = failedResumeModel.tasks.find(
+  (task) => task.id === "yuanta-all-statements",
+);
+assert.equal(failedResumeRow?.status, "failed");
+assert.equal(failedResumeRow?.primaryAction, "Retry");
+assert.equal(failedResumeRow?.progressText, "Failed");

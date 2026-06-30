@@ -1,6 +1,6 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun, AutomationTaskStatus } from "./store.ts";
-import { parseAutomationProgress } from "./runner.ts";
+import { parseAutomationProgress, resumeFailureMessage } from "./runner.ts";
 
 type ImportGate = {
   locked: boolean;
@@ -38,6 +38,7 @@ function rowStatus(
   isActive: boolean,
 ) {
   if (task.kind === "import" && gate.locked) return "locked";
+  if (run && resumeFailureMessage(run.logTail)) return "failed";
   if (isActive && !run) return "running";
   return run?.status ?? "queued";
 }

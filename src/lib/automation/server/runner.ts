@@ -27,6 +27,10 @@ export function resumeSessionFromLog(output: string) {
   return output.match(/libretto resume --session\s+([\w-]+)/i)?.[1] ?? null;
 }
 
+export function resumeFailureMessage(output: string) {
+  return output.match(/Workflow failed after resume:\s*([^\r\n]+)/i)?.[1]?.trim() ?? null;
+}
+
 export function parseAutomationProgress(output: string) {
   let progress: number | null = null;
   for (const match of output.matchAll(/automation-progress:\s*(\d+(?:\.\d+)?)/gi)) {
@@ -47,6 +51,10 @@ export function automationProcessEnv(
 }
 
 export function liveTaskRunUpdate(logTail: string) {
+  const resumeFailure = resumeFailureMessage(logTail);
+  if (resumeFailure) {
+    return { status: "failed" as const, errorMessage: resumeFailure, logTail };
+  }
   if (shouldMarkWaitingForHuman(logTail)) {
     return { status: "waiting_for_human" as const, logTail };
   }
@@ -60,10 +68,17 @@ export function nextAttemptStatus(input: {
   exitCode: number | null;
   waitingForHuman?: boolean;
 }): AutomationTaskStatus {
-  if (input.waitingForHuman) return "waiting_for_human";
+  if (input.exitCode === 0 && input.waitingForHuman) return "waiting_for_human";
   if (input.exitCode === 0) return "completed";
   if (input.kind === "crawler" && input.attempt < input.maxAttempts) return "retrying";
   return "failed";
+}
+
+export function shouldCloseResumeSession(input: {
+  status: AutomationTaskStatus;
+  resumeSession?: string;
+}) {
+  return input.status === "failed" && Boolean(input.resumeSession);
 }
 
 export function shouldAutoRunImport(input: {
@@ -96,6 +111,27 @@ function appendLog(logPath: string, chunk: string) {
 
 function tail(value: string) {
   return value.slice(-4000);
+}
+
+async function closeLibrettoSession(session: string) {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("npx", ["libretto", "close", "--session", session], {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: automationProcessEnv(),
+    });
+    let errorText = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      errorText = tail(errorText + chunk.toString("utf8"));
+    });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      if (exitCode === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(errorText || `libretto close exited with code ${exitCode}`));
+    });
+  });
 }
 
 export function startAutomationTask(
@@ -159,6 +195,19 @@ export async function runAutomationTask(
       });
       activeTaskRunIds.set(task.id, run.taskRunId);
       let logTail = "";
+      let closeResumeSessionPromise: Promise<void> | null = null;
+      const closeResumeSessionAfterFailure = () => {
+        if (!options.resumeSession) return null;
+        closeResumeSessionPromise ??= closeLibrettoSession(
+          options.resumeSession,
+        ).catch((error: unknown) => {
+          console.warn("automation-resume-session-close-failed", {
+            session: options.resumeSession,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return closeResumeSessionPromise;
+      };
 
       const result = await new Promise<{
         exitCode: number | null;
@@ -177,6 +226,9 @@ export async function runAutomationTask(
           appendLog(logPath, text);
           logTail = tail(logTail + text);
           updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
+          if (resumeFailureMessage(logTail)) {
+            void closeResumeSessionAfterFailure();
+          }
         };
         child.stdout.on("data", onOutput);
         child.stderr.on("data", onOutput);
@@ -188,7 +240,8 @@ export async function runAutomationTask(
         });
       });
 
-      const status = result.error
+      const resumeFailure = resumeFailureMessage(logTail);
+      const status = result.error || resumeFailure
         ? "failed"
         : nextAttemptStatus({
           kind: task.kind,
@@ -204,8 +257,12 @@ export async function runAutomationTask(
         signal: result.signal,
         logTail,
         errorMessage: result.error?.message
+          ?? resumeFailure
           ?? (status === "failed" ? `Task exited with code ${result.exitCode}` : null),
       });
+      if (shouldCloseResumeSession({ status, resumeSession: options.resumeSession })) {
+        await closeResumeSessionAfterFailure();
+      }
       if (status !== "retrying") {
         if (status !== "completed") return { status };
         const range = businessDayUtcRange();

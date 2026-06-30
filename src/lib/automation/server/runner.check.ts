@@ -4,8 +4,10 @@ import {
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
+  resumeFailureMessage,
   resumeSessionFromLog,
   shouldAutoRunImport,
+  shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
 } from "./runner.ts";
 
@@ -42,6 +44,21 @@ assert.deepEqual(liveTaskRunUpdate("Workflow paused. resume --session ses-1p4q")
   status: "waiting_for_human",
   logTail: "Workflow paused. resume --session ses-1p4q",
 });
+const failedResumeLog =
+  'Workflow failed after resume: Could not find selector "input[name=\\"qry_option\\"]".';
+const failedResumeMessage = 'Could not find selector "input[name=\\"qry_option\\"]".';
+assert.equal(
+  resumeFailureMessage(failedResumeLog),
+  failedResumeMessage,
+);
+assert.deepEqual(
+  liveTaskRunUpdate(failedResumeLog),
+  {
+    status: "failed",
+    errorMessage: failedResumeMessage,
+    logTail: failedResumeLog,
+  },
+);
 
 assert.equal(
   nextAttemptStatus({
@@ -56,6 +73,16 @@ assert.equal(
 assert.equal(
   nextAttemptStatus({ kind: "crawler", attempt: 1, maxAttempts: 2, exitCode: 1 }),
   "retrying",
+);
+assert.equal(
+  nextAttemptStatus({
+    kind: "crawler",
+    attempt: 1,
+    maxAttempts: 1,
+    exitCode: 1,
+    waitingForHuman: true,
+  }),
+  "failed",
 );
 assert.equal(
   nextAttemptStatus({ kind: "crawler", attempt: 2, maxAttempts: 2, exitCode: 1 }),
@@ -86,3 +113,9 @@ assert.equal(
   shouldAutoRunImport({ kind: "crawler", status: "completed", importLocked: true }),
   false,
 );
+assert.equal(shouldCloseResumeSession({ status: "failed", resumeSession: "ses-1p4q" }), true);
+assert.equal(
+  shouldCloseResumeSession({ status: "waiting_for_human", resumeSession: "ses-1p4q" }),
+  false,
+);
+assert.equal(shouldCloseResumeSession({ status: "failed" }), false);
