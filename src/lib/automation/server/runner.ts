@@ -26,7 +26,9 @@ export function nextAttemptStatus(input: {
   attempt: number;
   maxAttempts: number;
   exitCode: number | null;
+  waitingForHuman?: boolean;
 }): AutomationTaskStatus {
+  if (input.waitingForHuman) return "waiting_for_human";
   if (input.exitCode === 0) return "completed";
   if (input.kind === "crawler" && input.attempt < input.maxAttempts) return "retrying";
   return "failed";
@@ -129,6 +131,7 @@ export async function runAutomationTask(
           attempt,
           maxAttempts: task.maxAttempts,
           exitCode: result.exitCode,
+          waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
       updateTaskRun(db, run.taskRunId, {
         status,
@@ -140,7 +143,8 @@ export async function runAutomationTask(
           ?? (status === "failed" ? `Task exited with code ${result.exitCode}` : null),
       });
       activeTaskRunId = null;
-      if (status === "completed") {
+      if (status !== "retrying") {
+        if (status !== "completed") return { status };
         const range = businessDayUtcRange();
         const gate = importGateStatus(db, {
           dependencyIds: CSV_IMPORT_DEPENDENCY_IDS,

@@ -10,6 +10,16 @@ assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
 assert.equal(shouldMarkWaitingForHuman("download completed"), false);
 
 assert.equal(
+  nextAttemptStatus({
+    kind: "crawler",
+    attempt: 1,
+    maxAttempts: 2,
+    exitCode: 0,
+    waitingForHuman: true,
+  }),
+  "waiting_for_human",
+);
+assert.equal(
   nextAttemptStatus({ kind: "crawler", attempt: 1, maxAttempts: 2, exitCode: 1 }),
   "retrying",
 );
