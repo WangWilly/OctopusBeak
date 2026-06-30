@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   automationProcessEnv,
+  isForceQuitRun,
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
@@ -59,6 +60,9 @@ assert.deepEqual(
     logTail: failedResumeLog,
   },
 );
+assert.equal(isForceQuitRun({ status: "failed", errorMessage: "Browser session force quit." }), true);
+assert.equal(isForceQuitRun({ status: "failed", errorMessage: "Task exited with code 1" }), false);
+assert.equal(isForceQuitRun({ status: "waiting_for_human", errorMessage: null }), false);
 
 assert.equal(
   nextAttemptStatus({

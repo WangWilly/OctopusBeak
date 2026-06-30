@@ -8,7 +8,9 @@ import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.
 import {
   createTaskRun,
   importGateStatus,
+  taskRunById,
   updateTaskRun,
+  type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
 import {
@@ -59,6 +61,12 @@ export function liveTaskRunUpdate(logTail: string) {
     return { status: "waiting_for_human" as const, logTail };
   }
   return { logTail };
+}
+
+export function isForceQuitRun(
+  run: Pick<AutomationTaskRun, "status" | "errorMessage"> | null | undefined,
+) {
+  return run?.status === "failed" && run.errorMessage?.startsWith("Browser session force quit") === true;
 }
 
 export function nextAttemptStatus(input: {
@@ -113,7 +121,7 @@ function tail(value: string) {
   return value.slice(-4000);
 }
 
-async function closeLibrettoSession(session: string) {
+export async function closeLibrettoSession(session: string) {
   await new Promise<void>((resolve, reject) => {
     const child = spawn("npx", ["libretto", "close", "--session", session], {
       stdio: ["ignore", "ignore", "pipe"],
@@ -225,7 +233,9 @@ export async function runAutomationTask(
           const text = chunk.toString("utf8");
           appendLog(logPath, text);
           logTail = tail(logTail + text);
-          updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
+          if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
+            updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
+          }
           if (resumeFailureMessage(logTail)) {
             void closeResumeSessionAfterFailure();
           }
@@ -250,6 +260,7 @@ export async function runAutomationTask(
           exitCode: result.exitCode,
           waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
+      if (isForceQuitRun(taskRunById(taskDb, run.taskRunId))) return { status: "failed" };
       updateTaskRun(taskDb, run.taskRunId, {
         status,
         finishedAt: new Date().toISOString(),

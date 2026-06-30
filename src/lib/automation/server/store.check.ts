@@ -7,6 +7,7 @@ import {
   createTaskRun,
   importGateStatus,
   latestTaskRuns,
+  taskRunById,
   updateTaskRun,
 } from "./store.ts";
 
@@ -38,6 +39,8 @@ try {
   const latest = latestTaskRuns(db);
   assert.equal(latest["fubon-all-statements"]?.status, "completed");
   assert.equal(latest["fubon-all-statements"]?.finishedAt, finishedAt);
+  assert.equal(taskRunById(db, run.taskRunId)?.status, "completed");
+  assert.equal(taskRunById(db, "missing"), null);
 
   const lockedGate = importGateStatus(db, {
     dependencyIds: [
