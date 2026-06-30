@@ -141,19 +141,44 @@
 
   async function sendViewerInput(input: unknown) {
     if (!humanTask) return;
-    const response = await fetch("/automation/viewer/input", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId: humanTask.id, input }),
-    });
+    try {
+      const response = await fetch("/automation/viewer/input", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId: humanTask.id, input }),
+      });
 
-    if (!response.ok) {
-      viewerError = await response.text();
-      return;
+      if (!response.ok) {
+        viewerError = await response.text();
+        return;
+      }
+
+      viewerError = "";
+      refreshViewerImage();
+    } catch (error) {
+      viewerError = error instanceof Error ? error.message : String(error);
     }
+  }
 
-    viewerError = "";
-    refreshViewerImage();
+  async function forceQuitHumanViewer() {
+    if (!humanTask) return;
+    try {
+      const response = await fetch("/automation/viewer/force-quit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId: humanTask.id }),
+      });
+
+      if (!response.ok) {
+        viewerError = await response.text();
+        return;
+      }
+
+      closeHumanViewer();
+      void invalidateAll();
+    } catch (error) {
+      viewerError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function pointerPoint(event: PointerEvent) {
@@ -191,7 +216,10 @@
   }
 
   function handleViewerPointerCancel(event: PointerEvent) {
-    if (dragStart?.pointerId === event.pointerId) dragStart = null;
+    if (dragStart?.pointerId !== event.pointerId) return;
+    const image = event.currentTarget as HTMLImageElement;
+    dragStart = null;
+    if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
   }
 
   function handleViewerType(event: KeyboardEvent) {
@@ -372,6 +400,9 @@
           <p>{humanTask.humanSession ?? "No session"}</p>
         </div>
         <div class="viewer-actions">
+          <button class="button secondary fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
+            Force quit
+          </button>
           <form method="POST" action="?/resume">
             <input type="hidden" name="taskId" value={humanTask.id} />
             <button class="button primary fixed-action" type="submit">Resume</button>
@@ -396,6 +427,8 @@
             class="viewer-text-input"
             type="text"
             maxlength="128"
+            aria-label="Text to type into paused browser"
+            placeholder="Type text"
             autocomplete="off"
             onkeydown={handleViewerType}
           />
@@ -624,6 +657,7 @@
 
   .viewer-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: var(--space-3);
@@ -637,8 +671,10 @@
 
   .viewer-image {
     display: block;
-    width: 100%;
+    width: auto;
+    max-width: 100%;
     max-height: min(68vh, 720px);
+    justify-self: center;
     object-fit: contain;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -675,6 +711,10 @@
     font-size: 13px;
   }
 
+  .force-quit-action {
+    color: var(--danger);
+  }
+
   .log-output {
     min-height: 240px;
     margin: 0;
@@ -698,6 +738,15 @@
     }
 
     .task-actions {
+      justify-content: flex-start;
+    }
+
+    .human-viewer-modal .modal-head {
+      flex-direction: column;
+    }
+
+    .viewer-actions {
+      width: 100%;
       justify-content: flex-start;
     }
   }

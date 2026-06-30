@@ -132,6 +132,13 @@ export function updateTaskRun(
   );
 }
 
+export function taskRunById(db: LedgerDatabase, taskRunId: string) {
+  const row = db.prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?").get(taskRunId) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? rowToTaskRun(row) : null;
+}
+
 export function latestTaskRuns(db: LedgerDatabase) {
   const rows = db.prepare(`
     SELECT run.*
