@@ -160,7 +160,9 @@ export const actions: Actions = {
       const value = String(formData.get(key) ?? "").trim();
       if (value) updates[key] = value;
     }
-    writeFileSync(AUTOMATION_ENV_PATH, updateEnvText(readAutomationEnvText(), updates), "utf8");
+    const envText = readAutomationEnvText();
+    const nextEnvText = updateEnvText(envText, updates);
+    if (nextEnvText !== envText) writeFileSync(AUTOMATION_ENV_PATH, nextEnvText, "utf8");
     return { saved: true };
   },
   run: async ({ request }) => {

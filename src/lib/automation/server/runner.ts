@@ -3,6 +3,7 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { businessDayUtcRange } from "./business-day.ts";
+import { parseEnvText } from "./env-file.ts";
 import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.ts";
 import {
   createTaskRun,
@@ -33,6 +34,16 @@ export function parseAutomationProgress(output: string) {
     progress = Math.max(0, Math.min(100, value));
   }
   return progress;
+}
+
+export function automationProcessEnv(
+  envText = readAutomationEnvText(),
+  baseEnv: NodeJS.ProcessEnv = process.env,
+) {
+  return {
+    ...baseEnv,
+    ...parseEnvText(envText),
+  };
 }
 
 export function liveTaskRunUpdate(logTail: string) {
@@ -159,7 +170,7 @@ export async function runAutomationTask(
           : ["npm", "run", task.script];
         const child = spawn(command[0], command.slice(1), {
           stdio: ["ignore", "pipe", "pipe"],
-          env: process.env,
+          env: automationProcessEnv(),
         });
         const onOutput = (chunk: Buffer) => {
           const text = chunk.toString("utf8");

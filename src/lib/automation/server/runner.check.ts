@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  automationProcessEnv,
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
@@ -7,6 +8,18 @@ import {
   shouldAutoRunImport,
   shouldMarkWaitingForHuman,
 } from "./runner.ts";
+
+assert.deepEqual(
+  automationProcessEnv("FUBON_USER_ID=file-user\nFUBON_PASSWORD=file-password\n", {
+    FUBON_USER_ID: "process-user",
+    KEEP_ME: "yes",
+  }),
+  {
+    FUBON_USER_ID: "file-user",
+    FUBON_PASSWORD: "file-password",
+    KEEP_ME: "yes",
+  },
+);
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
