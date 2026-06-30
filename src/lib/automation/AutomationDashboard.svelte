@@ -12,10 +12,10 @@
   let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  $: sideValue = automation.active ? "Running" : automation.importGate.locked ? "Import locked" : "Ready";
+  $: sideValue = automation.active ? `${automation.activeTaskCount} running` : automation.importGate.locked ? "Import locked" : "Ready";
   $: sideSub = `Business day ${automation.businessDate}`;
   $: topStatus = automation.active
-    ? "Running"
+    ? `${automation.activeTaskCount} running`
     : automation.importGate.locked
       ? "Import locked"
       : "Ready";
@@ -81,7 +81,7 @@
       <div class="panel-title automation-title">
         <div>
           <h2>Task queue</h2>
-          <p>Tasks run one at a time. CSV import unlocks from today's persisted crawler history, not page state.</p>
+          <p>Tasks can run in parallel. CSV import unlocks from today's persisted crawler history, not page state.</p>
         </div>
         <span class="chip">UTC history</span>
       </div>
@@ -92,6 +92,7 @@
             <tr>
               <th>Task</th>
               <th>Status</th>
+              <th>Progress</th>
               <th>Attempt</th>
               <th>Latest UTC</th>
               <th>Latest log</th>
@@ -108,6 +109,14 @@
                   </div>
                 </td>
                 <td><span class={`chip ${statusClass(task.status)}`}>{task.status.replaceAll("_", " ")}</span></td>
+                <td>
+                  <div class="progress-cell">
+                    <div class="progress-bar" aria-hidden="true">
+                      <span style={`width: ${task.progressPercent ?? 0}%`}></span>
+                    </div>
+                    <span class="mono">{task.progressText}</span>
+                  </div>
+                </td>
                 <td class="mono">{task.attempt}/{task.maxAttempts}</td>
                 <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
                 <td class="mono log-tail">{task.errorMessage ?? (task.logTail || "--")}</td>
@@ -115,7 +124,7 @@
                   <div class="task-actions">
                     <form method="POST" action={`?/${actionName(task)}`}>
                       <input type="hidden" name="taskId" value={task.id} />
-                      <button class="button primary task-control" type="submit" disabled={!task.canRun}>
+                      <button class="button primary task-control" type="submit" disabled={!task.canRun} aria-busy={task.isActive}>
                         {task.primaryAction}
                       </button>
                     </form>
@@ -223,6 +232,27 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .progress-cell {
+    min-width: 150px;
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  .progress-bar {
+    width: 100%;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-soft);
+  }
+
+  .progress-bar span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
   }
 
   .task-actions {
