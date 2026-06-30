@@ -81,9 +81,16 @@
 
   .history-chart {
     min-height: 220px;
-    overflow-x: auto;
+    aspect-ratio: 720 / 220;
+    overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--surface-soft);
+  }
+
+  .history-chart :global(.sparkline) {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 </style>
