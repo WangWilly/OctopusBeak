@@ -555,6 +555,32 @@ function addMaicoinStatementValueTwd(db: LedgerDatabase) {
   addColumnIfMissing(db, "maicoin_statement_rows", "value_twd", "value_twd REAL");
 }
 
+function createAutomationTaskRuns(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS automation_task_runs (
+      task_run_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      script TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      max_attempts INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      exit_code INTEGER,
+      signal TEXT,
+      error_message TEXT,
+      log_path TEXT NOT NULL,
+      log_tail TEXT NOT NULL,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_latest
+    ON automation_task_runs(task_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_status
+    ON automation_task_runs(status, started_at);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -585,6 +611,11 @@ const migrations: LedgerMigration[] = [
     version: 6,
     name: "maicoin_statement_value_twd",
     up: addMaicoinStatementValueTwd,
+  },
+  {
+    version: 7,
+    name: "automation_task_runs",
+    up: createAutomationTaskRuns,
   },
 ];
 
