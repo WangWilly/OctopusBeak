@@ -278,3 +278,21 @@ export const maicoinStatementRows = sqliteTable("maicoin_statement_rows", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const automationTaskRuns = sqliteTable("automation_task_runs", {
+  taskRunId: text("task_run_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  script: text("script").notNull(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull(),
+  attempt: integer("attempt").notNull(),
+  maxAttempts: integer("max_attempts").notNull(),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  exitCode: integer("exit_code"),
+  signal: text("signal"),
+  errorMessage: text("error_message"),
+  logPath: text("log_path").notNull(),
+  logTail: text("log_tail").notNull(),
+  recordJson: text("record_json").notNull(),
+});
