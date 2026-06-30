@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { openLedgerDatabase } from "./db/client.ts";
 import type {
   BatchRecord,
   ImportRunRecord,
@@ -9,7 +8,6 @@ import type {
   TypedStatementTable,
 } from "./financial-dashboard-types.ts";
 
-const SQLITE_LEDGER_FILE = "ledger.sqlite";
 type LedgerDatabase = InstanceType<typeof DatabaseSync>;
 type ColumnKind = "text" | "number";
 type ColumnSpec = Readonly<Record<string, ColumnKind>>;
@@ -799,12 +797,7 @@ export type FinancialDashboardData = {
 export async function readFinancialDashboardData(
   ledgerDir: string,
 ): Promise<FinancialDashboardData> {
-  const sqlitePath = join(ledgerDir, SQLITE_LEDGER_FILE);
-  if (!existsSync(sqlitePath)) {
-    throw new Error(`Missing SQLite ledger: ${sqlitePath}`);
-  }
-
-  const db = new DatabaseSync(sqlitePath, { readOnly: true });
+  const db = openLedgerDatabase(ledgerDir, { readOnly: true });
   try {
     return {
       source: "sqlite",
