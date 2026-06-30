@@ -358,6 +358,9 @@ function renderOctopusBeakStyles(includeSources = false): string {
     }
     html[data-values-visible="false"] [data-sensitive] {
       color: var(--muted);
+      filter: blur(10px);
+      opacity: 0.64;
+      user-select: none;
     }
     .label, .eyebrow, .table th, .chip, .metric-label {
       color: var(--muted);

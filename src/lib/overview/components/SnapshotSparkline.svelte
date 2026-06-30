@@ -86,7 +86,7 @@
   {#each yTicks as tick}
     <g class="sparkline-tick">
       <path d={`M${left - 6} ${tick.y}H${left}`} />
-      <text x={left - 10} y={tick.y + 4} text-anchor="end">{shortAmount(tick.value)}</text>
+      <text data-sensitive x={left - 10} y={tick.y + 4} text-anchor="end">{shortAmount(tick.value)}</text>
     </g>
   {/each}
   {#each xTicks as tick}

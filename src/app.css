@@ -62,13 +62,14 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
-.money {
+.money,
+[data-sensitive] {
   transition: filter 160ms ease, opacity 160ms ease;
 }
 
-.values-hidden .money {
-  filter: blur(6px);
-  opacity: 0.72;
+.values-hidden :is(.money, [data-sensitive]) {
+  filter: blur(10px);
+  opacity: 0.64;
   user-select: none;
 }
 
