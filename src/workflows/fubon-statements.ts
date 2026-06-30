@@ -715,12 +715,12 @@ export async function runFubonStatements(
 
   for (let accountIndex = 0; accountIndex < accountCount; accountIndex += 1) {
     const accountStatements: ParsedDepositStatement[] = [];
+    const account = await openTransactionDetailForAccountIndex(
+      page,
+      accountIndex,
+    );
 
     for (const dateRange of input.dateRanges) {
-      const account = await openTransactionDetailForAccountIndex(
-        page,
-        accountIndex,
-      );
       accountStatements.push(
         await fetchDepositStatement(page, dateRange, account),
       );
