@@ -266,11 +266,13 @@
   }
 
   .spinner {
+    box-sizing: border-box;
+    flex: 0 0 14px;
     width: 14px;
     height: 14px;
-    border: 2px solid color-mix(in oklch, currentColor 25%, transparent);
+    border: 2px solid rgb(255 255 255 / 0.35);
     border-top-color: currentColor;
-    border-radius: 999px;
+    border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
 
