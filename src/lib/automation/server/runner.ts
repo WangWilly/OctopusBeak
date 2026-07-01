@@ -78,7 +78,6 @@ export function nextAttemptStatus(input: {
 }): AutomationTaskStatus {
   if (input.exitCode === 0 && input.waitingForHuman) return "waiting_for_human";
   if (input.exitCode === 0) return "completed";
-  if (input.kind === "crawler" && input.attempt < input.maxAttempts) return "retrying";
   return "failed";
 }
 
@@ -184,7 +183,7 @@ export async function runAutomationTask(
   try {
     db = openLedgerDatabase(ledgerDir);
     const taskDb = db;
-    const maxAttempts = options.resumeSession ? 1 : task.maxAttempts;
+    const maxAttempts = 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const startedAt = new Date().toISOString();
       const logPath = join(
@@ -200,7 +199,7 @@ export async function runAutomationTask(
         taskId: task.id,
         script,
         kind: task.kind,
-        status: attempt > 1 ? "retrying" : "running",
+        status: "running",
         attempt,
         maxAttempts,
         startedAt,
@@ -297,24 +296,22 @@ export async function runAutomationTask(
       if (shouldCloseResumeSession({ status, resumeSession: options.resumeSession })) {
         await closeResumeSessionAfterFailure();
       }
-      if (status !== "retrying") {
-        if (status !== "completed") return { status };
-        const range = businessDayUtcRange();
-        const enabledGroups = automationGroupEnabledStatus(readAutomationEnvText());
-        const gate = importGateStatus(taskDb, {
-          dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
-          startUtc: range.startUtc,
-          endUtc: range.endUtc,
-        });
-        if (shouldAutoRunImport({
-          kind: task.kind,
-          status,
-          importLocked: gate.locked,
-        }) && !activeTaskRunIds.has("import-downloads-csv")) {
-          await runAutomationTask("import-downloads-csv", ledgerDir);
-        }
-        return { status };
+      if (status !== "completed") return { status };
+      const range = businessDayUtcRange();
+      const enabledGroups = automationGroupEnabledStatus(readAutomationEnvText());
+      const gate = importGateStatus(taskDb, {
+        dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
+        startUtc: range.startUtc,
+        endUtc: range.endUtc,
+      });
+      if (shouldAutoRunImport({
+        kind: task.kind,
+        status,
+        importLocked: gate.locked,
+      }) && !activeTaskRunIds.has("import-downloads-csv")) {
+        await runAutomationTask("import-downloads-csv", ledgerDir);
       }
+      return { status };
     }
     return { status: "failed" as const };
   } finally {

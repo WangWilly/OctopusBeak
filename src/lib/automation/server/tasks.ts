@@ -106,7 +106,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "fubon",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[0].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "esun-credit-card-statements",
@@ -116,7 +116,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "esun",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[1].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "yuanta-all-statements",
@@ -126,7 +126,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "yuanta",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[2].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "yuanta-trade-statements",
@@ -136,7 +136,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "yuanta-trade",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[3].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "cathay-all-statements",
@@ -146,7 +146,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "cathay",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[4].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "hncb-statements",
@@ -156,7 +156,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "hncb",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[5].credentialKeys,
     dependencies: [],
-    maxAttempts: 2,
+    maxAttempts: 1,
   },
   {
     id: "sync-maicoin",
