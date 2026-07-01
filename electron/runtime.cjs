@@ -3,15 +3,30 @@ const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 
+const defaultAutomationSettings = {
+  AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+  LIBRETTO_CLOUD_FUBON_ENABLED: true,
+  LIBRETTO_CLOUD_ESUN_ENABLED: true,
+  LIBRETTO_CLOUD_YUANTA_ENABLED: true,
+  LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
+  LIBRETTO_CLOUD_CATHAY_ENABLED: true,
+  LIBRETTO_CLOUD_HNCB_ENABLED: true,
+  MAX_ENABLED: true,
+  MAX_SUB_ACCOUNT: "main",
+};
+
 function ensureDataRoot(userData) {
   fs.mkdirSync(path.join(userData, ".libretto"), { recursive: true });
   fs.mkdirSync(path.join(userData, "downloads"), { recursive: true });
   fs.mkdirSync(path.join(userData, "data", "ledger"), { recursive: true });
   fs.mkdirSync(path.join(userData, "data", "automation", "logs"), { recursive: true });
 
-  const envPath = path.join(userData, ".env");
-  if (!fs.existsSync(envPath)) {
-    fs.writeFileSync(envPath, "AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei\n", "utf8");
+  const settingsPath = path.join(userData, "settings.json");
+  if (!fs.existsSync(settingsPath)) {
+    fs.writeFileSync(settingsPath, `${JSON.stringify(defaultAutomationSettings, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
   }
 }
 
