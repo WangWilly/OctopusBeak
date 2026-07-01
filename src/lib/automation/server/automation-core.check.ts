@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
+  AUTOMATION_ENABLED_KEYS,
+  AUTOMATION_NON_SECRET_KEYS,
+  AUTOMATION_SECRET_KEYS,
   AUTOMATION_TASKS,
   CSV_IMPORT_DEPENDENCY_IDS,
+  automationCredentialKeyIsSecret,
   enabledAutomationTasks,
   enabledCsvImportDependencyIds,
   taskById,
@@ -40,6 +44,12 @@ assert.deepEqual(
     "LIBRETTO_CLOUD_FUBON_PASSWORD",
   ],
 );
+assert.equal(AUTOMATION_ENABLED_KEYS.includes("LIBRETTO_CLOUD_FUBON_ENABLED"), true);
+assert.equal(AUTOMATION_NON_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), true);
+assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SECRET_KEY"), true);
+assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), false);
+assert.equal(automationCredentialKeyIsSecret("MAX_SECRET_KEY"), true);
+assert.equal(automationCredentialKeyIsSecret("MAX_SUB_ACCOUNT"), false);
 
 const enabledGroups = automationGroupEnabledStatus("LIBRETTO_CLOUD_ESUN_ENABLED=false\n", {});
 assert.equal(enabledGroups.fubon, true);

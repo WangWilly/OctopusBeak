@@ -198,6 +198,24 @@ export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
   new Set(AUTOMATION_CREDENTIAL_GROUPS.flatMap((group) => group.credentialKeys)),
 );
 
+export const AUTOMATION_ENABLED_KEYS = AUTOMATION_CREDENTIAL_GROUPS.map((group) => group.enabledKey);
+
+export const AUTOMATION_NON_SECRET_KEYS = [
+  "AUTOMATION_BUSINESS_TIMEZONE",
+  "MAX_SUB_ACCOUNT",
+  ...AUTOMATION_ENABLED_KEYS,
+] as const;
+
+const nonSecretCredentialKeys = new Set<string>(["MAX_SUB_ACCOUNT"]);
+
+export const AUTOMATION_SECRET_KEYS = AUTOMATION_CREDENTIAL_KEYS.filter(
+  (key) => !nonSecretCredentialKeys.has(key),
+);
+
+export function automationCredentialKeyIsSecret(key: string) {
+  return !nonSecretCredentialKeys.has(key);
+}
+
 export function taskById(taskId: string) {
   return AUTOMATION_TASKS.find((task) => task.id === taskId) ?? null;
 }
