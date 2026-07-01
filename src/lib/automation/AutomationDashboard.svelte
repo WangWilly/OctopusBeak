@@ -320,11 +320,11 @@
       <div class="modal-head">
         <div>
           <h2 id="credentials-title">Credentials</h2>
-          <p>Saved to local .env. Existing secret values are shown only as saved or missing.</p>
+          <p>Saved locally. Switches go to settings.json; secrets go to credentials.json.</p>
         </div>
         <div class="credential-head-actions">
           <button class="button fixed-action" type="button" onclick={closeCredentials}>Cancel</button>
-          <button class="button primary fixed-action" type="submit">Save .env</button>
+          <button class="button primary fixed-action" type="submit">Save</button>
         </div>
       </div>
       <div class="modal-body credential-body">
