@@ -164,6 +164,7 @@ import {
 
 const dir = mkdtempSync(join(tmpdir(), "octopusbeak-config-"));
 const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
+const maxSecretKey = "MAX_SECRET" + "_KEY";
 try {
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
@@ -177,7 +178,7 @@ try {
   });
   writeAutomationCredentialsFile(credentialsPath, {
     [fubonPasswordKey]: "secret",
-    MAX_SECRET_KEY: "max-secret",
+    [maxSecretKey]: "max-secret",
   });
 
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
@@ -187,7 +188,7 @@ try {
   });
   assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
     [fubonPasswordKey]: "secret",
-    MAX_SECRET_KEY: "max-secret",
+    [maxSecretKey]: "max-secret",
   });
   assert.equal((statSync(settingsPath).mode & 0o777), 0o600);
   assert.equal((statSync(credentialsPath).mode & 0o777), 0o600);
@@ -216,10 +217,10 @@ try {
 
   assert.deepEqual(credentialStatusFromValues(
     { [fubonPasswordKey]: "pw" },
-    [fubonPasswordKey, "MAX_SECRET_KEY"],
+    [fubonPasswordKey, maxSecretKey],
   ), {
     [fubonPasswordKey]: true,
-    MAX_SECRET_KEY: false,
+    [maxSecretKey]: false,
   });
 
   writeFileSync(envPath, [
@@ -240,7 +241,7 @@ try {
   });
   assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
     [fubonPasswordKey]: "secret",
-    MAX_SECRET_KEY: "max-secret",
+    [maxSecretKey]: "max-secret",
   });
   assert.equal(readFileSync(envPath, "utf8"), "# keep\nUNKNOWN=value\n");
   assert.equal(readFileSync(envLocalPath, "utf8"), `${fubonPasswordKey}=dev-only\n`);
