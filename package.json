@@ -15,6 +15,8 @@
     "dev": "vite dev",
     "dev:mock": "LEDGER_DIR=data/mock-ledger vite dev",
     "build": "vite build",
+    "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
+    "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "preview": "vite preview",
     "run:example": "libretto run src/workflows/scrape-page.ts --headless",
     "run:fubon-statements": "libretto run src/workflows/fubon-statements.ts --headless",
@@ -50,9 +52,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-dmg": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
     "@sveltejs/adapter-node": "^5.5.7",
     "@sveltejs/kit": "^2.68.0",
     "@types/node": "^26.0.0",
+    "electron": "^43.0.0",
     "svelte": "^5.56.4",
     "svelte-check": "^4.7.1",
     "typescript": "^5.9.0",
