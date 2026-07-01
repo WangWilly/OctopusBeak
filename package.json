@@ -49,6 +49,7 @@
     "@ai-sdk/openai": "^2.0.0",
     "drizzle-orm": "^0.45.2",
     "libretto": "^0.6.31",
+    "playwright": "^1.61.0",
     "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
