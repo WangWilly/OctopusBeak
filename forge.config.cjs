@@ -1,5 +1,6 @@
 const shouldSign = process.env.OCTOPUSBEAK_SIGN === "1";
 const notaryProfile = process.env.OCTOPUSBEAK_NOTARY_PROFILE || "OctopusBeakNotary";
+const notaryKeychain = process.env.OCTOPUSBEAK_NOTARY_KEYCHAIN;
 
 module.exports = {
   packagerConfig: {
@@ -28,6 +29,7 @@ module.exports = {
           osxSign: {},
           osxNotarize: {
             keychainProfile: notaryProfile,
+            ...(notaryKeychain ? { keychain: notaryKeychain } : {}),
           },
         }
       : {}),
