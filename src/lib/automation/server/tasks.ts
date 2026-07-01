@@ -4,6 +4,7 @@ export type AutomationTask = {
   id: string;
   label: string;
   script: string;
+  command: readonly string[];
   kind: AutomationTaskKind;
   credentialGroupId?: string;
   credentialKeys: readonly string[];
@@ -102,6 +103,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "fubon-all-statements",
     label: "Fubon all statements",
     script: "run:fubon-all-statements",
+    command: ["libretto", "run", "src/workflows/fubon-all-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "fubon",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[0].credentialKeys,
@@ -112,6 +114,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "esun-credit-card-statements",
     label: "ESun credit card statements",
     script: "run:esun-credit-card-statements",
+    command: ["libretto", "run", "src/workflows/esun-credit-card-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "esun",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[1].credentialKeys,
@@ -122,6 +125,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "yuanta-all-statements",
     label: "Yuanta all statements",
     script: "run:yuanta-all-statements",
+    command: ["libretto", "run", "src/workflows/yuanta-all-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "yuanta",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[2].credentialKeys,
@@ -132,6 +136,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "yuanta-trade-statements",
     label: "Yuanta trade statements",
     script: "run:yuanta-trade-statements",
+    command: ["libretto", "run", "src/workflows/yuanta-trade-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "yuanta-trade",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[3].credentialKeys,
@@ -142,6 +147,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "cathay-all-statements",
     label: "Cathay all statements",
     script: "run:cathay-all-statements",
+    command: ["libretto", "run", "src/workflows/cathay-all-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "cathay",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[4].credentialKeys,
@@ -152,6 +158,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "hncb-statements",
     label: "HNCB statements",
     script: "run:hncb-statements",
+    command: ["libretto", "run", "src/workflows/hncb-statements.ts", "--headless"],
     kind: "crawler",
     credentialGroupId: "hncb",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[5].credentialKeys,
@@ -162,6 +169,13 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "sync-maicoin",
     label: "MaiCoin sync",
     script: "run:sync-maicoin",
+    command: [
+      "node",
+      "--env-file-if-exists=.env",
+      "--no-warnings",
+      "--experimental-strip-types",
+      "src/ledger/sync-maicoin.ts",
+    ],
     kind: "sync",
     credentialGroupId: "maicoin",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[6].credentialKeys,
@@ -172,6 +186,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "import-downloads-csv",
     label: "Import downloads CSV",
     script: "run:import-downloads-csv",
+    command: ["node", "--no-warnings", "--experimental-strip-types", "src/ledger/import-downloads-csv.ts"],
     kind: "import",
     credentialKeys: [],
     dependencies: CSV_IMPORT_DEPENDENCY_IDS,
