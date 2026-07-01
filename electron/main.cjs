@@ -66,6 +66,10 @@ function guardWindowNavigation(window, origin) {
     if (!isAllowedNavigation(targetUrl, origin)) event.preventDefault();
   });
 
+  window.webContents.on("will-redirect", (event, targetUrl) => {
+    if (!isAllowedNavigation(targetUrl, origin)) event.preventDefault();
+  });
+
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedNavigation(url, origin)) {
       void window.loadURL(url).catch(showStartupError);
