@@ -19,7 +19,7 @@ export type AutomationTaskRow = AutomationTask & {
   progressText: string;
   humanSession: string | null;
   isActive: boolean;
-  primaryAction: "Run" | "Resume" | "Retry" | "Locked" | "Running" | "Retrying";
+  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Running";
   canRun: boolean;
 };
 
@@ -54,8 +54,7 @@ function rowStatus(
 function primaryAction(status: AutomationTaskStatus) {
   if (status === "locked") return "Locked";
   if (status === "running") return "Running";
-  if (status === "retrying") return "Retrying";
-  if (status === "failed") return "Retry";
+  if (status === "failed") return "Run again";
   if (status === "waiting_for_human") return "Resume";
   return "Run";
 }

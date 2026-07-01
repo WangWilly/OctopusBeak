@@ -73,7 +73,7 @@ const failedModel = buildAutomationPageModel({
 });
 
 const failedRow = failedModel.tasks.find((task) => task.id === "hncb-statements");
-assert.equal(failedRow?.primaryAction, "Retry");
+assert.equal(failedRow?.primaryAction, "Run again");
 assert.equal(failedRow?.canRun, true);
 
 const activeModel = buildAutomationPageModel({
@@ -135,7 +135,7 @@ const staleRunningRow = staleRunningModel.tasks.find(
   (task) => task.id === "yuanta-all-statements",
 );
 assert.equal(staleRunningRow?.status, "failed");
-assert.equal(staleRunningRow?.primaryAction, "Retry");
+assert.equal(staleRunningRow?.primaryAction, "Run again");
 
 const failedResumeModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -166,5 +166,5 @@ const failedResumeRow = failedResumeModel.tasks.find(
   (task) => task.id === "yuanta-all-statements",
 );
 assert.equal(failedResumeRow?.status, "failed");
-assert.equal(failedResumeRow?.primaryAction, "Retry");
+assert.equal(failedResumeRow?.primaryAction, "Run again");
 assert.equal(failedResumeRow?.progressText, "Failed");
