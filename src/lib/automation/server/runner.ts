@@ -3,6 +3,11 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { businessDayUtcRange } from "./business-day.ts";
+import {
+  resolveLibrettoCommand,
+  resolvePatchCommand,
+  resolveTaskCommand,
+} from "./desktop-command.ts";
 import { parseEnvText } from "./env-file.ts";
 import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.ts";
 import {
@@ -91,8 +96,8 @@ export function shouldCloseResumeSession(input: {
 }
 
 export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
-  if (input.resumeSession) return null;
-  return ["node", "scripts/patch-libretto-run-cdp.mjs"] as const;
+  const command = resolvePatchCommand(input);
+  return command ? [command.command, ...command.args] as const : null;
 }
 
 export function shouldAutoRunImport(input: {
@@ -129,9 +134,13 @@ function tail(value: string) {
 
 export async function closeLibrettoSession(session: string) {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn("npx", ["libretto", "close", "--session", session], {
+    const command = resolveLibrettoCommand(
+      ["close", "--session", session],
+      automationProcessEnv(),
+    );
+    const child = spawn(command.command, command.args, {
       stdio: ["ignore", "ignore", "pipe"],
-      env: automationProcessEnv(),
+      env: command.env,
     });
     let errorText = "";
     child.stderr.on("data", (chunk: Buffer) => {
@@ -194,9 +203,9 @@ export async function runAutomationTask(
         "logs",
         `${task.id}-${Date.now()}-${attempt}.log`,
       );
-      const script = options.resumeSession
-        ? `npx libretto resume --session ${options.resumeSession}`
-        : task.script;
+      const env = automationProcessEnv();
+      const command = resolveTaskCommand(task, { resumeSession: options.resumeSession }, env);
+      const script = command.display;
       const run = createTaskRun(taskDb, {
         taskId: task.id,
         script,
@@ -228,10 +237,6 @@ export async function runAutomationTask(
         signal: NodeJS.Signals | null;
         error: Error | null;
       }>((resolve) => {
-        const command = options.resumeSession
-          ? ["npx", "libretto", "resume", "--session", options.resumeSession]
-          : ["npm", "run", task.script];
-        const env = automationProcessEnv();
         const onOutput = (chunk: Buffer) => {
           const text = chunk.toString("utf8");
           appendLog(logPath, text);
@@ -243,10 +248,10 @@ export async function runAutomationTask(
             void closeResumeSessionAfterFailure();
           }
         };
-        const patchCommand = librettoRunCdpPatchCommand(options);
+        const patchCommand = resolvePatchCommand(options, env);
         if (patchCommand) {
-          const patch = spawnSync(patchCommand[0], patchCommand.slice(1), {
-            env,
+          const patch = spawnSync(patchCommand.command, patchCommand.args, {
+            env: patchCommand.env,
             encoding: "utf8",
           });
           if (patch.stdout) onOutput(Buffer.from(patch.stdout));
@@ -260,9 +265,9 @@ export async function runAutomationTask(
             return;
           }
         }
-        const child = spawn(command[0], command.slice(1), {
+        const child = spawn(command.command, command.args, {
           stdio: ["ignore", "pipe", "pipe"],
-          env,
+          env: command.env,
         });
         child.stdout.on("data", onOutput);
         child.stderr.on("data", onOutput);
