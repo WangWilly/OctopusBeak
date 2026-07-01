@@ -2,9 +2,9 @@
 
 # OctopusBeak
 
-Personal banking automation for Taiwan online banking portals.
+Personal banking automation and local portfolio dashboards for Taiwan banking portals.
 
-OctopusBeak uses Libretto to run headed browser workflows for bank portals, download statement data, normalize files into CSV/JSON outputs, import them into a local SQLite ledger, and inspect the result in a Svelte dashboard.
+OctopusBeak uses Libretto to run browser workflows for bank portals, download statement data, normalize files into CSV/JSON outputs, import them into a local SQLite ledger, and inspect the result in Svelte dashboards.
 
 All downloaded statements, browser sessions, ledger databases, and credentials are sensitive local data. Keep `downloads/`, `data/`, `.libretto/`, and `.env` out of commits and shared archives.
 
@@ -12,6 +12,7 @@ All downloaded statements, browser sessions, ledger databases, and credentials a
 
 - Runs guided browser automations for supported Taiwan banking portals.
 - Pauses for manual steps such as CAPTCHA, OTP, email verification, or certificate selection.
+- Provides an in-app `/automation` panel for credentials, task runs, logs, retries, and human assist.
 - Saves clean local statement exports under `downloads/<workflow-name>/`.
 - Imports downloaded CSV files into `data/ledger/ledger.sqlite`.
 - Shows local portfolio views at `/overview`, `/assets`, and `/liabilities`.
@@ -34,14 +35,18 @@ Start the local dashboard:
 npm run dev
 ```
 
-Open `http://localhost:5173/overview`.
+Open `http://localhost:5173/overview` for the dashboard or `http://localhost:5173/automation` for the automation panel.
 
 ## Recommended Flow
 
-1. Download new statements with a headed workflow.
-2. Complete any manual browser checks when Libretto pauses.
-3. Import downloaded CSV files into the local ledger.
-4. Review the local dashboard.
+1. Start the local app and open `/automation`.
+2. Save the credentials needed for the sources you use.
+3. Run the crawler/sync tasks from the task table.
+4. Complete manual browser checks from the Assist modal when a task is waiting for human input.
+5. Run CSV import after the crawler dependencies succeed for the business day.
+6. Review `/overview`, `/assets`, or `/liabilities`.
+
+The same flow is still available from the CLI:
 
 ```bash
 npm run run:fubon-all-statements
@@ -55,6 +60,27 @@ Clean up interrupted browser sessions:
 ```bash
 npm run libretto:close-all
 ```
+
+## Automation Panel
+
+The `/automation` page wraps the existing npm scripts. It stores credential edits in `.env`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
+
+`import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
+
+Useful `.env` flags:
+
+```bash
+AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei
+LIBRETTO_CLOUD_FUBON_ENABLED=true
+LIBRETTO_CLOUD_ESUN_ENABLED=true
+LIBRETTO_CLOUD_YUANTA_ENABLED=true
+LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED=true
+LIBRETTO_CLOUD_CATHAY_ENABLED=true
+LIBRETTO_CLOUD_HNCB_ENABLED=true
+MAX_ENABLED=true
+```
+
+Set a group flag to `false`, `0`, `no`, `off`, or `disabled` to hide that source from the automation panel. Import remains visible because it has no credentials.
 
 ## Supported Workflows
 
@@ -97,7 +123,7 @@ Import new downloads:
 npm run run:import-downloads-csv
 ```
 
-The importer writes to `data/ledger/ledger.sqlite`. Imported source files are tracked so the same download path is only read once. Statement rows are stored in typed tables for account transactions, credit card lines, loan transactions, fund records, brokerage records, and crypto records.
+The importer writes to `data/ledger/ledger.sqlite`. Imported source files are tracked so the same download path is only read once. Statement rows are stored in typed tables for account transactions, credit card lines, loan transactions, fund records, brokerage records, and crypto records. Automation history is stored in `automation_task_runs` in the same database.
 
 Run schema migrations directly when needed:
 
@@ -150,6 +176,7 @@ npm run run:sync-maicoin -- --statement-json data/ledger/maicoin-statement.json
 ```bash
 npm run typecheck
 npm run build
+npm run check:libretto-patch
 npm run run:example
 ```
 
@@ -161,6 +188,8 @@ Useful project paths:
 | `src/ledger/`                                                  | importers, parsers, migrations, dashboard model code |
 | `src/lib/shared-ledger/`                                       | local ledger query and account summary helpers       |
 | `src/lib/assets/`, `src/lib/overview/`, `src/lib/liabilities/` | Svelte dashboard views                               |
+| `src/lib/automation/`                                          | automation panel UI and server helpers               |
+| `src/lib/shared-*`                                             | shared dashboard shell, account, metric, money code  |
 | `downloads/`                                                   | local statement exports                              |
 | `data/ledger/`                                                 | local SQLite ledger                                  |
 
