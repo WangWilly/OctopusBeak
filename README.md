@@ -6,7 +6,7 @@ Personal banking automation and local portfolio dashboards for Taiwan banking po
 
 OctopusBeak uses Libretto to run browser workflows for bank portals, download statement data, normalize files into CSV/JSON outputs, import them into a local SQLite ledger, and inspect the result in Svelte dashboards.
 
-All downloaded statements, browser sessions, ledger databases, and credentials are sensitive local data. Keep `downloads/`, `data/`, `.libretto/`, `.env`, and `~/Library/Application Support/OctopusBeak/` out of commits and shared archives.
+All downloaded statements, browser sessions, ledger databases, credentials, and local automation config are sensitive local data. Keep `downloads/`, `data/`, `.libretto/`, `.env`, `.env.local`, `settings.json`, `credentials.json`, and `~/Library/Application Support/OctopusBeak/` out of commits and shared archives.
 
 ## What It Does
 
@@ -23,11 +23,8 @@ All downloaded statements, browser sessions, ledger databases, and credentials a
 ```bash
 npm install
 npm run libretto:setup
-cp .env.example .env
 npm run typecheck
 ```
-
-Fill `.env` only with the credentials required by the workflow you are running.
 
 Start the local dashboard:
 
@@ -45,7 +42,7 @@ OctopusBeak can also run as a packaged macOS Electron app. The desktop app start
 ~/Library/Application Support/OctopusBeak/
 ```
 
-That directory contains the desktop `.env`, Libretto state, `downloads/`, automation logs, and `data/ledger/ledger.sqlite`.
+That directory contains desktop `settings.json`, local `credentials.json` after credentials are saved, Libretto state, `downloads/`, automation logs, and `data/ledger/ledger.sqlite`.
 
 Run locally in Electron:
 
@@ -94,24 +91,31 @@ npm run libretto:close-all
 
 ## Automation Panel
 
-The `/automation` page wraps the existing npm scripts. It stores credential edits in `.env`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
+The `/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in local `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
 
 `import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
 
-Useful `.env` flags:
+`credentials.json` is local and ignored, but it is not OS-keychain encrypted yet. Electron `safeStorage` is deferred until SSR is removed and the Electron main/preload API boundary owns credential access.
 
-```bash
-AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei
-LIBRETTO_CLOUD_FUBON_ENABLED=true
-LIBRETTO_CLOUD_ESUN_ENABLED=true
-LIBRETTO_CLOUD_YUANTA_ENABLED=true
-LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED=true
-LIBRETTO_CLOUD_CATHAY_ENABLED=true
-LIBRETTO_CLOUD_HNCB_ENABLED=true
-MAX_ENABLED=true
+Useful `settings.json` keys:
+
+```json
+{
+  "AUTOMATION_BUSINESS_TIMEZONE": "Asia/Taipei",
+  "LIBRETTO_CLOUD_FUBON_ENABLED": true,
+  "LIBRETTO_CLOUD_ESUN_ENABLED": true,
+  "LIBRETTO_CLOUD_YUANTA_ENABLED": true,
+  "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED": true,
+  "LIBRETTO_CLOUD_CATHAY_ENABLED": true,
+  "LIBRETTO_CLOUD_HNCB_ENABLED": true,
+  "MAX_ENABLED": true,
+  "MAX_SUB_ACCOUNT": "main"
+}
 ```
 
-Set a group flag to `false`, `0`, `no`, `off`, or `disabled` to hide that source from the automation panel. Import remains visible because it has no credentials.
+Set a group flag to `false` or to a string such as `"0"`, `"no"`, `"off"`, or `"disabled"` to hide that source from the automation panel. Import remains visible because it has no credentials.
+
+For direct `libretto run src/workflows/foo.ts` development, provide credentials through exported shell env. If you keep them in ignored `.env.local`, load them first with `set -a; source .env.local; set +a`; Libretto does not auto-load that file. Workflow files still read `process.env`; the desktop JSON store is only injected by the automation runner.
 
 ## Supported Workflows
 
@@ -182,7 +186,7 @@ Open `http://localhost:5173/overview`, `/assets`, or `/liabilities`.
 
 ## MAX/MaiCoin Sync
 
-Add the required keys to `.env`:
+For direct sync runs, export the required keys first:
 
 ```bash
 MAX_ACCESS_KEY=...
