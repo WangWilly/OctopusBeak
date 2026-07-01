@@ -46,10 +46,12 @@ export function automationProcessEnv(
   envText = readAutomationEnvText(),
   baseEnv: NodeJS.ProcessEnv = process.env,
 ) {
-  return {
+  const env = {
     ...baseEnv,
     ...parseEnvText(envText),
   };
+  if (env.NODE_ENV === "production") env.NODE_ENV = "development";
+  return env;
 }
 
 export function liveTaskRunUpdate(logTail: string) {
