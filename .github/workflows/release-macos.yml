@@ -62,8 +62,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          shopt -s globstar nullglob
-          assets=(out/make/**/*.dmg out/make/**/*.zip)
+          assets=()
+          while IFS= read -r asset; do
+            assets+=("$asset")
+          done < <(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) | sort)
           if [ ${#assets[@]} -eq 0 ]; then
             echo "No release assets found" >&2
             exit 1
