@@ -7,6 +7,7 @@ import {
   signInCathay,
 } from "./cathay-statements.js";
 import { downloadCathayForeignStatements } from "./cathay-foreign-statements.js";
+import { retryableStage } from "./retryable-stage.js";
 
 const statementTypeSchema = z.enum(["domestic", "foreign"]);
 const defaultStatementTypes: StatementType[] = ["domestic", "foreign"];
@@ -101,19 +102,27 @@ export function createCathayAllStatementsWorkflow(
         input.credentials,
         input.trustDevice,
       );
-      const cathaySession = await createCathaySession(page);
+      let cathaySession = await createCathaySession(page);
       const statementTypes = Array.from(new Set(input.statementTypes));
       const downloads = [];
       console.log("automation-progress: 25");
 
       if (statementTypes.includes("domestic")) {
         console.log("combined-workflow-section-start", { section: "domestic" });
-        const domesticDownloads = await downloadCathayStatements(
-          page,
-          input.dateRange,
-          input.domesticAccountFilters ?? input.accountFilters,
-          cathaySession,
-        );
+        const domesticDownloads = await retryableStage({
+          name: "cathay-domestic-statements",
+          session: ctx.session,
+          reset: async () => {
+            cathaySession = await createCathaySession(page);
+          },
+          run: async () =>
+            downloadCathayStatements(
+              page,
+              input.dateRange,
+              input.domesticAccountFilters ?? input.accountFilters,
+              cathaySession,
+            ),
+        });
         downloads.push(
           ...domesticDownloads.map((download) => ({
             type: "domestic" as const,
@@ -125,13 +134,21 @@ export function createCathayAllStatementsWorkflow(
 
       if (statementTypes.includes("foreign")) {
         console.log("combined-workflow-section-start", { section: "foreign" });
-        const foreignDownloads = await downloadCathayForeignStatements(
-          page,
-          input.dateRange,
-          input.foreignAccountFilters ?? input.accountFilters,
-          input.currencyFilters,
-          cathaySession,
-        );
+        const foreignDownloads = await retryableStage({
+          name: "cathay-foreign-statements",
+          session: ctx.session,
+          reset: async () => {
+            cathaySession = await createCathaySession(page);
+          },
+          run: async () =>
+            downloadCathayForeignStatements(
+              page,
+              input.dateRange,
+              input.foreignAccountFilters ?? input.accountFilters,
+              input.currencyFilters,
+              cathaySession,
+            ),
+        });
         downloads.push(
           ...foreignDownloads.map((download) => ({
             type: "foreign" as const,
