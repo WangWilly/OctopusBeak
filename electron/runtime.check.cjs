@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const {
@@ -23,6 +24,10 @@ async function main() {
       fs.readFileSync(path.join(root, ".env"), "utf8"),
       "AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei\n",
     );
+    const existingEnvText = "CUSTOM_SECRET=keep-me\n";
+    fs.writeFileSync(path.join(root, ".env"), existingEnvText, "utf8");
+    ensureDataRoot(root);
+    assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), existingEnvText);
 
     const env = buildDesktopEnv({
       userData: root,
@@ -55,6 +60,19 @@ async function main() {
     assert.equal(typeof address, "object");
     assert.notEqual(address, null);
     assert.equal(address.address, "127.0.0.1");
+    const responseBody = await new Promise((resolve, reject) => {
+      http.get(`http://127.0.0.1:${port}/probe`, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve(body);
+        });
+      }).on("error", reject);
+    });
+    assert.equal(responseBody, "/probe");
     server.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
