@@ -457,12 +457,15 @@ async function openFirstStatementDetail(page: Page): Promise<Frame> {
   return await waitForStatementForm(page);
 }
 
-async function waitForAccountSelect(page: Page): Promise<Frame> {
+async function waitForAccountSelect(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<Frame> {
   const mainFrame = await waitForFrame(page, "main");
   await mainFrame
     .locator('select[name="acct1"], #acct1')
     .first()
-    .waitFor({ state: "attached", timeout: 60_000 });
+    .waitFor({ state: "attached", timeout: timeoutMs });
   return mainFrame;
 }
 
@@ -473,13 +476,26 @@ function querySubmitLink(mainFrame: Frame): Locator {
     .first();
 }
 
-async function waitForStatementForm(page: Page): Promise<Frame> {
-  const mainFrame = await waitForAccountSelect(page);
+async function waitForStatementForm(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<Frame> {
+  const mainFrame = await waitForAccountSelect(page, timeoutMs);
   await querySubmitLink(mainFrame).waitFor({
     state: "attached",
-    timeout: 60_000,
+    timeout: timeoutMs,
   });
   return mainFrame;
+}
+
+export async function ensureHncbStatementForm(
+  page: Page,
+  waitForForm: (page: Page, timeoutMs?: number) => Promise<Frame> = waitForStatementForm,
+  reopenForm: (page: Page) => Promise<Frame> = openFirstStatementDetail,
+): Promise<Frame> {
+  return await waitForForm(page, 5_000).catch(async () => {
+    return await reopenForm(page);
+  });
 }
 
 async function waitForStatementResult(page: Page): Promise<Frame> {
@@ -530,7 +546,7 @@ async function queryAccountStatements(
   account: AccountOption,
   dateRange: WorkflowOutput["dateRange"],
 ): Promise<Frame> {
-  const mainFrame = await waitForStatementForm(page);
+  const mainFrame = await ensureHncbStatementForm(page);
   await mainFrame.locator("#acct1").selectOption(account.value);
   await mainFrame.locator('input[name="inqtype"][value="3"]').check({
     force: true,
