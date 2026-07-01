@@ -51,6 +51,10 @@ async function main() {
     const server = await listenWithHandler((request, response) => {
       response.end(request.url);
     }, port);
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    assert.equal(address.address, "127.0.0.1");
     server.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
