@@ -55,13 +55,15 @@ async function main() {
 
     const server = await listenWithHandler((request, response) => {
       response.end(request.url);
-    }, port);
+    }, 0);
     const address = server.address();
     assert.equal(typeof address, "object");
     assert.notEqual(address, null);
     assert.equal(address.address, "127.0.0.1");
+    assert.equal(Number.isInteger(address.port), true);
+    assert.equal(address.port > 0, true);
     const responseBody = await new Promise((resolve, reject) => {
-      http.get(`http://127.0.0.1:${port}/probe`, (response) => {
+      http.get(`http://127.0.0.1:${address.port}/probe`, (response) => {
         let body = "";
         response.setEncoding("utf8");
         response.on("data", (chunk) => {
