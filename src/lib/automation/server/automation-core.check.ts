@@ -13,7 +13,7 @@ import {
 } from "./tasks.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import { credentialStatus, updateEnvText } from "./env-file.ts";
-import { automationGroupEnabledStatus } from "./settings.ts";
+import { automationBusinessTimezone, automationGroupEnabledStatus } from "./settings.ts";
 
 const fubonUserKey = "LIBRETTO_CLOUD_FUBON" + "_USER_ID";
 
@@ -51,7 +51,9 @@ assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), false);
 assert.equal(automationCredentialKeyIsSecret("MAX_SECRET_KEY"), true);
 assert.equal(automationCredentialKeyIsSecret("MAX_SUB_ACCOUNT"), false);
 
-const enabledGroups = automationGroupEnabledStatus("LIBRETTO_CLOUD_ESUN_ENABLED=false\n", {});
+const enabledGroups = automationGroupEnabledStatus({
+  LIBRETTO_CLOUD_ESUN_ENABLED: false,
+});
 assert.equal(enabledGroups.fubon, true);
 assert.equal(enabledGroups.esun, false);
 assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "esun-credit-card-statements"), false);
@@ -74,6 +76,12 @@ const taipeiRange = businessDayUtcRange(
 assert.equal(taipeiRange.businessDate, "2026-07-01");
 assert.equal(taipeiRange.startUtc.toISOString(), "2026-06-30T16:00:00.000Z");
 assert.equal(taipeiRange.endUtc.toISOString(), "2026-07-01T16:00:00.000Z");
+
+const utcRange = businessDayUtcRange(
+  new Date("2026-06-30T15:30:00.000Z"),
+  automationBusinessTimezone({ AUTOMATION_BUSINESS_TIMEZONE: "UTC" }),
+);
+assert.equal(utcRange.businessDate, "2026-06-30");
 
 const updatedEnv = updateEnvText(
   `# keep me\n${fubonUserKey}=old\nOTHER=value\n`,

@@ -13,20 +13,8 @@ import {
   shouldMarkWaitingForHuman,
 } from "./runner.ts";
 
-assert.deepEqual(
-  automationProcessEnv("FUBON_USER_ID=file-user\nFUBON_PASSWORD=file-password\n", {
-    FUBON_USER_ID: "process-user",
-    KEEP_ME: "yes",
-  }),
-  {
-    FUBON_USER_ID: "file-user",
-    FUBON_PASSWORD: "file-password",
-    KEEP_ME: "yes",
-  },
-);
-assert.equal(automationProcessEnv("", { NODE_ENV: "production" }).NODE_ENV, "development");
-assert.equal(automationProcessEnv("NODE_ENV=production\n", {}).NODE_ENV, "development");
-assert.equal(automationProcessEnv("", { NODE_ENV: "test" }).NODE_ENV, "test");
+assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
+assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
