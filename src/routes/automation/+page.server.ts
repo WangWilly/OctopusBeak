@@ -169,10 +169,6 @@ export const actions: Actions = {
     const formData = await request.formData();
     return startTask(formTaskId(formData));
   },
-  retry: async ({ request }) => {
-    const formData = await request.formData();
-    return startTask(formTaskId(formData));
-  },
   resume: async ({ request }) => {
     const formData = await request.formData();
     return resumeTask(formTaskId(formData));

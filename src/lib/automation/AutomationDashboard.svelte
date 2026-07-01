@@ -59,7 +59,7 @@
   function statusClass(status: string) {
     if (status === "completed") return "good";
     if (status === "failed" || status === "locked") return "bad";
-    if (status === "running" || status === "retrying" || status === "waiting_for_human") return "warn";
+    if (status === "running" || status === "waiting_for_human") return "warn";
     return "";
   }
 
@@ -75,7 +75,6 @@
   }
 
   function actionName(task: AutomationTaskRow) {
-    if (task.primaryAction === "Retry") return "retry";
     if (task.primaryAction === "Resume") return "resume";
     return "run";
   }
@@ -263,7 +262,6 @@
               <th>Task</th>
               <th>Status</th>
               <th>Progress</th>
-              <th>Attempt</th>
               <th>Latest UTC</th>
               <th class="right">Controls</th>
             </tr>
@@ -286,7 +284,6 @@
                     <span class="mono">{task.progressText}</span>
                   </div>
                 </td>
-                <td class="mono">{task.attempt}/{task.maxAttempts}</td>
                 <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
                 <td class="right">
                   <div class="task-actions">
