@@ -24,6 +24,9 @@ assert.deepEqual(
     KEEP_ME: "yes",
   },
 );
+assert.equal(automationProcessEnv("", { NODE_ENV: "production" }).NODE_ENV, "development");
+assert.equal(automationProcessEnv("NODE_ENV=production\n", {}).NODE_ENV, "development");
+assert.equal(automationProcessEnv("", { NODE_ENV: "test" }).NODE_ENV, "test");
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
