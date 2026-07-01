@@ -1,27 +1,29 @@
 # 001 Dynamic Dashboard
 
-Status: MVP spec
+Status: Implemented MVP; historical spec retained
 Date: 2026-06-25
-Target repo: `/Volumes/projects02/libretto-playground`
+Last updated: 2026-07-01
+Target repo: `/Users/willywangkaa/.codex/worktrees/1ae6/libretto-playground`
 
 ## Purpose
 
-Replace the legacy static dashboard with a live SvelteKit dashboard backed by the existing SQLite ledger.
+Replace the legacy static dashboard with live SvelteKit dashboards backed by the existing SQLite ledger.
 
-The MVP must match the legacy static dashboard scope. It should not expand scope into new product areas.
+The MVP matched the legacy static dashboard scope, then split the user-facing app into `/overview`, `/assets`, and `/liabilities`. `/dashboard` now redirects to `/overview`.
 
 ## Current Flow
 
-Today the system works like this:
+The current system works like this:
 
 1. `src/workflows/*` downloads bank-provided account statements into `downloads/`.
-2. `src/ledger/import-downloads-csv.ts` parses CSV files and writes normalized source data into `data/ledger/ledger.sqlite`.
-3. `/dashboard` reads `ledger.sqlite` through SvelteKit server load functions.
-4. New imports are visible by reloading the dashboard page.
+2. `src/ledger/import-downloads-csv.ts` parses CSV files and writes typed statement rows into `data/ledger/ledger.sqlite`.
+3. `/overview`, `/assets`, and `/liabilities` read `ledger.sqlite` through SvelteKit server load functions.
+4. `/automation` can run the existing crawler/sync/import scripts and record task history in the same ledger.
+5. New imports are visible by reloading the dashboard page.
 
 ## MVP Scope
 
-Build a SvelteKit dashboard that reads `data/ledger/ledger.sqlite` directly and renders the same dashboard concepts from the legacy static dashboard.
+Build SvelteKit dashboards that read `data/ledger/ledger.sqlite` directly and render the same dashboard concepts from the legacy static dashboard.
 
 Included:
 
@@ -29,9 +31,9 @@ Included:
   - Net position
   - Asset value
   - Liabilities
-  - Investments
+- Investments through the asset total and account groups
 - Snapshot history / daily asset changes table
-- Account list with:
+- Account lists with:
   - All / Assets / Liabilities / Investments filters
   - Account search
   - Value visibility toggle
@@ -68,20 +70,51 @@ workflows
 Read path:
 
 ```text
-/dashboard/+page.server.ts
+/overview/+page.server.ts
+/assets/+page.server.ts
+/liabilities/+page.server.ts
   -> src/ledger/db/client.ts
   -> Drizzle queries
-  -> chart-specific pipelines
-  -> DashboardPageDto
-  -> Svelte components
+  -> shared ledger account/history/summary builders
+  -> page-specific DTOs
+  -> Svelte dashboard components
 ```
 
-The important rule is that the new dashboard does not rebuild a single giant financial domain model. It builds small DTOs for the UI sections that already exist.
+The important rule is that the dashboard does not rebuild a single giant financial domain model. It builds small DTOs for the UI sections that already exist.
 
-## Proposed File Tree
+## Current Implementation
+
+Current routes:
+
+- `/` redirects to `/overview`.
+- `/dashboard` redirects to `/overview`.
+- `/overview` renders summary metrics, daily history, and all accounts.
+- `/assets` renders non-liability accounts with positions, transactions, and account history.
+- `/liabilities` renders credit card, loan, and other liability accounts with transactions and account history.
+- `/automation` runs statement/sync/import tasks and tracks task history.
+
+Current server composition:
 
 ```text
-/Volumes/projects02/libretto-playground
+src/routes/overview/+page.server.ts
+  -> src/lib/overview/server/load-overview.ts
+  -> OverviewPageDto
+
+src/routes/assets/+page.server.ts
+  -> src/lib/assets/server/load-assets.ts
+  -> AssetsPageDto
+
+src/routes/liabilities/+page.server.ts
+  -> src/lib/liabilities/server/load-liabilities.ts
+  -> LiabilitiesPageDto
+```
+
+Shared account, position, transaction, history, summary, money, and shell code lives under `src/lib/shared-*`.
+
+## Original Proposed File Tree
+
+```text
+/Users/willywangkaa/.codex/worktrees/1ae6/libretto-playground
 ├── drizzle.config.ts
 ├── data/
 │   └── ledger/
@@ -119,40 +152,51 @@ The important rule is that the new dashboard does not rebuild a single giant fin
 ```
 
 
-## Dashboard DTO
+## Dashboard DTOs
 
-The server load function should return one page DTO that mirrors the existing static HTML payload, but with clearer boundaries.
+The implemented app uses page-specific DTOs instead of one all-purpose dashboard payload.
 
 ```ts
-export type DashboardPageDto = {
-  generatedAt: string;
+export type OverviewPageDto = {
   importedAt: string | null;
   summary: SummaryMetricDto[];
   dailyHistory: DailyHistoryRowDto[];
   accounts: AccountRowDto[];
+};
+
+export type AssetsPageDto = {
+  accounts: AccountRowDto[];
   positionsByAccount: Record<string, AssetPositionDto[]>;
   transactionsByAccount: Record<string, TransactionRowDto[]>;
-  firstAccountId: string | null;
+  dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;
+  dailyHistory: DailyHistoryRowDto[];
+};
+
+export type LiabilitiesPageDto = {
+  accounts: AccountRowDto[];
+  transactionsByAccount: Record<string, TransactionRowDto[]>;
+  dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;
+  dailyHistory: DailyHistoryRowDto[];
 };
 ```
 
-This replaces the current embedded HTML payload shape:
+These replace the old embedded static HTML payload shape:
 
 ```text
 { accounts, transactions, positions, snapshotHistory, firstAccountId }
 ```
 
-## Pipelines
+## Builders
 
-### SummaryMetricsPipeline
+### Summary Metrics
 
 Input: latest account balances and latest included positions.
 
-Output: cards for net position, asset value, liabilities, and investments.
+Output: cards for net position, asset value, and liabilities.
 
-This pipeline owns only dashboard-level totals. It should not classify every source row.
+This builder owns only dashboard-level totals. It does not classify every source row.
 
-### DailyHistoryPipeline
+### Daily History
 
 Input: imported statement dates, snapshot rows, latest account and position values per day.
 
@@ -166,7 +210,7 @@ Output: rows for the existing daily asset changes table:
 - Account changes
 - Positions
 
-### AccountOverviewPipeline
+### Account Overview
 
 Input: account balances, account metadata, investment/loan/card classifications needed for the current list.
 
@@ -180,7 +224,7 @@ Output: account rows used by `AccountList.svelte`:
 - Asset position count
 - Last updated/imported metadata where available
 
-### AccountDrilldownPipeline
+### Account Drilldown
 
 Input: selected account id.
 
@@ -311,7 +355,8 @@ The dashboard server may run migrations before reads:
 
 ```text
 +page.server.ts
-  -> openLedgerDb()
+  -> openLedgerDrizzle()
+  -> openLedgerDatabase()
   -> migrateLedgerDb(db)
   -> Drizzle queries
 ```
@@ -353,13 +398,13 @@ This avoids two migration systems fighting over one SQLite file.
 
 ## Routes
 
-### `GET /dashboard`
+### `GET /overview`
 
 Implemented by:
 
 ```text
-src/routes/dashboard/+page.server.ts
-src/routes/dashboard/+page.svelte
+src/routes/overview/+page.server.ts
+src/routes/overview/+page.svelte
 ```
 
 Server behavior:
@@ -367,17 +412,61 @@ Server behavior:
 1. Open `data/ledger/ledger.sqlite`.
 2. Apply idempotent SQL migrations if necessary.
 3. Run Drizzle queries.
-4. Build `DashboardPageDto` using four small pipelines.
+4. Build `OverviewPageDto`.
 5. Return DTO to Svelte.
 
 Client behavior:
 
 - Render summary strip.
 - Render daily history table.
-- Render account filters and search.
 - Render account list.
-- Open transaction and asset modals without a full page reload.
 - Keep value visibility client-side.
+
+### `GET /assets`
+
+Implemented by:
+
+```text
+src/routes/assets/+page.server.ts
+src/routes/assets/+page.svelte
+```
+
+Server behavior:
+
+1. Open `data/ledger/ledger.sqlite`.
+2. Query non-liability accounts, positions, transactions, and daily history.
+3. Build `AssetsPageDto`.
+
+Client behavior:
+
+- Render asset/investment accounts.
+- Open transaction, position, and account-history modals without a full page reload.
+- Keep account filtering and search client-side.
+
+### `GET /liabilities`
+
+Implemented by:
+
+```text
+src/routes/liabilities/+page.server.ts
+src/routes/liabilities/+page.svelte
+```
+
+Server behavior:
+
+1. Open `data/ledger/ledger.sqlite`.
+2. Query liability accounts, transactions, and daily history.
+3. Build `LiabilitiesPageDto`.
+
+Client behavior:
+
+- Render credit card, loan, and other liability accounts.
+- Open transaction and account-history modals without a full page reload.
+- Keep account filtering and search client-side.
+
+### Redirects
+
+`/` and `/dashboard` both redirect to `/overview`.
 
 ## Data Update Sequence
 
@@ -396,16 +485,18 @@ User or cron
 Dashboard load flow:
 
 ```text
-Browser opens /dashboard
+Browser opens /overview, /assets, or /liabilities
   -> +page.server.ts
   -> db/client.ts opens ledger.sqlite
   -> Drizzle runs narrow queries
-  -> summary/daily-history/accounts/drilldown pipelines build DTOs
+  -> shared account/history/summary builders build DTOs
   -> +page.svelte renders components
   -> filters/search/modals run client-side
 ```
 
-## Implementation Phases
+## Original Implementation Phases
+
+These phases are retained as historical context for the MVP build.
 
 ### Phase 1: Extract DB helpers
 
@@ -423,10 +514,10 @@ Browser opens /dashboard
 - Add Drizzle SQLite client and table definitions for only the tables needed by the dashboard.
 - Do not convert all importer writes to Drizzle in this phase.
 
-### Phase 3: Build DashboardPageDto
+### Phase 3: Build Page DTOs
 
-- Implement `load-dashboard.ts`.
-- Implement the four small pipelines.
+- Implement page-specific server loaders.
+- Implement shared account, summary, daily-history, transaction, and position builders.
 - Match the legacy static dashboard sections before adding anything else.
 
 ### Phase 4: Build Svelte components
@@ -447,7 +538,8 @@ Browser opens /dashboard
 
 The MVP is complete when:
 
-- `/dashboard` renders from SQLite without a static rebuild step.
+- `/overview`, `/assets`, and `/liabilities` render from SQLite without a static rebuild step.
+- `/dashboard` redirects to `/overview`.
 - The visible content matches the legacy static dashboard scope.
 - Summary cards show the same categories.
 - Daily history rows are available from SQLite.
@@ -464,7 +556,7 @@ The MVP is complete when:
 
 ## Open Decisions
 
-- Whether `/dashboard` should become `/` after MVP parity.
-- Whether imports remain CLI-only or get a small `POST /api/import` button later.
+- `/` and `/dashboard` redirect to `/overview` after MVP parity.
+- Imports are exposed through `/automation`; no separate `POST /api/import` button is needed yet.
 - Whether account aliases/manual grouping deserve a new SQLite table after the MVP.
 - Whether daily history should be computed live or cached after import if query time becomes noticeable.
