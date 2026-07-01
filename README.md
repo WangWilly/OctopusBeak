@@ -6,7 +6,7 @@ Personal banking automation and local portfolio dashboards for Taiwan banking po
 
 OctopusBeak uses Libretto to run browser workflows for bank portals, download statement data, normalize files into CSV/JSON outputs, import them into a local SQLite ledger, and inspect the result in Svelte dashboards.
 
-All downloaded statements, browser sessions, ledger databases, and credentials are sensitive local data. Keep `downloads/`, `data/`, `.libretto/`, and `.env` out of commits and shared archives.
+All downloaded statements, browser sessions, ledger databases, and credentials are sensitive local data. Keep `downloads/`, `data/`, `.libretto/`, `.env`, and `~/Library/Application Support/OctopusBeak/` out of commits and shared archives.
 
 ## What It Does
 
@@ -36,6 +36,37 @@ npm run dev
 ```
 
 Open `http://localhost:5173/overview` for the dashboard or `http://localhost:5173/automation` for the automation panel.
+
+## Desktop App
+
+OctopusBeak can also run as a packaged macOS Electron app. The desktop app starts the same SvelteKit dashboard inside an Electron window and stores runtime state under:
+
+```text
+~/Library/Application Support/OctopusBeak/
+```
+
+That directory contains the desktop `.env`, Libretto state, `downloads/`, automation logs, and `data/ledger/ledger.sqlite`.
+
+Run locally in Electron:
+
+```bash
+npm run desktop:dev
+```
+
+Build an unsigned local app:
+
+```bash
+npm run desktop:package
+open out/OctopusBeak-darwin-arm64/OctopusBeak.app
+```
+
+Build signed and notarized macOS release artifacts:
+
+```bash
+OCTOPUSBEAK_SIGN=1 OCTOPUSBEAK_NOTARY_PROFILE=OctopusBeakNotary npm run desktop:make
+```
+
+Artifacts are written to `out/make/`. See [Desktop Release](docs/desktop-release.md) for signing setup and smoke-test steps.
 
 ## Recommended Flow
 
@@ -190,8 +221,11 @@ Useful project paths:
 | `src/lib/assets/`, `src/lib/overview/`, `src/lib/liabilities/` | Svelte dashboard views                               |
 | `src/lib/automation/`                                          | automation panel UI and server helpers               |
 | `src/lib/shared-*`                                             | shared dashboard shell, account, metric, money code  |
+| `electron/`                                                    | Electron main process, runtime helpers, probes        |
+| `forge.config.cjs`                                             | Electron Forge packaging and signing config          |
 | `downloads/`                                                   | local statement exports                              |
 | `data/ledger/`                                                 | local SQLite ledger                                  |
+| `~/Library/Application Support/OctopusBeak/`                   | packaged desktop app runtime state                   |
 
 Before sharing changes, run:
 

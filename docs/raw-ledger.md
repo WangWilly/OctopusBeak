@@ -2,6 +2,8 @@
 
 Current scope: turn `downloads/` into a replayable, auditable, deduplicated local ledger.
 
+In the packaged desktop app, the same layout lives under `~/Library/Application Support/OctopusBeak/`: downloads are read from `downloads/`, and the ledger is written to `data/ledger/ledger.sqlite` inside that directory.
+
 This layer ingests source CSV files and writes typed statement rows. It must not calculate dashboard balances, pair transfers, reconcile credit card payments, or infer categories.
 
 ## Inputs
@@ -26,6 +28,8 @@ This normalization only establishes the row/header boundary. It does not rename 
 ## Outputs
 
 The current importer writes to `data/ledger/ledger.sqlite`.
+
+In local development this is relative to the repo. In the packaged desktop app this is relative to `~/Library/Application Support/OctopusBeak/`.
 
 Core import metadata is stored in:
 
