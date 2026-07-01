@@ -13,19 +13,7 @@ function errorMessage(error: unknown) {
 }
 
 export async function retryableStage<T>(input: RetryableStageInput<T>): Promise<T> {
-  try {
-    return await input.run();
-  } catch (error) {
-    console.warn("workflow-stage-retry", {
-      stage: input.name,
-      message: errorMessage(error),
-    });
-    await input.reset?.();
-  }
-
-  try {
-    return await input.run();
-  } catch (error) {
+  async function pauseForHuman(error: unknown) {
     console.error("workflow-stage-human-required", {
       stage: input.name,
       message: errorMessage(error),
@@ -34,6 +22,27 @@ export async function retryableStage<T>(input: RetryableStageInput<T>): Promise<
       `manual-repair-required: fix ${input.name}, then run \`npx libretto resume --session ${input.session}\`.`,
     );
     await (input.pauseForHuman ?? (() => pause(input.session)))();
+  }
+
+  try {
+    return await input.run();
+  } catch (error) {
+    console.warn("workflow-stage-retry", {
+      stage: input.name,
+      message: errorMessage(error),
+    });
+    try {
+      await input.reset?.();
+    } catch (resetError) {
+      await pauseForHuman(resetError);
+      return await input.run();
+    }
+  }
+
+  try {
+    return await input.run();
+  } catch (error) {
+    await pauseForHuman(error);
   }
 
   return await input.run();

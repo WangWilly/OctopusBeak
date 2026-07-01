@@ -44,3 +44,49 @@ const humanResult = await retryableStage({
 
 assert.equal(humanResult, "fixed");
 assert.deepEqual(humanCalls, ["run", "reset", "run", "pause", "run"]);
+
+const resetFailureCalls: string[] = [];
+let resetFailureRuns = 0;
+const resetFailureResult = await retryableStage({
+  name: "reset-failure",
+  session: "ses-reset",
+  run: async () => {
+    resetFailureCalls.push("run");
+    resetFailureRuns += 1;
+    if (resetFailureRuns === 1) throw new Error("transient");
+    return "reset-fixed";
+  },
+  reset: async () => {
+    resetFailureCalls.push("reset");
+    throw new Error("stale session");
+  },
+  pauseForHuman: async () => {
+    resetFailureCalls.push("pause");
+  },
+});
+
+assert.equal(resetFailureResult, "reset-fixed");
+assert.deepEqual(resetFailureCalls, ["run", "reset", "pause", "run"]);
+
+const finalFailureCalls: string[] = [];
+let finalFailureRuns = 0;
+await assert.rejects(
+  () =>
+    retryableStage({
+      name: "final-failure",
+      session: "ses-final",
+      run: async () => {
+        finalFailureCalls.push("run");
+        finalFailureRuns += 1;
+        throw new Error(`still-broken-${finalFailureRuns}`);
+      },
+      reset: async () => {
+        finalFailureCalls.push("reset");
+      },
+      pauseForHuman: async () => {
+        finalFailureCalls.push("pause");
+      },
+    }),
+  /still-broken-3/,
+);
+assert.deepEqual(finalFailureCalls, ["run", "reset", "run", "pause", "run"]);
