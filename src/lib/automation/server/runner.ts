@@ -8,8 +8,12 @@ import {
   resolvePatchCommand,
   resolveTaskCommand,
 } from "./desktop-command.ts";
-import { parseEnvText } from "./env-file.ts";
-import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.ts";
+import { automationConfigEnv } from "./config-files.ts";
+import {
+  automationBusinessTimezone,
+  automationGroupEnabledStatus,
+  readAutomationSettings,
+} from "./settings.ts";
 import {
   createTaskRun,
   importGateStatus,
@@ -47,16 +51,8 @@ export function parseAutomationProgress(output: string) {
   return progress;
 }
 
-export function automationProcessEnv(
-  envText = readAutomationEnvText(),
-  baseEnv: NodeJS.ProcessEnv = process.env,
-) {
-  const env = {
-    ...baseEnv,
-    ...parseEnvText(envText),
-  };
-  if (env.NODE_ENV === "production") env.NODE_ENV = "development";
-  return env;
+export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
+  return automationConfigEnv({ baseEnv });
 }
 
 export function liveTaskRunUpdate(logTail: string) {
@@ -304,8 +300,9 @@ export async function runAutomationTask(
         await closeResumeSessionAfterFailure();
       }
       if (status !== "completed") return { status };
-      const range = businessDayUtcRange();
-      const enabledGroups = automationGroupEnabledStatus(readAutomationEnvText());
+      const settings = readAutomationSettings();
+      const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+      const enabledGroups = automationGroupEnabledStatus(settings);
       const gate = importGateStatus(taskDb, {
         dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
         startUtc: range.startUtc,
