@@ -44,7 +44,7 @@ function bankRow(sourceFileId: string, sourceRowIndex: number, date: string, bal
     importedAt: `${date}T10:00:00.000Z`,
     createdAt: `${date}T10:00:00.000Z`,
     accountName: "Demo account",
-    accountNumber: "1234567890",
+    accountNumber: "demo-account",
     currency: "TWD",
     accountingDate: date,
     transactionDate: date,
