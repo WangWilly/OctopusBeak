@@ -41,6 +41,22 @@ assert.deepEqual(librettoRunCdpPatchCommand({ resumeSession: undefined }), [
   "node",
   "scripts/patch-libretto-run-cdp.mjs",
 ]);
+const originalDesktop = process.env.OCTOPUSBEAK_DESKTOP;
+const originalAppRoot = process.env.OCTOPUSBEAK_APP_ROOT;
+const originalNodePath = process.env.OCTOPUSBEAK_NODE_PATH;
+process.env.OCTOPUSBEAK_DESKTOP = "1";
+process.env.OCTOPUSBEAK_APP_ROOT = "/AppRoot";
+process.env.OCTOPUSBEAK_NODE_PATH = "/AppRoot/OctopusBeak";
+assert.deepEqual(librettoRunCdpPatchCommand({ resumeSession: undefined }), [
+  "/AppRoot/OctopusBeak",
+  "/AppRoot/scripts/patch-libretto-run-cdp.mjs",
+]);
+if (originalDesktop === undefined) delete process.env.OCTOPUSBEAK_DESKTOP;
+else process.env.OCTOPUSBEAK_DESKTOP = originalDesktop;
+if (originalAppRoot === undefined) delete process.env.OCTOPUSBEAK_APP_ROOT;
+else process.env.OCTOPUSBEAK_APP_ROOT = originalAppRoot;
+if (originalNodePath === undefined) delete process.env.OCTOPUSBEAK_NODE_PATH;
+else process.env.OCTOPUSBEAK_NODE_PATH = originalNodePath;
 assert.equal(librettoRunCdpPatchCommand({ resumeSession: "ses-1p4q" }), null);
 assert.equal(
   resumeSessionFromLog(
