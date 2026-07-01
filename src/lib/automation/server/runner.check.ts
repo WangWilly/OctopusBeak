@@ -88,7 +88,7 @@ assert.equal(
 );
 assert.equal(
   nextAttemptStatus({ kind: "crawler", attempt: 1, maxAttempts: 2, exitCode: 1 }),
-  "retrying",
+  "failed",
 );
 assert.equal(
   nextAttemptStatus({
