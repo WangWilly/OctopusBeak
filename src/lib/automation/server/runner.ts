@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -87,6 +87,11 @@ export function shouldCloseResumeSession(input: {
   resumeSession?: string;
 }) {
   return input.status === "failed" && Boolean(input.resumeSession);
+}
+
+export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
+  if (input.resumeSession) return null;
+  return ["node", "scripts/patch-libretto-run-cdp.mjs"] as const;
 }
 
 export function shouldAutoRunImport(input: {
@@ -225,10 +230,7 @@ export async function runAutomationTask(
         const command = options.resumeSession
           ? ["npx", "libretto", "resume", "--session", options.resumeSession]
           : ["npm", "run", task.script];
-        const child = spawn(command[0], command.slice(1), {
-          stdio: ["ignore", "pipe", "pipe"],
-          env: automationProcessEnv(),
-        });
+        const env = automationProcessEnv();
         const onOutput = (chunk: Buffer) => {
           const text = chunk.toString("utf8");
           appendLog(logPath, text);
@@ -240,6 +242,27 @@ export async function runAutomationTask(
             void closeResumeSessionAfterFailure();
           }
         };
+        const patchCommand = librettoRunCdpPatchCommand(options);
+        if (patchCommand) {
+          const patch = spawnSync(patchCommand[0], patchCommand.slice(1), {
+            env,
+            encoding: "utf8",
+          });
+          if (patch.stdout) onOutput(Buffer.from(patch.stdout));
+          if (patch.stderr) onOutput(Buffer.from(patch.stderr));
+          if (patch.error || patch.status !== 0) {
+            resolve({
+              exitCode: patch.status,
+              signal: patch.signal,
+              error: patch.error ?? new Error(`Libretto CDP patch exited with code ${patch.status}`),
+            });
+            return;
+          }
+        }
+        const child = spawn(command[0], command.slice(1), {
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+        });
         child.stdout.on("data", onOutput);
         child.stderr.on("data", onOutput);
         child.on("error", (error) => {

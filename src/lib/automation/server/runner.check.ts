@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   automationProcessEnv,
   isForceQuitRun,
+  librettoRunCdpPatchCommand,
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
@@ -33,6 +34,11 @@ assert.equal(
   false,
 );
 assert.equal(shouldMarkWaitingForHuman("download completed"), false);
+assert.deepEqual(librettoRunCdpPatchCommand({ resumeSession: undefined }), [
+  "node",
+  "scripts/patch-libretto-run-cdp.mjs",
+]);
+assert.equal(librettoRunCdpPatchCommand({ resumeSession: "ses-1p4q" }), null);
 assert.equal(
   resumeSessionFromLog(
     "Workflow paused. run `npx libretto resume --session ses-1p4q`.",
