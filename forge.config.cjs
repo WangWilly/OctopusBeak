@@ -7,6 +7,7 @@ module.exports = {
     executableName: "OctopusBeak",
     appBundleId: "app.octopusbeak.desktop",
     appCategoryType: "public.app-category.finance",
+    icon: "electron/assets/icon",
     asar: false,
     ignore: [
       /^\/\.git($|\/)/,
