@@ -1,4 +1,3 @@
-import { writeFileSync } from "node:fs";
 import { fail } from "@sveltejs/kit";
 import type { Actions } from "./$types";
 import {
@@ -8,13 +7,19 @@ import {
   enabledCsvImportDependencyIds,
   taskById,
 } from "$lib/automation/server/tasks.ts";
-import { credentialStatus, updateEnvText } from "$lib/automation/server/env-file.ts";
+import {
+  credentialStatusFromValues,
+  readAutomationCredentialsFile,
+  splitAutomationUpdates,
+  writeAutomationCredentials,
+  writeAutomationSettings,
+} from "$lib/automation/server/config-files.ts";
 import { businessDayUtcRange } from "$lib/automation/server/business-day.ts";
 import { buildAutomationPageModel } from "$lib/automation/server/page-model.ts";
 import {
-  AUTOMATION_ENV_PATH,
+  automationBusinessTimezone,
   automationGroupEnabledStatus,
-  readAutomationEnvText,
+  readAutomationSettings,
 } from "$lib/automation/server/settings.ts";
 import {
   activeAutomationTaskIds,
@@ -28,21 +33,23 @@ import { openLedgerDatabase } from "../../ledger/db/client.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 
-function currentCredentialStatus(envText: string) {
-  const status = credentialStatus(envText, AUTOMATION_CREDENTIAL_KEYS);
+function currentCredentialStatus() {
+  const settings = readAutomationSettings();
+  const credentials = readAutomationCredentialsFile();
+  const status = credentialStatusFromValues(credentials, AUTOMATION_CREDENTIAL_KEYS);
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
-    status[key] = status[key] || Boolean(process.env[key]?.trim());
+    status[key] = status[key] || Boolean(settings[key]) || Boolean(process.env[key]?.trim());
   }
   return status;
 }
 
 function currentAutomationModel() {
-  const envText = readAutomationEnvText();
-  const enabledGroups = automationGroupEnabledStatus(envText);
+  const settings = readAutomationSettings();
+  const enabledGroups = automationGroupEnabledStatus(settings);
   const db = openLedgerDatabase();
   try {
     const activeTaskIds = activeAutomationTaskIds();
-    const range = businessDayUtcRange();
+    const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
     const importGate = importGateStatus(db, {
       dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
       startUtc: range.startUtc,
@@ -52,7 +59,7 @@ function currentAutomationModel() {
       tasks: enabledAutomationTasks(enabledGroups),
       latestRuns: latestTaskRuns(db),
       activeTaskIds,
-      credentials: currentCredentialStatus(envText),
+      credentials: currentCredentialStatus(),
       importGate,
       active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
       businessDate: range.businessDate,
@@ -65,7 +72,7 @@ function currentAutomationModel() {
 function missingCredentialKeys(taskId: string) {
   const task = taskById(taskId);
   if (!task) return [];
-  const status = currentCredentialStatus(readAutomationEnvText());
+  const status = currentCredentialStatus();
   return task.credentialKeys.filter((key) => (
     !optionalCredentialKeys.has(key) && !status[key]
   ));
@@ -138,8 +145,8 @@ function resumeTask(taskId: string) {
 }
 
 export function load() {
-  const envText = readAutomationEnvText();
-  const enabledGroups = automationGroupEnabledStatus(envText);
+  const settings = readAutomationSettings();
+  const enabledGroups = automationGroupEnabledStatus(settings);
   return {
     automation: currentAutomationModel(),
     credentialGroups: AUTOMATION_CREDENTIAL_GROUPS.map((group) => ({
@@ -160,9 +167,17 @@ export const actions: Actions = {
       const value = String(formData.get(key) ?? "").trim();
       if (value) updates[key] = value;
     }
-    const envText = readAutomationEnvText();
-    const nextEnvText = updateEnvText(envText, updates);
-    if (nextEnvText !== envText) writeFileSync(AUTOMATION_ENV_PATH, nextEnvText, "utf8");
+    const { settings, credentials } = splitAutomationUpdates(updates);
+    writeAutomationSettings({
+      ...readAutomationSettings(),
+      ...settings,
+    });
+    if (Object.keys(credentials).length > 0) {
+      writeAutomationCredentials({
+        ...readAutomationCredentialsFile(),
+        ...credentials,
+      });
+    }
     return { saved: true };
   },
   run: async ({ request }) => {
