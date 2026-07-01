@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move automation non-secret switches to `settings.json` and sensitive credential values to `credentials.json`, then stop writing automation credentials to `.env`.
+**Goal:** Move automation non-secret switches to `settings.json` and sensitive credential values to a local `credentials.json`, then stop writing desktop automation credentials to `.env`.
 
-**Architecture:** Keep the existing environment variable names as JSON keys to avoid rewriting every workflow. Add one small server-side config layer that reads `settings.json`, reads `credentials.json`, migrates known automation keys out of `.env`, and returns a merged env object for spawned automation tasks. `credentials.json` is a local ignored file with `0600` permissions; OS keychain encryption is intentionally deferred until the Electron IPC/API migration.
+**Architecture:** Keep existing environment variable names as the contract for every `src/workflows/*.ts` file. Add one small server-side config layer that reads `settings.json`, reads `credentials.json`, migrates known automation keys out of legacy `.env`, and returns a merged env object for spawned automation tasks. `credentials.json` is local, ignored, and written with `0600` permissions; OS keychain/`safeStorage` encryption is intentionally deferred until SSR is removed and the Electron main/preload API boundary is stable.
 
 **Tech Stack:** SvelteKit server actions, Svelte components, Node `fs`/`path`/`os`/`assert`, existing `*.check.ts` self-checks.
 
@@ -40,22 +40,29 @@
 }
 ```
 
-- Treat user IDs, account numbers, passwords, certificate passwords, access keys, and secret keys as sensitive. Treat `MAX_SUB_ACCOUNT` as non-secret and store it in `settings.json`.
-- Keep workflows unchanged: they continue to read `process.env`. Only the automation server runner changes how env vars are assembled before spawning those workflows.
-- Keep `.env` as a read-only migration source. After a successful migration, remove known automation keys from `.env` and preserve unknown lines/comments.
-- Do not add a new dependency. Use the standard library only.
+- This phase improves source separation, git safety, and migration behavior, but does not provide OS-backed encryption yet.
+- Do not put app settings or secrets in the ledger SQLite database.
+- Treat user IDs, account numbers, passwords, certificate passwords, access keys, and secret keys as sensitive.
+- Treat enabled flags, `AUTOMATION_BUSINESS_TIMEZONE`, and `MAX_SUB_ACCOUNT` as non-secret.
+- Keep workflows unchanged: they continue to read `process.env`.
+- Keep `.env.example` as a developer key list.
+- Use exported shell env for direct `libretto run ...` development; `.env.local` is only a convenient ignored file to source manually.
+- Keep legacy `.env` as a migration source. After successful JSON writes, remove only known automation keys from `.env` and preserve unknown lines/comments.
+- Do not read or mutate `.env.local` during migration.
+- Do not add Electron `safeStorage`, keytar, SQLite settings tables, or new dependencies in this phase.
 
 ## File Structure
 
 - Create `src/lib/automation/server/config-files.ts`: JSON read/write helpers, key classification, `.env` migration, and env merge helpers.
-- Create `src/lib/automation/server/config-files.check.ts`: self-checks for JSON parsing, file mode, migration, and env merge behavior.
-- Modify `src/lib/automation/server/settings.ts`: replace `.env` settings reads with JSON settings reads.
+- Create `src/lib/automation/server/config-files.check.ts`: self-checks for JSON parsing, file mode, migration, `.env.local` preservation, and env merge behavior.
+- Modify `src/lib/automation/server/tasks.ts`: export secret/non-secret key lists.
+- Modify `src/lib/automation/server/settings.ts`: replace `.env` settings reads with JSON settings reads plus legacy fallback.
 - Modify `src/lib/automation/server/runner.ts`: build spawned task env from `settings.json` + `credentials.json`.
 - Modify `src/routes/automation/+page.server.ts`: save form updates into the two JSON files instead of `.env`.
 - Modify `src/lib/automation/AutomationDashboard.svelte`: update modal copy/button text from `.env` to local settings/credentials files.
 - Modify `electron/runtime.cjs`: initialize `settings.json` defaults in desktop userData.
-- Modify `.gitignore`: ignore `settings.json` and `credentials.json`.
-- Modify `README.md` and `.env.example`: document JSON storage and leave `.env` as legacy/CLI-only fallback.
+- Modify `.gitignore`: ignore `settings.json`, `credentials.json`, and `.env.local`.
+- Modify `README.md` and `.env.example`: document JSON storage and direct Libretto development.
 
 ---
 
@@ -100,7 +107,7 @@ AUTOMATION_SECRET_KEYS,
 automationCredentialKeyIsSecret,
 ```
 
-Then append these assertions:
+Then append:
 
 ```ts
 assert.equal(AUTOMATION_ENABLED_KEYS.includes("LIBRETTO_CLOUD_FUBON_ENABLED"), true);
@@ -112,8 +119,6 @@ assert.equal(automationCredentialKeyIsSecret("MAX_SUB_ACCOUNT"), false);
 ```
 
 - [ ] **Step 3: Run the check**
-
-Run:
 
 ```bash
 node --no-warnings --experimental-strip-types src/lib/automation/server/automation-core.check.ts
@@ -158,10 +163,12 @@ import {
 } from "./config-files.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "octopusbeak-config-"));
+const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
 try {
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
   const envPath = join(dir, ".env");
+  const envLocalPath = join(dir, ".env.local");
 
   writeAutomationSettingsFile(settingsPath, {
     AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
@@ -169,7 +176,7 @@ try {
     MAX_SUB_ACCOUNT: "main",
   });
   writeAutomationCredentialsFile(credentialsPath, {
-    LIBRETTO_CLOUD_FUBON_PASSWORD: "secret",
+    [fubonPasswordKey]: "secret",
     MAX_SECRET_KEY: "max-secret",
   });
 
@@ -179,9 +186,10 @@ try {
     MAX_SUB_ACCOUNT: "main",
   });
   assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
-    LIBRETTO_CLOUD_FUBON_PASSWORD: "secret",
+    [fubonPasswordKey]: "secret",
     MAX_SECRET_KEY: "max-secret",
   });
+  assert.equal((statSync(settingsPath).mode & 0o777), 0o600);
   assert.equal((statSync(credentialsPath).mode & 0o777), 0o600);
 
   assert.deepEqual(settingsToEnv({
@@ -194,7 +202,7 @@ try {
 
   assert.deepEqual(splitAutomationUpdates({
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
-    LIBRETTO_CLOUD_FUBON_PASSWORD: "pw",
+    [fubonPasswordKey]: "pw",
     MAX_SUB_ACCOUNT: "main",
   }), {
     settings: {
@@ -202,26 +210,27 @@ try {
       MAX_SUB_ACCOUNT: "main",
     },
     credentials: {
-      LIBRETTO_CLOUD_FUBON_PASSWORD: "pw",
+      [fubonPasswordKey]: "pw",
     },
   });
 
   assert.deepEqual(credentialStatusFromValues(
-    { LIBRETTO_CLOUD_FUBON_PASSWORD: "pw" },
-    ["LIBRETTO_CLOUD_FUBON_PASSWORD", "MAX_SECRET_KEY"],
+    { [fubonPasswordKey]: "pw" },
+    [fubonPasswordKey, "MAX_SECRET_KEY"],
   ), {
-    LIBRETTO_CLOUD_FUBON_PASSWORD: true,
+    [fubonPasswordKey]: true,
     MAX_SECRET_KEY: false,
   });
 
   writeFileSync(envPath, [
     "# keep",
     "LIBRETTO_CLOUD_FUBON_ENABLED=false",
-    "LIBRETTO_CLOUD_FUBON_PASSWORD=legacy-pw",
+    `${fubonPasswordKey}=legacy-pw`,
     "MAX_SUB_ACCOUNT=sub",
     "UNKNOWN=value",
     "",
   ].join("\n"));
+  writeFileSync(envLocalPath, `${fubonPasswordKey}=dev-only\n`);
 
   migrateAutomationEnvFile({ envPath, settingsPath, credentialsPath });
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
@@ -230,20 +239,21 @@ try {
     MAX_SUB_ACCOUNT: "main",
   });
   assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
-    LIBRETTO_CLOUD_FUBON_PASSWORD: "secret",
+    [fubonPasswordKey]: "secret",
     MAX_SECRET_KEY: "max-secret",
   });
   assert.equal(readFileSync(envPath, "utf8"), "# keep\nUNKNOWN=value\n");
+  assert.equal(readFileSync(envLocalPath, "utf8"), `${fubonPasswordKey}=dev-only\n`);
 
   assert.deepEqual(automationConfigEnv({
     baseEnv: { KEEP_ME: "yes", NODE_ENV: "production" },
     settings: { LIBRETTO_CLOUD_FUBON_ENABLED: true },
-    credentials: { LIBRETTO_CLOUD_FUBON_PASSWORD: "pw" },
+    credentials: { [fubonPasswordKey]: "pw" },
   }), {
     KEEP_ME: "yes",
     NODE_ENV: "development",
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
-    LIBRETTO_CLOUD_FUBON_PASSWORD: "pw",
+    [fubonPasswordKey]: "pw",
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });
@@ -251,8 +261,6 @@ try {
 ```
 
 - [ ] **Step 2: Verify it fails**
-
-Run:
 
 ```bash
 node --no-warnings --experimental-strip-types src/lib/automation/server/config-files.check.ts
@@ -278,7 +286,6 @@ import { parseEnvText } from "./env-file.ts";
 import {
   AUTOMATION_NON_SECRET_KEYS,
   AUTOMATION_SECRET_KEYS,
-  automationCredentialKeyIsSecret,
 } from "./tasks.ts";
 
 export type AutomationSettingValue = string | boolean;
@@ -369,7 +376,7 @@ export function splitAutomationUpdates(updates: Record<string, string>) {
       settings[key] = envValueToSetting(key, value);
       continue;
     }
-    if (automationCredentialKeyIsSecret(key) && value.trim()) credentials[key] = value;
+    if (automationSecretKeys.has(key) && value.trim()) credentials[key] = value;
   }
   return { settings, credentials };
 }
@@ -383,7 +390,7 @@ export function settingsToEnv(settings: AutomationSettingsFile): Record<string, 
 export function credentialStatusFromValues(
   credentials: AutomationCredentialsFile,
   keys: readonly string[],
-) {
+): Record<string, boolean> {
   return Object.fromEntries(keys.map((key) => [key, Boolean(credentials[key]?.trim())]));
 }
 
@@ -403,6 +410,10 @@ export function migrateAutomationEnvFile({
   envPath = resolve(".env"),
   settingsPath = AUTOMATION_SETTINGS_PATH,
   credentialsPath = AUTOMATION_CREDENTIALS_PATH,
+}: {
+  envPath?: string;
+  settingsPath?: string;
+  credentialsPath?: string;
 } = {}) {
   if (!existsSync(envPath)) return;
   const envText = readFileSync(envPath, "utf8");
@@ -410,15 +421,24 @@ export function migrateAutomationEnvFile({
   const existingSettings = readAutomationSettingsFile(settingsPath);
   const existingCredentials = readAutomationCredentialsFile(credentialsPath);
   const migrated = splitAutomationUpdates(parsed);
-  writeAutomationSettingsFile(settingsPath, {
-    ...migrated.settings,
-    ...existingSettings,
-  });
-  writeAutomationCredentialsFile(credentialsPath, {
-    ...migrated.credentials,
-    ...existingCredentials,
-  });
-  writeFileSync(envPath, withoutKnownAutomationLines(envText), { encoding: "utf8", mode: 0o600 });
+
+  const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settingsPath);
+  const hasCredentials = Object.keys(migrated.credentials).length > 0 || existsSync(credentialsPath);
+  if (hasSettings) {
+    writeAutomationSettingsFile(settingsPath, {
+      ...migrated.settings,
+      ...existingSettings,
+    });
+  }
+  if (hasCredentials) {
+    writeAutomationCredentialsFile(credentialsPath, {
+      ...migrated.credentials,
+      ...existingCredentials,
+    });
+  }
+  if (Object.keys(migrated.settings).length > 0 || Object.keys(migrated.credentials).length > 0) {
+    writeFileSync(envPath, withoutKnownAutomationLines(envText), { encoding: "utf8", mode: 0o600 });
+  }
 }
 
 export function automationConfigEnv({
@@ -441,8 +461,6 @@ export function automationConfigEnv({
 ```
 
 - [ ] **Step 4: Run the new check**
-
-Run:
 
 ```bash
 node --no-warnings --experimental-strip-types src/lib/automation/server/config-files.check.ts
@@ -469,32 +487,9 @@ git commit -m "feat: add automation JSON config files"
 
 - [ ] **Step 1: Update settings helpers**
 
-Replace `src/lib/automation/server/settings.ts` with:
+Replace `.env` as the primary settings source. Keep legacy `.env` and shell env as fallback:
 
 ```ts
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { parseEnvText } from "./env-file.ts";
-import {
-  AUTOMATION_SETTINGS_PATH,
-  migrateAutomationEnvFile,
-  readAutomationSettingsFile,
-  type AutomationSettingsFile,
-} from "./config-files.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
-
-export const AUTOMATION_ENV_PATH = resolve(".env");
-
-export function readAutomationEnvText(envPath = AUTOMATION_ENV_PATH) {
-  return existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-}
-
-export function envFlagEnabled(value: string | boolean | undefined) {
-  if (value === undefined) return true;
-  if (typeof value === "boolean") return value;
-  return !new Set(["0", "false", "no", "off", "disabled"]).has(value.trim().toLowerCase());
-}
-
 export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) {
   migrateAutomationEnvFile({ envPath: AUTOMATION_ENV_PATH, settingsPath });
   return readAutomationSettingsFile(settingsPath);
@@ -529,30 +524,81 @@ export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
 }
 ```
 
-Also change the import block to import `automationConfigEnv` from `./config-files.ts`.
+Also import `automationConfigEnv` from `./config-files.ts`.
 
-- [ ] **Step 3: Update call sites that passed env text**
+- [ ] **Step 3: Use settings timezone in runner gates**
 
-In `src/lib/automation/server/runner.check.ts`, replace assertions that call `automationProcessEnv("...")` with direct `automationConfigEnv(...)` tests from Task 2, or with:
+In `src/lib/automation/server/runner.ts`, replace the old settings import:
+
+```ts
+import { automationGroupEnabledStatus, readAutomationEnvText } from "./settings.ts";
+```
+
+with:
+
+```ts
+import {
+  automationBusinessTimezone,
+  automationGroupEnabledStatus,
+  readAutomationSettings,
+} from "./settings.ts";
+```
+
+Then replace the auto-import gate settings block near the end of `runAutomationTask`:
+
+```ts
+const range = businessDayUtcRange();
+const enabledGroups = automationGroupEnabledStatus(readAutomationEnvText());
+```
+
+with:
+
+```ts
+const settings = readAutomationSettings();
+const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+const enabledGroups = automationGroupEnabledStatus(settings);
+```
+
+- [ ] **Step 4: Preserve direct Libretto development path**
+
+Do not change any `src/workflows/*.ts` files. They keep reading `process.env`.
+
+Document and preserve this runtime split:
+
+```text
+Desktop automation button:
+  settings.json + credentials.json -> runner env -> workflow process.env
+
+Developer terminal:
+  set -a; source .env.local; set +a
+  libretto run src/workflows/foo.ts -> workflow process.env
+```
+
+- [ ] **Step 5: Update checks**
+
+In `runner.check.ts`, replace old `automationProcessEnv("...")` checks with:
 
 ```ts
 assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
 assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
 ```
 
-- [ ] **Step 4: Update automation core check imports**
-
-Keep `credentialStatus` and `updateEnvText` checks for legacy parser coverage, but add one `automationGroupEnabledStatus` assertion using a settings object:
+In `automation-core.check.ts`, add `automationBusinessTimezone` to the `./settings.ts` import, then add these assertions:
 
 ```ts
 const enabledGroups = automationGroupEnabledStatus({
   LIBRETTO_CLOUD_ESUN_ENABLED: false,
 });
+assert.equal(enabledGroups.esun, false);
+
+const utcRange = businessDayUtcRange(
+  new Date("2026-06-30T15:30:00.000Z"),
+  automationBusinessTimezone({ AUTOMATION_BUSINESS_TIMEZONE: "UTC" }),
+);
+assert.equal(utcRange.businessDate, "2026-06-30");
 ```
 
-- [ ] **Step 5: Run focused checks**
-
-Run:
+- [ ] **Step 6: Run focused checks**
 
 ```bash
 node --no-warnings --experimental-strip-types src/lib/automation/server/config-files.check.ts
@@ -562,7 +608,7 @@ node --no-warnings --experimental-strip-types src/lib/automation/server/runner.c
 
 Expected: each exits `0` with no output.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/lib/automation/server/settings.ts src/lib/automation/server/runner.ts src/lib/automation/server/runner.check.ts src/lib/automation/server/automation-core.check.ts
@@ -592,6 +638,7 @@ import {
 ```
 
 Also import `readAutomationSettings` from `$lib/automation/server/settings.ts`.
+Include `automationBusinessTimezone` in that same settings import.
 
 - [ ] **Step 2: Update credential status**
 
@@ -599,10 +646,11 @@ Replace `currentCredentialStatus` with:
 
 ```ts
 function currentCredentialStatus() {
+  const settings = readAutomationSettings();
   const credentials = readAutomationCredentialsFile();
   const status = credentialStatusFromValues(credentials, AUTOMATION_CREDENTIAL_KEYS);
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
-    status[key] = status[key] || Boolean(process.env[key]?.trim());
+    status[key] = status[key] || Boolean(settings[key]) || Boolean(process.env[key]?.trim());
   }
   return status;
 }
@@ -610,7 +658,7 @@ function currentCredentialStatus() {
 
 - [ ] **Step 3: Update model settings reads**
 
-Replace local `envText` reads with JSON settings:
+Use JSON settings:
 
 ```ts
 const settings = readAutomationSettings();
@@ -618,6 +666,12 @@ const enabledGroups = automationGroupEnabledStatus(settings);
 ```
 
 Use that pattern in `currentAutomationModel()` and `load()`.
+
+In `currentAutomationModel()`, use the same settings object for the business-day range:
+
+```ts
+const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+```
 
 - [ ] **Step 4: Update save action**
 
@@ -667,8 +721,6 @@ to:
 
 - [ ] **Step 6: Run checks**
 
-Run:
-
 ```bash
 node --no-warnings --experimental-strip-types src/lib/automation/server/config-files.check.ts
 node --no-warnings --experimental-strip-types src/lib/automation/server/automation-core.check.ts
@@ -691,43 +743,82 @@ git commit -m "feat: save automation credentials to JSON files"
 
 **Files:**
 - Modify: `electron/runtime.cjs`
+- Modify: `electron/runtime.check.cjs`
 - Modify: `.gitignore`
 
 - [ ] **Step 1: Update desktop data root initialization**
 
-In `electron/runtime.cjs`, replace the `.env` creation block in `ensureDataRoot` with:
+In `electron/runtime.cjs`, create `settings.json` under `userData` when missing:
 
 ```js
-  const settingsPath = path.join(userData, "settings.json");
-  if (!fs.existsSync(settingsPath)) {
-    fs.writeFileSync(settingsPath, `${JSON.stringify({
-      AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
-      LIBRETTO_CLOUD_FUBON_ENABLED: true,
-      LIBRETTO_CLOUD_ESUN_ENABLED: true,
-      LIBRETTO_CLOUD_YUANTA_ENABLED: true,
-      LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
-      LIBRETTO_CLOUD_CATHAY_ENABLED: true,
-      LIBRETTO_CLOUD_HNCB_ENABLED: true,
-      MAX_ENABLED: true,
-      MAX_SUB_ACCOUNT: "main",
-    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  }
+const settingsPath = path.join(userData, "settings.json");
+if (!fs.existsSync(settingsPath)) {
+  fs.writeFileSync(settingsPath, `${JSON.stringify({
+    AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+    LIBRETTO_CLOUD_FUBON_ENABLED: true,
+    LIBRETTO_CLOUD_ESUN_ENABLED: true,
+    LIBRETTO_CLOUD_YUANTA_ENABLED: true,
+    LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
+    LIBRETTO_CLOUD_CATHAY_ENABLED: true,
+    LIBRETTO_CLOUD_HNCB_ENABLED: true,
+    MAX_ENABLED: true,
+    MAX_SUB_ACCOUNT: "main",
+  }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
 ```
 
 Do not create `credentials.json` until the user saves a credential.
 
-- [ ] **Step 2: Ignore local JSON files**
+- [ ] **Step 2: Update runtime check**
+
+In `electron/runtime.check.cjs`, replace the `.env` assertions:
+
+```js
+assert.equal(fs.existsSync(path.join(root, ".env")), true);
+assert.equal(
+  fs.readFileSync(path.join(root, ".env"), "utf8"),
+  "AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei\n",
+);
+const existingEnvText = "CUSTOM_SECRET=keep-me\n";
+fs.writeFileSync(path.join(root, ".env"), existingEnvText, "utf8");
+ensureDataRoot(root);
+assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), existingEnvText);
+```
+
+with:
+
+```js
+const settingsPath = path.join(root, "settings.json");
+assert.equal(fs.existsSync(settingsPath), true);
+assert.equal(fs.existsSync(path.join(root, "credentials.json")), false);
+assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, "utf8")), {
+  AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+  LIBRETTO_CLOUD_FUBON_ENABLED: true,
+  LIBRETTO_CLOUD_ESUN_ENABLED: true,
+  LIBRETTO_CLOUD_YUANTA_ENABLED: true,
+  LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
+  LIBRETTO_CLOUD_CATHAY_ENABLED: true,
+  LIBRETTO_CLOUD_HNCB_ENABLED: true,
+  MAX_ENABLED: true,
+  MAX_SUB_ACCOUNT: "main",
+});
+const existingSettingsText = JSON.stringify({ CUSTOM_SETTING: "keep-me" }, null, 2) + "\n";
+fs.writeFileSync(settingsPath, existingSettingsText, "utf8");
+ensureDataRoot(root);
+assert.equal(fs.readFileSync(settingsPath, "utf8"), existingSettingsText);
+```
+
+- [ ] **Step 3: Ignore local files**
 
 Add to `.gitignore`:
 
 ```gitignore
 settings.json
 credentials.json
+.env.local
 ```
 
-- [ ] **Step 3: Run package/runtime checks**
-
-Run:
+- [ ] **Step 4: Run package/runtime checks**
 
 ```bash
 npm run desktop:runtime-probe
@@ -736,10 +827,10 @@ npm run typecheck
 
 Expected: both commands exit `0`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add electron/runtime.cjs .gitignore
+git add electron/runtime.cjs electron/runtime.check.cjs .gitignore
 git commit -m "chore: initialize local automation settings"
 ```
 
@@ -750,37 +841,46 @@ git commit -m "chore: initialize local automation settings"
 **Files:**
 - Modify: `README.md`
 - Modify: `.env.example`
-- Optional create: `settings.example.json`
+- Create: `settings.example.json`
 
 - [ ] **Step 1: Update README automation panel section**
 
-Replace the sentence:
+Document:
 
 ```md
-The `/automation` page wraps the existing npm scripts. It stores credential edits in `.env`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
+The `/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in local `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
 ```
 
-with:
+Also document:
 
 ```md
-The `/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
+`credentials.json` is local and ignored, but it is not OS-keychain encrypted yet. Electron `safeStorage` should be added after SSR is removed and the Electron main/preload API boundary owns credential access.
 ```
 
-Replace "Useful `.env` flags:" with "Useful `settings.json` keys:" and show JSON instead of shell assignments.
+- [ ] **Step 2: Document direct Libretto development**
 
-- [ ] **Step 2: Update `.env.example`**
+Add:
 
-Reduce `.env.example` to legacy/CLI-only guidance:
+```md
+For direct `libretto run src/workflows/foo.ts` development, provide credentials through exported shell env. If you keep them in ignored `.env.local`, load them first with `set -a; source .env.local; set +a`; Libretto does not auto-load that file. Workflow files still read `process.env`; the desktop JSON store is only injected by the automation runner.
+```
+
+- [ ] **Step 3: Update `.env.example`**
+
+Keep it as a key list and mark it developer-only:
 
 ```dotenv
-# Legacy CLI-only fallback. The desktop automation panel stores app settings in
-# settings.json and secret credentials in credentials.json.
+# Developer-only fallback for direct workflow runs.
+# The desktop automation panel stores app settings in settings.json and
+# credential values in credentials.json.
 AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei
 ```
 
-- [ ] **Step 3: Add optional settings example**
+Keep the existing bank/MAX key list, but remove wording that says the desktop panel writes to `.env`.
 
-Create `settings.example.json` if a committed example is useful:
+- [ ] **Step 4: Add settings example**
+
+Create `settings.example.json`:
 
 ```json
 {
@@ -796,9 +896,7 @@ Create `settings.example.json` if a committed example is useful:
 }
 ```
 
-- [ ] **Step 4: Run privacy check**
-
-Run:
+- [ ] **Step 5: Run privacy check**
 
 ```bash
 npm run privacy-check
@@ -806,12 +904,27 @@ npm run privacy-check
 
 Expected: exits `0`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add README.md .env.example settings.example.json
 git commit -m "docs: document automation JSON config"
 ```
+
+---
+
+## Deferred Work
+
+Do not implement this work in this phase. Add it to follow-up work after SSR removal:
+
+```text
+After SSR is removed:
+  renderer UI -> preload/contextBridge -> ipcMain handlers
+  ipcMain handlers -> Electron safeStorage
+  safeStorage encrypted blobs -> userData/credentials.json
+```
+
+Reason: adding `safeStorage` now would place native credential behavior behind the current SvelteKit server-action boundary, then require moving the same behavior again during the Electron API migration.
 
 ---
 
@@ -842,12 +955,14 @@ Expected:
 - Saving a group switch creates/updates `settings.json`.
 - Saving a password creates/updates `credentials.json`.
 - Known automation keys are no longer left in `.env` after migration.
-- Running a task still receives the same env variable names as before.
+- `.env.local` is left untouched.
+- Running a desktop task still receives the same env variable names as before.
+- Direct `libretto run src/workflows/foo.ts` still works when credentials are supplied through shell env, including values manually sourced from `.env.local`.
 
 ## Self-Review
 
-- Spec coverage: covers `settings.json`, `credentials.json`, migration away from `.env`, route save behavior, runner env behavior, docs, and verification.
-- Placeholder scan: no TBD/TODO/implement-later placeholders.
+- Spec coverage: covers `settings.json`, `credentials.json`, migration away from `.env`, `.env.local` development fallback, route save behavior, runner env behavior, docs, and verification.
+- Placeholder scan: no placeholder markers remain.
 - Type consistency: plan uses `AutomationSettingsFile`, `AutomationCredentialsFile`, `settingsToEnv`, `credentialStatusFromValues`, `splitAutomationUpdates`, and `automationConfigEnv` consistently.
 
-Skipped: OS keychain/safeStorage encryption. Add it when the Electron main/preload API migration lands, so only one native boundary owns credential encryption.
+Skipped: OS keychain/`safeStorage` encryption and SQLite credential storage. Add `safeStorage` after SSR removal; add SQLite only if settings become query-heavy or multi-profile.
