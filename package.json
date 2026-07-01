@@ -4,6 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "postinstall": "node scripts/patch-libretto-run-cdp.mjs",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
