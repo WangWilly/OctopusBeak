@@ -12,22 +12,33 @@ const {
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "octopusbeak-runtime-"));
+  const defaultSettings = {
+    AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+    LIBRETTO_CLOUD_FUBON_ENABLED: true,
+    LIBRETTO_CLOUD_ESUN_ENABLED: true,
+    LIBRETTO_CLOUD_YUANTA_ENABLED: true,
+    LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
+    LIBRETTO_CLOUD_CATHAY_ENABLED: true,
+    LIBRETTO_CLOUD_HNCB_ENABLED: true,
+    MAX_ENABLED: true,
+    MAX_SUB_ACCOUNT: "main",
+  };
 
   try {
     ensureDataRoot(root);
-    assert.equal(fs.existsSync(path.join(root, ".env")), true);
+    const settingsPath = path.join(root, "settings.json");
+    const credentialsPath = path.join(root, "credentials.json");
+    assert.equal(fs.existsSync(settingsPath), true);
+    assert.equal(fs.existsSync(credentialsPath), false);
     assert.equal(fs.existsSync(path.join(root, ".libretto")), true);
     assert.equal(fs.existsSync(path.join(root, "downloads")), true);
     assert.equal(fs.existsSync(path.join(root, "data", "ledger")), true);
     assert.equal(fs.existsSync(path.join(root, "data", "automation", "logs")), true);
-    assert.equal(
-      fs.readFileSync(path.join(root, ".env"), "utf8"),
-      "AUTOMATION_BUSINESS_TIMEZONE=Asia/Taipei\n",
-    );
-    const existingEnvText = "CUSTOM_SECRET=keep-me\n";
-    fs.writeFileSync(path.join(root, ".env"), existingEnvText, "utf8");
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, "utf8")), defaultSettings);
+    const existingSettingsText = `${JSON.stringify({ CUSTOM_SETTING: "keep-me" }, null, 2)}\n`;
+    fs.writeFileSync(settingsPath, existingSettingsText, "utf8");
     ensureDataRoot(root);
-    assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), existingEnvText);
+    assert.equal(fs.readFileSync(settingsPath, "utf8"), existingSettingsText);
 
     const env = buildDesktopEnv({
       userData: root,

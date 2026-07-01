@@ -3,6 +3,9 @@ node_modules/
 build/
 out/
 .env
+/.env.local
+/settings.json
+/credentials.json
 downloads/
 data/
 .superpowers/
