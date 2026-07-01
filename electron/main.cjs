@@ -11,6 +11,9 @@ let server = null;
 let mainWindow = null;
 let createWindowPromise = null;
 
+app.setName("OctopusBeak");
+app.setPath("userData", path.join(app.getPath("appData"), "OctopusBeak"));
+
 function projectRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, "app");
   return path.join(__dirname, "..");
