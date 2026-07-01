@@ -7,23 +7,28 @@
   "main": "electron/main.cjs",
   "scripts": {
     "postinstall": "node scripts/patch-libretto-run-cdp.mjs",
+
+    "dev": "vite dev",
+    "dev:mock": "LEDGER_DIR=data/mock-ledger vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+
+    "desktop:dev": "npm run build && electron .",
+    "desktop:package": "npm run build && npm run desktop:install-browsers && electron-forge package",
+    "desktop:make": "npm run build && npm run desktop:install-browsers && electron-forge make",
+    "desktop:make:signed": "OCTOPUSBEAK_SIGN=1 npm run desktop:make",
+    "desktop:install-browsers": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium",
+    "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
+    "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
+
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
     "libretto:status": "libretto status",
     "libretto:setup": "libretto setup",
     "libretto:close-session": "libretto close --session",
     "libretto:close-all": "libretto close --all",
-    "dev": "vite dev",
-    "dev:mock": "LEDGER_DIR=data/mock-ledger vite dev",
-    "build": "vite build",
-    "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
-    "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
-    "desktop:install-browsers": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium",
-    "desktop:dev": "npm run build && electron .",
-    "desktop:package": "npm run build && npm run desktop:install-browsers && electron-forge package",
-    "desktop:make": "npm run build && npm run desktop:install-browsers && electron-forge make",
-    "desktop:make:signed": "OCTOPUSBEAK_SIGN=1 npm run desktop:make",
-    "preview": "vite preview",
+
     "run:example": "libretto run src/workflows/scrape-page.ts --headless",
     "run:fubon-statements": "libretto run src/workflows/fubon-statements.ts --headless",
     "run:fubon-all-statements": "libretto run src/workflows/fubon-all-statements.ts --headless",
@@ -41,14 +46,15 @@
     "run:cathay-all-statements": "libretto run src/workflows/cathay-all-statements.ts --headless",
     "run:cathay-foreign-statements": "libretto run src/workflows/cathay-foreign-statements.ts --headless",
     "run:hncb-statements": "libretto run src/workflows/hncb-statements.ts --headless",
+
     "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",
     "run:seed-mock-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/seed-mock-ledger-db.ts",
+
     "privacy-check": ".githooks/pre-commit",
     "secrets-check": "gitleaks dir . --config .gitleaks.toml --redact --verbose",
-    "hooks:install": "git config core.hooksPath .githooks",
-    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",
