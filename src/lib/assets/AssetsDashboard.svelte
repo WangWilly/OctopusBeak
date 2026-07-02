@@ -14,7 +14,6 @@
 
   export let assets: AssetsPageDto;
 
-  let valuesVisible = true;
   let search = "";
   let chartCurrency = "TWD";
 
@@ -117,7 +116,6 @@
   {sideSub}
   searchPlaceholder="Search asset accounts"
   bind:search
-  bind:valuesVisible
 >
   <div class="content">
     <section class="card balance-history" aria-label="Asset balance history">

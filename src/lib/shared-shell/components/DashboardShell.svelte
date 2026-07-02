@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
+  import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
   export let active: "overview" | "assets" | "liabilities" | "automation" = "overview";
   export let eyebrow = "Overview";
@@ -13,23 +14,16 @@
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
-  export let valuesVisible = true;
 
   const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
-  const valuesStorageKey = "octopusbeak-values-visible";
   let sidebarCollapsed = false;
-  let valuesStorageLoaded = false;
+  let valuesVisible = readStoredValuesVisible();
 
   onMount(() => {
     sidebarCollapsed = localStorage.getItem(sidebarStorageKey) === "1";
-    const storedValuesVisible = localStorage.getItem(valuesStorageKey);
-    if (storedValuesVisible) valuesVisible = storedValuesVisible === "1";
-    valuesStorageLoaded = true;
   });
 
-  $: if (valuesStorageLoaded) {
-    localStorage.setItem(valuesStorageKey, valuesVisible ? "1" : "0");
-  }
+  $: writeStoredValuesVisible(valuesVisible);
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;

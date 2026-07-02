@@ -13,7 +13,6 @@
 
   export let liabilities: LiabilitiesPageDto;
 
-  let valuesVisible = true;
   let search = "";
   let chartCurrency = "TWD";
 
@@ -113,7 +112,6 @@
   {sideSub}
   searchPlaceholder="Search liabilities"
   bind:search
-  bind:valuesVisible
 >
   <div class="content">
     <section class="card balance-history" aria-label="Debt balance history">
