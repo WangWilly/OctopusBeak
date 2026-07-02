@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { invalidateAll } from "$app/navigation";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
@@ -14,6 +13,7 @@
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroup[];
+  export let reload: () => Promise<void>;
 
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
@@ -23,6 +23,7 @@
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let viewerImageUrl = "";
   let viewerError = "";
+  let actionError = "";
   let dragStart: { x: number; y: number; pointerId: number } | null = null;
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
@@ -46,7 +47,7 @@
   onMount(() => {
     if (automation.active) {
       pollTimer = setInterval(() => {
-        void invalidateAll();
+        void reload();
       }, 2_000);
     }
   });
@@ -54,6 +55,7 @@
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
     if (viewerTimer) clearInterval(viewerTimer);
+    if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
   });
 
   function statusClass(status: string) {
@@ -72,11 +74,6 @@
       .replace(/^LIBRETTO_CLOUD_/, "")
       .replace(/_/g, " ")
       .toLowerCase();
-  }
-
-  function actionName(task: AutomationTaskRow) {
-    if (task.primaryAction === "Resume") return "resume";
-    return "run";
   }
 
   function resetCredentialChanges() {
@@ -115,24 +112,65 @@
     };
   }
 
-  function refreshViewerImage() {
+  async function runTask(task: AutomationTaskRow) {
+    try {
+      actionError = "";
+      if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
+      else await window.octopusBeak.automation.run(task.id);
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function saveCredentials(event: SubmitEvent) {
+    event.preventDefault();
+    const updates: Record<string, string> = {};
+    for (const group of credentialGroups) {
+      updates[group.enabledKey] = groupEnabled[group.id] !== false ? "true" : "false";
+    }
+    for (const [key, value] of Object.entries(credentialDrafts)) {
+      if (value.trim()) updates[key] = value.trim();
+    }
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.saveCredentials(updates);
+      resetCredentialChanges();
+      credentialsOpen = false;
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function refreshViewerImage() {
     if (!humanTask) return;
-    viewerImageUrl = `/automation/viewer/screenshot?taskId=${encodeURIComponent(humanTask.id)}&t=${Date.now()}`;
+    try {
+      const bytes = await window.octopusBeak.automation.viewerScreenshot(humanTask.id);
+      if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
+      viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
+      viewerError = "";
+    } catch (error) {
+      viewerError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function openHumanViewer(task: AutomationTaskRow) {
     humanTask = task;
     viewerError = "";
     dragStart = null;
-    refreshViewerImage();
+    void refreshViewerImage();
     if (viewerTimer) clearInterval(viewerTimer);
-    viewerTimer = setInterval(refreshViewerImage, 750);
+    viewerTimer = setInterval(() => {
+      void refreshViewerImage();
+    }, 750);
   }
 
   function closeHumanViewer() {
     if (viewerTimer) clearInterval(viewerTimer);
     viewerTimer = null;
     humanTask = null;
+    if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
     viewerImageUrl = "";
     viewerError = "";
     dragStart = null;
@@ -141,19 +179,9 @@
   async function sendViewerInput(input: unknown) {
     if (!humanTask) return;
     try {
-      const response = await fetch("/automation/viewer/input", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ taskId: humanTask.id, input }),
-      });
-
-      if (!response.ok) {
-        viewerError = await response.text();
-        return;
-      }
-
+      await window.octopusBeak.automation.viewerInput(humanTask.id, input);
       viewerError = "";
-      refreshViewerImage();
+      await refreshViewerImage();
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
     }
@@ -162,19 +190,9 @@
   async function forceQuitHumanViewer() {
     if (!humanTask) return;
     try {
-      const response = await fetch("/automation/viewer/force-quit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ taskId: humanTask.id }),
-      });
-
-      if (!response.ok) {
-        viewerError = await response.text();
-        return;
-      }
-
+      await window.octopusBeak.automation.forceQuit(humanTask.id);
       closeHumanViewer();
-      void invalidateAll();
+      await reload();
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
     }
@@ -287,13 +305,16 @@
                 <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
                 <td class="right">
                   <div class="task-actions">
-                    <form method="POST" action={`?/${actionName(task)}`}>
-                      <input type="hidden" name="taskId" value={task.id} />
-                      <button class="button primary task-control" type="submit" disabled={!task.canRun} aria-busy={task.isActive}>
-                        {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
-                        <span>{task.primaryAction}</span>
-                      </button>
-                    </form>
+                    <button
+                      class="button primary task-control"
+                      type="button"
+                      disabled={!task.canRun}
+                      aria-busy={task.isActive}
+                      onclick={() => void runTask(task)}
+                    >
+                      {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
+                      <span>{task.primaryAction}</span>
+                    </button>
                     {#if task.status === "waiting_for_human" && task.humanSession}
                       <button class="button secondary task-control" type="button" onclick={() => openHumanViewer(task)}>
                         Assist
@@ -309,6 +330,7 @@
           </tbody>
         </table>
       </div>
+      {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
     </section>
   </div>
 </DashboardShell>
@@ -316,7 +338,7 @@
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
     <button class="modal-backdrop" type="button" aria-label="Close credentials" onclick={closeCredentials}></button>
-    <form class="modal-panel credential-modal" method="POST" action="?/saveCredentials">
+    <form class="modal-panel credential-modal" onsubmit={saveCredentials}>
       <div class="modal-head">
         <div>
           <h2 id="credentials-title">Credentials</h2>
@@ -333,7 +355,6 @@
             <section class="credential-section" aria-labelledby={`${group.id}-credentials-title`}>
               <div class="credential-section-head">
                 <h3 id={`${group.id}-credentials-title`}>{group.label}</h3>
-                <input type="hidden" name={group.enabledKey} value={groupEnabled[group.id] !== false ? "true" : "false"} />
                 <button
                   class="switch credential-switch"
                   class:dirty={(groupEnabled[group.id] !== false) !== group.enabled}
@@ -400,10 +421,9 @@
           <button class="button secondary fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
             Force quit
           </button>
-          <form method="POST" action="?/resume">
-            <input type="hidden" name="taskId" value={humanTask.id} />
-            <button class="button primary fixed-action" type="submit">Resume</button>
-          </form>
+          <button class="button primary fixed-action" type="button" onclick={() => humanTask && void runTask(humanTask)}>
+            Resume
+          </button>
           <button class="modal-close" type="button" aria-label="Close" onclick={closeHumanViewer}>x</button>
         </div>
       </div>
