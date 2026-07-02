@@ -21,6 +21,8 @@ jobs:
           node-version: 25
           cache: npm
 
+      - run: npm run check:package-lock
+
       - run: npm ci
 
       - name: Configure signing keychain

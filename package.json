@@ -20,6 +20,7 @@
     "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
+    "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
     "libretto:status": "libretto status",
     "libretto:setup": "libretto setup",
