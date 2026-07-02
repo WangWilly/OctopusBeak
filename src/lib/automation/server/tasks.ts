@@ -1,22 +1,10 @@
-export type AutomationTaskKind = "crawler" | "sync" | "import";
+import type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
 
-export type AutomationTask = {
-  id: string;
-  label: string;
-  script: string;
+export type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
+
+export type AutomationTask = AutomationTaskSummary & {
   command: readonly string[];
-  kind: AutomationTaskKind;
-  credentialGroupId?: string;
-  credentialKeys: readonly string[];
-  dependencies: readonly string[];
   maxAttempts: number;
-};
-
-export type AutomationCredentialGroup = {
-  id: string;
-  label: string;
-  enabledKey: string;
-  credentialKeys: readonly string[];
 };
 
 export const CSV_IMPORT_DEPENDENCY_IDS = [
