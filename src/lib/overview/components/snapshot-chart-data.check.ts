@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { buildSnapshotChartPoints } from "./snapshot-chart-data.ts";
+import {
+  buildSnapshotChartPoints,
+  buildSnapshotDivergingSeries,
+  selectSnapshotDivergingSeries,
+} from "./snapshot-chart-data.ts";
 import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 
 const rows: DailyHistoryRowDto[] = [
@@ -36,13 +40,45 @@ const rows: DailyHistoryRowDto[] = [
 ];
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "netAssets"), [
-  { date: "2026-07-01", dateLabel: "2026-07-01", value: 100 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", value: 120 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange"), [
-  { date: "2026-07-01", dateLabel: "2026-07-01", value: 5 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", value: -10 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 5 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -10 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets"), []);
+
+const divergingSeries = buildSnapshotDivergingSeries(rows, "TWD");
+
+assert.deepEqual(
+  divergingSeries.map((series) => series.key),
+  ["net", "assets", "liabilities"],
+);
+
+assert.deepEqual(divergingSeries[0].data, [
+  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
+]);
+
+assert.deepEqual(divergingSeries[1].data, [
+  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 150 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 160 },
+]);
+
+assert.deepEqual(divergingSeries[2].data, [
+  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: -50 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -40 },
+]);
+
+assert.deepEqual(
+  selectSnapshotDivergingSeries(divergingSeries, ["assets", "liabilities"]).map((series) => series.key),
+  ["assets", "liabilities"],
+);
+
+assert.deepEqual(
+  selectSnapshotDivergingSeries(divergingSeries, []).map((series) => series.key),
+  ["net", "assets", "liabilities"],
+);

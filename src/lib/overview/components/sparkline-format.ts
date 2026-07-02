@@ -24,6 +24,22 @@ export function buildSparklineYAxis(values: number[]) {
   };
 }
 
+export function buildCenteredSparklineYAxis(values: number[]) {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) return { min: 0, max: 0, step: 0, ticks: [] };
+
+  const rawMax = Math.max(...finiteValues.map((value) => Math.abs(value)));
+  const max = rawMax === 0 ? 2 : rawMax * 1.5;
+  const step = max / 2;
+
+  return {
+    min: -max,
+    max,
+    step,
+    ticks: [max, step, 0, -step, -max],
+  };
+}
+
 export function formatSparklineTick(value: number, step = 0) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: compactFractionDigits(value, step),
