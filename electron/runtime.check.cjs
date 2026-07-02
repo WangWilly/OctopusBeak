@@ -1,16 +1,13 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
-const {
-  buildDesktopEnv,
-  ensureDataRoot,
-  findFreePort,
-  listenWithHandler,
-} = require("./runtime.cjs");
+const { buildDesktopEnv, ensureDataRoot } = require("./runtime.cjs");
 
 async function main() {
+  assert.equal(typeof buildDesktopEnv, "function");
+  assert.equal(typeof ensureDataRoot, "function");
+
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "octopusbeak-runtime-"));
   const defaultSettings = {
     AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
@@ -46,14 +43,10 @@ async function main() {
     const env = buildDesktopEnv({
       userData: root,
       appRoot: missingBrowsersAppRoot,
-      port: 41234,
       electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
     });
     if (originalBrowsersPath === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
     else process.env.PLAYWRIGHT_BROWSERS_PATH = originalBrowsersPath;
-    assert.equal(env.HOST, "127.0.0.1");
-    assert.equal(env.PORT, "41234");
-    assert.equal(env.ORIGIN, "http://127.0.0.1:41234");
     assert.equal(env.NODE_ENV, "production");
     assert.equal(env.LEDGER_DIR, path.join(root, "data", "ledger"));
     assert.equal(env.OCTOPUSBEAK_DESKTOP, "1");
@@ -68,7 +61,6 @@ async function main() {
     const packagedEnv = buildDesktopEnv({
       userData: root,
       appRoot: packagedAppRoot,
-      port: 41235,
       electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
     });
     assert.equal(
@@ -76,33 +68,6 @@ async function main() {
       packagedBrowsersPath,
     );
 
-    const port = await findFreePort();
-    assert.equal(Number.isInteger(port), true);
-    assert.equal(port > 0, true);
-
-    const server = await listenWithHandler((request, response) => {
-      response.end(request.url);
-    }, 0);
-    const address = server.address();
-    assert.equal(typeof address, "object");
-    assert.notEqual(address, null);
-    assert.equal(address.address, "127.0.0.1");
-    assert.equal(Number.isInteger(address.port), true);
-    assert.equal(address.port > 0, true);
-    const responseBody = await new Promise((resolve, reject) => {
-      http.get(`http://127.0.0.1:${address.port}/probe`, (response) => {
-        let body = "";
-        response.setEncoding("utf8");
-        response.on("data", (chunk) => {
-          body += chunk;
-        });
-        response.on("end", () => {
-          resolve(body);
-        });
-      }).on("error", reject);
-    });
-    assert.equal(responseBody, "/probe");
-    server.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
