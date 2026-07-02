@@ -9,7 +9,6 @@
 
   export let overview: OverviewPageDto;
 
-  let valuesVisible = true;
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
 
@@ -66,7 +65,6 @@
   {sideSub}
   {sideSubSensitive}
   syncLabel={`Imported ${formatImportedAt(overview.importedAt)}`}
-  bind:valuesVisible
 >
   <div class="content">
     <section aria-label="Summary metrics">

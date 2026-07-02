@@ -18,7 +18,6 @@
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
   let humanTask: AutomationTaskRow | null = null;
-  let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let viewerRequestId = 0;
@@ -275,7 +274,6 @@
   sideLabel="Automation"
   {sideValue}
   {sideSub}
-  bind:valuesVisible
 >
   <svelte:fragment slot="topbar-actions">
     <span class={`chip ${topStatusClass}`}>{topStatus}</span>
