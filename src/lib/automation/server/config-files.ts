@@ -6,7 +6,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { parseEnvText } from "./env-file.ts";
 import {
   AUTOMATION_NON_SECRET_KEYS,
@@ -17,8 +17,8 @@ export type AutomationSettingValue = string | boolean;
 export type AutomationSettingsFile = Record<string, AutomationSettingValue>;
 export type AutomationCredentialsFile = Record<string, string>;
 
-export const AUTOMATION_SETTINGS_PATH = resolve("settings.json");
-export const AUTOMATION_CREDENTIALS_PATH = resolve("credentials.json");
+export const AUTOMATION_SETTINGS_PATH = "settings.json";
+export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
 
 const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
 const automationSecretKeys = new Set<string>(AUTOMATION_SECRET_KEYS);
@@ -132,7 +132,7 @@ function withoutKnownAutomationLines(envText: string) {
 }
 
 export function migrateAutomationEnvFile({
-  envPath = resolve(".env"),
+  envPath = ".env",
   settingsPath = AUTOMATION_SETTINGS_PATH,
   credentialsPath = AUTOMATION_CREDENTIALS_PATH,
 }: {
