@@ -40,25 +40,25 @@
     {
       id: "overview",
       label: "Overview",
-      href: "/overview",
+      href: "#/overview",
       path: "M3 13h8V3H3v10Zm2-8h4v6H5V5Zm-2 16h8v-6H3v6Zm2-4h4v2H5v-2Zm8 4h8V11h-8v10Zm2-8h4v6h-4v-6Zm-2-10v6h8V3h-8Zm2 2h4v2h-4V5Z",
     },
     {
       id: "assets",
       label: "Assets",
-      href: "/assets",
+      href: "#/assets",
       path: "M21 7h-2V5c0-1.1-.9-2-2-2H5C3.34 3 2 4.34 2 6v12c0 1.1.9 2 2 2h17c.55 0 1-.45 1-1V8c0-.55-.45-1-1-1ZM5 5h12v2H5c-.55 0-1-.45-1-1s.45-1 1-1Zm15 10h-4c-1.1 0-2-.9-2-2s.9-2 2-2h4v4Zm-4-1.5c.28 0 .5-.22.5-.5s-.22-.5-.5-.5-.5.22-.5.5.22.5.5.5Z",
     },
     {
       id: "liabilities",
       label: "Liabilities",
-      href: "/liabilities",
+      href: "#/liabilities",
       path: "M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z",
     },
     {
       id: "automation",
       label: "Automation",
-      href: "/automation",
+      href: "#/automation",
       path: "M5 4h14v2H5V4Zm2 4h10v2H7V8Zm-2 4h14v8H5v-8Zm2 2v4h10v-4H7Z",
     },
   ] as const;
@@ -68,7 +68,7 @@
   <aside class="sidebar">
     <div>
       <div class="brand-row">
-        <a class="brand" href="/overview" aria-label="OctopusBeak home">
+        <a class="brand" href="#/overview" aria-label="OctopusBeak home">
           <span class="brand-mark">
             <img class="brand-icon" src={projectIcon} alt="" width="32" height="32" aria-hidden="true" />
           </span>
