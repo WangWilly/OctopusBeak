@@ -369,8 +369,8 @@ In `src/app.css`, replace the existing sparkline CSS block from `.sparkline { ..
   display: block;
 }
 
-.sparkline-grid :global(line),
-.sparkline-grid :global(path) {
+.sparkline-grid line,
+.sparkline-grid path {
   stroke: var(--border);
 }
 
