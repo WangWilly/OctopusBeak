@@ -110,21 +110,21 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   return { saved: true as const };
 }
 
-export function automationRun(taskId: string) {
-  const task = assertAutomationTaskCanStart(taskId);
-  startAutomationTask(task.id);
+export function automationRun(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+  const task = assertAutomationTaskCanStart(taskId, ledgerDir);
+  startAutomationTask(task.id, ledgerDir);
   return { started: task.id };
 }
 
-export function automationResume(taskId: string) {
+export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const model = loadAutomationDesktopModel();
+  const model = loadAutomationDesktopModel(ledgerDir);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status !== "waiting_for_human") throw new Error("Task is not waiting for human input.");
   const session = resumeSessionFromLog(row.logTail);
   if (!session) throw new Error("Missing Libretto resume session in latest log.");
-  startAutomationResume(task.id, session);
+  startAutomationResume(task.id, session, ledgerDir);
   return { resumed: task.id };
 }
