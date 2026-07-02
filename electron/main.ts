@@ -31,6 +31,33 @@ function rendererEntry(appRoot: string) {
   return pathToFileURL(path.join(appRoot, "build", "index.html")).href;
 }
 
+function isAllowedNavigation(targetUrl: string, rendererUrl: string) {
+  try {
+    const target = new URL(targetUrl);
+    const renderer = new URL(rendererUrl);
+    return target.origin === renderer.origin && target.pathname === renderer.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function guardWindowNavigation(window: BrowserWindow, rendererUrl: string) {
+  window.webContents.on("will-navigate", (event, targetUrl) => {
+    if (!isAllowedNavigation(targetUrl, rendererUrl)) event.preventDefault();
+  });
+
+  window.webContents.on("will-redirect", (event, targetUrl) => {
+    if (!isAllowedNavigation(targetUrl, rendererUrl)) event.preventDefault();
+  });
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedNavigation(url, rendererUrl)) {
+      void window.loadURL(url).catch(showStartupError);
+    }
+    return { action: "deny" };
+  });
+}
+
 async function createWindow(rendererUrl: string, preloadPath: string) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.focus();
@@ -58,6 +85,7 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
     window.on("closed", () => {
       if (mainWindow === window) mainWindow = null;
     });
+    guardWindowNavigation(window, rendererUrl);
 
     try {
       await window.loadURL(`${rendererUrl}#/overview`);
