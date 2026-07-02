@@ -31,7 +31,7 @@ function ensureDataRoot(userData) {
 }
 
 function buildDesktopEnv({ userData, appRoot, port, electronPath = process.execPath }) {
-  return {
+  const env = {
     ...process.env,
     HOST: "127.0.0.1",
     PORT: String(port),
@@ -42,8 +42,10 @@ function buildDesktopEnv({ userData, appRoot, port, electronPath = process.execP
     OCTOPUSBEAK_APP_ROOT: appRoot,
     OCTOPUSBEAK_USER_DATA: userData,
     OCTOPUSBEAK_NODE_PATH: electronPath,
-    PLAYWRIGHT_BROWSERS_PATH: path.join(appRoot, "node_modules", "playwright-core", ".local-browsers"),
   };
+  const playwrightBrowsersPath = path.join(appRoot, "node_modules", "playwright-core", ".local-browsers");
+  if (fs.existsSync(playwrightBrowsersPath)) env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPath;
+  return env;
 }
 
 function findFreePort() {

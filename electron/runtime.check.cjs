@@ -40,24 +40,40 @@ async function main() {
     ensureDataRoot(root);
     assert.equal(fs.readFileSync(settingsPath, "utf8"), existingSettingsText);
 
+    const missingBrowsersAppRoot = path.join(root, "missing-browsers-app");
+    const originalBrowsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    process.env.PLAYWRIGHT_BROWSERS_PATH = "/tmp/inherited-playwright";
     const env = buildDesktopEnv({
       userData: root,
-      appRoot: "/Applications/OctopusBeak.app/Contents/Resources/app",
+      appRoot: missingBrowsersAppRoot,
       port: 41234,
       electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
     });
+    if (originalBrowsersPath === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = originalBrowsersPath;
     assert.equal(env.HOST, "127.0.0.1");
     assert.equal(env.PORT, "41234");
     assert.equal(env.ORIGIN, "http://127.0.0.1:41234");
     assert.equal(env.NODE_ENV, "production");
     assert.equal(env.LEDGER_DIR, path.join(root, "data", "ledger"));
     assert.equal(env.OCTOPUSBEAK_DESKTOP, "1");
-    assert.equal(env.OCTOPUSBEAK_APP_ROOT, "/Applications/OctopusBeak.app/Contents/Resources/app");
+    assert.equal(env.OCTOPUSBEAK_APP_ROOT, missingBrowsersAppRoot);
     assert.equal(env.OCTOPUSBEAK_USER_DATA, root);
     assert.equal(env.OCTOPUSBEAK_NODE_PATH, "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak");
+    assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, "/tmp/inherited-playwright");
+
+    const packagedAppRoot = path.join(root, "packaged-app");
+    const packagedBrowsersPath = path.join(packagedAppRoot, "node_modules", "playwright-core", ".local-browsers");
+    fs.mkdirSync(packagedBrowsersPath, { recursive: true });
+    const packagedEnv = buildDesktopEnv({
+      userData: root,
+      appRoot: packagedAppRoot,
+      port: 41235,
+      electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
+    });
     assert.equal(
-      env.PLAYWRIGHT_BROWSERS_PATH,
-      path.join("/Applications/OctopusBeak.app/Contents/Resources/app", "node_modules", "playwright-core", ".local-browsers"),
+      packagedEnv.PLAYWRIGHT_BROWSERS_PATH,
+      packagedBrowsersPath,
     );
 
     const port = await findFreePort();

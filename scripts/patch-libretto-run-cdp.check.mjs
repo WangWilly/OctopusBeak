@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
-import { patchExecutionSource } from "./patch-libretto-run-cdp.mjs";
+import { join } from "node:path";
+import {
+  patchExecutionSource,
+  resolveLibrettoExecutionPath,
+} from "./patch-libretto-run-cdp.mjs";
+
+assert.equal(
+  resolveLibrettoExecutionPath("/tmp/OctopusBeak.app/Contents/Resources/app"),
+  join(
+    "/tmp/OctopusBeak.app/Contents/Resources/app",
+    "node_modules",
+    "libretto",
+    "dist",
+    "cli",
+    "commands",
+    "execution.js",
+  ),
+);
 
 const before = `
 import { readFileSync } from "node:fs";
