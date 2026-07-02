@@ -8,14 +8,19 @@
     SummaryMetricDto,
   } from "$lib/shared-ledger/types.ts";
   import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
+  import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
+  import {
+    buildStackedBalanceChartData,
+    type BalanceChartFilter,
+  } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
 
   export let assets: AssetsPageDto;
 
   let search = "";
   let chartCurrency = "TWD";
+  let accountFilter: BalanceChartFilter = "all";
 
   const assetBreakdown: Array<{ kind: AccountKind; label: string }> = [
     { kind: "bank", label: "Bank" },
@@ -35,6 +40,13 @@
     ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
   ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
   $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
+  $: chartData = buildStackedBalanceChartData({
+    accounts: assetAccounts,
+    dailyHistoryByAccount: assets.dailyHistoryByAccount,
+    filter: accountFilter,
+    currency: chartCurrency,
+    mode: "asset",
+  });
 
   function buildMetrics(accounts: AccountRowDto[]): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
@@ -118,6 +130,10 @@
   bind:search
 >
   <div class="content">
+    <section aria-label="Asset metrics">
+      <SummaryStrip {metrics} />
+    </section>
+
     <section class="card balance-history" aria-label="Asset balance history">
       <div class="panel-title">
         <h2>Asset balance</h2>
@@ -139,18 +155,15 @@
         <span class="chip">30 days</span>
       </div>
       <div class="pad balance-chart">
-        <SnapshotSparkline rows={chartRows} currency={chartCurrency} amountKey="assets" label="Asset balance" />
+        <StackedBalanceChart chart={chartData} currency={chartCurrency} label="Asset allocation" />
       </div>
-    </section>
-
-    <section aria-label="Asset metrics">
-      <SummaryStrip {metrics} />
     </section>
 
     <AccountTable
       accounts={assetAccounts}
       mode="asset"
       bind:search
+      bind:filter={accountFilter}
       positionsByAccount={assets.positionsByAccount}
       transactionsByAccount={assets.transactionsByAccount}
       dailyHistoryByAccount={assets.dailyHistoryByAccount}

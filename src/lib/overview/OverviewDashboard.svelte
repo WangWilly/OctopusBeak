@@ -1,23 +1,16 @@
 <script lang="ts">
+  import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
-  import type { AccountKind, AccountRowDto } from "$lib/shared-ledger/types.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
-  import { amountValue, formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
+  import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
 
   export let overview: OverviewPageDto;
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
-
-  const allocationOrder: Array<{ kind: AccountKind; label: string; className: string }> = [
-    { kind: "brokerage", label: "Brokerage", className: "accent" },
-    { kind: "fund", label: "Fund", className: "domain" },
-    { kind: "bank", label: "Bank", className: "" },
-    { kind: "foreign", label: "Foreign", className: "" },
-  ];
 
   $: metrics = overview.summary.slice(0, 3);
   $: netMetric = metrics.find((metric) => metric.label === "Net position") ?? metrics[0] ?? null;
@@ -27,25 +20,8 @@
     netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") ||
     `Imported ${formatImportedAt(overview.importedAt)}`;
   $: sideSubSensitive = netAmounts.length > 1;
-  $: assetAccounts = overview.accounts.filter((account) => account.group !== "liability");
-  $: allocation = buildAllocation(assetAccounts);
   $: history = overview.dailyHistory;
   $: snapshotHistory = [...history].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
-
-  function buildAllocation(accounts: AccountRowDto[]) {
-    const total = accounts.reduce((sum, account) => sum + amountValue(account.amountLines), 0);
-    return allocationOrder
-      .map((item) => {
-        const value = accounts
-          .filter((account) => account.kind === item.kind)
-          .reduce((sum, account) => sum + amountValue(account.amountLines), 0);
-        return {
-          ...item,
-          percent: total > 0 ? Math.round((value / total) * 1000) / 10 : 0,
-        };
-      })
-      .filter((item) => item.percent > 0);
-  }
 
   function formatImportedAt(value: string | null) {
     return value?.slice(0, 16).replace("T", " ") ?? "not yet";
@@ -91,33 +67,17 @@
           <span class="chip">30 days</span>
         </div>
         <div class="card pad">
-          <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} />
+          <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label="Snapshot history" diverging />
           {#key snapshotCurrency}
             <DailyHistoryTable rows={snapshotHistory} compact netLabel="Net position" currency={snapshotCurrency} />
           {/key}
         </div>
       </article>
 
-      <article class="card">
-        <div class="panel-title">
-          <h2>Asset allocation</h2>
-        </div>
-        <div class="card pad bars">
-          {#each allocation as item}
-            <div>
-              <div class="bar-head">
-                <span>{item.label}</span>
-                <span class="money">{item.percent.toFixed(1)}%</span>
-              </div>
-              <div class="bar-track">
-                <div class={`bar-fill ${item.className}`} style={`width:${item.percent}%`}></div>
-              </div>
-            </div>
-          {:else}
-            <p class="lead">No asset allocation data yet.</p>
-          {/each}
-        </div>
-      </article>
+      <div class="overview-allocation-stack">
+        <AllocationDonutCard title="Asset allocation" accounts={overview.accounts} mode="asset" />
+        <AllocationDonutCard title="Liability exposure" accounts={overview.accounts} mode="liability" />
+      </div>
     </section>
 
     <section class="card daily-card">
@@ -144,3 +104,11 @@
     </section>
   </div>
 </DashboardShell>
+
+<style>
+  .overview-allocation-stack {
+    min-width: 0;
+    display: grid;
+    gap: var(--space-4);
+  }
+</style>

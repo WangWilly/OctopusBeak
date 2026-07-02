@@ -7,14 +7,19 @@
     SummaryMetricDto,
   } from "$lib/shared-ledger/types.ts";
   import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
+  import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
+  import {
+    buildStackedBalanceChartData,
+    type BalanceChartFilter,
+  } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
 
   export let liabilities: LiabilitiesPageDto;
 
   let search = "";
   let chartCurrency = "TWD";
+  let accountFilter: BalanceChartFilter = "all";
 
   $: liabilityAccounts = liabilities.accounts;
   $: metrics = buildMetrics(liabilityAccounts);
@@ -26,6 +31,13 @@
     ...new Set(chartRows.flatMap((row) => row.liabilities.map((amount) => amount.currency))),
   ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
   $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
+  $: chartData = buildStackedBalanceChartData({
+    accounts: liabilityAccounts,
+    dailyHistoryByAccount: liabilities.dailyHistoryByAccount,
+    filter: accountFilter,
+    currency: chartCurrency,
+    mode: "liability",
+  });
 
   function buildMetrics(accounts: AccountRowDto[]): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
@@ -114,6 +126,10 @@
   bind:search
 >
   <div class="content">
+    <section aria-label="Liability metrics">
+      <SummaryStrip {metrics} />
+    </section>
+
     <section class="card balance-history" aria-label="Debt balance history">
       <div class="panel-title">
         <h2>Debt balance</h2>
@@ -135,18 +151,15 @@
         <span class="chip">30 days</span>
       </div>
       <div class="pad balance-chart">
-        <SnapshotSparkline rows={chartRows} currency={chartCurrency} amountKey="liabilities" label="Debt balance" />
+        <StackedBalanceChart chart={chartData} currency={chartCurrency} label="Debt exposure" />
       </div>
-    </section>
-
-    <section aria-label="Liability metrics">
-      <SummaryStrip {metrics} />
     </section>
 
     <AccountTable
       accounts={liabilityAccounts}
       mode="liability"
       bind:search
+      bind:filter={accountFilter}
       transactionsByAccount={liabilities.transactionsByAccount}
       dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
     />

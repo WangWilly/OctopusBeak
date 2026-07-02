@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
-import { buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
+import { buildCenteredSparklineYAxis } from "./sparkline-format.ts";
 
-assert.deepEqual(
-  [2_641_397, 2_436_574, 2_231_751].map((value) => formatSparklineTick(value)),
-  ["2.6M", "2.4M", "2.2M"],
-);
+assert.deepEqual(buildCenteredSparklineYAxis([120, 160, -50]), {
+  min: -240,
+  max: 240,
+  step: 120,
+  ticks: [240, 120, 0, -120, -240],
+});
 
-const debtAxis = buildSparklineYAxis([1_554_043, 1_568_164]);
-
-assert.deepEqual(debtAxis.ticks.map((tick) => formatSparklineTick(tick, debtAxis.step)), [
-  "1.575M",
-  "1.568M",
-  "1.561M",
-  "1.554M",
-  "1.547M",
-]);
-assert.equal(debtAxis.min, 1_546_982.5);
-assert.equal(debtAxis.max, 1_575_224.5);
+assert.deepEqual(buildCenteredSparklineYAxis([0]), {
+  min: -2,
+  max: 2,
+  step: 1,
+  ticks: [2, 1, 0, -1, -2],
+});
