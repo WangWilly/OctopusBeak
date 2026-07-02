@@ -1,15 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const executionPath = join(
-  process.cwd(),
-  "node_modules",
-  "libretto",
-  "dist",
-  "cli",
-  "commands",
-  "execution.js",
-);
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+
+export function resolveLibrettoExecutionPath(appRoot = process.env.OCTOPUSBEAK_APP_ROOT ?? resolve(scriptDir, "..")) {
+  return join(appRoot, "node_modules", "libretto", "dist", "cli", "commands", "execution.js");
+}
 
 const freePortHelper = `
 async function pickFreePort() {
@@ -75,6 +72,7 @@ export function patchExecutionSource(source) {
 }
 
 export function patchInstalledLibretto() {
+  const executionPath = resolveLibrettoExecutionPath();
   if (!existsSync(executionPath)) {
     console.log("libretto execution.js not found; skipping CDP patch until dependencies are installed.");
     return false;
