@@ -1,5 +1,6 @@
 import type { AutomationTask } from "./tasks.ts";
-import type { AutomationTaskRun, AutomationTaskStatus } from "./store.ts";
+import type { AutomationTaskRun } from "./store.ts";
+import type { AutomationTaskStatus } from "../types.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "../types.ts";
 import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 
@@ -65,7 +66,13 @@ export function buildAutomationPageModel(input: {
       const progressPercent = parseAutomationProgress(run?.logTail ?? "");
       const attempt = run?.attempt ?? 0;
       return {
-        ...task,
+        id: task.id,
+        label: task.label,
+        script: task.script,
+        kind: task.kind,
+        credentialGroupId: task.credentialGroupId,
+        credentialKeys: task.credentialKeys,
+        dependencies: task.dependencies,
         status,
         attempt,
         latestStartedAt: run?.startedAt ?? null,
@@ -79,7 +86,7 @@ export function buildAutomationPageModel(input: {
         isActive,
         primaryAction: action,
         canRun: !isActive && action !== "Locked",
-      };
+      } satisfies AutomationTaskRow;
     }),
   };
 }

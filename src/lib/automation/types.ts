@@ -1,12 +1,37 @@
-import type { AutomationTask } from "./server/tasks.ts";
-import type { AutomationTaskRun, AutomationTaskStatus } from "./server/store.ts";
+export type AutomationTaskKind = "crawler" | "sync" | "import";
+
+export type AutomationTaskStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_human"
+  | "retrying"
+  | "completed"
+  | "failed"
+  | "locked";
+
+export type AutomationTaskSummary = {
+  id: string;
+  label: string;
+  script: string;
+  kind: AutomationTaskKind;
+  credentialGroupId?: string;
+  credentialKeys: readonly string[];
+  dependencies: readonly string[];
+};
+
+export type AutomationCredentialGroup = {
+  id: string;
+  label: string;
+  enabledKey: string;
+  credentialKeys: readonly string[];
+};
 
 type ImportGate = {
   locked: boolean;
   missingTaskIds: readonly string[];
 };
 
-export type AutomationTaskRow = AutomationTask & {
+export type AutomationTaskRow = AutomationTaskSummary & {
   status: AutomationTaskStatus;
   attempt: number;
   latestStartedAt: string | null;

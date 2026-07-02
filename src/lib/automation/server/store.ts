@@ -1,15 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
-import type { AutomationTaskKind } from "./tasks.ts";
+import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
-export type AutomationTaskStatus =
-  | "queued"
-  | "running"
-  | "waiting_for_human"
-  | "retrying"
-  | "completed"
-  | "failed"
-  | "locked";
+export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
 export type AutomationTaskRun = {
   taskRunId: string;

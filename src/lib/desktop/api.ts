@@ -1,6 +1,5 @@
 import type { AssetsPageDto } from "$lib/assets/types.ts";
-import type { AutomationCredentialGroup } from "$lib/automation/server/tasks.ts";
-import type { AutomationPageModel } from "$lib/automation/types.ts";
+import type { AutomationCredentialGroup, AutomationPageModel } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 
