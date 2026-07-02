@@ -150,14 +150,16 @@
   }
 
   async function refreshViewerImage() {
-    if (!humanTask) return;
+    const taskId = humanTask?.id;
+    if (!taskId) return;
     try {
-      const bytes = await window.octopusBeak.automation.viewerScreenshot(humanTask.id);
+      const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
+      if (humanTask?.id !== taskId) return;
       if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
       viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
       viewerError = "";
     } catch (error) {
-      viewerError = error instanceof Error ? error.message : String(error);
+      if (humanTask?.id === taskId) viewerError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -202,6 +204,13 @@
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function resumeHumanViewer() {
+    if (!humanTask) return;
+    const task = humanTask;
+    closeHumanViewer();
+    void runTask(task);
   }
 
   function pointerPoint(event: PointerEvent) {
@@ -427,7 +436,7 @@
           <button class="button secondary fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
             Force quit
           </button>
-          <button class="button primary fixed-action" type="button" onclick={() => humanTask && void runTask(humanTask)}>
+          <button class="button primary fixed-action" type="button" onclick={resumeHumanViewer}>
             Resume
           </button>
           <button class="modal-close" type="button" aria-label="Close" onclick={closeHumanViewer}>x</button>
