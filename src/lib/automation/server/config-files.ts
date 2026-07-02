@@ -19,6 +19,23 @@ export type AutomationCredentialsFile = Record<string, string>;
 
 export const AUTOMATION_SETTINGS_PATH = "settings.json";
 export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
+export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
+
+export type AutomationCredentialCodec = {
+  encrypt(text: string): string;
+  decrypt(payload: string): string;
+};
+
+type EncryptedAutomationCredentialsFile = {
+  format: typeof AUTOMATION_CREDENTIALS_FORMAT;
+  data: string;
+};
+
+let automationCredentialCodec: AutomationCredentialCodec | null = null;
+
+export function setAutomationCredentialCodec(codec: AutomationCredentialCodec | null) {
+  automationCredentialCodec = codec;
+}
 
 const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
 const automationSecretKeys = new Set<string>(AUTOMATION_SECRET_KEYS);
@@ -62,12 +79,52 @@ function cleanCredentials(record: Record<string, unknown>): AutomationCredential
   return result;
 }
 
+function encryptedAutomationCredentialsFile(
+  record: Record<string, unknown>,
+): EncryptedAutomationCredentialsFile | null {
+  if (record.format !== AUTOMATION_CREDENTIALS_FORMAT) return null;
+  if (typeof record.data !== "string" || !record.data.trim()) {
+    throw new Error(`${AUTOMATION_CREDENTIALS_PATH} encrypted envelope is invalid.`);
+  }
+  return {
+    format: AUTOMATION_CREDENTIALS_FORMAT,
+    data: record.data,
+  };
+}
+
+function requireAutomationCredentialCodec() {
+  if (!automationCredentialCodec) {
+    throw new Error("Credential encryption is not configured. Refusing to read encrypted automation credentials.");
+  }
+  return automationCredentialCodec;
+}
+
+function decodeCredentialsRecord(record: Record<string, unknown>) {
+  const encrypted = encryptedAutomationCredentialsFile(record);
+  if (!encrypted) return record;
+  const text = requireAutomationCredentialCodec().decrypt(encrypted.data);
+  const parsed = JSON.parse(text) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${AUTOMATION_CREDENTIALS_PATH} encrypted payload must contain a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function credentialsFileText(credentials: AutomationCredentialsFile) {
+  const cleaned = cleanCredentials(credentials);
+  if (!automationCredentialCodec) return `${JSON.stringify(cleaned, null, 2)}\n`;
+  return `${JSON.stringify({
+    format: AUTOMATION_CREDENTIALS_FORMAT,
+    data: automationCredentialCodec.encrypt(JSON.stringify(cleaned)),
+  }, null, 2)}\n`;
+}
+
 export function readAutomationSettingsFile(path = AUTOMATION_SETTINGS_PATH) {
   return cleanSettings(readJsonRecord(path));
 }
 
 export function readAutomationCredentialsFile(path = AUTOMATION_CREDENTIALS_PATH) {
-  return cleanCredentials(readJsonRecord(path));
+  return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path)));
 }
 
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
@@ -75,7 +132,7 @@ export function writeAutomationSettingsFile(path: string, settings: AutomationSe
 }
 
 export function writeAutomationCredentialsFile(path: string, credentials: AutomationCredentialsFile) {
-  atomicWrite(path, `${JSON.stringify(cleanCredentials(credentials), null, 2)}\n`);
+  atomicWrite(path, credentialsFileText(credentials));
 }
 
 export function writeAutomationSettings(settings: AutomationSettingsFile) {
@@ -84,6 +141,17 @@ export function writeAutomationSettings(settings: AutomationSettingsFile) {
 
 export function writeAutomationCredentials(credentials: AutomationCredentialsFile) {
   writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials);
+}
+
+export function migrateAutomationCredentialsFileEncryption(path = AUTOMATION_CREDENTIALS_PATH) {
+  if (!existsSync(path)) return false;
+  const record = readJsonRecord(path);
+  if (encryptedAutomationCredentialsFile(record)) return false;
+  const credentials = cleanCredentials(record);
+  if (Object.keys(credentials).length === 0) return false;
+  requireAutomationCredentialCodec();
+  writeAutomationCredentialsFile(path, credentials);
+  return true;
 }
 
 function envValueToSetting(key: string, value: string): AutomationSettingValue {
