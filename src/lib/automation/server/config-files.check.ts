@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
+  AUTOMATION_CREDENTIALS_PATH,
+  AUTOMATION_SETTINGS_PATH,
   automationConfigEnv,
   credentialStatusFromValues,
   migrateAutomationEnvFile,
@@ -13,6 +17,7 @@ import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
 } from "./config-files.ts";
+import { AUTOMATION_ENV_PATH } from "./settings.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "octopusbeak-config-"));
 const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
@@ -112,6 +117,41 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
     [fubonPasswordKey]: "pw",
   });
+
+  assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
+  assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");
+  assert.equal(AUTOMATION_ENV_PATH, ".env");
+
+  const importCwd = join(dir, "import-cwd");
+  const runtimeCwd = join(dir, "runtime-cwd");
+  mkdirSync(importCwd);
+  mkdirSync(runtimeCwd);
+  const configModuleUrl = pathToFileURL(join(process.cwd(), "src/lib/automation/server/config-files.ts")).href;
+  const child = spawnSync(process.execPath, [
+    "--no-warnings",
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    `
+      const mod = await import(${JSON.stringify(configModuleUrl)});
+      process.chdir(${JSON.stringify(runtimeCwd)});
+      const passwordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
+      mod.writeAutomationSettings({ MAX_SUB_ACCOUNT: "runtime" });
+      mod.writeAutomationCredentials({ [passwordKey]: "runtime-pw" });
+    `,
+  ], {
+    cwd: importCwd,
+    encoding: "utf8",
+  });
+  assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+  assert.deepEqual(readAutomationSettingsFile(join(runtimeCwd, "settings.json")), {
+    MAX_SUB_ACCOUNT: "runtime",
+  });
+  assert.deepEqual(readAutomationCredentialsFile(join(runtimeCwd, "credentials.json")), {
+    [fubonPasswordKey]: "runtime-pw",
+  });
+  assert.equal(existsSync(join(importCwd, "settings.json")), false);
+  assert.equal(existsSync(join(importCwd, "credentials.json")), false);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
