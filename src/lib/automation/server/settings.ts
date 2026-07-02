@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { parseEnvText } from "./env-file.ts";
 import {
   AUTOMATION_SETTINGS_PATH,
@@ -9,7 +8,7 @@ import {
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 
-export const AUTOMATION_ENV_PATH = resolve(".env");
+export const AUTOMATION_ENV_PATH = ".env";
 
 export function readAutomationEnvText(envPath = AUTOMATION_ENV_PATH) {
   return existsSync(envPath) ? readFileSync(envPath, "utf8") : "";

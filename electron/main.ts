@@ -20,7 +20,7 @@ let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 
 app.setName("OctopusBeak");
-app.setPath("userData", path.join(app.getPath("appData"), "OctopusBeak"));
+app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 
 function projectRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, "app");
