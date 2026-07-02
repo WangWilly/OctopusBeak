@@ -10,5 +10,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "svelte.config.js", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte", "electron/**/*.ts", "svelte.config.js", "vite.config.ts"]
 }
