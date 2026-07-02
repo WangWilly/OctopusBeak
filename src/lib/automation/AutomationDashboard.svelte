@@ -21,6 +21,7 @@
   let valuesVisible = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
+  let viewerRequestId = 0;
   let viewerImageUrl = "";
   let viewerError = "";
   let actionError = "";
@@ -152,14 +153,15 @@
   async function refreshViewerImage() {
     const taskId = humanTask?.id;
     if (!taskId) return;
+    const requestId = ++viewerRequestId;
     try {
       const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
-      if (humanTask?.id !== taskId) return;
+      if (humanTask?.id !== taskId || requestId !== viewerRequestId) return;
       if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
       viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
       viewerError = "";
     } catch (error) {
-      if (humanTask?.id === taskId) viewerError = error instanceof Error ? error.message : String(error);
+      if (humanTask?.id === taskId && requestId === viewerRequestId) viewerError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -175,6 +177,7 @@
   }
 
   function closeHumanViewer() {
+    viewerRequestId += 1;
     if (viewerTimer) clearInterval(viewerTimer);
     viewerTimer = null;
     humanTask = null;
