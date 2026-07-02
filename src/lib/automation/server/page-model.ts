@@ -1,41 +1,12 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun, AutomationTaskStatus } from "./store.ts";
+import type { AutomationPageModel, AutomationTaskRow } from "../types.ts";
 import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
-
-type ImportGate = {
-  locked: boolean;
-  missingTaskIds: readonly string[];
-};
-
-export type AutomationTaskRow = AutomationTask & {
-  status: AutomationTaskStatus;
-  attempt: number;
-  latestStartedAt: string | null;
-  latestFinishedAt: string | null;
-  logTail: string;
-  errorMessage: string | null;
-  logPath: string | null;
-  progressPercent: number | null;
-  progressText: string;
-  humanSession: string | null;
-  isActive: boolean;
-  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Running";
-  canRun: boolean;
-};
-
-export type AutomationPageModel = {
-  businessDate: string;
-  active: boolean;
-  activeTaskCount: number;
-  credentials: Record<string, boolean>;
-  importGate: ImportGate;
-  tasks: AutomationTaskRow[];
-};
 
 function rowStatus(
   task: AutomationTask,
   run: AutomationTaskRun | undefined,
-  gate: ImportGate,
+  gate: AutomationPageModel["importGate"],
   isActive: boolean,
 ) {
   if (task.kind === "import" && gate.locked) return "locked";
@@ -75,7 +46,7 @@ export function buildAutomationPageModel(input: {
   latestRuns: Record<string, AutomationTaskRun>;
   activeTaskIds?: readonly string[];
   credentials: Record<string, boolean>;
-  importGate: ImportGate;
+  importGate: AutomationPageModel["importGate"];
   active: boolean;
   businessDate: string;
 }): AutomationPageModel {
