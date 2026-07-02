@@ -22,7 +22,7 @@ function main() {
   }
 
   console.log(`Mock ledger written to ${ledgerDir}/${SQLITE_LEDGER_FILE}`);
-  console.log(`Run with: ${process.argv[2] ? `LEDGER_DIR=${ledgerDir} npm run dev` : "npm run dev:mock"}`);
+  console.log(`Run with: LEDGER_DIR=${ledgerDir} npm run desktop:dev`);
 }
 
 function cleanSqliteFiles(ledgerDir: string) {

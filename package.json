@@ -7,8 +7,6 @@
   "main": "electron/main.cjs",
   "scripts": {
     "postinstall": "node scripts/patch-libretto-run-cdp.mjs",
-    "dev": "vite dev",
-    "dev:mock": "LEDGER_DIR=data/mock-ledger vite dev",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "vite build --config electron.vite.config.ts",
