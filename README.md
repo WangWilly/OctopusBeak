@@ -95,7 +95,7 @@ The `#/automation` page wraps the existing npm scripts. It stores non-secret swi
 
 `import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
 
-`credentials.json` is local and ignored, but it is not OS-keychain encrypted yet. Electron `safeStorage` is a follow-up now that the Electron main/preload API boundary owns credential access.
+`credentials.json` is local, ignored, and encrypted by Electron `safeStorage` in desktop runtime. If `safeStorage` encryption is unavailable, the desktop app fails startup instead of writing plaintext credentials.
 
 Useful `settings.json` keys:
 
