@@ -3,6 +3,7 @@
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { buildSnapshotChartPoints } from "./snapshot-chart-data.ts";
+  import { buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
 
   type HistoryAmountKey = "netAssets" | "assets" | "liabilities";
 
@@ -12,6 +13,9 @@
   export let label = "Net position";
 
   $: points = buildSnapshotChartPoints(rows, currency, amountKey);
+  $: xDomain = points.map((point) => point.date);
+  $: yAxis = buildSparklineYAxis(points.map((point) => point.value));
+  $: yDomain = [yAxis.min, yAxis.max];
   $: ariaLabel = `${label} trend ${currency}`;
 
   function shortDate(value: unknown) {
@@ -30,6 +34,9 @@
     return `${month}-${day}`;
   }
 
+  function shortAmount(value: unknown) {
+    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
+  }
 </script>
 
 {#if points.length > 0}
@@ -38,16 +45,25 @@
       data={points}
       x="date"
       y="value"
+      {xDomain}
+      {yDomain}
+      yBaseline={null}
       yNice
       axis={true}
       grid={{ y: true }}
+      padding={{ top: 12, right: 12, bottom: 24, left: 48 }}
       points={points.length === 1 ? { r: 5, class: "sparkline-dot" } : false}
       height={220}
       props={{
         area: { class: "sparkline-area" },
         line: { class: "sparkline-line" },
         xAxis: { class: "sparkline-axis", format: shortDate },
-        yAxis: { class: "sparkline-axis", tickLabelProps: { "data-sensitive": "" } },
+        yAxis: {
+          class: "sparkline-axis",
+          format: shortAmount,
+          ticks: yAxis.ticks,
+          tickLabelProps: { "data-sensitive": "" },
+        },
         grid: { class: "sparkline-grid" },
         highlight: { points: { r: 5, class: "sparkline-dot" } },
       }}

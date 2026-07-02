@@ -3,7 +3,7 @@ import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 type HistoryAmountKey = "netAssets" | "assets" | "liabilities" | "dailyChange";
 
 export type SnapshotChartPoint = {
-  date: Date;
+  date: string;
   dateLabel: string;
   value: number;
 };
@@ -18,7 +18,7 @@ export function buildSnapshotChartPoints(
       const amount = row[amountKey].find((item) => item.currency === currency);
       return amount
         ? {
-            date: new Date(`${row.date}T00:00:00.000Z`),
+            date: row.date,
             dateLabel: row.date,
             value: amount.value,
           }
