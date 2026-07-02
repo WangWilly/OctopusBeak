@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
@@ -44,19 +44,25 @@
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: credentialsDirty = credentialInputDirty || credentialToggleDirty;
 
-  onMount(() => {
-    if (automation.active) {
-      pollTimer = setInterval(() => {
-        void reload();
-      }, 2_000);
-    }
-  });
+  $: if (automation.active && !pollTimer) {
+    pollTimer = setInterval(() => {
+      void reload();
+    }, 2_000);
+  } else if (!automation.active && pollTimer) {
+    stopPolling();
+  }
 
   onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
+    stopPolling();
     if (viewerTimer) clearInterval(viewerTimer);
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
   });
+
+  function stopPolling() {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 
   function statusClass(status: string) {
     if (status === "completed") return "good";
