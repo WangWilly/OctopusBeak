@@ -3,11 +3,10 @@ import {
   migrateAutomationCredentialsFileEncryption,
   setAutomationCredentialCodec,
 } from "../src/lib/automation/server/config-files.ts";
+import { assertSafeStorageCanEncrypt } from "./safe-storage-availability.ts";
 
 export function registerAutomationCredentialSafeStorage() {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error("Electron safeStorage encryption is not available. Refusing to read or write automation credentials.");
-  }
+  assertSafeStorageCanEncrypt(safeStorage);
 
   setAutomationCredentialCodec({
     encrypt(text: string) {
