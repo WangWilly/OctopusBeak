@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,10 +34,18 @@ try {
     /Import is locked/,
   );
 
-  assert.deepEqual(api.automationSaveCredentials({
+  const saveResult = api.automationSaveCredentials({
     [enabledKey]: "false",
     [accountKey]: "next-acct",
-  }), { saved: true });
+  });
+  assert.deepEqual(saveResult, { saved: true });
+
+  const settings = JSON.parse(readFileSync("settings.json", "utf8"));
+  const credentials = JSON.parse(readFileSync("credentials.json", "utf8"));
+  assert.equal(settings[enabledKey], false);
+  assert.equal(Object.hasOwn(settings, accountKey), false);
+  assert.equal(credentials[accountKey], "next-acct");
+  assert.equal(Object.hasOwn(credentials, enabledKey), false);
 } finally {
   process.chdir(originalCwd);
   rmSync(dir, { recursive: true, force: true });

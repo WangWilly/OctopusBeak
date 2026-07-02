@@ -11,6 +11,10 @@ function message(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function status(error: unknown) {
+  return message(error).startsWith("Missing credentials:") ? 400 : 409;
+}
+
 export function load() {
   return loadAutomationDesktopModel();
 }
@@ -33,7 +37,7 @@ export const actions: Actions = {
     try {
       return automationRun(taskId);
     } catch (error) {
-      return fail(409, { message: message(error) });
+      return fail(status(error), { message: message(error) });
     }
   },
   resume: async ({ request }) => {
