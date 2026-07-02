@@ -10,6 +10,7 @@ const enabledKey = `${credentialPrefix}ENABLED`;
 const userIdKey = `${credentialPrefix}USER_ID`;
 const accountKey = `${credentialPrefix}ACCOUNT`;
 const passwordKey = `${credentialPrefix}PASSWORD`;
+let resetCredentialCodec: (() => void) | null = null;
 
 try {
   process.chdir(dir);
@@ -23,6 +24,8 @@ try {
     [passwordKey]: "pw",
   }, null, 2));
 
+  const configFiles = await import("./config-files.ts");
+  resetCredentialCodec = () => configFiles.setAutomationCredentialCodec(null);
   const api = await import("./desktop-api.ts");
 
   const model = api.loadAutomationDesktopModel(dir);
@@ -34,6 +37,18 @@ try {
     /Import is locked/,
   );
 
+  const fakeCodec = {
+    encrypt(text: string) {
+      return Buffer.from(`safe:${text}`, "utf8").toString("base64");
+    },
+    decrypt(payload: string) {
+      const text = Buffer.from(payload, "base64").toString("utf8");
+      if (!text.startsWith("safe:")) throw new Error("bad fake credential payload");
+      return text.slice("safe:".length);
+    },
+  };
+  configFiles.setAutomationCredentialCodec(fakeCodec);
+
   const saveResult = api.automationSaveCredentials({
     [enabledKey]: "false",
     [accountKey]: "next-acct",
@@ -41,12 +56,22 @@ try {
   assert.deepEqual(saveResult, { saved: true });
 
   const settings = JSON.parse(readFileSync("settings.json", "utf8"));
-  const credentials = JSON.parse(readFileSync("credentials.json", "utf8"));
+  const rawCredentialsText = readFileSync("credentials.json", "utf8");
+  const rawCredentials = JSON.parse(rawCredentialsText) as { format?: unknown };
+  const credentials = configFiles.readAutomationCredentialsFile("credentials.json");
   assert.equal(settings[enabledKey], false);
   assert.equal(Object.hasOwn(settings, accountKey), false);
+  assert.equal(rawCredentials.format, configFiles.AUTOMATION_CREDENTIALS_FORMAT);
+  assert.equal(rawCredentialsText.includes("next-acct"), false);
   assert.equal(credentials[accountKey], "next-acct");
   assert.equal(Object.hasOwn(credentials, enabledKey), false);
+  resetCredentialCodec();
+  assert.throws(
+    () => configFiles.readAutomationCredentialsFile("credentials.json"),
+    /Credential encryption is not configured/,
+  );
 } finally {
+  resetCredentialCodec?.();
   process.chdir(originalCwd);
   rmSync(dir, { recursive: true, force: true });
 }
