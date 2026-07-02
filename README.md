@@ -12,10 +12,10 @@ All downloaded statements, browser sessions, ledger databases, credentials, and 
 
 - Runs guided browser automations for supported Taiwan banking portals.
 - Pauses for manual steps such as CAPTCHA, OTP, email verification, or certificate selection.
-- Provides an in-app `/automation` panel for credentials, task runs, logs, retries, and human assist.
+- Provides an in-app `#/automation` panel for credentials, task runs, logs, retries, and human assist.
 - Saves clean local statement exports under `downloads/<workflow-name>/`.
 - Imports downloaded CSV files into `data/ledger/ledger.sqlite`.
-- Shows local portfolio views at `/overview`, `/assets`, and `/liabilities`.
+- Shows local portfolio views at `#/overview`, `#/assets`, and `#/liabilities`.
 - Syncs MAX/MaiCoin balances and statement rows into the same ledger.
 
 ## Quick Start
@@ -26,17 +26,17 @@ npm run libretto:setup
 npm run typecheck
 ```
 
-Start the local dashboard:
+Start the desktop UI:
 
 ```bash
-npm run dev
+npm run desktop:dev
 ```
 
-Open `http://localhost:5173/overview` for the dashboard or `http://localhost:5173/automation` for the automation panel.
+The desktop UI is Electron-only and opens the static renderer through `#/overview`.
 
 ## Desktop App
 
-OctopusBeak can also run as a packaged macOS Electron app. The desktop app starts the same SvelteKit dashboard inside an Electron window and stores runtime state under:
+OctopusBeak runs as a macOS Electron app. The desktop app loads a static Svelte renderer and sends data, automation, settings, credentials, and human-assist actions through the Electron preload API. Runtime state is stored under:
 
 ```text
 ~/Library/Application Support/OctopusBeak/
@@ -67,12 +67,12 @@ Artifacts are written to `out/make/`. See [Desktop Release](docs/desktop-release
 
 ## Recommended Flow
 
-1. Start the local app and open `/automation`.
+1. Start the desktop app and open `#/automation`.
 2. Save the credentials needed for the sources you use.
 3. Run the crawler/sync tasks from the task table.
 4. Complete manual browser checks from the Assist modal when a task is waiting for human input.
 5. Run CSV import after the crawler dependencies succeed for the business day.
-6. Review `/overview`, `/assets`, or `/liabilities`.
+6. Review `#/overview`, `#/assets`, or `#/liabilities`.
 
 The same flow is still available from the CLI:
 
@@ -80,7 +80,7 @@ The same flow is still available from the CLI:
 npm run run:fubon-all-statements
 npx libretto resume --session <session-name>
 npm run run:import-downloads-csv
-npm run dev
+npm run desktop:dev
 ```
 
 Clean up interrupted browser sessions:
@@ -91,11 +91,11 @@ npm run libretto:close-all
 
 ## Automation Panel
 
-The `/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in local `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
+The `#/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in local `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
 
 `import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
 
-`credentials.json` is local and ignored, but it is not OS-keychain encrypted yet. Electron `safeStorage` is deferred until SSR is removed and the Electron main/preload API boundary owns credential access.
+`credentials.json` is local and ignored, but it is not OS-keychain encrypted yet. Electron `safeStorage` is a follow-up now that the Electron main/preload API boundary owns credential access.
 
 Useful `settings.json` keys:
 
@@ -176,13 +176,7 @@ npm run run:seed-mock-ledger-db
 
 This rewrites `data/mock-ledger/ledger.sqlite`. The generated database includes mock rows for the dashboard's bank, foreign-currency, credit-card, loan, fund, brokerage, and MAX/MaiCoin views. `data/` is gitignored, so the generated SQLite file is not committed.
 
-Start the dashboard against the mock ledger:
-
-```bash
-npm run dev:mock
-```
-
-Open `http://localhost:5173/overview`, `/assets`, or `/liabilities`.
+The desktop app reads its ledger from `~/Library/Application Support/OctopusBeak/data/ledger/`. Use the seed command for importer/model development, then copy or import data into the desktop ledger when you need to inspect it in the UI.
 
 ## MAX/MaiCoin Sync
 
