@@ -5,13 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  AUTOMATION_CREDENTIALS_FORMAT,
   AUTOMATION_CREDENTIALS_PATH,
   AUTOMATION_SETTINGS_PATH,
   automationConfigEnv,
   credentialStatusFromValues,
+  migrateAutomationCredentialsFileEncryption,
   migrateAutomationEnvFile,
   readAutomationCredentialsFile,
   readAutomationSettingsFile,
+  setAutomationCredentialCodec,
   settingsToEnv,
   splitAutomationUpdates,
   writeAutomationCredentialsFile,
@@ -152,6 +155,50 @@ try {
   });
   assert.equal(existsSync(join(importCwd, "settings.json")), false);
   assert.equal(existsSync(join(importCwd, "credentials.json")), false);
+
+  const fakeCodec = {
+    encrypt(text: string) {
+      return Buffer.from(`safe:${text}`, "utf8").toString("base64");
+    },
+    decrypt(payload: string) {
+      const text = Buffer.from(payload, "base64").toString("utf8");
+      if (!text.startsWith("safe:")) throw new Error("bad fake credential payload");
+      return text.slice("safe:".length);
+    },
+  };
+
+  const encryptedCredentialsPath = join(dir, "encrypted-credentials.json");
+  setAutomationCredentialCodec(fakeCodec);
+  writeAutomationCredentialsFile(encryptedCredentialsPath, {
+    [fubonPasswordKey]: "encrypted-secret",
+  });
+  const encryptedText = readFileSync(encryptedCredentialsPath, "utf8");
+  const encryptedRecord = JSON.parse(encryptedText) as { format?: unknown; data?: unknown };
+  assert.equal(encryptedRecord.format, AUTOMATION_CREDENTIALS_FORMAT);
+  assert.equal(typeof encryptedRecord.data, "string");
+  assert.equal(encryptedText.includes("encrypted-secret"), false);
+  assert.deepEqual(readAutomationCredentialsFile(encryptedCredentialsPath), {
+    [fubonPasswordKey]: "encrypted-secret",
+  });
+
+  setAutomationCredentialCodec(null);
+  assert.throws(
+    () => readAutomationCredentialsFile(encryptedCredentialsPath),
+    /Credential encryption is not configured/,
+  );
+
+  const legacyCredentialsPath = join(dir, "legacy-credentials.json");
+  writeFileSync(legacyCredentialsPath, `${JSON.stringify({
+    [maxSecretKey]: "legacy-secret",
+  }, null, 2)}\n`);
+  setAutomationCredentialCodec(fakeCodec);
+  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), true);
+  assert.deepEqual(readAutomationCredentialsFile(legacyCredentialsPath), {
+    [maxSecretKey]: "legacy-secret",
+  });
+  assert.equal(readFileSync(legacyCredentialsPath, "utf8").includes("legacy-secret"), false);
+  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), false);
+  setAutomationCredentialCodec(null);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
