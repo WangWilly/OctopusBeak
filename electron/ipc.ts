@@ -37,8 +37,8 @@ export function registerOctopusBeakIpc() {
     await sendViewerInput(session, input);
     return { ok: true as const };
   });
-  ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => ({
-    ok: true as const,
-    ...(await forceQuitHumanSessionForTask(taskId)),
-  }));
+  ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
+    await forceQuitHumanSessionForTask(taskId);
+    return { ok: true as const, closed: true };
+  });
 }
