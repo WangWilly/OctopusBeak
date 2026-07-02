@@ -36,13 +36,13 @@ const rows: DailyHistoryRowDto[] = [
 ];
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "netAssets"), [
-  { date: new Date("2026-07-01T00:00:00.000Z"), dateLabel: "2026-07-01", value: 100 },
-  { date: new Date("2026-07-02T00:00:00.000Z"), dateLabel: "2026-07-02", value: 120 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", value: 100 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", value: 120 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange"), [
-  { date: new Date("2026-07-01T00:00:00.000Z"), dateLabel: "2026-07-01", value: 5 },
-  { date: new Date("2026-07-02T00:00:00.000Z"), dateLabel: "2026-07-02", value: -10 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", value: 5 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", value: -10 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets"), []);
