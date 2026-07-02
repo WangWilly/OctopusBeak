@@ -15,6 +15,13 @@ const { buildDesktopEnv, ensureDataRoot } = runtime as {
   ensureDataRoot: (userData: string) => void;
 };
 
+const devRemoteDebuggingPort = 9222;
+
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch("remote-debugging-port", String(devRemoteDebuggingPort));
+  console.info(`Electron remote debugging listening on port ${devRemoteDebuggingPort}`);
+}
+
 let mainWindow: BrowserWindow | null = null;
 let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
