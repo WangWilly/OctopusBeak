@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import type { AutomationPageModel, AutomationTaskRow } from "./server/page-model.ts";
+  import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
   type CredentialGroup = {
     id: string;
