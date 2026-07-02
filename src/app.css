@@ -714,43 +714,6 @@ a {
   font-weight: 700;
 }
 
-.bars {
-  display: grid;
-  gap: var(--space-5);
-}
-
-.bar-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.bar-track {
-  height: 10px;
-  border-radius: 999px;
-  background: var(--surface-soft);
-  overflow: hidden;
-}
-
-.bar-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: var(--fg);
-}
-
-.bar-fill.accent {
-  background: var(--accent);
-}
-
-.bar-fill.domain {
-  background: var(--success);
-}
-
 .modal {
   position: fixed;
   inset: 0;

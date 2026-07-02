@@ -26,7 +26,7 @@
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
 
-  let filter: AccountKind | "all" = "all";
+  export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
   let transactionsOpen = false;
   let positionsOpen = false;
