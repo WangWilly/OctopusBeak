@@ -186,27 +186,35 @@ export function todayTaskRunIds(
 
 export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
   const rows = db.prepare(`
-    SELECT *
+    SELECT
+      task_run_id,
+      task_id,
+      script,
+      kind,
+      status,
+      started_at,
+      finished_at,
+      exit_code,
+      signal,
+      error_message,
+      log_path
     FROM automation_task_runs
     ORDER BY started_at DESC
     LIMIT ?
   `).all(limit) as Record<string, unknown>[];
-  return rows.map((row) => {
-    const run = rowToTaskRun(row);
-    return {
-      taskRunId: run.taskRunId,
-      taskId: run.taskId,
-      script: run.script,
-      kind: run.kind,
-      status: run.status,
-      startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      exitCode: run.exitCode,
-      signal: run.signal,
-      errorMessage: run.errorMessage,
-      logPath: run.logPath,
-    };
-  });
+  return rows.map((row) => ({
+    taskRunId: String(row.task_run_id),
+    taskId: String(row.task_id),
+    script: String(row.script),
+    kind: row.kind as AutomationTaskKind,
+    status: row.status as AutomationTaskStatus,
+    startedAt: String(row.started_at),
+    finishedAt: nullableString(row.finished_at),
+    exitCode: nullableNumber(row.exit_code),
+    signal: nullableString(row.signal),
+    errorMessage: nullableString(row.error_message),
+    logPath: String(row.log_path),
+  }));
 }
 
 export function importGateStatus(

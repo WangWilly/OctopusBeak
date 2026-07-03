@@ -2,7 +2,7 @@
   import { onDestroy, tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+  import type { AutomationPageModel, AutomationTaskHistoryRow, AutomationTaskRow } from "./types.ts";
 
   type CredentialGroup = {
     id: string;
@@ -19,6 +19,8 @@
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
   let historyOpen = false;
+  let historyLoading = false;
+  let historyRows: AutomationTaskHistoryRow[] = [];
   let humanTask: AutomationTaskRow | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
@@ -163,6 +165,19 @@
       await reload();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function openRunHistory() {
+    historyOpen = true;
+    historyLoading = true;
+    try {
+      actionError = "";
+      historyRows = await window.octopusBeak.automation.runHistory();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    } finally {
+      historyLoading = false;
     }
   }
 
@@ -391,7 +406,7 @@
           <h2>{$t.automation.taskQueue}</h2>
           <p>{$t.automation.taskQueueDescription}</p>
         </div>
-        <button class="button secondary fixed-action history-action" type="button" onclick={() => (historyOpen = true)}>
+        <button class="button secondary fixed-action history-action" type="button" onclick={() => void openRunHistory()}>
           {$t.automation.runHistory}
         </button>
       </div>
@@ -529,7 +544,7 @@
       <div class="modal-head">
         <div>
           <h2 id="history-title">{$t.automation.runHistory}</h2>
-          <p>{automation.runHistory.length} / 100</p>
+          <p>{historyRows.length} / 100</p>
         </div>
         <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (historyOpen = false)}>x</button>
       </div>
@@ -545,7 +560,12 @@
             </tr>
           </thead>
           <tbody>
-            {#each automation.runHistory as run}
+            {#if historyLoading}
+              <tr>
+                <td colspan="5">{$t.common.loading}</td>
+              </tr>
+            {/if}
+            {#each historyRows as run}
               <tr>
                 <td>
                   <div class="task-name">

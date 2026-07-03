@@ -68,7 +68,6 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
           startUtc: range.startUtc,
           endUtc: range.endUtc,
         }),
-        runHistory: recentTaskRuns(db, 100),
         activeTaskIds,
         credentials: currentCredentialStatus(),
         importGate,
@@ -129,6 +128,15 @@ export function automationRun(taskId: string, ledgerDir = process.env.LEDGER_DIR
 
 export function automationCancel(taskId: string) {
   return cancelAutomationTask(taskId);
+}
+
+export function automationRunHistory(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    return recentTaskRuns(db, 100);
+  } finally {
+    db.close();
+  }
 }
 
 export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {

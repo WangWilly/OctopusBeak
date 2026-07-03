@@ -1,5 +1,5 @@
 import type { AssetsPageDto } from "$lib/assets/types.ts";
-import type { AutomationCredentialGroup, AutomationPageModel } from "$lib/automation/types.ts";
+import type { AutomationCredentialGroup, AutomationPageModel, AutomationTaskHistoryRow } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 
@@ -41,6 +41,7 @@ export type OctopusBeakApi = {
     run(taskId: string): Promise<{ started: string }>;
     resume(taskId: string): Promise<{ resumed: string }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
+    runHistory(): Promise<AutomationTaskHistoryRow[]>;
     viewerScreenshot(taskId: string): Promise<Uint8Array>;
     viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
     viewerInput(taskId: string, input: unknown): Promise<{ ok: true }>;
@@ -57,6 +58,7 @@ export const octopusBeakApiChannels = [
   "automation:run",
   "automation:resume",
   "automation:cancel",
+  "automation:runHistory",
   "automation:viewerScreenshot",
   "automation:viewerInspect",
   "automation:viewerInput",
