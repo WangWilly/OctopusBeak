@@ -27,10 +27,33 @@ try {
   const configFiles = await import("./config-files.ts");
   resetCredentialCodec = () => configFiles.setAutomationCredentialCodec(null);
   const api = await import("./desktop-api.ts");
+  const { openLedgerDatabase } = await import("../../../ledger/db/client.ts");
+  const { createTaskRun } = await import("./store.ts");
+  const db = openLedgerDatabase(dir);
+  try {
+    createTaskRun(db, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "completed",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      exitCode: 0,
+      logPath: "data/automation/logs/fubon.log",
+      logTail: "ok",
+    });
+  } finally {
+    db.close();
+  }
 
   const model = api.loadAutomationDesktopModel(dir);
   assert.equal(model.credentialGroups.find((group) => group.id === "fubon")?.enabled, true);
   assert.equal(model.automation.credentials[passwordKey], true);
+  assert.equal(Object.hasOwn(model.automation, "runHistory"), false);
+  assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.ranToday, true);
+  assert.equal(api.automationRunHistory(dir)[0]?.taskId, "fubon-all-statements");
 
   assert.throws(
     () => api.assertAutomationTaskCanStart("import-downloads-csv", dir),

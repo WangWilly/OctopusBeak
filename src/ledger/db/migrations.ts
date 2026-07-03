@@ -581,6 +581,13 @@ function createAutomationTaskRuns(db: LedgerDatabase) {
   `);
 }
 
+function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_started_at
+    ON automation_task_runs(started_at DESC)
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -616,6 +623,11 @@ const migrations: LedgerMigration[] = [
     version: 7,
     name: "automation_task_runs",
     up: createAutomationTaskRuns,
+  },
+  {
+    version: 8,
+    name: "automation_task_runs_started_at_index",
+    up: addAutomationTaskRunsStartedAtIndex,
   },
 ];
 
