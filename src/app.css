@@ -95,6 +95,28 @@ a {
   color: white;
 }
 
+html.desktop-shell {
+  --titlebar-safe-top: 28px;
+}
+
+html.desktop-shell .sidebar,
+html.desktop-shell .topbar {
+  -webkit-app-region: drag;
+}
+
+html.desktop-shell .sidebar :is(a, button),
+html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button"]) {
+  -webkit-app-region: no-drag;
+}
+
+html.desktop-shell .sidebar {
+  padding-top: calc(var(--space-6) + var(--titlebar-safe-top));
+}
+
+html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
+  padding-top: calc(var(--space-4) + var(--titlebar-safe-top));
+}
+
 .brand-row {
   display: flex;
   align-items: flex-start;
