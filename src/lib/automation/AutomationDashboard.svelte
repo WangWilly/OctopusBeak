@@ -116,6 +116,16 @@
     closeCredentials();
   }
 
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    if (floatingInput) {
+      event.preventDefault();
+      floatingInput = null;
+      return;
+    }
+    closeCredentialsOnEscape(event);
+  }
+
   function toggleGroup(groupId: string) {
     groupEnabled = {
       ...groupEnabled,
@@ -334,7 +344,7 @@
   }
 </script>
 
-<svelte:window onkeydown={closeCredentialsOnEscape} />
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <DashboardShell
   active="automation"
@@ -878,26 +888,77 @@
     z-index: 2;
     width: min(288px, calc(100% - 24px));
     min-height: 44px;
+    padding: 5px;
     display: flex;
     gap: var(--space-2);
     align-items: center;
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 0.42);
+    border-radius: calc(var(--radius) + 6px);
+    background: rgb(255 255 255 / 0.34);
+    box-shadow: var(--shadow);
     transform: translateY(-50%);
+    backdrop-filter: blur(18px) saturate(1.35);
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .viewer-floating-input::before {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 74%;
+    height: 160%;
+    display: block;
+    content: "";
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgb(99 102 241 / 0.2), rgb(14 165 233 / 0.16), transparent);
+    opacity: 0.9;
+    transform: translate(-50%, -50%);
+    animation: floating-gradient 2.6s ease-in-out infinite alternate;
+  }
+
+  .viewer-floating-input:hover {
+    border-color: rgb(255 255 255 / 0.78);
+    background: rgb(255 255 255 / 0.88);
+    box-shadow: 0 16px 40px rgb(15 23 42 / 0.18);
+  }
+
+  .viewer-floating-input:hover::before {
+    opacity: 0.42;
+  }
+
+  @keyframes floating-gradient {
+    from {
+      transform: translate(-68%, -50%);
+    }
+
+    to {
+      transform: translate(-32%, -50%);
+    }
   }
 
   .viewer-floating-input input {
+    position: relative;
+    z-index: 1;
     min-width: 0;
     min-height: 44px;
     flex: 1;
     padding: 0 var(--space-4);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface);
+    background: rgb(255 255 255 / 0.66);
     color: var(--fg);
-    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    transition: background 0.18s ease;
+  }
+
+  .viewer-floating-input:hover input {
+    background: rgb(255 255 255 / 0.96);
   }
 
   .viewer-floating-submit {
     position: relative;
+    z-index: 1;
     flex: 0 0 44px;
     width: 44px;
     height: 44px;
