@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -29,6 +29,7 @@ import {
 } from "./tasks.ts";
 
 const activeTaskRunIds = new Map<string, string>();
+const activeTaskChildren = new Map<string, ChildProcess>();
 
 export function shouldMarkWaitingForHuman(output: string) {
   return /manual-(?:auth|otp)-required|workflow paused|resume --session|\benter\b[^\r\n]*(?:captcha|otp|verification|certificate)/i.test(output);
@@ -177,6 +178,14 @@ export function startAutomationResume(
   });
 }
 
+export function cancelAutomationTask(taskId: string) {
+  if (!activeTaskRunIds.has(taskId)) throw new Error(`Automation task is not running: ${taskId}`);
+  const child = activeTaskChildren.get(taskId);
+  if (!child) throw new Error(`Automation task has not started a process yet: ${taskId}`);
+  child.kill("SIGTERM");
+  return { cancelled: taskId };
+}
+
 export async function runAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
@@ -265,12 +274,15 @@ export async function runAutomationTask(
           stdio: ["ignore", "pipe", "pipe"],
           env: command.env,
         });
+        activeTaskChildren.set(task.id, child);
         child.stdout.on("data", onOutput);
         child.stderr.on("data", onOutput);
         child.on("error", (error) => {
+          activeTaskChildren.delete(task.id);
           resolve({ exitCode: null, signal: null, error });
         });
         child.on("close", (exitCode, signal) => {
+          activeTaskChildren.delete(task.id);
           resolve({ exitCode, signal, error: null });
         });
       });
@@ -320,6 +332,7 @@ export async function runAutomationTask(
     return { status: "failed" as const };
   } finally {
     activeTaskRunIds.delete(taskId);
+    activeTaskChildren.delete(taskId);
     db?.close();
   }
 }
