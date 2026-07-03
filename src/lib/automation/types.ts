@@ -34,6 +34,7 @@ type ImportGate = {
 export type AutomationTaskRow = AutomationTaskSummary & {
   status: AutomationTaskStatus;
   attempt: number;
+  maxAttempts: number;
   latestStartedAt: string | null;
   latestFinishedAt: string | null;
   logTail: string;

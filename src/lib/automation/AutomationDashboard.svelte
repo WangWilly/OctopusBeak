@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
@@ -28,13 +29,17 @@
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
 
-  $: sideValue = automation.active ? `${automation.activeTaskCount} running` : automation.importGate.locked ? "Import locked" : "Ready";
-  $: sideSub = `Business day ${automation.businessDate}`;
-  $: topStatus = automation.active
-    ? `${automation.activeTaskCount} running`
+  $: sideValue = automation.active
+    ? $t.common.runningCount(automation.activeTaskCount)
     : automation.importGate.locked
-      ? "Import locked"
-      : "Ready";
+      ? $t.common.importLocked
+      : $t.common.ready;
+  $: sideSub = $t.common.businessDay(automation.businessDate);
+  $: topStatus = automation.active
+    ? $t.common.runningCount(automation.activeTaskCount)
+    : automation.importGate.locked
+      ? $t.common.importLocked
+      : $t.common.ready;
   $: topStatusClass = automation.active
     ? "warn"
     : automation.importGate.locked
@@ -75,11 +80,15 @@
     return value?.slice(0, 19).replace("T", " ") ?? "--";
   }
 
-  function credentialLabel(key: string) {
+  function credentialLabel(key: string, dictionary: Translation) {
+    const words = dictionary.automation.credentialWords as Record<string, string>;
     return key
       .replace(/^LIBRETTO_CLOUD_/, "")
       .replace(/_/g, " ")
-      .toLowerCase();
+      .toLowerCase()
+      .split(" ")
+      .map((word) => words[word] ?? word)
+      .join(" ");
   }
 
   function resetCredentialChanges() {
@@ -93,7 +102,7 @@
   }
 
   function closeCredentials() {
-    if (credentialsDirty && !confirm("Discard unsaved credential changes?")) return;
+    if (credentialsDirty && !confirm($t.automation.discardCredentialChanges)) return;
     resetCredentialChanges();
     credentialsOpen = false;
   }
@@ -263,29 +272,44 @@
     void sendViewerInput({ type: "type", text: input.value });
     input.value = "";
   }
+
+  function taskLabel(task: AutomationTaskRow, dictionary: Translation) {
+    return (dictionary.automation.taskLabels as Record<string, string>)[task.id] ?? task.label;
+  }
+
+  function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
+    if (task.progressPercent !== null) return `${task.progressPercent}%`;
+    if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
+    if (task.status === "retrying") return dictionary.automation.progressRetrying(task.attempt || 1, task.maxAttempts);
+    if (task.status === "waiting_for_human") return dictionary.automation.progressWaiting;
+    if (task.status === "completed") return dictionary.automation.progressCompleted;
+    if (task.status === "failed") return dictionary.automation.progressFailed;
+    if (task.status === "locked") return dictionary.automation.progressLocked;
+    return dictionary.automation.progressQueued;
+  }
 </script>
 
 <svelte:window onkeydown={closeCredentialsOnEscape} />
 
 <DashboardShell
   active="automation"
-  eyebrow="Automation"
-  title="Statement Update"
-  sideLabel="Automation"
+  eyebrow={$t.automation.eyebrow}
+  title={$t.automation.title}
+  sideLabel={$t.automation.sideLabel}
   {sideValue}
   {sideSub}
 >
   <svelte:fragment slot="topbar-actions">
     <span class={`chip ${topStatusClass}`}>{topStatus}</span>
-    <button class="button secondary fixed-action" type="button" onclick={openCredentials}>Credentials</button>
+    <button class="button secondary fixed-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
   </svelte:fragment>
 
   <div class="content">
     <section class="card">
       <div class="panel-title automation-title">
         <div>
-          <h2>Task queue</h2>
-          <p>Tasks can run in parallel. CSV import unlocks from today's persisted crawler history, not page state.</p>
+          <h2>{$t.automation.taskQueue}</h2>
+          <p>{$t.automation.taskQueueDescription}</p>
         </div>
       </div>
 
@@ -293,11 +317,11 @@
         <table class="table automation-table">
           <thead>
             <tr>
-              <th>Task</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Latest UTC</th>
-              <th class="right">Controls</th>
+              <th>{$t.automation.task}</th>
+              <th>{$t.automation.status}</th>
+              <th>{$t.automation.progress}</th>
+              <th>{$t.automation.latestUtc}</th>
+              <th class="right">{$t.automation.controls}</th>
             </tr>
           </thead>
           <tbody>
@@ -305,17 +329,17 @@
               <tr>
                 <td>
                   <div class="task-name">
-                    <strong>{task.label}</strong>
+                    <strong>{taskLabel(task, $t)}</strong>
                     <span>{task.script}</span>
                   </div>
                 </td>
-                <td><span class={`chip ${statusClass(task.status)}`}>{task.status.replaceAll("_", " ")}</span></td>
+                <td><span class={`chip ${statusClass(task.status)}`}>{$t.automation.statusLabels[task.status]}</span></td>
                 <td>
                   <div class="progress-cell">
                     <div class="progress-bar" aria-hidden="true">
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
-                    <span class="mono">{task.progressText}</span>
+                    <span class="mono">{progressLabel(task, $t)}</span>
                   </div>
                 </td>
                 <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
@@ -329,15 +353,15 @@
                       onclick={() => void runTask(task)}
                     >
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
-                      <span>{task.primaryAction}</span>
+                      <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
                     {#if task.status === "waiting_for_human" && task.humanSession}
                       <button class="button secondary task-control" type="button" onclick={() => openHumanViewer(task)}>
-                        Assist
+                        {$t.automation.assist}
                       </button>
                     {/if}
                     <button class="button secondary task-control" type="button" onclick={() => (logTask = task)}>
-                      Logs
+                      {$t.automation.logs}
                     </button>
                   </div>
                 </td>
@@ -353,16 +377,16 @@
 
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
-    <button class="modal-backdrop" type="button" aria-label="Close credentials" onclick={closeCredentials}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} onclick={closeCredentials}></button>
     <form class="modal-panel credential-modal" onsubmit={saveCredentials}>
       <div class="modal-head">
         <div>
-          <h2 id="credentials-title">Credentials</h2>
-          <p>Saved locally. Switches go to settings.json; secrets go to credentials.json.</p>
+          <h2 id="credentials-title">{$t.automation.credentialsTitle}</h2>
+          <p>{$t.automation.credentialsDescription}</p>
         </div>
         <div class="credential-head-actions">
-          <button class="button fixed-action" type="button" onclick={closeCredentials}>Cancel</button>
-          <button class="button primary fixed-action" type="submit">Save</button>
+          <button class="button fixed-action" type="button" onclick={closeCredentials}>{$t.common.cancel}</button>
+          <button class="button primary fixed-action" type="submit">{$t.common.save}</button>
         </div>
       </div>
       <div class="modal-body credential-body">
@@ -378,21 +402,21 @@
                   aria-pressed={groupEnabled[group.id] !== false}
                   onclick={() => toggleGroup(group.id)}
                 >
-                  <span>Enabled</span>
+                  <span>{$t.common.enabled}</span>
                   <span class="switch-track" aria-hidden="true"></span>
                 </button>
               </div>
               <div class="credential-grid">
                 {#each group.credentialKeys as key}
                   <label class="credential-field">
-                    <span>{credentialLabel(key)}</span>
+                    <span>{credentialLabel(key, $t)}</span>
                     <input
                       name={key}
                       type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
                       value={credentialDrafts[key] ?? ""}
                       class:dirty={Boolean(credentialDrafts[key]?.trim())}
                       oninput={(event) => updateCredentialDraft(key, event)}
-                      placeholder={automation.credentials[key] ? "saved" : "missing"}
+                      placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
                       autocomplete="off"
                     />
                   </label>
@@ -408,17 +432,17 @@
 
 {#if logTask}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="logs-title">
-    <button class="modal-backdrop" type="button" aria-label="Close logs" onclick={() => (logTask = null)}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeLogs} onclick={() => (logTask = null)}></button>
     <div class="modal-panel">
       <div class="modal-head">
         <div>
-          <h2 id="logs-title">{logTask.label} Logs</h2>
-          <p>{logTask.logPath ?? "No log file yet."}</p>
+          <h2 id="logs-title">{$t.automation.logsTitle(taskLabel(logTask, $t))}</h2>
+          <p>{logTask.logPath ?? $t.automation.noLogFile}</p>
         </div>
-        <button class="modal-close" type="button" aria-label="Close" onclick={() => (logTask = null)}>x</button>
+        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (logTask = null)}>x</button>
       </div>
       <div class="modal-body">
-        <pre class="log-output">{logTask.errorMessage ?? (logTask.logTail || "No logs yet.")}</pre>
+        <pre class="log-output">{logTask.errorMessage ?? (logTask.logTail || $t.automation.noLogs)}</pre>
       </div>
     </div>
   </div>
@@ -426,31 +450,31 @@
 
 {#if humanTask}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
-    <button class="modal-backdrop" type="button" aria-label="Close assist" onclick={closeHumanViewer}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
     <div class="modal-panel human-viewer-modal">
       <div class="modal-head">
         <div>
-          <h2 id="human-viewer-title">{humanTask.label} Assist</h2>
-          <p>{humanTask.humanSession ?? "No session"}</p>
+          <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>
+          <p>{humanTask.humanSession ?? $t.automation.noSession}</p>
         </div>
         <div class="viewer-actions">
           <button class="button secondary fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
-            Force quit
+            {$t.automation.forceQuit}
           </button>
           <button class="button primary fixed-action" type="button" onclick={resumeHumanViewer}>
-            Resume
+            {$t.automation.resume}
           </button>
-          <button class="modal-close" type="button" aria-label="Close" onclick={closeHumanViewer}>x</button>
+          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHumanViewer}>x</button>
         </div>
       </div>
       <div class="modal-body viewer-body">
         <img
           class="viewer-image"
           src={viewerImageUrl}
-          alt="Paused browser"
+          alt={$t.automation.pausedBrowser}
           draggable="false"
           onload={() => (viewerError = "")}
-          onerror={() => (viewerError = "Viewer screenshot is not available yet.")}
+          onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
           onpointerdown={handleViewerPointerDown}
           onpointerup={handleViewerPointerUp}
           onpointercancel={handleViewerPointerCancel}
@@ -460,13 +484,13 @@
             class="viewer-text-input"
             type="text"
             maxlength="128"
-            aria-label="Text to type into paused browser"
-            placeholder="Type text"
+            aria-label={$t.automation.textToTypeAria}
+            placeholder={$t.automation.typeText}
             autocomplete="off"
             onkeydown={handleViewerType}
           />
           <button class="button secondary fixed-action" type="button" onclick={() => void sendViewerInput({ type: "press", key: "Enter" })}>
-            Enter
+            {$t.automation.enter}
           </button>
         </div>
         {#if viewerError}<p class="viewer-error">{viewerError}</p>{/if}

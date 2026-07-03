@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, translateKnownLabel } from "$lib/i18n/i18n.ts";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import type { AccountRowDto, DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
@@ -28,19 +29,19 @@
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label="Close" onclick={() => (open = false)}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={() => (open = false)}></button>
     <div class="modal-panel" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-head">
         <div>
-          <h2>{account ? `${account.label} Balance history` : "Balance history"}</h2>
-          <p class="lead">{account ? `${account.institution} / ${account.typeLabel}` : ""}</p>
+          <h2>{account ? $t.accountHistory.accountTitle(account.label) : $t.accountHistory.title}</h2>
+          <p class="lead">{account ? `${account.institution} / ${translateKnownLabel($t, account.typeLabel)}` : ""}</p>
         </div>
         <div class="modal-actions">
           {#if currencies.length > 0}
             <label class="chip select-chip" for="account-history-currency">
               <select
                 id="account-history-currency"
-                aria-label="Account history currency"
+                aria-label={$t.accountHistory.currencyAria}
                 bind:value={currency}
                 onchange={(event) => (currency = selectValue(event))}
                 oninput={(event) => (currency = selectValue(event))}
@@ -51,15 +52,15 @@
               </select>
             </label>
           {/if}
-          <button class="modal-close" type="button" aria-label="Close" onclick={() => (open = false)}>x</button>
+          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (open = false)}>x</button>
         </div>
       </div>
       <div class="modal-body history-modal-body">
         <div class="history-chart">
-          <SnapshotSparkline rows={chartRows} {currency} label="Balance" />
+          <SnapshotSparkline rows={chartRows} {currency} label={$t.common.balance} />
         </div>
         {#key currency}
-          <DailyHistoryTable rows={rows} {currency} netLabel="Balance" paginate pageSize={20} visibleRows={6} />
+          <DailyHistoryTable rows={rows} {currency} netLabel={$t.common.balance} paginate pageSize={20} visibleRows={6} />
         {/key}
       </div>
     </div>

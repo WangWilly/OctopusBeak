@@ -1,6 +1,7 @@
 <script lang="ts">
   import { PieChart } from "layerchart";
   import { cubicInOut } from "svelte/easing";
+  import { t } from "$lib/i18n/i18n.ts";
   import type { AccountRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import {
@@ -11,7 +12,7 @@
 
   export let accounts: AccountRowDto[] = [];
   export let mode: AllocationDonutMode = "asset";
-  export let title = "Allocation";
+  export let title = "";
 
   let currency = "TWD";
 
@@ -19,6 +20,7 @@
   $: if (currencies.length > 0 && !currencies.includes(currency)) currency = currencies[0];
   $: chart = buildAllocationDonutData(accounts, mode, currency);
   $: selectId = `allocation-${mode}-currency`;
+  $: displayTitle = title || $t.allocation.defaultTitle;
 
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
@@ -27,12 +29,12 @@
 
 <article class="card allocation-card">
   <div class="panel-title">
-    <h2>{title}</h2>
+    <h2>{displayTitle}</h2>
     {#if currencies.length > 1}
       <label class="chip select-chip" for={selectId}>
         <select
           id={selectId}
-          aria-label={`${title} currency`}
+          aria-label={$t.allocation.currencyAria(displayTitle)}
           bind:value={currency}
           onchange={(event) => (currency = selectValue(event))}
           oninput={(event) => (currency = selectValue(event))}
@@ -50,7 +52,7 @@
   <div class="allocation-panel">
     {#if chart.items.length > 0}
       <div class="allocation-content">
-        <div class="allocation-donut-stage" aria-label={`${title} ${currency}`}>
+        <div class="allocation-donut-stage" aria-label={$t.allocation.stageAria(displayTitle, currency)}>
           {#key chart.currency}
             <PieChart
               data={chart.items}
@@ -70,14 +72,14 @@
             />
           {/key}
           <div class="allocation-donut-center" aria-hidden="true">
-            <span>Total</span>
+            <span>{$t.common.total}</span>
             <strong class="allocation-donut-total" data-sensitive>
               {formatMoney({ currency: chart.currency, value: chart.total })}
             </strong>
           </div>
         </div>
 
-        <div class="allocation-legend" aria-label={`${title} breakdown`}>
+        <div class="allocation-legend" aria-label={$t.allocation.breakdownAria(displayTitle)}>
           {#each chart.items as item}
             <div class="allocation-legend-item">
               <span class="allocation-swatch" style:background-color={item.color}></span>
@@ -91,7 +93,7 @@
         </div>
       </div>
     {:else}
-      <div class="allocation-empty">No {currency} data yet.</div>
+      <div class="allocation-empty">{$t.allocation.empty(currency)}</div>
     {/if}
   </div>
 </article>

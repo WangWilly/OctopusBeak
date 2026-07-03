@@ -65,6 +65,7 @@ export function buildAutomationPageModel(input: {
       const action = primaryAction(status);
       const progressPercent = parseAutomationProgress(run?.logTail ?? "");
       const attempt = run?.attempt ?? 0;
+      const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
       return {
         id: task.id,
         label: task.label,
@@ -75,13 +76,14 @@ export function buildAutomationPageModel(input: {
         dependencies: task.dependencies,
         status,
         attempt,
+        maxAttempts,
         latestStartedAt: run?.startedAt ?? null,
         latestFinishedAt: run?.finishedAt ?? null,
         logTail: run?.logTail ?? "",
         errorMessage: run?.errorMessage ?? null,
         logPath: run?.logPath ?? null,
         progressPercent,
-        progressText: progressText(status, attempt, run?.maxAttempts ?? task.maxAttempts, progressPercent),
+        progressText: progressText(status, attempt, maxAttempts, progressPercent),
         humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
         isActive,
         primaryAction: action,

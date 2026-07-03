@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import type {
@@ -22,10 +23,13 @@
   let accountFilter: BalanceChartFilter = "all";
 
   $: liabilityAccounts = liabilities.accounts;
-  $: metrics = buildMetrics(liabilityAccounts);
+  $: metrics = buildMetrics(liabilityAccounts, $t);
   $: liabilityValue = metrics[0]?.amounts ?? [];
   $: sideValue = formatAmountLines(liabilityValue.slice(0, 1));
-  $: sideSub = `${liabilityAccounts.length} debt accounts / ${currencyCount(liabilityAccounts.map((account) => account.amountLines))} currencies`;
+  $: sideSub = $t.liabilities.sideSub(
+    liabilityAccounts.length,
+    currencyCount(liabilityAccounts.map((account) => account.amountLines)),
+  );
   $: chartRows = [...liabilities.dailyHistory].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
   $: chartCurrencies = [
     ...new Set(chartRows.flatMap((row) => row.liabilities.map((amount) => amount.currency))),
@@ -39,7 +43,7 @@
     mode: "liability",
   });
 
-  function buildMetrics(accounts: AccountRowDto[]): SummaryMetricDto[] {
+  function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
     const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
     const loanAccounts = accounts.filter((account) => account.kind === "loan");
@@ -50,34 +54,34 @@
     );
     const metrics: SummaryMetricDto[] = [
       {
-        label: "Total debt",
+        label: dictionary.liabilities.metricTotalDebt,
         amounts: totalAmounts(accounts),
         breakdown: [
-          cardAccounts.length ? `Credit card ${cardAccounts.length}` : null,
-          loanAccounts.length ? `Loan ${loanAccounts.length}` : null,
-          cryptoAccounts.length ? `Crypto ${cryptoAccounts.length}` : null,
-          otherAccounts.length ? `Other ${otherAccounts.length}` : null,
+          cardAccounts.length ? dictionary.common.countLabel(dictionary.accounts.creditCard, cardAccounts.length) : null,
+          loanAccounts.length ? dictionary.common.countLabel(dictionary.accounts.loan, loanAccounts.length) : null,
+          cryptoAccounts.length ? dictionary.common.countLabel(dictionary.accounts.crypto, cryptoAccounts.length) : null,
+          otherAccounts.length ? dictionary.common.countLabel(dictionary.accounts.other, otherAccounts.length) : null,
         ].filter(Boolean) as string[],
       },
     ];
 
     if (largest) {
       metrics.push({
-        label: "Largest facility",
+        label: dictionary.liabilities.metricLargestFacility,
         amounts: largest.amountLines,
         breakdown: [largest.label],
       });
     }
     if (cardAccounts.length > 0) {
       metrics.push({
-        label: "Card balance",
+        label: dictionary.liabilities.metricCardBalance,
         amounts: totalAmounts(cardAccounts),
         breakdown: [cardAccounts.map((account) => account.institution).slice(0, 3).join(" + ")],
       });
     }
     if (foreignDebtAccounts.length > 0) {
       metrics.push({
-        label: "Foreign debt",
+        label: dictionary.liabilities.metricForeignDebt,
         amounts: totalAmounts(foreignDebtAccounts),
         breakdown: foreignDebtAccounts.map((account) => account.label).slice(0, 3),
       });
@@ -117,27 +121,27 @@
 
 <DashboardShell
   active="liabilities"
-  eyebrow="Liabilities"
-  title="Debt accounts"
-  sideLabel="Liabilities"
+  eyebrow={$t.liabilities.eyebrow}
+  title={$t.liabilities.title}
+  sideLabel={$t.liabilities.sideLabel}
   {sideValue}
   {sideSub}
-  searchPlaceholder="Search liabilities"
+  searchPlaceholder={$t.liabilities.searchPlaceholder}
   bind:search
 >
   <div class="content">
-    <section aria-label="Liability metrics">
+    <section aria-label={$t.liabilities.metricsAria}>
       <SummaryStrip {metrics} />
     </section>
 
-    <section class="card balance-history" aria-label="Debt balance history">
+    <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
-        <h2>Debt balance</h2>
+        <h2>{$t.liabilities.debtBalance}</h2>
         {#if chartCurrencies.length > 0}
           <label class="chip select-chip" for="debt-balance-currency">
             <select
               id="debt-balance-currency"
-              aria-label="Debt balance currency"
+              aria-label={$t.liabilities.debtBalanceCurrency}
               bind:value={chartCurrency}
               onchange={(event) => (chartCurrency = selectValue(event))}
               oninput={(event) => (chartCurrency = selectValue(event))}
@@ -148,10 +152,10 @@
             </select>
           </label>
         {/if}
-        <span class="chip">30 days</span>
+        <span class="chip">{$t.common.days30}</span>
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart chart={chartData} currency={chartCurrency} label="Debt exposure" />
+        <StackedBalanceChart chart={chartData} currency={chartCurrency} label={$t.liabilities.debtExposure} />
       </div>
     </section>
 

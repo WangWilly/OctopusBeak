@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import {
     buildSnapshotChartPoints,
@@ -17,13 +18,18 @@
   export let rows: DailyHistoryRowDto[] = [];
   export let currency = "TWD";
   export let amountKey: HistoryAmountKey = "netAssets";
-  export let label = "Net position";
+  export let label = "";
   export let diverging = false;
 
   let selectedSeriesKeys: SnapshotDivergingSeriesKey[] = [];
 
   $: points = buildSnapshotChartPoints(rows, currency, amountKey);
-  $: divergingSeries = diverging ? buildSnapshotDivergingSeries(rows, currency) : [];
+  $: divergingSeries = diverging
+    ? buildSnapshotDivergingSeries(rows, currency).map((series) => ({
+        ...series,
+        label: translateDivergingSeries(series.key, $t),
+      }))
+    : [];
   $: visibleDivergingSeries = selectSnapshotDivergingSeries(divergingSeries, selectedSeriesKeys);
   $: selectedSeriesKeySet = new Set(selectedSeriesKeys);
   $: chartPoints = diverging ? visibleDivergingSeries.flatMap((series) => series.data) : points;
@@ -34,7 +40,8 @@
     ? buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
     : buildSparklineYAxis(chartPoints.map((point) => point.value));
   $: yDomain = [yAxis.min, yAxis.max];
-  $: ariaLabel = `${label} trend ${currency}`;
+  $: displayLabel = label || $t.overview.sideLabel;
+  $: ariaLabel = $t.chart.trendAria(displayLabel, currency);
   $: hasChartData = diverging ? divergingSeries.length > 0 : points.length > 0;
 
   function toggleSeries(key: SnapshotDivergingSeriesKey) {
@@ -79,6 +86,12 @@
     if (existing) return existing;
     const date = new Date(time).toISOString().slice(0, 10);
     return { date, dateLabel: date, time, value: 0 };
+  }
+
+  function translateDivergingSeries(key: SnapshotDivergingSeriesKey, dictionary: Translation) {
+    if (key === "net") return dictionary.chart.seriesNet;
+    if (key === "assets") return dictionary.chart.seriesAssets;
+    return dictionary.chart.seriesLiabilities;
   }
 </script>
 
@@ -135,7 +148,7 @@
           {/snippet}
         </AreaChart>
       </div>
-      <div class="snapshot-diverging-legend" aria-label={`${label} legend`}>
+      <div class="snapshot-diverging-legend" aria-label={$t.chart.legendAria(displayLabel)}>
         {#each divergingSeries as series}
           <button
             class:selected={selectedSeriesKeys.length === 0 || selectedSeriesKeySet.has(series.key)}

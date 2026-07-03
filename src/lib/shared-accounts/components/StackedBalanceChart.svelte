@@ -1,5 +1,6 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
+  import { t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import {
@@ -9,7 +10,7 @@
 
   export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "" };
   export let currency = "TWD";
-  export let label = "Balance";
+  export let label = "";
 
   let selectedSeriesKeys: string[] = [];
   let lastSignature = "";
@@ -25,7 +26,8 @@
   $: yAxis = buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
   $: yDomain = [0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => tick >= 0);
-  $: ariaLabel = `${label} ${currency}`;
+  $: displayLabel = label || $t.common.balance;
+  $: ariaLabel = $t.chart.labelAria(displayLabel, currency);
 
   function toggleSeries(key: string) {
     if (selectedSeriesKeys.length === 0) {
@@ -116,7 +118,7 @@
         {/snippet}
       </AreaChart>
     </div>
-    <div class="stacked-balance-legend" aria-label={`${label} legend`}>
+    <div class="stacked-balance-legend" aria-label={$t.chart.legendAria(displayLabel)}>
       {#each chart.series as series}
         <button
           class:selected={selectedSeriesKeys.length === 0 || selectedKeySet.has(series.key)}
@@ -134,7 +136,7 @@
   </div>
 {:else}
   <div class="stacked-balance-chart sparkline-empty" role="img" aria-label={ariaLabel}>
-    No {currency} history
+    {$t.chart.noHistory(currency)}
   </div>
 {/if}
 

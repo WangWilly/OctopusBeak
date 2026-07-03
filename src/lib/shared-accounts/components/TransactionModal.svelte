@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, translateKnownLabel } from "$lib/i18n/i18n.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
@@ -12,16 +13,16 @@
 
   let sortKey: SortKey | null = null;
   let sortDirection: SortDirection = "asc";
-
-  const sortColumns: SortColumn[] = [
-    { key: "date", label: "Date" },
-    { key: "label", label: "Description" },
-    { key: "type", label: "Type" },
-    { key: "amount", label: "Amount", right: true },
-    { key: "note", label: "Note", right: true },
-  ];
+  let sortColumns: SortColumn[] = [];
 
   $: sortedRows = sortRows(rows, sortKey, sortDirection);
+  $: sortColumns = [
+    { key: "date", label: $t.transactions.date },
+    { key: "label", label: $t.transactions.description },
+    { key: "type", label: $t.transactions.type },
+    { key: "amount", label: $t.transactions.amount, right: true },
+    { key: "note", label: $t.transactions.note, right: true },
+  ] satisfies SortColumn[];
 
   function closeOnEscape(event: KeyboardEvent) {
     if (open && event.key === "Escape") open = false;
@@ -62,14 +63,14 @@
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label="Close" on:click={() => (open = false)}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={() => (open = false)}></button>
     <div class="modal-panel" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-head">
         <div>
-          <h2>{account ? `${account.label} Transactions` : "Transactions"}</h2>
-          <p class="lead">{account ? `${account.institution} / ${account.typeLabel}` : ""}</p>
+          <h2>{account ? $t.transactions.accountTitle(account.label) : $t.transactions.title}</h2>
+          <p class="lead">{account ? `${account.institution} / ${translateKnownLabel($t, account.typeLabel)}` : ""}</p>
         </div>
-        <button class="modal-close" type="button" aria-label="Close" on:click={() => (open = false)}>x</button>
+        <button class="modal-close" type="button" aria-label={$t.common.close} on:click={() => (open = false)}>x</button>
       </div>
       <div class="modal-body">
         <table class="table">
@@ -104,7 +105,7 @@
               <tr>
                 <td>{row.date}</td>
                 <td>{row.label}</td>
-                <td>{row.type}</td>
+                <td>{translateKnownLabel($t, row.type)}</td>
                 <td
                   class="right money"
                   class:amount-positive={row.amount > 0}
@@ -116,7 +117,7 @@
                 <td class="right">{row.note || "--"}</td>
               </tr>
             {:else}
-              <tr><td colspan="5">No transactions for this account.</td></tr>
+              <tr><td colspan="5">{$t.transactions.noRows}</td></tr>
             {/each}
           </tbody>
         </table>
