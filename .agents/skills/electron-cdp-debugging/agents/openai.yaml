@@ -1,0 +1,4 @@
+interface:
+  display_name: "Electron CDP Debugging"
+  short_description: "Debug this Electron app through CDP"
+  default_prompt: "Use $electron-cdp-debugging to inspect and verify this project's Electron desktop app."
