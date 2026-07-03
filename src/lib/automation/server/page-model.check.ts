@@ -27,6 +27,7 @@ const model = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns,
   activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
   credentials: {
     LIBRETTO_CLOUD_FUBON_USER_ID: true,
     MAX_ACCESS_KEY: false,
@@ -47,7 +48,9 @@ assert.equal(importRow?.canRun, false);
 const fubonRow = model.tasks.find((task) => task.id === "fubon-all-statements");
 assert.equal(fubonRow?.status, "completed");
 assert.equal(fubonRow?.primaryAction, "Run");
+assert.equal(fubonRow?.ranToday, true);
 assert.equal(fubonRow?.logTail, "ok");
+assert.equal(Object.hasOwn(model, "runHistory"), false);
 
 const failedModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -63,6 +66,7 @@ const failedModel = buildAutomationPageModel({
     },
   },
   activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
   credentials: {},
   importGate: {
     locked: true,
@@ -88,6 +92,7 @@ const activeModel = buildAutomationPageModel({
     },
   },
   activeTaskIds: ["fubon-all-statements"],
+  todayRunTaskIds: ["fubon-all-statements", "esun-credit-card-statements"],
   credentials: {},
   importGate: {
     locked: true,
@@ -101,11 +106,13 @@ const activeFubonRow = activeModel.tasks.find((task) => task.id === "fubon-all-s
 const activeEsunRow = activeModel.tasks.find((task) => task.id === "esun-credit-card-statements");
 assert.equal(activeModel.activeTaskCount, 1);
 assert.equal(activeFubonRow?.isActive, true);
-assert.equal(activeFubonRow?.canRun, false);
-assert.equal(activeFubonRow?.primaryAction, "Running");
+assert.equal(activeFubonRow?.canRun, true);
+assert.equal(activeFubonRow?.primaryAction, "Cancel");
+assert.equal(activeFubonRow?.ranToday, true);
 assert.equal(activeFubonRow?.progressPercent, 42);
 assert.equal(activeFubonRow?.progressText, "42%");
 assert.equal(activeEsunRow?.canRun, true);
+assert.equal(activeEsunRow?.ranToday, true);
 
 const staleRunningModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -122,6 +129,7 @@ const staleRunningModel = buildAutomationPageModel({
     },
   },
   activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
   credentials: {},
   importGate: {
     locked: true,
@@ -153,6 +161,7 @@ const failedResumeModel = buildAutomationPageModel({
     },
   },
   activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
   credentials: {},
   importGate: {
     locked: true,

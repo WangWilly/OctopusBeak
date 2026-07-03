@@ -21,12 +21,18 @@ import {
 } from "./settings.ts";
 import {
   activeAutomationTaskIds,
+  cancelAutomationTask,
   hasActiveAutomationTask,
   resumeSessionFromLog,
   startAutomationResume,
   startAutomationTask,
 } from "./runner.ts";
-import { importGateStatus, latestTaskRuns } from "./store.ts";
+import {
+  importGateStatus,
+  latestTaskRuns,
+  recentTaskRuns,
+  todayTaskRunIds,
+} from "./store.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
 
@@ -58,6 +64,10 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
       automation: buildAutomationPageModel({
         tasks: enabledAutomationTasks(enabledGroups),
         latestRuns: latestTaskRuns(db),
+        todayRunTaskIds: todayTaskRunIds(db, {
+          startUtc: range.startUtc,
+          endUtc: range.endUtc,
+        }),
         activeTaskIds,
         credentials: currentCredentialStatus(),
         importGate,
@@ -114,6 +124,19 @@ export function automationRun(taskId: string, ledgerDir = process.env.LEDGER_DIR
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
   startAutomationTask(task.id, ledgerDir);
   return { started: task.id };
+}
+
+export function automationCancel(taskId: string) {
+  return cancelAutomationTask(taskId);
+}
+
+export function automationRunHistory(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    return recentTaskRuns(db, 100);
+  } finally {
+    db.close();
+  }
 }
 
 export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {

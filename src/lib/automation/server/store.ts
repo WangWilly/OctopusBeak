@@ -22,6 +22,21 @@ export type AutomationTaskRun = {
   recordJson: string;
 };
 
+export type AutomationTaskHistoryRow = Pick<
+  AutomationTaskRun,
+  | "taskRunId"
+  | "taskId"
+  | "script"
+  | "kind"
+  | "status"
+  | "startedAt"
+  | "finishedAt"
+  | "exitCode"
+  | "signal"
+  | "errorMessage"
+  | "logPath"
+>;
+
 type CreateTaskRunInput = {
   taskId: string;
   script: string;
@@ -155,23 +170,69 @@ export function latestTaskRuns(db: LedgerDatabase) {
   }));
 }
 
+export function todayTaskRunIds(
+  db: LedgerDatabase,
+  input: { startUtc: Date; endUtc: Date },
+) {
+  const rows = db.prepare(`
+    SELECT DISTINCT task_id
+    FROM automation_task_runs
+    WHERE started_at >= ?
+      AND started_at < ?
+    ORDER BY task_id
+  `).all(input.startUtc.toISOString(), input.endUtc.toISOString()) as { task_id: string }[];
+  return rows.map((row) => row.task_id);
+}
+
+export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
+  const rows = db.prepare(`
+    SELECT
+      task_run_id,
+      task_id,
+      script,
+      kind,
+      status,
+      started_at,
+      finished_at,
+      exit_code,
+      signal,
+      error_message,
+      log_path
+    FROM automation_task_runs
+    ORDER BY started_at DESC
+    LIMIT ?
+  `).all(limit) as Record<string, unknown>[];
+  return rows.map((row) => ({
+    taskRunId: String(row.task_run_id),
+    taskId: String(row.task_id),
+    script: String(row.script),
+    kind: row.kind as AutomationTaskKind,
+    status: row.status as AutomationTaskStatus,
+    startedAt: String(row.started_at),
+    finishedAt: nullableString(row.finished_at),
+    exitCode: nullableNumber(row.exit_code),
+    signal: nullableString(row.signal),
+    errorMessage: nullableString(row.error_message),
+    logPath: String(row.log_path),
+  }));
+}
+
 export function importGateStatus(
   db: LedgerDatabase,
   input: { dependencyIds: readonly string[]; startUtc: Date; endUtc: Date },
 ) {
   const missingTaskIds = input.dependencyIds.filter((taskId) => {
     const row = db.prepare(`
-      SELECT status
+      SELECT 1 AS ran
       FROM automation_task_runs
       WHERE task_id = ?
         AND started_at >= ?
         AND started_at < ?
-      ORDER BY started_at DESC
       LIMIT 1
     `).get(taskId, input.startUtc.toISOString(), input.endUtc.toISOString()) as
-      | { status?: string }
+      | { ran?: number }
       | undefined;
-    return row?.status !== "completed";
+    return !row;
   });
   return {
     locked: missingTaskIds.length > 0,
