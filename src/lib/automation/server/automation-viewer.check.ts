@@ -4,6 +4,7 @@ import {
   normalizeViewerInput,
   normalizeViewerPoint,
   selectInspectableTextTarget,
+  selectAllShortcut,
   selectViewerPage,
 } from "./automation-viewer.ts";
 
@@ -31,6 +32,10 @@ assert.deepEqual(
   normalizeViewerInput({ type: "press", key: "ArrowRight" }),
   { type: "press", key: "ArrowRight" },
 );
+
+assert.equal(selectAllShortcut("darwin"), "Meta+A");
+assert.equal(selectAllShortcut("linux"), "Control+A");
+assert.equal(selectAllShortcut("win32"), "Control+A");
 
 assert.deepEqual(normalizeViewerPoint({ x: 4.4, y: 9.6 }), { x: 4, y: 10 });
 assert.throws(() => normalizeViewerPoint({ x: 1 }));
