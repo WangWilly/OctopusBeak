@@ -69,6 +69,5 @@ export type AutomationPageModel = {
   activeTaskCount: number;
   credentials: Record<string, boolean>;
   importGate: ImportGate;
-  runHistory: AutomationTaskHistoryRow[];
   tasks: AutomationTaskRow[];
 };

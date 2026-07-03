@@ -17,6 +17,7 @@ const api: OctopusBeakApi = {
     run: (taskId) => ipcRenderer.invoke("automation:run", taskId),
     resume: (taskId) => ipcRenderer.invoke("automation:resume", taskId),
     cancel: (taskId) => ipcRenderer.invoke("automation:cancel", taskId),
+    runHistory: () => ipcRenderer.invoke("automation:runHistory"),
     viewerScreenshot: (taskId) => ipcRenderer.invoke("automation:viewerScreenshot", taskId),
     viewerInspect: (taskId, point) => ipcRenderer.invoke("automation:viewerInspect", taskId, point),
     viewerInput: (taskId, input) => ipcRenderer.invoke("automation:viewerInput", taskId, input),

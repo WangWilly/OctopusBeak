@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   createTaskRun,
   importGateStatus,
@@ -13,10 +13,41 @@ import {
   updateTaskRun,
 } from "./store.ts";
 
+let recentTaskRunsSql = "";
+const fakeDb = {
+  prepare(sql: string) {
+    recentTaskRunsSql = sql;
+    return {
+      all(limit: number) {
+        assert.equal(limit, 100);
+        return [{
+          task_run_id: "history-1",
+          task_id: "fubon-all-statements",
+          script: "run:fubon-all-statements",
+          kind: "crawler",
+          status: "completed",
+          started_at: "2026-06-30T01:00:00.000Z",
+          finished_at: "2026-06-30T01:01:00.000Z",
+          exit_code: 0,
+          signal: null,
+          error_message: null,
+          log_path: "data/automation/logs/fubon.log",
+        }];
+      },
+    };
+  },
+} as unknown as LedgerDatabase;
+
+assert.equal(recentTaskRuns(fakeDb, 100)[0]?.taskRunId, "history-1");
+assert.doesNotMatch(recentTaskRunsSql, /SELECT\s+\*/i);
+assert.doesNotMatch(recentTaskRunsSql, /\blog_tail\b|\brecord_json\b/i);
+
 const ledgerDir = mkdtempSync(join(tmpdir(), "automation-store-"));
 
 try {
   const db = openLedgerDatabase(ledgerDir);
+  const indexes = db.prepare("PRAGMA index_list('automation_task_runs')").all() as { name: string }[];
+  assert.equal(indexes.some((index) => index.name === "idx_automation_task_runs_started_at"), true);
   const startedAt = "2026-06-30T01:00:00.000Z";
   const finishedAt = "2026-06-30T01:02:00.000Z";
 

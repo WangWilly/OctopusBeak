@@ -4,6 +4,7 @@ import {
   automationCancel,
   automationResume,
   automationRun,
+  automationRunHistory,
   automationSaveCredentials,
   loadAutomationDesktopModel,
 } from "../src/lib/automation/server/desktop-api.ts";
@@ -31,6 +32,7 @@ export function registerOctopusBeakIpc() {
   ipcMain.handle("automation:run", (_event, taskId: string) => automationRun(taskId));
   ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));
   ipcMain.handle("automation:cancel", (_event, taskId: string) => automationCancel(taskId));
+  ipcMain.handle("automation:runHistory", () => automationRunHistory());
   ipcMain.handle("automation:viewerScreenshot", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
     return new Uint8Array(await captureSessionScreenshot(session));
