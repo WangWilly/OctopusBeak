@@ -91,10 +91,11 @@ a {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
+  transition: grid-template-columns 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .shell-page.sidebar-collapsed {
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -107,6 +108,7 @@ a {
   padding: var(--space-6);
   background: var(--surface-strong);
   color: white;
+  transition: padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 html.desktop-shell {
@@ -129,15 +131,13 @@ html.desktop-shell .sidebar {
   padding-top: calc(var(--space-6) + var(--titlebar-safe-top));
 }
 
-html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
-  padding-top: calc(var(--space-4) + var(--titlebar-safe-top));
-}
-
 .brand-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-3);
+  padding-right: 44px;
   margin-bottom: var(--space-8);
+  transition: margin 220ms cubic-bezier(0.2, 0.8, 0.2, 1), padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .brand {
@@ -156,6 +156,7 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   overflow: hidden;
   background: white;
   border-radius: var(--radius-sm);
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1), height 220ms cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 220ms ease;
 }
 
 .brand-icon {
@@ -172,11 +173,15 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
 }
 
 .brand-copy {
+  min-width: 0;
   display: grid;
   gap: 2px;
 }
 
 .brand-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 650;
@@ -192,26 +197,42 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
 }
 
 .brand-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: rgba(255, 255, 255, 0.48);
   font-size: 10px;
   font-weight: 650;
 }
 
 .sidebar-toggle {
-  width: 32px;
-  height: 32px;
+  position: absolute;
+  top: calc(var(--space-6) + var(--titlebar-safe-top, 0px));
+  right: var(--space-6);
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--radius-sm);
-  background: transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
   color: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.14);
+  transition:
+    top 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    right 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease;
 }
 
 .sidebar-toggle:hover {
   color: white;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .side-nav {
@@ -230,6 +251,13 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   color: rgba(255, 255, 255, 0.62);
   font-size: 14px;
   font-weight: 560;
+  transition:
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    min-height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
 }
 
 .nav-link:hover,
@@ -266,16 +294,25 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
 
 .shell-page.sidebar-collapsed .sidebar {
   align-items: center;
-  padding: var(--space-4) var(--space-3);
+  padding: calc(var(--space-5) + var(--titlebar-safe-top, 0px)) var(--space-4) var(--space-5);
 }
 
 .shell-page.sidebar-collapsed .brand-row {
   display: grid;
   justify-items: center;
+  gap: var(--space-3);
+  padding-right: 0;
+  margin-bottom: var(--space-10);
 }
 
 .shell-page.sidebar-collapsed .brand {
   justify-content: center;
+}
+
+.shell-page.sidebar-collapsed .brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
 }
 
 .shell-page.sidebar-collapsed .brand-copy,
@@ -284,18 +321,44 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   display: none;
 }
 
+.shell-page.sidebar-collapsed .sidebar-toggle {
+  top: calc(var(--titlebar-safe-top, 0px) + 72px);
+  right: 0;
+  width: 38px;
+  height: 38px;
+  border-color: rgb(15 23 42 / 0.12);
+  background: color-mix(in oklch, var(--surface) 94%, transparent);
+  color: var(--surface-strong);
+  transform: translateX(50%);
+}
+
 .shell-page.sidebar-collapsed .sidebar-toggle svg {
   transform: rotate(180deg);
 }
 
+.shell-page.sidebar-collapsed .sidebar-toggle:hover {
+  background: var(--surface);
+  color: var(--fg);
+  transform: translateX(50%) scale(1.04);
+}
+
 .shell-page.sidebar-collapsed .side-nav {
   justify-items: center;
+  gap: var(--space-3);
 }
 
 .shell-page.sidebar-collapsed .nav-link {
-  width: 44px;
+  width: 48px;
+  min-height: 48px;
   justify-content: center;
   padding: 0;
+  border-radius: 14px;
+}
+
+.shell-page.sidebar-collapsed .nav-link .icon,
+.shell-page.sidebar-collapsed .sidebar-toggle .icon {
+  width: 22px;
+  height: 22px;
 }
 
 .page {
