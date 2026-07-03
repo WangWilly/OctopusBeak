@@ -893,13 +893,13 @@
     gap: var(--space-2);
     align-items: center;
     overflow: hidden;
-    border: 1px solid rgb(255 255 255 / 0.42);
+    border: 1px solid rgb(255 255 255 / 0.28);
     border-radius: calc(var(--radius) + 6px);
-    background: rgb(255 255 255 / 0.34);
+    background: rgb(255 255 255 / 0.16);
     box-shadow: var(--shadow);
     transform: translateY(-50%);
-    backdrop-filter: blur(18px) saturate(1.35);
-    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    backdrop-filter: blur(3px);
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, backdrop-filter 0.18s ease;
   }
 
   .viewer-floating-input::before {
@@ -921,6 +921,7 @@
     border-color: rgb(255 255 255 / 0.78);
     background: rgb(255 255 255 / 0.88);
     box-shadow: 0 16px 40px rgb(15 23 42 / 0.18);
+    backdrop-filter: blur(18px) saturate(1.35);
   }
 
   .viewer-floating-input:hover::before {
@@ -946,14 +947,15 @@
     padding: 0 var(--space-4);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: rgb(255 255 255 / 0.66);
+    background: rgb(255 255 255 / 0.36);
     color: var(--fg);
-    backdrop-filter: blur(8px);
+    backdrop-filter: none;
     transition: background 0.18s ease;
   }
 
   .viewer-floating-input:hover input {
     background: rgb(255 255 255 / 0.96);
+    backdrop-filter: blur(8px);
   }
 
   .viewer-floating-submit {
