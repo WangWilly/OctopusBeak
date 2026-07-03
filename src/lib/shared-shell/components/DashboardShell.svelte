@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
@@ -17,18 +16,18 @@
   export let syncLabel: string | null = null;
 
   const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
-  let sidebarCollapsed = false;
+  let sidebarCollapsed = readStoredSidebarCollapsed();
   let valuesVisible = readStoredValuesVisible();
-
-  onMount(() => {
-    sidebarCollapsed = localStorage.getItem(sidebarStorageKey) === "1";
-  });
 
   $: writeStoredValuesVisible(valuesVisible);
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     localStorage.setItem(sidebarStorageKey, sidebarCollapsed ? "1" : "0");
+  }
+
+  function readStoredSidebarCollapsed() {
+    return typeof localStorage !== "undefined" && localStorage.getItem(sidebarStorageKey) === "1";
   }
 
   $: nav = [
@@ -74,7 +73,7 @@
             <img class="brand-icon" src={projectIcon} alt="" width="32" height="32" aria-hidden="true" />
           </span>
           <span class="brand-copy">
-            <strong class="brand-title">OctopusBeak</strong>
+            <strong class="brand-title">OB</strong>
             <span class="brand-subtitle">{$t.nav.personalPortfolio}</span>
           </span>
         </a>
