@@ -9,7 +9,9 @@
   --accent: oklch(52% 0.15 250);
   --accent-soft: oklch(94% 0.032 250);
   --success: oklch(52% 0.13 150);
+  --warn: oklch(62% 0.14 80);
   --danger: oklch(52% 0.16 28);
+  --shadow: 0 18px 44px rgb(15 23 42 / 0.1);
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 16px;
@@ -43,12 +45,24 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
 button {
   cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+:is(button, input, select, textarea):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
 }
 
 a {
@@ -476,6 +490,49 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   flex-wrap: wrap;
 }
 
+.account-toolbar {
+  align-items: stretch;
+}
+
+.selected-actions {
+  min-height: 56px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.selected-actions-label {
+  min-width: 150px;
+  display: grid;
+  gap: 2px;
+}
+
+.selected-actions-label .label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.selected-actions-label strong {
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.selected-actions .button {
+  min-height: 36px;
+}
+
 .search {
   min-width: min(100%, 320px);
   min-height: 44px;
@@ -522,6 +579,12 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   color: var(--accent);
   border-color: color-mix(in oklch, var(--accent) 24%, var(--border));
   background: var(--accent-soft);
+}
+
+.button.danger {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
+  background: color-mix(in oklch, var(--danger) 9%, white);
 }
 
 .chip {
@@ -639,6 +702,11 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
 .account-card:hover,
 .account-card.selected {
   background: color-mix(in oklch, var(--accent) 5%, white);
+}
+
+.account-row.selected,
+.account-card.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .account-meta {
@@ -766,6 +834,7 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
+  box-shadow: var(--shadow);
 }
 
 .modal-head {
@@ -876,6 +945,13 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   .toolbar {
     align-items: stretch;
     justify-content: start;
+  }
+
+  .selected-actions {
+    width: 100%;
+    margin-left: 0;
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .topbar-actions {
