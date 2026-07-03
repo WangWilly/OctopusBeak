@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
@@ -26,6 +26,9 @@
   let viewerError = "";
   let actionError = "";
   let dragStart: { x: number; y: number; pointerId: number } | null = null;
+  let floatingInput: { left: number; top: number; value: string } | null = null;
+  let floatingInputEl: HTMLInputElement | null = null;
+  let viewerExpanded = false;
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
 
@@ -193,6 +196,8 @@
     viewerImageUrl = "";
     viewerError = "";
     dragStart = null;
+    floatingInput = null;
+    viewerExpanded = false;
   }
 
   async function sendViewerInput(input: unknown) {
@@ -203,6 +208,18 @@
       await refreshViewerImage();
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function inspectViewerPoint(point: { x: number; y: number }) {
+    if (!humanTask) return null;
+    try {
+      const result = await window.octopusBeak.automation.viewerInspect(humanTask.id, point);
+      viewerError = "";
+      return result;
+    } catch (error) {
+      viewerError = error instanceof Error ? error.message : String(error);
+      return null;
     }
   }
 
@@ -228,9 +245,21 @@
     const image = event.currentTarget as HTMLImageElement;
     const rect = image.getBoundingClientRect();
     if (!image.naturalWidth || !image.naturalHeight || !rect.width || !rect.height) return null;
+    const frameRect = image.parentElement?.getBoundingClientRect() ?? rect;
     return {
       x: (event.clientX - rect.left) * (image.naturalWidth / rect.width),
       y: (event.clientY - rect.top) * (image.naturalHeight / rect.height),
+      left: event.clientX - frameRect.left,
+      top: event.clientY - frameRect.top,
+      frameWidth: frameRect.width,
+      frameHeight: frameRect.height,
+    };
+  }
+
+  function floatingInputAnchor(point: NonNullable<ReturnType<typeof pointerPoint>>) {
+    return {
+      left: Math.min(Math.max(point.left + 12, 12), Math.max(12, point.frameWidth - 300)),
+      top: Math.min(Math.max(point.top, 36), Math.max(36, point.frameHeight - 36)),
     };
   }
 
@@ -251,11 +280,12 @@
     if (!point) return;
 
     const moved = Math.hypot(point.x - start.x, point.y - start.y);
-    void sendViewerInput(
-      moved <= 8
-        ? { type: "click", x: point.x, y: point.y }
-        : { type: "drag", x: start.x, y: start.y, toX: point.x, toY: point.y },
-    );
+    if (moved <= 8) {
+      void handleViewerClick(point);
+    } else {
+      floatingInput = null;
+      void sendViewerInput({ type: "drag", x: start.x, y: start.y, toX: point.x, toY: point.y });
+    }
   }
 
   function handleViewerPointerCancel(event: PointerEvent) {
@@ -265,12 +295,27 @@
     if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
   }
 
-  function handleViewerType(event: KeyboardEvent) {
-    const input = event.currentTarget as HTMLInputElement;
-    if (event.key !== "Enter" || !input.value) return;
+  async function handleViewerClick(point: NonNullable<ReturnType<typeof pointerPoint>>) {
+    floatingInput = null;
+    await sendViewerInput({ type: "click", x: point.x, y: point.y });
+    const inspected = await inspectViewerPoint({ x: point.x, y: point.y });
+    if (!inspected?.editable) return;
+    floatingInput = { ...floatingInputAnchor(point), value: "" };
+    await tick();
+    floatingInputEl?.focus();
+  }
+
+  function updateFloatingInput(event: Event) {
+    if (!floatingInput) return;
+    floatingInput = { ...floatingInput, value: (event.currentTarget as HTMLInputElement).value };
+  }
+
+  function submitFloatingInput(event: SubmitEvent) {
     event.preventDefault();
-    void sendViewerInput({ type: "type", text: input.value });
-    input.value = "";
+    if (!floatingInput?.value) return;
+    const text = floatingInput.value;
+    floatingInput = null;
+    void sendViewerInput({ type: "type", text });
   }
 
   function taskLabel(task: AutomationTaskRow, dictionary: Translation) {
@@ -451,7 +496,7 @@
 {#if humanTask}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
-    <div class="modal-panel human-viewer-modal">
+    <div class="modal-panel human-viewer-modal" class:expanded={viewerExpanded}>
       <div class="modal-head">
         <div>
           <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>
@@ -468,30 +513,48 @@
         </div>
       </div>
       <div class="modal-body viewer-body">
-        <img
-          class="viewer-image"
-          src={viewerImageUrl}
-          alt={$t.automation.pausedBrowser}
-          draggable="false"
-          onload={() => (viewerError = "")}
-          onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
-          onpointerdown={handleViewerPointerDown}
-          onpointerup={handleViewerPointerUp}
-          onpointercancel={handleViewerPointerCancel}
-        />
-        <div class="viewer-keyboard">
-          <input
-            class="viewer-text-input"
-            type="text"
-            maxlength="128"
-            aria-label={$t.automation.textToTypeAria}
-            placeholder={$t.automation.typeText}
-            autocomplete="off"
-            onkeydown={handleViewerType}
+        <div class="viewer-frame">
+          <img
+            class="viewer-image"
+            src={viewerImageUrl}
+            alt={$t.automation.pausedBrowser}
+            draggable="false"
+            onload={() => (viewerError = "")}
+            onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
+            onpointerdown={handleViewerPointerDown}
+            onpointerup={handleViewerPointerUp}
+            onpointercancel={handleViewerPointerCancel}
           />
-          <button class="button secondary fixed-action" type="button" onclick={() => void sendViewerInput({ type: "press", key: "Enter" })}>
-            {$t.automation.enter}
+          <button
+            class="viewer-expand-action"
+            type="button"
+            aria-label={viewerExpanded ? $t.automation.exitFullscreen : $t.automation.fullscreen}
+            aria-pressed={viewerExpanded}
+            onclick={() => (viewerExpanded = !viewerExpanded)}
+          >
+            <span aria-hidden="true"></span>
           </button>
+          {#if floatingInput}
+            <form
+              class="viewer-floating-input"
+              style={`left: ${floatingInput.left}px; top: ${floatingInput.top}px;`}
+              onsubmit={submitFloatingInput}
+            >
+              <input
+                bind:this={floatingInputEl}
+                type="text"
+                maxlength="128"
+                aria-label={$t.automation.textToTypeAria}
+                placeholder={$t.automation.typeText}
+                autocomplete="off"
+                value={floatingInput.value}
+                oninput={updateFloatingInput}
+              />
+              <button class="viewer-floating-submit" type="submit" aria-label={$t.automation.sendText}>
+                <span aria-hidden="true"></span>
+              </button>
+            </form>
+          {/if}
         </div>
         {#if viewerError}<p class="viewer-error">{viewerError}</p>{/if}
       </div>
@@ -710,6 +773,13 @@
 
   .human-viewer-modal {
     width: min(1040px, 100%);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .human-viewer-modal.expanded {
+    width: calc(100vw - 48px);
+    height: calc(100vh - 48px);
   }
 
   .viewer-actions {
@@ -721,9 +791,30 @@
   }
 
   .viewer-body {
+    min-height: 0;
     display: grid;
     gap: var(--space-4);
     padding: var(--space-5);
+  }
+
+  .human-viewer-modal.expanded .viewer-body {
+    flex: 1;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .viewer-frame {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    justify-self: center;
+    place-items: center;
+    max-width: 100%;
+  }
+
+  .human-viewer-modal.expanded .viewer-frame {
+    width: 100%;
+    height: 100%;
   }
 
   .viewer-image {
@@ -731,7 +822,6 @@
     width: auto;
     max-width: 100%;
     max-height: min(68vh, 720px);
-    justify-self: center;
     object-fit: contain;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -740,12 +830,61 @@
     user-select: none;
   }
 
-  .viewer-keyboard {
-    display: flex;
-    gap: var(--space-3);
+  .human-viewer-modal.expanded .viewer-image {
+    max-height: 100%;
   }
 
-  .viewer-text-input {
+  .viewer-expand-action {
+    position: absolute;
+    top: var(--space-3);
+    right: var(--space-3);
+    width: 44px;
+    height: 44px;
+    border: 1px solid color-mix(in oklch, var(--fg) 16%, transparent);
+    border-radius: 12px;
+    background: color-mix(in oklch, var(--surface) 92%, transparent);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+  }
+
+  .viewer-expand-action span,
+  .viewer-expand-action span::before,
+  .viewer-floating-submit span,
+  .viewer-floating-submit span::before {
+    position: absolute;
+    display: block;
+    content: "";
+  }
+
+  .viewer-expand-action span {
+    inset: 12px;
+    border: 2px solid var(--fg);
+    border-radius: 3px;
+  }
+
+  .viewer-expand-action[aria-pressed="true"] span {
+    inset: 14px;
+  }
+
+  .viewer-expand-action:focus-visible,
+  .viewer-floating-submit:focus-visible,
+  .viewer-floating-input input:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--surface-soft);
+  }
+
+  .viewer-floating-input {
+    position: absolute;
+    z-index: 2;
+    width: min(288px, calc(100% - 24px));
+    min-height: 44px;
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    transform: translateY(-50%);
+  }
+
+  .viewer-floating-input input {
     min-width: 0;
     min-height: 44px;
     flex: 1;
@@ -754,12 +893,39 @@
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--fg);
-    outline: none;
+    box-shadow: var(--shadow);
   }
 
-  .viewer-text-input:focus {
-    border-color: var(--fg);
-    box-shadow: 0 0 0 3px var(--surface-soft);
+  .viewer-floating-submit {
+    position: relative;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--fg);
+    color: var(--surface);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+  }
+
+  .viewer-floating-submit span {
+    left: 13px;
+    top: 17px;
+    width: 18px;
+    height: 2px;
+    background: currentColor;
+    transform: rotate(-90deg);
+  }
+
+  .viewer-floating-submit span::before {
+    right: -1px;
+    top: -5px;
+    width: 10px;
+    height: 10px;
+    border-top: 2px solid currentColor;
+    border-right: 2px solid currentColor;
+    transform: rotate(45deg);
   }
 
   .viewer-error {

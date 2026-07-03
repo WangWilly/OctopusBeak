@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { normalizeViewerInput, selectViewerPage } from "./automation-viewer.ts";
+import {
+  isInspectableTextTarget,
+  normalizeViewerInput,
+  normalizeViewerPoint,
+  selectViewerPage,
+} from "./automation-viewer.ts";
 
 assert.deepEqual(
   normalizeViewerInput({ type: "click", x: 10.2, y: 20.8 }),
@@ -25,6 +30,15 @@ assert.deepEqual(
   normalizeViewerInput({ type: "press", key: "ArrowRight" }),
   { type: "press", key: "ArrowRight" },
 );
+
+assert.deepEqual(normalizeViewerPoint({ x: 4.4, y: 9.6 }), { x: 4, y: 10 });
+assert.throws(() => normalizeViewerPoint({ x: 1 }));
+
+assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: false, readOnly: false }), true);
+assert.equal(isInspectableTextTarget({ tagName: "TEXTAREA", type: "", editable: false, disabled: false, readOnly: false }), true);
+assert.equal(isInspectableTextTarget({ tagName: "DIV", type: "", editable: true, disabled: false, readOnly: false }), true);
+assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "checkbox", editable: false, disabled: false, readOnly: false }), false);
+assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: true, readOnly: false }), false);
 
 assert.throws(() => normalizeViewerInput({ type: "click", x: -1, y: 0 }));
 assert.throws(() => normalizeViewerInput({ type: "drag", x: 0, y: 0, toX: 1 }));

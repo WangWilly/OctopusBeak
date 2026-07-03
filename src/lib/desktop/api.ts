@@ -19,6 +19,11 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+export type ViewerInspectResult = {
+  editable: boolean;
+  rect: { x: number; y: number; width: number; height: number } | null;
+};
+
 export type OctopusBeakApi = {
   overview: {
     load(): Promise<OverviewPageDto>;
@@ -35,6 +40,7 @@ export type OctopusBeakApi = {
     run(taskId: string): Promise<{ started: string }>;
     resume(taskId: string): Promise<{ resumed: string }>;
     viewerScreenshot(taskId: string): Promise<Uint8Array>;
+    viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
     viewerInput(taskId: string, input: unknown): Promise<{ ok: true }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
   };
@@ -49,6 +55,7 @@ export const octopusBeakApiChannels = [
   "automation:run",
   "automation:resume",
   "automation:viewerScreenshot",
+  "automation:viewerInspect",
   "automation:viewerInput",
   "automation:forceQuit",
 ] as const;
