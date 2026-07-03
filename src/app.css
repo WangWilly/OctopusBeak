@@ -485,13 +485,36 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
 }
 
 .filters {
-  display: flex;
-  gap: var(--space-2);
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
   flex-wrap: wrap;
+  border: 1px solid color-mix(in oklch, var(--border) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--surface) 42%, transparent);
+  box-shadow: 0 12px 28px rgb(15 23 42 / 0.05);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.filters:hover {
+  border-color: color-mix(in oklch, var(--accent) 18%, var(--border));
+  background: color-mix(in oklch, var(--surface) 82%, transparent);
+  box-shadow: 0 16px 34px rgb(15 23 42 / 0.09);
 }
 
 .account-toolbar {
+  position: sticky;
+  top: calc(72px + var(--space-6));
+  z-index: 8;
   align-items: stretch;
+  padding: var(--space-3) 0;
+  background: color-mix(in oklch, var(--bg) 34%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .selected-actions {
@@ -501,9 +524,20 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: color-mix(in oklch, var(--surface) 46%, transparent);
+  box-shadow: 0 12px 30px rgb(15 23 42 / 0.06);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.selected-actions:hover {
+  border-color: color-mix(in oklch, var(--accent) 22%, var(--border));
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+  box-shadow: 0 18px 40px rgb(15 23 42 / 0.12);
+  transform: translateY(-1px);
 }
 
 .selected-actions-label {
@@ -576,6 +610,32 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   text-transform: none;
 }
 
+.filter-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  text-transform: none;
+}
+
+.filters .filter-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.filters .filter-btn[aria-pressed="true"] {
+  border-color: color-mix(in oklch, var(--border) 72%, transparent);
+  background: color-mix(in oklch, var(--surface) 72%, transparent);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+}
+
 .filter-btn[aria-pressed="true"],
 .button.primary {
   background: var(--fg);
@@ -593,6 +653,30 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   color: var(--danger);
   border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
   background: color-mix(in oklch, var(--danger) 9%, white);
+}
+
+.selected-actions .action-group {
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid color-mix(in oklch, var(--border) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--surface) 42%, transparent);
+}
+
+.selected-actions .button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.selected-actions .button:hover {
+  border-color: color-mix(in oklch, var(--border) 72%, transparent);
+  background: color-mix(in oklch, var(--surface) 72%, transparent);
+  color: var(--fg);
 }
 
 .chip {
