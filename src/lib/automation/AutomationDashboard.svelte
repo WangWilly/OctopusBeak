@@ -18,6 +18,7 @@
 
   let credentialsOpen = false;
   let logTask: AutomationTaskRow | null = null;
+  let historyOpen = false;
   let humanTask: AutomationTaskRow | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
@@ -145,6 +146,20 @@
       actionError = "";
       if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
       else await window.octopusBeak.automation.run(task.id);
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function primaryTaskAction(task: AutomationTaskRow) {
+    if (task.primaryAction !== "Cancel") {
+      await runTask(task);
+      return;
+    }
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.cancel(task.id);
       await reload();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
@@ -328,8 +343,18 @@
     void sendViewerInput({ type: "type", text });
   }
 
+  function taskIdLabel(taskId: string, dictionary: Translation) {
+    return (dictionary.automation.taskLabels as Record<string, string>)[taskId] ?? taskId;
+  }
+
   function taskLabel(task: AutomationTaskRow, dictionary: Translation) {
     return (dictionary.automation.taskLabels as Record<string, string>)[task.id] ?? task.label;
+  }
+
+  function importLockTitle(task: AutomationTaskRow, dictionary: Translation) {
+    if (task.id !== "import-downloads-csv" || task.status !== "locked") return undefined;
+    const missing = automation.importGate.missingTaskIds.map((taskId) => taskIdLabel(taskId, dictionary));
+    return missing.length > 0 ? dictionary.automation.importLockedBy(missing.join(", ")) : dictionary.automation.progressLocked;
   }
 
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
@@ -366,6 +391,9 @@
           <h2>{$t.automation.taskQueue}</h2>
           <p>{$t.automation.taskQueueDescription}</p>
         </div>
+        <button class="button secondary fixed-action history-action" type="button" onclick={() => (historyOpen = true)}>
+          {$t.automation.runHistory}
+        </button>
       </div>
 
       <div class="table-wrap">
@@ -375,7 +403,7 @@
               <th>{$t.automation.task}</th>
               <th>{$t.automation.status}</th>
               <th>{$t.automation.progress}</th>
-              <th>{$t.automation.latestUtc}</th>
+              <th>{$t.automation.ranToday}</th>
               <th class="right">{$t.automation.controls}</th>
             </tr>
           </thead>
@@ -388,7 +416,11 @@
                     <span>{task.script}</span>
                   </div>
                 </td>
-                <td><span class={`chip ${statusClass(task.status)}`}>{$t.automation.statusLabels[task.status]}</span></td>
+                <td>
+                  <span class={`chip ${statusClass(task.status)}`} title={importLockTitle(task, $t)}>
+                    {$t.automation.statusLabels[task.status]}
+                  </span>
+                </td>
                 <td>
                   <div class="progress-cell">
                     <div class="progress-bar" aria-hidden="true">
@@ -397,7 +429,11 @@
                     <span class="mono">{progressLabel(task, $t)}</span>
                   </div>
                 </td>
-                <td class="mono">{formatTime(task.latestFinishedAt ?? task.latestStartedAt)}</td>
+                <td>
+                  <span class={`chip ${task.ranToday ? "good" : ""}`}>
+                    {task.ranToday ? $t.automation.ran : $t.automation.notRun}
+                  </span>
+                </td>
                 <td class="right">
                   <div class="task-actions">
                     <button
@@ -405,7 +441,8 @@
                       type="button"
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
-                      onclick={() => void runTask(task)}
+                      title={importLockTitle(task, $t)}
+                      onclick={() => void primaryTaskAction(task)}
                     >
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
@@ -482,6 +519,50 @@
         </div>
       </div>
     </form>
+  </div>
+{/if}
+
+{#if historyOpen}
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeRunHistory} onclick={() => (historyOpen = false)}></button>
+    <div class="modal-panel history-modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="history-title">{$t.automation.runHistory}</h2>
+          <p>{automation.runHistory.length} / 100</p>
+        </div>
+        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (historyOpen = false)}>x</button>
+      </div>
+      <div class="modal-body history-body">
+        <table class="table history-table">
+          <thead>
+            <tr>
+              <th>{$t.automation.task}</th>
+              <th>{$t.automation.status}</th>
+              <th>{$t.automation.historyStartedUtc}</th>
+              <th>{$t.automation.historyFinishedUtc}</th>
+              <th>{$t.automation.historyError}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each automation.runHistory as run}
+              <tr>
+                <td>
+                  <div class="task-name">
+                    <strong>{taskIdLabel(run.taskId, $t)}</strong>
+                    <span>{run.script}</span>
+                  </div>
+                </td>
+                <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
+                <td class="mono">{formatTime(run.startedAt)}</td>
+                <td class="mono">{formatTime(run.finishedAt)}</td>
+                <td class="history-error">{run.errorMessage ?? "--"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -577,6 +658,10 @@
     align-items: flex-start;
   }
 
+  .history-action {
+    margin-left: auto;
+  }
+
   .automation-title p,
   .modal-head p {
     margin: var(--space-1) 0 0;
@@ -643,6 +728,26 @@
     align-items: center;
     justify-content: center;
     gap: var(--space-2);
+  }
+
+  .history-modal {
+    width: min(1040px, 100%);
+  }
+
+  .history-body {
+    max-height: min(68vh, 720px);
+    overflow: auto;
+    padding: 0;
+  }
+
+  .history-table td {
+    vertical-align: middle;
+  }
+
+  .history-error {
+    max-width: 320px;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .spinner {

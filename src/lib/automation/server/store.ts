@@ -22,6 +22,21 @@ export type AutomationTaskRun = {
   recordJson: string;
 };
 
+export type AutomationTaskHistoryRow = Pick<
+  AutomationTaskRun,
+  | "taskRunId"
+  | "taskId"
+  | "script"
+  | "kind"
+  | "status"
+  | "startedAt"
+  | "finishedAt"
+  | "exitCode"
+  | "signal"
+  | "errorMessage"
+  | "logPath"
+>;
+
 type CreateTaskRunInput = {
   taskId: string;
   script: string;
@@ -155,23 +170,61 @@ export function latestTaskRuns(db: LedgerDatabase) {
   }));
 }
 
+export function todayTaskRunIds(
+  db: LedgerDatabase,
+  input: { startUtc: Date; endUtc: Date },
+) {
+  const rows = db.prepare(`
+    SELECT DISTINCT task_id
+    FROM automation_task_runs
+    WHERE started_at >= ?
+      AND started_at < ?
+    ORDER BY task_id
+  `).all(input.startUtc.toISOString(), input.endUtc.toISOString()) as { task_id: string }[];
+  return rows.map((row) => row.task_id);
+}
+
+export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
+  const rows = db.prepare(`
+    SELECT *
+    FROM automation_task_runs
+    ORDER BY started_at DESC
+    LIMIT ?
+  `).all(limit) as Record<string, unknown>[];
+  return rows.map((row) => {
+    const run = rowToTaskRun(row);
+    return {
+      taskRunId: run.taskRunId,
+      taskId: run.taskId,
+      script: run.script,
+      kind: run.kind,
+      status: run.status,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      exitCode: run.exitCode,
+      signal: run.signal,
+      errorMessage: run.errorMessage,
+      logPath: run.logPath,
+    };
+  });
+}
+
 export function importGateStatus(
   db: LedgerDatabase,
   input: { dependencyIds: readonly string[]; startUtc: Date; endUtc: Date },
 ) {
   const missingTaskIds = input.dependencyIds.filter((taskId) => {
     const row = db.prepare(`
-      SELECT status
+      SELECT 1 AS ran
       FROM automation_task_runs
       WHERE task_id = ?
         AND started_at >= ?
         AND started_at < ?
-      ORDER BY started_at DESC
       LIMIT 1
     `).get(taskId, input.startUtc.toISOString(), input.endUtc.toISOString()) as
-      | { status?: string }
+      | { ran?: number }
       | undefined;
-    return row?.status !== "completed";
+    return !row;
   });
   return {
     locked: missingTaskIds.length > 0,

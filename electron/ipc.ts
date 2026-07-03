@@ -1,6 +1,7 @@
 import { ipcMain } from "electron";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
+  automationCancel,
   automationResume,
   automationRun,
   automationSaveCredentials,
@@ -29,6 +30,7 @@ export function registerOctopusBeakIpc() {
   );
   ipcMain.handle("automation:run", (_event, taskId: string) => automationRun(taskId));
   ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));
+  ipcMain.handle("automation:cancel", (_event, taskId: string) => automationCancel(taskId));
   ipcMain.handle("automation:viewerScreenshot", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
     return new Uint8Array(await captureSessionScreenshot(session));

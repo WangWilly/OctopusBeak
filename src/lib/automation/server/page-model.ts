@@ -23,9 +23,9 @@ function rowStatus(
   return run?.status ?? "queued";
 }
 
-function primaryAction(status: AutomationTaskStatus) {
+function primaryAction(status: AutomationTaskStatus, isActive: boolean) {
+  if (isActive) return "Cancel";
   if (status === "locked") return "Locked";
-  if (status === "running") return "Running";
   if (status === "failed") return "Run again";
   if (status === "waiting_for_human") return "Resume";
   return "Run";
@@ -46,23 +46,27 @@ export function buildAutomationPageModel(input: {
   tasks: readonly AutomationTask[];
   latestRuns: Record<string, AutomationTaskRun>;
   activeTaskIds?: readonly string[];
+  todayRunTaskIds?: readonly string[];
+  runHistory?: AutomationPageModel["runHistory"];
   credentials: Record<string, boolean>;
   importGate: AutomationPageModel["importGate"];
   active: boolean;
   businessDate: string;
 }): AutomationPageModel {
   const activeTaskIds = new Set(input.activeTaskIds ?? []);
+  const todayRunTaskIds = new Set(input.todayRunTaskIds ?? []);
   return {
     businessDate: input.businessDate,
     active: input.active || activeTaskIds.size > 0,
     activeTaskCount: activeTaskIds.size,
     credentials: input.credentials,
     importGate: input.importGate,
+    runHistory: input.runHistory ?? [],
     tasks: input.tasks.map((task) => {
       const run = input.latestRuns[task.id];
       const isActive = activeTaskIds.has(task.id);
       const status = rowStatus(task, run, input.importGate, isActive);
-      const action = primaryAction(status);
+      const action = primaryAction(status, isActive);
       const progressPercent = parseAutomationProgress(run?.logTail ?? "");
       const attempt = run?.attempt ?? 0;
       const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
@@ -86,8 +90,9 @@ export function buildAutomationPageModel(input: {
         progressText: progressText(status, attempt, maxAttempts, progressPercent),
         humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
         isActive,
+        ranToday: todayRunTaskIds.has(task.id),
         primaryAction: action,
-        canRun: !isActive && action !== "Locked",
+        canRun: action === "Cancel" || (!isActive && action !== "Locked"),
       } satisfies AutomationTaskRow;
     }),
   };
