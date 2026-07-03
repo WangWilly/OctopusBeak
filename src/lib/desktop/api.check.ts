@@ -10,6 +10,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:run",
   "automation:resume",
   "automation:viewerScreenshot",
+  "automation:viewerInspect",
   "automation:viewerInput",
   "automation:forceQuit",
 ]);
