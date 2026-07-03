@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, translateKnownLabel } from "$lib/i18n/i18n.ts";
   import type { AccountRowDto, AssetPositionDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
@@ -10,12 +11,13 @@
   export let account: AccountRowDto | null = null;
   export let rows: AssetPositionDto[] = [];
 
-  const returnOptions = [
-    { key: "trade", label: "Trade" },
-    { key: "deposit", label: "Deposit" },
-    { key: "reward", label: "Reward" },
-  ] as const;
-  type ReturnKey = (typeof returnOptions)[number]["key"];
+  const returnKeys = ["trade", "deposit", "reward"] as const;
+  $: returnOptions = [
+    { key: "trade" as const, label: $t.positions.trade },
+    { key: "deposit" as const, label: $t.positions.deposit },
+    { key: "reward" as const, label: $t.positions.reward },
+  ];
+  type ReturnKey = (typeof returnKeys)[number];
   type ReturnSelection = Record<ReturnKey, boolean>;
 
   let selectedReturns: ReturnSelection = { trade: true, deposit: true, reward: true };
@@ -34,7 +36,7 @@
   }
 
   $: metricLabels = [...new Set(rows.map((row) => row.metricLabel ?? "Return"))];
-  $: metricLabel = metricLabels.length === 1 ? metricLabels[0] : "Metric";
+  $: metricLabel = metricLabels.length === 1 ? translateKnownLabel($t, metricLabels[0]) : $t.positions.metric;
 
   function isReturnMetric(row: AssetPositionDto) {
     return (row.metricLabel ?? "Return") === "Return";
@@ -129,10 +131,10 @@
   }, {});
   $: sortedParentRows = sortPositions(parentRows, sortKey, sortDirection, childRowsBySymbol, selectedReturns);
   $: sortColumns = [
-    { key: "symbol", label: "Symbol" },
-    { key: "name", label: "Name" },
-    { key: "units", label: "Units", right: true },
-    { key: "value", label: "Value", right: true },
+    { key: "symbol", label: $t.positions.symbol },
+    { key: "name", label: $t.positions.name },
+    { key: "units", label: $t.positions.units, right: true },
+    { key: "value", label: $t.positions.value, right: true },
     { key: "change", label: metricLabel, right: true },
   ];
 </script>
@@ -141,14 +143,14 @@
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label="Close" on:click={() => (open = false)}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={() => (open = false)}></button>
     <div class="modal-panel" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-head">
         <div>
-          <h2>{account ? `${account.label} Positions` : "Positions"}</h2>
-          <p class="lead">{account ? `${account.institution} / ${account.typeLabel}` : ""}</p>
+          <h2>{account ? $t.positions.accountTitle(account.label) : $t.positions.title}</h2>
+          <p class="lead">{account ? `${account.institution} / ${translateKnownLabel($t, account.typeLabel)}` : ""}</p>
         </div>
-        <button class="modal-close" type="button" aria-label="Close" on:click={() => (open = false)}>x</button>
+        <button class="modal-close" type="button" aria-label={$t.common.close} on:click={() => (open = false)}>x</button>
       </div>
       <div class="modal-body">
         {#if hasReturnBreakdown}
@@ -207,7 +209,7 @@
                       <button
                         class="expand-btn"
                         type="button"
-                        aria-label={expanded ? `Collapse ${row.symbol} return details` : `Expand ${row.symbol} return details`}
+                        aria-label={expanded ? $t.positions.collapseReturnDetails(row.symbol) : $t.positions.expandReturnDetails(row.symbol)}
                         aria-expanded={expanded}
                         on:click={() => toggleExpanded(row.symbol)}
                       >
@@ -247,7 +249,7 @@
                 {/each}
               {/if}
             {:else}
-              <tr><td colspan="5">No asset positions for this account.</td></tr>
+              <tr><td colspan="5">{$t.positions.noRows}</td></tr>
             {/each}
           </tbody>
         </table>

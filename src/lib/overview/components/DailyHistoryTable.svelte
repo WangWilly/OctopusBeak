@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "$lib/i18n/i18n.ts";
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
@@ -8,7 +9,7 @@
 
   export let rows: DailyHistoryRowDto[] = [];
   export let compact = false;
-  export let netLabel = "Net assets";
+  export let netLabel = "";
   export let currency = "TWD";
   export let paginate = false;
   export let pageSize = 30;
@@ -21,17 +22,17 @@
 
   $: columns = compact
     ? [
-        { key: "date", label: "Date", right: false },
-        { key: "netAssets", label: netLabel, right: true },
-        { key: "assets", label: "Assets", right: true },
-        { key: "liabilities", label: "Liabilities", right: true },
+        { key: "date", label: $t.historyTable.date, right: false },
+        { key: "netAssets", label: netLabel || $t.historyTable.netAssets, right: true },
+        { key: "assets", label: $t.historyTable.assets, right: true },
+        { key: "liabilities", label: $t.historyTable.liabilities, right: true },
       ]
     : [
-        { key: "date", label: "Date", right: false },
-        { key: "netAssets", label: netLabel, right: true },
-        { key: "dailyChange", label: "Daily change", right: true },
-        { key: "assets", label: "Assets", right: true },
-        { key: "liabilities", label: "Liabilities", right: true },
+        { key: "date", label: $t.historyTable.date, right: false },
+        { key: "netAssets", label: netLabel || $t.historyTable.netAssets, right: true },
+        { key: "dailyChange", label: $t.historyTable.dailyChange, right: true },
+        { key: "assets", label: $t.historyTable.assets, right: true },
+        { key: "liabilities", label: $t.historyTable.liabilities, right: true },
       ];
   $: sortedRows = sortRows(rows, sortKey, sortDirection);
   $: totalPages = paginate ? Math.max(1, Math.ceil(sortedRows.length / pageSize)) : 1;
@@ -132,7 +133,7 @@
           </tr>
         {:else}
           <tr>
-            <td colspan={compact ? 4 : 5}>No snapshot history yet.</td>
+            <td colspan={compact ? 4 : 5}>{$t.historyTable.noSnapshotHistory}</td>
           </tr>
         {/each}
       </tbody>
@@ -140,20 +141,20 @@
   </div>
 
   {#if paginate}
-    <div class="table-pager" aria-label="Daily history pagination">
-      <span class="pager-count">{rangeStart}-{rangeEnd} of {sortedRows.length}</span>
+    <div class="table-pager" aria-label={$t.historyTable.paginationAria}>
+      <span class="pager-count">{$t.common.pagerCount(rangeStart, rangeEnd, sortedRows.length)}</span>
       <div class="pager-actions">
         <button class="button pager-button" type="button" disabled={page === 0} onclick={() => (page -= 1)}>
-          Prev
+          {$t.historyTable.prev}
         </button>
-        <span class="chip">Page {page + 1} / {totalPages}</span>
+        <span class="chip">{$t.common.page(page + 1, totalPages)}</span>
         <button
           class="button pager-button"
           type="button"
           disabled={page >= totalPages - 1}
           onclick={() => (page += 1)}
         >
-          Next
+          {$t.historyTable.next}
         </button>
       </div>
     </div>
