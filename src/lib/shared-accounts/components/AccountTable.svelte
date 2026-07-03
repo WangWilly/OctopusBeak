@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
     AccountKind,
@@ -35,6 +36,11 @@
   let sortKey: SortKey | null = null;
   let sortDirection: SortDirection = "asc";
   let sortColumns: SortColumn[] = [];
+  let tableWrap: HTMLDivElement | null = null;
+  let tableWrapHeight: string | null = null;
+  let tableWrapAnimating = false;
+  let tableWrapTimeout: ReturnType<typeof setTimeout> | null = null;
+  let tableWrapFrame = 0;
 
   $: assetFilters = [
     { id: "all" as const, label: $t.accounts.allAssets },
@@ -141,6 +147,39 @@
     }
   }
 
+  function tableHeight() {
+    return tableWrap?.querySelector("table")?.getBoundingClientRect().height ?? 0;
+  }
+
+  async function selectFilter(nextFilter: AccountKind | "all") {
+    if (filter === nextFilter) return;
+    const from = tableHeight();
+    if (from > 0) {
+      tableWrapAnimating = false;
+      tableWrapHeight = `${from}px`;
+    }
+    filter = nextFilter;
+    await tick();
+    const to = tableHeight();
+    if (!from || !to) {
+      tableWrapHeight = null;
+      return;
+    }
+    // Commit the fixed starting height before transitioning to the new table height.
+    tableWrap?.getBoundingClientRect();
+    if (tableWrapFrame) cancelAnimationFrame(tableWrapFrame);
+    tableWrapFrame = requestAnimationFrame(() => {
+      tableWrapAnimating = true;
+      tableWrapHeight = `${to}px`;
+      if (tableWrapTimeout) clearTimeout(tableWrapTimeout);
+      tableWrapTimeout = setTimeout(() => {
+        tableWrapHeight = null;
+        tableWrapAnimating = false;
+        tableWrapTimeout = null;
+      }, 340);
+    });
+  }
+
   function translateKnownLabel(value: string, dictionary: Translation) {
     return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
   }
@@ -149,7 +188,7 @@
 <div class="toolbar account-toolbar">
   <div class="filters" aria-label={mode === "asset" ? $t.accounts.assetFiltersAria : $t.accounts.debtFiltersAria}>
     {#each filters as item}
-      <button class="filter-btn" type="button" aria-pressed={filter === item.id} on:click={() => (filter = item.id)}>
+      <button class="filter-btn" type="button" aria-pressed={filter === item.id} on:click={() => selectFilter(item.id)}>
         {item.label}
       </button>
     {/each}
@@ -174,7 +213,12 @@
 <section class="layout-accounts">
   <div>
     <div class="account-list card">
-      <div class="table-wrap">
+      <div
+        class="table-wrap account-table-wrap"
+        class:account-table-wrap-animating={tableWrapAnimating}
+        bind:this={tableWrap}
+        style:height={tableWrapHeight}
+      >
         <table class="table">
           <thead>
             <tr>
@@ -295,5 +339,16 @@
 
   .sort-mark.asc::before {
     transform: rotate(180deg);
+  }
+
+  .account-table-wrap-animating {
+    overflow-y: hidden;
+    transition: height 320ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .account-table-wrap-animating {
+      transition: none;
+    }
   }
 </style>
