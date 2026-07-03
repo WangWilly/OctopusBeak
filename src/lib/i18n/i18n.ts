@@ -209,6 +209,9 @@ const en = {
     textToTypeAria: "Text to type into paused browser",
     typeText: "Type text",
     enter: "Enter",
+    fullscreen: "Fullscreen viewer",
+    exitFullscreen: "Exit fullscreen viewer",
+    sendText: "Send text",
     statusLabels: {
       queued: "queued",
       running: "running",
@@ -496,6 +499,9 @@ const zh: typeof en = {
     textToTypeAria: "要輸入到暫停瀏覽器的文字",
     typeText: "輸入文字",
     enter: "Enter",
+    fullscreen: "全屏顯示檢視器",
+    exitFullscreen: "退出全屏檢視器",
+    sendText: "送出文字",
     statusLabels: {
       queued: "已排隊",
       running: "執行中",
