@@ -8,6 +8,7 @@ import {
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   captureSessionScreenshot,
+  inspectViewerPoint,
   sendViewerInput,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
@@ -31,6 +32,10 @@ export function registerOctopusBeakIpc() {
   ipcMain.handle("automation:viewerScreenshot", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
     return new Uint8Array(await captureSessionScreenshot(session));
+  });
+  ipcMain.handle("automation:viewerInspect", async (_event, taskId: string, point: unknown) => {
+    const session = humanSessionForTask(taskId);
+    return inspectViewerPoint(session, point);
   });
   ipcMain.handle("automation:viewerInput", async (_event, taskId: string, input: unknown) => {
     const session = humanSessionForTask(taskId);
