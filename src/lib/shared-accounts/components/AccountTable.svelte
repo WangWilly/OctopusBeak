@@ -72,11 +72,14 @@
   });
   $: total = accounts.reduce((sum, account) => sum + amountValue(account.amountLines), 0);
   $: sorted = sortAccounts(filtered, sortKey, sortDirection, total);
+  $: if (sorted.length === 0 && selectedAccountId !== null) {
+    selectedAccountId = null;
+  }
   $: if (sorted.length > 0 && !sorted.some((account) => account.id === selectedAccountId)) {
     selectedAccountId = sorted[0].id;
   }
   $: selectedAccount =
-    accounts.find((account) => account.id === selectedAccountId) ?? sorted[0] ?? null;
+    sorted.find((account) => account.id === selectedAccountId) ?? null;
   $: selectedTransactions =
     selectedAccount ? transactionsByAccount[selectedAccount.id] ?? [] : [];
   $: selectedPositions =
@@ -90,6 +93,10 @@
     { key: "balance", label: $t.accounts.balance, right: true },
     { key: "allocation", label: mode === "asset" ? $t.accounts.allocation : $t.accounts.exposure, right: true },
   ];
+
+  function selectAccount(accountId: string) {
+    selectedAccountId = accountId;
+  }
 
   function percentage(account: AccountRowDto) {
     if (total <= 0) return 0;
@@ -139,7 +146,7 @@
   }
 </script>
 
-<div class="toolbar">
+<div class="toolbar account-toolbar">
   <div class="filters" aria-label={mode === "asset" ? $t.accounts.assetFiltersAria : $t.accounts.debtFiltersAria}>
     {#each filters as item}
       <button class="filter-btn" type="button" aria-pressed={filter === item.id} on:click={() => (filter = item.id)}>
@@ -147,6 +154,21 @@
       </button>
     {/each}
   </div>
+  {#if selectedAccount}
+    <div class="selected-actions" aria-label={$t.accounts.actions}>
+      <div class="selected-actions-label">
+        <span class="label">{$t.accounts.actions}</span>
+        <strong>{selectedAccount.label}</strong>
+      </div>
+      <div class="action-group">
+        <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
+        <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        {#if mode === "asset" && selectedPositions.length > 0}
+          <button class="button secondary" type="button" on:click={() => (positionsOpen = true)}>{$t.accounts.positions}</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>
 
 <section class="layout-accounts">
@@ -178,7 +200,6 @@
                   </button>
                 </th>
               {/each}
-              <th class="right">{$t.accounts.actions}</th>
             </tr>
           </thead>
           <tbody>
@@ -187,7 +208,7 @@
               <tr
                 class:selected={account.id === selectedAccountId}
                 class="account-card"
-                on:click={() => (selectedAccountId = account.id)}
+                on:click={() => selectAccount(account.id)}
               >
                 <td>
                   <strong>{account.label}</strong><br />
@@ -205,38 +226,10 @@
                     <span style={`width:${percent}%`}></span>
                   </div>
                 </td>
-                <td class="right actions-cell">
-                  <button
-                    class="chip"
-                    type="button"
-                    on:click|stopPropagation={() => {
-                      selectedAccountId = account.id;
-                      transactionsOpen = true;
-                    }}>{$t.accounts.tx}</button
-                  >
-                  <button
-                    class="chip"
-                    type="button"
-                    on:click|stopPropagation={() => {
-                      selectedAccountId = account.id;
-                      historyOpen = true;
-                    }}>{$t.accounts.history}</button
-                  >
-                  {#if mode === "asset" && account.assetPositionCount > 0}
-                    <button
-                      class="chip"
-                      type="button"
-                      on:click|stopPropagation={() => {
-                        selectedAccountId = account.id;
-                        positionsOpen = true;
-                      }}>{$t.accounts.positions}</button
-                    >
-                  {/if}
-                </td>
               </tr>
             {:else}
               <tr>
-                <td colspan="6">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
+                <td colspan="5">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
               </tr>
             {/each}
           </tbody>
