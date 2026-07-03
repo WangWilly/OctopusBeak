@@ -142,7 +142,7 @@
 
 <style>
   .stacked-balance-chart {
-    min-height: 260px;
+    min-height: 286px;
   }
 
   .stacked-balance-stage {
