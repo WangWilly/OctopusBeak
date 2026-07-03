@@ -47,7 +47,6 @@ export function buildAutomationPageModel(input: {
   latestRuns: Record<string, AutomationTaskRun>;
   activeTaskIds?: readonly string[];
   todayRunTaskIds?: readonly string[];
-  runHistory?: AutomationPageModel["runHistory"];
   credentials: Record<string, boolean>;
   importGate: AutomationPageModel["importGate"];
   active: boolean;
@@ -61,7 +60,6 @@ export function buildAutomationPageModel(input: {
     activeTaskCount: activeTaskIds.size,
     credentials: input.credentials,
     importGate: input.importGate,
-    runHistory: input.runHistory ?? [],
     tasks: input.tasks.map((task) => {
       const run = input.latestRuns[task.id];
       const isActive = activeTaskIds.has(task.id);
