@@ -111,6 +111,10 @@ export function normalizeViewerInput(raw: unknown): ViewerInput {
   throw new Error(unsupportedInputError);
 }
 
+export function selectAllShortcut(platform = process.platform) {
+  return platform === "darwin" ? "Meta+A" : "Control+A";
+}
+
 export function selectViewerPage<T extends { url(): string }>(pages: T[]) {
   const eligiblePages = pages.filter((candidate) => {
     const url = candidate.url();
@@ -258,6 +262,7 @@ export async function sendViewerInput(session: string, rawInput: unknown) {
       await page.mouse.move(input.toX, input.toY);
       await page.mouse.up();
     } else if (input.type === "type") {
+      await page.keyboard.press(selectAllShortcut());
       await page.keyboard.type(input.text);
     } else {
       await page.keyboard.press(input.key);
