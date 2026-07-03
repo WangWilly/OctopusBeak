@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
     AccountKind,
     AccountRowDto,
@@ -35,21 +36,21 @@
   let sortDirection: SortDirection = "asc";
   let sortColumns: SortColumn[] = [];
 
-  const assetFilters: Filter[] = [
-    { id: "all", label: "All Assets" },
-    { id: "bank", label: "Bank" },
-    { id: "fund", label: "Fund" },
-    { id: "brokerage", label: "Brokerage" },
-    { id: "crypto", label: "Crypto" },
-    { id: "foreign", label: "Foreign" },
-  ];
-  const liabilityFilters: Filter[] = [
-    { id: "all", label: "All Debts" },
-    { id: "credit-card", label: "Credit Card" },
-    { id: "loan", label: "Loan" },
-    { id: "crypto", label: "Crypto" },
-    { id: "other", label: "Other" },
-  ];
+  $: assetFilters = [
+    { id: "all" as const, label: $t.accounts.allAssets },
+    { id: "bank" as const, label: $t.accounts.bank },
+    { id: "fund" as const, label: $t.accounts.fund },
+    { id: "brokerage" as const, label: $t.accounts.brokerage },
+    { id: "crypto" as const, label: $t.accounts.crypto },
+    { id: "foreign" as const, label: $t.accounts.foreign },
+  ] satisfies Filter[];
+  $: liabilityFilters = [
+    { id: "all" as const, label: $t.accounts.allDebts },
+    { id: "credit-card" as const, label: $t.accounts.creditCard },
+    { id: "loan" as const, label: $t.accounts.loan },
+    { id: "crypto" as const, label: $t.accounts.crypto },
+    { id: "other" as const, label: $t.accounts.other },
+  ] satisfies Filter[];
 
   $: availableKinds = new Set(accounts.map((account) => account.kind));
   $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter(
@@ -83,11 +84,11 @@
   $: selectedDailyHistory =
     selectedAccount ? dailyHistoryByAccount[selectedAccount.id] ?? [] : [];
   $: sortColumns = [
-    { key: "label", label: "Account Name" },
-    { key: "institution", label: "Institution" },
-    { key: "type", label: "Type" },
-    { key: "balance", label: "Balance", right: true },
-    { key: "allocation", label: mode === "asset" ? "Allocation" : "Exposure", right: true },
+    { key: "label", label: $t.accounts.accountName },
+    { key: "institution", label: $t.accounts.institution },
+    { key: "type", label: $t.accounts.type },
+    { key: "balance", label: $t.accounts.balance, right: true },
+    { key: "allocation", label: mode === "asset" ? $t.accounts.allocation : $t.accounts.exposure, right: true },
   ];
 
   function percentage(account: AccountRowDto) {
@@ -132,10 +133,14 @@
       sortDirection = key === "balance" || key === "allocation" ? "desc" : "asc";
     }
   }
+
+  function translateKnownLabel(value: string, dictionary: Translation) {
+    return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
+  }
 </script>
 
 <div class="toolbar">
-  <div class="filters" aria-label={mode === "asset" ? "Asset filters" : "Debt filters"}>
+  <div class="filters" aria-label={mode === "asset" ? $t.accounts.assetFiltersAria : $t.accounts.debtFiltersAria}>
     {#each filters as item}
       <button class="filter-btn" type="button" aria-pressed={filter === item.id} on:click={() => (filter = item.id)}>
         {item.label}
@@ -173,7 +178,7 @@
                   </button>
                 </th>
               {/each}
-              <th class="right">Actions</th>
+              <th class="right">{$t.accounts.actions}</th>
             </tr>
           </thead>
           <tbody>
@@ -186,13 +191,13 @@
               >
                 <td>
                   <strong>{account.label}</strong><br />
-                  <span class="account-meta">{account.product} / {account.transactionCount} TX</span>
+                  <span class="account-meta">{account.product} / {$t.accounts.txCount(account.transactionCount)}</span>
                 </td>
                 <td>{account.institution}</td>
-                <td><span class="chip">{account.typeLabel}</span></td>
+                <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
                 <td class="right">
                   <strong class="money">{formatAmountLines(account.amountLines)}</strong><br />
-                  <span class="account-meta">Updated {account.lastUpdated ?? "--"}</span>
+                  <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">
                   <span class="account-meta">{percent}%</span>
@@ -207,7 +212,7 @@
                     on:click|stopPropagation={() => {
                       selectedAccountId = account.id;
                       transactionsOpen = true;
-                    }}>TX</button
+                    }}>{$t.accounts.tx}</button
                   >
                   <button
                     class="chip"
@@ -215,7 +220,7 @@
                     on:click|stopPropagation={() => {
                       selectedAccountId = account.id;
                       historyOpen = true;
-                    }}>History</button
+                    }}>{$t.accounts.history}</button
                   >
                   {#if mode === "asset" && account.assetPositionCount > 0}
                     <button
@@ -224,14 +229,14 @@
                       on:click|stopPropagation={() => {
                         selectedAccountId = account.id;
                         positionsOpen = true;
-                      }}>Positions</button
+                      }}>{$t.accounts.positions}</button
                     >
                   {/if}
                 </td>
               </tr>
             {:else}
               <tr>
-                <td colspan="6">{mode === "asset" ? "No matching asset accounts." : "No matching liabilities."}</td>
+                <td colspan="6">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
               </tr>
             {/each}
           </tbody>

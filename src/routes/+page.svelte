@@ -4,12 +4,14 @@
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+  import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
+  import SettingsPage from "$lib/settings/SettingsPage.svelte";
 
-  type RouteId = "overview" | "assets" | "liabilities" | "automation";
+  type RouteId = "overview" | "assets" | "liabilities" | "automation" | "settings";
   type LoadState<T> =
     | { status: "loading" }
     | { status: "error"; message: string }
@@ -23,7 +25,7 @@
 
   function normalizeRoute() {
     const next = location.hash.replace(/^#\/?/, "") as RouteId;
-    route = ["overview", "assets", "liabilities", "automation"].includes(next) ? next : "overview";
+    route = ["overview", "assets", "liabilities", "automation", "settings"].includes(next) ? next : "overview";
     if (!location.hash || next !== route) location.hash = `/${route}`;
     void loadRoute(route);
   }
@@ -56,17 +58,17 @@
 
 {#if route === "overview"}
   {#if overview.status === "ready"}<OverviewDashboard overview={overview.data} />{/if}
-  {#if overview.status === "loading"}<p class="status">Loading...</p>{/if}
+  {#if overview.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
   {#if overview.status === "error"}<p class="status">{overview.message}</p>{/if}
 {:else if route === "assets"}
   {#if assets.status === "ready"}<AssetsDashboard assets={assets.data} />{/if}
-  {#if assets.status === "loading"}<p class="status">Loading...</p>{/if}
+  {#if assets.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
   {#if assets.status === "error"}<p class="status">{assets.message}</p>{/if}
 {:else if route === "liabilities"}
   {#if liabilities.status === "ready"}<LiabilitiesDashboard liabilities={liabilities.data} />{/if}
-  {#if liabilities.status === "loading"}<p class="status">Loading...</p>{/if}
+  {#if liabilities.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
   {#if liabilities.status === "error"}<p class="status">{liabilities.message}</p>{/if}
-{:else}
+{:else if route === "automation"}
   {#if automation.status === "ready"}
     <AutomationDashboard
       automation={automation.data.automation}
@@ -74,8 +76,10 @@
       reload={() => loadRoute("automation")}
     />
   {/if}
-  {#if automation.status === "loading"}<p class="status">Loading...</p>{/if}
+  {#if automation.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
   {#if automation.status === "error"}<p class="status">{automation.message}</p>{/if}
+{:else}
+  <SettingsPage />
 {/if}
 
 <style>

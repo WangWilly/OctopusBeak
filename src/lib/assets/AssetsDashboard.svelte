@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AssetsPageDto } from "$lib/assets/types.ts";
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import type {
     AccountKind,
@@ -22,19 +23,21 @@
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
 
-  const assetBreakdown: Array<{ kind: AccountKind; label: string }> = [
-    { kind: "bank", label: "Bank" },
-    { kind: "fund", label: "Fund" },
-    { kind: "brokerage", label: "Brokerage" },
-    { kind: "crypto", label: "Crypto" },
-    { kind: "foreign", label: "Foreign" },
-  ];
-
+  $: assetBreakdown = [
+    { kind: "bank" as const, label: $t.accounts.bank },
+    { kind: "fund" as const, label: $t.accounts.fund },
+    { kind: "brokerage" as const, label: $t.accounts.brokerage },
+    { kind: "crypto" as const, label: $t.accounts.crypto },
+    { kind: "foreign" as const, label: $t.accounts.foreign },
+  ] satisfies Array<{ kind: AccountKind; label: string }>;
   $: assetAccounts = assets.accounts;
-  $: metrics = buildMetrics(assetAccounts);
+  $: metrics = buildMetrics(assetAccounts, $t);
   $: assetValue = metrics[0]?.amounts ?? [];
   $: sideValue = formatAmountLines(assetValue.slice(0, 1));
-  $: sideSub = `${assetAccounts.length} accounts / ${currencyCount(assetAccounts.map((account) => account.amountLines))} currencies`;
+  $: sideSub = $t.assets.sideSub(
+    assetAccounts.length,
+    currencyCount(assetAccounts.map((account) => account.amountLines)),
+  );
   $: chartRows = [...assets.dailyHistory].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
   $: chartCurrencies = [
     ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
@@ -48,18 +51,18 @@
     mode: "asset",
   });
 
-  function buildMetrics(accounts: AccountRowDto[]): SummaryMetricDto[] {
+  function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
     const bankAccounts = accounts.filter((account) => account.kind === "bank");
     const foreignAccounts = accounts.filter((account) => account.kind === "foreign");
     const metrics: SummaryMetricDto[] = [
       {
-        label: "Asset value",
+        label: dictionary.assets.metricAssetValue,
         amounts: totalAmounts(accounts),
         breakdown: assetBreakdown
           .map((item) => {
             const count = accounts.filter((account) => account.kind === item.kind).length;
-            return count ? `${item.label} ${count}` : null;
+            return count ? dictionary.common.countLabel(item.label, count) : null;
           })
           .filter(Boolean) as string[],
       },
@@ -67,21 +70,21 @@
 
     if (largest) {
       metrics.push({
-        label: "Largest account",
+        label: dictionary.assets.metricLargestAccount,
         amounts: largest.amountLines,
         breakdown: [largest.label],
       });
     }
     if (bankAccounts.length > 0) {
       metrics.push({
-        label: "Liquid cash",
+        label: dictionary.assets.metricLiquidCash,
         amounts: totalAmounts(bankAccounts),
         breakdown: bankAccounts.map((account) => account.institution).slice(0, 3),
       });
     }
     if (foreignAccounts.length > 0) {
       metrics.push({
-        label: "Foreign balance",
+        label: dictionary.assets.metricForeignBalance,
         amounts: totalAmounts(foreignAccounts),
         breakdown: foreignAccounts.map((account) => account.institution).slice(0, 3),
       });
@@ -121,27 +124,27 @@
 
 <DashboardShell
   active="assets"
-  eyebrow="Assets"
-  title="Asset accounts"
-  sideLabel="Asset value"
+  eyebrow={$t.assets.eyebrow}
+  title={$t.assets.title}
+  sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
-  searchPlaceholder="Search asset accounts"
+  searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
   <div class="content">
-    <section aria-label="Asset metrics">
+    <section aria-label={$t.assets.metricsAria}>
       <SummaryStrip {metrics} />
     </section>
 
-    <section class="card balance-history" aria-label="Asset balance history">
+    <section class="card balance-history" aria-label={$t.assets.balanceHistoryAria}>
       <div class="panel-title">
-        <h2>Asset balance</h2>
+        <h2>{$t.assets.assetBalance}</h2>
         {#if chartCurrencies.length > 0}
           <label class="chip select-chip" for="asset-balance-currency">
             <select
               id="asset-balance-currency"
-              aria-label="Asset balance currency"
+              aria-label={$t.assets.assetBalanceCurrency}
               bind:value={chartCurrency}
               onchange={(event) => (chartCurrency = selectValue(event))}
               oninput={(event) => (chartCurrency = selectValue(event))}
@@ -152,10 +155,10 @@
             </select>
           </label>
         {/if}
-        <span class="chip">30 days</span>
+        <span class="chip">{$t.common.days30}</span>
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart chart={chartData} currency={chartCurrency} label="Asset allocation" />
+        <StackedBalanceChart chart={chartData} currency={chartCurrency} label={$t.overview.assetAllocation} />
       </div>
     </section>
 
