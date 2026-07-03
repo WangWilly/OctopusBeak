@@ -265,6 +265,7 @@
 
   async function forceQuitHumanViewer() {
     if (!humanTask) return;
+    if (!confirm($t.automation.confirmForceQuit)) return;
     try {
       await window.octopusBeak.automation.forceQuit(humanTask.id);
       closeHumanViewer();
@@ -614,7 +615,7 @@
           <p>{humanTask.humanSession ?? $t.automation.noSession}</p>
         </div>
         <div class="viewer-actions">
-          <button class="button secondary fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
+          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
             {$t.automation.forceQuit}
           </button>
           <button class="button primary fixed-action" type="button" onclick={resumeHumanViewer}>
