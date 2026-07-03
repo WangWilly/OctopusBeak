@@ -51,6 +51,15 @@
     : automation.importGate.locked
       ? "bad"
       : "good";
+  $: readyTaskCount = automation.tasks.filter((task) => task.canRun && !task.isActive).length;
+  $: attentionTaskCount = automation.tasks.filter((task) =>
+    task.status === "failed" || task.status === "waiting_for_human" || task.status === "locked",
+  ).length;
+  $: automationStats = [
+    { label: $t.automation.activeNow, value: automation.activeTaskCount, detail: topStatus, tone: topStatusClass },
+    { label: $t.automation.readyToRun, value: readyTaskCount, detail: $t.automation.readyTasks, tone: readyTaskCount ? "good" : "" },
+    { label: $t.automation.needsAttention, value: attentionTaskCount, detail: $t.automation.attentionTasks, tone: attentionTaskCount ? "bad" : "good" },
+  ];
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: credentialsDirty = credentialInputDirty || credentialToggleDirty;
@@ -84,6 +93,10 @@
 
   function formatTime(value: string | null) {
     return value?.slice(0, 19).replace("T", " ") ?? "--";
+  }
+
+  function latestTaskTime(task: AutomationTaskRow) {
+    return formatTime(task.latestFinishedAt ?? task.latestStartedAt);
   }
 
   function credentialLabel(key: string, dictionary: Translation) {
@@ -159,6 +172,7 @@
       await runTask(task);
       return;
     }
+    if (!confirm($t.automation.confirmCancel(taskLabel(task, $t)))) return;
     try {
       actionError = "";
       await window.octopusBeak.automation.cancel(task.id);
@@ -397,19 +411,47 @@
 >
   <svelte:fragment slot="topbar-actions">
     <span class={`chip ${topStatusClass}`}>{topStatus}</span>
-    <button class="button secondary fixed-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
   </svelte:fragment>
 
-  <div class="content">
-    <section class="card">
+  <div class="content automation-content">
+    <section class="automation-command-grid" aria-label={$t.automation.commandCenter}>
+      <article class="card command-card command-primary">
+        <div class="command-topline">
+          <span class="label">{$t.automation.commandCenter}</span>
+          <span class={`chip ${topStatusClass}`}>{topStatus}</span>
+        </div>
+        <h2>{sideValue}</h2>
+      </article>
+
+      <article class="card command-card">
+        <div>
+          <span class="label">{$t.automation.controls}</span>
+          <h2>{$t.automation.taskQueue}</h2>
+        </div>
+        <div class="command-actions">
+          <button class="button secondary fixed-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
+          <button class="button secondary fixed-action" type="button" onclick={() => void openRunHistory()}>
+            {$t.automation.runHistory}
+          </button>
+        </div>
+      </article>
+    </section>
+
+    <section class="automation-stats" aria-label={$t.automation.statusSummary}>
+      {#each automationStats as stat}
+        <article class="card automation-stat">
+          <span class="label">{stat.label}</span>
+          <strong>{stat.value}</strong>
+          <span class={`chip ${stat.tone}`}>{stat.detail}</span>
+        </article>
+      {/each}
+    </section>
+
+    <section class="card task-board">
       <div class="panel-title automation-title">
         <div>
           <h2>{$t.automation.taskQueue}</h2>
-          <p>{$t.automation.taskQueueDescription}</p>
         </div>
-        <button class="button secondary fixed-action history-action" type="button" onclick={() => void openRunHistory()}>
-          {$t.automation.runHistory}
-        </button>
       </div>
 
       <div class="table-wrap">
@@ -425,11 +467,12 @@
           </thead>
           <tbody>
             {#each automation.tasks as task}
-              <tr>
+              <tr class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || task.status === "waiting_for_human"}>
                 <td>
                   <div class="task-name">
                     <strong>{taskLabel(task, $t)}</strong>
                     <span>{task.script}</span>
+                    <span>{$t.automation.latestUtc}: {latestTaskTime(task)}</span>
                   </div>
                 </td>
                 <td>
@@ -453,7 +496,7 @@
                 <td class="right">
                   <div class="task-actions">
                     <button
-                      class="button primary task-control"
+                      class={`button task-control ${task.primaryAction === "Cancel" ? "danger" : "primary"}`}
                       type="button"
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
@@ -675,15 +718,77 @@
 {/if}
 
 <style>
+  .automation-content {
+    display: grid;
+    gap: var(--space-6);
+  }
+
+  .automation-command-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+    gap: var(--space-4);
+  }
+
+  .command-card {
+    min-height: 132px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .command-card h2 {
+    margin: var(--space-2) 0 0;
+    font-size: clamp(24px, 3vw, 34px);
+    line-height: 1.05;
+  }
+
+  .command-primary {
+    border-color: color-mix(in oklch, var(--accent) 12%, var(--border));
+    background: var(--surface);
+  }
+
+  .command-topline,
+  .command-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+
+  .command-topline {
+    justify-content: space-between;
+  }
+
+  .automation-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+
+  .automation-stat {
+    min-height: 132px;
+    display: grid;
+    align-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .automation-stat strong {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    line-height: 1;
+  }
+
+  .task-board {
+    overflow: hidden;
+  }
+
   .automation-title {
     align-items: flex-start;
   }
 
-  .history-action {
-    margin-left: auto;
-  }
-
-  .automation-title p,
   .modal-head p {
     margin: var(--space-1) 0 0;
     color: var(--muted);
@@ -692,6 +797,14 @@
 
   .automation-table td {
     vertical-align: middle;
+  }
+
+  .automation-table tr.task-active td {
+    background: color-mix(in oklch, var(--warn) 2%, white);
+  }
+
+  .automation-table tr.task-attention td {
+    background: color-mix(in oklch, var(--danger) 2%, white);
   }
 
   .task-name {
@@ -736,6 +849,7 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);
+    flex-wrap: wrap;
   }
 
   .task-control,
@@ -790,12 +904,12 @@
 
   .chip.warn {
     color: var(--warn);
-    background: color-mix(in oklch, var(--warn) 10%, white);
+    background: color-mix(in oklch, var(--warn) 6%, white);
   }
 
   .chip.bad {
     color: var(--danger);
-    background: color-mix(in oklch, var(--danger) 10%, white);
+    background: color-mix(in oklch, var(--danger) 6%, white);
   }
 
   .credential-modal {
@@ -1140,6 +1254,17 @@
   }
 
   @media (max-width: 820px) {
+    .automation-command-grid,
+    .automation-stats {
+      grid-template-columns: 1fr;
+    }
+
+    .command-actions,
+    .command-actions .button,
+    .automation-stat .chip {
+      width: 100%;
+    }
+
     .credential-section-head {
       align-items: flex-start;
       flex-direction: column;
