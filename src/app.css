@@ -399,11 +399,36 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   font-weight: 720;
 }
 
-.metric-card .value {
+.metric-amounts {
   margin-top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.metric-card .value {
   font-size: clamp(22px, 2.5vw, 32px);
   font-weight: 750;
   line-height: 1.1;
+}
+
+.currency-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.currency-chip {
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted) 7%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 
 .metric-card .breakdown {
