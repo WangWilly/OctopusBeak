@@ -101,11 +101,13 @@ html.desktop-shell {
 
 html.desktop-shell .sidebar,
 html.desktop-shell .topbar {
+  app-region: drag;
   -webkit-app-region: drag;
 }
 
 html.desktop-shell .sidebar :is(a, button, input, select, textarea, [role="button"]),
 html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button"]) {
+  app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 
