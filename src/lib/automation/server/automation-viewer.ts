@@ -19,7 +19,8 @@ export type ViewerInspectResult = {
   editable: boolean;
   rect: { x: number; y: number; width: number; height: number } | null;
 };
-type RawInspectableTarget = InspectableTarget & ViewerInspectResult;
+type InspectableRect = { x: number; y: number; width: number; height: number };
+type InspectableTextTarget = InspectableTarget & { rect: InspectableRect };
 
 const unsupportedInputError = "Unsupported viewer input.";
 const allowedPressKeys = new Set([
@@ -53,6 +54,34 @@ export function isInspectableTextTarget(target: InspectableTarget) {
   if (target.editable) return true;
   if (target.tagName === "TEXTAREA") return true;
   return target.tagName === "INPUT" && textInputTypes.has(target.type.toLowerCase());
+}
+
+export function selectInspectableTextTarget(
+  targets: InspectableTextTarget[],
+  point: ViewerPoint,
+) {
+  const textTargets = targets.filter(isInspectableTextTarget);
+  const containing = textTargets.find((target) => (
+    point.x >= target.rect.x &&
+    point.x <= target.rect.x + target.rect.width &&
+    point.y >= target.rect.y &&
+    point.y <= target.rect.y + target.rect.height
+  ));
+  if (containing) return containing;
+
+  let nearest: { target: InspectableTextTarget; distance: number } | null = null;
+  for (const target of textTargets) {
+    const dx = point.x < target.rect.x
+      ? target.rect.x - point.x
+      : Math.max(0, point.x - (target.rect.x + target.rect.width));
+    const dy = point.y < target.rect.y
+      ? target.rect.y - point.y
+      : Math.max(0, point.y - (target.rect.y + target.rect.height));
+    if (dx > 220 || dy > 24) continue;
+    const distance = Math.hypot(dx, dy);
+    if (!nearest || distance < nearest.distance) nearest = { target, distance };
+  }
+  return nearest?.target ?? null;
 }
 
 export function normalizeViewerInput(raw: unknown): ViewerInput {
@@ -122,7 +151,68 @@ export function captureSessionScreenshot(session: string) {
   ));
 }
 
-async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<RawInspectableTarget | null> {
+async function inspectableFromElement(element: ElementHandle<HTMLElement>): Promise<InspectableTextTarget | null> {
+  try {
+    const box = await element.boundingBox();
+    if (!box?.width || !box.height) return null;
+    const target = await element.evaluate((node) => {
+      const style = getComputedStyle(node);
+      const input = node instanceof HTMLInputElement ? node : null;
+      const textarea = node instanceof HTMLTextAreaElement ? node : null;
+      return {
+        tagName: node.tagName,
+        type: input?.type ?? "",
+        editable: node.isContentEditable,
+        disabled: Boolean(input?.disabled ?? textarea?.disabled),
+        readOnly: Boolean(input?.readOnly ?? textarea?.readOnly),
+        visible: style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0,
+      };
+    });
+    if (!target.visible) return null;
+    return {
+      tagName: target.tagName,
+      type: target.type,
+      editable: target.editable,
+      disabled: target.disabled,
+      readOnly: target.readOnly,
+      rect: { x: box.x, y: box.y, width: box.width, height: box.height },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function frameTextTargets(frame: Frame): Promise<InspectableTextTarget[]> {
+  let handles: ElementHandle<HTMLElement>[];
+  try {
+    handles = await frame.$$("input, textarea, [contenteditable='true'], [contenteditable='']") as ElementHandle<HTMLElement>[];
+  } catch {
+    return [];
+  }
+  const targets: InspectableTextTarget[] = [];
+  for (const handle of handles) {
+    try {
+      const target = await inspectableFromElement(handle);
+      if (target) targets.push(target);
+    } finally {
+      await handle.dispose();
+    }
+  }
+  return targets;
+}
+
+async function pageTextTargets(page: Page): Promise<InspectableTextTarget[]> {
+  const targets = await Promise.all(page.frames().map(async (frame) => {
+    try {
+      return await frameTextTargets(frame);
+    } catch {
+      return [];
+    }
+  }));
+  return targets.flat();
+}
+
+async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<InspectableTextTarget | null> {
   const handle = await frame.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), point);
   const element = handle.asElement() as ElementHandle<HTMLElement> | null;
   if (!element) {
@@ -141,19 +231,7 @@ async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<RawI
       return inspectFramePoint(childFrame, { x: point.x - iframe.x, y: point.y - iframe.y });
     }
 
-    return element.evaluate((node) => {
-      const rect = node.getBoundingClientRect();
-      const input = node instanceof HTMLInputElement ? node : null;
-      const textarea = node instanceof HTMLTextAreaElement ? node : null;
-      return {
-        tagName: node.tagName,
-        type: input?.type ?? "",
-        editable: node.isContentEditable,
-        disabled: Boolean(input?.disabled ?? textarea?.disabled),
-        readOnly: Boolean(input?.readOnly ?? textarea?.readOnly),
-        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      };
-    });
+    return inspectableFromElement(element);
   } finally {
     await handle.dispose();
   }
@@ -163,11 +241,9 @@ export async function inspectViewerPoint(session: string, rawPoint: unknown): Pr
   const point = normalizeViewerPoint(rawPoint);
   return withPausedPage(session, async (page) => {
     const target = await inspectFramePoint(page.mainFrame(), point);
-    if (!target) return { editable: false, rect: null };
-    return {
-      editable: isInspectableTextTarget(target),
-      rect: target.rect,
-    };
+    if (target && isInspectableTextTarget(target)) return { editable: true, rect: target.rect };
+    const fallback = selectInspectableTextTarget(await pageTextTargets(page), point);
+    return fallback ? { editable: true, rect: fallback.rect } : { editable: false, rect: target?.rect ?? null };
   });
 }
 
