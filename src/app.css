@@ -5,13 +5,13 @@
   --surface-strong: oklch(18% 0.012 250);
   --fg: oklch(18% 0.012 250);
   --muted: oklch(50% 0.012 250);
-  --border: oklch(88% 0.006 250);
-  --accent: oklch(52% 0.15 250);
-  --accent-soft: oklch(94% 0.032 250);
-  --success: oklch(52% 0.13 150);
-  --warn: oklch(62% 0.14 80);
-  --danger: oklch(52% 0.16 28);
-  --shadow: 0 18px 44px rgb(15 23 42 / 0.1);
+  --border: oklch(90% 0.006 250);
+  --accent: oklch(48% 0.08 238);
+  --accent-soft: oklch(95% 0.018 238);
+  --success: oklch(47% 0.08 155);
+  --warn: oklch(56% 0.08 82);
+  --danger: oklch(48% 0.09 28);
+  --shadow: 0 14px 34px rgb(15 23 42 / 0.07);
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 16px;
@@ -566,6 +566,14 @@ html.desktop-shell .shell-page.sidebar-collapsed .sidebar {
   font-weight: 720;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.button {
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  text-transform: none;
 }
 
 .filter-btn[aria-pressed="true"],
