@@ -3,6 +3,7 @@ import {
   isInspectableTextTarget,
   normalizeViewerInput,
   normalizeViewerPoint,
+  selectInspectableTextTarget,
   selectViewerPage,
 } from "./automation-viewer.ts";
 
@@ -39,6 +40,83 @@ assert.equal(isInspectableTextTarget({ tagName: "TEXTAREA", type: "", editable: 
 assert.equal(isInspectableTextTarget({ tagName: "DIV", type: "", editable: true, disabled: false, readOnly: false }), true);
 assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "checkbox", editable: false, disabled: false, readOnly: false }), false);
 assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: true, readOnly: false }), false);
+
+assert.deepEqual(
+  selectInspectableTextTarget([
+    {
+      tagName: "INPUT",
+      type: "text",
+      editable: false,
+      disabled: false,
+      readOnly: false,
+      rect: { x: 700, y: 386, width: 96, height: 28 },
+    },
+  ], { x: 724, y: 400 }),
+  {
+    tagName: "INPUT",
+    type: "text",
+    editable: false,
+    disabled: false,
+    readOnly: false,
+    rect: { x: 700, y: 386, width: 96, height: 28 },
+  },
+);
+
+assert.deepEqual(
+  selectInspectableTextTarget([
+    {
+      tagName: "INPUT",
+      type: "text",
+      editable: false,
+      disabled: false,
+      readOnly: false,
+      rect: { x: 700, y: 386, width: 96, height: 28 },
+    },
+  ], { x: 810, y: 400 }),
+  {
+    tagName: "INPUT",
+    type: "text",
+    editable: false,
+    disabled: false,
+    readOnly: false,
+    rect: { x: 700, y: 386, width: 96, height: 28 },
+  },
+);
+
+assert.deepEqual(
+  selectInspectableTextTarget([
+    {
+      tagName: "INPUT",
+      type: "text",
+      editable: false,
+      disabled: false,
+      readOnly: false,
+      rect: { x: 700, y: 386, width: 96, height: 28 },
+    },
+  ], { x: 810, y: 426 }),
+  {
+    tagName: "INPUT",
+    type: "text",
+    editable: false,
+    disabled: false,
+    readOnly: false,
+    rect: { x: 700, y: 386, width: 96, height: 28 },
+  },
+);
+
+assert.equal(
+  selectInspectableTextTarget([
+    {
+      tagName: "INPUT",
+      type: "text",
+      editable: false,
+      disabled: false,
+      readOnly: false,
+      rect: { x: 700, y: 386, width: 96, height: 28 },
+    },
+  ], { x: 810, y: 460 }),
+  null,
+);
 
 assert.throws(() => normalizeViewerInput({ type: "click", x: -1, y: 0 }));
 assert.throws(() => normalizeViewerInput({ type: "drag", x: 0, y: 0, toX: 1 }));
