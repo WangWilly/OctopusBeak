@@ -42,7 +42,7 @@ export type OctopusBeakApi = {
     resume(taskId: string): Promise<{ resumed: string }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
-    viewerScreenshot(taskId: string): Promise<Uint8Array>;
+    viewerScreenshot(taskId: string): Promise<Uint8Array | null>;
     viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
     viewerInput(taskId: string, input: unknown): Promise<{ ok: true }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;

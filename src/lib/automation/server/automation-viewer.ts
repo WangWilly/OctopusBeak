@@ -36,6 +36,12 @@ const allowedPressKeys = new Set([
 ]);
 const textInputTypes = new Set(["", "email", "number", "password", "search", "tel", "text", "url"]);
 
+export function isClosedViewerSessionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("No CDP endpoint available for Libretto session") ||
+    /connect ECONNREFUSED 127\.0\.0\.1:\d+/.test(message);
+}
+
 function pixel(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(unsupportedInputError);
   const rounded = Math.round(value);
