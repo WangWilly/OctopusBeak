@@ -66,6 +66,9 @@ export function createSourceCsvParser(context: SourceCsvContext): SourceCsvParse
   if (bankProduct === "cathay/statements") {
     return bind("account_transactions", bankTransactionFields);
   }
+  if (bankProduct === "ctbc/statements") {
+    return bind("account_transactions", bankTransactionFields);
+  }
   if (bankProduct === "fubon/statements") {
     return bind("account_transactions", bankTransactionFields);
   }

@@ -11,6 +11,41 @@ assert.equal(normalizeCurrencyCode("美金"), "USD");
 assert.equal(normalizeCurrencyCode("US/TWD"), "TWD");
 assert.equal(normalizeCurrencyCode("0台幣", "USD"), "TWD");
 
+const ctbcParser = createSourceCsvParser({
+  bank: "ctbc",
+  product: "statements",
+  sourceRelativePath: "ctbc-statements/example.csv",
+  metadata: { 帳號: "新臺幣-123456" },
+  headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+});
+assert.equal(ctbcParser.table, "account_transactions");
+assert.deepEqual(
+  ctbcParser.parseRow({
+    帳務日期: "2026/07/03",
+    交易日期: "2026/07/02",
+    交易時間: "09:08:07",
+    摘要: "薪資",
+    支出金額: "0",
+    存入金額: "1,234",
+    即時餘額: "5,678",
+    附註: "公司,入帳 七月",
+  }),
+  {
+    account_name: "新臺幣-123456",
+    account_number: "123456",
+    currency: "TWD",
+    accounting_date: "2026-07-03",
+    transaction_date: "2026-07-02",
+    transaction_time: "09:08:07",
+    description: "薪資",
+    withdrawal_amount: 0,
+    deposit_amount: 1234,
+    balance_after: 5678,
+    note: "公司,入帳 七月",
+    fx_rate: null,
+  },
+);
+
 const postParser = createSourceCsvParser({
   bank: "post",
   product: "statements",
