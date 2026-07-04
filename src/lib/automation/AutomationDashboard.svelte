@@ -652,8 +652,8 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
     <div class="modal-panel human-viewer-modal" class:expanded={viewerExpanded}>
-      <div class="modal-head">
-        <div>
+      <div class="modal-head viewer-head">
+        <div class="viewer-title">
           <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>
           <p>{humanTask.humanSession ?? $t.automation.noSession}</p>
         </div>
@@ -1022,9 +1022,10 @@
   }
 
   .human-viewer-modal {
-    width: min(1040px, 100%);
+    width: min(1080px, calc(100vw - 48px));
     display: flex;
     flex-direction: column;
+    border-radius: 20px;
   }
 
   .human-viewer-modal.expanded {
@@ -1032,50 +1033,109 @@
     height: calc(100vh - 48px);
   }
 
+  .viewer-head {
+    align-items: center;
+    padding: var(--space-4);
+    border-bottom: 0;
+    background: linear-gradient(180deg, var(--surface), color-mix(in oklch, var(--surface-soft) 44%, var(--surface)));
+  }
+
+  .viewer-title {
+    min-width: 0;
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .viewer-title h2 {
+    font-size: 19px;
+    line-height: 1.15;
+  }
+
+  .viewer-title p {
+    width: fit-content;
+    max-width: 100%;
+    margin: 0;
+    padding: 4px 9px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .viewer-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
-    gap: var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .human-viewer-modal .fixed-action {
+    width: auto;
+    min-width: 96px;
+    min-height: 36px;
+    padding: 0 var(--space-4);
+    border-radius: 10px;
+  }
+
+  .human-viewer-modal .modal-close {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    font-size: 18px;
   }
 
   .viewer-body {
     min-height: 0;
     display: grid;
-    gap: var(--space-4);
-    padding: var(--space-5);
+    gap: var(--space-3);
+    padding: 0 var(--space-4) var(--space-4);
+    background: color-mix(in oklch, var(--surface-soft) 44%, var(--surface));
   }
 
   .human-viewer-modal.expanded .viewer-body {
     flex: 1;
     grid-template-rows: minmax(0, 1fr) auto;
+    padding: 0;
   }
 
   .viewer-frame {
     position: relative;
     min-width: 0;
     min-height: 0;
+    width: 100%;
+    overflow: hidden;
     display: grid;
     justify-self: center;
     place-items: center;
     max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: oklch(18% 0.025 250);
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04);
   }
 
   .human-viewer-modal.expanded .viewer-frame {
     width: 100%;
     height: 100%;
+    border: 0;
+    border-radius: 0;
   }
 
   .viewer-image {
     display: block;
-    width: auto;
+    width: 100%;
     max-width: 100%;
-    max-height: min(68vh, 720px);
+    max-height: min(72vh, 720px);
     object-fit: contain;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-soft);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     touch-action: none;
     user-select: none;
   }
@@ -1182,11 +1242,11 @@
     position: relative;
     z-index: 1;
     min-width: 0;
-    min-height: 44px;
+    min-height: 38px;
     flex: 1;
-    padding: 0 var(--space-4);
+    padding: 0 12px;
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: 12px;
     background: rgb(255 255 255 / 0.36);
     color: var(--fg);
     backdrop-filter: none;
@@ -1201,34 +1261,43 @@
   .viewer-floating-submit {
     position: relative;
     z-index: 1;
-    flex: 0 0 44px;
-    width: 44px;
-    height: 44px;
-    border: 0;
-    border-radius: 999px;
+    flex: 0 0 38px;
+    width: 38px;
+    height: 38px;
+    border: 1px solid rgb(15 23 42 / 0.14);
+    border-radius: 12px;
+    background: rgb(255 255 255 / 0.7);
+    color: var(--fg);
+    box-shadow: 0 8px 18px rgb(15 23 42 / 0.12), inset 0 1px 0 rgb(255 255 255 / 0.72);
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .viewer-floating-submit:hover {
+    border-color: rgb(15 23 42 / 0.22);
     background: var(--fg);
     color: var(--surface);
-    box-shadow: var(--shadow);
-    cursor: pointer;
+    transform: translateY(-1px);
   }
 
   .viewer-floating-submit span {
-    left: 13px;
-    top: 17px;
-    width: 18px;
-    height: 2px;
+    left: 50%;
+    top: 50%;
+    width: 2px;
+    height: 16px;
+    border-radius: 999px;
     background: currentColor;
-    transform: rotate(-90deg);
+    transform: translate(-50%, -50%);
   }
 
   .viewer-floating-submit span::before {
-    right: -1px;
-    top: -5px;
-    width: 10px;
-    height: 10px;
+    left: 50%;
+    top: 0;
+    width: 9px;
+    height: 9px;
     border-top: 2px solid currentColor;
-    border-right: 2px solid currentColor;
-    transform: rotate(45deg);
+    border-left: 2px solid currentColor;
+    transform: translate(-50%, -1px) rotate(45deg);
   }
 
   .viewer-error {
@@ -1239,6 +1308,7 @@
 
   .force-quit-action {
     color: var(--danger);
+    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
   }
 
   .log-output {
