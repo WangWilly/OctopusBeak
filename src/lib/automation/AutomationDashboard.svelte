@@ -222,6 +222,7 @@
     try {
       const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
       if (humanTask?.id !== taskId || requestId !== viewerRequestId) return;
+      if (!bytes) return;
       if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
       viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
       viewerError = "";

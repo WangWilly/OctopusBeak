@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  isClosedViewerSessionError,
   isInspectableTextTarget,
   normalizeViewerInput,
   normalizeViewerPoint,
@@ -7,6 +8,10 @@ import {
   selectAllShortcut,
   selectViewerPage,
 } from "./automation-viewer.ts";
+
+assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
+assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
+assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
 
 assert.deepEqual(
   normalizeViewerInput({ type: "click", x: 10.2, y: 20.8 }),
