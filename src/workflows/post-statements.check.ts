@@ -14,11 +14,11 @@ assert.equal(
 
 assert.deepEqual(
   postLoginFieldValues({
-    post_user_id: "A123456789",
+    post_user_id: "post-user-id",
     post_account: "user-code",
     post_password: "pw",
   }),
-  { cifId: "A123456789", userCode: "user-code", password: "pw" },
+  { cifId: "post-user-id", userCode: "user-code", password: "pw" },
 );
 
 assert.equal(postDetailLinkSelector(true), "a.btn_td_orange_dtl:visible");
