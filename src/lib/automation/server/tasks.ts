@@ -14,6 +14,7 @@ export const CSV_IMPORT_DEPENDENCY_IDS = [
   "yuanta-trade-statements",
   "cathay-all-statements",
   "hncb-statements",
+  "post-statements",
 ] as const;
 
 export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
@@ -76,6 +77,16 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       "LIBRETTO_CLOUD_HNCB_USER_ID",
       "LIBRETTO_CLOUD_HNCB_ACCOUNT",
       "LIBRETTO_CLOUD_HNCB_PASSWORD",
+    ],
+  },
+  {
+    id: "post",
+    label: "Post Office",
+    enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
+    credentialKeys: [
+      "LIBRETTO_CLOUD_POST_USER_ID",
+      "LIBRETTO_CLOUD_POST_ACCOUNT",
+      "LIBRETTO_CLOUD_POST_PASSWORD",
     ],
   },
   {
@@ -154,6 +165,17 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
   {
+    id: "post-statements",
+    label: "Post Office statements",
+    script: "run:post-statements",
+    command: ["libretto", "run", "src/workflows/post-statements.ts", "--headless"],
+    kind: "crawler",
+    credentialGroupId: "post",
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[6].credentialKeys,
+    dependencies: [],
+    maxAttempts: 1,
+  },
+  {
     id: "sync-maicoin",
     label: "MaiCoin sync",
     script: "run:sync-maicoin",
@@ -166,7 +188,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     ],
     kind: "sync",
     credentialGroupId: "maicoin",
-    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[6].credentialKeys,
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[7].credentialKeys,
     dependencies: [],
     maxAttempts: 1,
   },

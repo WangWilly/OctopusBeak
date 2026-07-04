@@ -43,6 +43,7 @@
     "run:cathay-all-statements": "libretto run src/workflows/cathay-all-statements.ts --headless",
     "run:cathay-foreign-statements": "libretto run src/workflows/cathay-foreign-statements.ts --headless",
     "run:hncb-statements": "libretto run src/workflows/hncb-statements.ts --headless",
+    "run:post-statements": "libretto run src/workflows/post-statements.ts --headless",
     "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",

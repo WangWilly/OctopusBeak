@@ -26,10 +26,12 @@ assert.deepEqual(
     "yuanta-trade-statements",
     "cathay-all-statements",
     "hncb-statements",
+    "post-statements",
   ],
 );
 
 assert.equal(taskById("sync-maicoin")?.kind, "sync");
+assert.equal(taskById("post-statements")?.credentialGroupId, "post");
 assert.equal(taskById("import-downloads-csv")?.kind, "import");
 assert.deepEqual(
   taskById("import-downloads-csv")?.dependencies,
@@ -48,6 +50,7 @@ assert.equal(AUTOMATION_ENABLED_KEYS.includes("LIBRETTO_CLOUD_FUBON_ENABLED"), t
 assert.equal(AUTOMATION_NON_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), true);
 assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SECRET_KEY"), true);
 assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), false);
+assert.equal(AUTOMATION_SECRET_KEYS.includes("LIBRETTO_CLOUD_POST_PASSWORD"), true);
 assert.equal(automationCredentialKeyIsSecret("MAX_SECRET_KEY"), true);
 assert.equal(automationCredentialKeyIsSecret("MAX_SUB_ACCOUNT"), false);
 
@@ -66,6 +69,7 @@ assert.deepEqual(
     "yuanta-trade-statements",
     "cathay-all-statements",
     "hncb-statements",
+    "post-statements",
   ],
 );
 
