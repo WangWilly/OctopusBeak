@@ -137,6 +137,7 @@ For direct `libretto run src/workflows/foo.ts` development, provide credentials 
 | Cathay      | `npm run run:cathay-statements`                  | TWD account statements                                    |
 | Cathay      | `npm run run:cathay-foreign-statements`          | foreign-currency statements                               |
 | HNCB        | `npm run run:hncb-statements`                    | TWD account statements                                    |
+| CTBC        | `npm run run:ctbc-statements`                    | TWD account statements                                    |
 | Post Office | `npm run run:post-statements`                    | TWD account statements                                    |
 | MAX/MaiCoin | `npm run run:sync-maicoin`                       | crypto balances and statement rows                        |
 
