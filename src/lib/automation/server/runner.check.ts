@@ -19,6 +19,10 @@ assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
 assert.equal(
+  shouldMarkWaitingForHuman("manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-post`."),
+  true,
+);
+assert.equal(
   shouldMarkWaitingForHuman(
     "hncb-login-account-refilled-after-captcha\nautomation-progress: 100\nIntegration completed.",
   ),
@@ -51,6 +55,12 @@ assert.equal(
     "Workflow paused. run `npx libretto resume --session ses-1p4q`.",
   ),
   "ses-1p4q",
+);
+assert.equal(
+  resumeSessionFromLog(
+    "manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-post`.",
+  ),
+  "ses-post",
 );
 assert.equal(resumeSessionFromLog("download completed"), null);
 assert.equal(parseAutomationProgress("automation-progress: 35"), 35);
