@@ -16,6 +16,7 @@ export const CSV_IMPORT_DEPENDENCY_IDS = [
   "hncb-statements",
   "ctbc-statements",
   "post-statements",
+  "sinopac-statements",
 ] as const;
 
 export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
@@ -98,6 +99,16 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       "LIBRETTO_CLOUD_POST_USER_ID",
       "LIBRETTO_CLOUD_POST_ACCOUNT",
       "LIBRETTO_CLOUD_POST_PASSWORD",
+    ],
+  },
+  {
+    id: "sinopac",
+    label: "SinoPac",
+    enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
+    credentialKeys: [
+      "LIBRETTO_CLOUD_SINOPAC_USER_ID",
+      "LIBRETTO_CLOUD_SINOPAC_ACCOUNT",
+      "LIBRETTO_CLOUD_SINOPAC_PASSWORD",
     ],
   },
   {
@@ -198,6 +209,17 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
   {
+    id: "sinopac-statements",
+    label: "SinoPac statements",
+    script: "run:sinopac-statements",
+    command: ["libretto", "run", "src/workflows/sinopac-statements.ts", "--headless"],
+    kind: "crawler",
+    credentialGroupId: "sinopac",
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[8].credentialKeys,
+    dependencies: [],
+    maxAttempts: 1,
+  },
+  {
     id: "sync-maicoin",
     label: "MaiCoin sync",
     script: "run:sync-maicoin",
@@ -210,7 +232,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     ],
     kind: "sync",
     credentialGroupId: "maicoin",
-    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[8].credentialKeys,
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[9].credentialKeys,
     dependencies: [],
     maxAttempts: 1,
   },
