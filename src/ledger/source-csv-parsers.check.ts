@@ -80,3 +80,25 @@ assert.deepEqual(
     fx_rate: null,
   },
 );
+
+assert.equal(
+  createSourceCsvParser({
+    bank: "sinopac",
+    product: "statements",
+    sourceRelativePath: "sinopac-statements/example.csv",
+    metadata: { 帳號: "123456 永豐" },
+    headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+  }).table,
+  "account_transactions",
+);
+
+assert.equal(
+  createSourceCsvParser({
+    bank: "sinopac",
+    product: "foreign-statements",
+    sourceRelativePath: "sinopac-foreign-statements/example.csv",
+    metadata: { 帳號: "123456 永豐", 幣別: "USD" },
+    headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+  }).table,
+  "foreign_currency_transactions",
+);

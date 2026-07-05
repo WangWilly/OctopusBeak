@@ -78,10 +78,16 @@ export function createSourceCsvParser(context: SourceCsvContext): SourceCsvParse
   if (bankProduct === "post/statements") {
     return bind("account_transactions", bankTransactionFields);
   }
+  if (bankProduct === "sinopac/statements") {
+    return bind("account_transactions", bankTransactionFields);
+  }
   if (bankProduct === "yuanta/statements") {
     return bind("account_transactions", bankTransactionFields);
   }
   if (bankProduct === "cathay/foreign-statements") {
+    return bind("foreign_currency_transactions", foreignCurrencyTransactionFields);
+  }
+  if (bankProduct === "sinopac/foreign-statements") {
     return bind("foreign_currency_transactions", foreignCurrencyTransactionFields);
   }
   if (bankProduct === "yuanta/foreign-currency-statements") {
