@@ -139,6 +139,7 @@ For direct `libretto run src/workflows/foo.ts` development, provide credentials 
 | HNCB        | `npm run run:hncb-statements`                    | TWD account statements                                    |
 | CTBC        | `npm run run:ctbc-statements`                    | TWD account statements                                    |
 | Post Office | `npm run run:post-statements`                    | TWD account statements                                    |
+| SinoPac     | `npm run run:sinopac-statements`                 | TWD and foreign-currency statements                       |
 | MAX/MaiCoin | `npm run run:sync-maicoin`                       | crypto balances and statement rows                        |
 
 ## Output Format
