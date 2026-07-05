@@ -650,7 +650,7 @@
 {/if}
 
 {#if humanTask}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
+  <div class="modal" class:viewer-modal-expanded={viewerExpanded} role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
     <div class="modal-panel human-viewer-modal" class:expanded={viewerExpanded}>
       <div class="modal-head viewer-head">
@@ -1031,7 +1031,12 @@
 
   .human-viewer-modal.expanded {
     width: calc(100vw - 48px);
-    height: calc(100vh - 48px);
+    height: calc(100vh - 144px);
+    max-height: calc(100vh - 144px);
+  }
+
+  .viewer-modal-expanded {
+    padding-block: calc(var(--space-6) * 3);
   }
 
   .viewer-head {
