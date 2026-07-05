@@ -181,7 +181,13 @@ npm run run:seed-mock-ledger-db
 
 This rewrites `data/mock-ledger/ledger.sqlite`. The generated database includes mock rows for the dashboard's bank, foreign-currency, credit-card, loan, fund, brokerage, and MAX/MaiCoin views. `data/` is gitignored, so the generated SQLite file is not committed.
 
-The desktop app reads its ledger from `~/Library/Application Support/OctopusBeak/data/ledger/`. Use the seed command for importer/model development, then copy or import data into the desktop ledger when you need to inspect it in the UI.
+Run the desktop app with only mock data:
+
+```bash
+npm run desktop:dev:mock
+```
+
+This uses `data/mock-desktop/` as the Electron user data directory, so it does not read the normal desktop ledger in `~/Library/Application Support/OctopusBeak/`.
 
 ## MAX/MaiCoin Sync
 

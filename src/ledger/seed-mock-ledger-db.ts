@@ -22,7 +22,7 @@ function main() {
   }
 
   console.log(`Mock ledger written to ${ledgerDir}/${SQLITE_LEDGER_FILE}`);
-  console.log(`Run with: LEDGER_DIR=${ledgerDir} npm run desktop:dev`);
+  console.log("Desktop mock shortcut: npm run desktop:dev:mock");
 }
 
 function cleanSqliteFiles(ledgerDir: string) {
@@ -71,8 +71,8 @@ function seed(db: LedgerDatabase) {
         asOfDate: "2026-06-27",
         assetType: "total",
         assetName: "Mock brokerage total",
-        assetValueTwd: 501000,
-        unrealizedPnlTwd: 78500,
+        assetValueTwd: 858000,
+        unrealizedPnlTwd: 76500,
       },
     ]);
     insertRows(db, "brokerage_trade_transactions", data.brokerageTradeTransactions);

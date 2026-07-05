@@ -53,6 +53,7 @@ async function main() {
     assert.equal(env.OCTOPUSBEAK_APP_ROOT, missingBrowsersAppRoot);
     assert.equal(env.OCTOPUSBEAK_USER_DATA, root);
     assert.equal(env.OCTOPUSBEAK_NODE_PATH, "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak");
+    assert.equal(env.LIBRETTO_REPO_ROOT, root);
     assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, "/tmp/inherited-playwright");
 
     const packagedAppRoot = path.join(root, "packaged-app");
