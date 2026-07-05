@@ -37,6 +37,7 @@ function buildDesktopEnv({ userData, appRoot, electronPath = process.execPath })
     OCTOPUSBEAK_APP_ROOT: appRoot,
     OCTOPUSBEAK_USER_DATA: userData,
     OCTOPUSBEAK_NODE_PATH: electronPath,
+    LIBRETTO_REPO_ROOT: userData,
   };
   const playwrightBrowsersPath = path.join(appRoot, "node_modules", "playwright-core", ".local-browsers");
   if (fs.existsSync(playwrightBrowsersPath)) env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPath;
