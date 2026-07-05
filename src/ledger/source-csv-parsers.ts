@@ -75,6 +75,9 @@ export function createSourceCsvParser(context: SourceCsvContext): SourceCsvParse
   if (bankProduct === "hncb/statements") {
     return bind("account_transactions", bankTransactionFields);
   }
+  if (bankProduct === "linebank/statements") {
+    return bind("account_transactions", bankTransactionFields);
+  }
   if (bankProduct === "post/statements") {
     return bind("account_transactions", bankTransactionFields);
   }
@@ -85,6 +88,9 @@ export function createSourceCsvParser(context: SourceCsvContext): SourceCsvParse
     return bind("account_transactions", bankTransactionFields);
   }
   if (bankProduct === "cathay/foreign-statements") {
+    return bind("foreign_currency_transactions", foreignCurrencyTransactionFields);
+  }
+  if (bankProduct === "linebank/foreign-statements") {
     return bind("foreign_currency_transactions", foreignCurrencyTransactionFields);
   }
   if (bankProduct === "sinopac/foreign-statements") {

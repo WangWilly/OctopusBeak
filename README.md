@@ -108,6 +108,7 @@ Useful `settings.json` keys:
   "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED": true,
   "LIBRETTO_CLOUD_CATHAY_ENABLED": true,
   "LIBRETTO_CLOUD_HNCB_ENABLED": true,
+  "LIBRETTO_CLOUD_LINEBANK_ENABLED": true,
   "MAX_ENABLED": true,
   "MAX_SUB_ACCOUNT": "main"
 }
@@ -140,6 +141,7 @@ For direct `libretto run src/workflows/foo.ts` development, provide credentials 
 | CTBC        | `npm run run:ctbc-statements`                    | TWD account statements                                    |
 | Post Office | `npm run run:post-statements`                    | TWD account statements                                    |
 | SinoPac     | `npm run run:sinopac-statements`                 | TWD and foreign-currency statements                       |
+| LINE Bank   | `npm run run:linebank-statements`                | TWD and foreign-currency statements                       |
 | MAX/MaiCoin | `npm run run:sync-maicoin`                       | crypto balances and statement rows                        |
 
 ## Output Format

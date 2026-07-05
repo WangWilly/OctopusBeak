@@ -102,3 +102,25 @@ assert.equal(
   }).table,
   "foreign_currency_transactions",
 );
+
+assert.equal(
+  createSourceCsvParser({
+    bank: "linebank",
+    product: "statements",
+    sourceRelativePath: "linebank-statements/example.csv",
+    metadata: { 帳號: "123456 LINE Bank" },
+    headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+  }).table,
+  "account_transactions",
+);
+
+assert.equal(
+  createSourceCsvParser({
+    bank: "linebank",
+    product: "foreign-statements",
+    sourceRelativePath: "linebank-foreign-statements/example.csv",
+    metadata: { 帳號: "123456 LINE Bank", 幣別: "USD" },
+    headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+  }).table,
+  "foreign_currency_transactions",
+);
