@@ -1,0 +1,930 @@
+<!doctype html>
+<!-- OD web-prototype seed, composed for OctopusBeak App. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OctopusBeak App · Bank automation and financial dashboard</title>
+  <meta name="description" content="OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials." />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#2f9f87" />
+  <link rel="canonical" href="https://wangwilly.github.io/OctopusBeak/" />
+  <link rel="alternate" hreflang="en" href="https://wangwilly.github.io/OctopusBeak/?lang=en" />
+  <link rel="alternate" hreflang="zh-Hant" href="https://wangwilly.github.io/OctopusBeak/?lang=zh-Hant" />
+  <link rel="alternate" hreflang="x-default" href="https://wangwilly.github.io/OctopusBeak/" />
+  <meta property="og:title" content="OctopusBeak App" />
+  <meta property="og:description" content="Bank automation and account-first financial dashboard for daily personal finance review." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://wangwilly.github.io/OctopusBeak/" />
+  <meta property="og:site_name" content="OctopusBeak" />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:locale:alternate" content="zh_TW" />
+  <meta property="og:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png" />
+  <meta property="og:image:width" content="1672" />
+  <meta property="og:image:height" content="941" />
+  <meta property="og:image:alt" content="OctopusBeak bank automation dashboard preview" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="OctopusBeak App · Bank automation and financial dashboard" />
+  <meta name="twitter:description" content="OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials." />
+  <meta name="twitter:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png" />
+  <meta name="twitter:image:alt" content="OctopusBeak bank automation dashboard preview" />
+  <link rel="preload" as="image" href="assets/ob-hero-workspace.png" />
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "OctopusBeak",
+  "url": "https://wangwilly.github.io/OctopusBeak/",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "macOS",
+  "description": "OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials.",
+  "image": "https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png",
+  "inLanguage": ["en", "zh-Hant"]
+}
+  </script>
+  <style>
+    :root {
+      --bg:      oklch(98% 0.005 250);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(20% 0.018 250);
+      --muted:   oklch(50% 0.014 250);
+      --border:  oklch(90% 0.007 250);
+      --accent:  oklch(56% 0.13 172);
+      --secondary: oklch(58% 0.12 235);
+      --ok: oklch(58% 0.14 150);
+      --warn: oklch(70% 0.13 78);
+      --risk: oklch(58% 0.16 28);
+
+      --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+      --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+      --font-display: 'Iowan Old Style', 'Charter', Georgia, 'Times New Roman', serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+      --fs-h1: clamp(44px, 6vw, 76px);
+      --fs-h2: clamp(32px, 4vw, 48px);
+      --fs-h3: 22px;
+      --fs-lead: 19px;
+      --fs-body: 16px;
+      --fs-meta: 13px;
+      --gap-xs: 8px;
+      --gap-sm: 12px;
+      --gap-md: 20px;
+      --gap-lg: 32px;
+      --gap-xl: 56px;
+      --gap-2xl: 96px;
+      --container: 1120px;
+      --gutter: 32px;
+      --radius: 10px;
+      --radius-lg: 16px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--fs-body);
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; }
+    p { text-wrap: pretty; }
+    h1, h2, h3, h4 { text-wrap: balance; }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .section { padding-block: clamp(48px, 8vw, var(--gap-2xl)); }
+    .section + .section { border-top: 1px solid var(--border); }
+    .stack { display: flex; flex-direction: column; }
+    .stack > * + * { margin-top: var(--gap-md); }
+    .row { display: flex; align-items: center; gap: var(--gap-md); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap-lg); }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-lg); }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-md); }
+    .grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: var(--gap-xl); align-items: start; }
+    .grid-1-2 { display: grid; grid-template-columns: 1fr 2fr; gap: var(--gap-xl); align-items: start; }
+
+    .h1, h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.04; letter-spacing: -0.02em; margin: 0; }
+    .h2, h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.1; letter-spacing: -0.015em; margin: 0; }
+    .h3, h3 { font-family: var(--font-display); font-size: var(--fs-h3); font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; margin: 0; }
+    .lead { font-size: var(--fs-lead); line-height: 1.55; color: var(--muted); max-width: 60ch; margin: 0; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0 0 var(--gap-md);
+    }
+    .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+    .topnav {
+      position: sticky; top: 0; z-index: 10;
+      background: color-mix(in oklch, var(--bg) 92%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
+    .topnav .logo { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted); }
+    .topnav nav a:hover { color: var(--fg); }
+    .topnav-actions { display: flex; align-items: center; gap: var(--gap-sm); }
+    .lang-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+    .lang-switch button {
+      min-width: 42px;
+      min-height: 32px;
+      padding: 5px 10px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .lang-switch button.is-active { background: var(--fg); color: var(--surface); }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .row-between { flex-wrap: wrap; gap: var(--gap-md); }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 20px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, var(--fg)); }
+    .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+    .btn-secondary:hover, .btn-secondary.is-active { border-color: var(--fg); background: var(--surface); }
+    .btn-ghost { background: transparent; color: var(--fg); border-color: transparent; padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent); }
+    .btn-arrow::after { content: '→'; transition: transform 0.15s ease; }
+    .btn-arrow:hover::after { transform: translateX(2px); }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+    }
+    .card-flat { background: transparent; border: 0; padding: 0; }
+    .card-rule { background: transparent; border: 0; border-top: 1px solid var(--fg); padding: 24px 0 0; border-radius: 0; }
+
+    .feature .feature-mark {
+      width: 36px; height: 36px;
+      display: grid; place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--muted);
+      margin-bottom: var(--gap-md);
+      background: var(--surface);
+    }
+    .feature .feature-mark svg { width: 18px; height: 18px; }
+    .feature h3 { margin-bottom: 6px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 15px; }
+
+    .stat .stat-num {
+      font-family: var(--font-display);
+      font-size: clamp(56px, 8vw, 96px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .stat .stat-label { color: var(--muted); font-size: 14px; margin-top: 8px; max-width: 24ch; }
+    .stat .stat-unit { font-size: 0.5em; opacity: 0.7; margin-left: 2px; }
+    .quote { font-family: var(--font-display); font-size: clamp(24px, 2.6vw, 32px); line-height: 1.32; letter-spacing: -0.01em; max-width: 28ch; }
+    .quote-author { color: var(--muted); font-size: 14px; margin-top: var(--gap-md); }
+    .quote-mark { font-family: var(--font-display); font-size: 140px; line-height: 0.7; color: var(--accent); opacity: 0.18; margin-bottom: -28px; }
+
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px;
+      background: color-mix(in oklch, var(--fg) 6%, transparent);
+      color: var(--muted);
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .tag {
+      display: inline-flex; align-items: center;
+      padding: 4px 10px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 13px; color: var(--muted); }
+    .input, .textarea {
+      width: 100%;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--fg);
+      font: inherit;
+      font-size: 15px;
+    }
+    .input:focus, .textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    .textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
+    .ds-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .ds-table th, .ds-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+    .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .ds-table tbody tr:hover { background: var(--fg-soft); }
+    .ds-table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+    .ph-img {
+      background: linear-gradient(135deg, var(--accent-soft), var(--fg-soft)), var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      aspect-ratio: 16 / 10;
+      display: grid; place-items: center;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+    .ph-img.square { aspect-ratio: 1 / 1; }
+    .ph-img.portrait { aspect-ratio: 3 / 4; }
+    .ph-img.wide { aspect-ratio: 16 / 9; }
+    .media-card {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+    }
+    .media-card img {
+      width: 100%;
+      display: block;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+    }
+    .media-card.softened img {
+      filter: saturate(0.72);
+      transform: scale(1.01);
+      opacity: 0.64;
+    }
+    .rule { border: 0; border-top: 1px solid var(--border); margin: 0; }
+    .rule-strong { border: 0; border-top: 1px solid var(--fg); margin: 0; }
+    .hero { padding-block: clamp(80px, 12vw, 160px); }
+    .hero-center { text-align: center; max-width: 32ch; margin-inline: auto; }
+    .hero h1 { margin-bottom: var(--gap-md); }
+    .hero .lead { margin-bottom: var(--gap-lg); }
+    .hero-cta { display: inline-flex; gap: var(--gap-sm); flex-wrap: wrap; }
+    .hero-center .hero-cta { justify-content: center; }
+    .hero-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-2xl); align-items: center; }
+    .log-row { display: grid; grid-template-columns: 120px 1fr 100px; gap: var(--gap-lg); padding: 22px 0; border-top: 1px solid var(--border); align-items: baseline; }
+    .log-row .meta { color: var(--muted); }
+    .log-row h3 { font-size: 19px; }
+    .log-row .pull { text-align: right; }
+
+    .product-visual { position: relative; overflow: hidden; padding: 18px; place-items: stretch; font-family: var(--font-body); letter-spacing: 0; color: var(--fg); }
+    .visual-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.32; filter: saturate(0.88); }
+    .app-shell { position: relative; z-index: 1; min-height: 100%; background: color-mix(in oklch, var(--surface) 94%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 18px 60px color-mix(in oklch, var(--fg) 10%, transparent); }
+    .app-bar { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .app-tabs, .segment { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tab-btn, .seg-btn {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-size: 12px;
+    }
+    .tab-btn.is-active, .seg-btn.is-active { background: var(--fg); border-color: var(--fg); color: var(--surface); }
+    .app-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 16px; }
+    .metric { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--surface); }
+    .metric strong { display: block; font-family: var(--font-mono); font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 6px; }
+    .metric small, .account-row small { color: var(--muted); }
+    .account-list { display: grid; gap: 10px; padding: 0 16px 16px; }
+    .account-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--ok); display: inline-block; margin-right: 6px; }
+    .status-warn { background: var(--warn); }
+    .status-risk { background: var(--risk); }
+    .screen-panel { display: none; }
+    .screen-panel.is-active { display: block; }
+    .automation-card { display: grid; gap: 18px; }
+    .progress-track { height: 8px; background: var(--fg-soft); border-radius: 999px; overflow: hidden; }
+    .progress-bar { width: 38%; height: 100%; background: var(--secondary); border-radius: inherit; transition: width 0.3s ease; }
+    .run-done .progress-bar { width: 100%; }
+    .status-list { display: grid; gap: 12px; }
+    .status-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .status-item:last-child { border-bottom: 0; }
+    .mini-chart { height: 168px; display: grid; grid-template-columns: repeat(7, 1fr); align-items: end; gap: 8px; padding-top: 18px; }
+    .bar { border-radius: 8px 8px 0 0; background: color-mix(in oklch, var(--secondary) 28%, var(--surface)); min-height: 28px; }
+    .bar:nth-child(2), .bar:nth-child(5) { background: color-mix(in oklch, var(--ok) 28%, var(--surface)); }
+    .drawer {
+      position: fixed; inset: auto 24px 24px auto; width: min(420px, calc(100vw - 48px));
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      box-shadow: 0 20px 80px color-mix(in oklch, var(--fg) 18%, transparent);
+      padding: 22px; transform: translateY(18px); opacity: 0; pointer-events: none;
+      transition: transform 0.18s ease, opacity 0.18s ease; z-index: 20;
+    }
+    .drawer.is-open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+    @media (max-width: 920px) {
+      :root { --gutter: 20px; }
+      .grid-2, .grid-3, .grid-4, .grid-2-1, .grid-1-2, .hero-split, .app-grid { grid-template-columns: 1fr; }
+      .topnav nav { display: none; }
+      .topnav-actions { gap: 8px; }
+      .topnav-actions .btn { padding-inline: 12px; }
+      .topnav-inner { align-items: center; }
+      .hero-cta { display: flex; }
+      .ph-img.wide { aspect-ratio: auto; }
+      .product-visual { min-height: 620px; }
+      .log-row { grid-template-columns: 1fr; gap: 8px; }
+      .log-row .pull { text-align: left; }
+      .drawer { inset: auto 12px 12px 12px; width: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <span class="logo">OctopusBeak</span>
+      <nav data-od-id="topnav-links" aria-label="Landing sections" data-i18n-aria-label="aria.navSections">
+        <a href="#automation" data-od-id="nav-automation" data-i18n="nav.automation">Automation</a>
+        <a href="#dashboard" data-od-id="nav-dashboard" data-i18n="nav.dashboard">Dashboard</a>
+        <a href="#features" data-od-id="nav-features" data-i18n="nav.features">Features</a>
+      </nav>
+      <div class="topnav-actions">
+        <div class="lang-switch" aria-label="Language" data-i18n-aria-label="aria.language">
+          <button type="button" data-lang="en" aria-pressed="true">EN</button>
+          <button type="button" data-lang="zh-Hant" aria-pressed="false">繁中</button>
+        </div>
+        <a class="btn btn-secondary" href="https://github.com/WangWilly/OctopusBeak/releases/latest" rel="noopener" data-od-id="topnav-cta" data-i18n="cta.download">Download Beta</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="content" data-od-id="main">
+    <section class="section" data-od-id="hero-split">
+      <div class="container hero-split">
+        <div>
+          <p class="eyebrow" data-i18n="hero.eyebrow">Personal finance desktop app</p>
+          <h1 data-od-id="hero-title" data-i18n="hero.title">Bank automation with a dashboard people can trust.</h1>
+          <p class="lead" style="margin-top: 20px;" data-od-id="hero-lead" data-i18n="hero.lead">OctopusBeak pulls statement activity into one reviewable workspace, organizes every account clearly, and keeps each drilldown one click away.</p>
+          <div class="hero-cta" style="margin-top: 28px;" data-od-id="hero-actions">
+            <a class="btn btn-primary" href="https://github.com/WangWilly/OctopusBeak/releases/latest" rel="noopener" data-od-id="hero-primary" data-i18n="cta.download">Download Beta</a>
+          </div>
+        </div>
+        <div class="ph-img wide product-visual" aria-label="OctopusBeak dashboard preview" data-i18n-aria-label="aria.heroPreview" data-od-id="hero-product-visual" style="aspect-ratio: auto; min-height: 430px;">
+          <img class="visual-bg" src="assets/ob-hero-workspace.png" alt="" aria-hidden="true" />
+          <div class="app-shell" data-od-id="app-shell-preview">
+            <div class="app-bar">
+              <div>
+                <strong data-i18n="preview.portfolio">Portfolio</strong>
+                <div class="meta" data-i18n="preview.workspace">Portfolio workspace</div>
+              </div>
+              <div class="app-tabs" role="tablist" aria-label="Dashboard views" data-i18n-aria-label="aria.dashboardViews">
+                <button class="tab-btn is-active" data-tab="overview" data-i18n="preview.overview">Overview</button>
+                <button class="tab-btn" data-tab="assets" data-i18n="preview.assets">Assets</button>
+                <button class="tab-btn" data-tab="automation" data-i18n="preview.automation">Automation</button>
+              </div>
+            </div>
+            <div class="screen-panel is-active" data-panel="overview">
+              <div class="app-grid">
+                <div class="metric">
+                  <small data-i18n="metric.netPosition">Net position</small>
+                  <strong class="money">NT$ 1,246,800</strong>
+                </div>
+                <div class="metric">
+                  <small data-i18n="metric.liabilities">Liabilities</small>
+                  <strong class="money">NT$ 318,400</strong>
+                </div>
+              </div>
+              <div class="account-list">
+                <div class="account-row">
+                  <div><span class="status-dot"></span><span data-i18n="account.everyday">Everyday account</span><br><small data-i18n="account.freshImported">Fresh activity imported</small></div>
+                  <button class="tab-btn" data-open-drawer>42 TX</button>
+                </div>
+                <div class="account-row">
+                  <div><span class="status-dot status-warn"></span><span data-i18n="account.creditCard">Credit card</span><br><small data-i18n="account.verificationNeeded">Verification needed</small></div>
+                  <button class="tab-btn" data-run-sync data-i18n="action.assist">Assist</button>
+                </div>
+              </div>
+            </div>
+            <div class="screen-panel" data-panel="assets">
+              <div class="app-grid">
+                <div class="metric">
+                  <small data-i18n="metric.cash">Cash</small>
+                  <strong class="money">NT$ 684,200</strong>
+                </div>
+                <div class="metric">
+                  <small data-i18n="metric.investments">Investments</small>
+                  <strong class="money">NT$ 881,000</strong>
+                </div>
+              </div>
+              <div class="mini-chart" aria-label="Asset trend">
+                <div class="bar" style="height: 42%;"></div>
+                <div class="bar" style="height: 64%;"></div>
+                <div class="bar" style="height: 54%;"></div>
+                <div class="bar" style="height: 78%;"></div>
+                <div class="bar" style="height: 70%;"></div>
+                <div class="bar" style="height: 86%;"></div>
+                <div class="bar" style="height: 92%;"></div>
+              </div>
+            </div>
+            <div class="screen-panel" data-panel="automation">
+              <div class="app-grid">
+                <div class="metric">
+                  <small data-i18n="automation.state">Automation state</small>
+                  <strong id="hero-sync-state" data-i18n="status.ready">Ready</strong>
+                </div>
+              </div>
+              <div class="account-list">
+                <div class="progress-track" aria-label="Sync progress" data-i18n-aria-label="aria.syncProgress"><div class="progress-bar"></div></div>
+                <button class="btn btn-secondary" data-run-sync data-i18n="action.runSync">Run sync</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="features" data-od-id="features">
+      <div class="container stack" style="gap: 56px;">
+        <div style="max-width: 38ch;">
+          <h2 data-od-id="features-title" data-i18n="features.title">OB knows what people need most to manage their finances.</h2>
+        </div>
+        <div class="grid-3">
+          <div class="feature card-flat" data-od-id="feature-bank-automation">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8h16M6 8v10M10 8v10M14 8v10M18 8v10M3 18h18M12 3l8 5H4l8-5Z"/></svg>
+            </div>
+            <h3 data-i18n="feature.automation.title">Bank automation with simple steps</h3>
+            <p data-i18n="feature.automation.copy">Supported most popular institutions. Designed for Taiwanese</p>
+          </div>
+          <div class="feature card-flat" data-od-id="feature-dashboard">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19V5M4 19h16M8 16v-4M12 16V8M16 16v-7"/></svg>
+            </div>
+            <h3 data-i18n="feature.dashboard.title">Account-first dashboard</h3>
+            <p data-i18n="feature.dashboard.copy">Overview, assets, liabilities, and transaction drilldowns are designed around the way personal finance users actually check money.</p>
+          </div>
+          <div class="feature card-flat" data-od-id="feature-privacy">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4.5c5 0 8.5 4.5 8.5 7.5S17 19.5 12 19.5 3.5 15 3.5 12 7 4.5 12 4.5Z"/><path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z"/><path d="M4 4l16 16"/></svg>
+            </div>
+            <h3 data-i18n="feature.privacy.title">Privacy by default</h3>
+            <p data-i18n="feature.privacy.copy">Your credentials are securely saved on your desktop. No one else has your password. You own your data.</p>
+          </div>
+        </div>
+        <figure class="media-card" data-od-id="feature-icon-asset" aria-label="OctopusBeak feature icon illustration" data-i18n-aria-label="aria.featureIcon">
+          <img src="assets/ob-feature-icon-reference.png" alt="Bank automation, account dashboard, and privacy icons for OctopusBeak" data-i18n-alt="alt.featureIcons" loading="lazy" />
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="automation" data-od-id="automation">
+      <div class="container grid-2-1">
+        <div class="card automation-card" id="sync-card" data-od-id="automation-card">
+          <div class="row-between">
+            <div>
+              <p class="eyebrow" data-i18n="automation.eyebrow">Bank automation</p>
+              <h2 data-od-id="automation-title" data-i18n="automation.title">Fetch statements with simple steps.</h2>
+            </div>
+            <span class="pill" id="sync-pill" data-od-id="sync-pill" data-i18n="status.ready">Ready</span>
+          </div>
+          <div class="progress-track" aria-label="Sync progress" data-i18n-aria-label="aria.syncProgress"><div class="progress-bar" id="sync-progress"></div></div>
+          <div class="status-list" data-od-id="automation-status-list">
+            <div class="status-item">
+              <span class="status-dot"></span>
+              <span data-i18n="automation.selectSource">Select the bank source</span>
+              <span class="meta" data-i18n="status.done">Done</span>
+            </div>
+            <div class="status-item">
+              <span class="status-dot status-warn"></span>
+              <span data-i18n="automation.handleVerification">Handle verification only when needed</span>
+              <span class="meta" id="assist-state" data-i18n="status.waiting">Waiting</span>
+            </div>
+            <div class="status-item">
+              <span class="status-dot status-risk"></span>
+              <span data-i18n="automation.reviewRows">Review imported statement rows</span>
+              <span class="meta" id="reconcile-state" data-i18n="status.queued">Queued</span>
+            </div>
+          </div>
+          <div class="row" style="flex-wrap: wrap;">
+            <button class="btn btn-primary" data-od-id="run-sync-button" data-run-sync data-i18n="action.runSync">Run sync</button>
+            <button class="btn btn-secondary" data-od-id="open-brief-button" data-open-drawer data-i18n="action.betaDetails">Beta details</button>
+          </div>
+        </div>
+        <div class="stack" data-od-id="automation-copy">
+          <p class="lead" data-i18n="automation.sideLead">The automation is ultimately simple to use. Click, type, and fetch all your bank statements in one run.</p>
+          <figure class="media-card" data-od-id="automation-flow-asset" aria-label="OctopusBeak automation workflow visual" data-i18n-aria-label="aria.automationFlow">
+            <img src="assets/ob-automation-flow.png" alt="Three-step bank statement automation workflow inside a desktop app" data-i18n-alt="alt.automationFlow" loading="lazy" />
+          </figure>
+          <div class="card-rule">
+            <h3 data-i18n="automation.simpleSteps">Simple steps</h3>
+            <p style="margin: 8px 0 0; color: var(--muted);" data-i18n="automation.simpleStepsCopy">Choose the bank, enter what the bank asks for, and let OctopusBeak collect the statements.</p>
+          </div>
+          <div class="card-rule">
+            <h3 data-i18n="automation.onePlace">One place to review</h3>
+            <p style="margin: 8px 0 0; color: var(--muted);" data-i18n="automation.onePlaceCopy">Run notes and statement rows stay together so review feels direct instead of hidden in the background.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="dashboard" data-od-id="dashboard">
+      <div class="container grid-1-2">
+        <div class="stack" data-od-id="dashboard-copy">
+          <h2 data-od-id="dashboard-title" data-i18n="dashboard.title">Clear for decisions. Calm for daily use.</h2>
+          <p class="lead" data-i18n="dashboard.lead">Compare account health at a glance, and jump from any account row into the transactions behind it.</p>
+        </div>
+        <div class="card" id="dashboard-card" data-od-id="dashboard-card">
+          <div class="row-between" style="margin-bottom: 18px;">
+            <div>
+              <h3 data-i18n="preview.portfolio">Portfolio</h3>
+              <p class="meta" style="margin: 4px 0 0;" data-i18n="dashboard.workspace">TWD workspace</p>
+            </div>
+            <div class="segment" aria-label="Dashboard segment" data-i18n-aria-label="aria.dashboardSegment">
+              <button class="seg-btn is-active" data-screen="summary" data-i18n="segment.summary">Summary</button>
+              <button class="seg-btn" data-screen="accounts" data-i18n="segment.accounts">Accounts</button>
+              <button class="seg-btn" data-screen="changes" data-i18n="segment.changes">Changes</button>
+            </div>
+          </div>
+          <div class="screen-panel is-active" data-screen-panel="summary">
+            <div class="grid-3" style="gap: 12px;">
+              <div class="metric"><small data-i18n="metric.assets">Assets</small><strong class="money">NT$ 1,565,200</strong></div>
+              <div class="metric"><small data-i18n="metric.liabilities">Liabilities</small><strong class="money">NT$ 318,400</strong></div>
+              <div class="metric"><small data-i18n="metric.accounts">Accounts</small><strong>3</strong></div>
+            </div>
+          </div>
+          <div class="screen-panel" data-screen-panel="accounts">
+            <table class="ds-table" data-od-id="accounts-table">
+              <thead><tr><th data-i18n="table.account">Account</th><th data-i18n="table.status">Status</th><th class="num-col" data-i18n="table.balance">Balance</th></tr></thead>
+              <tbody>
+                <tr><td data-i18n="account.everyday">Everyday account</td><td data-i18n="status.imported">Imported</td><td class="num-col money">NT$ 284,200</td></tr>
+                <tr><td data-i18n="account.brokerage">Brokerage account</td><td data-i18n="status.synced">Synced</td><td class="num-col money">NT$ 881,000</td></tr>
+                <tr><td data-i18n="account.creditCard">Credit card</td><td data-i18n="status.needsAssist">Needs assist</td><td class="num-col money">NT$ 46,900</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="screen-panel" data-screen-panel="changes">
+            <div class="mini-chart" aria-label="Daily change chart">
+              <div class="bar" style="height: 36%;"></div>
+              <div class="bar" style="height: 48%;"></div>
+              <div class="bar" style="height: 64%;"></div>
+              <div class="bar" style="height: 52%;"></div>
+              <div class="bar" style="height: 74%;"></div>
+              <div class="bar" style="height: 68%;"></div>
+              <div class="bar" style="height: 88%;"></div>
+            </div>
+          </div>
+          <figure class="media-card softened" data-od-id="dashboard-generated-asset" aria-label="Softened account dashboard reference" data-i18n-aria-label="aria.dashboardReference">
+            <img src="assets/ob-dashboard-drilldown-soft.png" alt="Softened account health and transaction drilldown reference" data-i18n-alt="alt.dashboardReference" loading="lazy" />
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" data-od-id="cta-strip" style="text-align: center;">
+      <div class="container" style="max-width: 640px;">
+        <h2 data-od-id="cta-title" data-i18n="cta.title">Ready to try OctopusBeak?</h2>
+        <p class="lead" style="margin: 16px auto 32px;" data-od-id="cta-copy" data-i18n="cta.copy">Download the beta and start collecting bank statements into one calm workspace.</p>
+        <a class="btn btn-primary" href="https://github.com/WangWilly/OctopusBeak/releases/latest" rel="noopener" data-od-id="cta-button" data-i18n="cta.download">Download Beta</a>
+      </div>
+    </section>
+  </main>
+
+  <aside class="drawer" id="beta-drawer" aria-hidden="true" data-od-id="beta-drawer">
+    <div class="row-between" style="margin-bottom: 16px;">
+      <h3 data-i18n="drawer.title">Beta details</h3>
+      <button class="btn btn-ghost" data-close-drawer aria-label="Close beta details" data-i18n-aria-label="aria.closeBetaDetails" data-i18n="action.close">Close</button>
+    </div>
+    <p class="lead" style="font-size: 16px;" data-i18n="drawer.copy">Desktop app for bank automation, account review, and transaction drilldowns. Credentials stay on your desktop.</p>
+    <table class="ds-table" style="margin-top: 18px;">
+      <tbody>
+        <tr><td data-i18n="drawer.primaryUser">Primary user</td><td class="num-col" data-i18n="drawer.personalFinance">Personal finance</td></tr>
+        <tr><td data-i18n="drawer.dataPosture">Data posture</td><td class="num-col" data-i18n="drawer.desktopOwnedData">Desktop-owned data</td></tr>
+        <tr><td data-i18n="drawer.coreModules">Core modules</td><td class="num-col" data-i18n="drawer.modules">Automation, dashboard, transactions</td></tr>
+      </tbody>
+    </table>
+  </aside>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between">
+      <span>© OctopusBeak App · 2026</span>
+      <span class="meta" data-i18n="footer.copy">Bank automation · financial dashboard</span>
+    </div>
+  </footer>
+
+  <script>
+    const root = document.documentElement;
+    const drawer = document.querySelector('#beta-drawer');
+    const syncCard = document.querySelector('#sync-card');
+    const syncPill = document.querySelector('#sync-pill');
+    const heroSyncState = document.querySelector('#hero-sync-state');
+    const assistState = document.querySelector('#assist-state');
+    const reconcileState = document.querySelector('#reconcile-state');
+    const translations = {
+      en: {
+        "metadata.title": "OctopusBeak App · Bank automation and financial dashboard",
+        "metadata.description": "OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials.",
+        "metadata.ogDescription": "Bank automation and account-first financial dashboard for daily personal finance review.",
+        "metadata.locale": "en_US",
+        "nav.automation": "Automation",
+        "nav.dashboard": "Dashboard",
+        "nav.features": "Features",
+        "cta.download": "Download Beta",
+        "cta.features": "See features",
+        "hero.eyebrow": "Personal finance desktop app",
+        "hero.title": "Bank automation with a dashboard people can trust.",
+        "hero.lead": "OctopusBeak pulls statement activity into one reviewable workspace, organizes every account clearly, and keeps each drilldown one click away.",
+        "preview.portfolio": "Portfolio",
+        "preview.workspace": "Portfolio workspace",
+        "preview.overview": "Overview",
+        "preview.assets": "Assets",
+        "preview.automation": "Automation",
+        "metric.netPosition": "Net position",
+        "metric.liabilities": "Liabilities",
+        "metric.cash": "Cash",
+        "metric.investments": "Investments",
+        "metric.assets": "Assets",
+        "metric.accounts": "Accounts",
+        "account.everyday": "Everyday account",
+        "account.freshImported": "Fresh activity imported",
+        "account.creditCard": "Credit card",
+        "account.verificationNeeded": "Verification needed",
+        "account.brokerage": "Brokerage account",
+        "automation.state": "Automation state",
+        "status.ready": "Ready",
+        "status.synced": "Synced",
+        "status.done": "Done",
+        "status.waiting": "Waiting",
+        "status.verified": "Verified",
+        "status.queued": "Queued",
+        "status.imported": "Imported",
+        "status.needsAssist": "Needs assist",
+        "action.assist": "Assist",
+        "action.runSync": "Run sync",
+        "action.betaDetails": "Beta details",
+        "action.close": "Close",
+        "features.title": "OB knows what people need most to manage their finances.",
+        "feature.automation.title": "Bank automation with simple steps",
+        "feature.automation.copy": "Supported most popular institutions. Designed for Taiwanese",
+        "feature.dashboard.title": "Account-first dashboard",
+        "feature.dashboard.copy": "Overview, assets, liabilities, and transaction drilldowns are designed around the way personal finance users actually check money.",
+        "feature.privacy.title": "Privacy by default",
+        "feature.privacy.copy": "Your credentials are securely saved on your desktop. No one else has your password. You own your data.",
+        "automation.eyebrow": "Bank automation",
+        "automation.title": "Fetch statements with simple steps.",
+        "automation.selectSource": "Select the bank source",
+        "automation.handleVerification": "Handle verification only when needed",
+        "automation.reviewRows": "Review imported statement rows",
+        "automation.sideLead": "The automation is ultimately simple to use. Click, type, and fetch all your bank statements in one run.",
+        "automation.simpleSteps": "Simple steps",
+        "automation.simpleStepsCopy": "Choose the bank, enter what the bank asks for, and let OctopusBeak collect the statements.",
+        "automation.onePlace": "One place to review",
+        "automation.onePlaceCopy": "Run notes and statement rows stay together so review feels direct instead of hidden in the background.",
+        "dashboard.title": "Clear for decisions. Calm for daily use.",
+        "dashboard.lead": "Compare account health at a glance, and jump from any account row into the transactions behind it.",
+        "dashboard.workspace": "TWD workspace",
+        "segment.summary": "Summary",
+        "segment.accounts": "Accounts",
+        "segment.changes": "Changes",
+        "table.account": "Account",
+        "table.status": "Status",
+        "table.balance": "Balance",
+        "cta.title": "Ready to try OctopusBeak?",
+        "cta.copy": "Download the beta and start collecting bank statements into one calm workspace.",
+        "drawer.title": "Beta details",
+        "drawer.copy": "Desktop app for bank automation, account review, and transaction drilldowns. Credentials stay on your desktop.",
+        "drawer.primaryUser": "Primary user",
+        "drawer.personalFinance": "Personal finance",
+        "drawer.dataPosture": "Data posture",
+        "drawer.desktopOwnedData": "Desktop-owned data",
+        "drawer.coreModules": "Core modules",
+        "drawer.modules": "Automation, dashboard, transactions",
+        "footer.copy": "Bank automation · financial dashboard",
+        "aria.navSections": "Landing sections",
+        "aria.language": "Language",
+        "aria.heroPreview": "OctopusBeak dashboard preview",
+        "aria.dashboardViews": "Dashboard views",
+        "aria.syncProgress": "Sync progress",
+        "aria.featureIcon": "OctopusBeak feature icon illustration",
+        "aria.automationFlow": "OctopusBeak automation workflow visual",
+        "aria.dashboardSegment": "Dashboard segment",
+        "aria.dashboardReference": "Softened account dashboard reference",
+        "aria.closeBetaDetails": "Close beta details",
+        "alt.featureIcons": "Bank automation, account dashboard, and privacy icons for OctopusBeak",
+        "alt.automationFlow": "Three-step bank statement automation workflow inside a desktop app",
+        "alt.dashboardReference": "Softened account health and transaction drilldown reference"
+      },
+      "zh-Hant": {
+        "metadata.title": "OctopusBeak App · 銀行自動化與財務儀表板",
+        "metadata.description": "OctopusBeak 將銀行帳務活動整理到安靜的本機工作區，提供帳戶明細檢視與桌面端憑證管理。",
+        "metadata.ogDescription": "為日常個人財務檢查打造的銀行自動化與帳戶優先財務儀表板。",
+        "metadata.locale": "zh_TW",
+        "nav.automation": "自動化",
+        "nav.dashboard": "儀表板",
+        "nav.features": "功能",
+        "cta.download": "下載 Beta",
+        "cta.features": "查看功能",
+        "hero.eyebrow": "個人財務桌面應用程式",
+        "hero.title": "銀行自動化與值得信任的儀表板。",
+        "hero.lead": "OctopusBeak 將帳務活動集中到可檢查的工作區，清楚整理每個帳戶，並讓每筆明細都能一鍵深入查看。",
+        "preview.portfolio": "投資組合",
+        "preview.workspace": "投資組合工作區",
+        "preview.overview": "總覽",
+        "preview.assets": "資產",
+        "preview.automation": "自動化",
+        "metric.netPosition": "淨部位",
+        "metric.liabilities": "負債",
+        "metric.cash": "現金",
+        "metric.investments": "投資",
+        "metric.assets": "資產",
+        "metric.accounts": "帳戶",
+        "account.everyday": "日常帳戶",
+        "account.freshImported": "最新活動已匯入",
+        "account.creditCard": "信用卡",
+        "account.verificationNeeded": "需要驗證",
+        "account.brokerage": "證券帳戶",
+        "automation.state": "自動化狀態",
+        "status.ready": "待命",
+        "status.synced": "已同步",
+        "status.done": "完成",
+        "status.waiting": "等待中",
+        "status.verified": "已驗證",
+        "status.queued": "排隊中",
+        "status.imported": "已匯入",
+        "status.needsAssist": "需要協助",
+        "action.assist": "協助",
+        "action.runSync": "執行同步",
+        "action.betaDetails": "Beta 詳細資訊",
+        "action.close": "關閉",
+        "features.title": "OctopusBeak 理解管理財務時最需要被看清楚的地方。",
+        "feature.automation.title": "簡單步驟完成銀行自動化",
+        "feature.automation.copy": "支援常用金融機構，依台灣使用情境設計。",
+        "feature.dashboard.title": "以帳戶為核心的儀表板",
+        "feature.dashboard.copy": "總覽、資產、負債與交易明細，依個人財務檢查習慣整理。",
+        "feature.privacy.title": "預設保護隱私",
+        "feature.privacy.copy": "憑證安全保存在桌面端；密碼不交給別人，資料由你自己掌握。",
+        "automation.eyebrow": "銀行自動化",
+        "automation.title": "用簡單步驟抓取帳務資料。",
+        "automation.selectSource": "選擇銀行來源",
+        "automation.handleVerification": "只在需要時處理驗證",
+        "automation.reviewRows": "檢查匯入的帳務列",
+        "automation.sideLead": "自動化使用起來很直接：點選、輸入，然後一次取得銀行帳務資料。",
+        "automation.simpleSteps": "簡單步驟",
+        "automation.simpleStepsCopy": "選擇銀行、輸入銀行要求的資訊，讓 OctopusBeak 收集帳務資料。",
+        "automation.onePlace": "集中檢查",
+        "automation.onePlaceCopy": "執行紀錄與帳務列放在同一處，檢查起來直接，不會藏在背景流程裡。",
+        "dashboard.title": "決策時清楚，日常使用時安靜。",
+        "dashboard.lead": "快速比較帳戶健康狀態，並從任何帳戶列跳到背後的交易明細。",
+        "dashboard.workspace": "台幣工作區",
+        "segment.summary": "摘要",
+        "segment.accounts": "帳戶",
+        "segment.changes": "變化",
+        "table.account": "帳戶",
+        "table.status": "狀態",
+        "table.balance": "餘額",
+        "cta.title": "準備好試用 OctopusBeak？",
+        "cta.copy": "下載 Beta，開始把銀行帳務資料集中到一個安靜的工作區。",
+        "drawer.title": "Beta 詳細資訊",
+        "drawer.copy": "桌面應用程式，用於銀行自動化、帳戶檢查與交易明細瀏覽。憑證留在你的桌面端。",
+        "drawer.primaryUser": "主要使用者",
+        "drawer.personalFinance": "個人財務",
+        "drawer.dataPosture": "資料姿態",
+        "drawer.desktopOwnedData": "桌面端資料",
+        "drawer.coreModules": "核心模組",
+        "drawer.modules": "自動化、儀表板、交易",
+        "footer.copy": "銀行自動化 · 財務儀表板",
+        "aria.navSections": "頁面區段",
+        "aria.language": "語言",
+        "aria.heroPreview": "OctopusBeak 儀表板預覽",
+        "aria.dashboardViews": "儀表板檢視",
+        "aria.syncProgress": "同步進度",
+        "aria.featureIcon": "OctopusBeak 功能圖示示意",
+        "aria.automationFlow": "OctopusBeak 自動化流程示意",
+        "aria.dashboardSegment": "儀表板分頁",
+        "aria.dashboardReference": "柔化的帳戶儀表板參考圖",
+        "aria.closeBetaDetails": "關閉 Beta 詳細資訊",
+        "alt.featureIcons": "OctopusBeak 的銀行自動化、帳戶儀表板與隱私圖示",
+        "alt.automationFlow": "桌面應用程式中的三步驟銀行帳務自動化流程",
+        "alt.dashboardReference": "柔化的帳戶健康與交易明細參考"
+      }
+    };
+    let currentLang = 'en';
+
+    function initialLanguage() {
+      const urlLang = new URLSearchParams(location.search).get('lang');
+      if (urlLang && translations[urlLang]) return urlLang;
+      try {
+        const savedLang = localStorage.getItem('octopusbeak-site-lang');
+        if (savedLang && translations[savedLang]) return savedLang;
+      } catch {
+        // localStorage can be unavailable in stricter browser contexts.
+      }
+      return navigator.language?.toLowerCase().startsWith('zh') ? 'zh-Hant' : 'en';
+    }
+
+    function t(key) {
+      return translations[currentLang][key] ?? translations.en[key] ?? key;
+    }
+
+    function updateMeta() {
+      document.title = t('metadata.title');
+      document.querySelector('meta[name="description"]')?.setAttribute('content', t('metadata.description'));
+      document.querySelector('meta[property="og:title"]')?.setAttribute('content', t('metadata.title'));
+      document.querySelector('meta[property="og:description"]')?.setAttribute('content', t('metadata.ogDescription'));
+      document.querySelector('meta[property="og:locale"]')?.setAttribute('content', t('metadata.locale'));
+      document.querySelector('meta[name="twitter:title"]')?.setAttribute('content', t('metadata.title'));
+      document.querySelector('meta[name="twitter:description"]')?.setAttribute('content', t('metadata.description'));
+    }
+
+    function updateLanguageUrl(nextLang) {
+      const url = new URL(location.href);
+      url.searchParams.set('lang', nextLang);
+      history.replaceState(null, '', url);
+    }
+
+    function applyTranslations(nextLang) {
+      if (!translations[nextLang]) nextLang = 'en';
+      currentLang = nextLang;
+      document.documentElement.lang = nextLang;
+      updateMeta();
+      document.querySelectorAll('[data-i18n]').forEach((node) => {
+        node.textContent = t(node.dataset.i18n);
+      });
+      document.querySelectorAll('[data-i18n-alt]').forEach((node) => {
+        node.setAttribute('alt', t(node.dataset.i18nAlt));
+      });
+      document.querySelectorAll('[data-i18n-aria-label]').forEach((node) => {
+        node.setAttribute('aria-label', t(node.dataset.i18nAriaLabel));
+      });
+      document.querySelectorAll('[data-lang]').forEach((button) => {
+        const active = button.dataset.lang === nextLang;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      try {
+        localStorage.setItem('octopusbeak-site-lang', nextLang);
+      } catch {
+        // Language still works without persistence.
+      }
+      updateLanguageUrl(nextLang);
+    }
+
+    document.querySelectorAll('[data-tab]').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('[data-tab]').forEach((item) => item.classList.toggle('is-active', item === button));
+        document.querySelectorAll('[data-panel]').forEach((panel) => panel.classList.toggle('is-active', panel.dataset.panel === button.dataset.tab));
+      });
+    });
+
+    document.querySelectorAll('[data-screen]').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('[data-screen]').forEach((item) => item.classList.toggle('is-active', item === button));
+        document.querySelectorAll('[data-screen-panel]').forEach((panel) => panel.classList.toggle('is-active', panel.dataset.screenPanel === button.dataset.screen));
+      });
+    });
+
+    document.querySelectorAll('[data-run-sync]').forEach((button) => {
+      button.addEventListener('click', () => {
+        syncCard?.classList.add('run-done');
+        root.classList.add('run-done');
+        if (syncPill) syncPill.dataset.i18n = 'status.synced';
+        if (heroSyncState) heroSyncState.dataset.i18n = 'status.synced';
+        if (assistState) assistState.dataset.i18n = 'status.verified';
+        if (reconcileState) reconcileState.dataset.i18n = 'status.imported';
+        applyTranslations(currentLang);
+      });
+    });
+
+    document.querySelectorAll('[data-lang]').forEach((button) => {
+      button.addEventListener('click', () => applyTranslations(button.dataset.lang));
+    });
+
+    document.querySelectorAll('[data-open-drawer]').forEach((button) => {
+      button.addEventListener('click', () => {
+        drawer?.classList.add('is-open');
+        drawer?.setAttribute('aria-hidden', 'false');
+      });
+    });
+
+    document.querySelector('[data-close-drawer]')?.addEventListener('click', () => {
+      drawer?.classList.remove('is-open');
+      drawer?.setAttribute('aria-hidden', 'true');
+    });
+
+    applyTranslations(initialLanguage());
+  </script>
+</body>
+</html>
