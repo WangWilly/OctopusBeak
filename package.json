@@ -2,7 +2,7 @@
   "name": "octopus-beak",
   "version": "0.2.10",
   "private": true,
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
