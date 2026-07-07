@@ -181,27 +181,17 @@
     .card-flat { background: transparent; border: 0; padding: 0; }
     .card-rule { background: transparent; border: 0; border-top: 1px solid var(--fg); padding: 24px 0 0; border-radius: 0; }
 
-    .feature .feature-mark {
-      width: 36px; height: 36px;
-      display: grid; place-items: center;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      color: var(--muted);
-      margin-bottom: var(--gap-md);
-      background: var(--surface);
-    }
-    .feature .feature-mark svg { width: 18px; height: 18px; }
     .feature h3 { margin-bottom: 6px; }
     .feature p { margin: 0; color: var(--muted); font-size: 15px; }
     .feature-landscape { position: relative; isolation: isolate; padding: 24px 0; }
     .feature-landscape::before {
       content: "";
       position: absolute;
-      inset: -28px 0;
+      inset: -72px -24px;
       z-index: -1;
       border-radius: var(--radius-lg);
-      background: linear-gradient(180deg, color-mix(in oklch, var(--bg) 76%, transparent), color-mix(in oklch, var(--bg) 62%, transparent)), url("assets/ob-feature-icon-reference.png") center / cover no-repeat;
-      opacity: 0.52;
+      background: linear-gradient(180deg, color-mix(in oklch, var(--bg) 76%, transparent), color-mix(in oklch, var(--bg) 62%, transparent)), url("assets/ob-feature-icon-reference.png") center / contain no-repeat;
+      opacity: 0.28;
     }
 
     .stat .stat-num {
@@ -561,23 +551,14 @@
         </div>
         <div class="grid-3 feature-landscape">
           <div class="feature card-flat" data-od-id="feature-bank-automation">
-            <div class="feature-mark">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8h16M6 8v10M10 8v10M14 8v10M18 8v10M3 18h18M12 3l8 5H4l8-5Z"/></svg>
-            </div>
             <h3 data-i18n="feature.automation.title">Bank automation with simple steps</h3>
             <p data-i18n="feature.automation.copy">Supported most popular institutions. Designed for Taiwanese</p>
           </div>
           <div class="feature card-flat" data-od-id="feature-dashboard">
-            <div class="feature-mark">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19V5M4 19h16M8 16v-4M12 16V8M16 16v-7"/></svg>
-            </div>
             <h3 data-i18n="feature.dashboard.title">Account-first dashboard</h3>
             <p data-i18n="feature.dashboard.copy">Overview, assets, liabilities, and transaction drilldowns are designed around the way personal finance users actually check money.</p>
           </div>
           <div class="feature card-flat" data-od-id="feature-privacy">
-            <div class="feature-mark">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4.5c5 0 8.5 4.5 8.5 7.5S17 19.5 12 19.5 3.5 15 3.5 12 7 4.5 12 4.5Z"/><path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z"/><path d="M4 4l16 16"/></svg>
-            </div>
             <h3 data-i18n="feature.privacy.title">Privacy by default</h3>
             <p data-i18n="feature.privacy.copy">Your credentials are securely saved on your desktop. No one else has your password. You own your data.</p>
           </div>
@@ -809,7 +790,7 @@
         "cta.features": "查看功能",
         "hero.eyebrow": "個人財務自動化工具",
         "hero.title": "一覽無遺最放心",
-        "hero.lead": "OctopusBeak 幫你取得帳務資料，每筆交易都無所遁逃；帳號密碼握在手，資料由你作主。",
+        "hero.lead": "OctopusBeak 幫您取得帳務資料，每筆交易都無所遁逃；帳號密碼握在手，資料由您作主。",
         "preview.portfolio": "投資組合",
         "preview.workspace": "台幣帳戶",
         "preview.overview": "總覽",
@@ -865,7 +846,7 @@
         "automation.simpleStepsCopy": "選銀行，填必要資訊，OctopusBeak 把帳務資料整理呈現給您。",
         "automation.onePlace": "集中管理",
         "automation.onePlaceCopy": "執行紀錄和帳務資料都保留，資料不掉隊。",
-        "dashboard.title": "繁瑣變簡潔，還給你平靜的日常",
+        "dashboard.title": "繁瑣變簡潔，還給您平靜的日常",
         "dashboard.lead": "背後的交易明細濃縮成一眼就能看懂的帳戶狀態",
         "dashboard.workspace": "台幣帳戶",
         "segment.summary": "摘要",
