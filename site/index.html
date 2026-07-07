@@ -10,6 +10,9 @@
   <meta name="theme-color" content="#2f9f87" />
   <meta name="application-name" content="OctopusBeak" />
   <meta name="apple-mobile-web-app-title" content="OctopusBeak" />
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
   <link rel="canonical" href="https://wangwilly.github.io/OctopusBeak/" />
   <link rel="alternate" hreflang="en" href="https://wangwilly.github.io/OctopusBeak/?lang=en" />
   <link rel="alternate" hreflang="zh-Hant" href="https://wangwilly.github.io/OctopusBeak/?lang=zh-Hant" />
@@ -138,7 +141,9 @@
       border-bottom: 1px solid var(--border);
     }
     .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
-    .topnav .logo { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+    .topnav .logo { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+    .brand-icon { width: 24px; height: 24px; border-radius: 6px; }
+    .cta-icon { width: 48px; height: 48px; border-radius: 12px; margin: 0 auto 18px; }
     .topnav nav { display: flex; gap: var(--gap-lg); }
     .topnav nav a { font-size: 14px; color: var(--muted); }
     .topnav nav a:hover { color: var(--fg); }
@@ -398,7 +403,7 @@
 <body>
   <header class="topnav" data-od-id="topnav">
     <div class="container topnav-inner">
-      <span class="logo">OctopusBeak</span>
+      <span class="logo"><img class="brand-icon" src="assets/site-icon.png" alt="" aria-hidden="true" />OctopusBeak</span>
       <nav data-od-id="topnav-links" aria-label="Landing sections" data-i18n-aria-label="aria.navSections">
         <a href="#automation" data-od-id="nav-automation" data-i18n="nav.automation">Automation</a>
         <a href="#dashboard" data-od-id="nav-dashboard" data-i18n="nav.dashboard">Dashboard</a>
@@ -669,6 +674,7 @@
 
     <section class="section" data-od-id="cta-strip" style="text-align: center;">
       <div class="container" style="max-width: 640px;">
+        <img class="cta-icon" src="assets/site-icon.png" alt="" aria-hidden="true" />
         <h2 data-od-id="cta-title" data-i18n="cta.title">Ready to try OctopusBeak?</h2>
         <p class="lead" style="margin: 16px auto 32px;" data-od-id="cta-copy" data-i18n="cta.copy">Download the beta and start collecting bank statements into one calm workspace.</p>
         <a class="btn btn-primary" href="https://github.com/WangWilly/OctopusBeak/releases/latest" rel="noopener" data-od-id="cta-button" data-i18n="cta.download">Download Beta</a>
