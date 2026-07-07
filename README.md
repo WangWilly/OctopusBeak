@@ -18,6 +18,12 @@ All downloaded statements, browser sessions, ledger databases, credentials, and 
 - Shows local portfolio views at `#/overview`, `#/assets`, and `#/liabilities`.
 - Syncs MAX/MaiCoin balances and statement rows into the same ledger.
 
+## Automation Demo
+
+![Portfolio automation waiting for Fubon CAPTCHA assist](docs/assets/portfolio-automation-fubon-captcha-60s.gif)
+
+The automation panel queues bank statement tasks, pauses when a Fubon CAPTCHA needs human assist, and resumes the run after verification.
+
 ## Quick Start
 
 ```bash
