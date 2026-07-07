@@ -22,6 +22,9 @@ assertIncludes(html, '<meta property="og:site_name" content="OctopusBeak" />', '
 assertIncludes(html, '<meta property="og:type" content="website" />', 'Open Graph type');
 assertIncludes(html, '<meta property="og:locale" content="en_US" />', 'Open Graph locale');
 assertIncludes(html, '<meta property="og:locale:alternate" content="zh_TW" />', 'Open Graph alternate locale');
+assertIncludes(html, '<meta property="og:image:type" content="image/png" />', 'Open Graph image type');
+assertIncludes(html, '<meta name="application-name" content="OctopusBeak" />', 'application name');
+assertIncludes(html, '<meta name="apple-mobile-web-app-title" content="OctopusBeak" />', 'Apple app title');
 assertIncludes(html, '<meta name="twitter:title" content="OctopusBeak App · Bank automation and financial dashboard" />', 'Twitter title');
 assertIncludes(html, '<meta name="twitter:description" content="OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials." />', 'Twitter description');
 assertIncludes(html, 'document.querySelector(\'meta[name="twitter:title"]\')?.setAttribute(\'content\', t(\'metadata.title\'));', 'localized Twitter title update');
@@ -37,6 +40,9 @@ assert.equal(structuredData.name, 'OctopusBeak');
 assert.equal(structuredData.url, siteUrl);
 assert.equal(structuredData.applicationCategory, 'FinanceApplication');
 assert.equal(structuredData.operatingSystem, 'macOS');
+assert.equal(structuredData.downloadUrl, 'https://github.com/WangWilly/OctopusBeak/releases/latest');
+assert.equal(structuredData.sameAs, 'https://github.com/WangWilly/OctopusBeak');
+assert.equal(structuredData.softwareVersion, 'Beta');
 
 assert.ok(existsSync(robotsPath), 'site/robots.txt missing');
 const robots = readFileSync(robotsPath, 'utf8');
@@ -47,6 +53,7 @@ assertIncludes(robots, `Sitemap: ${siteUrl}sitemap.xml`, 'robots sitemap');
 assert.ok(existsSync(sitemapPath), 'site/sitemap.xml missing');
 const sitemap = readFileSync(sitemapPath, 'utf8');
 assertIncludes(sitemap, `<loc>${siteUrl}</loc>`, 'sitemap root URL');
+assertIncludes(sitemap, '<lastmod>2026-07-07</lastmod>', 'sitemap lastmod');
 assertIncludes(sitemap, `href="${siteUrl}?lang=en"`, 'sitemap English alternate');
 assertIncludes(sitemap, `href="${siteUrl}?lang=zh-Hant"`, 'sitemap Traditional Chinese alternate');
 assertIncludes(sitemap, `href="${siteUrl}"`, 'sitemap default alternate');
