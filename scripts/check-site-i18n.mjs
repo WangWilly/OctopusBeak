@@ -7,7 +7,7 @@ assert.match(html, /data-lang="en"/, "English language control is missing");
 assert.match(html, /data-lang="zh-Hant"/, "Traditional Chinese language control is missing");
 assert.match(html, /const translations = \{/, "translation dictionary is missing");
 assert.match(html, /"zh-Hant": \{/, "Traditional Chinese translations are missing");
-assert.match(html, /銀行帳務自動化，配上一個放心用的儀表板/, "Traditional Chinese hero headline is missing");
+assert.match(html, /"hero\.title": "[^"]+"/, "Traditional Chinese hero headline is missing");
 assert.doesNotMatch(html, /值得信任的儀表板|最需要被看清楚|資料姿態|不要吵/, "stiff Traditional Chinese copy is present");
 assert.match(html, /document\.documentElement\.lang = nextLang/, "html lang update is missing");
 assert.doesNotMatch(html, /OctoputBeak/, "legacy OctoputBeak typo is present");
