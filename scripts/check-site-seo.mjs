@@ -5,6 +5,10 @@ const siteUrl = 'https://wangwilly.github.io/OctopusBeak/';
 const indexPath = 'site/index.html';
 const robotsPath = 'site/robots.txt';
 const sitemapPath = 'site/sitemap.xml';
+const favicon32Path = 'site/assets/favicon-32x32.png';
+const favicon16Path = 'site/assets/favicon-16x16.png';
+const appleTouchIconPath = 'site/assets/apple-touch-icon.png';
+const siteIconPath = 'site/assets/site-icon.png';
 
 const html = readFileSync(indexPath, 'utf8');
 
@@ -25,6 +29,11 @@ assertIncludes(html, '<meta property="og:locale:alternate" content="zh_TW" />', 
 assertIncludes(html, '<meta property="og:image:type" content="image/png" />', 'Open Graph image type');
 assertIncludes(html, '<meta name="application-name" content="OctopusBeak" />', 'application name');
 assertIncludes(html, '<meta name="apple-mobile-web-app-title" content="OctopusBeak" />', 'Apple app title');
+assertIncludes(html, '<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />', '32px favicon');
+assertIncludes(html, '<link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />', '16px favicon');
+assertIncludes(html, '<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />', 'Apple touch icon');
+assertIncludes(html, '<img class="brand-icon" src="assets/site-icon.png" alt="" aria-hidden="true" />', 'top-left brand icon');
+assertIncludes(html, '<img class="cta-icon" src="assets/site-icon.png" alt="" aria-hidden="true" />', 'CTA icon');
 assertIncludes(html, '<meta name="twitter:title" content="OctopusBeak App · Bank automation and financial dashboard" />', 'Twitter title');
 assertIncludes(html, '<meta name="twitter:description" content="OctopusBeak pulls bank statement activity into one calm workspace with account drilldowns and desktop-owned credentials." />', 'Twitter description');
 assertIncludes(html, 'document.querySelector(\'meta[name="twitter:title"]\')?.setAttribute(\'content\', t(\'metadata.title\'));', 'localized Twitter title update');
@@ -57,5 +66,10 @@ assertIncludes(sitemap, '<lastmod>2026-07-07</lastmod>', 'sitemap lastmod');
 assertIncludes(sitemap, `href="${siteUrl}?lang=en"`, 'sitemap English alternate');
 assertIncludes(sitemap, `href="${siteUrl}?lang=zh-Hant"`, 'sitemap Traditional Chinese alternate');
 assertIncludes(sitemap, `href="${siteUrl}"`, 'sitemap default alternate');
+
+assert.ok(existsSync(favicon32Path), '32px favicon file missing');
+assert.ok(existsSync(favicon16Path), '16px favicon file missing');
+assert.ok(existsSync(appleTouchIconPath), 'Apple touch icon file missing');
+assert.ok(existsSync(siteIconPath), 'site brand icon file missing');
 
 console.log('site SEO checks passed');
