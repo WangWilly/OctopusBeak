@@ -139,6 +139,12 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function isFubonCreditCardNoRecordText(
+  value: string | null | undefined,
+): boolean {
+  return /查無資料|查無相關資料|無資料|無消費/.test(cleanText(value));
+}
+
 function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
@@ -516,17 +522,40 @@ async function openUnbilledDetailsPage(page: Page): Promise<BrowserScope> {
     "task_CCCQU004.menu_CCC0203",
     "未出帳單消費明細",
   );
-  const scope = await findScopeWithLocator(
-    page,
-    unbilledDetailsTable,
-    "unbilled credit card detail table",
-    60_000,
-  );
+  const scope = await findUnbilledDetailsScope(page);
+  if (await hasFubonCreditCardNoRecord(scope)) return scope;
+
   await unbilledDetailsTable(scope).waitFor({
     state: "attached",
     timeout: 60_000,
   });
   return scope;
+}
+
+async function hasFubonCreditCardNoRecord(
+  scope: BrowserScope,
+): Promise<boolean> {
+  const bodyText = await scope
+    .locator("body")
+    .textContent({ timeout: 500 })
+    .catch(() => "");
+  return isFubonCreditCardNoRecordText(bodyText);
+}
+
+async function findUnbilledDetailsScope(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<BrowserScope> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if (await hasAttachedLocator(unbilledDetailsTable(scope))) return scope;
+      if (await hasFubonCreditCardNoRecord(scope)) return scope;
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error("Could not find unbilled credit card result in any frame.");
 }
 
 function statementDetailsTable(scope: BrowserScope): Locator {

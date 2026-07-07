@@ -1,7 +1,10 @@
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { keepBrowserWindowOutOfForeground } from "./browser-interaction.js";
+import {
+  activateControlWithoutPointer,
+  keepBrowserWindowOutOfForeground,
+} from "./browser-interaction.js";
 import {
   fubonCreditCardStatementsInputSchema,
   fubonCreditCardStatementsOutputSchema,
@@ -66,6 +69,32 @@ function startFubonSessionKeepAlive(page: Page): () => void {
   return () => {
     clearInterval(interval);
   };
+}
+
+async function signOutFubon(page: Page): Promise<void> {
+  const headerFrame = page.frame({ name: "frame1" });
+  if (!headerFrame) return;
+
+  const logoutLink = headerFrame
+    .locator("#header_form\\:header_logout")
+    .first();
+  if (!(await logoutLink.isVisible().catch(() => false))) return;
+
+  await activateControlWithoutPointer(logoutLink);
+  await headerFrame.evaluate(() => {
+    const bankWindow = globalThis as typeof globalThis & {
+      logoutNow?: () => unknown;
+    };
+    if (typeof bankWindow.logoutNow === "function") {
+      bankWindow.logoutNow();
+    }
+  });
+  await headerFrame
+    .locator("a")
+    .filter({ hasText: "登入" })
+    .first()
+    .waitFor({ state: "visible", timeout: 15_000 })
+    .catch(() => undefined);
 }
 
 async function runSectionOutOfForeground<T>(
@@ -133,6 +162,11 @@ export default workflow("fubonAllStatements", {
       };
     } finally {
       stopSessionKeepAlive();
+      await signOutFubon(page).catch((error: unknown) => {
+        console.warn("fubon-logout-failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
   },
 });

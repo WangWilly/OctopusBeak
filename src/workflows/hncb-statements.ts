@@ -118,6 +118,12 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
+export function isNoStatementDataText(
+  value: string | null | undefined,
+): boolean {
+  return /查無資料|無資料|無交易|查無符合/.test(cleanText(value));
+}
+
 function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -498,12 +504,37 @@ export async function ensureHncbStatementForm(
   });
 }
 
-async function waitForStatementResult(page: Page): Promise<Frame> {
-  const mainFrame = await waitForAccountSelect(page);
-  await mainFrame
-    .locator('a[href="javascript:doSubmit(\'5\')"]')
-    .waitFor({ state: "attached", timeout: 60_000 });
-  return mainFrame;
+function statementDownloadLink(mainFrame: Frame): Locator {
+  return mainFrame
+    .locator(
+      'a[href*="doSubmit"][href*="5"], input[onclick*="doSubmit"][onclick*="5"]',
+    )
+    .first();
+}
+
+async function hasNoStatementData(mainFrame: Frame): Promise<boolean> {
+  const text = await mainFrame
+    .locator("body")
+    .innerText({ timeout: 500 })
+    .catch(() => "");
+  return isNoStatementDataText(text);
+}
+
+async function waitForStatementResult(page: Page): Promise<Frame | null> {
+  const mainFrame = await waitForFrame(page, "main");
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (
+      (await statementDownloadLink(mainFrame)
+        .count()
+        .catch(() => 0)) > 0
+    ) {
+      return mainFrame;
+    }
+    if (await hasNoStatementData(mainFrame)) return null;
+    await page.waitForTimeout(500);
+  }
+  throw new Error("Timed out waiting for HNCB statement result.");
 }
 
 async function readAccountOptions(
@@ -545,7 +576,7 @@ async function queryAccountStatements(
   page: Page,
   account: AccountOption,
   dateRange: WorkflowOutput["dateRange"],
-): Promise<Frame> {
+): Promise<Frame | null> {
   const mainFrame = await ensureHncbStatementForm(page);
   await mainFrame.locator("#acct1").selectOption(account.value);
   await mainFrame.locator('input[name="inqtype"][value="3"]').check({
@@ -572,10 +603,14 @@ async function queryAccountStatements(
 async function downloadCurrentStatement(
   page: Page,
   fallbackAccount: string,
+  resultFrame?: Frame,
 ): Promise<ParsedStatement> {
-  const mainFrame = await waitForStatementResult(page);
+  const mainFrame = resultFrame ?? (await waitForStatementResult(page));
+  if (!mainFrame) {
+    throw new Error("Cannot download an empty HNCB statement result.");
+  }
   const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-  await mainFrame.locator('a[href="javascript:doSubmit(\'5\')"]').click();
+  await statementDownloadLink(mainFrame).click();
   const popup = await popupPromise;
 
   try {
@@ -688,8 +723,22 @@ export default workflow("hncbStatements", {
       const downloads: StatementDownload[] = [];
 
       for (const account of accounts) {
-        await queryAccountStatements(page, account, dateRange);
-        const statement = await downloadCurrentStatement(page, account.label);
+        const resultFrame = await queryAccountStatements(
+          page,
+          account,
+          dateRange,
+        );
+        if (!resultFrame) {
+          console.warn("hncb-account-no-statement-data", {
+            account: account.label,
+          });
+          continue;
+        }
+        const statement = await downloadCurrentStatement(
+          page,
+          account.label,
+          resultFrame,
+        );
         downloads.push(await writeStatementFile(input.outputDir, statement));
         console.log(
           `automation-progress: ${40 + Math.round((downloads.length / accounts.length) * 55)}`,

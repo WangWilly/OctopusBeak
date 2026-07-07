@@ -67,6 +67,21 @@ export function liveTaskRunUpdate(logTail: string) {
   return { logTail };
 }
 
+export function finalFailureMessage(logTail: string, exitCode: number | null) {
+  const message = logTail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .toReversed()
+    .find((line) =>
+      !/^automation-progress:/i.test(line) &&
+      !/^libretto run CDP patch/i.test(line) &&
+      !/^Running workflow /i.test(line) &&
+      !/^Browser is still open\./i.test(line)
+    );
+  return message ?? `Task exited with code ${exitCode}`;
+}
+
 export function isForceQuitRun(
   run: Pick<AutomationTaskRun, "status" | "errorMessage"> | null | undefined,
 ) {
@@ -306,7 +321,7 @@ export async function runAutomationTask(
         logTail,
         errorMessage: result.error?.message
           ?? resumeFailure
-          ?? (status === "failed" ? `Task exited with code ${result.exitCode}` : null),
+          ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null),
       });
       if (shouldCloseResumeSession({ status, resumeSession: options.resumeSession })) {
         await closeResumeSessionAfterFailure();
