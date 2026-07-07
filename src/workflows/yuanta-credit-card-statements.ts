@@ -90,6 +90,16 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+export function isCreditCardNoRecordText(
+  value: string | null | undefined,
+): boolean {
+  return /查無資料|查無相關資料|無資料|無消費/.test(cleanText(value));
+}
+
+export function creditCardNoRecordLocator(scope: BrowserScope): Locator {
+  return scope.locator("#creditNoRecordMsg, #creditNoUnbilledMsg, .errorArea");
+}
+
 function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
@@ -373,7 +383,14 @@ async function waitForSignedInState(
 
 async function openCreditCardBillsPage(page: Page): Promise<BrowserScope> {
   const existing = await findCreditCardBillsScope(page, 5_000).catch(() => null);
-  if (existing) return await waitForCreditCardBillsReady(page);
+  if (existing) {
+    const ready = await waitForCreditCardBillsReady(
+      page,
+      undefined,
+      8_000,
+    ).catch(() => null);
+    if (ready) return ready;
+  }
 
   if (await clickCreditCardBillsLink(page, 5_000)) {
     return await waitForCreditCardBillsReady(page);
@@ -533,6 +550,45 @@ async function clickMonth(page: Page, month: MonthOption): Promise<void> {
   await waitForCreditCardBillsReady(page, month.label);
 }
 
+async function waitForCreditCardFunctionResult(
+  page: Page,
+  description: string,
+  timeoutMs = 60_000,
+): Promise<BrowserScope> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if (
+        (await hasAttachedLocator(scope.locator(".cardBx"))) ||
+        (await hasAttachedLocator(scope.locator("table.rwdTable")))
+      ) {
+        return scope;
+      }
+
+      const noRecordText = await creditCardNoRecordLocator(scope)
+        .evaluateAll((elements) =>
+          elements.map((element) => element.textContent ?? "").join(" "),
+        )
+        .catch(() => "");
+      if (isCreditCardNoRecordText(noRecordText)) return scope;
+
+      const bodyText = await scope
+        .locator("body")
+        .textContent({ timeout: 500 })
+        .catch(() => "");
+      if (
+        /credit(?:No)?UnbilledMsg|creditNoRecordMsg/.test(bodyText ?? "") &&
+        isCreditCardNoRecordText(bodyText)
+      ) {
+        return scope;
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(`Could not find ${description} result in any frame.`);
+}
+
 async function clickCreditCardFunction(
   page: Page,
   functionIndex: number,
@@ -549,7 +605,7 @@ async function clickCreditCardFunction(
   );
   await link.click({ force: true });
   await settleAfterNavigation(page);
-  return await findScopeWithSelector(page, "table.rwdTable");
+  return await waitForCreditCardFunctionResult(page, description);
 }
 
 const baseStatementHeaders = [
@@ -741,12 +797,12 @@ async function findStatementScope(page: Page): Promise<BrowserScope | null> {
       if (await hasAttachedLocator(scope.locator(".cardBx"))) {
         return scope;
       }
-      const noRecordText = await scope
-        .locator("#creditNoRecordMsg, .errorArea")
-        .first()
-        .textContent({ timeout: 1_000 })
+      const noRecordText = await creditCardNoRecordLocator(scope)
+        .evaluateAll((elements) =>
+          elements.map((element) => element.textContent ?? "").join(" "),
+        )
         .catch(() => "");
-      if (/查無資料|無資料|無消費/.test(noRecordText ?? "")) return null;
+      if (isCreditCardNoRecordText(noRecordText)) return null;
     }
     await page.waitForTimeout(250);
   }
@@ -833,7 +889,13 @@ function inferPaymentStatus(columns: Record<string, string>): string {
 }
 
 async function readBillingPaymentStatus(page: Page): Promise<string> {
-  const scope = await findScopeWithSelector(page, "table.rwdTable");
+  const scope = await findScopeWithSelector(
+    page,
+    "table.rwdTable",
+    10_000,
+  ).catch(() => null);
+  if (!scope) return "";
+
   const tables = scope.locator("table.rwdTable");
   const count = await tables.count();
 

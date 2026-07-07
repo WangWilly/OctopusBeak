@@ -316,12 +316,11 @@ async function fillLoginForm(page: Page, credentials: FubonCredentials) {
 }
 
 async function waitForSignedInState(page: Page) {
-  await findScopeWithLocator(
-    page,
-    depositRows,
-    "Fubon deposit account list after login",
-    120_000,
-  );
+  const headerFrame = await waitForFrame(page, "frame1");
+  await headerFrame.locator("#header_form\\:header_logout").waitFor({
+    state: "visible",
+    timeout: 120_000,
+  });
 }
 
 function depositRows(scope: BrowserScope): Locator {

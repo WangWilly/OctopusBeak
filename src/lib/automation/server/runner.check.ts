@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   automationProcessEnv,
+  finalFailureMessage,
   isForceQuitRun,
   librettoRunCdpPatchCommand,
   liveTaskRunUpdate,
@@ -89,6 +90,21 @@ assert.deepEqual(
     logTail: failedResumeLog,
   },
 );
+assert.equal(
+  finalFailureMessage(
+    [
+      "libretto run CDP patch already applied.",
+      "Running workflow \"fubonAllStatements\" from /path/fubon-all-statements.ts (headless)...",
+      "automation-progress: 0",
+      "Fubon credentials look like placeholder values. Update the Fubon credentials in Settings before running Fubon statements.",
+      "Browser is still open. You can use `exec` to inspect it. Call `run` to re-run the workflow.",
+      "",
+    ].join("\n"),
+    1,
+  ),
+  "Fubon credentials look like placeholder values. Update the Fubon credentials in Settings before running Fubon statements.",
+);
+assert.equal(finalFailureMessage("", 1), "Task exited with code 1");
 assert.equal(isForceQuitRun({ status: "failed", errorMessage: "Browser session force quit." }), true);
 assert.equal(isForceQuitRun({ status: "failed", errorMessage: "Task exited with code 1" }), false);
 assert.equal(isForceQuitRun({ status: "waiting_for_human", errorMessage: null }), false);
