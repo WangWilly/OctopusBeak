@@ -41,6 +41,12 @@ type StatementRow = {
   period: string | null;
 };
 
+type ParsedCreditCardBillsHtml = {
+  monthOptions: MonthOption[];
+  paymentStatus: string;
+  rows: StatementRow[];
+};
+
 const inputSchema = z.object({
   monthIndexes: z.array(z.number().int().min(0).max(24)).optional(),
   includeUnbilled: z.boolean().default(true),
@@ -161,10 +167,10 @@ async function findScopeWithSelector(
 ): Promise<BrowserScope> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of [...page.frames(), page]) {
       if (await hasAttachedLocator(scope.locator(selector))) return scope;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
   throw new Error(`Could not find selector "${selector}" in any frame.`);
 }
@@ -177,10 +183,10 @@ async function findScopeWithLocator(
 ): Promise<BrowserScope> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of [...page.frames(), page]) {
       if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
   throw new Error(`Could not find ${description} in any frame.`);
 }
@@ -197,7 +203,7 @@ async function firstVisibleLocator(
       const candidate = locator.nth(index);
       if (await candidate.isVisible().catch(() => false)) return candidate;
     }
-    await locator.page().waitForTimeout(500);
+    await locator.page().waitForTimeout(250);
   }
 
   throw new Error(`Could not find a visible ${description}.`);
@@ -207,7 +213,7 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
     // YuanTa keeps timers alive; selector waits below confirm readiness.
   });
-  await page.waitForTimeout(750);
+  await page.waitForTimeout(250);
 }
 
 async function fillLoginForm(
@@ -290,16 +296,7 @@ async function isCreditCardBillsPage(
   page: Page,
   timeoutMs = 3_000,
 ): Promise<boolean> {
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('input[name="menutype"][value="creditcardbillsquery"]')
-        .or(candidate.locator('a[onclick*="queryMonth("]'))
-        .first(),
-    "YuanTa credit card bills page",
-    timeoutMs,
-  )
+  return await findCreditCardBillsScope(page, timeoutMs)
     .then(() => true)
     .catch(() => false);
 }
@@ -370,7 +367,7 @@ async function waitForSignedInState(
       throw new Error(`YuanTa login failed: ${dialogMessage}`);
     }
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   const dialogMessage = getLastDialogMessage();
@@ -407,7 +404,7 @@ async function openCreditCardBillsPage(page: Page): Promise<BrowserScope> {
     )
       .then((link) => link.click({ force: true }))
       .catch(() => undefined);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   if (await clickCreditCardBillsLink(page)) {
@@ -421,16 +418,19 @@ async function findCreditCardBillsScope(
   page: Page,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('input[name="menutype"][value="creditcardbillsquery"]')
-        .or(candidate.locator('a[onclick*="queryMonth("]'))
-        .first(),
-    "YuanTa credit card bills page",
-    timeoutMs,
-  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [...page.frames(), page]) {
+      const hasMonthLink = await hasAttachedLocator(
+        scope.locator('a[onclick*="queryMonth("]'),
+      );
+      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
+      if (hasMonthLink && hasTable) return scope;
+    }
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error("Could not find YuanTa credit card bills page in any frame.");
 }
 
 async function waitForCreditCardBillsReady(
@@ -442,10 +442,6 @@ async function waitForCreditCardBillsReady(
   while (Date.now() < deadline) {
     const scope = await findCreditCardBillsScope(page, 3_000).catch(() => null);
     if (scope) {
-      const hasMonthLink = await hasAttachedLocator(
-        scope.locator('a[onclick*="queryMonth("]'),
-      );
-      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
       const hasPeriod =
         !period ||
         (await scope
@@ -454,9 +450,9 @@ async function waitForCreditCardBillsReady(
           .count()
           .catch(() => 0)) > 0;
 
-      if (hasMonthLink && hasTable && hasPeriod) return scope;
+      if (hasPeriod) return scope;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   throw new Error("Timed out waiting for YuanTa credit card bills page tables.");
@@ -470,7 +466,9 @@ async function clickCreditCardBillsLink(
     page,
     (candidate) =>
       candidate
-        .locator('a[onclick*="creditcardbillsquery"]')
+        .locator(
+          'a[onclick*="creditcardbillsquery"], a[onclick*="turnCDFunc(2)"]',
+        )
         .filter({ hasText: /歷史帳單明細/ }),
     "YuanTa credit card bills link",
     timeoutMs,
@@ -479,7 +477,9 @@ async function clickCreditCardBillsLink(
 
   const link = await firstVisibleLocator(
     scope
-      .locator('a[onclick*="creditcardbillsquery"]')
+      .locator(
+        'a[onclick*="creditcardbillsquery"], a[onclick*="turnCDFunc(2)"]',
+      )
       .filter({ hasText: /歷史帳單明細/ }),
     "YuanTa credit card bills link",
     timeoutMs,
@@ -557,7 +557,7 @@ async function waitForCreditCardFunctionResult(
 ): Promise<BrowserScope> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of [...page.frames(), page]) {
       if (
         (await hasAttachedLocator(scope.locator(".cardBx"))) ||
         (await hasAttachedLocator(scope.locator("table.rwdTable")))
@@ -583,7 +583,7 @@ async function waitForCreditCardFunctionResult(
         return scope;
       }
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   throw new Error(`Could not find ${description} result in any frame.`);
@@ -621,6 +621,108 @@ const baseStatementHeaders = [
 ];
 
 const billedStatementHeaders = [...baseStatementHeaders, "繳費狀態"];
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code: string) =>
+      String.fromCodePoint(Number(code)),
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 16)),
+    );
+}
+
+function htmlAttribute(tag: string, name: string): string {
+  const match = tag.match(
+    new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"),
+  );
+  return decodeHtmlEntities(match?.[2] ?? match?.[3] ?? match?.[4] ?? "");
+}
+
+function stripHtml(value: string): string {
+  return cleanText(
+    decodeHtmlEntities(
+      value
+        .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " "),
+    ),
+  );
+}
+
+function htmlElements(html: string, tag: string): string[] {
+  return [...html.matchAll(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "gi"))]
+    .map((match) => match[0]);
+}
+
+function htmlBlocksByClass(html: string, className: string): string[] {
+  const starts = [
+    ...html.matchAll(
+      new RegExp(
+        `<div\\b[^>]*class=["'][^"']*\\b${className}\\b[^"']*["'][^>]*>`,
+        "gi",
+      ),
+    ),
+  ].map((match) => match.index ?? 0);
+
+  return starts.map((start, index) =>
+    html.slice(start, starts[index + 1] ?? html.length),
+  );
+}
+
+function parseHtmlRowsFromString(tableHtml: string): string[][] {
+  const parsedRows: string[][] = [];
+
+  for (const rowHtml of htmlElements(tableHtml, "tr")) {
+    const values = [
+      ...rowHtml.matchAll(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi),
+    ]
+      .filter((match) => {
+        const className = htmlAttribute(match[0], "class");
+        return !/\b(cardDetailList|billcontrol_Btn)\b/.test(className);
+      })
+      .map((match) => stripHtml(match[3]));
+
+    if (values.some((value) => value.length > 0)) parsedRows.push(values);
+  }
+
+  if (parsedRows.length === 0) {
+    const text = stripHtml(tableHtml);
+    if (text) parsedRows.push([text]);
+  }
+
+  return parsedRows;
+}
+
+function parseRwdTablesFromHtml(html: string): string[][][] {
+  return [
+    ...html.matchAll(
+      /<table\b[^>]*class=["'][^"']*\brwdTable\b[^"']*["'][^>]*>[\s\S]*?<\/table>/gi,
+    ),
+  ].map((match) => parseHtmlRowsFromString(match[0]));
+}
+
+function parseMonthOptionsFromHtml(html: string): MonthOption[] {
+  const options = new Map<number, MonthOption>();
+  for (const match of html.matchAll(
+    /<a\b[^>]*onclick=["'][^"']*queryMonth\(['"]?(\d+)['"]?\)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi,
+  )) {
+    const label = stripHtml(match[2]);
+    if (label) options.set(Number(match[1]), { index: Number(match[1]), label });
+  }
+
+  if (options.size === 0) {
+    throw new Error("Could not find YuanTa credit card statement month links.");
+  }
+
+  return [...options.values()].sort((left, right) => left.index - right.index);
+}
 
 async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
   const rows = await table.locator("tr").all();
@@ -793,7 +895,7 @@ function statementRowsFromTableRows(
 async function findStatementScope(page: Page): Promise<BrowserScope | null> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of [...page.frames(), page]) {
       if (await hasAttachedLocator(scope.locator(".cardBx"))) {
         return scope;
       }
@@ -886,6 +988,74 @@ function inferPaymentStatus(columns: Record<string, string>): string {
   if (paid <= 0) return "未繳";
   if (paid >= due) return "已繳";
   return "部分繳款";
+}
+
+function paymentStatusFromTables(tables: string[][][]): string {
+  for (const rows of tables) {
+    const headerRowIndex = rows.findIndex(
+      (row) => row.includes("帳單月份") && row.includes("已繳款金額"),
+    );
+    if (headerRowIndex < 0 || headerRowIndex + 1 >= rows.length) continue;
+
+    const headers = uniqueHeaders(rows[headerRowIndex]);
+    const values = alignValuesToHeaders(rows[headerRowIndex + 1], headers).slice(
+      0,
+      headers.length,
+    );
+    return inferPaymentStatus(columnsFromValues(headers, values));
+  }
+
+  return "";
+}
+
+function parseCreditCardName(cardHtml: string): string {
+  const heading =
+    cardHtml.match(
+      /<h4\b[^>]*class=["'][^"']*\bweb\b[^"']*["'][^>]*>([\s\S]*?)<\/h4>/i,
+    )?.[1] ??
+    cardHtml.match(/<div\b[^>]*class=["'][^"']*\bcardHead\b[^"']*["'][^>]*>[\s\S]*?<h4\b[^>]*>([\s\S]*?)<\/h4>/i)?.[1] ??
+    "";
+  return stripHtml(heading).replace(/主卡/g, "").trim();
+}
+
+function parseCreditCardNo(cardHtml: string): string {
+  for (const item of htmlElements(cardHtml, "li")) {
+    if (!stripHtml(item.match(/<h5\b[^>]*>([\s\S]*?)<\/h5>/i)?.[1] ?? "").includes("卡號")) {
+      continue;
+    }
+    return stripHtml(item.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i)?.[1] ?? "");
+  }
+
+  return "";
+}
+
+function parseCreditCardBillsHtml(
+  html: string,
+  period: string | null,
+  requireMonthOptions = true,
+): ParsedCreditCardBillsHtml {
+  const tables = parseRwdTablesFromHtml(html);
+  const paymentStatus = period ? paymentStatusFromTables(tables) : "";
+  const rows = htmlBlocksByClass(html, "cardBx")
+    .filter((cardHtml) => cardHtml.includes("cardInfoD") && cardHtml.includes("rwdTable"))
+    .flatMap((cardHtml) => {
+      const creditCardNo = parseCreditCardNo(cardHtml);
+      const creditCardName = parseCreditCardName(cardHtml);
+      return parseRwdTablesFromHtml(cardHtml).flatMap((tableRows) =>
+        statementRowsFromTableRows(tableRows, {
+          creditCardNo,
+          creditCardName,
+          period,
+          paymentStatus,
+        }),
+      );
+    });
+
+  return {
+    monthOptions: requireMonthOptions ? parseMonthOptionsFromHtml(html) : [],
+    paymentStatus,
+    rows,
+  };
 }
 
 async function readBillingPaymentStatus(page: Page): Promise<string> {
@@ -1005,6 +1175,110 @@ async function writeStatementFile(
   };
 }
 
+async function creditCardBillsFrame(page: Page): Promise<Frame> {
+  const preferred = page.frame({ name: "fmain" });
+  if (preferred) return preferred;
+  return page.mainFrame();
+}
+
+async function waitForCreditCardForm(frame: Frame): Promise<void> {
+  await frame.waitForSelector(
+    'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
+    { state: "attached", timeout: 120_000 },
+  );
+}
+
+async function readCreditCardBillsHtmlFromFrameUrl(
+  frame: Frame,
+): Promise<string | null> {
+  const url = frame.url();
+  if (!url.includes("creditcardbillsquery")) return null;
+
+  const response = await frame.goto(url, { waitUntil: "domcontentloaded" });
+  if (!response) throw new Error("YuanTa credit card bills page did not respond.");
+  return await response.text();
+}
+
+async function readCreditCardBillsHtmlFromCurrentUrl(
+  page: Page,
+): Promise<string | null> {
+  const preferred = page.frame({ name: "fmain" });
+  if (preferred) {
+    const html = await readCreditCardBillsHtmlFromFrameUrl(preferred);
+    if (html) return html;
+  }
+
+  for (const frame of page.frames()) {
+    if (frame === preferred) continue;
+    const html = await readCreditCardBillsHtmlFromFrameUrl(frame);
+    if (html) return html;
+  }
+
+  return null;
+}
+
+async function readCurrentCreditCardBillsHtml(page: Page): Promise<string> {
+  const currentHtml = await readCreditCardBillsHtmlFromCurrentUrl(page);
+  if (currentHtml) return currentHtml;
+
+  await openCreditCardBillsPage(page);
+  const openedHtml = await readCreditCardBillsHtmlFromCurrentUrl(page);
+  if (openedHtml) return openedHtml;
+
+  throw new Error("YuanTa credit card bills frame is not on the bills page.");
+}
+
+async function submitCreditCardMonth(
+  page: Page,
+  month: MonthOption,
+): Promise<string> {
+  const frame = await creditCardBillsFrame(page);
+  await waitForCreditCardForm(frame);
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
+      response.request().method() === "POST",
+    { timeout: 120_000 },
+  );
+  await frame.evaluate((monthIndex) => {
+    const form = document.forms.namedItem("mform");
+    if (!form) throw new Error("YuanTa credit card form was not found.");
+    const field = form.elements.namedItem("cdHistoryQuery") as HTMLInputElement | null;
+    if (!field) throw new Error("YuanTa credit card form missed cdHistoryQuery.");
+    field.value = String(monthIndex);
+    form.action = "../tx/creditcardbillsquery?method=queryHistoryDetail";
+    form.submit();
+  }, month.index);
+
+  return await (await responsePromise).text();
+}
+
+async function submitCreditCardUnbilled(page: Page): Promise<string> {
+  const frame = await creditCardBillsFrame(page);
+  await waitForCreditCardForm(frame);
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/nib/tx/creditcardunbilled") &&
+      response.request().method() === "POST",
+    { timeout: 120_000 },
+  );
+  await frame.evaluate(() => {
+    const form = document.forms.namedItem("mform");
+    if (!form) throw new Error("YuanTa credit card form was not found.");
+    const set = (name: string, value: string) => {
+      const field = form.elements.namedItem(name) as HTMLInputElement | null;
+      if (field) field.value = value;
+    };
+    set("menutype", "creditcardunbilled");
+    set("iconid", "menu_creditcardunbilled");
+    set("cdHistoryQuery", "");
+    form.action = "../tx/creditcardunbilled";
+    form.submit();
+  });
+
+  return await (await responsePromise).text();
+}
+
 export default workflow("yuantaCreditCardStatements", {
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
@@ -1054,31 +1328,99 @@ export default workflow("yuantaCreditCardStatements", {
       },
     });
 
-    await openCreditCardBillsPage(page);
-
-    const allMonthOptions = await readMonthOptions(page);
+    const pageReadyStartedAt = Date.now();
+    console.log("yuanta-credit-card-page-ready-start", {
+      startedAt: new Date(pageReadyStartedAt).toISOString(),
+    });
+    let currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+    console.log("yuanta-credit-card-page-ready-complete", {
+      durationMs: Date.now() - pageReadyStartedAt,
+    });
+    const allMonthOptions = parseCreditCardBillsHtml(
+      currentMonthHtml,
+      null,
+    ).monthOptions;
     const monthOptions = selectMonthOptions(allMonthOptions, input);
+    console.log("yuanta-credit-card-months-found", {
+      available: allMonthOptions.length,
+      selected: monthOptions.length,
+    });
     const nextTimestamp = createTimestampGenerator();
     const billedRows: StatementRow[] = [];
-
-    for (const month of monthOptions) {
-      if (month.index !== 0) await clickMonth(page, month);
-      const paymentStatus = await readBillingPaymentStatus(page);
-      billedRows.push(
-        ...(await parseStatementRows(page, month.label, paymentStatus)),
+    const creditCardStepCount =
+      monthOptions.length + (input.includeUnbilled ? 1 : 0);
+    let completedCreditCardSteps = 0;
+    const creditCardProgress = (currentCreditCardSteps = completedCreditCardSteps) =>
+      console.log(
+        `automation-progress: ${
+          60 +
+          Math.min(
+            14,
+            Math.round(
+              (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) *
+                14,
+            ),
+          )
+        }`,
       );
+
+    for (
+      let monthPosition = 0;
+      monthPosition < monthOptions.length;
+      monthPosition += 1
+    ) {
+      const month = monthOptions[monthPosition];
+      const monthStartedAt = Date.now();
+      console.log("yuanta-credit-card-month-start", {
+        index: monthPosition + 1,
+        total: monthOptions.length,
+        monthIndex: month.index,
+        period: month.label,
+        startedAt: new Date(monthStartedAt).toISOString(),
+      });
+      creditCardProgress(monthPosition + 1);
+      if (month.index !== 0) {
+        currentMonthHtml = await submitCreditCardMonth(page, month);
+      }
+      const parsedMonth = parseCreditCardBillsHtml(currentMonthHtml, month.label);
+      const monthRows = parsedMonth.rows;
+      billedRows.push(...monthRows);
+      completedCreditCardSteps += 1;
+      console.log("yuanta-credit-card-month-complete", {
+        index: monthPosition + 1,
+        total: monthOptions.length,
+        monthIndex: month.index,
+        period: month.label,
+        rowCount: monthRows.length,
+        durationMs: Date.now() - monthStartedAt,
+      });
+      creditCardProgress();
     }
 
     const files: TableFile[] = [];
     let unbilledFile: TableFile | null = null;
     if (input.includeUnbilled) {
-      await clickCreditCardFunction(page, 1, "YuanTa unbilled credit card link");
-      const unbilledRows = await parseStatementRows(page, null, "");
+      const unbilledStartedAt = Date.now();
+      console.log("yuanta-credit-card-unbilled-start", {
+        startedAt: new Date(unbilledStartedAt).toISOString(),
+      });
+      creditCardProgress(completedCreditCardSteps + 1);
+      const unbilledRows = parseCreditCardBillsHtml(
+        await submitCreditCardUnbilled(page),
+        null,
+        false,
+      ).rows;
       unbilledFile = await writeStatementFile(
         nextTimestamp,
         "unbilled",
         unbilledRows,
       );
+      completedCreditCardSteps += 1;
+      console.log("yuanta-credit-card-unbilled-complete", {
+        rowCount: unbilledRows.length,
+        durationMs: Date.now() - unbilledStartedAt,
+      });
+      creditCardProgress();
     }
 
     if (unbilledFile) files.push(unbilledFile);

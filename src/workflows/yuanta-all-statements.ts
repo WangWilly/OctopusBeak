@@ -94,7 +94,7 @@ async function findScopeWithLocator(
 ): Promise<BrowserScope | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of [...page.frames(), page]) {
       if (await hasAttachedLocator(locatorFor(scope))) return scope;
     }
     await page.waitForTimeout(250);
@@ -239,16 +239,18 @@ async function hasLoanStatementForm(page: Page): Promise<boolean> {
 }
 
 async function hasCreditCardBillsPage(page: Page): Promise<boolean> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('input[name="menutype"][value="creditcardbillsquery"]')
-        .or(candidate.locator('a[onclick*="queryMonth("]'))
-        .first(),
-    3_000,
-  );
-  return scope !== null;
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    for (const scope of [...page.frames(), page]) {
+      const hasMonthLink = await hasAttachedLocator(
+        scope.locator('a[onclick*="queryMonth("]'),
+      );
+      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
+      if (hasMonthLink && hasTable) return true;
+    }
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 async function revealYuanTaArea(
@@ -299,8 +301,10 @@ async function prepareForComponent(
 ): Promise<void> {
   const { page } = ctx;
   if (componentKey === "foreignCurrency") {
+    const startedAt = Date.now();
     console.log("yuanta-all-component-prepare", {
       workflow: "yuantaForeignCurrencyStatements",
+      startedAt: new Date(startedAt).toISOString(),
     });
     const usedDirectNavigation = await gotoTransactionPage(
       page,
@@ -311,6 +315,7 @@ async function prepareForComponent(
       console.log("yuanta-all-component-page-ready", {
         workflow: "yuantaForeignCurrencyStatements",
         via: usedDirectNavigation ? "direct-navigation" : "existing-page",
+        durationMs: Date.now() - startedAt,
       });
       return;
     }
@@ -324,14 +329,17 @@ async function prepareForComponent(
     });
     console.warn("yuanta-all-component-page-not-ready", {
       workflow: "yuantaForeignCurrencyStatements",
+      durationMs: Date.now() - startedAt,
       note: "falling back to the component's own menu navigation",
     });
     return;
   }
 
   if (componentKey === "loan") {
+    const startedAt = Date.now();
     console.log("yuanta-all-component-prepare", {
       workflow: "yuantaLoanStatements",
+      startedAt: new Date(startedAt).toISOString(),
     });
     const usedDirectNavigation = await gotoTransactionPage(
       page,
@@ -342,6 +350,7 @@ async function prepareForComponent(
       console.log("yuanta-all-component-page-ready", {
         workflow: "yuantaLoanStatements",
         via: usedDirectNavigation ? "direct-navigation" : "existing-page",
+        durationMs: Date.now() - startedAt,
       });
       return;
     }
@@ -355,14 +364,17 @@ async function prepareForComponent(
     });
     console.warn("yuanta-all-component-page-not-ready", {
       workflow: "yuantaLoanStatements",
+      durationMs: Date.now() - startedAt,
       note: "falling back to the component's own menu navigation",
     });
     return;
   }
 
   if (componentKey === "creditCard") {
+    const startedAt = Date.now();
     console.log("yuanta-all-component-prepare", {
       workflow: "yuantaCreditCardStatements",
+      startedAt: new Date(startedAt).toISOString(),
     });
     const usedDirectNavigation = await gotoTransactionPage(
       page,
@@ -373,6 +385,7 @@ async function prepareForComponent(
       console.log("yuanta-all-component-page-ready", {
         workflow: "yuantaCreditCardStatements",
         via: usedDirectNavigation ? "direct-navigation" : "existing-page",
+        durationMs: Date.now() - startedAt,
       });
       return;
     }
@@ -387,13 +400,16 @@ async function prepareForComponent(
     });
     console.warn("yuanta-all-component-page-not-ready", {
       workflow: "yuantaCreditCardStatements",
+      durationMs: Date.now() - startedAt,
       note: "falling back to the component's own menu navigation",
     });
     return;
   }
 
+  const startedAt = Date.now();
   console.log("yuanta-all-component-prepare", {
     workflow: "yuantaFundStatements",
+    startedAt: new Date(startedAt).toISOString(),
   });
   await revealYuanTaArea(page, "fund", {
     menuSelectors: [
@@ -403,6 +419,7 @@ async function prepareForComponent(
   });
   console.warn("yuanta-all-component-page-not-ready", {
     workflow: "yuantaFundStatements",
+    durationMs: Date.now() - startedAt,
     note: "falling back to the component's own menu navigation",
   });
 }
@@ -419,16 +436,24 @@ async function runComponent(
     return { workflow: component.name, status: "skipped" };
   }
 
-  console.log("yuanta-all-component-start", { workflow: component.name });
+  const startedAt = Date.now();
+  console.log("yuanta-all-component-start", {
+    workflow: component.name,
+    startedAt: new Date(startedAt).toISOString(),
+  });
 
   try {
     const output = await component.run(ctx, withCredentials(input, credentials));
-    console.log("yuanta-all-component-complete", { workflow: component.name });
+    console.log("yuanta-all-component-complete", {
+      workflow: component.name,
+      durationMs: Date.now() - startedAt,
+    });
     return { workflow: component.name, status: "success", output };
   } catch (error: unknown) {
     const message = errorMessage(error);
     console.error("yuanta-all-component-failed", {
       workflow: component.name,
+      durationMs: Date.now() - startedAt,
       message,
     });
     if (!continueOnError) throw error;

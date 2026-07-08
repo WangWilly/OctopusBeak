@@ -495,6 +495,8 @@ async function submitLogin(
   page: Page,
   credentials: YuantaCredentials,
 ): Promise<void> {
+  if (page.frame({ name: "fmain" }) && currentCidFromFrameUrls(page)) return;
+
   const loginFrame = await waitForFrame(page, "main");
   await restoreUserIdForSubmit(
     loginFrame,

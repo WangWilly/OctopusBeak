@@ -1092,7 +1092,7 @@ async function waitForFundTables(
       );
       if (bodyPattern.test(bodyText)) return scope;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   throw new Error(`Timed out waiting for ${description}.`);
@@ -1745,6 +1745,20 @@ export default workflow("yuantaFundStatements", {
       const parsedTables: ParsedTable[] = [];
       const nextTimestamp = createTimestampGenerator();
       let selectedFunds: FundPosition[] = [];
+      let completedFundSteps = 0;
+      let fundStepCount = 0;
+      const fundProgress = () => {
+        if (fundStepCount === 0) return;
+        console.log(
+          `automation-progress: ${
+            75 +
+            Math.min(
+              24,
+              Math.round((completedFundSteps / fundStepCount) * 24),
+            )
+          }`,
+        );
+      };
 
       if (input.includePortfolioSummary) {
         await openPortfolioSummary(page);
@@ -1761,11 +1775,17 @@ export default workflow("yuantaFundStatements", {
         input.includeInvestmentDetails ||
         input.includeHistoricalTransactions
       ) {
+        const overviewStartedAt = Date.now();
         await openInvestmentOverview(page);
         const fundPositions = await extractFundPositions(page);
         selectedFunds = fundPositions.filter((position) =>
           matchesFundFilter(position, input.fundFilters),
         );
+        console.log("yuanta-fund-positions-found", {
+          available: fundPositions.length,
+          selected: selectedFunds.length,
+          durationMs: Date.now() - overviewStartedAt,
+        });
 
         if (input.includeInvestmentDetails) {
           await captureTables(
@@ -1782,7 +1802,20 @@ export default workflow("yuantaFundStatements", {
             throw new Error("Could not find matching YuanTa fund positions.");
           }
 
-          for (const position of selectedFunds) {
+          fundStepCount = selectedFunds.length;
+          for (
+            let fundIndex = 0;
+            fundIndex < selectedFunds.length;
+            fundIndex += 1
+          ) {
+            const position = selectedFunds[fundIndex];
+            const tableCountBefore = parsedTables.length;
+            const historyStartedAt = Date.now();
+            console.log("yuanta-fund-history-start", {
+              index: fundIndex + 1,
+              total: selectedFunds.length,
+              startedAt: new Date(historyStartedAt).toISOString(),
+            });
             await openInvestmentOverview(page);
             await openFundDetail(page, position);
             await queryFundTransactions(
@@ -1797,6 +1830,14 @@ export default workflow("yuantaFundStatements", {
               `${position.paperNo}-${position.trustNo}`,
               dateRange.label,
             );
+            completedFundSteps += 1;
+            console.log("yuanta-fund-history-complete", {
+              index: fundIndex + 1,
+              total: selectedFunds.length,
+              tableCount: parsedTables.length - tableCountBefore,
+              durationMs: Date.now() - historyStartedAt,
+            });
+            fundProgress();
           }
         }
       }
