@@ -70,7 +70,7 @@ await writeFile(join(sourceDir, "first.csv"), csv([confirmedRow]), "utf8");
 await runImport();
 
 await writeFile(
-  join(sourceDir, "second.csv"),
+  join(sourceDir, "first.csv"),
   csv([{ ...confirmedRow, status: "voided" }]),
   "utf8",
 );
@@ -84,19 +84,31 @@ const itemCount = db.prepare(
   "SELECT COUNT(*) AS count FROM personal_invoice_items",
 ).get() as { count: number };
 const invoice = db.prepare(
-  "SELECT invoice_id, issued_at, status, rebated FROM personal_invoices",
+  [
+    "SELECT invoice_id, issued_at, status, rebated,",
+    "source_relative_path, raw_payload_json",
+    "FROM personal_invoices",
+  ].join(" "),
 ).get() as {
   invoice_id: string;
   issued_at: number;
   status: string;
   rebated: number;
+  source_relative_path: string;
+  raw_payload_json: string;
 };
 const item = db.prepare(
-  "SELECT item_sequence_number, item_product_name, item_paid_amount FROM personal_invoice_items",
+  [
+    "SELECT item_sequence_number, item_product_name, item_paid_amount,",
+    "source_relative_path, raw_payload_json",
+    "FROM personal_invoice_items",
+  ].join(" "),
 ).get() as {
   item_sequence_number: string;
   item_product_name: string;
   item_paid_amount: number;
+  source_relative_path: string;
+  raw_payload_json: string;
 };
 db.close();
 
@@ -107,9 +119,13 @@ assert.deepEqual({ ...invoice }, {
   issued_at: 1783065600,
   status: "voided",
   rebated: 0,
+  source_relative_path: "einvoice-personal-invoices/first.csv",
+  raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
 });
 assert.deepEqual({ ...item }, {
   item_sequence_number: "1",
   item_product_name: "Coffee",
   item_paid_amount: 100,
+  source_relative_path: "einvoice-personal-invoices/first.csv",
+  raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
 });
