@@ -28,12 +28,33 @@ assert.deepEqual(
     "hncb-statements",
     "ctbc-statements",
     "post-statements",
+    "sinopac-statements",
+    "linebank-statements",
+    "einvoice-personal-invoices",
   ],
 );
 
 assert.equal(taskById("sync-maicoin")?.kind, "sync");
 assert.equal(taskById("ctbc-statements")?.credentialGroupId, "ctbc");
 assert.equal(taskById("post-statements")?.credentialGroupId, "post");
+assert.equal(taskById("einvoice-personal-invoices")?.kind, "crawler");
+assert.equal(taskById("einvoice-personal-invoices")?.credentialGroupId, "einvoice");
+assert.deepEqual(
+  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "einvoice")
+    ?.credentialKeys,
+  [
+    "LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER",
+    "LIBRETTO_CLOUD_EINVOICE_PASSWORD",
+  ],
+);
+assert.equal(
+  AUTOMATION_ENABLED_KEYS.includes("LIBRETTO_CLOUD_EINVOICE_ENABLED"),
+  true,
+);
+assert.equal(
+  AUTOMATION_SECRET_KEYS.includes("LIBRETTO_CLOUD_EINVOICE_PASSWORD"),
+  true,
+);
 assert.equal(taskById("import-downloads-csv")?.kind, "import");
 assert.deepEqual(
   taskById("import-downloads-csv")?.dependencies,
@@ -74,6 +95,9 @@ assert.deepEqual(
     "hncb-statements",
     "ctbc-statements",
     "post-statements",
+    "sinopac-statements",
+    "linebank-statements",
+    "einvoice-personal-invoices",
   ],
 );
 
