@@ -58,6 +58,7 @@ type InvoiceHeader = {
 };
 
 type InvoiceItem = {
+  sequenceNumber?: string | null;
   item?: string | null;
   quantity?: string | null;
   unitPrice?: string | null;
@@ -82,6 +83,7 @@ type PurchasedItemRow = {
   seller_name: string;
   seller_addr: string;
   buyer_business_account_number: string;
+  item_sequence_number: string;
   item_quantity: string;
   item_unit_price: string;
   item_paid_amount: string;
@@ -123,6 +125,7 @@ const csvHeaders: (keyof PurchasedItemRow)[] = [
   "seller_name",
   "seller_addr",
   "buyer_business_account_number",
+  "item_sequence_number",
   "item_quantity",
   "item_unit_price",
   "item_paid_amount",
@@ -268,8 +271,9 @@ function purchasedItemRows(
   };
 
   const rows = items.length ? items : [{}];
-  return rows.map((item) => ({
+  return rows.map((item, index) => ({
     ...base,
+    item_sequence_number: cleanText(item.sequenceNumber) || String(index + 1),
     item_quantity: cleanText(item.quantity),
     item_unit_price: cleanText(item.unitPrice),
     item_paid_amount: cleanText(item.amount),
@@ -506,7 +510,7 @@ async function readAllInvoices(page: Page): Promise<{
 }
 
 async function writeInvoicesFile(rows: PurchasedItemRow[]): Promise<TableFile> {
-  const dir = join(process.cwd(), "downloads");
+  const dir = join(process.cwd(), "downloads", "einvoice-personal-invoices");
   await mkdir(dir, { recursive: true });
 
   const baseName = `einvoice-personal-invoices-${Date.now()}`;
