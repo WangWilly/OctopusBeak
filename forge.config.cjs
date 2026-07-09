@@ -26,7 +26,6 @@ module.exports = {
       /^\/docs($|\/)/,
       /^\/downloads($|\/)/,
       /^\/playground($|\/)/,
-      /^\/build($|\/)/,
       /^\/out($|\/)/,
     ],
     ...(shouldSign
