@@ -27,7 +27,6 @@ module.exports = {
       /^\/downloads($|\/)/,
       /^\/playground($|\/)/,
       /^\/build($|\/)/,
-      /^\/build-electron($|\/)/,
       /^\/out($|\/)/,
     ],
     ...(shouldSign
