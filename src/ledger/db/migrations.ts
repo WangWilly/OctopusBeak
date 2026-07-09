@@ -320,11 +320,64 @@ function createTypedStatementSchema(db: LedgerDatabase) {
     );
   `);
 
+  createPersonalInvoiceStatementTables(db);
+
   for (const table of TYPED_STATEMENT_TABLES) {
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source_file_id ON ${table}(source_file_id)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_import_run_id ON ${table}(import_run_id)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source ON ${table}(source_relative_path, source_row_index)`);
+    createTypedStatementIndexesFor(db, table);
   }
+}
+
+function createTypedStatementIndexesFor(db: LedgerDatabase, table: string) {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source_file_id ON ${table}(source_file_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_import_run_id ON ${table}(import_run_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source ON ${table}(source_relative_path, source_row_index)`);
+}
+
+function createPersonalInvoiceStatementTables(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS personal_invoices (
+      ${COMMON_ROW_COLUMNS},
+      invoice_key TEXT NOT NULL UNIQUE,
+      carrier_customized_name TEXT,
+      issued_at INTEGER,
+      invoice_id TEXT NOT NULL,
+      amount REAL,
+      status TEXT,
+      rebated INTEGER NOT NULL DEFAULT 0,
+      seller_business_account_number TEXT,
+      seller_name TEXT,
+      seller_addr TEXT,
+      buyer_business_account_number TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_personal_invoices_invoice_id
+      ON personal_invoices(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_personal_invoices_issued_at
+      ON personal_invoices(issued_at);
+    CREATE INDEX IF NOT EXISTS idx_personal_invoices_seller
+      ON personal_invoices(seller_business_account_number);
+
+    CREATE TABLE IF NOT EXISTS personal_invoice_items (
+      ${COMMON_ROW_COLUMNS},
+      item_key TEXT NOT NULL UNIQUE,
+      invoice_key TEXT NOT NULL,
+      item_sequence_number TEXT,
+      item_quantity REAL,
+      item_unit_price REAL,
+      item_paid_amount REAL,
+      item_product_name TEXT,
+      FOREIGN KEY (invoice_key) REFERENCES personal_invoices(invoice_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_personal_invoice_items_invoice_key
+      ON personal_invoice_items(invoice_key);
+    CREATE INDEX IF NOT EXISTS idx_personal_invoice_items_product_name
+      ON personal_invoice_items(item_product_name);
+  `);
+}
+
+function addPersonalInvoiceStatementTables(db: LedgerDatabase) {
+  createPersonalInvoiceStatementTables(db);
+  createTypedStatementIndexesFor(db, "personal_invoices");
+  createTypedStatementIndexesFor(db, "personal_invoice_items");
 }
 
 function createDashboardIndexes(db: LedgerDatabase) {
@@ -628,6 +681,11 @@ const migrations: LedgerMigration[] = [
     version: 8,
     name: "automation_task_runs_started_at_index",
     up: addAutomationTaskRunsStartedAtIndex,
+  },
+  {
+    version: 9,
+    name: "personal_invoice_statement_tables",
+    up: addPersonalInvoiceStatementTables,
   },
 ];
 
