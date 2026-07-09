@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import XLSX from "xlsx";
 import { z } from "zod";
 import {
@@ -16,6 +17,8 @@ import {
 import {
   TYPED_STATEMENT_TABLES,
   createSourceCsvParser,
+  personalInvoiceFields,
+  personalInvoiceItemFields,
   type SourceMetadata,
 } from "./source-csv-parsers.ts";
 
@@ -266,6 +269,46 @@ function insertRecord(db: LedgerDatabase, table: string, record: Record<string, 
   ).run(...columns.map((column) => sqliteValue(record[column])));
 }
 
+const PERSONAL_INVOICE_UPDATE_COLUMNS = [
+  "carrier_customized_name",
+  "issued_at",
+  "invoice_id",
+  "amount",
+  "status",
+  "rebated",
+  "seller_business_account_number",
+  "seller_name",
+  "seller_addr",
+  "buyer_business_account_number",
+] as const;
+
+const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
+  "invoice_key",
+  "item_sequence_number",
+  "item_quantity",
+  "item_unit_price",
+  "item_paid_amount",
+  "item_product_name",
+] as const;
+
+function upsertRecord(
+  db: LedgerDatabase,
+  table: string,
+  record: Record<string, unknown>,
+  conflictColumn: string,
+  updateColumns: readonly string[],
+) {
+  const columns = Object.keys(record);
+  const placeholders = columns.map(() => "?").join(", ");
+  const assignments = updateColumns
+    .map((column) => `${column} = excluded.${column}`)
+    .join(", ");
+  db.prepare(
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders}) ` +
+      `ON CONFLICT(${conflictColumn}) DO UPDATE SET ${assignments}`,
+  ).run(...columns.map((column) => sqliteValue(record[column])));
+}
+
 function sourceFileIdForPath(sourceRelativePath: string): string {
   return hashBytes(stableStringify(["source-file", sourceRelativePath])).slice(0, 24);
 }
@@ -362,6 +405,41 @@ function commonTypedRowFields(
   };
 }
 
+function insertPersonalInvoiceStatementRow(
+  db: LedgerDatabase,
+  sourceFileRecord: Record<string, unknown>,
+  row: {
+    sourceRowIndex: number;
+    rawPayload: Record<string, string>;
+    rawRowHash?: string;
+    sourceHash?: string;
+    contentHash?: string;
+    dedupeStatus?: string;
+  },
+) {
+  const commonFields = commonTypedRowFields(sourceFileRecord, row);
+  upsertRecord(
+    db,
+    "personal_invoices",
+    {
+      ...commonFields,
+      ...personalInvoiceFields(row.rawPayload),
+    },
+    "invoice_key",
+    PERSONAL_INVOICE_UPDATE_COLUMNS,
+  );
+  upsertRecord(
+    db,
+    "personal_invoice_items",
+    {
+      ...commonFields,
+      ...personalInvoiceItemFields(row.rawPayload),
+    },
+    "item_key",
+    PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS,
+  );
+}
+
 function insertTypedStatementRow(
   db: LedgerDatabase,
   sourceFileRecord: Record<string, unknown>,
@@ -374,13 +452,19 @@ function insertTypedStatementRow(
     dedupeStatus?: string;
   },
 ) {
+  const bank = String(sourceFileRecord.bank ?? "");
+  const product = String(sourceFileRecord.product ?? "");
+  if (bank === "einvoice" && product === "personal-invoices") {
+    insertPersonalInvoiceStatementRow(db, sourceFileRecord, row);
+    return;
+  }
   const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
   const headers = Array.isArray(sourceFileRecord.headers)
     ? (sourceFileRecord.headers as string[])
     : [];
   const parser = createSourceCsvParser({
-    bank: String(sourceFileRecord.bank ?? ""),
-    product: String(sourceFileRecord.product ?? ""),
+    bank,
+    product,
     sourceRelativePath,
     metadata: (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
     headers,
@@ -511,7 +595,7 @@ function sourceHashForOccurrence(
   );
 }
 
-async function importDownloadsCsv(rawInput: Record<string, unknown>) {
+export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
   console.log("automation-progress: 0");
   const input = inputSchema.parse(rawInput);
   const downloadsDir = resolve(input.downloadsDir);
@@ -732,7 +816,13 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+const isCliEntry =
+  process.argv[1] !== undefined &&
+  pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isCliEntry) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}
