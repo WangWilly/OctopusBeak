@@ -270,6 +270,7 @@ function insertRecord(db: LedgerDatabase, table: string, record: Record<string, 
 }
 
 const PERSONAL_INVOICE_UPDATE_COLUMNS = [
+  "statement_row_id",
   "source_file_id",
   "import_run_id",
   "source_relative_path",
@@ -293,6 +294,7 @@ const PERSONAL_INVOICE_UPDATE_COLUMNS = [
 ] as const;
 
 const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
+  "statement_row_id",
   "source_file_id",
   "import_run_id",
   "source_relative_path",
