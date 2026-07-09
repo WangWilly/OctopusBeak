@@ -20,7 +20,6 @@ module.exports = {
       /^\/\.env(?:\..*)?$/,
       /^\/\.libretto($|\/)/,
       /^\/\.superpowers($|\/)/,
-      /^\/scripts($|\/)/,
       /^\/site($|\/)/,
       /^\/data($|\/)/,
       /^\/docs($|\/)/,
