@@ -18,6 +18,7 @@ export const CSV_IMPORT_DEPENDENCY_IDS = [
   "post-statements",
   "sinopac-statements",
   "linebank-statements",
+  "einvoice-personal-invoices",
 ] as const;
 
 export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
@@ -120,6 +121,15 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       "LIBRETTO_CLOUD_LINEBANK_USER_ID",
       "LIBRETTO_CLOUD_LINEBANK_ACCOUNT",
       "LIBRETTO_CLOUD_LINEBANK_PASSWORD",
+    ],
+  },
+  {
+    id: "einvoice",
+    label: "E-Invoice",
+    enabledKey: "LIBRETTO_CLOUD_EINVOICE_ENABLED",
+    credentialKeys: [
+      "LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER",
+      "LIBRETTO_CLOUD_EINVOICE_PASSWORD",
     ],
   },
   {
@@ -242,6 +252,17 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
   {
+    id: "einvoice-personal-invoices",
+    label: "E-Invoice personal invoices",
+    script: "run:einvoice-personal-invoices",
+    command: ["libretto", "run", "src/workflows/einvoice-personal-invoices.ts"],
+    kind: "crawler",
+    credentialGroupId: "einvoice",
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[10].credentialKeys,
+    dependencies: [],
+    maxAttempts: 1,
+  },
+  {
     id: "sync-maicoin",
     label: "MaiCoin sync",
     script: "run:sync-maicoin",
@@ -254,7 +275,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     ],
     kind: "sync",
     credentialGroupId: "maicoin",
-    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[10].credentialKeys,
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[11].credentialKeys,
     dependencies: [],
     maxAttempts: 1,
   },
