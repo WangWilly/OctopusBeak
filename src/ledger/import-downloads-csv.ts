@@ -270,6 +270,16 @@ function insertRecord(db: LedgerDatabase, table: string, record: Record<string, 
 }
 
 const PERSONAL_INVOICE_UPDATE_COLUMNS = [
+  "source_file_id",
+  "import_run_id",
+  "source_relative_path",
+  "source_row_index",
+  "source_hash",
+  "raw_row_hash",
+  "content_hash",
+  "dedupe_status",
+  "raw_payload_json",
+  "imported_at",
   "carrier_customized_name",
   "issued_at",
   "invoice_id",
@@ -283,6 +293,16 @@ const PERSONAL_INVOICE_UPDATE_COLUMNS = [
 ] as const;
 
 const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
+  "source_file_id",
+  "import_run_id",
+  "source_relative_path",
+  "source_row_index",
+  "source_hash",
+  "raw_row_hash",
+  "content_hash",
+  "dedupe_status",
+  "raw_payload_json",
+  "imported_at",
   "invoice_key",
   "item_sequence_number",
   "item_quantity",
@@ -649,7 +669,9 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       scannedCsvFiles += 1;
 
       const sourceRelativePath = relative(downloadsDir, sourceFile);
-      if (importedSourceFiles.has(sourceRelativePath)) {
+      const allowPathReimport =
+        context.bank === "einvoice" && context.product === "personal-invoices";
+      if (!allowPathReimport && importedSourceFiles.has(sourceRelativePath)) {
         skippedCsvFiles += 1;
         continue;
       }
