@@ -494,6 +494,7 @@ function normalizeContentHashesAndDedupe(db: LedgerDatabase) {
   }> = [];
 
   for (const table of TYPED_STATEMENT_TABLES) {
+    if (!tableColumns(db, table).has("statement_row_id")) continue;
     rows.push(
       ...(db
         .prepare(`

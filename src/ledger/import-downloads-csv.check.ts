@@ -193,3 +193,58 @@ assert.deepEqual(
     raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
   },
 );
+
+const unchangedRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-unchanged-"));
+const unchangedDownloadsDir = join(unchangedRootDir, "downloads");
+const unchangedOutputDir = join(unchangedRootDir, "ledger");
+const unchangedSourceDir = join(
+  unchangedDownloadsDir,
+  "einvoice-personal-invoices",
+);
+await mkdir(unchangedSourceDir, { recursive: true });
+
+await writeFile(join(unchangedSourceDir, "same.csv"), csv([confirmedRow]), "utf8");
+await importDownloadsCsv({
+  downloadsDir: unchangedDownloadsDir,
+  outputDir: unchangedOutputDir,
+  bankFilters: ["einvoice"],
+  productFilters: ["personal-invoices"],
+});
+await importDownloadsCsv({
+  downloadsDir: unchangedDownloadsDir,
+  outputDir: unchangedOutputDir,
+  bankFilters: ["einvoice"],
+  productFilters: ["personal-invoices"],
+});
+
+const unchangedDb = openLedgerDatabase(unchangedOutputDir, { readOnly: true });
+const unchangedInvoiceCount = unchangedDb.prepare(
+  "SELECT COUNT(*) AS count FROM personal_invoices",
+).get() as { count: number };
+const unchangedItemCount = unchangedDb.prepare(
+  "SELECT COUNT(*) AS count FROM personal_invoice_items",
+).get() as { count: number };
+const unchangedInvoice = unchangedDb.prepare(
+  "SELECT status, dedupe_status FROM personal_invoices",
+).get() as {
+  status: string;
+  dedupe_status: string;
+};
+const unchangedItem = unchangedDb.prepare(
+  "SELECT item_product_name, dedupe_status FROM personal_invoice_items",
+).get() as {
+  item_product_name: string;
+  dedupe_status: string;
+};
+unchangedDb.close();
+
+assert.equal(unchangedInvoiceCount.count, 1);
+assert.equal(unchangedItemCount.count, 1);
+assert.deepEqual({ ...unchangedInvoice }, {
+  status: "confirmed",
+  dedupe_status: "unique",
+});
+assert.deepEqual({ ...unchangedItem }, {
+  item_product_name: "Coffee",
+  dedupe_status: "unique",
+});
