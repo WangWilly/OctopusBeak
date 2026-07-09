@@ -313,6 +313,27 @@ const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
   "item_product_name",
 ] as const;
 
+const SOURCE_FILE_UPDATE_COLUMNS = [
+  "source_file_id",
+  "import_run_id",
+  "source_file",
+  "source_file_hash",
+  "source_file_bytes",
+  "source_file_modified_at",
+  "imported_at",
+  "bank",
+  "product",
+  "source_sheet_name",
+  "csv_layout_json",
+  "headers_json",
+  "record_keys_json",
+  "related_raw_files_json",
+  "related_raw_file_metadata_json",
+  "row_count",
+  "status",
+  "record_json",
+] as const;
+
 function upsertRecord(
   db: LedgerDatabase,
   table: string,
@@ -373,7 +394,13 @@ function sourceFileRecordFromBatch(
 }
 
 function insertSourceFile(db: LedgerDatabase, record: Record<string, unknown>) {
-  insertRecord(db, "source_files", sourceFileRecordFromBatch(record));
+  upsertRecord(
+    db,
+    "source_files",
+    sourceFileRecordFromBatch(record),
+    "source_relative_path",
+    SOURCE_FILE_UPDATE_COLUMNS,
+  );
 }
 
 function commonTypedRowFields(

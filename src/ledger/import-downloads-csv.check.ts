@@ -76,6 +76,16 @@ const initialInvoice = initialDb.prepare(
 const initialItem = initialDb.prepare(
   "SELECT statement_row_id FROM personal_invoice_items",
 ).get() as { statement_row_id: string };
+const initialSourceFile = initialDb.prepare(
+  [
+    "SELECT import_run_id, source_file_hash, record_json",
+    "FROM source_files",
+  ].join(" "),
+).get() as {
+  import_run_id: string;
+  source_file_hash: string;
+  record_json: string;
+};
 initialDb.close();
 
 await writeFile(
@@ -92,14 +102,18 @@ const invoiceCount = db.prepare(
 const itemCount = db.prepare(
   "SELECT COUNT(*) AS count FROM personal_invoice_items",
 ).get() as { count: number };
+const sourceFileCount = db.prepare(
+  "SELECT COUNT(*) AS count FROM source_files",
+).get() as { count: number };
 const invoice = db.prepare(
   [
-    "SELECT statement_row_id, invoice_id, issued_at, status, rebated,",
+    "SELECT statement_row_id, import_run_id, invoice_id, issued_at, status, rebated,",
     "source_relative_path, raw_payload_json",
     "FROM personal_invoices",
   ].join(" "),
 ).get() as {
   statement_row_id: string;
+  import_run_id: string;
   invoice_id: string;
   issued_at: number;
   status: string;
@@ -121,12 +135,34 @@ const item = db.prepare(
   source_relative_path: string;
   raw_payload_json: string;
 };
+const sourceFile = db.prepare(
+  [
+    "SELECT import_run_id, source_file_hash, source_relative_path, record_json",
+    "FROM source_files",
+  ].join(" "),
+).get() as {
+  import_run_id: string;
+  source_file_hash: string;
+  source_relative_path: string;
+  record_json: string;
+};
 db.close();
 
 assert.equal(invoiceCount.count, 1);
 assert.equal(itemCount.count, 1);
+assert.equal(sourceFileCount.count, 1);
 assert.notEqual(invoice.statement_row_id, initialInvoice.statement_row_id);
 assert.notEqual(item.statement_row_id, initialItem.statement_row_id);
+assert.equal(sourceFile.import_run_id, invoice.import_run_id);
+assert.notEqual(sourceFile.import_run_id, initialSourceFile.import_run_id);
+assert.notEqual(sourceFile.source_file_hash, initialSourceFile.source_file_hash);
+assert.notEqual(sourceFile.record_json, initialSourceFile.record_json);
+assert.equal(
+  sourceFile.source_relative_path,
+  "einvoice-personal-invoices/first.csv",
+);
+assert.match(sourceFile.record_json, /"importRunId":"[^"]+"/);
+assert.match(sourceFile.record_json, /"sourceFileHash":"[^"]+"/);
 assert.deepEqual(
   {
     ...invoice,
@@ -134,6 +170,7 @@ assert.deepEqual(
   },
   {
     statement_row_id: "<changed>",
+    import_run_id: sourceFile.import_run_id,
     invoice_id: "AB12345678",
     issued_at: 1783065600,
     status: "voided",
