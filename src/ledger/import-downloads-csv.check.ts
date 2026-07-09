@@ -69,6 +69,15 @@ async function runImport() {
 await writeFile(join(sourceDir, "first.csv"), csv([confirmedRow]), "utf8");
 await runImport();
 
+const initialDb = openLedgerDatabase(outputDir, { readOnly: true });
+const initialInvoice = initialDb.prepare(
+  "SELECT statement_row_id FROM personal_invoices",
+).get() as { statement_row_id: string };
+const initialItem = initialDb.prepare(
+  "SELECT statement_row_id FROM personal_invoice_items",
+).get() as { statement_row_id: string };
+initialDb.close();
+
 await writeFile(
   join(sourceDir, "first.csv"),
   csv([{ ...confirmedRow, status: "voided" }]),
@@ -85,11 +94,12 @@ const itemCount = db.prepare(
 ).get() as { count: number };
 const invoice = db.prepare(
   [
-    "SELECT invoice_id, issued_at, status, rebated,",
+    "SELECT statement_row_id, invoice_id, issued_at, status, rebated,",
     "source_relative_path, raw_payload_json",
     "FROM personal_invoices",
   ].join(" "),
 ).get() as {
+  statement_row_id: string;
   invoice_id: string;
   issued_at: number;
   status: string;
@@ -99,11 +109,12 @@ const invoice = db.prepare(
 };
 const item = db.prepare(
   [
-    "SELECT item_sequence_number, item_product_name, item_paid_amount,",
+    "SELECT statement_row_id, item_sequence_number, item_product_name, item_paid_amount,",
     "source_relative_path, raw_payload_json",
     "FROM personal_invoice_items",
   ].join(" "),
 ).get() as {
+  statement_row_id: string;
   item_sequence_number: string;
   item_product_name: string;
   item_paid_amount: number;
@@ -114,18 +125,34 @@ db.close();
 
 assert.equal(invoiceCount.count, 1);
 assert.equal(itemCount.count, 1);
-assert.deepEqual({ ...invoice }, {
-  invoice_id: "AB12345678",
-  issued_at: 1783065600,
-  status: "voided",
-  rebated: 0,
-  source_relative_path: "einvoice-personal-invoices/first.csv",
-  raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
-});
-assert.deepEqual({ ...item }, {
-  item_sequence_number: "1",
-  item_product_name: "Coffee",
-  item_paid_amount: 100,
-  source_relative_path: "einvoice-personal-invoices/first.csv",
-  raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
-});
+assert.notEqual(invoice.statement_row_id, initialInvoice.statement_row_id);
+assert.notEqual(item.statement_row_id, initialItem.statement_row_id);
+assert.deepEqual(
+  {
+    ...invoice,
+    statement_row_id: "<changed>",
+  },
+  {
+    statement_row_id: "<changed>",
+    invoice_id: "AB12345678",
+    issued_at: 1783065600,
+    status: "voided",
+    rebated: 0,
+    source_relative_path: "einvoice-personal-invoices/first.csv",
+    raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
+  },
+);
+assert.deepEqual(
+  {
+    ...item,
+    statement_row_id: "<changed>",
+  },
+  {
+    statement_row_id: "<changed>",
+    item_sequence_number: "1",
+    item_product_name: "Coffee",
+    item_paid_amount: 100,
+    source_relative_path: "einvoice-personal-invoices/first.csv",
+    raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
+  },
+);
