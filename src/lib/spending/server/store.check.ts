@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import { buildSpendingModel } from "../model.ts";
 import { loadSpending, updateSpendingItemCategory } from "./store.ts";
 
 const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
@@ -46,7 +47,7 @@ function insertItem(
   input: {
     itemKey: string;
     invoiceKey: string;
-    sequence: number;
+    sequence: number | null;
     paidAmount: number;
     productName: string;
     category: string;
@@ -65,7 +66,7 @@ function insertItem(
   `).run(
     `row-${input.itemKey}`,
     `source-${input.itemKey}`,
-    input.sequence,
+    input.sequence ?? 0,
     `source-hash-${input.itemKey}`,
     `raw-hash-${input.itemKey}`,
     `content-hash-${input.itemKey}`,
@@ -100,21 +101,43 @@ try {
     amount: 50,
     issuedAt: null,
   });
+  insertInvoice(db, {
+    invoiceKey: "legacy-null-sequence-invoice",
+    invoiceId: "GH12345678",
+    status: "confirmed",
+    amount: 5,
+  });
+  insertItem(db, {
+    itemKey: "confirmed-item-b",
+    invoiceKey: "confirmed-invoice",
+    sequence: 1,
+    paidAmount: 20,
+    productName: "Tied B",
+    category: "daily",
+  });
+  insertItem(db, {
+    itemKey: "confirmed-item-a",
+    invoiceKey: "confirmed-invoice",
+    sequence: 1,
+    paidAmount: 30,
+    productName: "Tied A",
+    category: "food",
+  });
   insertItem(db, {
     itemKey: "confirmed-item-2",
     invoiceKey: "confirmed-invoice",
     sequence: 2,
-    paidAmount: 60,
+    paidAmount: 40,
     productName: "Second",
-    category: "daily",
+    category: "home",
   });
   insertItem(db, {
-    itemKey: "confirmed-item-1",
-    invoiceKey: "confirmed-invoice",
-    sequence: 1,
-    paidAmount: 40,
-    productName: "First",
-    category: "food",
+    itemKey: "legacy-null-sequence-item",
+    invoiceKey: "legacy-null-sequence-invoice",
+    sequence: null,
+    paidAmount: 5,
+    productName: "Legacy",
+    category: "other",
   });
   insertItem(db, {
     itemKey: "voided-item",
@@ -131,20 +154,43 @@ try {
     loaded.invoices.some((invoice) => invoice.invoiceKey === "missing-issued-at-invoice"),
     false,
   );
-  assert.equal(loaded.invoices.length, 1);
-  assert.equal(loaded.invoices[0]?.invoiceKey, "confirmed-invoice");
-  assert.deepEqual(loaded.invoices[0]?.items.map((item) => item.itemKey), [
-    "confirmed-item-1",
+  assert.equal(loaded.invoices.length, 2);
+  const confirmedInvoice = loaded.invoices.find(
+    (invoice) => invoice.invoiceKey === "confirmed-invoice",
+  );
+  assert.deepEqual(confirmedInvoice?.items.map((item) => item.itemKey), [
+    "confirmed-item-a",
+    "confirmed-item-b",
     "confirmed-item-2",
   ]);
-  assert.equal(loaded.invoices[0]?.items[0]?.paidAmount, 40);
-  assert.equal(Object.hasOwn(loaded.invoices[0] ?? {}, "rawPayloadJson"), false);
+  assert.deepEqual(confirmedInvoice?.items.map((item) => item.sequence), [1, 1, 2]);
+  assert.equal(
+    loaded.invoices.find((invoice) => invoice.invoiceKey === "legacy-null-sequence-invoice")
+      ?.items[0]?.sequence,
+    null,
+  );
+  assert.deepEqual(buildSpendingModel(confirmedInvoice ? [confirmedInvoice] : []).monthlyRows, [{
+    month: "2026-02",
+    total: 100,
+    food: 40,
+    daily: 20,
+    transport: 0,
+    shopping: 0,
+    home: 40,
+    leisure: 0,
+    other: 0,
+  }]);
+  assert.equal(Object.hasOwn(confirmedInvoice ?? {}, "rawPayloadJson"), false);
 
-  updateSpendingItemCategory({ itemKey: "confirmed-item-2", category: "home" }, ledgerDir);
-  assert.equal(loadSpending(ledgerDir).invoices[0]?.items[1]?.category, "home");
+  updateSpendingItemCategory({ itemKey: "confirmed-item-2", category: "leisure" }, ledgerDir);
+  assert.equal(
+    loadSpending(ledgerDir).invoices.find((invoice) => invoice.invoiceKey === "confirmed-invoice")
+      ?.items[2]?.category,
+    "leisure",
+  );
   assert.throws(
     () => updateSpendingItemCategory({
-      itemKey: "confirmed-item-1",
+      itemKey: "confirmed-item-a",
       category: "invalid" as never,
     }, ledgerDir),
     /Unknown spending category: invalid/,

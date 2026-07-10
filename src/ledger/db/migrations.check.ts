@@ -7,8 +7,13 @@ import { migrateLedgerDb } from "./migrations.ts";
 
 const invoiceKey = "AB12345678|1783065600|24536806";
 
-function resetItemsToVersion9(db: LedgerDatabase, version = 9) {
-  const sequenceColumnType = version === 9 ? "TEXT" : "INTEGER";
+function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
+  const sequenceColumnDefinition = version === 9
+    ? "TEXT"
+    : `INTEGER CHECK (
+        item_sequence_number IS NULL
+        OR (typeof(item_sequence_number) = 'integer' AND item_sequence_number >= 0)
+      )`;
   db.exec(`
     DROP TABLE personal_invoice_items;
     CREATE TABLE personal_invoice_items (
@@ -28,7 +33,7 @@ function resetItemsToVersion9(db: LedgerDatabase, version = 9) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       item_key TEXT NOT NULL UNIQUE,
       invoice_key TEXT NOT NULL,
-      item_sequence_number ${sequenceColumnType},
+      item_sequence_number ${sequenceColumnDefinition},
       item_quantity REAL,
       item_unit_price REAL,
       item_paid_amount REAL,
@@ -252,7 +257,24 @@ try {
   invalidDb.close();
 
   const categoryDb = openLedgerDatabase(categoryLedgerDir);
-  resetItemsToVersion9(categoryDb);
+  resetItemsToVersion9(categoryDb, 10);
+  const version10Columns = categoryDb.prepare(
+    "PRAGMA table_info(personal_invoice_items)",
+  ).all() as Array<{ name: string; type: string }>;
+  assert.equal(
+    version10Columns.some((column) => column.name === "category"),
+    false,
+  );
+  assert.equal(
+    version10Columns.find((column) => column.name === "item_sequence_number")?.type,
+    "INTEGER",
+  );
+  assert.equal(
+    (categoryDb.prepare(
+      "SELECT version FROM schema_migrations WHERE version = 10",
+    ).get() as { version: number } | undefined)?.version,
+    10,
+  );
   categoryDb.prepare(`
     UPDATE personal_invoices
     SET seller_name = '台灣中油股份有限公司'
@@ -273,6 +295,15 @@ try {
     productName: "unmatched item",
   });
   migrateLedgerDb(categoryDb);
+
+  const migratedCategoryColumn = categoryDb.prepare(
+    "PRAGMA table_info(personal_invoice_items)",
+  ).all().find((column) => (
+    (column as { name: string }).name === "category"
+  )) as { type: string; notnull: number; dflt_value: string } | undefined;
+  assert.equal(migratedCategoryColumn?.type, "TEXT");
+  assert.equal(migratedCategoryColumn?.notnull, 1);
+  assert.equal(migratedCategoryColumn?.dflt_value, "'other'");
 
   const categories = categoryDb.prepare(`
     SELECT item_product_name, category
