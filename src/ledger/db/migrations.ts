@@ -4,6 +4,7 @@ import {
   TYPED_STATEMENT_TABLES,
 } from "../source-csv-parsers.ts";
 import { contentHashForRow } from "../content-hash.ts";
+import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
 import type { LedgerDatabase } from "./client.ts";
 
 type LedgerMigration = {
@@ -372,6 +373,8 @@ function createPersonalInvoiceStatementTables(db: LedgerDatabase) {
       item_unit_price REAL,
       item_paid_amount REAL,
       item_product_name TEXT,
+      category TEXT NOT NULL DEFAULT 'other'
+        CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other')),
       FOREIGN KEY (invoice_key) REFERENCES personal_invoices(invoice_key)
     );
     CREATE INDEX IF NOT EXISTS idx_personal_invoice_items_invoice_key
@@ -473,6 +476,46 @@ function normalizePersonalInvoiceItemSequenceNumbers(db: LedgerDatabase) {
     DROP TABLE personal_invoice_items_legacy;
   `);
   createTypedStatementIndexesFor(db, "personal_invoice_items");
+}
+
+function addPersonalInvoiceItemCategories(db: LedgerDatabase) {
+  const categoryColumn = (
+    db.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
+      name: string;
+    }>
+  ).find((column) => column.name === "category");
+  if (categoryColumn) return;
+
+  db.exec(`
+    ALTER TABLE personal_invoice_items
+      ADD COLUMN category TEXT NOT NULL DEFAULT 'other'
+      CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other'));
+  `);
+
+  const items = db.prepare(`
+    SELECT
+      items.item_key,
+      items.item_product_name AS product_name,
+      invoices.seller_name,
+      invoices.seller_addr
+    FROM personal_invoice_items AS items
+    JOIN personal_invoices AS invoices USING (invoice_key)
+  `).all() as Array<{
+    item_key: string;
+    product_name: string | null;
+    seller_name: string | null;
+    seller_addr: string | null;
+  }>;
+  const updateCategory = db.prepare(
+    "UPDATE personal_invoice_items SET category = ? WHERE item_key = ?",
+  );
+  for (const item of items) {
+    updateCategory.run(classifyPersonalInvoiceItem({
+      productName: item.product_name ?? "",
+      sellerName: item.seller_name ?? "",
+      sellerAddr: item.seller_addr ?? "",
+    }), item.item_key);
+  }
 }
 
 function createDashboardIndexes(db: LedgerDatabase) {
@@ -787,6 +830,11 @@ const migrations: LedgerMigration[] = [
     version: 10,
     name: "normalized_personal_invoice_item_sequence_numbers",
     up: normalizePersonalInvoiceItemSequenceNumbers,
+  },
+  {
+    version: 11,
+    name: "personal_invoice_item_categories",
+    up: addPersonalInvoiceItemCategories,
   },
 ];
 

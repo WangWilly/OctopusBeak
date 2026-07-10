@@ -7,7 +7,8 @@ import { migrateLedgerDb } from "./migrations.ts";
 
 const invoiceKey = "AB12345678|1783065600|24536806";
 
-function resetItemsToVersion9(db: LedgerDatabase) {
+function resetItemsToVersion9(db: LedgerDatabase, version = 9) {
+  const sequenceColumnType = version === 9 ? "TEXT" : "INTEGER";
   db.exec(`
     DROP TABLE personal_invoice_items;
     CREATE TABLE personal_invoice_items (
@@ -27,7 +28,7 @@ function resetItemsToVersion9(db: LedgerDatabase) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       item_key TEXT NOT NULL UNIQUE,
       invoice_key TEXT NOT NULL,
-      item_sequence_number TEXT,
+      item_sequence_number ${sequenceColumnType},
       item_quantity REAL,
       item_unit_price REAL,
       item_paid_amount REAL,
@@ -38,7 +39,7 @@ function resetItemsToVersion9(db: LedgerDatabase) {
       ON personal_invoice_items(invoice_key);
     CREATE INDEX idx_personal_invoice_items_product_name
       ON personal_invoice_items(item_product_name);
-    DELETE FROM schema_migrations WHERE version = 10;
+    DELETE FROM schema_migrations WHERE version >= 10;
     INSERT OR IGNORE INTO personal_invoices (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
       source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
@@ -52,6 +53,14 @@ function resetItemsToVersion9(db: LedgerDatabase) {
       '${invoiceKey}', 'AB12345678', 0
     );
   `);
+  if (version === 10) {
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (10, ?, ?)",
+    ).run(
+      "normalized_personal_invoice_item_sequence_numbers",
+      "2026-01-01T00:00:00.000Z",
+    );
+  }
 }
 
 function insertLegacyItem(
@@ -98,6 +107,9 @@ const legacyLedgerDir = mkdtempSync(
 const invalidLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-invalid-sequence-"),
 );
+const categoryLedgerDir = mkdtempSync(
+  join(tmpdir(), "ledger-db-category-migration-"),
+);
 
 try {
   const seeded = openLedgerDatabase(ledgerDir);
@@ -118,12 +130,13 @@ try {
   const itemColumns = migrated.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
     name: string;
     type: string;
+    notnull: number;
   }>;
   migrated.close();
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
   );
   assert.ok(invoiceColumns.some((column) => column.name === "invoice_key"));
   assert.ok(itemColumns.some((column) => column.name === "item_key"));
@@ -131,6 +144,8 @@ try {
     (column) => column.name === "item_sequence_number",
   );
   assert.equal(sequenceColumn?.type, "INTEGER");
+  const categoryColumn = itemColumns.find((column) => column.name === "category");
+  assert.equal(categoryColumn?.notnull, 1);
 
   const legacyDb = openLedgerDatabase(legacyLedgerDir);
   resetItemsToVersion9(legacyDb);
@@ -235,8 +250,56 @@ try {
   assert.equal(invalidRow.item_sequence_number, "A1");
   assert.equal(migration10, undefined);
   invalidDb.close();
+
+  const categoryDb = openLedgerDatabase(categoryLedgerDir);
+  resetItemsToVersion9(categoryDb, 10);
+  categoryDb.prepare(`
+    UPDATE personal_invoices
+    SET seller_name = '台灣中油股份有限公司'
+    WHERE invoice_key = ?
+  `).run(invoiceKey);
+  insertLegacyItem(categoryDb, {
+    id: "coffee",
+    sourceRowIndex: 1,
+    sequence: "1",
+    importedAt: "2026-01-01T00:00:00.000Z",
+    productName: "咖啡",
+  });
+  insertLegacyItem(categoryDb, {
+    id: "fuel",
+    sourceRowIndex: 2,
+    sequence: "2",
+    importedAt: "2026-01-01T00:00:00.000Z",
+    productName: "unmatched item",
+  });
+  migrateLedgerDb(categoryDb);
+
+  const categories = categoryDb.prepare(`
+    SELECT item_product_name, category
+    FROM personal_invoice_items
+    ORDER BY item_sequence_number
+  `).all().map((item) => ({ ...item })) as Array<{
+    item_product_name: string;
+    category: string;
+  }>;
+  assert.deepEqual(categories, [
+    { item_product_name: "咖啡", category: "food" },
+    { item_product_name: "unmatched item", category: "transport" },
+  ]);
+  assert.throws(
+    () => categoryDb.prepare(`
+      UPDATE personal_invoice_items SET category = 'invalid'
+    `).run(),
+    /CHECK constraint failed/,
+  );
+  categoryDb.close();
 } finally {
-  for (const directory of [ledgerDir, legacyLedgerDir, invalidLedgerDir]) {
+  for (const directory of [
+    ledgerDir,
+    legacyLedgerDir,
+    invalidLedgerDir,
+    categoryLedgerDir,
+  ]) {
     rmSync(directory, { recursive: true, force: true });
   }
 }
