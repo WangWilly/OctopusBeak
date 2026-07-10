@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { BarChart, Tooltip } from "layerchart";
+  import { BarChart, Text, Tooltip, type TextProps } from "layerchart";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { buildSparklineYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
+  import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { SPENDING_CATEGORY_IDS, type SpendingCategory } from "$lib/spending/categories.ts";
   import type { DailySpendingRow, MonthlySpendingRow } from "$lib/spending/model.ts";
@@ -24,6 +24,7 @@
   export let label = "";
   export let onBarClick: ((key: string) => void) | null = null;
 
+  let stageWidth = 0;
   let selectedCategories: SpendingCategory[] = [];
 
   $: selectedCategorySet = new Set(selectedCategories);
@@ -35,7 +36,6 @@
     label: $t.spending.categories[key],
     color: categoryColors[key],
   }));
-  $: xValues = rows.map(rowKey);
   $: stackExtents = rows.flatMap((row) => [
     visibleCategories.reduce((total, category) => total + Math.min(0, row[category]), 0),
     visibleCategories.reduce((total, category) => total + Math.max(0, row[category]), 0),
@@ -47,6 +47,14 @@
   $: hasData = rows.length > 0 && rows.some((row) => SPENDING_CATEGORY_IDS.some((category) => row[category] !== 0));
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
   $: ariaLabel = selectedKey ? `${displayLabel}: ${axisLabel(selectedKey)}` : displayLabel;
+  $: selectedRow = rows.find((row) => rowKey(row) === selectedKey);
+  $: selectedExtents = selectedRow
+    ? [
+        visibleCategories.reduce((total, category) => total + Math.min(0, selectedRow[category]), 0),
+        visibleCategories.reduce((total, category) => total + Math.max(0, selectedRow[category]), 0),
+      ]
+    : null;
+  $: compactAmount = new Intl.NumberFormat($locale, { maximumFractionDigits: 1, notation: "compact" });
 
   function rowKey(row: SpendingChartRow) {
     return "month" in row ? row.month : row.date;
@@ -89,7 +97,7 @@
   }
 
   function shortAmount(value: unknown) {
-    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
+    return typeof value === "number" ? compactAmount.format(value) : String(value);
   }
 
   function tooltipValue(row: SpendingChartRow | null | undefined, category: SpendingCategory) {
@@ -97,10 +105,23 @@
   }
 </script>
 
+{#snippet xTick({ props }: { props: TextProps })}
+  <Text
+    {...props}
+    class={`${props.class ?? ""}${props.value === axisLabel(selectedKey) ? " spending-selected-label" : ""}`}
+  />
+{/snippet}
+
 {#if hasData}
-  <div class="spending-bar-chart" role="img" aria-label={ariaLabel}>
-    <div class="spending-bar-stage">
-      <BarChart
+  <div class="spending-bar-chart">
+    <div
+      class="spending-bar-stage"
+      role="img"
+      aria-label={ariaLabel}
+      bind:clientWidth={stageWidth}
+    >
+      {#if stageWidth > 0}
+        <BarChart
         data={rows}
         x={rowKey}
         {series}
@@ -119,7 +140,12 @@
         onTooltipClick={selectTooltip}
         props={{
           bars: { class: "spending-bar-segment", stroke: "var(--surface)", strokeWidth: 1, radius: 2 },
-          xAxis: { class: "sparkline-axis", format: axisLabel, ticks: xValues },
+          xAxis: {
+            class: "sparkline-axis",
+            format: axisLabel,
+            tickLabel: xTick,
+            tickSpacing: kind === "month" ? 52 : 40,
+          },
           yAxis: {
             class: "sparkline-axis",
             format: shortAmount,
@@ -129,6 +155,25 @@
           grid: { class: "sparkline-grid" },
         }}
       >
+        {#snippet aboveMarks({ context })}
+          {#if selectedKey && selectedExtents}
+            {@const x = Number(context.xScale(selectedKey))}
+            {@const width = Number(context.xScale.bandwidth?.() ?? 0)}
+            {@const y1 = Number(context.yScale(selectedExtents[0]))}
+            {@const y2 = Number(context.yScale(selectedExtents[1]))}
+            {#if [x, width, y1, y2].every(Number.isFinite) && width > 0}
+              <rect
+                class="spending-selected-band"
+                x={x - 4}
+                y={Math.min(y1, y2) - 4}
+                width={width + 8}
+                height={Math.abs(y2 - y1) + 8}
+                rx="5"
+              ></rect>
+            {/if}
+          {/if}
+        {/snippet}
+
         {#snippet tooltip({ context })}
           <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
             {#snippet children({ data })}
@@ -144,10 +189,11 @@
             {/snippet}
           </Tooltip.Root>
         {/snippet}
-      </BarChart>
+        </BarChart>
+      {/if}
     </div>
 
-    <div class="spending-legend" aria-label={$t.spending.categoryLegendAria}>
+    <div class="spending-legend" role="group" aria-label={$t.spending.categoryLegendAria}>
       {#each SPENDING_CATEGORY_IDS as category}
         <button
           class:selected={selectedCategories.length === 0 || selectedCategorySet.has(category)}
@@ -164,8 +210,10 @@
     </div>
   </div>
 {:else}
-  <div class="spending-bar-chart spending-chart-empty" role="img" aria-label={ariaLabel}>
-    {$t.spending.noChartData}
+  <div class="spending-bar-chart">
+    <div class="spending-bar-stage spending-chart-empty" role="img" aria-label={ariaLabel}>
+      {$t.spending.noChartData}
+    </div>
   </div>
 {/if}
 
@@ -189,6 +237,19 @@
 
   .spending-bar-stage :global(.spending-bar-segment) {
     cursor: pointer;
+  }
+
+  .spending-bar-stage :global(.spending-selected-band) {
+    fill: none;
+    stroke: var(--fg);
+    stroke-width: 2;
+    pointer-events: none;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .spending-bar-stage :global(.spending-selected-label) {
+    fill: var(--fg);
+    font-weight: 800;
   }
 
   .spending-tooltip {
