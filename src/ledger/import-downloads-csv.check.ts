@@ -104,7 +104,10 @@ editableDb.close();
 
 await writeFile(
   join(sourceDir, "first.csv"),
-  csv([{ ...confirmedRow, status: "voided" }, transportRow]),
+  csv([
+    { ...confirmedRow, status: "voided", item_paid_amount: "110" },
+    transportRow,
+  ]),
   "utf8",
 );
 await runImport();
@@ -198,7 +201,11 @@ assert.deepEqual(
     status: "voided",
     rebated: 0,
     source_relative_path: "einvoice-personal-invoices/first.csv",
-    raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
+    raw_payload_json: JSON.stringify({
+      ...confirmedRow,
+      status: "voided",
+      item_paid_amount: "110",
+    }),
   },
 );
 assert.deepEqual(
@@ -211,10 +218,14 @@ assert.deepEqual(
     item_sequence_number: 1,
     item_sequence_type: "integer",
     item_product_name: "咖啡",
-    item_paid_amount: 100,
+    item_paid_amount: 110,
     category: "shopping",
     source_relative_path: "einvoice-personal-invoices/first.csv",
-    raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
+    raw_payload_json: JSON.stringify({
+      ...confirmedRow,
+      status: "voided",
+      item_paid_amount: "110",
+    }),
   },
 );
 assert.equal(initialItem.category, "food");
