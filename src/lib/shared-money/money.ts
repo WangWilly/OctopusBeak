@@ -1,9 +1,12 @@
 import type { CurrencyAmountDto } from "$lib/shared-ledger/types.ts";
 
-export function formatMoney(amount: CurrencyAmountDto, options: { signed?: boolean } = {}) {
+export function formatMoney(
+  amount: CurrencyAmountDto,
+  options: { signed?: boolean; locale?: string } = {},
+) {
   const digits = amount.currency === "JPY" || amount.currency === "TWD" ? 0 : 2;
   const prefix = options.signed && amount.value > 0 ? "+" : "";
-  return `${amount.currency} ${prefix}${new Intl.NumberFormat("en-US", {
+  return `${amount.currency} ${prefix}${new Intl.NumberFormat(options.locale ?? "en-US", {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
   }).format(amount.value)}`;

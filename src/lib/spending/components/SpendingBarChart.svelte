@@ -182,7 +182,10 @@
                 {#each series as item}
                   <div class="spending-tooltip-row">
                     <span>{item.label}</span>
-                    <strong data-sensitive>{formatMoney({ currency: "TWD", value: tooltipValue(data, item.key) })}</strong>
+                    <strong data-sensitive>{formatMoney(
+                      { currency: "TWD", value: tooltipValue(data, item.key) },
+                      { locale: $locale },
+                    )}</strong>
                   </div>
                 {/each}
               </div>
