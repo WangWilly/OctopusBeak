@@ -11,6 +11,10 @@ const api: OctopusBeakApi = {
   liabilities: {
     load: () => ipcRenderer.invoke("liabilities:load"),
   },
+  spending: {
+    load: () => ipcRenderer.invoke("spending:load"),
+    updateItemCategory: (input) => ipcRenderer.invoke("spending:updateItemCategory", input),
+  },
   automation: {
     load: () => ipcRenderer.invoke("automation:load"),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
