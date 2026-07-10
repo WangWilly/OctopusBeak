@@ -472,6 +472,7 @@ function normalizePersonalInvoiceItemSequenceNumbers(db: LedgerDatabase) {
 
     DROP TABLE personal_invoice_items_legacy;
   `);
+  createTypedStatementIndexesFor(db, "personal_invoice_items");
 }
 
 function createDashboardIndexes(db: LedgerDatabase) {
