@@ -255,7 +255,12 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "einvoice-personal-invoices",
     label: "E-Invoice personal invoices",
     script: "run:einvoice-personal-invoices",
-    command: ["libretto", "run", "src/workflows/einvoice-personal-invoices.ts"],
+    command: [
+      "libretto",
+      "run",
+      "src/workflows/einvoice-personal-invoices.ts",
+      "--headless",
+    ],
     kind: "crawler",
     credentialGroupId: "einvoice",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[10].credentialKeys,
