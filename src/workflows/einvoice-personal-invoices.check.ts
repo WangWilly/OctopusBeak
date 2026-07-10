@@ -4,9 +4,12 @@ import { closeInvoiceDetailModal } from "./einvoice-personal-invoices.ts";
 
 const actions: string[] = [];
 let modalVisible = true;
+let closeClicks = 0;
 const closeButton = {
   async click() {
     actions.push("click-close");
+    closeClicks += 1;
+    if (closeClicks === 2) modalVisible = false;
   },
 };
 const modal = {
@@ -24,6 +27,7 @@ const modal = {
   },
   async waitFor(options: { state: string }) {
     actions.push(`wait-modal-${options.state}`);
+    if (modalVisible) throw new Error("Modal is still visible");
   },
 };
 const backdrop = {
@@ -45,6 +49,9 @@ const page = {
 await closeInvoiceDetailModal(page as unknown as Page);
 
 assert.deepEqual(actions, [
+  "modal-visible",
+  "click-close",
+  "wait-modal-hidden",
   "modal-visible",
   "click-close",
   "wait-modal-hidden",

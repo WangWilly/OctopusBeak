@@ -451,13 +451,21 @@ async function selectResultPage(
 
 export async function closeInvoiceDetailModal(page: Page): Promise<void> {
   const modal = page.locator(".modal_barcode_detail.show").first();
-  if (await modal.isVisible()) {
+  const backdrop = page.locator(".simple-modal-backdrop").first();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!(await modal.isVisible())) {
+      await backdrop.waitFor({ state: "hidden", timeout: 2_000 });
+      return;
+    }
     await modal.getByRole("button", { name: "關閉視窗" }).click();
-    await modal.waitFor({ state: "hidden" });
+    try {
+      await modal.waitFor({ state: "hidden", timeout: 2_000 });
+      await backdrop.waitFor({ state: "hidden", timeout: 2_000 });
+      return;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
   }
-  await page.locator(".simple-modal-backdrop").first().waitFor({
-    state: "hidden",
-  });
 }
 
 async function readInvoiceRows(
