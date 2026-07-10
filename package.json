@@ -49,7 +49,7 @@
     "run:post-statements": "libretto run src/workflows/post-statements.ts --headless",
     "run:sinopac-statements": "libretto run src/workflows/sinopac-statements.ts",
     "run:linebank-statements": "libretto run src/workflows/linebank-statements.ts --headless",
-    "run:einvoice-personal-invoices": "libretto run src/workflows/einvoice-personal-invoices.ts",
+    "run:einvoice-personal-invoices": "libretto run src/workflows/einvoice-personal-invoices.ts --headless",
     "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
   resolveLibrettoCommand,
@@ -7,6 +8,11 @@ import {
   resolveTaskCommand,
 } from "./desktop-command.ts";
 import { taskById } from "./tasks.ts";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../../../../package.json") as {
+  scripts: Record<string, string>;
+};
 
 const env = {
   OCTOPUSBEAK_DESKTOP: "1",
@@ -54,6 +60,20 @@ assert.deepEqual(
     args: ["run", "run:fubon-all-statements"],
     env: { PATH: "/usr/bin" },
   },
+);
+
+const eInvoice = taskById("einvoice-personal-invoices");
+assert.ok(eInvoice);
+const eInvoiceCommand = resolveTaskCommand(eInvoice, {}, { PATH: "/usr/bin" });
+assert.deepEqual(eInvoiceCommand, {
+  display: "run:einvoice-personal-invoices",
+  command: "npm",
+  args: ["run", "run:einvoice-personal-invoices"],
+  env: { PATH: "/usr/bin" },
+});
+assert.equal(
+  packageJson.scripts[eInvoiceCommand.display],
+  "libretto run src/workflows/einvoice-personal-invoices.ts --headless",
 );
 
 assert.deepEqual(
