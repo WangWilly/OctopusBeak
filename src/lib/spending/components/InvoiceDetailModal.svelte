@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { SPENDING_CATEGORY_IDS, type SpendingCategory } from "$lib/spending/categories.ts";
@@ -11,6 +12,9 @@
   export let onCategoryChange: (itemKey: string, category: string) => void | Promise<void> = () => {};
 
   let displayInvoiceCategories: SpendingCategory[] = [];
+  let closeButton: HTMLButtonElement | null = null;
+
+  onMount(() => closeButton?.focus());
 
   $: dateFormatter = new Intl.DateTimeFormat($locale, {
     year: "numeric",
@@ -28,6 +32,23 @@
 
   function closeOnEscape(event: KeyboardEvent) {
     if (event.key === "Escape") void onClose();
+  }
+
+  function containFocus(event: KeyboardEvent) {
+    if (event.key !== "Tab") return;
+    const focusable = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(
+      'button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function categoryValue(event: Event) {
@@ -64,6 +85,7 @@
     aria-modal="true"
     aria-labelledby="invoice-detail-title"
     tabindex="-1"
+    onkeydown={containFocus}
   >
     <div class="modal-head invoice-detail-head">
       <div class="invoice-title">
@@ -75,6 +97,7 @@
         <p>{$t.spending.date}: {dateFormatter.format(new Date(invoice.issuedAt * 1000))}</p>
       </div>
       <button
+        bind:this={closeButton}
         class="modal-close"
         type="button"
         aria-label={$t.spending.closeInvoiceDetails}
