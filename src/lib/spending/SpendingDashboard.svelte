@@ -23,7 +23,10 @@
   });
   $: activeMonthLabel = model.selectedMonth ? formatMonth(model.selectedMonth) : "";
   $: sideValue = model.selectedMonth
-    ? formatMoney({ currency: "TWD", value: model.selectedMonthSummary.total })
+    ? formatMoney(
+        { currency: "TWD", value: model.selectedMonthSummary.total },
+        { locale: $locale },
+      )
     : "--";
   $: sideSub = model.selectedMonth
     ? $t.spending.sideSub(activeMonthLabel, model.selectedMonthSummary.invoiceCount)
@@ -139,7 +142,10 @@
             <h2>{$t.spending.dailyTitle(activeMonthLabel)}</h2>
             <div class="invoice-summary-value">
               <strong class="money" data-sensitive>
-                {formatMoney({ currency: "TWD", value: model.selectedMonthSummary.total })}
+                {formatMoney(
+                  { currency: "TWD", value: model.selectedMonthSummary.total },
+                  { locale: $locale },
+                )}
               </strong>
               <span>{$t.spending.invoiceCount(model.selectedMonthSummary.invoiceCount)}</span>
             </div>
@@ -193,7 +199,10 @@
                   </p>
                 </div>
                 <strong class="invoice-amount money" data-sensitive>
-                  {formatMoney({ currency: "TWD", value: invoice.amount })}
+                  {formatMoney(
+                    { currency: "TWD", value: invoice.amount },
+                    { locale: $locale },
+                  )}
                 </strong>
               </article>
             {/each}
