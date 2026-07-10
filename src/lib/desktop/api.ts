@@ -2,6 +2,8 @@ import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type { AutomationCredentialGroup, AutomationPageModel, AutomationTaskHistoryRow } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
+import type { SpendingCategory } from "$lib/spending/categories.ts";
+import type { SpendingPageDto } from "$lib/spending/model.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -35,6 +37,10 @@ export type OctopusBeakApi = {
   liabilities: {
     load(): Promise<LiabilitiesPageDto>;
   };
+  spending: {
+    load(): Promise<SpendingPageDto>;
+    updateItemCategory(input: { itemKey: string; category: SpendingCategory }): Promise<{ ok: true }>;
+  };
   automation: {
     load(): Promise<AutomationDesktopModel>;
     saveCredentials(updates: Record<string, string>): Promise<{ saved: true }>;
@@ -53,6 +59,8 @@ export const octopusBeakApiChannels = [
   "overview:load",
   "assets:load",
   "liabilities:load",
+  "spending:load",
+  "spending:updateItemCategory",
   "automation:load",
   "automation:saveCredentials",
   "automation:run",

@@ -20,11 +20,17 @@ import {
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
+import { loadSpending, updateSpendingItemCategory } from "../src/lib/spending/server/store.ts";
 
 export function registerOctopusBeakIpc() {
   ipcMain.handle("overview:load", () => loadOverview());
   ipcMain.handle("assets:load", () => loadAssets());
   ipcMain.handle("liabilities:load", () => loadLiabilities());
+  ipcMain.handle("spending:load", () => loadSpending());
+  ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
+    await updateSpendingItemCategory(input);
+    return { ok: true as const };
+  });
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
