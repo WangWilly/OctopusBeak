@@ -14,6 +14,9 @@ assert.equal(translations.en.nav.spending, "Spending");
 assert.equal(translations["zh-TW"].nav.spending, "消費");
 assert.equal(translations.en.spending.title, "Personal spending");
 assert.equal(translations["zh-TW"].spending.title, "個人消費");
+assert.equal(translations["zh-TW"].spending.monthlyEyebrow, "每月消費");
+assert.equal(translations["zh-TW"].spending.dailyEyebrow, "每日明細");
+assert.equal(translations["zh-TW"].spending.invoiceEyebrow, "發票資料");
 
 function keys(value: unknown, prefix = ""): string[] {
   if (!value || typeof value !== "object") return [prefix];
