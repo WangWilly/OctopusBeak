@@ -9,7 +9,13 @@ const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
 
 function insertInvoice(
   db: LedgerDatabase,
-  input: { invoiceKey: string; invoiceId: string; status: string; amount: number },
+  input: {
+    invoiceKey: string;
+    invoiceId: string;
+    status: string;
+    amount: number;
+    issuedAt?: number | null;
+  },
 ) {
   db.prepare(`
     INSERT INTO personal_invoices (
@@ -19,7 +25,7 @@ function insertInvoice(
       issued_at, invoice_id, amount, status, rebated, seller_name
     ) VALUES (?, ?, 'run', 'invoices.csv', 1, ?, ?, ?, 'einvoice',
       'personal-invoices', 'unique', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', ?, 1769877000, ?, ?, ?, 0, ?)
+      '2026-02-01T00:00:00.000Z', ?, ?, ?, ?, ?, 0, ?)
   `).run(
     `row-${input.invoiceKey}`,
     `source-${input.invoiceKey}`,
@@ -27,6 +33,7 @@ function insertInvoice(
     `raw-hash-${input.invoiceKey}`,
     `content-hash-${input.invoiceKey}`,
     input.invoiceKey,
+    input.issuedAt === undefined ? 1769877000 : input.issuedAt,
     input.invoiceId,
     input.amount,
     input.status,
@@ -86,6 +93,13 @@ try {
     status: "voided",
     amount: 999,
   });
+  insertInvoice(db, {
+    invoiceKey: "missing-issued-at-invoice",
+    invoiceId: "EF12345678",
+    status: "confirmed",
+    amount: 50,
+    issuedAt: null,
+  });
   insertItem(db, {
     itemKey: "confirmed-item-2",
     invoiceKey: "confirmed-invoice",
@@ -113,6 +127,10 @@ try {
   db.close();
 
   const loaded = loadSpending(ledgerDir);
+  assert.equal(
+    loaded.invoices.some((invoice) => invoice.invoiceKey === "missing-issued-at-invoice"),
+    false,
+  );
   assert.equal(loaded.invoices.length, 1);
   assert.equal(loaded.invoices[0]?.invoiceKey, "confirmed-invoice");
   assert.deepEqual(loaded.invoices[0]?.items.map((item) => item.itemKey), [
