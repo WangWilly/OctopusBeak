@@ -3,7 +3,13 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import { SPENDING_CATEGORY_IDS, type SpendingCategory } from "./categories.ts";
+  import {
+    SPENDING_CATEGORY_IDS,
+    isSpendingCategory,
+    type SpendingCategory,
+  } from "./categories.ts";
+  import DailySpendingModal from "./components/DailySpendingModal.svelte";
+  import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
   import SpendingBarChart from "./components/SpendingBarChart.svelte";
   import { buildSpendingModel, type SpendingInvoiceDto, type SpendingPageDto } from "./model.ts";
 
@@ -12,6 +18,12 @@
   let selectedMonth: string | undefined;
   let selectedCategory: SpendingCategory | undefined;
   let monthTabs: HTMLDivElement | null = null;
+  let dailyModalOpen = false;
+  let selectedInvoiceKey: string | undefined;
+  let dailyModalTrigger: HTMLButtonElement | null = null;
+  let invoiceModalTrigger: HTMLButtonElement | null = null;
+  let savingItemKeys = new Set<string>();
+  let errorItemKeys = new Set<string>();
 
   $: model = buildSpendingModel(spending.invoices, selectedMonth, selectedCategory);
   $: monthFormatter = new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" });
@@ -41,6 +53,9 @@
   $: invoiceRows = [...model.invoices].sort(
     (left, right) => right.issuedAt - left.issuedAt || right.invoiceId.localeCompare(left.invoiceId),
   );
+  $: selectedInvoice = selectedInvoiceKey
+    ? spending.invoices.find((invoice) => invoice.invoiceKey === selectedInvoiceKey) ?? null
+    : null;
 
   onMount(() => {
     void tick().then(scrollSelectedMonthIntoView);
@@ -55,6 +70,66 @@
 
   function selectCategory(category: SpendingCategory | undefined) {
     selectedCategory = category;
+  }
+
+  function openDailyModal(event: MouseEvent) {
+    dailyModalTrigger = event.currentTarget as HTMLButtonElement;
+    dailyModalOpen = true;
+  }
+
+  async function closeDailyModal() {
+    const trigger = dailyModalTrigger;
+    dailyModalOpen = false;
+    dailyModalTrigger = null;
+    await tick();
+    trigger?.focus();
+  }
+
+  function openInvoiceModal(event: MouseEvent, invoiceKey: string) {
+    invoiceModalTrigger = event.currentTarget as HTMLButtonElement;
+    selectedInvoiceKey = invoiceKey;
+  }
+
+  async function closeInvoiceModal() {
+    const trigger = invoiceModalTrigger;
+    selectedInvoiceKey = undefined;
+    invoiceModalTrigger = null;
+    await tick();
+    trigger?.focus();
+  }
+
+  async function updateItemCategory(itemKey: string, category: string) {
+    if (!isSpendingCategory(category) || savingItemKeys.has(itemKey)) return;
+    const item = spending.invoices.flatMap((invoice) => invoice.items)
+      .find((candidate) => candidate.itemKey === itemKey);
+    if (!item || item.category === category) return;
+
+    const previousCategory = item.category;
+    savingItemKeys = new Set(savingItemKeys).add(itemKey);
+    errorItemKeys = new Set(errorItemKeys);
+    errorItemKeys.delete(itemKey);
+    replaceItemCategory(itemKey, category);
+
+    try {
+      await window.octopusBeak.spending.updateItemCategory({ itemKey, category });
+    } catch {
+      replaceItemCategory(itemKey, previousCategory);
+      errorItemKeys = new Set(errorItemKeys).add(itemKey);
+    } finally {
+      savingItemKeys = new Set(savingItemKeys);
+      savingItemKeys.delete(itemKey);
+    }
+  }
+
+  function replaceItemCategory(itemKey: string, category: SpendingCategory) {
+    spending = {
+      invoices: spending.invoices.map((invoice) => invoice.items.some((item) => item.itemKey === itemKey)
+        ? {
+            ...invoice,
+            items: invoice.items.map((item) => item.itemKey === itemKey ? { ...item, category } : item),
+          }
+        : invoice),
+    };
   }
 
   function scrollSelectedMonthIntoView() {
@@ -133,6 +208,17 @@
             </button>
           {/each}
         </div>
+        <button
+          class="button daily-chart-button"
+          type="button"
+          title={$t.spending.openDailyChart}
+          aria-label={$t.spending.openDailyChart}
+          onclick={openDailyModal}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19V10M10 19V5M16 19v-7M22 19H2"></path>
+          </svg>
+        </button>
       </div>
 
       <section class="card invoice-panel">
@@ -183,7 +269,16 @@
         <div class="invoice-list">
           {#if invoiceRows.length > 0}
             {#each invoiceRows as invoice (invoice.invoiceKey)}
-              <article class="invoice-row">
+              <button
+                class="invoice-row"
+                type="button"
+                aria-label={$t.spending.invoiceRowAria(
+                  invoice.invoiceId,
+                  invoice.sellerName || $t.spending.unknownSeller,
+                  formatMoney({ currency: "TWD", value: invoice.amount }, { locale: $locale }),
+                )}
+                onclick={(event) => openInvoiceModal(event, invoice.invoiceKey)}
+              >
                 <div class="invoice-main">
                   <div class="invoice-idline">
                     <strong>{invoice.invoiceId}</strong>
@@ -204,7 +299,7 @@
                     { locale: $locale },
                   )}
                 </strong>
-              </article>
+              </button>
             {/each}
           {:else}
             <div class="invoice-empty">
@@ -214,6 +309,26 @@
           {/if}
         </div>
       </section>
+    {/if}
+
+    {#if dailyModalOpen && model.selectedMonth}
+      <DailySpendingModal
+        month={activeMonthLabel}
+        total={model.selectedMonthSummary.total}
+        invoiceCount={model.selectedMonthSummary.invoiceCount}
+        rows={model.dailyRows}
+        onClose={closeDailyModal}
+      />
+    {/if}
+
+    {#if selectedInvoice}
+      <InvoiceDetailModal
+        invoice={selectedInvoice}
+        {savingItemKeys}
+        {errorItemKeys}
+        onClose={closeInvoiceModal}
+        onCategoryChange={updateItemCategory}
+      />
     {/if}
   </div>
 </DashboardShell>
@@ -276,6 +391,16 @@
     min-width: 0;
   }
 
+  .month-toolbar {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
+  .month-tabs {
+    flex: 1 1 auto;
+  }
+
   .month-tabs {
     display: flex;
     align-items: center;
@@ -308,6 +433,23 @@
     background: var(--surface);
     color: var(--fg);
     box-shadow: 0 1px 3px rgb(15 23 42 / 0.06);
+  }
+
+  .daily-chart-button {
+    width: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+  }
+
+  .daily-chart-button svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
   }
 
   .invoice-header {
@@ -362,6 +504,7 @@
   }
 
   .invoice-row {
+    width: 100%;
     min-width: 0;
     min-height: 92px;
     display: grid;
@@ -369,8 +512,24 @@
     align-items: center;
     gap: var(--space-4);
     padding: var(--space-4) var(--space-5);
+    border: 0;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .invoice-row:hover {
+    background: var(--surface-soft);
+  }
+
+  .invoice-row:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .invoice-row:last-child {
