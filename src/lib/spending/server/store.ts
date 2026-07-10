@@ -8,7 +8,7 @@ import type {
 type SpendingRow = {
   invoice_key: string;
   invoice_id: string;
-  issued_at: number;
+  issued_at: unknown;
   invoice_amount: number | null;
   seller_business_account_number: string | null;
   seller_name: string | null;
@@ -50,12 +50,16 @@ export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingPageDto {
     const invoices: SpendingInvoiceDto[] = [];
     const invoicesByKey = new Map<string, SpendingInvoiceDto>();
     for (const row of rows) {
+      const issuedAt = row.issued_at;
+      if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt) || issuedAt <= 0) {
+        continue;
+      }
       let invoice = invoicesByKey.get(row.invoice_key);
       if (!invoice) {
         invoice = {
           invoiceKey: row.invoice_key,
           invoiceId: row.invoice_id,
-          issuedAt: Number(row.issued_at),
+          issuedAt,
           amount: Number(row.invoice_amount ?? 0),
           sellerBusinessAccountNumber: row.seller_business_account_number,
           sellerName: row.seller_name,
