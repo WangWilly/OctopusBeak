@@ -484,13 +484,13 @@ function addPersonalInvoiceItemCategories(db: LedgerDatabase) {
       name: string;
     }>
   ).find((column) => column.name === "category");
-  if (categoryColumn) return;
-
-  db.exec(`
-    ALTER TABLE personal_invoice_items
-      ADD COLUMN category TEXT NOT NULL DEFAULT 'other'
-      CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other'));
-  `);
+  if (!categoryColumn) {
+    db.exec(`
+      ALTER TABLE personal_invoice_items
+        ADD COLUMN category TEXT NOT NULL DEFAULT 'other'
+        CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other'));
+    `);
+  }
 
   const items = db.prepare(`
     SELECT

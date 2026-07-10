@@ -252,7 +252,7 @@ try {
   invalidDb.close();
 
   const categoryDb = openLedgerDatabase(categoryLedgerDir);
-  resetItemsToVersion9(categoryDb, 10);
+  resetItemsToVersion9(categoryDb);
   categoryDb.prepare(`
     UPDATE personal_invoices
     SET seller_name = '台灣中油股份有限公司'
