@@ -360,7 +360,14 @@ function createPersonalInvoiceStatementTables(db: LedgerDatabase) {
       ${COMMON_ROW_COLUMNS},
       item_key TEXT NOT NULL UNIQUE,
       invoice_key TEXT NOT NULL,
-      item_sequence_number TEXT,
+      item_sequence_number INTEGER
+        CHECK (
+          item_sequence_number IS NULL
+          OR (
+            typeof(item_sequence_number) = 'integer'
+            AND item_sequence_number >= 0
+          )
+        ),
       item_quantity REAL,
       item_unit_price REAL,
       item_paid_amount REAL,
@@ -378,6 +385,93 @@ function addPersonalInvoiceStatementTables(db: LedgerDatabase) {
   createPersonalInvoiceStatementTables(db);
   createTypedStatementIndexesFor(db, "personal_invoices");
   createTypedStatementIndexesFor(db, "personal_invoice_items");
+}
+
+function normalizePersonalInvoiceItemSequenceNumbers(db: LedgerDatabase) {
+  const sequenceColumn = (
+    db.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
+      name: string;
+      type: string;
+    }>
+  ).find((column) => column.name === "item_sequence_number");
+  if (!sequenceColumn) {
+    throw new Error(
+      "Missing personal_invoice_items.item_sequence_number column",
+    );
+  }
+  if (sequenceColumn.type.toUpperCase() === "INTEGER") return;
+
+  const invalid = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM personal_invoice_items
+    WHERE item_sequence_number IS NOT NULL
+      AND TRIM(item_sequence_number) <> ''
+      AND (
+        TRIM(item_sequence_number) GLOB '*[^0-9]*'
+        OR CAST(TRIM(item_sequence_number) AS INTEGER) > 9007199254740991
+      )
+  `).get() as { count: number };
+  if (invalid.count > 0) {
+    throw new Error(
+      "Cannot normalize personal_invoice_items.item_sequence_number: "
+        + `${invalid.count} invalid value(s)`,
+    );
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_personal_invoice_items_invoice_key;
+    DROP INDEX IF EXISTS idx_personal_invoice_items_product_name;
+    ALTER TABLE personal_invoice_items
+      RENAME TO personal_invoice_items_legacy;
+  `);
+  createPersonalInvoiceStatementTables(db);
+  db.exec(`
+    WITH normalized AS (
+      SELECT
+        legacy.*,
+        legacy.rowid AS legacy_rowid,
+        CASE
+          WHEN legacy.item_sequence_number IS NULL
+            OR TRIM(legacy.item_sequence_number) = ''
+            THEN NULL
+          ELSE CAST(TRIM(legacy.item_sequence_number) AS INTEGER)
+        END AS normalized_sequence,
+        CASE
+          WHEN legacy.item_sequence_number IS NULL
+            OR TRIM(legacy.item_sequence_number) = ''
+            THEN legacy.item_key
+          ELSE legacy.invoice_key || '|'
+            || CAST(CAST(TRIM(legacy.item_sequence_number) AS INTEGER) AS TEXT)
+        END AS normalized_item_key
+      FROM personal_invoice_items_legacy AS legacy
+    ), ranked AS (
+      SELECT
+        normalized.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY normalized_item_key
+          ORDER BY imported_at DESC, source_row_index DESC,
+            created_at DESC, legacy_rowid DESC
+        ) AS canonical_rank
+      FROM normalized
+    )
+    INSERT INTO personal_invoice_items (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
+      dedupe_status, raw_payload_json, imported_at, created_at, item_key,
+      invoice_key, item_sequence_number, item_quantity, item_unit_price,
+      item_paid_amount, item_product_name
+    )
+    SELECT
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
+      dedupe_status, raw_payload_json, imported_at, created_at,
+      normalized_item_key, invoice_key, normalized_sequence, item_quantity,
+      item_unit_price, item_paid_amount, item_product_name
+    FROM ranked
+    WHERE canonical_rank = 1;
+
+    DROP TABLE personal_invoice_items_legacy;
+  `);
 }
 
 function createDashboardIndexes(db: LedgerDatabase) {
@@ -687,6 +781,11 @@ const migrations: LedgerMigration[] = [
     version: 9,
     name: "personal_invoice_statement_tables",
     up: addPersonalInvoiceStatementTables,
+  },
+  {
+    version: 10,
+    name: "normalized_personal_invoice_item_sequence_numbers",
+    up: normalizePersonalInvoiceItemSequenceNumbers,
   },
 ];
 
