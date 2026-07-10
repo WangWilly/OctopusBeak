@@ -21,6 +21,7 @@ import {
   personalInvoiceItemFields,
   type SourceMetadata,
 } from "./source-csv-parsers.ts";
+import { classifyPersonalInvoiceItem } from "../lib/spending/categories.ts";
 
 const inputSchema = z.object({
   downloadsDir: z.string().default("downloads"),
@@ -293,6 +294,7 @@ const PERSONAL_INVOICE_UPDATE_COLUMNS = [
 ] as const;
 
 const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
+  // Category is a user-editable classification and must survive reimports.
   "statement_row_id",
   "source_file_id",
   "import_run_id",
@@ -481,6 +483,11 @@ function insertPersonalInvoiceStatementRow(
     {
       ...commonFields,
       ...personalInvoiceItemFields(row.rawPayload),
+      category: classifyPersonalInvoiceItem({
+        productName: row.rawPayload.item_product_name,
+        sellerName: row.rawPayload.seller_name,
+        sellerAddr: row.rawPayload.seller_addr,
+      }),
     },
     "item_key",
     PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS,

@@ -44,7 +44,15 @@ const confirmedRow = {
   item_quantity: "2",
   item_unit_price: "50",
   item_paid_amount: "100",
-  item_product_name: "Coffee",
+  item_product_name: "咖啡",
+};
+
+const transportRow = {
+  ...confirmedRow,
+  invoice_id: "CD12345678",
+  item_sequence_number: "002",
+  item_product_name: "Unlabelled item",
+  seller_name: "台灣中油股份有限公司",
 };
 
 function csvCell(value: string): string {
@@ -74,8 +82,8 @@ const initialInvoice = initialDb.prepare(
   "SELECT statement_row_id FROM personal_invoices",
 ).get() as { statement_row_id: string };
 const initialItem = initialDb.prepare(
-  "SELECT statement_row_id FROM personal_invoice_items",
-).get() as { statement_row_id: string };
+  "SELECT statement_row_id, category FROM personal_invoice_items",
+).get() as { statement_row_id: string; category: string };
 const initialSourceFile = initialDb.prepare(
   [
     "SELECT import_run_id, source_file_hash, record_json",
@@ -88,9 +96,15 @@ const initialSourceFile = initialDb.prepare(
 };
 initialDb.close();
 
+const editableDb = openLedgerDatabase(outputDir);
+editableDb.prepare(
+  "UPDATE personal_invoice_items SET category = 'shopping' WHERE statement_row_id = ?",
+).run(initialItem.statement_row_id);
+editableDb.close();
+
 await writeFile(
   join(sourceDir, "first.csv"),
-  csv([{ ...confirmedRow, status: "voided" }]),
+  csv([{ ...confirmedRow, status: "voided" }, transportRow]),
   "utf8",
 );
 await runImport();
@@ -110,6 +124,7 @@ const invoice = db.prepare(
     "SELECT statement_row_id, import_run_id, invoice_id, issued_at, status, rebated,",
     "source_relative_path, raw_payload_json",
     "FROM personal_invoices",
+    "WHERE invoice_id = 'AB12345678'",
   ].join(" "),
 ).get() as {
   statement_row_id: string;
@@ -125,8 +140,9 @@ const item = db.prepare(
   [
     "SELECT statement_row_id, item_sequence_number,",
     "typeof(item_sequence_number) AS item_sequence_type,",
-    "item_product_name, item_paid_amount, source_relative_path, raw_payload_json",
+    "item_product_name, item_paid_amount, category, source_relative_path, raw_payload_json",
     "FROM personal_invoice_items",
+    "WHERE item_sequence_number = 1",
   ].join(" "),
 ).get() as {
   statement_row_id: string;
@@ -134,9 +150,13 @@ const item = db.prepare(
   item_sequence_type: string;
   item_product_name: string;
   item_paid_amount: number;
+  category: string;
   source_relative_path: string;
   raw_payload_json: string;
 };
+const transportItem = db.prepare(
+  "SELECT category FROM personal_invoice_items WHERE item_sequence_number = 2",
+).get() as { category: string };
 const sourceFile = db.prepare(
   [
     "SELECT import_run_id, source_file_hash, source_relative_path, record_json",
@@ -150,8 +170,8 @@ const sourceFile = db.prepare(
 };
 db.close();
 
-assert.equal(invoiceCount.count, 1);
-assert.equal(itemCount.count, 1);
+assert.equal(invoiceCount.count, 2);
+assert.equal(itemCount.count, 2);
 assert.equal(sourceFileCount.count, 1);
 assert.notEqual(invoice.statement_row_id, initialInvoice.statement_row_id);
 assert.notEqual(item.statement_row_id, initialItem.statement_row_id);
@@ -190,12 +210,15 @@ assert.deepEqual(
     statement_row_id: "<changed>",
     item_sequence_number: 1,
     item_sequence_type: "integer",
-    item_product_name: "Coffee",
+    item_product_name: "咖啡",
     item_paid_amount: 100,
+    category: "shopping",
     source_relative_path: "einvoice-personal-invoices/first.csv",
     raw_payload_json: JSON.stringify({ ...confirmedRow, status: "voided" }),
   },
 );
+assert.equal(initialItem.category, "food");
+assert.equal(transportItem.category, "transport");
 
 const unchangedRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-unchanged-"));
 const unchangedDownloadsDir = join(unchangedRootDir, "downloads");
@@ -248,6 +271,6 @@ assert.deepEqual({ ...unchangedInvoice }, {
   dedupe_status: "unique",
 });
 assert.deepEqual({ ...unchangedItem }, {
-  item_product_name: "Coffee",
+  item_product_name: "咖啡",
   dedupe_status: "unique",
 });
