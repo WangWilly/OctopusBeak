@@ -4,7 +4,7 @@
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
-  export let active: "overview" | "assets" | "liabilities" | "automation" | "settings" = "overview";
+  export let active: "overview" | "assets" | "liabilities" | "spending" | "automation" | "settings" = "overview";
   export let eyebrow = "Overview";
   export let title = "Portfolio";
   export let sideLabel = "Net position";
@@ -48,6 +48,12 @@
       label: $t.nav.liabilities,
       href: "#/liabilities",
       path: "M3 6h18c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V7c0-.55.45-1 1-1Zm3 2c0 1.1-.9 2-2 2v4c1.1 0 2 .9 2 2h12c0-1.1.9-2 2-2v-4c-1.1 0-2-.9-2-2H6Zm6 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z",
+    },
+    {
+      id: "spending",
+      label: $t.nav.spending,
+      href: "#/spending",
+      path: "M19 3H5a2 2 0 0 0-2 2v16l3-2 2 2 2-2 2 2 2-2 2 2 2-2 3 2V5a2 2 0 0 0-2-2Zm-2 14.17-1-1-2 2-2-2-2 2-2-2-1 1V5h12v12.17ZM7 7h10v2H7V7Zm0 4h10v2H7v-2Z",
     },
     {
       id: "automation",
@@ -129,3 +135,26 @@
     <slot />
   </main>
 </div>
+
+<style>
+  @media (max-width: 760px) {
+    .nav-link,
+    .shell-page.sidebar-collapsed .nav-link {
+      min-width: 0;
+      min-height: 56px;
+      flex-direction: column;
+      gap: 2px;
+      padding: 4px;
+      font-size: 11px;
+    }
+
+    .nav-link span,
+    .shell-page.sidebar-collapsed .nav-link span {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+</style>
