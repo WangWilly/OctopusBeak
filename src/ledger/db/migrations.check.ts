@@ -182,6 +182,15 @@ try {
   assert.ok(itemIndexes.some(
     (index) => index.name === "idx_personal_invoice_items_product_name",
   ));
+  assert.ok(itemIndexes.some(
+    (index) => index.name === "idx_personal_invoice_items_source_file_id",
+  ));
+  assert.ok(itemIndexes.some(
+    (index) => index.name === "idx_personal_invoice_items_import_run_id",
+  ));
+  assert.ok(itemIndexes.some(
+    (index) => index.name === "idx_personal_invoice_items_source",
+  ));
   assert.ok(itemForeignKeys.some((foreignKey) => (
     foreignKey.table === "personal_invoices"
     && foreignKey.from === "invoice_key"
