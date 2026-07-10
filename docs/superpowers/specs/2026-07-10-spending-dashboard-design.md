@@ -99,7 +99,7 @@ The returned DTO retains normalized invoice and item entities. Pure view-model h
 - Categories present in the selected month.
 - Invoice filtering by selected category.
 
-All calendar grouping uses `Asia/Taipei` because `issued_at` is a Unix timestamp and invoice dates are local Taiwan dates. Negative item amounts remain negative in category totals. Any difference between the invoice amount and summed item amounts is assigned to the first item category, matching the wireframe and preserving the invoice total.
+All calendar grouping uses `Asia/Taipei` because `issued_at` is a Unix timestamp and invoice dates are local Taiwan dates. Negative item amounts remain negative in category totals. Any difference between the invoice amount and summed item amounts is assigned to the first item category, or `other` when the invoice has no items, matching the wireframe and preserving the invoice total.
 
 Only invoices with `status = 'confirmed'` contribute to spending totals and lists. Other statuses remain stored in the ledger but are excluded from this view.
 
