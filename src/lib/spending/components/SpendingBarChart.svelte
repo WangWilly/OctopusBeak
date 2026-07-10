@@ -44,7 +44,9 @@
   $: hasNegative = stackExtents.some((value) => value < 0);
   $: yDomain = [hasNegative ? yAxis.min : 0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => hasNegative || tick >= 0);
-  $: hasData = rows.length > 0 && rows.some((row) => SPENDING_CATEGORY_IDS.some((category) => row[category] !== 0));
+  $: hasData = rows.length > 0 && rows.some((row) =>
+    visibleCategories.some((category) => row[category] !== 0)
+  );
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
   $: ariaLabel = selectedKey ? `${displayLabel}: ${axisLabel(selectedKey)}` : displayLabel;
   $: selectedRow = rows.find((row) => rowKey(row) === selectedKey);
@@ -103,6 +105,18 @@
   function tooltipValue(row: SpendingChartRow | null | undefined, category: SpendingCategory) {
     return row?.[category] ?? 0;
   }
+
+  function rowSummary(row: SpendingChartRow) {
+    return [
+      tooltipLabel(row),
+      ...SPENDING_CATEGORY_IDS.map((category) =>
+        `${$t.spending.categories[category]}: ${formatMoney(
+          { currency: "TWD", value: row[category] },
+          { locale: $locale },
+        )}`
+      ),
+    ].join(", ");
+  }
 </script>
 
 {#snippet xTick({ props }: { props: TextProps })}
@@ -112,8 +126,26 @@
   />
 {/snippet}
 
-{#if hasData}
-  <div class="spending-bar-chart">
+<div class="spending-bar-chart">
+  <ul class="spending-chart-summary" aria-label={displayLabel}>
+    {#each rows as row (rowKey(row))}
+      <li>
+        <span class="spending-row-summary">{rowSummary(row)}</span>
+        {#if onBarClick}
+          <button
+            class="spending-row-action"
+            type="button"
+            aria-label={`${displayLabel}: ${rowSummary(row)}`}
+            onclick={() => onBarClick?.(rowKey(row))}
+          >
+            {tooltipLabel(row)}
+          </button>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+
+  {#if hasData}
     <div
       class="spending-bar-stage"
       role="img"
@@ -196,6 +228,13 @@
       {/if}
     </div>
 
+  {:else}
+    <div class="spending-bar-stage spending-chart-empty" role="img" aria-label={ariaLabel}>
+      {$t.spending.noChartData}
+    </div>
+  {/if}
+
+  {#if rows.length > 0}
     <div class="spending-legend" role="group" aria-label={$t.spending.categoryLegendAria}>
       {#each SPENDING_CATEGORY_IDS as category}
         <button
@@ -211,17 +250,12 @@
         </button>
       {/each}
     </div>
-  </div>
-{:else}
-  <div class="spending-bar-chart">
-    <div class="spending-bar-stage spending-chart-empty" role="img" aria-label={ariaLabel}>
-      {$t.spending.noChartData}
-    </div>
-  </div>
-{/if}
+  {/if}
+</div>
 
 <style>
   .spending-bar-chart {
+    position: relative;
     width: 100%;
     min-width: 0;
     min-height: 356px;
@@ -253,6 +287,52 @@
   .spending-bar-stage :global(.spending-selected-label) {
     fill: var(--fg);
     font-weight: 800;
+  }
+
+  .spending-chart-summary {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    pointer-events: none;
+  }
+
+  .spending-row-summary,
+  .spending-row-action {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    border: 0;
+    white-space: nowrap;
+  }
+
+  .spending-row-action {
+    top: 8px;
+    left: 8px;
+    pointer-events: none;
+  }
+
+  .spending-row-action:focus-visible {
+    z-index: 2;
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 7px 10px;
+    overflow: visible;
+    clip: auto;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: auto;
   }
 
   .spending-tooltip {

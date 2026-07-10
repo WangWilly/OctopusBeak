@@ -44,7 +44,8 @@ export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingPageDto {
       FROM personal_invoices AS invoices
       LEFT JOIN personal_invoice_items AS items USING (invoice_key)
       WHERE invoices.status = ?
-      ORDER BY invoices.issued_at, invoices.invoice_key, items.item_sequence_number
+      ORDER BY invoices.issued_at, invoices.invoice_key,
+        items.item_sequence_number, items.item_key
     `).all("confirmed") as SpendingRow[];
 
     const invoices: SpendingInvoiceDto[] = [];

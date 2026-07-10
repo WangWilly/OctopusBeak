@@ -154,9 +154,13 @@ function cleanTypedCell(value: unknown): string {
     .trim();
 }
 
-function personalInvoiceItemSequenceNumber(value: unknown): number | null {
+function personalInvoiceItemSequenceNumber(value: unknown): number {
   const raw = cleanTypedCell(value);
-  if (!raw) return null;
+  if (!raw) {
+    throw new Error(
+      "Invalid personal invoice item_sequence_number: item_sequence_number is required",
+    );
+  }
   if (!/^\d+$/.test(raw)) {
     throw new Error(
       "Invalid personal invoice item_sequence_number: expected a non-negative decimal integer",
@@ -197,14 +201,7 @@ export function personalInvoiceItemKey(rawPayload: Record<string, string>): stri
   const sequenceNumber = personalInvoiceItemSequenceNumber(
     rawPayload.item_sequence_number,
   );
-  if (sequenceNumber !== null) return `${invoiceKey}|${sequenceNumber}`;
-  return [
-    invoiceKey,
-    cleanTypedCell(rawPayload.item_product_name),
-    cleanTypedCell(rawPayload.item_quantity),
-    cleanTypedCell(rawPayload.item_unit_price),
-    cleanTypedCell(rawPayload.item_paid_amount),
-  ].join("|");
+  return `${invoiceKey}|${sequenceNumber}`;
 }
 
 export function personalInvoiceFields(rawPayload: Record<string, string>) {

@@ -18,6 +18,9 @@
   let selectedMonth: string | undefined;
   let selectedCategory: SpendingCategory | undefined;
   let monthTabs: HTMLDivElement | null = null;
+  let categoryFilters: HTMLDivElement | null = null;
+  let allCategoryFilter: HTMLButtonElement | null = null;
+  let invoiceList: HTMLDivElement | null = null;
   let dailyModalOpen = false;
   let selectedInvoiceKey: string | undefined;
   let dailyModalTrigger: HTMLButtonElement | null = null;
@@ -95,7 +98,14 @@
     selectedInvoiceKey = undefined;
     invoiceModalTrigger = null;
     await tick();
-    trigger?.focus();
+    if (trigger?.isConnected) {
+      trigger.focus();
+      return;
+    }
+    const fallback = invoiceList?.querySelector<HTMLButtonElement>(".invoice-row")
+      ?? categoryFilters?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')
+      ?? allCategoryFilter;
+    fallback?.focus();
   }
 
   async function updateItemCategory(itemKey: string, category: string) {
@@ -112,6 +122,10 @@
 
     try {
       await window.octopusBeak.spending.updateItemCategory({ itemKey, category });
+      await tick();
+      if (selectedCategory && model.invoices.length === 0) {
+        selectedCategory = undefined;
+      }
     } catch {
       replaceItemCategory(itemKey, previousCategory);
       errorItemKeys = new Set(errorItemKeys).add(itemKey);
@@ -244,8 +258,14 @@
         </div>
 
         <div class="invoice-tools">
-          <div class="category-filters" role="group" aria-label={$t.spending.categoryFilterAria}>
+          <div
+            class="category-filters"
+            bind:this={categoryFilters}
+            role="group"
+            aria-label={$t.spending.categoryFilterAria}
+          >
             <button
+              bind:this={allCategoryFilter}
               class="filter-btn"
               type="button"
               aria-pressed={!selectedCategory}
@@ -266,7 +286,7 @@
           </div>
         </div>
 
-        <div class="invoice-list">
+        <div class="invoice-list" bind:this={invoiceList}>
           {#if invoiceRows.length > 0}
             {#each invoiceRows as invoice (invoice.invoiceKey)}
               <button

@@ -218,6 +218,23 @@ for (const invalidSequence of ["-1", "1.5", "item-1"]) {
   );
 }
 
+for (const blankSequence of ["", "   "]) {
+  assert.throws(
+    () => einvoiceParser.parseRow({
+      ...einvoicePayload,
+      item_sequence_number: blankSequence,
+    }),
+    /item_sequence_number is required/,
+  );
+}
+
+const missingSequencePayload: Record<string, string> = { ...einvoicePayload };
+delete missingSequencePayload.item_sequence_number;
+assert.throws(
+  () => einvoiceParser.parseRow(missingSequencePayload),
+  /item_sequence_number is required/,
+);
+
 assert.throws(
   () => personalInvoiceItemFields({
     ...einvoicePayload,

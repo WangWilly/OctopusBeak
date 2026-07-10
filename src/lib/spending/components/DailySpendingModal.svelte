@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import type { DailySpendingRow } from "$lib/spending/model.ts";
@@ -10,8 +11,29 @@
   export let rows: readonly DailySpendingRow[] = [];
   export let onClose: () => void | Promise<void> = () => {};
 
+  let closeButton: HTMLButtonElement | null = null;
+
+  onMount(() => closeButton?.focus());
+
   function closeOnEscape(event: KeyboardEvent) {
     if (event.key === "Escape") void onClose();
+  }
+
+  function containFocus(event: KeyboardEvent) {
+    if (event.key !== "Tab") return;
+    const focusable = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(
+      'button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 </script>
 
@@ -30,6 +52,7 @@
     aria-modal="true"
     aria-labelledby="daily-spending-title"
     tabindex="-1"
+    onkeydown={containFocus}
   >
     <div class="modal-head daily-modal-head">
       <div class="daily-modal-title">
@@ -44,6 +67,7 @@
         </div>
       </div>
       <button
+        bind:this={closeButton}
         class="modal-close"
         type="button"
         aria-label={$t.spending.closeDailyChart}
