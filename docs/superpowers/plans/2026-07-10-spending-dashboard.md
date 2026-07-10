@@ -42,7 +42,7 @@ Create `src/lib/spending/categories.check.ts` with assertions covering:
 
 ```ts
 assert.equal(classifyPersonalInvoiceItem({
-  productName: "Coffee",
+  productName: "咖啡",
   sellerName: "Unknown store",
   sellerAddr: "Taipei",
 }), "food");
@@ -69,7 +69,7 @@ assert.equal(isSpendingCategory("shopping"), true);
 assert.equal(isSpendingCategory("invalid"), false);
 ```
 
-Include a case-insensitive Latin-text assertion and one representative assertion for every category.
+Include one representative assertion for every category.
 
 - [ ] **Step 2: Run the category check and verify RED**
 
@@ -129,7 +129,7 @@ Extend `src/ledger/db/migrations.check.ts` to assert:
 
 - Fresh databases report migrations `1` through `11`.
 - `PRAGMA table_info(personal_invoice_items)` includes a non-null `category` column.
-- A version-10-style row with product name `Coffee` migrates to `food`.
+- A version-10-style row with product name `咖啡` migrates to `food`.
 - A row whose item name does not match but whose seller is `台灣中油股份有限公司` migrates to `transport`.
 - `UPDATE personal_invoice_items SET category = 'invalid'` fails its `CHECK` constraint.
 
@@ -198,7 +198,7 @@ git commit -m "feat: persist personal invoice categories"
 
 In `src/ledger/import-downloads-csv.check.ts`:
 
-1. Select `category` with the initially imported item and expect `food` for `Coffee`.
+1. Select `category` with the initially imported item and expect `food` for `咖啡`.
 2. Reopen the database read-write after the first import and set that item's category to `shopping`.
 3. Reimport the same logical invoice with the existing status/source-field change.
 4. Assert the invoice and ordinary item fields refresh while `category` remains `shopping`.
@@ -620,10 +620,12 @@ Check the CDP endpoint first:
 curl http://127.0.0.1:9222/json/version
 ```
 
-If no development app is running, start and keep it alive:
+Create a temporary copy of the ledger first so category-edit verification cannot modify the default ledger. Start and keep Electron alive with `LEDGER_DIR` pointing at that copy:
 
 ```bash
-npm run desktop:dev
+SPENDING_LEDGER_ROOT="$(mktemp -d /tmp/octopusbeak-spending-ledger.XXXXXX)"
+cp -R data/ledger "$SPENDING_LEDGER_ROOT/ledger"
+LEDGER_DIR="$SPENDING_LEDGER_ROOT/ledger" npm run desktop:dev
 ```
 
 Use the port printed by Electron if it differs from `9222`.
@@ -641,6 +643,8 @@ Navigate to `#/spending` and inspect the accessibility tree, DOM, console, and s
 7. Changing one item category updates the chart/list immediately and remains after app reload.
 8. Re-running the CSV importer does not overwrite that category.
 9. No renderer console error appears.
+
+Confirm the running process reports the temporary `LEDGER_DIR` before performing category edits. Never use the default ledger for mutation verification.
 
 - [ ] **Step 5: Capture responsive evidence**
 
