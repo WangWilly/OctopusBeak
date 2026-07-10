@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  accumulateAutomationOutput,
   automationProcessEnv,
   finalFailureMessage,
   isForceQuitRun,
@@ -89,6 +90,31 @@ assert.deepEqual(
     errorMessage: failedResumeMessage,
     logTail: failedResumeLog,
   },
+);
+const longResumeFailureLog = [
+  "Workflow failed after resume: locator.click: Timeout 30000ms exceeded.",
+  ...Array.from(
+    { length: 220 },
+    () => "\u001b[2m    - waiting 500ms\u001b[22m",
+  ),
+].join("\n");
+const accumulatedFailure = accumulateAutomationOutput(
+  { logTail: "", resumeFailure: null },
+  longResumeFailureLog,
+);
+assert.equal(
+  accumulatedFailure.resumeFailure,
+  "locator.click: Timeout 30000ms exceeded.",
+);
+assert.ok(accumulatedFailure.logTail.length <= 4_000);
+assert.doesNotMatch(accumulatedFailure.logChunk, /\u001b/);
+assert.doesNotMatch(accumulatedFailure.logTail, /\u001b/);
+assert.equal(
+  accumulateAutomationOutput(
+    accumulatedFailure,
+    "\u001b[2m    - retrying click action\u001b[22m",
+  ).resumeFailure,
+  "locator.click: Timeout 30000ms exceeded.",
 );
 assert.equal(
   finalFailureMessage(
