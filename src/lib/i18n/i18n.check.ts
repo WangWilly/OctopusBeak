@@ -10,6 +10,10 @@ assert.equal(localeLabels.en, "English");
 assert.equal(localeLabels["zh-TW"], "繁體中文");
 assert.equal(translations.en.settings.title, "Settings");
 assert.equal(translations["zh-TW"].settings.title, "設定");
+assert.equal(translations.en.nav.spending, "Spending");
+assert.equal(translations["zh-TW"].nav.spending, "消費");
+assert.equal(translations.en.spending.title, "Personal spending");
+assert.equal(translations["zh-TW"].spending.title, "個人消費");
 
 function keys(value: unknown, prefix = ""): string[] {
   if (!value || typeof value !== "object") return [prefix];

@@ -10,8 +10,10 @@
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
+  import type { SpendingPageDto } from "$lib/spending/model.ts";
 
-  type RouteId = "overview" | "assets" | "liabilities" | "automation" | "settings";
+  type RouteId = "overview" | "assets" | "liabilities" | "spending" | "automation" | "settings";
   type LoadState<T> =
     | { status: "loading" }
     | { status: "error"; message: string }
@@ -21,11 +23,12 @@
   let overview: LoadState<OverviewPageDto> = { status: "loading" };
   let assets: LoadState<AssetsPageDto> = { status: "loading" };
   let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
+  let spending: LoadState<SpendingPageDto> = { status: "loading" };
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
 
   function normalizeRoute() {
     const next = location.hash.replace(/^#\/?/, "") as RouteId;
-    route = ["overview", "assets", "liabilities", "automation", "settings"].includes(next) ? next : "overview";
+    route = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next) ? next : "overview";
     if (!location.hash || next !== route) location.hash = `/${route}`;
     void loadRoute(route);
   }
@@ -39,12 +42,14 @@
       if (next === "overview") overview = { status: "ready", data: await window.octopusBeak.overview.load() };
       if (next === "assets") assets = { status: "ready", data: await window.octopusBeak.assets.load() };
       if (next === "liabilities") liabilities = { status: "ready", data: await window.octopusBeak.liabilities.load() };
+      if (next === "spending") spending = { status: "ready", data: await window.octopusBeak.spending.load() };
       if (next === "automation") automation = { status: "ready", data: await window.octopusBeak.automation.load() };
     } catch (error) {
       const failed = { status: "error" as const, message: message(error) };
       if (next === "overview") overview = failed;
       if (next === "assets") assets = failed;
       if (next === "liabilities") liabilities = failed;
+      if (next === "spending") spending = failed;
       if (next === "automation") automation = failed;
     }
   }
@@ -68,6 +73,10 @@
   {#if liabilities.status === "ready"}<LiabilitiesDashboard liabilities={liabilities.data} />{/if}
   {#if liabilities.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
   {#if liabilities.status === "error"}<p class="status">{liabilities.message}</p>{/if}
+{:else if route === "spending"}
+  {#if spending.status === "ready"}<SpendingDashboard spending={spending.data} />{/if}
+  {#if spending.status === "loading"}<p class="status">{$t.common.loading}</p>{/if}
+  {#if spending.status === "error"}<p class="status">{spending.message}</p>{/if}
 {:else if route === "automation"}
   {#if automation.status === "ready"}
     <AutomationDashboard
