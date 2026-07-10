@@ -40,7 +40,7 @@ const confirmedRow = {
   seller_name: "Store",
   seller_addr: "Taipei",
   buyer_business_account_number: "",
-  item_sequence_number: "1",
+  item_sequence_number: "001",
   item_quantity: "2",
   item_unit_price: "50",
   item_paid_amount: "100",
@@ -123,13 +123,15 @@ const invoice = db.prepare(
 };
 const item = db.prepare(
   [
-    "SELECT statement_row_id, item_sequence_number, item_product_name, item_paid_amount,",
-    "source_relative_path, raw_payload_json",
+    "SELECT statement_row_id, item_sequence_number,",
+    "typeof(item_sequence_number) AS item_sequence_type,",
+    "item_product_name, item_paid_amount, source_relative_path, raw_payload_json",
     "FROM personal_invoice_items",
   ].join(" "),
 ).get() as {
   statement_row_id: string;
-  item_sequence_number: string;
+  item_sequence_number: number;
+  item_sequence_type: string;
   item_product_name: string;
   item_paid_amount: number;
   source_relative_path: string;
@@ -186,7 +188,8 @@ assert.deepEqual(
   },
   {
     statement_row_id: "<changed>",
-    item_sequence_number: "1",
+    item_sequence_number: 1,
+    item_sequence_type: "integer",
     item_product_name: "Coffee",
     item_paid_amount: 100,
     source_relative_path: "einvoice-personal-invoices/first.csv",
