@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import {
@@ -144,6 +145,19 @@ function tail(value: string) {
   return value.slice(-4000);
 }
 
+export function accumulateAutomationOutput(
+  state: { logTail: string; resumeFailure: string | null },
+  chunk: string,
+) {
+  const logChunk = stripVTControlCharacters(chunk);
+  const combined = state.logTail + logChunk;
+  return {
+    logChunk,
+    logTail: tail(combined),
+    resumeFailure: state.resumeFailure ?? resumeFailureMessage(combined),
+  };
+}
+
 export async function closeLibrettoSession(session: string) {
   await new Promise<void>((resolve, reject) => {
     const command = resolveLibrettoCommand(
@@ -238,6 +252,7 @@ export async function runAutomationTask(
       });
       activeTaskRunIds.set(task.id, run.taskRunId);
       let logTail = "";
+      let detectedResumeFailure: string | null = null;
       let closeResumeSessionPromise: Promise<void> | null = null;
       const closeResumeSessionAfterFailure = () => {
         if (!options.resumeSession) return null;
@@ -258,13 +273,17 @@ export async function runAutomationTask(
         error: Error | null;
       }>((resolve) => {
         const onOutput = (chunk: Buffer) => {
-          const text = chunk.toString("utf8");
-          appendLog(logPath, text);
-          logTail = tail(logTail + text);
+          const output = accumulateAutomationOutput(
+            { logTail, resumeFailure: detectedResumeFailure },
+            chunk.toString("utf8"),
+          );
+          appendLog(logPath, output.logChunk);
+          logTail = output.logTail;
+          detectedResumeFailure = output.resumeFailure;
           if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
             updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
           }
-          if (resumeFailureMessage(logTail)) {
+          if (detectedResumeFailure) {
             void closeResumeSessionAfterFailure();
           }
         };
@@ -302,7 +321,7 @@ export async function runAutomationTask(
         });
       });
 
-      const resumeFailure = resumeFailureMessage(logTail);
+      const resumeFailure = detectedResumeFailure ?? resumeFailureMessage(logTail);
       const status = result.error || resumeFailure
         ? "failed"
         : nextAttemptStatus({

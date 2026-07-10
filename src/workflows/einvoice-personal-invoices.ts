@@ -449,25 +449,39 @@ async function selectResultPage(
   return await listPromise;
 }
 
+export async function closeInvoiceDetailModal(page: Page): Promise<void> {
+  const modal = page.locator(".modal_barcode_detail.show").first();
+  if (await modal.isVisible()) {
+    await modal.getByRole("button", { name: "關閉視窗" }).click();
+    await modal.waitFor({ state: "hidden" });
+  }
+  await page.locator(".simple-modal-backdrop").first().waitFor({
+    state: "hidden",
+  });
+}
+
 async function readInvoiceRows(
   page: Page,
   entry: InvoiceListEntry,
 ): Promise<PurchasedItemRow[]> {
+  await closeInvoiceDetailModal(page);
   const responses = waitForInvoiceResponses(page);
-  await page.locator(`a[title="${entry.invoiceNumber}"]`).first().click();
-  let { header, details } = await responses;
+  try {
+    await page.locator(`a[title="${entry.invoiceNumber}"]`).first().click();
+    let { header, details } = await responses;
 
-  if (details.totalElements > details.content.length) {
-    const visibleModal = page.locator(".modal.show .modal-content").first();
-    const detailPromise = waitForDetailResponse(page);
-    await visibleModal.locator("select#SelectSizes").first().selectOption("100");
-    await visibleModal.locator('button[title="執行"]').nth(1).click();
-    details = await detailPromise;
+    if (details.totalElements > details.content.length) {
+      const visibleModal = page.locator(".modal.show .modal-content").first();
+      const detailPromise = waitForDetailResponse(page);
+      await visibleModal.locator("select#SelectSizes").first().selectOption("100");
+      await visibleModal.locator('button[title="執行"]').nth(1).click();
+      details = await detailPromise;
+    }
+
+    return purchasedItemRows(entry, header, details.content);
+  } finally {
+    await closeInvoiceDetailModal(page);
   }
-
-  const rows = purchasedItemRows(entry, header, details.content);
-  await page.getByRole("button", { name: "關閉視窗" }).click();
-  return rows;
 }
 
 async function readVisibleListRows(
