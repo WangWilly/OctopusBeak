@@ -154,6 +154,23 @@ function cleanTypedCell(value: unknown): string {
     .trim();
 }
 
+function personalInvoiceItemSequenceNumber(value: unknown): number | null {
+  const raw = cleanTypedCell(value);
+  if (!raw) return null;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(
+      "Invalid personal invoice item_sequence_number: expected a non-negative decimal integer",
+    );
+  }
+  const sequenceNumber = Number(raw);
+  if (!Number.isSafeInteger(sequenceNumber)) {
+    throw new Error(
+      "Invalid personal invoice item_sequence_number: exceeds the safe integer range",
+    );
+  }
+  return sequenceNumber;
+}
+
 function sqliteInteger(value: string | number | null | undefined): number | null {
   const cleaned = cleanTypedCell(value);
   if (!cleaned) return null;
@@ -177,8 +194,10 @@ export function personalInvoiceKey(rawPayload: Record<string, string>): string {
 
 export function personalInvoiceItemKey(rawPayload: Record<string, string>): string {
   const invoiceKey = personalInvoiceKey(rawPayload);
-  const sequenceNumber = cleanTypedCell(rawPayload.item_sequence_number);
-  if (sequenceNumber) return `${invoiceKey}|${sequenceNumber}`;
+  const sequenceNumber = personalInvoiceItemSequenceNumber(
+    rawPayload.item_sequence_number,
+  );
+  if (sequenceNumber !== null) return `${invoiceKey}|${sequenceNumber}`;
   return [
     invoiceKey,
     cleanTypedCell(rawPayload.item_product_name),
@@ -212,7 +231,9 @@ export function personalInvoiceItemFields(rawPayload: Record<string, string>) {
   return {
     item_key: personalInvoiceItemKey(rawPayload),
     invoice_key: personalInvoiceKey(rawPayload),
-    item_sequence_number: cleanTypedCell(rawPayload.item_sequence_number),
+    item_sequence_number: personalInvoiceItemSequenceNumber(
+      rawPayload.item_sequence_number,
+    ),
     item_quantity: sqliteAmount(rawPayload.item_quantity),
     item_unit_price: sqliteAmount(rawPayload.item_unit_price),
     item_paid_amount: sqliteAmount(rawPayload.item_paid_amount),

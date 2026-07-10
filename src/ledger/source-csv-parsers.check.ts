@@ -140,7 +140,7 @@ const einvoicePayload = {
   seller_name: "Store",
   seller_addr: "Taipei",
   buyer_business_account_number: "",
-  item_sequence_number: "1",
+  item_sequence_number: "001",
   item_quantity: "2",
   item_unit_price: "50",
   item_paid_amount: "100",
@@ -179,7 +179,7 @@ assert.deepEqual(personalInvoiceFields(einvoicePayload), {
 assert.deepEqual(personalInvoiceItemFields(einvoicePayload), {
   item_key: "AB12345678|1783065600|24536806|1",
   invoice_key: "AB12345678|1783065600|24536806",
-  item_sequence_number: "1",
+  item_sequence_number: 1,
   item_quantity: 2,
   item_unit_price: 50,
   item_paid_amount: 100,
@@ -188,9 +188,40 @@ assert.deepEqual(personalInvoiceItemFields(einvoicePayload), {
 assert.deepEqual(einvoiceParser.parseRow(einvoicePayload), {
   item_key: "AB12345678|1783065600|24536806|1",
   invoice_key: "AB12345678|1783065600|24536806",
-  item_sequence_number: "1",
+  item_sequence_number: 1,
   item_quantity: 2,
   item_unit_price: 50,
   item_paid_amount: 100,
   item_product_name: "Coffee",
 });
+
+const zeroSequencePayload = {
+  ...einvoicePayload,
+  item_sequence_number: "0",
+};
+assert.equal(
+  personalInvoiceItemKey(zeroSequencePayload),
+  "AB12345678|1783065600|24536806|0",
+);
+assert.equal(
+  personalInvoiceItemFields(zeroSequencePayload).item_sequence_number,
+  0,
+);
+
+for (const invalidSequence of ["-1", "1.5", "item-1"]) {
+  assert.throws(
+    () => personalInvoiceItemFields({
+      ...einvoicePayload,
+      item_sequence_number: invalidSequence,
+    }),
+    /expected a non-negative decimal integer/,
+  );
+}
+
+assert.throws(
+  () => personalInvoiceItemFields({
+    ...einvoicePayload,
+    item_sequence_number: "9007199254740992",
+  }),
+  /exceeds the safe integer range/,
+);
