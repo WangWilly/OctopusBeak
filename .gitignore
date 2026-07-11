@@ -11,6 +11,7 @@ out/
 downloads/
 data/
 .superpowers/
+.worktrees/
 
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/
