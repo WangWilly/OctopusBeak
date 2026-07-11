@@ -122,41 +122,41 @@ function personalInvoiceFixtures(importRunId: string, importedAt: string, refere
   const sourceFileId = "einvoice.personal.current";
   const templates = [
     {
-      month: 0, invoiceId: "AA10000001", sellerId: "16740494", seller: "全聯福利中心新店中正店",
+      month: 0, day: 10, invoiceId: "AA10000001", sellerId: "16740494", seller: "全聯福利中心新店中正店",
       addr: "新北市新店區中正路199號", items: [
         ["有機鮮奶", 1, 95, "food"], ["抽取式衛生紙", 1, 189, "daily"],
       ],
     },
     {
-      month: 0, invoiceId: "AA10000002", sellerId: "24536806", seller: "台灣大車隊股份有限公司",
+      month: 0, day: 7, invoiceId: "AA10000002", sellerId: "24536806", seller: "台灣大車隊股份有限公司",
       addr: "台北市中山區濱江街136號", items: [["計程車車資", 1, 285, "transport"]],
     },
     {
-      month: 0, invoiceId: "AA10000003", sellerId: "27952966", seller: "宜家家居股份有限公司新店分公司",
+      month: 0, day: 3, invoiceId: "AA10000003", sellerId: "27952966", seller: "宜家家居股份有限公司新店分公司",
       addr: "新北市新店區中央路159號", items: [["LED 閱讀燈", 1, 799, "home"]],
     },
     {
-      month: 1, invoiceId: "BB20000001", sellerId: "23525871", seller: "台灣優衣庫有限公司",
+      month: 1, day: 24, invoiceId: "BB20000001", sellerId: "23525871", seller: "台灣優衣庫有限公司",
       addr: "台北市信義區松高路12號", items: [["亞麻襯衫", 1, 990, "shopping"]],
     },
     {
-      month: 1, invoiceId: "BB20000002", sellerId: "54396490", seller: "網飛服務有限公司",
+      month: 1, day: 15, invoiceId: "BB20000002", sellerId: "54396490", seller: "網飛服務有限公司",
       addr: "台北市信義區信義路五段7號", items: [["影音月費", 1, 390, "leisure"]],
     },
     {
-      month: 1, invoiceId: "BB20000003", sellerId: "60616841", seller: "三民晨食有限公司",
+      month: 1, day: 6, invoiceId: "BB20000003", sellerId: "60616841", seller: "三民晨食有限公司",
       addr: "新北市新店區三民路40號", items: [["里肌蛋吐司", 1, 65, "food"], ["冰豆漿", 1, 30, "food"]],
     },
     {
-      month: 2, invoiceId: "CC30000001", sellerId: "03795904", seller: "台灣電力公司",
+      month: 2, day: 18, invoiceId: "CC30000001", sellerId: "03795904", seller: "台灣電力公司",
       addr: "台北市中正區羅斯福路三段242號", items: [["住宅電費", 1, 1268, "daily"]],
     },
     {
-      month: 2, invoiceId: "CC30000002", sellerId: "38443075", seller: "台灣中油新店站",
+      month: 2, day: 9, invoiceId: "CC30000002", sellerId: "38443075", seller: "台灣中油新店站",
       addr: "新北市新店區北新路一段90號", items: [["95 無鉛汽油", 22.4, 31.2, "transport"]],
     },
     {
-      month: 3, invoiceId: "DD40000001", sellerId: "24789086", seller: "便利生活服務股份有限公司",
+      month: 3, day: 12, invoiceId: "DD40000001", sellerId: "24789086", seller: "便利生活服務股份有限公司",
       addr: "台北市大安區復興南路一段1號", items: [["代收服務費", 1, 15, "other"]],
     },
   ] as const;
@@ -166,7 +166,7 @@ function personalInvoiceFixtures(importRunId: string, importedAt: string, refere
 
   for (const template of templates) {
     const invoiceKey = `${template.invoiceId}|${template.sellerId}`;
-    const issuedAt = relativeMonthUnix(referenceDate, template.month, 10, 12);
+    const issuedAt = relativeMonthUnix(referenceDate, template.month, template.day, 12);
     const amount = template.items.reduce((sum, item) => sum + item[1] * item[2], 0);
     invoices.push({
       ...commonRow(importRunId, importedAt, sourceFileId, "einvoice", "personal-invoices", rowIndex),
