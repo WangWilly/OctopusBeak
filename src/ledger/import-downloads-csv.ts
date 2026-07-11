@@ -484,9 +484,9 @@ function insertPersonalInvoiceStatementRow(
       ...commonFields,
       ...personalInvoiceItemFields(row.rawPayload),
       category: classifyPersonalInvoiceItem({
-        productName: row.rawPayload.item_product_name,
-        sellerName: row.rawPayload.seller_name,
-        sellerAddr: row.rawPayload.seller_addr,
+        productName: row.rawPayload.item_product_name ?? "",
+        sellerName: row.rawPayload.seller_name ?? "",
+        sellerAddr: row.rawPayload.seller_addr ?? "",
       }),
     },
     "item_key",
