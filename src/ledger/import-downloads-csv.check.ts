@@ -285,3 +285,32 @@ assert.deepEqual({ ...unchangedItem }, {
   item_product_name: "咖啡",
   dedupe_status: "unique",
 });
+
+const sparseRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-sparse-"));
+const sparseDownloadsDir = join(sparseRootDir, "downloads");
+const sparseOutputDir = join(sparseRootDir, "ledger");
+const sparseSourceDir = join(sparseDownloadsDir, "einvoice-personal-invoices");
+const sparseHeaders = headers.filter((header) =>
+  !["item_product_name", "seller_name", "seller_addr"].includes(header)
+);
+await mkdir(sparseSourceDir, { recursive: true });
+await writeFile(
+  join(sparseSourceDir, "missing-classifier-fields.csv"),
+  `${sparseHeaders.join(",")}\n${sparseHeaders
+    .map((header) => csvCell(confirmedRow[header as keyof typeof confirmedRow] ?? ""))
+    .join(",")}\n`,
+  "utf8",
+);
+await importDownloadsCsv({
+  downloadsDir: sparseDownloadsDir,
+  outputDir: sparseOutputDir,
+  bankFilters: ["einvoice"],
+  productFilters: ["personal-invoices"],
+});
+
+const sparseDb = openLedgerDatabase(sparseOutputDir, { readOnly: true });
+const sparseItem = sparseDb.prepare(
+  "SELECT category FROM personal_invoice_items",
+).get() as { category: string };
+sparseDb.close();
+assert.equal(sparseItem.category, "other");
