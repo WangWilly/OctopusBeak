@@ -4,7 +4,7 @@ Current scope: turn `downloads/` into a replayable, auditable, deduplicated loca
 
 In the packaged desktop app, the same layout lives under `~/Library/Application Support/OctopusBeak/`: downloads are read from `downloads/`, and the ledger is written to `data/ledger/ledger.sqlite` inside that directory.
 
-This layer ingests source CSV files and writes typed statement rows. It must not calculate dashboard balances, pair transfers, reconcile credit card payments, or infer categories.
+This layer ingests source CSV files and writes typed statement rows. It must not calculate dashboard balances, pair transfers, or reconcile credit card payments. The only category inference in this layer is the fixed keyword classifier for new personal invoice items.
 
 ## Inputs
 
@@ -23,7 +23,7 @@ Before writing rows, the importer establishes the header/data boundary for each 
 
 The current importer is intentionally conservative: it treats row 1 as the header when row 1 has data, and records empty files as metadata-only. Blank or duplicate headers are converted into stable record keys such as `column_1` or `Name__2`. Statement rows use the original 1-based CSV row number in `sourceRowIndex`, so a row remains traceable to the source file.
 
-This normalization only establishes the row/header boundary. It does not rename columns into a shared accounting model, infer categories, calculate balances, pair transfers, or reconcile card payments.
+This normalization only establishes the row/header boundary. It does not rename columns into a shared accounting model, calculate balances, pair transfers, or reconcile card payments. Personal E-Invoice rows are subsequently mapped into their dedicated invoice tables and new items receive a spending category.
 
 ## Outputs
 
@@ -45,6 +45,8 @@ Typed statement rows are stored in tables such as:
 - `loan_transactions`
 - `fund_*`
 - `brokerage_*`
+- `personal_invoices`
+- `personal_invoice_items`
 - `unsupported_statement_rows`
 
 MAX/MaiCoin API sync writes:
@@ -61,11 +63,15 @@ The automation panel writes task history to:
 
 ## Replay Semantics
 
-The importer is append-only. Re-running inputs should not delete or rewrite prior rows.
+Import runs and lifecycle events are append-only. Most statement sources are also append-only: re-running inputs should not delete or rewrite their prior rows.
 
 Each run has an `importRunId`. Each imported CSV has a `sourceFileId`. Each parsed CSV row has a `statementRowId`.
 
-If `source_files` already contains the same `sourceRelativePath`, that CSV is skipped for the current run. Rows from new files are still written even when their content was seen before; those rows are marked with `dedupeStatus: "duplicate"`.
+If `source_files` already contains the same `sourceRelativePath`, that CSV is normally skipped for the current run. Rows from new files are still written even when their content was seen before; those rows are marked with `dedupeStatus: "duplicate"`.
+
+Personal E-Invoice imports are the deliberate exception. Files under `einvoice-personal-invoices/` may be reimported because invoice status and details can change. The importer derives stable keys, upserts invoice metadata into `personal_invoices`, and upserts purchased items into `personal_invoice_items`. Unique keys prevent duplicate invoices and items. Source sequence values such as `1`, `01`, and `001` are stored as the same non-negative SQLite integer. Existing user-edited item categories are excluded from reimport updates, so they survive refreshed CSV data.
+
+New personal invoice items are classified from item, seller, and address keywords into one of `food`, `daily`, `transport`, `shopping`, `home`, `leisure`, or `other`. The category column is constrained in SQLite and may later be edited from the Spending dashboard.
 
 `sourceHash` is a conservative replay key based on source path, source file hash, source row index, and raw row hash. `contentHash` is based on bank, product, and raw row payload, and drives duplicate marking across imported rows.
 
@@ -158,5 +164,5 @@ Each typed statement row records:
 - No balance calculation.
 - No transfer matching.
 - No credit card payment reconciliation.
-- No category inference.
+- No general transaction category inference beyond personal invoice item categories.
 - No dashboard or reporting layer.

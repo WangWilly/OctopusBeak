@@ -2,7 +2,9 @@
 
 # OctopusBeak
 
-Personal banking automation and local portfolio dashboards for Taiwan banking portals.
+[繁體中文版](README.zh-TW.md)
+
+Personal banking and E-Invoice automation with local portfolio and spending dashboards for Taiwan services.
 
 OctopusBeak uses Libretto to run browser workflows for bank portals, download statement data, normalize files into CSV/JSON outputs, import them into a local SQLite ledger, and inspect the result in Svelte dashboards.
 
@@ -15,7 +17,9 @@ All downloaded statements, browser sessions, ledger databases, credentials, and 
 - Provides an in-app `#/automation` panel for credentials, task runs, logs, retries, and human assist.
 - Saves clean local statement exports under `downloads/<workflow-name>/`.
 - Imports downloaded CSV files into `data/ledger/ledger.sqlite`.
+- Fetches personal E-Invoices in a headless browser and pauses for CAPTCHA assistance when required.
 - Shows local portfolio views at `#/overview`, `#/assets`, and `#/liabilities`.
+- Shows confirmed personal invoice spending at `#/spending`, with monthly and daily category charts, invoice details, and editable item categories.
 - Syncs MAX/MaiCoin balances and statement rows into the same ledger.
 
 ## Automation Demo
@@ -78,7 +82,7 @@ Artifacts are written to `out/make/`. See [Desktop Release](docs/desktop-release
 3. Run the crawler/sync tasks from the task table.
 4. Complete manual browser checks from the Assist modal when a task is waiting for human input.
 5. Run CSV import after the crawler dependencies succeed for the business day.
-6. Review `#/overview`, `#/assets`, or `#/liabilities`.
+6. Review `#/overview`, `#/assets`, `#/liabilities`, or `#/spending`.
 
 The same flow is still available from the CLI:
 
@@ -115,6 +119,7 @@ Useful `settings.json` keys:
   "LIBRETTO_CLOUD_CATHAY_ENABLED": true,
   "LIBRETTO_CLOUD_HNCB_ENABLED": true,
   "LIBRETTO_CLOUD_LINEBANK_ENABLED": true,
+  "LIBRETTO_CLOUD_EINVOICE_ENABLED": true,
   "MAX_ENABLED": true,
   "MAX_SUB_ACCOUNT": "main"
 }
@@ -148,6 +153,7 @@ For direct `libretto run src/workflows/foo.ts` development, provide credentials 
 | Post Office | `npm run run:post-statements`                    | TWD account statements                                    |
 | SinoPac     | `npm run run:sinopac-statements`                 | TWD and foreign-currency statements                       |
 | LINE Bank   | `npm run run:linebank-statements`                | TWD and foreign-currency statements                       |
+| E-Invoice   | `npm run run:einvoice-personal-invoices`         | personal invoices and purchased items                     |
 | MAX/MaiCoin | `npm run run:sync-maicoin`                       | crypto balances and statement rows                        |
 
 ## Output Format
@@ -169,7 +175,9 @@ Import new downloads:
 npm run run:import-downloads-csv
 ```
 
-The importer writes to `data/ledger/ledger.sqlite`. Imported source files are tracked so the same download path is only read once. Statement rows are stored in typed tables for account transactions, credit card lines, loan transactions, fund records, brokerage records, and crypto records. Automation history is stored in `automation_task_runs` in the same database.
+The importer writes to `data/ledger/ledger.sqlite`. Imported source files are tracked so the same download path is normally read once. Statement rows are stored in typed tables for account transactions, credit card lines, loan transactions, fund records, brokerage records, personal invoices, personal invoice items, and crypto records. Automation history is stored in `automation_task_runs` in the same database.
+
+Personal E-Invoice CSV files are intentionally reimportable. Stable invoice and item keys upsert refreshed source fields without duplicating records, while a user's edited `personal_invoice_items.category` value is preserved. New items receive one keyword-based category: `food`, `daily`, `transport`, `shopping`, `home`, `leisure`, or `other`.
 
 Run schema migrations directly when needed:
 
@@ -233,7 +241,8 @@ Useful project paths:
 | `src/workflows/`                                               | Libretto browser workflows                           |
 | `src/ledger/`                                                  | importers, parsers, migrations, dashboard model code |
 | `src/lib/shared-ledger/`                                       | local ledger query and account summary helpers       |
-| `src/lib/assets/`, `src/lib/overview/`, `src/lib/liabilities/` | Svelte dashboard views                               |
+| `src/lib/assets/`, `src/lib/overview/`, `src/lib/liabilities/` | portfolio dashboard views                            |
+| `src/lib/spending/`                                           | personal invoice spending model and UI               |
 | `src/lib/automation/`                                          | automation panel UI and server helpers               |
 | `src/lib/shared-*`                                             | shared dashboard shell, account, metric, money code  |
 | `electron/`                                                    | Electron main process, runtime helpers, probes        |
