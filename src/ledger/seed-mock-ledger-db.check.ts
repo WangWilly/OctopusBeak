@@ -21,6 +21,11 @@ const categories = new Set(spending.invoices.flatMap((invoice) =>
 assert.equal(months.size, 4);
 assert.deepEqual([...categories].sort(), [...SPENDING_CATEGORY_IDS].sort());
 assert.ok(spending.invoices.some((invoice) => invoice.items.length > 1));
+assert.ok(new Set(
+  spending.invoices
+    .filter((invoice) => new Date(invoice.issuedAt * 1000).toISOString().startsWith("2026-07"))
+    .map((invoice) => new Date(invoice.issuedAt * 1000).toISOString().slice(0, 10)),
+).size >= 3);
 
 const db = openLedgerDatabase(ledgerDir, { readOnly: true });
 const invoiceCounts = db.prepare(`
