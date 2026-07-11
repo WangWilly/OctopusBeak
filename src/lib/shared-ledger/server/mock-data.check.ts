@@ -3,7 +3,8 @@ import { buildDailyHistory } from "../../overview/server/daily-history.ts";
 import { emptyLedgerQueryData } from "./accounts.ts";
 import { mockLedgerQueryData } from "./mock-data.ts";
 
-const data = mockLedgerQueryData();
+const launchDate = new Date("2026-07-11T04:00:00.000Z");
+const data = mockLedgerQueryData(launchDate);
 
 assert.ok(data.accountTransactions.length >= 6);
 assert.ok(data.foreignCurrencyTransactions.length >= 5);
@@ -18,6 +19,17 @@ assert.ok(data.brokerageHoldings.length >= 5);
 assert.ok(data.brokerageTradeTransactions.length >= 6);
 assert.ok(data.maicoinAccountSnapshots.length >= 4);
 assert.ok(data.maicoinStatementRows.length >= 6);
+
+assert.equal(
+  Math.max(...data.sourceFiles.map((row) => Date.parse(row.sourceFileModifiedAt ?? ""))),
+  Date.parse("2026-07-11T09:00:00.000Z"),
+);
+assert.ok(data.accountTransactions.every((row) => !row.accountName?.includes("Mock")));
+assert.ok(data.accountTransactions.some((row) => row.description === "薪資入帳" && row.depositAmount === 88000));
+assert.equal(
+  data.brokerageHoldings.reduce((sum, row) => sum + (row.marketValueTwd ?? 0), 0),
+  858000,
+);
 
 assert.ok(distinct(data.accountTransactions.map((row) => row.accountingDate)).length >= 3);
 assert.ok(distinct(data.foreignCurrencyTransactions.map((row) => row.accountingDate)).length >= 3);
