@@ -45,12 +45,18 @@ Normalized transaction deduplication remains in place. Its semantic transaction 
 
 ## Column Retirement
 
-A second migration rebuilds typed statement tables without:
+A second migration removes these columns from every table built with the common
+statement-row columns, including `personal_invoices` and
+`personal_invoice_items`:
 
 - `dedupe_status`, which becomes constant after physical deduplication.
 - `raw_row_hash`, which has no production reader and is redundant with retained identity and raw payload data.
 
-The rebuild preserves every table-specific column, primary key, foreign key, named index, and unique constraint. It runs transactionally and is covered by schema checks.
+The migration uses SQLite's native `ALTER TABLE ... DROP COLUMN` support so
+table-specific columns, primary keys, foreign keys, named indexes, and unique
+constraints remain unchanged. It runs transactionally and is covered by schema
+checks. Personal invoice tables do not receive a `content_hash` unique index;
+their existing entity keys continue to control upserts.
 
 The following columns remain:
 
@@ -82,7 +88,9 @@ Focused checks must prove:
 6. `skippedDuplicateRows` reports database and same-import duplicates accurately.
 7. An unrelated insert constraint error still aborts and rolls back the import.
 8. Personal invoice refresh and category-preservation behavior remains unchanged.
-9. The column-retirement migration removes only `dedupe_status` and `raw_row_hash` while preserving table-specific schema objects.
+9. The column-retirement migration removes only `dedupe_status` and
+   `raw_row_hash` from ordinary and personal-invoice statement tables while
+   preserving table-specific schema objects.
 10. TypeScript compilation and the Electron production build succeed.
 
 No new dependency, UI, duplicate-history table, or compatibility abstraction is introduced.
