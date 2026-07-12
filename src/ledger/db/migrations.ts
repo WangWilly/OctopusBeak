@@ -3,7 +3,8 @@ import {
   sqliteAmount,
   TYPED_STATEMENT_TABLES,
 } from "../source-csv-parsers.ts";
-import { contentHashForRow } from "../content-hash.ts";
+import { contentHashForRow, hashBytes, stableStringify } from "../content-hash.ts";
+import { creditCardSemanticKey } from "../credit-card-identity.ts";
 import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
 import type { LedgerDatabase } from "./client.ts";
 
@@ -844,6 +845,152 @@ function createCreditCardSnapshots(db: LedgerDatabase) {
   `);
 }
 
+function backfillCreditCardSnapshots(db: LedgerDatabase) {
+  const rows = db.prepare(`
+    SELECT statement_row_id, source_file_id, source_relative_path,
+      source_row_index, bank, product, imported_at,
+      statement_type, card_number, consume_date, description,
+      foreign_currency, foreign_amount, twd_amount, installment_action,
+      payment_status
+    FROM credit_card_statement_lines
+  `).all() as Array<{
+    statement_row_id: string;
+    source_file_id: string;
+    source_relative_path: string;
+    source_row_index: number;
+    bank: string;
+    product: string;
+    imported_at: string;
+    statement_type: string;
+    card_number: string | null;
+    consume_date: string | null;
+    description: string | null;
+    foreign_currency: string | null;
+    foreign_amount: number | null;
+    twd_amount: number | null;
+    installment_action: string | null;
+    payment_status: string | null;
+  }>;
+  const updateSemanticKey = db.prepare(`
+    UPDATE credit_card_statement_lines
+    SET semantic_key = ?
+    WHERE statement_row_id = ? AND semantic_key IS NULL
+  `);
+  const captures = new Map<string, {
+    sourceFileId: string;
+    bank: string;
+    product: string;
+    cardKey: string;
+    statementType: string;
+    capturedAt: string;
+    keys: Set<string>;
+    totalAmount: number;
+  }>();
+
+  for (const row of rows) {
+    const semanticKey = creditCardSemanticKey({
+      bank: row.bank,
+      cardNumber: row.card_number,
+      statementType: row.statement_type,
+      consumeDate: row.consume_date,
+      description: row.description,
+      foreignCurrency: row.foreign_currency,
+      foreignAmount: row.foreign_amount,
+      twdAmount: row.twd_amount,
+      installmentAction: row.installment_action,
+      paymentStatus: row.payment_status,
+    });
+    updateSemanticKey.run(semanticKey, row.statement_row_id);
+    const cardKey = (row.card_number ?? "").replace(/\D/g, "").slice(-4);
+    const captureKey = stableStringify([
+      row.source_file_id, cardKey, row.statement_type,
+    ]);
+    const capture = captures.get(captureKey) ?? {
+      sourceFileId: row.source_file_id,
+      bank: row.bank,
+      product: row.product,
+      cardKey,
+      statementType: row.statement_type,
+      capturedAt: row.imported_at,
+      keys: new Set<string>(),
+      totalAmount: 0,
+    };
+    if (!capture.keys.has(semanticKey)) {
+      capture.keys.add(semanticKey);
+      capture.totalAmount += row.twd_amount ?? 0;
+    }
+    captures.set(captureKey, capture);
+  }
+
+  db.exec(`
+    DROP INDEX uq_credit_card_statement_lines_content_hash;
+    DELETE FROM credit_card_statement_lines
+    WHERE statement_row_id IN (
+      SELECT statement_row_id
+      FROM (
+        SELECT statement_row_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY semantic_key
+            ORDER BY imported_at ASC, source_relative_path ASC,
+              source_row_index ASC, statement_row_id ASC
+          ) AS duplicate_rank
+        FROM credit_card_statement_lines
+      )
+      WHERE duplicate_rank > 1
+    );
+  `);
+
+  const byDay = new Map<string, Array<(typeof captures extends Map<string, infer T> ? T : never)>>();
+  for (const capture of captures.values()) {
+    const dayKey = stableStringify([
+      capture.cardKey, capture.statementType, capture.capturedAt.slice(0, 10),
+    ]);
+    const day = byDay.get(dayKey) ?? [];
+    day.push(capture);
+    byDay.set(dayKey, day);
+  }
+  const insertSnapshot = db.prepare(`
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, source_file_id, bank, product, card_key, statement_type,
+      captured_at, as_of_date, currency, transaction_count, total_amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TWD', ?, ?)
+  `);
+  for (const day of byDay.values()) {
+    day.sort((left, right) => (
+      left.capturedAt.localeCompare(right.capturedAt)
+      || left.sourceFileId.localeCompare(right.sourceFileId)
+    ));
+    let eligible = day[0];
+    for (let index = 1; index < day.length; index += 1) {
+      const candidate = day[index];
+      const properSubset = day.slice(0, index).some((earlier) => (
+        candidate.keys.size < earlier.keys.size
+        && [...candidate.keys].every((key) => earlier.keys.has(key))
+      ));
+      if (!properSubset) eligible = candidate;
+    }
+    insertSnapshot.run(
+      hashBytes(stableStringify([
+        "credit-card-snapshot", eligible.sourceFileId,
+        eligible.cardKey, eligible.statementType,
+      ])).slice(0, 32),
+      eligible.sourceFileId,
+      eligible.bank,
+      eligible.product,
+      eligible.cardKey,
+      eligible.statementType,
+      eligible.capturedAt,
+      eligible.capturedAt.slice(0, 10),
+      eligible.keys.size,
+      eligible.totalAmount,
+    );
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX uq_credit_card_statement_lines_semantic_key
+    ON credit_card_statement_lines(semantic_key);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -914,6 +1061,11 @@ const migrations: LedgerMigration[] = [
     version: 14,
     name: "credit_card_snapshots",
     up: createCreditCardSnapshots,
+  },
+  {
+    version: 15,
+    name: "backfilled_credit_card_snapshots",
+    up: backfillCreditCardSnapshots,
   },
 ];
 
