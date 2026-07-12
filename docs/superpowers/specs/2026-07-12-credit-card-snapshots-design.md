@@ -65,6 +65,13 @@ total_amount REAL NOT NULL
 
 Named indexes support `(card_key, statement_type, as_of_date, captured_at)` lookup and source-file provenance. A unique constraint prevents importing the same card/type/source snapshot twice.
 
+Migration 14 also adds a nullable `semantic_key` to
+`credit_card_statement_lines`. New imports populate it immediately; migration
+15 backfills legacy rows before enforcing a unique semantic-key index. The
+column remains physically nullable to avoid rebuilding the large statement
+table solely for a `NOT NULL` declaration; migration checks prove no null
+values remain after backfill.
+
 Importing a sidecar with `snapshotMode: "full"` groups parsed credit-card rows by card and statement type, then stores count and amount totals. Partial or legacy sidecars without a full marker do not create new snapshots during normal imports.
 
 Daily balance history groups snapshots by card, statement type, and `as_of_date`, selecting the greatest `captured_at` for that day. It no longer infers a balance snapshot from whichever transaction source file was imported last.
