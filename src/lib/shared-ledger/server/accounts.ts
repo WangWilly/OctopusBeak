@@ -285,7 +285,7 @@ function creditCardPositions(snapshots: CreditCardSnapshot[], rows: CreditCardSt
   return latestBy(
     snapshots,
     (snapshot) => [creditCardSnapshotAccountKey(snapshot), snapshot.statementType].join("|"),
-    (snapshot) => [snapshot.capturedAt, snapshot.snapshotId].join("|"),
+    (snapshot) => [snapshot.asOfDate, snapshot.capturedAt, snapshot.snapshotId].join("|"),
   ).map((snapshot) => {
     const row = latestRows.get(creditCardSnapshotAccountKey(snapshot));
     return {

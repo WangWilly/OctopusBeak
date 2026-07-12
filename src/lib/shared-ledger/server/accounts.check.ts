@@ -102,6 +102,7 @@ function creditCardSnapshot(
   statementType: "billed" | "unbilled",
   capturedAt: string,
   totalAmount: number,
+  asOfDate = capturedAt.slice(0, 10),
 ): CreditCardSnapshot {
   return {
     snapshotId,
@@ -111,7 +112,7 @@ function creditCardSnapshot(
     cardKey: "4281",
     statementType,
     capturedAt,
-    asOfDate: capturedAt.slice(0, 10),
+    asOfDate,
     currency: "TWD",
     transactionCount: 1,
     totalAmount,
@@ -127,6 +128,7 @@ currentCardData.creditCardSnapshots = [
   creditCardSnapshot("billed-current", "billed", "2026-06-27T09:00:00.000Z", 3000),
   creditCardSnapshot("unbilled-old", "unbilled", "2026-06-26T10:00:00.000Z", 4005),
   creditCardSnapshot("unbilled-current", "unbilled", "2026-06-27T10:00:00.000Z", 5000),
+  creditCardSnapshot("old-date-captured-later", "unbilled", "2026-06-28T10:00:00.000Z", 999, "2026-06-26"),
 ];
 
 const currentCard = buildAccountOverview(currentCardData).find((row) => row.kind === "credit-card");
