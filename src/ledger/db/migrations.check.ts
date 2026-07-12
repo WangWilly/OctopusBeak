@@ -412,26 +412,18 @@ try {
     SELECT statement_row_id FROM account_transactions
     WHERE content_hash = 'same-content'
   `).all().map((row) => ({ ...row }));
-  const accountIndexes = dedupeDb.prepare(
-    "PRAGMA index_list(account_transactions)",
-  ).all() as Array<{ name: string; unique: number }>;
-  const invoiceIndexes = dedupeDb.prepare(
-    "PRAGMA index_list(personal_invoices)",
-  ).all() as Array<{ name: string }>;
-  const invoiceItemIndexes = dedupeDb.prepare(
-    "PRAGMA index_list(personal_invoice_items)",
-  ).all() as Array<{ name: string }>;
-
   assert.deepEqual(retained, [{ statement_row_id: "canonical" }]);
-  assert.ok(accountIndexes.some((index) => (
-    index.name === "uq_account_transactions_content_hash" && index.unique === 1
-  )));
-  assert.equal(invoiceIndexes.some(
-    (index) => index.name === "uq_personal_invoices_content_hash",
-  ), false);
-  assert.equal(invoiceItemIndexes.some(
-    (index) => index.name === "uq_personal_invoice_items_content_hash",
-  ), false);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    const index = (dedupeDb.prepare(`PRAGMA index_list(${table})`).all() as Array<{
+      name: string;
+      unique: number;
+    }>).find((candidate) => candidate.name === `uq_${table}_content_hash`);
+    if (table === "personal_invoices" || table === "personal_invoice_items") {
+      assert.equal(index, undefined, table);
+    } else {
+      assert.equal(index?.unique, 1, table);
+    }
+  }
   assert.throws(() => dedupeDb.prepare(`
     INSERT INTO account_transactions (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
