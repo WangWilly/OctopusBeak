@@ -1,6 +1,7 @@
 import {
   buildAccountOverview,
   bucketToAmounts,
+  latestImportedUnbilledSnapshots,
   totalsForAccounts,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
@@ -50,7 +51,7 @@ function dailyHistoryDates(data: LedgerQueryData) {
     ...new Set(
       data.sourceFiles
         .map((source) => sourceFileDate(source))
-        .concat(data.creditCardSnapshots.map((snapshot) => snapshot.asOfDate))
+        .concat(latestImportedUnbilledSnapshots(data.creditCardSnapshots).map((snapshot) => snapshot.asOfDate))
         .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
         .filter(Boolean)
         .sort(),
@@ -88,6 +89,7 @@ function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
 }
 
 function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
+  const latestUnbilledSnapshots = latestImportedUnbilledSnapshots(data.creditCardSnapshots);
   const sourceFileIds = new Set(
     data.sourceFiles
       .filter((source) => sourceFileDate(source) <= date)
@@ -99,7 +101,7 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     accountTransactions: data.accountTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     creditCardStatementLines: data.creditCardStatementLines.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    creditCardSnapshots: data.creditCardSnapshots.filter((row) => row.asOfDate <= date),
+    creditCardSnapshots: latestUnbilledSnapshots.filter((row) => row.asOfDate <= date),
     loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
     brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),

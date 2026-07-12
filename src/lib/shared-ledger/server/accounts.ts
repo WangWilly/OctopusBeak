@@ -282,11 +282,7 @@ function creditCardPositions(snapshots: CreditCardSnapshot[], rows: CreditCardSt
     (row) => sortKey(row, row.consumeDate),
   ).map((row) => [creditCardAccountKey(row), row]));
 
-  return latestBy(
-    snapshots,
-    (snapshot) => [creditCardSnapshotAccountKey(snapshot), snapshot.statementType].join("|"),
-    (snapshot) => [snapshot.asOfDate, snapshot.capturedAt, snapshot.snapshotId].join("|"),
-  ).map((snapshot) => {
+  return latestImportedUnbilledSnapshots(snapshots).map((snapshot) => {
     const row = latestRows.get(creditCardSnapshotAccountKey(snapshot));
     return {
       id: stableId("card-position", snapshot.bank, snapshot.product, snapshot.cardKey, snapshot.statementType),
@@ -304,6 +300,14 @@ function creditCardPositions(snapshots: CreditCardSnapshot[], rows: CreditCardSt
       positionDetail: null,
     };
   });
+}
+
+export function latestImportedUnbilledSnapshots(snapshots: CreditCardSnapshot[]) {
+  return latestBy(
+    snapshots.filter((snapshot) => snapshot.statementType === "unbilled"),
+    creditCardSnapshotAccountKey,
+    (snapshot) => [snapshot.capturedAt, snapshot.snapshotId].join("|"),
+  );
 }
 
 function loanPositions(rows: LoanTransaction[]): RawPosition[] {

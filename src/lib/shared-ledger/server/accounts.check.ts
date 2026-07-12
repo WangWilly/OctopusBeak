@@ -134,7 +134,7 @@ currentCardData.creditCardSnapshots = [
 const currentCard = buildAccountOverview(currentCardData).find((row) => row.kind === "credit-card");
 
 assert.ok(currentCard);
-assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 8000 }]);
+assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 999 }]);
 assert.equal(currentCard.transactionCount, 2);
 
 const reimportedCardData = emptyLedgerQueryData();
@@ -163,9 +163,28 @@ settledCardData.creditCardSnapshots = [
 
 const settledCard = buildAccountOverview(settledCardData).find((row) => row.kind === "credit-card");
 
-assert.ok(settledCard);
-assert.deepEqual(settledCard.amountLines, [{ currency: "TWD", value: 0 }]);
-assert.equal(settledCard.transactionCount, 2);
+assert.equal(settledCard, undefined);
+assert.deepEqual(Object.values(buildTransactionsByAccount(settledCardData)).map((rows) => rows.length), [2]);
+
+const latest8397Data = emptyLedgerQueryData();
+latest8397Data.creditCardStatementLines = [
+  { ...creditCardRow(1, "unbilled", "8397", "2026-07-03T09:00:00.000Z", 142), bank: "esun" },
+  { ...creditCardRow(2, "unbilled", "8397", "2026-07-12T09:00:00.000Z", 14844), bank: "esun" },
+];
+latest8397Data.creditCardSnapshots = [
+  { ...creditCardSnapshot("8397-billed", "billed", "2026-07-12T08:00:00.000Z", 19000), bank: "esun", cardKey: "8397" },
+  { ...creditCardSnapshot("8397-old", "unbilled", "2026-07-03T10:00:00.000Z", 6120), bank: "esun", cardKey: "8397" },
+  { ...creditCardSnapshot("8397-latest", "unbilled", "2026-07-12T10:00:00.000Z", 14844), bank: "esun", cardKey: "8397" },
+  { ...creditCardSnapshot("5678-billed", "billed", "2026-07-12T08:00:00.000Z", 9000), bank: "esun", cardKey: "5678" },
+  { ...creditCardSnapshot("5678-old", "unbilled", "2026-07-03T10:00:00.000Z", 300), bank: "esun", cardKey: "5678" },
+  { ...creditCardSnapshot("5678-latest", "unbilled", "2026-07-12T10:00:00.000Z", 700), bank: "esun", cardKey: "5678" },
+];
+const latestCards = buildAccountOverview(latest8397Data).filter((row) => row.kind === "credit-card");
+
+assert.equal(latestCards.length, 2);
+assert.ok(latestCards.some((row) => row.amountLines[0]?.value === 14844));
+assert.ok(latestCards.some((row) => row.amountLines[0]?.value === 700));
+assert.equal(latestCards.some((row) => row.amountLines[0]?.value === 19000), false);
 
 function loanRow(sourceRowIndex: number, item: string, amount: number, balanceAfter: number): LoanTransaction {
   return {
