@@ -60,6 +60,9 @@ function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
     );
   `);
   for (const table of TYPED_STATEMENT_TABLES) {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+    ) continue;
     db.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
   }
   if (version === 10) {
@@ -131,6 +134,9 @@ try {
     DELETE FROM schema_migrations WHERE version >= 4;
   `);
   for (const table of TYPED_STATEMENT_TABLES) {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+    ) continue;
     seeded.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
   }
   seeded.close();
@@ -338,6 +344,9 @@ try {
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
   for (const table of TYPED_STATEMENT_TABLES) {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+    ) continue;
     dedupeDb.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
   }
   const insertAccountRow = dedupeDb.prepare(`
@@ -377,11 +386,23 @@ try {
   const accountIndexes = dedupeDb.prepare(
     "PRAGMA index_list(account_transactions)",
   ).all() as Array<{ name: string; unique: number }>;
+  const invoiceIndexes = dedupeDb.prepare(
+    "PRAGMA index_list(personal_invoices)",
+  ).all() as Array<{ name: string }>;
+  const invoiceItemIndexes = dedupeDb.prepare(
+    "PRAGMA index_list(personal_invoice_items)",
+  ).all() as Array<{ name: string }>;
 
   assert.deepEqual(retained, [{ statement_row_id: "canonical" }]);
   assert.ok(accountIndexes.some((index) => (
     index.name === "uq_account_transactions_content_hash" && index.unique === 1
   )));
+  assert.equal(invoiceIndexes.some(
+    (index) => index.name === "uq_personal_invoices_content_hash",
+  ), false);
+  assert.equal(invoiceItemIndexes.some(
+    (index) => index.name === "uq_personal_invoice_items_content_hash",
+  ), false);
   assert.throws(() => insertAccountRow.run(
     "blocked", "blocked-file", "c.csv", 1, "source-blocked", "raw-blocked",
     "duplicate", "2026-03-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z",

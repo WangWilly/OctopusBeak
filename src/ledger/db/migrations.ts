@@ -782,6 +782,9 @@ function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
 
 function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   for (const table of TYPED_STATEMENT_TABLES) {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+    ) continue;
     db.exec(`
       DELETE FROM ${table}
       WHERE statement_row_id IN (
