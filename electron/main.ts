@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
+import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
@@ -131,6 +132,7 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
+  migrateLedgerBeforeWindow();
   registerAutomationCredentialSafeStorage();
   registerOctopusBeakIpc();
   currentRendererUrl = rendererEntry(appRoot);
