@@ -147,6 +147,8 @@ function insertLegacyCardCapture(
     capturedAt: string;
     card?: string;
     statementType?: string;
+    bank?: string;
+    product?: string;
     transactions: Array<{ id: string; amount: number }>;
   },
 ) {
@@ -156,8 +158,8 @@ function insertLegacyCardCapture(
       source_row_index, source_hash, content_hash, bank, product,
       raw_payload_json, imported_at, created_at, statement_type, card_number,
       consume_date, description, twd_amount
-    ) VALUES (?, ?, 'legacy-run', ?, ?, ?, ?, 'esun',
-      'credit-card-statements', '{}', ?, ?, ?, ?, '2026-06-01', ?, ?)
+    ) VALUES (?, ?, 'legacy-run', ?, ?, ?, ?, ?,
+      ?, '{}', ?, ?, ?, ?, '2026-06-01', ?, ?)
   `);
   input.transactions.forEach((transaction, index) => insert.run(
     `${input.source}-${transaction.id}`,
@@ -166,6 +168,8 @@ function insertLegacyCardCapture(
     index + 1,
     `source-hash-${input.source}`,
     `content-${input.source}-${transaction.id}`,
+    input.bank ?? "esun",
+    input.product ?? "credit-card-statements",
     input.capturedAt,
     input.capturedAt,
     input.statementType ?? "billed",
@@ -182,6 +186,9 @@ function resetCardsToVersion14(db: LedgerDatabase) {
     DROP INDEX uq_credit_card_statement_lines_semantic_key;
     CREATE UNIQUE INDEX uq_credit_card_statement_lines_content_hash
       ON credit_card_statement_lines(content_hash);
+    DROP INDEX uq_credit_card_snapshots_source_card_type;
+    CREATE UNIQUE INDEX uq_credit_card_snapshots_source_card_type
+      ON credit_card_snapshots(source_file_id, card_key, statement_type);
   `);
 }
 
@@ -272,7 +279,7 @@ try {
   assert.deepEqual(
     snapshotIndexColumns("uq_credit_card_snapshots_source_card_type")
       .map((column) => column.name),
-    ["source_file_id", "card_key", "statement_type"],
+    ["source_file_id", "card_key", "statement_type", "as_of_date"],
   );
   assert.deepEqual(
     snapshotIndexColumns("idx_credit_card_snapshots_card_day")
@@ -582,6 +589,24 @@ try {
   insertLegacyCardCapture(cardDb, {
     source: "next-day-subset", capturedAt: "2026-07-05T08:00:00.000Z", card: "9999", transactions: transactions(1),
   });
+  insertLegacyCardCapture(cardDb, {
+    source: "two-day-source", capturedAt: "2026-07-06T08:00:00.000Z", card: "2222",
+    transactions: [{ id: "day-one", amount: 10 }],
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "two-day-source", capturedAt: "2026-07-07T08:00:00.000Z", card: "2222",
+    transactions: [{ id: "day-two", amount: 20 }],
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "esun-same-last4", capturedAt: "2026-07-08T08:00:00.000Z", card: "3333",
+    bank: "esun", product: "esun-credit-card-statements",
+    transactions: [{ id: "esun", amount: 30 }],
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "cathay-same-last4", capturedAt: "2026-07-08T09:00:00.000Z", card: "3333",
+    bank: "cathay", product: "cathay-credit-card-statements",
+    transactions: [{ id: "cathay", amount: 40 }],
+  });
   migrateLedgerDb(cardDb);
 
   const snapshots = cardDb.prepare(`
@@ -590,10 +615,14 @@ try {
     ORDER BY source_file_id
   `).all().map((row) => ({ ...row }));
   assert.deepEqual(snapshots, [
+    { source_file_id: "cathay-same-last4", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 40 },
+    { source_file_id: "esun-same-last4", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 30 },
     { source_file_id: "july-full", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
     { source_file_id: "june-full", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 9, total_amount: 45 },
     { source_file_id: "next-day-subset", as_of_date: "2026-07-05", currency: "TWD", transaction_count: 1, total_amount: 1 },
     { source_file_id: "superset-latest", as_of_date: "2026-07-04", currency: "TWD", transaction_count: 3, total_amount: 6 },
+    { source_file_id: "two-day-source", as_of_date: "2026-07-06", currency: "TWD", transaction_count: 1, total_amount: 10 },
+    { source_file_id: "two-day-source", as_of_date: "2026-07-07", currency: "TWD", transaction_count: 1, total_amount: 20 },
   ]);
   assert.equal((cardDb.prepare(`
     SELECT COUNT(*) AS count FROM credit_card_statement_lines
