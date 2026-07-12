@@ -47,7 +47,6 @@ type CommonRow = {
   product: string;
   importedAt: string;
   sourceRowIndex: number;
-  dedupeStatus: string;
 };
 
 export type LedgerQueryData = {
@@ -159,15 +158,15 @@ export function buildTransactionsByAccount(
   data: LedgerQueryData,
 ): Record<string, TransactionRowDto[]> {
   const transactions: Array<[string, TransactionRowDto]> = [
-    ...data.accountTransactions.filter(isUnique).map(bankTransactionDto),
-    ...data.foreignCurrencyTransactions.filter(isUnique).map(foreignTransactionDto),
+    ...data.accountTransactions.map(bankTransactionDto),
+    ...data.foreignCurrencyTransactions.map(foreignTransactionDto),
     ...latestCreditCardTransactionRows(data.creditCardStatementLines).map(creditCardTransactionDto),
-    ...data.loanTransactions.filter(isUnique).map(loanTransactionDto),
-    ...data.fundBuyTransactions.filter(isUnique).map(fundBuyTransactionDto),
-    ...data.fundRedemptionTransactions.filter(isUnique).map(fundRedemptionTransactionDto),
-    ...data.fundCashDividends.filter(isUnique).map(fundCashDividendDto),
-    ...data.fundConversionTransactions.filter(isUnique).map(fundConversionTransactionDto),
-    ...data.brokerageTradeTransactions.filter(isUnique).map(brokerageTransactionDto),
+    ...data.loanTransactions.map(loanTransactionDto),
+    ...data.fundBuyTransactions.map(fundBuyTransactionDto),
+    ...data.fundRedemptionTransactions.map(fundRedemptionTransactionDto),
+    ...data.fundCashDividends.map(fundCashDividendDto),
+    ...data.fundConversionTransactions.map(fundConversionTransactionDto),
+    ...data.brokerageTradeTransactions.map(brokerageTransactionDto),
     ...maicoinTransactionDtos(data.maicoinStatementRows, data.maicoinAccountSnapshots),
   ];
 
@@ -230,7 +229,7 @@ export function bucketToAmounts(
 
 function cashPositions(rows: AccountTransaction[]): RawPosition[] {
   return latestBy(
-    rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
+    rows.filter((row) => row.balanceAfter !== null),
     (row) => ["cash", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)].join("|"),
     (row) => sortKey(row, row.transactionDate, row.transactionTime),
   ).map((row) => ({
@@ -252,7 +251,7 @@ function cashPositions(rows: AccountTransaction[]): RawPosition[] {
 
 function foreignCashPositions(rows: ForeignCurrencyTransaction[]): RawPosition[] {
   return latestBy(
-    rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
+    rows.filter((row) => row.balanceAfter !== null),
     (row) => ["foreign", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)].join("|"),
     (row) => sortKey(row, row.transactionDate, row.transactionTime),
   ).map((row) => ({
@@ -317,7 +316,7 @@ function creditCardPositions(rows: CreditCardStatementLine[]): RawPosition[] {
 
 function loanPositions(rows: LoanTransaction[]): RawPosition[] {
   return latestBy(
-    rows.filter((row) => isUnique(row) && row.balanceAfter !== null),
+    rows.filter((row) => row.balanceAfter !== null),
     (row) => ["loan", row.bank, row.product, row.accountNumber ?? ""].join("|"),
     (row) => loanSortKey(row),
   ).map((row) => ({
@@ -339,7 +338,7 @@ function loanPositions(rows: LoanTransaction[]): RawPosition[] {
 
 function fundPositions(rows: FundHolding[]): RawPosition[] {
   return latestBy(
-    rows.filter((row) => isUnique(row) && (row.marketValueWithoutDividend ?? row.investmentAmount) !== null),
+    rows.filter((row) => (row.marketValueWithoutDividend ?? row.investmentAmount) !== null),
     (row) => ["fund", row.bank, row.product, row.fundId ?? "", row.fundName ?? "", currency(row.currency)].join("|"),
     (row) => [row.importedAt, String(row.sourceRowIndex)].join("|"),
   ).map((row) => {
@@ -371,7 +370,7 @@ function fundPositions(rows: FundHolding[]): RawPosition[] {
 
 function brokeragePositions(rows: BrokerageHolding[]): RawPosition[] {
   return latestBy(
-    rows.filter((row) => isUnique(row) && (row.marketValueOriginal ?? row.marketValueTwd) !== null),
+    rows.filter((row) => (row.marketValueOriginal ?? row.marketValueTwd) !== null),
     (row) => ["brokerage", row.bank, row.product, row.accountNumber ?? "", row.productCode ?? "", currency(row.currency)].join("|"),
     (row) => [row.asOfDate ?? "", row.importedAt, String(row.sourceRowIndex)].join("|"),
   ).map((row) => {
@@ -989,10 +988,6 @@ function subtractBuckets(
 
 function addBucket(bucket: Record<string, number>, currencyCode: string, value: number) {
   bucket[currencyCode] = (bucket[currencyCode] ?? 0) + value;
-}
-
-function isUnique(row: CommonRow) {
-  return row.dedupeStatus !== "duplicate";
 }
 
 function sortKey(row: CommonRow, date: string | null, time?: string | null) {

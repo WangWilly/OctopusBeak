@@ -807,6 +807,15 @@ function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   }
 }
 
+function retireDuplicateOccurrenceColumns(db: LedgerDatabase) {
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`
+      ALTER TABLE ${table} DROP COLUMN dedupe_status;
+      ALTER TABLE ${table} DROP COLUMN raw_row_hash;
+    `);
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -867,6 +876,11 @@ const migrations: LedgerMigration[] = [
     version: 12,
     name: "physical_content_hash_deduplication",
     up: physicallyDeduplicateStatementRows,
+  },
+  {
+    version: 13,
+    name: "retired_duplicate_occurrence_columns",
+    up: retireDuplicateOccurrenceColumns,
   },
 ];
 
