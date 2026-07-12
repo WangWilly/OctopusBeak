@@ -15,7 +15,6 @@ import {
   stableStringify,
 } from "./content-hash.ts";
 import {
-  TYPED_STATEMENT_TABLES,
   createSourceCsvParser,
   personalInvoiceFields,
   personalInvoiceItemFields,
@@ -262,12 +261,25 @@ function sqliteValue(value: unknown): string | number | null {
   return String(value);
 }
 
-function insertRecord(db: LedgerDatabase, table: string, record: Record<string, unknown>) {
+export function insertRecord(
+  db: LedgerDatabase,
+  table: string,
+  record: Record<string, unknown>,
+): "inserted" | "duplicate" {
   const columns = Object.keys(record);
   const placeholders = columns.map(() => "?").join(", ");
-  db.prepare(
-    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
-  ).run(...columns.map((column) => sqliteValue(record[column])));
+  try {
+    db.prepare(
+      `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
+    ).run(...columns.map((column) => sqliteValue(record[column])));
+    return "inserted";
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message.includes(`UNIQUE constraint failed: ${table}.content_hash`)
+    ) return "duplicate";
+    throw error;
+  }
 }
 
 const PERSONAL_INVOICE_UPDATE_COLUMNS = [
@@ -505,12 +517,12 @@ function insertTypedStatementRow(
     contentHash?: string;
     dedupeStatus?: string;
   },
-) {
+): "inserted" | "duplicate" | "upserted" {
   const bank = String(sourceFileRecord.bank ?? "");
   const product = String(sourceFileRecord.product ?? "");
   if (bank === "einvoice" && product === "personal-invoices") {
     insertPersonalInvoiceStatementRow(db, sourceFileRecord, row);
-    return;
+    return "upserted";
   }
   const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
   const headers = Array.isArray(sourceFileRecord.headers)
@@ -523,7 +535,7 @@ function insertTypedStatementRow(
     metadata: (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
     headers,
   });
-  insertRecord(db, parser.table, {
+  return insertRecord(db, parser.table, {
     ...commonTypedRowFields(sourceFileRecord, row),
     ...parser.parseRow(row.rawPayload),
   });
@@ -534,17 +546,6 @@ function importedSourceRelativePaths(db: LedgerDatabase): Set<string> {
     .prepare("SELECT source_relative_path FROM source_files")
     .all() as Array<{ source_relative_path: string }>;
   return new Set(rows.map((row) => row.source_relative_path));
-}
-
-function importedContentHashes(db: LedgerDatabase): Set<string> {
-  const hashes = new Set<string>();
-  for (const table of TYPED_STATEMENT_TABLES) {
-    const rows = db
-      .prepare(`SELECT content_hash FROM ${table}`)
-      .all() as Array<{ content_hash: string }>;
-    for (const row of rows) hashes.add(row.content_hash);
-  }
-  return hashes;
 }
 
 function hasAnyCell(row: unknown[]): boolean {
@@ -675,7 +676,6 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
 
   try {
     const importedSourceFiles = importedSourceRelativePaths(db);
-    const contentHashes = importedContentHashes(db);
     const sourceFileRecords: Record<string, unknown>[] = [];
     const statementRows: Array<{
       sourceFileRecord: Record<string, unknown>;
@@ -685,7 +685,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         rawRowHash: string;
         sourceHash: string;
         contentHash: string;
-        dedupeStatus: "unique" | "duplicate";
+        dedupeStatus?: string;
       };
     }> = [];
     const fileSummaries: FileImportSummary[] = [];
@@ -694,6 +694,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     let importedCsvFiles = 0;
     let skippedCsvFiles = 0;
     let importedRows = 0;
+    let skippedDuplicateRows = 0;
 
     for (const sourceFile of await listCsvFiles(downloadsDir)) {
       const context = inferContext(sourceFile, downloadsDir);
@@ -752,8 +753,6 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
           rawRowHash,
         );
         const contentHash = contentHashForRow(context.bank, context.product, rawPayload);
-        const dedupeStatus = contentHashes.has(contentHash) ? "duplicate" : "unique";
-        contentHashes.add(contentHash);
         statementRows.push({
           sourceFileRecord,
           row: {
@@ -762,10 +761,8 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
             rawRowHash,
             sourceHash,
             contentHash,
-            dedupeStatus,
           },
         });
-        importedRows += 1;
       }
 
       fileSummaries.push({
@@ -790,43 +787,48 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       );
     }
 
-    const finishedAt = new Date().toISOString();
     const sourceFilesWritten = sourceFileRecords.length;
-    const runRecord = {
-      ...baseRecord("import_run"),
-      importRunId,
-      startedAt,
-      finishedAt,
-      downloadsDir,
-      outputDir,
-      bankFilters: input.bankFilters,
-      productFilters: input.productFilters,
-      scannedCsvFiles,
-      importedCsvFiles,
-      skippedCsvFiles,
-      importedRows,
-      sourceFilesWritten,
-      sqlitePath,
-    };
-    const completedEvent = {
-      ...baseRecord("import_run_event"),
-      importRunId,
-      eventType: "completed",
-      eventAt: finishedAt,
-      scannedCsvFiles,
-      importedCsvFiles,
-      skippedCsvFiles,
-      importedRows,
-      sourceFilesWritten,
-    };
+    let finishedAt = "";
     db.exec("BEGIN");
     try {
       for (const sourceFileRecord of sourceFileRecords) {
         insertSourceFile(db, sourceFileRecord);
       }
       for (const item of statementRows) {
-        insertTypedStatementRow(db, item.sourceFileRecord, item.row);
+        const outcome = insertTypedStatementRow(db, item.sourceFileRecord, item.row);
+        if (outcome === "duplicate") skippedDuplicateRows += 1;
+        else importedRows += 1;
       }
+      finishedAt = new Date().toISOString();
+      const runRecord = {
+        ...baseRecord("import_run"),
+        importRunId,
+        startedAt,
+        finishedAt,
+        downloadsDir,
+        outputDir,
+        bankFilters: input.bankFilters,
+        productFilters: input.productFilters,
+        scannedCsvFiles,
+        importedCsvFiles,
+        skippedCsvFiles,
+        importedRows,
+        skippedDuplicateRows,
+        sourceFilesWritten,
+        sqlitePath,
+      };
+      const completedEvent = {
+        ...baseRecord("import_run_event"),
+        importRunId,
+        eventType: "completed",
+        eventAt: finishedAt,
+        scannedCsvFiles,
+        importedCsvFiles,
+        skippedCsvFiles,
+        importedRows,
+        skippedDuplicateRows,
+        sourceFilesWritten,
+      };
       insertImportRun(db, runRecord);
       insertRunEvent(db, completedEvent);
       db.exec("COMMIT");
@@ -847,6 +849,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       importedCsvFiles,
       skippedCsvFiles,
       importedRows,
+      skippedDuplicateRows,
       sourceFilesWritten,
       files: fileSummaries,
     };
