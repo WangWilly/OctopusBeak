@@ -93,6 +93,7 @@ function cardSnapshot(
   snapshotId: string,
   capturedAt: string,
   totalAmount: number,
+  asOfDate = capturedAt.slice(0, 10),
 ): CreditCardSnapshot {
   return {
     snapshotId,
@@ -102,7 +103,7 @@ function cardSnapshot(
     cardKey: "8397",
     statementType: "unbilled",
     capturedAt,
-    asOfDate: capturedAt.slice(0, 10),
+    asOfDate,
     currency: "TWD",
     transactionCount: 9,
     totalAmount,
@@ -145,6 +146,7 @@ const cardData = emptyLedgerQueryData();
 cardData.creditCardSnapshots = [
   cardSnapshot("june-early", "2026-06-30T08:00:00.000Z", 4500),
   cardSnapshot("june-late", "2026-06-30T10:00:00.000Z", 4680),
+  cardSnapshot("older-day-captured-later", "2026-07-04T08:00:00.000Z", 999, "2026-07-01"),
   cardSnapshot("july-complete", "2026-07-03T08:00:00.000Z", 6120),
 ];
 cardData.sourceFiles = [
@@ -163,5 +165,6 @@ assert.deepEqual(buildDailyHistoryByAccount(cardData)[cardAccount.id]?.map((row)
   liabilities: row.liabilities,
 })), [
   { date: "2026-06-30", liabilities: [{ currency: "TWD", value: 4680 }] },
+  { date: "2026-07-01", liabilities: [{ currency: "TWD", value: 999 }] },
   { date: "2026-07-03", liabilities: [{ currency: "TWD", value: 6120 }] },
 ]);
