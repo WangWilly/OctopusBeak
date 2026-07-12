@@ -392,3 +392,118 @@ const rowsAfterFailedInsert = failureDb.prepare(
 ).get() as { count: number };
 assert.equal(rowsAfterFailedInsert.count, 0);
 failureDb.close();
+
+const cardHeaders = [
+  "statement_period", "card_number", "consume_date", "posting_date",
+  "description", "country_currency", "foreign_currency", "foreign_amount",
+  "twd_amount", "installment_action", "payment_status",
+];
+const cardCsv = (rows: Array<Record<string, string>>) =>
+  `${cardHeaders.join(",")}\n${rows
+    .map((row) => cardHeaders.map((header) => csvCell(row[header] ?? "")).join(","))
+    .join("\n")}\n`;
+const cardRows = [
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-1111",
+    consume_date: "2026-07-01", posting_date: "2026-07-02", description: "Coffee",
+    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "100",
+    twd_amount: "100", installment_action: "", payment_status: "unpaid",
+  },
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-1111",
+    consume_date: "2026-07-03", posting_date: "2026-07-04", description: "Lunch",
+    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "250",
+    twd_amount: "250", installment_action: "", payment_status: "unpaid",
+  },
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-2222",
+    consume_date: "2026-07-05", posting_date: "2026-07-06", description: "Book",
+    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "480",
+    twd_amount: "480", installment_action: "", payment_status: "unpaid",
+  },
+];
+
+async function cardImportFixture(metadata: Record<string, unknown>) {
+  const root = await mkdtemp(join(tmpdir(), "card-snapshot-import-"));
+  const fixtureDownloadsDir = join(root, "downloads");
+  const fixtureOutputDir = join(root, "ledger");
+  const fixtureSourceDir = join(fixtureDownloadsDir, "esun-credit-card-statements");
+  await mkdir(fixtureSourceDir, { recursive: true });
+  await writeFile(join(fixtureSourceDir, "billed.csv"), cardCsv(cardRows), "utf8");
+  await writeFile(join(fixtureSourceDir, "billed.json"), JSON.stringify(metadata), "utf8");
+  return { fixtureDownloadsDir, fixtureOutputDir };
+}
+
+const fullCardFixture = await cardImportFixture({
+  snapshotMode: "full",
+  snapshotCapturedAt: "2026-07-12T08:09:10.000Z",
+  cardRowCounts: { "1111": 2, "2222": 1, "3333": 0 },
+});
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+const fullCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
+const snapshots = (fullCardDb.prepare([
+  "SELECT s.source_file_id, f.source_file_id AS expected_source_file_id,",
+  "s.card_key, s.statement_type, s.captured_at, s.as_of_date, s.currency,",
+  "s.transaction_count, s.total_amount",
+  "FROM credit_card_snapshots s JOIN source_files f ON f.source_file_id = s.source_file_id",
+  "ORDER BY s.card_key",
+].join(" ")).all() as Array<Record<string, unknown>>).map((row) => ({ ...row }));
+const semanticKeyCount = fullCardDb.prepare(
+  "SELECT COUNT(semantic_key) AS count FROM credit_card_statement_lines",
+).get() as { count: number };
+fullCardDb.close();
+assert.deepEqual(snapshots, [
+  {
+    source_file_id: snapshots[0]?.source_file_id,
+    expected_source_file_id: snapshots[0]?.source_file_id,
+    card_key: "1111", statement_type: "billed",
+    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
+    currency: "TWD", transaction_count: 2, total_amount: 350,
+  },
+  {
+    source_file_id: snapshots[1]?.source_file_id,
+    expected_source_file_id: snapshots[1]?.source_file_id,
+    card_key: "2222", statement_type: "billed",
+    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
+    currency: "TWD", transaction_count: 1, total_amount: 480,
+  },
+  {
+    source_file_id: snapshots[2]?.source_file_id,
+    expected_source_file_id: snapshots[2]?.source_file_id,
+    card_key: "3333", statement_type: "billed",
+    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
+    currency: "TWD", transaction_count: 0, total_amount: 0,
+  },
+]);
+assert.equal(semanticKeyCount.count, 3);
+
+const legacyCardFixture = await cardImportFixture({ cardRowCounts: { "1111": 2, "2222": 1 } });
+await importDownloadsCsv({
+  downloadsDir: legacyCardFixture.fixtureDownloadsDir,
+  outputDir: legacyCardFixture.fixtureOutputDir,
+});
+const legacyCardDb = openLedgerDatabase(legacyCardFixture.fixtureOutputDir, { readOnly: true });
+assert.equal((legacyCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots",
+).get() as { count: number }).count, 0);
+legacyCardDb.close();
+
+const malformedCardFixture = await cardImportFixture({
+  snapshotMode: "full",
+  cardRowCounts: { "1111": 2, "2222": 1 },
+});
+await assert.rejects(() => importDownloadsCsv({
+  downloadsDir: malformedCardFixture.fixtureDownloadsDir,
+  outputDir: malformedCardFixture.fixtureOutputDir,
+}), /snapshotCapturedAt/);
+const malformedCardDb = openLedgerDatabase(malformedCardFixture.fixtureOutputDir, { readOnly: true });
+assert.equal((malformedCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines",
+).get() as { count: number }).count, 0);
+assert.equal((malformedCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots",
+).get() as { count: number }).count, 0);
+malformedCardDb.close();
