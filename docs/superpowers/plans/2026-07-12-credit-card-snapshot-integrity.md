@@ -355,7 +355,48 @@ git commit -m "fix: build card history from complete snapshots"
 
 ---
 
-### Task 7: Full Verification and Electron CDP Review
+### Task 7: Use Only the Latest Imported Unbilled Balance
+
+**Files:**
+- Modify: `src/lib/shared-ledger/server/accounts.ts`
+- Modify: `src/lib/overview/server/daily-history.ts`
+- Modify: `src/lib/shared-ledger/server/accounts.check.ts`
+- Modify: `src/lib/overview/server/daily-history.check.ts`
+- Modify: `src/ledger/db/migrations.ts`
+- Modify: `src/ledger/db/migrations.check.ts`
+
+**Interfaces:**
+- Produces: latest-imported-unbilled-only credit-card balances.
+- Preserves: transaction list rows and source provenance; billed rows remain stored but do not contribute to credit-card balance.
+
+- [ ] **Step 1: Add failing policy checks**
+
+Assert that two cards with historical snapshots select only the greatest `captured_at` unbilled snapshot overall, ignore all billed snapshots, and expose no historical unbilled balance rows. Assert 8397's latest imported total is TWD 14,844 and neither TWD 160 nor TWD 142 appears in daily history.
+
+- [ ] **Step 2: Implement latest-only selection**
+
+In `creditCardPositions`, filter `statementType === "unbilled"`, then select one snapshot per bank/product/card by `capturedAt` and `snapshotId`. Do not add billed snapshots to the credit-card balance.
+
+In daily-history input normalization, retain only those latest unbilled snapshots; keep other account/source dates for loans and non-card history, but do not replay historical unbilled snapshots.
+
+- [ ] **Step 3: Add a cleanup migration**
+
+Add migration 16 `latest_imported_unbilled_snapshots` that deletes older unbilled rows per bank/product/card, retaining only the greatest `captured_at`/`snapshot_id`. Billed snapshot rows remain for provenance but are not read for balances.
+
+- [ ] **Step 4: Verify and commit**
+
+```bash
+node --no-warnings --experimental-strip-types src/lib/shared-ledger/server/accounts.check.ts
+node --no-warnings --experimental-strip-types src/lib/overview/server/daily-history.check.ts
+node --no-warnings --experimental-strip-types src/ledger/db/migrations.check.ts
+npm run typecheck
+git diff --check
+git commit -m "fix: use latest imported unbilled balances"
+```
+
+---
+
+### Task 8: Full Verification and Electron CDP Review
 
 **Files:**
 - No product files expected.
