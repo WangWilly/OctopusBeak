@@ -3,6 +3,7 @@ import type {
   accountTransactions,
   brokerageHoldings,
   brokerageTradeTransactions,
+  creditCardSnapshots,
   creditCardStatementLines,
   foreignCurrencyTransactions,
   fundBuyTransactions,
@@ -29,6 +30,7 @@ import type {
 type AccountTransaction = typeof accountTransactions.$inferSelect;
 type ForeignCurrencyTransaction = typeof foreignCurrencyTransactions.$inferSelect;
 type CreditCardStatementLine = typeof creditCardStatementLines.$inferSelect;
+type CreditCardSnapshot = typeof creditCardSnapshots.$inferSelect;
 type LoanTransaction = typeof loanTransactions.$inferSelect;
 type FundHolding = typeof fundHoldings.$inferSelect;
 type FundBuyTransaction = typeof fundBuyTransactions.$inferSelect;
@@ -55,6 +57,7 @@ export type LedgerQueryData = {
   accountTransactions: AccountTransaction[];
   foreignCurrencyTransactions: ForeignCurrencyTransaction[];
   creditCardStatementLines: CreditCardStatementLine[];
+  creditCardSnapshots: CreditCardSnapshot[];
   loanTransactions: LoanTransaction[];
   fundHoldings: FundHolding[];
   fundBuyTransactions: FundBuyTransaction[];
@@ -74,6 +77,7 @@ export function emptyLedgerQueryData(): LedgerQueryData {
     accountTransactions: [],
     foreignCurrencyTransactions: [],
     creditCardStatementLines: [],
+    creditCardSnapshots: [],
     loanTransactions: [],
     fundHoldings: [],
     fundBuyTransactions: [],
@@ -146,7 +150,7 @@ export function buildRawPositions(data: LedgerQueryData): RawPosition[] {
   return [
     ...cashPositions(data.accountTransactions),
     ...foreignCashPositions(data.foreignCurrencyTransactions),
-    ...creditCardPositions(data.creditCardStatementLines),
+    ...creditCardPositions(data.creditCardSnapshots, data.creditCardStatementLines),
     ...loanPositions(data.loanTransactions),
     ...fundPositions(data.fundHoldings),
     ...brokeragePositions(data.brokerageHoldings),
@@ -160,7 +164,7 @@ export function buildTransactionsByAccount(
   const transactions: Array<[string, TransactionRowDto]> = [
     ...data.accountTransactions.map(bankTransactionDto),
     ...data.foreignCurrencyTransactions.map(foreignTransactionDto),
-    ...latestCreditCardTransactionRows(data.creditCardStatementLines).map(creditCardTransactionDto),
+    ...data.creditCardStatementLines.map(creditCardTransactionDto),
     ...data.loanTransactions.map(loanTransactionDto),
     ...data.fundBuyTransactions.map(fundBuyTransactionDto),
     ...data.fundRedemptionTransactions.map(fundRedemptionTransactionDto),
@@ -271,47 +275,35 @@ function foreignCashPositions(rows: ForeignCurrencyTransaction[]): RawPosition[]
   }));
 }
 
-function creditCardPositions(rows: CreditCardStatementLine[]): RawPosition[] {
-  const groups = new Map<string, { row: CreditCardStatementLine; value: number }>();
-  for (const row of latestCreditCardTransactionRows(rows)) {
-    const key = creditCardAccountKey(row);
-    const previous = groups.get(key);
-    if (!previous || sortKey(row, row.consumeDate) > sortKey(previous.row, previous.row.consumeDate)) {
-      groups.set(key, { row, value: 0 });
-    }
-  }
+function creditCardPositions(snapshots: CreditCardSnapshot[], rows: CreditCardStatementLine[]): RawPosition[] {
+  const latestRows = new Map(latestBy(
+    rows,
+    creditCardAccountKey,
+    (row) => sortKey(row, row.consumeDate),
+  ).map((row) => [creditCardAccountKey(row), row]));
 
-  for (const row of latestCreditCardStatementRows(rows)) {
-    if (row.statementType !== "unbilled") continue;
-    const value = row.twdAmount ?? 0;
-    if (value <= 0) continue;
-    const key = creditCardAccountKey(row);
-    const previous = groups.get(key);
-    if (!previous) {
-      groups.set(key, { row, value });
-    } else {
-      previous.value += value;
-      if (sortKey(row, row.consumeDate) > sortKey(previous.row, previous.row.consumeDate)) {
-        previous.row = row;
-      }
-    }
-  }
-
-  return [...groups.values()].map(({ row, value }) => ({
-    id: stableId("card-position", row.bank, row.product, creditCardNumberKey(row)),
-    accountId: accountId("card", row.bank, row.product, creditCardNumberKey(row), "TWD"),
-    label: row.cardLabel?.trim() || maskAccount(row.cardNumber),
-    institution: bankLabel(row.bank),
-    product: row.product,
-    group: "liability",
-    kind: "credit-card",
-    typeLabel: "Credit card",
-    currency: "TWD",
-    value,
-    asOfDate: row.consumeDate,
-    importedAt: row.importedAt,
-    positionDetail: null,
-  }));
+  return latestBy(
+    snapshots,
+    (snapshot) => [creditCardSnapshotAccountKey(snapshot), snapshot.statementType].join("|"),
+    (snapshot) => [snapshot.capturedAt, snapshot.snapshotId].join("|"),
+  ).map((snapshot) => {
+    const row = latestRows.get(creditCardSnapshotAccountKey(snapshot));
+    return {
+      id: stableId("card-position", snapshot.bank, snapshot.product, snapshot.cardKey, snapshot.statementType),
+      accountId: accountId("card", snapshot.bank, snapshot.product, snapshot.cardKey, snapshot.currency),
+      label: row?.cardLabel?.trim() || maskAccount(row?.cardNumber ?? snapshot.cardKey),
+      institution: bankLabel(snapshot.bank),
+      product: snapshot.product,
+      group: "liability",
+      kind: "credit-card",
+      typeLabel: "Credit card",
+      currency: snapshot.currency,
+      value: snapshot.totalAmount,
+      asOfDate: snapshot.asOfDate,
+      importedAt: snapshot.capturedAt,
+      positionDetail: null,
+    };
+  });
 }
 
 function loanPositions(rows: LoanTransaction[]): RawPosition[] {
@@ -999,43 +991,12 @@ function loanSortKey(row: LoanTransaction) {
   return [row.tradeDate ?? "", row.importedAt, principalPriority, String(row.sourceRowIndex)].join("|");
 }
 
-function latestCreditCardStatementRows(rows: CreditCardStatementLine[]) {
-  const latestSnapshotByCard = new Map<string, { snapshotKey: string; sortKey: string }>();
-  for (const row of rows) {
-    const key = creditCardAccountKey(row);
-    const previous = latestSnapshotByCard.get(key);
-    const snapshotKey = creditCardSnapshotKey(row);
-    const sortKey = creditCardSnapshotSortKey(row);
-    if (!previous || sortKey > previous.sortKey) {
-      latestSnapshotByCard.set(key, { snapshotKey, sortKey });
-    }
-  }
-
-  return rows.filter(
-    (row) => latestSnapshotByCard.get(creditCardAccountKey(row))?.snapshotKey === creditCardSnapshotKey(row),
-  );
-}
-
-function latestCreditCardTransactionRows(rows: CreditCardStatementLine[]) {
-  const latestSnapshotByCardType = new Map<string, { snapshotKey: string; sortKey: string }>();
-  for (const row of rows) {
-    const key = [creditCardAccountKey(row), row.statementType].join("|");
-    const previous = latestSnapshotByCardType.get(key);
-    const snapshotKey = creditCardSnapshotKey(row);
-    const sortKey = creditCardSnapshotSortKey(row);
-    if (!previous || sortKey > previous.sortKey) {
-      latestSnapshotByCardType.set(key, { snapshotKey, sortKey });
-    }
-  }
-
-  return rows.filter((row) => {
-    const key = [creditCardAccountKey(row), row.statementType].join("|");
-    return latestSnapshotByCardType.get(key)?.snapshotKey === creditCardSnapshotKey(row);
-  });
-}
-
 function creditCardAccountKey(row: CreditCardStatementLine) {
   return [row.bank, row.product, creditCardNumberKey(row)].join("|");
+}
+
+function creditCardSnapshotAccountKey(snapshot: CreditCardSnapshot) {
+  return [snapshot.bank, snapshot.product, snapshot.cardKey].join("|");
 }
 
 function creditCardNumberKey(row: CreditCardStatementLine) {
@@ -1046,15 +1007,6 @@ function creditCardNumberKey(row: CreditCardStatementLine) {
 function cardLast4(value: string) {
   const digits = value.replace(/\D/g, "");
   return digits.length >= 4 ? digits.slice(-4) : "";
-}
-
-function creditCardSnapshotKey(row: CreditCardStatementLine) {
-  return [row.importedAt, row.sourceRelativePath, row.statementType].join("|");
-}
-
-function creditCardSnapshotSortKey(row: CreditCardStatementLine) {
-  const unbilledPriority = row.statementType === "unbilled" ? "1" : "0";
-  return [row.importedAt, unbilledPriority, row.sourceRelativePath].join("|");
 }
 
 function accountId(kind: string, bank: string, product: string, account: string, currencyCode: string) {

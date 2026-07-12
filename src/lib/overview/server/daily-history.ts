@@ -50,6 +50,7 @@ function dailyHistoryDates(data: LedgerQueryData) {
     ...new Set(
       data.sourceFiles
         .map((source) => sourceFileDate(source))
+        .concat(data.creditCardSnapshots.map((snapshot) => snapshot.asOfDate))
         .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
         .filter(Boolean)
         .sort(),
@@ -98,6 +99,7 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     accountTransactions: data.accountTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     creditCardStatementLines: data.creditCardStatementLines.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    creditCardSnapshots: data.creditCardSnapshots.filter((row) => row.asOfDate <= date),
     loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
     brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
