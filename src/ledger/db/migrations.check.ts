@@ -357,6 +357,14 @@ try {
     "duplicate", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
   );
   insertAccountRow.run(
+    "aaa-later-row", "tie-row-file", "a.csv", 2, "source-tie-row", "raw-tie-row",
+    "duplicate", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
+  );
+  insertAccountRow.run(
+    "tie-later-id", "tie-id-file", "a.csv", 1, "source-tie-id", "raw-tie-id",
+    "duplicate", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
+  );
+  insertAccountRow.run(
     "canonical", "canonical-file", "a.csv", 1, "source-canonical", "raw-canonical",
     "unique", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
   );
