@@ -31,7 +31,9 @@ assert.equal(
 );
 
 for (const changed of [
+  { bank: "other-bank" },
   { cardNumber: "9999" },
+  { foreignAmount: 1 },
   { twdAmount: 101 },
   { consumeDate: "2026-07-02" },
   { description: "tea" },
