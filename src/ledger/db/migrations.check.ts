@@ -166,7 +166,10 @@ try {
   }>;
   const commonStatementColumns = new Map(TYPED_STATEMENT_TABLES.map((table) => [
     table,
-    migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>,
+    migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+      notnull: number;
+    }>,
   ]));
   const snapshotColumns = migrated.prepare(
     "PRAGMA table_info(credit_card_snapshots)",
@@ -174,6 +177,9 @@ try {
   const snapshotIndexes = migrated.prepare(
     "PRAGMA index_list(credit_card_snapshots)",
   ).all() as Array<{ name: string; unique: number }>;
+  const snapshotIndexColumns = (index: string) => migrated.prepare(
+    `PRAGMA index_info(${index})`,
+  ).all() as Array<{ name: string }>;
 
   assert.deepEqual(
     versions.map((row) => row.version),
@@ -200,18 +206,26 @@ try {
     "statement_type", "captured_at", "as_of_date", "currency",
     "transaction_count", "total_amount",
   ]);
-  assert.equal(
-    commonStatementColumns.get("credit_card_statement_lines")?.some(
-      (column) => column.name === "semantic_key",
-    ),
-    true,
-  );
+  const semanticKeyColumn = commonStatementColumns
+    .get("credit_card_statement_lines")
+    ?.find((column) => column.name === "semantic_key");
+  assert.equal(semanticKeyColumn?.notnull, 0);
   assert.equal(snapshotIndexes.find(
     (index) => index.name === "uq_credit_card_snapshots_source_card_type",
   )?.unique, 1);
   assert.equal(snapshotIndexes.some(
     (index) => index.name === "idx_credit_card_snapshots_card_day",
   ), true);
+  assert.deepEqual(
+    snapshotIndexColumns("uq_credit_card_snapshots_source_card_type")
+      .map((column) => column.name),
+    ["source_file_id", "card_key", "statement_type"],
+  );
+  assert.deepEqual(
+    snapshotIndexColumns("idx_credit_card_snapshots_card_day")
+      .map((column) => column.name),
+    ["card_key", "statement_type", "as_of_date", "captured_at"],
+  );
   const insertSnapshot = migrated.prepare(`
     INSERT INTO credit_card_snapshots (
       snapshot_id, source_file_id, bank, product, card_key, statement_type,
