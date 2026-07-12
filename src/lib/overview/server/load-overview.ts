@@ -17,6 +17,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       accountTransactions,
       foreignCurrencyTransactions,
       creditCardStatementLines,
+      creditCardSnapshots,
       loanTransactions,
       fundHoldings,
       brokerageHoldings,
@@ -27,6 +28,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
       db.select().from(schema.creditCardStatementLines).all(),
+      db.select().from(schema.creditCardSnapshots).all(),
       db.select().from(schema.loanTransactions).all(),
       db.select().from(schema.fundHoldings).all(),
       db.select().from(schema.brokerageHoldings).all(),
@@ -40,6 +42,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       accountTransactions,
       foreignCurrencyTransactions,
       creditCardStatementLines,
+      creditCardSnapshots,
       loanTransactions,
       fundHoldings,
       brokerageHoldings,
@@ -62,6 +65,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
 function latestImportedAt(data: LedgerQueryData) {
   return [
     ...data.sourceFiles.map((source) => source.importedAt),
+    ...data.creditCardSnapshots.map((snapshot) => snapshot.capturedAt),
     ...data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt),
   ].sort().at(-1) ?? null;
 }

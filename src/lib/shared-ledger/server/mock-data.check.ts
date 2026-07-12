@@ -9,6 +9,7 @@ const data = mockLedgerQueryData(launchDate);
 assert.ok(data.accountTransactions.length >= 6);
 assert.ok(data.foreignCurrencyTransactions.length >= 5);
 assert.ok(data.creditCardStatementLines.length >= 8);
+assert.ok(data.creditCardSnapshots.length >= 6);
 assert.ok(data.loanTransactions.length >= 3);
 assert.ok(data.fundHoldings.length >= 4);
 assert.ok(data.fundBuyTransactions.length >= 3);
@@ -47,6 +48,7 @@ const liabilityHistory = buildDailyHistory({
   ...emptyLedgerQueryData(),
   sourceFiles: data.sourceFiles,
   creditCardStatementLines: data.creditCardStatementLines,
+  creditCardSnapshots: data.creditCardSnapshots,
   loanTransactions: data.loanTransactions,
   maicoinAccountSnapshots: data.maicoinAccountSnapshots,
 }).filter((row) => row.liabilities.length > 0);

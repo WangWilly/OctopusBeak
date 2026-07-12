@@ -11,6 +11,7 @@ export const MOCK_LEDGER_TABLES = [
   { key: "accountTransactions", table: "account_transactions", label: "TWD bank rows" },
   { key: "foreignCurrencyTransactions", table: "foreign_currency_transactions", label: "Foreign cash rows" },
   { key: "creditCardStatementLines", table: "credit_card_statement_lines", label: "Credit card rows" },
+  { key: "creditCardSnapshots", table: "credit_card_snapshots", label: "Credit card snapshots" },
   { key: "loanTransactions", table: "loan_transactions", label: "Loan rows" },
   { key: "fundHoldings", table: "fund_holdings", label: "Fund positions" },
   { key: "fundBuyTransactions", table: "fund_buy_transactions", label: "Fund buys" },
@@ -34,6 +35,7 @@ export function mockLedgerQueryData(referenceDate = new Date()): LedgerQueryData
     accountTransactions,
     foreignCurrencyTransactions,
     creditCardStatementLines,
+    creditCardSnapshots,
     loanTransactions,
     fundHoldings,
     fundBuyTransactions,
@@ -495,6 +497,38 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "paid",
   },
 ];
+
+const creditCardSnapshots: LedgerRow<"creditCardSnapshots">[] = [
+  cardSnapshot("card.2026-05-22", "1234", "billed", "2026-05-22", 440, 2),
+  cardSnapshot("card.2026-05-22", "5678", "billed", "2026-05-22", 7728, 1),
+  cardSnapshot("card.2026-06-24", "5678", "unbilled", "2026-06-24", 3900, 1),
+  cardSnapshot("card.2026-06-25", "1234", "unbilled", "2026-06-25", 1280, 1),
+  cardSnapshot("card.2026-06-26", "5678", "unbilled", "2026-06-26", 4840, 1),
+  cardSnapshot("card.2026-06-27", "1234", "unbilled", "2026-06-27", 5580, 2),
+];
+
+function cardSnapshot(
+  sourceFileId: string,
+  cardKey: string,
+  statementType: "billed" | "unbilled",
+  asOfDate: string,
+  totalAmount: number,
+  transactionCount: number,
+): LedgerRow<"creditCardSnapshots"> {
+  return {
+    snapshotId: `mock-snapshot-${sourceFileId}-${cardKey}-${statementType}`,
+    sourceFileId,
+    bank: "fubon",
+    product: "credit-card",
+    cardKey,
+    statementType,
+    capturedAt: `${asOfDate}T18:00:00.000Z`,
+    asOfDate,
+    currency: "TWD",
+    transactionCount,
+    totalAmount,
+  };
+}
 
 const loanTransactions: LedgerRow<"loanTransactions">[] = [
   {
