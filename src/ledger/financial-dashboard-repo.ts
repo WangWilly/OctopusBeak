@@ -77,13 +77,11 @@ export abstract class TypedStatementRow<T extends TypedStatementTable>
   readonly importRunId: string;
   readonly importBatchId: string;
   readonly sourceHash: string;
-  readonly rawRowHash: string;
   readonly contentHash: string;
   readonly sourceRelativePath: string;
   readonly sourceRowIndex: number;
   readonly bank: string;
   readonly product: string;
-  readonly dedupeStatus: "unique" | "duplicate";
   readonly typedPayload: Record<string, string>;
 
   protected constructor(
@@ -95,14 +93,11 @@ export abstract class TypedStatementRow<T extends TypedStatementTable>
     this.importRunId = textColumn(row, "import_run_id");
     this.importBatchId = textColumn(row, "source_file_id");
     this.sourceHash = textColumn(row, "source_hash");
-    this.rawRowHash = textColumn(row, "raw_row_hash");
     this.contentHash = textColumn(row, "content_hash");
     this.sourceRelativePath = textColumn(row, "source_relative_path");
     this.sourceRowIndex = numberColumn(row, "source_row_index") ?? 0;
     this.bank = textColumn(row, "bank");
     this.product = textColumn(row, "product");
-    this.dedupeStatus =
-      textColumn(row, "dedupe_status") === "duplicate" ? "duplicate" : "unique";
     this.typedPayload = payloadFromSchema(row, columns);
   }
 }

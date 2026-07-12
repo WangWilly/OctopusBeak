@@ -15,6 +15,13 @@ function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
         item_sequence_number IS NULL
         OR (typeof(item_sequence_number) = 'integer' AND item_sequence_number >= 0)
       )`;
+  for (const table of TYPED_STATEMENT_TABLES) {
+    if (table === "personal_invoice_items") continue;
+    db.exec(`
+      ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE ${table} ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'unique';
+    `);
+  }
   db.exec(`
     DROP TABLE personal_invoice_items;
     CREATE TABLE personal_invoice_items (
@@ -137,6 +144,10 @@ try {
     if (
       table === "personal_invoices" || table === "personal_invoice_items"
     ) continue;
+    seeded.exec(`
+      ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE ${table} ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'unique';
+    `);
     seeded.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
   }
   seeded.close();
@@ -153,12 +164,24 @@ try {
     type: string;
     notnull: number;
   }>;
+  const commonStatementColumns = new Map(TYPED_STATEMENT_TABLES.map((table) => [
+    table,
+    migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>,
+  ]));
   migrated.close();
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
   );
+  for (const [table, columns] of commonStatementColumns) {
+    const names = new Set(columns.map((column) => column.name));
+    assert.equal(names.has("dedupe_status"), false, table);
+    assert.equal(names.has("raw_row_hash"), false, table);
+    assert.equal(names.has("content_hash"), true, table);
+    assert.equal(names.has("source_hash"), true, table);
+    assert.equal(names.has("raw_payload_json"), true, table);
+  }
   assert.ok(invoiceColumns.some((column) => column.name === "invoice_key"));
   assert.ok(itemColumns.some((column) => column.name === "item_key"));
   const sequenceColumn = itemColumns.find(
@@ -344,6 +367,12 @@ try {
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
   for (const table of TYPED_STATEMENT_TABLES) {
+    dedupeDb.exec(`
+      ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE ${table} ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'unique';
+    `);
+  }
+  for (const table of TYPED_STATEMENT_TABLES) {
     if (
       table === "personal_invoices" || table === "personal_invoice_items"
     ) continue;
@@ -403,10 +432,15 @@ try {
   assert.equal(invoiceItemIndexes.some(
     (index) => index.name === "uq_personal_invoice_items_content_hash",
   ), false);
-  assert.throws(() => insertAccountRow.run(
-    "blocked", "blocked-file", "c.csv", 1, "source-blocked", "raw-blocked",
-    "duplicate", "2026-03-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z",
-  ), /UNIQUE constraint failed: account_transactions.content_hash/);
+  assert.throws(() => dedupeDb.prepare(`
+    INSERT INTO account_transactions (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, currency
+    ) VALUES ('blocked', 'blocked-file', 'run', 'c.csv', 1, 'source-blocked',
+      'same-content', 'demo', 'statements', '{}',
+      '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', 'TWD')
+  `).run(), /UNIQUE constraint failed: account_transactions.content_hash/);
   dedupeDb.close();
 } finally {
   for (const directory of [

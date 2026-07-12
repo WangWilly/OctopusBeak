@@ -262,16 +262,14 @@ const unchangedItemCount = unchangedDb.prepare(
   "SELECT COUNT(*) AS count FROM personal_invoice_items",
 ).get() as { count: number };
 const unchangedInvoice = unchangedDb.prepare(
-  "SELECT status, dedupe_status FROM personal_invoices",
+  "SELECT status FROM personal_invoices",
 ).get() as {
   status: string;
-  dedupe_status: string;
 };
 const unchangedItem = unchangedDb.prepare(
-  "SELECT item_product_name, dedupe_status FROM personal_invoice_items",
+  "SELECT item_product_name FROM personal_invoice_items",
 ).get() as {
   item_product_name: string;
-  dedupe_status: string;
 };
 unchangedDb.close();
 
@@ -279,11 +277,9 @@ assert.equal(unchangedInvoiceCount.count, 1);
 assert.equal(unchangedItemCount.count, 1);
 assert.deepEqual({ ...unchangedInvoice }, {
   status: "confirmed",
-  dedupe_status: "unique",
 });
 assert.deepEqual({ ...unchangedItem }, {
   item_product_name: "咖啡",
-  dedupe_status: "unique",
 });
 
 const sparseRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-sparse-"));
@@ -384,12 +380,10 @@ assert.throws(() => insertRecord(failureDb, "account_transactions", {
   source_relative_path: "ctbc-statements/invalid.csv",
   source_row_index: 1,
   source_hash: "invalid-source",
-  raw_row_hash: "invalid-raw",
   content_hash: "invalid-content",
   bank: "ctbc",
   product: "statements",
   currency: null,
-  dedupe_status: "unique",
   raw_payload_json: "{}",
   imported_at: "2026-07-12T00:00:00.000Z",
 }), /NOT NULL constraint failed: account_transactions.currency/);
