@@ -352,6 +352,7 @@ const foreignCurrencyTransactions: LedgerRow<"foreignCurrencyTransactions">[] = 
 const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   {
     ...common("card.2026-06-25", "fubon", "credit-card", 1),
+    semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
     cardNumber: "**** **** **** 1234",
@@ -369,6 +370,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-06-27", "fubon", "credit-card", 2),
+    semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
     cardNumber: "**** **** **** 1234",
@@ -386,6 +388,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-05-22", "fubon", "credit-card", 3),
+    semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
     cardNumber: "**** **** **** 1234",
@@ -403,6 +406,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-06-27", "fubon", "credit-card", 4),
+    semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
     cardNumber: "**** **** **** 1234",
@@ -420,6 +424,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-06-26", "fubon", "credit-card", 5),
+    semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
     cardNumber: "**** **** **** 5678",
@@ -437,6 +442,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-06-24", "fubon", "credit-card", 6),
+    semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
     cardNumber: "**** **** **** 5678",
@@ -454,6 +460,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-05-22", "fubon", "credit-card", 7),
+    semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
     cardNumber: "**** **** **** 5678",
@@ -471,6 +478,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
   {
     ...common("card.2026-05-22", "fubon", "credit-card", 8),
+    semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
     cardNumber: "**** **** **** 1234",

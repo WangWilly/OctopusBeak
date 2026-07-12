@@ -816,6 +816,34 @@ function retireDuplicateOccurrenceColumns(db: LedgerDatabase) {
   }
 }
 
+function createCreditCardSnapshots(db: LedgerDatabase) {
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "semantic_key",
+    "semantic_key TEXT",
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credit_card_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      source_file_id TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      card_key TEXT NOT NULL,
+      statement_type TEXT NOT NULL CHECK (statement_type IN ('billed','unbilled')),
+      captured_at TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      transaction_count INTEGER NOT NULL CHECK (transaction_count >= 0),
+      total_amount REAL NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_card_snapshots_source_card_type
+    ON credit_card_snapshots(source_file_id, card_key, statement_type);
+    CREATE INDEX IF NOT EXISTS idx_credit_card_snapshots_card_day
+    ON credit_card_snapshots(card_key, statement_type, as_of_date, captured_at);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -881,6 +909,11 @@ const migrations: LedgerMigration[] = [
     version: 13,
     name: "retired_duplicate_occurrence_columns",
     up: retireDuplicateOccurrenceColumns,
+  },
+  {
+    version: 14,
+    name: "credit_card_snapshots",
+    up: createCreditCardSnapshots,
   },
 ];
 
