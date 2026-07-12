@@ -418,7 +418,7 @@ const cardRows = [
   {
     statement_period: "2026-07", card_number: "4000-0000-0000-2222",
     consume_date: "2026-07-05", posting_date: "2026-07-06", description: "Book",
-    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "480",
+    country_currency: "USD", foreign_currency: "USD", foreign_amount: "15",
     twd_amount: "480", installment_action: "", payment_status: "unpaid",
   },
 ];
@@ -507,3 +507,26 @@ assert.equal((malformedCardDb.prepare(
   "SELECT COUNT(*) AS count FROM credit_card_snapshots",
 ).get() as { count: number }).count, 0);
 malformedCardDb.close();
+
+for (const invalidCardKey of ["", "111", "card-1111"]) {
+  const invalidCardKeyFixture = await cardImportFixture({
+    snapshotMode: "full",
+    snapshotCapturedAt: "2026-07-12T08:09:10.000Z",
+    cardRowCounts: { [invalidCardKey]: 2, "2222": 1 },
+  });
+  await assert.rejects(() => importDownloadsCsv({
+    downloadsDir: invalidCardKeyFixture.fixtureDownloadsDir,
+    outputDir: invalidCardKeyFixture.fixtureOutputDir,
+  }), /cardRowCounts/);
+  const invalidCardKeyDb = openLedgerDatabase(
+    invalidCardKeyFixture.fixtureOutputDir,
+    { readOnly: true },
+  );
+  assert.equal((invalidCardKeyDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_statement_lines",
+  ).get() as { count: number }).count, 0);
+  assert.equal((invalidCardKeyDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots",
+  ).get() as { count: number }).count, 0);
+  invalidCardKeyDb.close();
+}

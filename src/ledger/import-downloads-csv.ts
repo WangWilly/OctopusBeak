@@ -87,7 +87,10 @@ type FileImportSummary = {
 const fullSnapshotMetadataSchema = z.object({
   snapshotMode: z.literal("full"),
   snapshotCapturedAt: z.string().datetime(),
-  cardRowCounts: z.record(z.string(), z.number().int().nonnegative()),
+  cardRowCounts: z.record(
+    z.string().regex(/^\d{4}$/),
+    z.number().int().nonnegative(),
+  ),
 });
 
 type FullSnapshotMetadata = z.infer<typeof fullSnapshotMetadataSchema>;
@@ -582,7 +585,6 @@ function insertCreditCardSnapshots(
     cardKey: string;
     statementType: string;
     capturedAt: string;
-    currency: string;
     expectedCount: number;
     transactions: Map<string, number>;
   }>();
@@ -597,8 +599,7 @@ function insertCreditCardSnapshots(
     const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
     const sourceFileId = sourceFileIdForPath(sourceRelativePath);
     const statementType = sourceRelativePath.includes("unbilled") ? "unbilled" : "billed";
-    for (const [rawCardKey, expectedCount] of Object.entries(snapshot.cardRowCounts)) {
-      const cardKey = rawCardKey.replace(/\D/g, "").slice(-4);
+    for (const [cardKey, expectedCount] of Object.entries(snapshot.cardRowCounts)) {
       groups.set(stableStringify([sourceFileId, cardKey, statementType]), {
         sourceFileId,
         bank,
@@ -606,7 +607,6 @@ function insertCreditCardSnapshots(
         cardKey,
         statementType,
         capturedAt: snapshot.snapshotCapturedAt,
-        currency: "TWD",
         expectedCount,
         transactions: new Map(),
       });
@@ -634,11 +634,6 @@ function insertCreditCardSnapshots(
     ]);
     const group = groups.get(groupKey);
     if (!group) throw new Error(`Full snapshot metadata is missing card ${cardKey}`);
-    const currency = String(fields.country_currency || fields.foreign_currency || "TWD");
-    if (group.transactions.size === 0) group.currency = currency;
-    else if (group.currency !== currency) {
-      throw new Error(`Full snapshot card ${cardKey} mixes currencies`);
-    }
     const semanticKey = semanticKeyForCreditCardFields(bank, fields);
     group.transactions.set(semanticKey, Number(fields.twd_amount ?? 0));
   }
@@ -660,7 +655,7 @@ function insertCreditCardSnapshots(
       statement_type: group.statementType,
       captured_at: group.capturedAt,
       as_of_date: group.capturedAt.slice(0, 10),
-      currency: group.currency,
+      currency: "TWD",
       transaction_count: group.transactions.size,
       total_amount: [...group.transactions.values()].reduce((sum, amount) => sum + amount, 0),
     });
