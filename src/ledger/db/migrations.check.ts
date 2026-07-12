@@ -168,11 +168,16 @@ try {
     table,
     migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>,
   ]));
-  migrated.close();
+  const snapshotColumns = migrated.prepare(
+    "PRAGMA table_info(credit_card_snapshots)",
+  ).all() as Array<{ name: string }>;
+  const snapshotIndexes = migrated.prepare(
+    "PRAGMA index_list(credit_card_snapshots)",
+  ).all() as Array<{ name: string; unique: number }>;
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -190,6 +195,47 @@ try {
   assert.equal(sequenceColumn?.type, "INTEGER");
   const categoryColumn = itemColumns.find((column) => column.name === "category");
   assert.equal(categoryColumn?.notnull, 1);
+  assert.deepEqual(snapshotColumns.map((column) => column.name), [
+    "snapshot_id", "source_file_id", "bank", "product", "card_key",
+    "statement_type", "captured_at", "as_of_date", "currency",
+    "transaction_count", "total_amount",
+  ]);
+  assert.equal(
+    commonStatementColumns.get("credit_card_statement_lines")?.some(
+      (column) => column.name === "semantic_key",
+    ),
+    true,
+  );
+  assert.equal(snapshotIndexes.find(
+    (index) => index.name === "uq_credit_card_snapshots_source_card_type",
+  )?.unique, 1);
+  assert.equal(snapshotIndexes.some(
+    (index) => index.name === "idx_credit_card_snapshots_card_day",
+  ), true);
+  const insertSnapshot = migrated.prepare(`
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, source_file_id, bank, product, card_key, statement_type,
+      captured_at, as_of_date, currency, transaction_count, total_amount
+    ) VALUES (?, 'source', 'esun', 'cards', '3456', 'billed',
+      '2026-07-01T00:00:00.000Z', '2026-07-01', 'TWD', 1, 100)
+  `);
+  insertSnapshot.run("snapshot-1");
+  assert.throws(() => insertSnapshot.run("snapshot-2"), /UNIQUE constraint failed/);
+  assert.throws(() => migrated.prepare(`
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, source_file_id, bank, product, card_key, statement_type,
+      captured_at, as_of_date, currency, transaction_count, total_amount
+    ) VALUES ('invalid-type', 'other-source', 'esun', 'cards', '3456', 'other',
+      '2026-07-01T00:00:00.000Z', '2026-07-01', 'TWD', 1, 100)
+  `).run(), /CHECK constraint failed/);
+  assert.throws(() => migrated.prepare(`
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, source_file_id, bank, product, card_key, statement_type,
+      captured_at, as_of_date, currency, transaction_count, total_amount
+    ) VALUES ('invalid-count', 'other-source', 'esun', 'cards', '3456', 'billed',
+      '2026-07-01T00:00:00.000Z', '2026-07-01', 'TWD', -1, 100)
+  `).run(), /CHECK constraint failed/);
+  migrated.close();
 
   const legacyDb = openLedgerDatabase(legacyLedgerDir);
   resetItemsToVersion9(legacyDb);

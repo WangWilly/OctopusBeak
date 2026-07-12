@@ -1,4 +1,5 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const commonColumns = () => ({
   statementRowId: text("statement_row_id").primaryKey(),
@@ -80,6 +81,7 @@ export const foreignCurrencyTransactions = sqliteTable("foreign_currency_transac
 
 export const creditCardStatementLines = sqliteTable("credit_card_statement_lines", {
   ...commonColumns(),
+  semanticKey: text("semantic_key"),
   statementType: text("statement_type").notNull(),
   statementPeriod: text("statement_period"),
   cardNumber: text("card_number"),
@@ -95,6 +97,34 @@ export const creditCardStatementLines = sqliteTable("credit_card_statement_lines
   installmentAction: text("installment_action"),
   paymentStatus: text("payment_status"),
 });
+
+export const creditCardSnapshots = sqliteTable("credit_card_snapshots", {
+  snapshotId: text("snapshot_id").primaryKey(),
+  sourceFileId: text("source_file_id").notNull(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  cardKey: text("card_key").notNull(),
+  statementType: text("statement_type").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  asOfDate: text("as_of_date").notNull(),
+  currency: text("currency").notNull(),
+  transactionCount: integer("transaction_count").notNull(),
+  totalAmount: real("total_amount").notNull(),
+}, (table) => [
+  uniqueIndex("uq_credit_card_snapshots_source_card_type").on(
+    table.sourceFileId,
+    table.cardKey,
+    table.statementType,
+  ),
+  index("idx_credit_card_snapshots_card_day").on(
+    table.cardKey,
+    table.statementType,
+    table.asOfDate,
+    table.capturedAt,
+  ),
+  check("ck_credit_card_snapshots_transaction_count", sql`${table.transactionCount} >= 0`),
+  check("ck_credit_card_snapshots_statement_type", sql`${table.statementType} IN ('billed','unbilled')`),
+]);
 
 export const loanTransactions = sqliteTable("loan_transactions", {
   ...commonColumns(),
