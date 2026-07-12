@@ -66,6 +66,7 @@ function creditCardRow(
   twdAmount: number,
 ): CreditCardStatementLine {
   return {
+    semanticKey: null,
     statementRowId: `card-${sourceRowIndex}`,
     sourceFileId: "source",
     importRunId: "run",
