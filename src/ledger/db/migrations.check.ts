@@ -9,6 +9,7 @@ import { TYPED_STATEMENT_TABLES } from "../source-csv-parsers.ts";
 const invoiceKey = "AB12345678|1783065600|24536806";
 
 function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
+  db.exec("DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key");
   const sequenceColumnDefinition = version === 9
     ? "TEXT"
     : `INTEGER CHECK (
@@ -132,6 +133,57 @@ const categoryLedgerDir = mkdtempSync(
 const dedupeLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-physical-dedupe-"),
 );
+const cardBackfillLedgerDir = mkdtempSync(
+  join(tmpdir(), "ledger-db-card-backfill-"),
+);
+const invalidCardBackfillLedgerDir = mkdtempSync(
+  join(tmpdir(), "ledger-db-invalid-card-backfill-"),
+);
+
+function insertLegacyCardCapture(
+  db: LedgerDatabase,
+  input: {
+    source: string;
+    capturedAt: string;
+    card?: string;
+    statementType?: string;
+    transactions: Array<{ id: string; amount: number }>;
+  },
+) {
+  const insert = db.prepare(`
+    INSERT INTO credit_card_statement_lines (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, statement_type, card_number,
+      consume_date, description, twd_amount
+    ) VALUES (?, ?, 'legacy-run', ?, ?, ?, ?, 'esun',
+      'credit-card-statements', '{}', ?, ?, ?, ?, '2026-06-01', ?, ?)
+  `);
+  input.transactions.forEach((transaction, index) => insert.run(
+    `${input.source}-${transaction.id}`,
+    input.source,
+    `${input.source}.csv`,
+    index + 1,
+    `source-hash-${input.source}`,
+    `content-${input.source}-${transaction.id}`,
+    input.capturedAt,
+    input.capturedAt,
+    input.statementType ?? "billed",
+    input.card ?? "1234",
+    transaction.id,
+    transaction.amount,
+  ));
+}
+
+function resetCardsToVersion14(db: LedgerDatabase) {
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version = 15;
+    DELETE FROM credit_card_snapshots;
+    DROP INDEX uq_credit_card_statement_lines_semantic_key;
+    CREATE UNIQUE INDEX uq_credit_card_statement_lines_content_hash
+      ON credit_card_statement_lines(content_hash);
+  `);
+}
 
 try {
   const seeded = openLedgerDatabase(ledgerDir);
@@ -139,6 +191,7 @@ try {
     DROP TABLE personal_invoice_items;
     DROP TABLE personal_invoices;
     DELETE FROM schema_migrations WHERE version >= 4;
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
   `);
   for (const table of TYPED_STATEMENT_TABLES) {
     if (
@@ -183,7 +236,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -426,6 +479,7 @@ try {
 
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
+  dedupeDb.exec("DROP INDEX uq_credit_card_statement_lines_semantic_key");
   for (const table of TYPED_STATEMENT_TABLES) {
     dedupeDb.exec(`
       ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
@@ -478,7 +532,10 @@ try {
       name: string;
       unique: number;
     }>).find((candidate) => candidate.name === `uq_${table}_content_hash`);
-    if (table === "personal_invoices" || table === "personal_invoice_items") {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+      || table === "credit_card_statement_lines"
+    ) {
       assert.equal(index, undefined, table);
     } else {
       assert.equal(index?.unique, 1, table);
@@ -494,6 +551,93 @@ try {
       '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', 'TWD')
   `).run(), /UNIQUE constraint failed: account_transactions.content_hash/);
   dedupeDb.close();
+
+  const cardDb = openLedgerDatabase(cardBackfillLedgerDir);
+  resetCardsToVersion14(cardDb);
+  const transactions = (count: number) => Array.from({ length: count }, (_, index) => ({
+    id: `tx-${index + 1}`,
+    amount: index + 1,
+  }));
+  insertLegacyCardCapture(cardDb, {
+    source: "june-full", capturedAt: "2026-06-30T08:00:00.000Z", transactions: transactions(9),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "june-subset", capturedAt: "2026-06-30T09:00:00.000Z", transactions: transactions(2),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "july-full", capturedAt: "2026-07-03T08:00:00.000Z", card: "5678", transactions: transactions(12),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "july-subset", capturedAt: "2026-07-03T09:00:00.000Z", card: "5678", transactions: transactions(1),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "equal-earlier", capturedAt: "2026-07-04T08:00:00.000Z", card: "9999", transactions: transactions(2),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "equal-latest", capturedAt: "2026-07-04T09:00:00.000Z", card: "9999", transactions: transactions(2),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "superset-latest", capturedAt: "2026-07-04T10:00:00.000Z", card: "9999", transactions: transactions(3),
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "next-day-subset", capturedAt: "2026-07-05T08:00:00.000Z", card: "9999", transactions: transactions(1),
+  });
+  migrateLedgerDb(cardDb);
+
+  const snapshots = cardDb.prepare(`
+    SELECT source_file_id, as_of_date, currency, transaction_count, total_amount
+    FROM credit_card_snapshots
+    ORDER BY source_file_id
+  `).all().map((row) => ({ ...row }));
+  assert.deepEqual(snapshots, [
+    { source_file_id: "july-full", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
+    { source_file_id: "june-full", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 9, total_amount: 45 },
+    { source_file_id: "next-day-subset", as_of_date: "2026-07-05", currency: "TWD", transaction_count: 1, total_amount: 1 },
+    { source_file_id: "superset-latest", as_of_date: "2026-07-04", currency: "TWD", transaction_count: 3, total_amount: 6 },
+  ]);
+  assert.equal((cardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_statement_lines
+    WHERE semantic_key IS NULL
+  `).get() as { count: number }).count, 0);
+  assert.deepEqual(cardDb.prepare(`
+    SELECT statement_row_id FROM credit_card_statement_lines
+    WHERE card_number = '9999' AND description = 'tx-1'
+  `).all().map((row) => ({ ...row })), [
+    { statement_row_id: "equal-earlier-tx-1" },
+  ]);
+  const cardIndexes = cardDb.prepare(
+    "PRAGMA index_list(credit_card_statement_lines)",
+  ).all() as Array<{ name: string; unique: number }>;
+  assert.equal(cardIndexes.some((index) => (
+    index.name === "uq_credit_card_statement_lines_content_hash"
+  )), false);
+  assert.equal(cardIndexes.find((index) => (
+    index.name === "uq_credit_card_statement_lines_semantic_key"
+  ))?.unique, 1);
+  cardDb.close();
+
+  const invalidCardDb = openLedgerDatabase(invalidCardBackfillLedgerDir);
+  resetCardsToVersion14(invalidCardDb);
+  insertLegacyCardCapture(invalidCardDb, {
+    source: "invalid-card", capturedAt: "2026-07-06T08:00:00.000Z",
+    statementType: "other", transactions: transactions(1),
+  });
+  assert.throws(() => migrateLedgerDb(invalidCardDb), /CHECK constraint failed/);
+  assert.equal(invalidCardDb.prepare(`
+    SELECT version FROM schema_migrations WHERE version = 15
+  `).get(), undefined);
+  assert.equal((invalidCardDb.prepare(`
+    SELECT semantic_key FROM credit_card_statement_lines
+    WHERE statement_row_id = 'invalid-card-tx-1'
+  `).get() as { semantic_key: string | null }).semantic_key, null);
+  assert.equal((invalidCardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_snapshots
+  `).get() as { count: number }).count, 0);
+  assert.equal((invalidCardDb.prepare(`
+    SELECT COUNT(*) AS count FROM pragma_index_list('credit_card_statement_lines')
+    WHERE name = 'uq_credit_card_statement_lines_content_hash'
+  `).get() as { count: number }).count, 1);
+  invalidCardDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
@@ -501,6 +645,8 @@ try {
     invalidLedgerDir,
     categoryLedgerDir,
     dedupeLedgerDir,
+    cardBackfillLedgerDir,
+    invalidCardBackfillLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
