@@ -76,6 +76,13 @@ Importing a sidecar with `snapshotMode: "full"` groups parsed credit-card rows b
 
 Daily balance history groups snapshots by card, statement type, and `as_of_date`, selecting the greatest `captured_at` for that day. It no longer infers a balance snapshot from whichever transaction source file was imported last.
 
+The current credit-card balance policy is intentionally simpler: select only
+the latest imported `unbilled` snapshot per bank/product/card, and exclude
+`billed` snapshots from the credit-card balance. Historical unbilled snapshots
+are not replayed because their transition to billed cannot be proven from the
+available source data. A cleanup migration removes older unbilled snapshot
+rows; transaction rows and source-file provenance remain available.
+
 ## Legacy Backfill
 
 Migration 15 evaluates existing credit-card source files before removing repeated transaction rows.
