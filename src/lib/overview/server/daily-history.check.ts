@@ -8,6 +8,8 @@ import { buildDailyHistoryByAccount } from "./daily-history.ts";
 
 type AccountTransaction = LedgerQueryData["accountTransactions"][number];
 type SourceFile = LedgerQueryData["sourceFiles"][number];
+type CreditCardSnapshot = LedgerQueryData["creditCardSnapshots"][number];
+type CreditCardStatementLine = LedgerQueryData["creditCardStatementLines"][number];
 
 function sourceFile(sourceFileId: string, date: string): SourceFile {
   return {
@@ -85,4 +87,81 @@ assert.deepEqual(buildDailyHistoryByAccount(data)[account.id], [
     accountChanges: [account.label],
     positionCount: 0,
   },
+]);
+
+function cardSnapshot(
+  snapshotId: string,
+  capturedAt: string,
+  totalAmount: number,
+): CreditCardSnapshot {
+  return {
+    snapshotId,
+    sourceFileId: snapshotId,
+    bank: "esun",
+    product: "credit-card-statements",
+    cardKey: "8397",
+    statementType: "unbilled",
+    capturedAt,
+    asOfDate: capturedAt.slice(0, 10),
+    currency: "TWD",
+    transactionCount: 9,
+    totalAmount,
+  };
+}
+
+function cardRow(sourceFileId: string, importedAt: string, twdAmount: number): CreditCardStatementLine {
+  return {
+    semanticKey: `semantic-${sourceFileId}`,
+    statementRowId: `row-${sourceFileId}`,
+    sourceFileId,
+    importRunId: "run",
+    sourceRelativePath: `${sourceFileId}.csv`,
+    sourceRowIndex: 1,
+    sourceHash: `source-${sourceFileId}`,
+    contentHash: `content-${sourceFileId}`,
+    bank: "esun",
+    product: "credit-card-statements",
+    rawPayloadJson: "{}",
+    importedAt,
+    createdAt: importedAt,
+    statementType: "unbilled",
+    statementPeriod: "2026-07",
+    cardNumber: "************8397",
+    cardLabel: "玉山 8397",
+    consumeDate: importedAt.slice(0, 10),
+    postingDate: null,
+    description: "partial transaction source",
+    countryCurrency: "TWD",
+    foreignExchangeDate: null,
+    foreignCurrency: null,
+    foreignAmount: null,
+    twdAmount,
+    installmentAction: null,
+    paymentStatus: null,
+  };
+}
+
+const cardData = emptyLedgerQueryData();
+cardData.creditCardSnapshots = [
+  cardSnapshot("june-early", "2026-06-30T08:00:00.000Z", 4500),
+  cardSnapshot("june-late", "2026-06-30T10:00:00.000Z", 4680),
+  cardSnapshot("july-complete", "2026-07-03T08:00:00.000Z", 6120),
+];
+cardData.sourceFiles = [
+  sourceFile("june-partial", "2026-06-30"),
+  sourceFile("july-partial", "2026-07-03"),
+];
+cardData.creditCardStatementLines = [
+  cardRow("june-partial", "2026-06-30T11:00:00.000Z", 160),
+  cardRow("july-partial", "2026-07-03T09:00:00.000Z", 142),
+];
+
+const cardAccount = buildAccountOverview(cardData).find((row) => row.kind === "credit-card");
+assert.ok(cardAccount);
+assert.deepEqual(buildDailyHistoryByAccount(cardData)[cardAccount.id]?.map((row) => ({
+  date: row.date,
+  liabilities: row.liabilities,
+})), [
+  { date: "2026-06-30", liabilities: [{ currency: "TWD", value: 4680 }] },
+  { date: "2026-07-03", liabilities: [{ currency: "TWD", value: 6120 }] },
 ]);

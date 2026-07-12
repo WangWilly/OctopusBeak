@@ -9,6 +9,7 @@ import {
 
 type ForeignCurrencyTransaction = LedgerQueryData["foreignCurrencyTransactions"][number];
 type CreditCardStatementLine = LedgerQueryData["creditCardStatementLines"][number];
+type CreditCardSnapshot = LedgerQueryData["creditCardSnapshots"][number];
 type LoanTransaction = LedgerQueryData["loanTransactions"][number];
 type MaicoinAccountSnapshot = LedgerQueryData["maicoinAccountSnapshots"][number];
 type MaicoinStatementRow = LedgerQueryData["maicoinStatementRows"][number];
@@ -96,16 +97,42 @@ function creditCardRow(
   };
 }
 
+function creditCardSnapshot(
+  snapshotId: string,
+  statementType: "billed" | "unbilled",
+  capturedAt: string,
+  totalAmount: number,
+): CreditCardSnapshot {
+  return {
+    snapshotId,
+    sourceFileId: snapshotId,
+    bank: "fubon",
+    product: "credit-card-statements",
+    cardKey: "4281",
+    statementType,
+    capturedAt,
+    asOfDate: capturedAt.slice(0, 10),
+    currency: "TWD",
+    transactionCount: 1,
+    totalAmount,
+  };
+}
+
 const currentCardData = emptyLedgerQueryData();
 currentCardData.creditCardStatementLines = [
   creditCardRow(1, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
   creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
 ];
+currentCardData.creditCardSnapshots = [
+  creditCardSnapshot("billed-current", "billed", "2026-06-27T09:00:00.000Z", 3000),
+  creditCardSnapshot("unbilled-old", "unbilled", "2026-06-26T10:00:00.000Z", 4005),
+  creditCardSnapshot("unbilled-current", "unbilled", "2026-06-27T10:00:00.000Z", 5000),
+];
 
 const currentCard = buildAccountOverview(currentCardData).find((row) => row.kind === "credit-card");
 
 assert.ok(currentCard);
-assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 4005 }]);
+assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 8000 }]);
 assert.equal(currentCard.transactionCount, 2);
 
 const reimportedCardData = emptyLedgerQueryData();
@@ -113,17 +140,23 @@ reimportedCardData.creditCardStatementLines = [
   creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 1000),
   creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
 ];
+reimportedCardData.creditCardSnapshots = [
+  creditCardSnapshot("unbilled-reimported", "unbilled", "2026-06-27T10:00:00.000Z", 4005),
+];
 
 const reimportedCard = buildAccountOverview(reimportedCardData).find((row) => row.kind === "credit-card");
 
 assert.ok(reimportedCard);
 assert.deepEqual(reimportedCard.amountLines, [{ currency: "TWD", value: 4005 }]);
-assert.equal(reimportedCard.transactionCount, 1);
+assert.equal(reimportedCard.transactionCount, 2);
 
 const settledCardData = emptyLedgerQueryData();
 settledCardData.creditCardStatementLines = [
   creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 4005),
   creditCardRow(2, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
+];
+settledCardData.creditCardSnapshots = [
+  creditCardSnapshot("billed-settled", "billed", "2026-06-27T10:00:00.000Z", 0),
 ];
 
 const settledCard = buildAccountOverview(settledCardData).find((row) => row.kind === "credit-card");
