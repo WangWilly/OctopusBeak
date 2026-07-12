@@ -902,10 +902,19 @@ function backfillCreditCardSnapshots(db: LedgerDatabase) {
     });
     updateSemanticKey.run(semanticKey, row.statement_row_id);
     const cardKey = (row.card_number ?? "").replace(/\D/g, "").slice(-4);
+    const importDay = row.imported_at.slice(0, 10);
     const captureKey = stableStringify([
-      row.source_file_id, cardKey, row.statement_type,
+      row.source_file_id, cardKey, row.statement_type, importDay,
     ]);
-    const capture = captures.get(captureKey) ?? {
+    const existingCapture = captures.get(captureKey);
+    if (existingCapture && (
+      existingCapture.bank !== row.bank
+      || existingCapture.product !== row.product
+      || existingCapture.capturedAt !== row.imported_at
+    )) {
+      throw new Error(`Inconsistent credit-card capture provenance: ${captureKey}`);
+    }
+    const capture = existingCapture ?? {
       sourceFileId: row.source_file_id,
       bank: row.bank,
       product: row.product,
@@ -938,12 +947,16 @@ function backfillCreditCardSnapshots(db: LedgerDatabase) {
       )
       WHERE duplicate_rank > 1
     );
+    DROP INDEX uq_credit_card_snapshots_source_card_type;
+    CREATE UNIQUE INDEX uq_credit_card_snapshots_source_card_type
+    ON credit_card_snapshots(source_file_id, card_key, statement_type, as_of_date);
   `);
 
   const byDay = new Map<string, Array<(typeof captures extends Map<string, infer T> ? T : never)>>();
   for (const capture of captures.values()) {
     const dayKey = stableStringify([
-      capture.cardKey, capture.statementType, capture.capturedAt.slice(0, 10),
+      capture.bank, capture.product, capture.cardKey, capture.statementType,
+      capture.capturedAt.slice(0, 10),
     ]);
     const day = byDay.get(dayKey) ?? [];
     day.push(capture);
@@ -973,6 +986,7 @@ function backfillCreditCardSnapshots(db: LedgerDatabase) {
       hashBytes(stableStringify([
         "credit-card-snapshot", eligible.sourceFileId,
         eligible.cardKey, eligible.statementType,
+        eligible.capturedAt.slice(0, 10),
       ])).slice(0, 32),
       eligible.sourceFileId,
       eligible.bank,
