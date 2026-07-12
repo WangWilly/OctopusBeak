@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "./db/client.ts";
-import { importDownloadsCsv } from "./import-downloads-csv.ts";
+import { importDownloadsCsv, insertRecord } from "./import-downloads-csv.ts";
 
 const rootDir = await mkdtemp(join(tmpdir(), "einvoice-import-"));
 const downloadsDir = join(rootDir, "downloads");
@@ -314,3 +314,87 @@ const sparseItem = sparseDb.prepare(
 ).get() as { category: string };
 sparseDb.close();
 assert.equal(sparseItem.category, "other");
+
+const ordinaryRootDir = await mkdtemp(join(tmpdir(), "ordinary-import-"));
+const ordinaryDownloadsDir = join(ordinaryRootDir, "downloads");
+const ordinaryOutputDir = join(ordinaryRootDir, "ledger");
+const ordinarySourceDir = join(ordinaryDownloadsDir, "ctbc-statements");
+await mkdir(ordinarySourceDir, { recursive: true });
+
+const accountHeaders = [
+  "帳務日期", "交易日期", "交易時間", "摘要",
+  "支出金額", "存入金額", "即時餘額", "附註",
+];
+const accountRow = {
+  帳務日期: "2026/07/03",
+  交易日期: "2026/07/02",
+  交易時間: "09:08:07",
+  摘要: "薪資",
+  支出金額: "0",
+  存入金額: "1234",
+  即時餘額: "5678",
+  附註: "公司入帳",
+};
+const accountCsv = (rows: Array<Record<string, string>>) =>
+  `${accountHeaders.join(",")}\n${rows
+    .map((row) => accountHeaders.map((header) => csvCell(row[header] ?? "")).join(","))
+    .join("\n")}\n`;
+const ordinaryInput = {
+  downloadsDir: ordinaryDownloadsDir,
+  outputDir: ordinaryOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+};
+
+await writeFile(join(ordinarySourceDir, "first.csv"), accountCsv([accountRow]), "utf8");
+const firstResult = await importDownloadsCsv(ordinaryInput);
+await writeFile(
+  join(ordinarySourceDir, "second.csv"),
+  accountCsv([accountRow, accountRow]),
+  "utf8",
+);
+const secondResult = await importDownloadsCsv(ordinaryInput);
+
+const ordinaryDb = openLedgerDatabase(ordinaryOutputDir, { readOnly: true });
+const accountRowCount = ordinaryDb.prepare(
+  "SELECT COUNT(*) AS count FROM account_transactions",
+).get() as { count: number };
+const secondRun = JSON.parse((ordinaryDb.prepare(
+  "SELECT record_json FROM import_runs ORDER BY rowid DESC LIMIT 1",
+).get() as { record_json: string }).record_json) as Record<string, unknown>;
+const secondCompletedEvent = JSON.parse((ordinaryDb.prepare(
+  "SELECT record_json FROM import_run_events WHERE event_type = 'completed' ORDER BY rowid DESC LIMIT 1",
+).get() as { record_json: string }).record_json) as Record<string, unknown>;
+ordinaryDb.close();
+
+assert.equal(firstResult.importedRows, 1);
+assert.equal(firstResult.skippedDuplicateRows, 0);
+assert.equal(secondResult.importedRows, 0);
+assert.equal(secondResult.skippedDuplicateRows, 2);
+assert.equal(accountRowCount.count, 1);
+assert.equal(secondRun.skippedDuplicateRows, 2);
+assert.equal(secondCompletedEvent.skippedDuplicateRows, 2);
+
+const failureRootDir = await mkdtemp(join(tmpdir(), "failed-insert-"));
+const failureDb = openLedgerDatabase(failureRootDir);
+assert.throws(() => insertRecord(failureDb, "account_transactions", {
+  statement_row_id: "invalid-row",
+  source_file_id: "invalid-file",
+  import_run_id: "invalid-run",
+  source_relative_path: "ctbc-statements/invalid.csv",
+  source_row_index: 1,
+  source_hash: "invalid-source",
+  raw_row_hash: "invalid-raw",
+  content_hash: "invalid-content",
+  bank: "ctbc",
+  product: "statements",
+  currency: null,
+  dedupe_status: "unique",
+  raw_payload_json: "{}",
+  imported_at: "2026-07-12T00:00:00.000Z",
+}), /NOT NULL constraint failed: account_transactions.currency/);
+const rowsAfterFailedInsert = failureDb.prepare(
+  "SELECT COUNT(*) AS count FROM account_transactions",
+).get() as { count: number };
+assert.equal(rowsAfterFailedInsert.count, 0);
+failureDb.close();
