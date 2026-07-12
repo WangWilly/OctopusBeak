@@ -1005,6 +1005,26 @@ function backfillCreditCardSnapshots(db: LedgerDatabase) {
   `);
 }
 
+function retainLatestImportedUnbilledSnapshots(db: LedgerDatabase) {
+  db.exec(`
+    DELETE FROM credit_card_snapshots
+    WHERE statement_type = 'unbilled'
+      AND snapshot_id IN (
+        SELECT snapshot_id
+        FROM (
+          SELECT snapshot_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY bank, product, card_key
+              ORDER BY captured_at DESC, snapshot_id DESC
+            ) AS snapshot_rank
+          FROM credit_card_snapshots
+          WHERE statement_type = 'unbilled'
+        )
+        WHERE snapshot_rank > 1
+      );
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1080,6 +1100,11 @@ const migrations: LedgerMigration[] = [
     version: 15,
     name: "backfilled_credit_card_snapshots",
     up: backfillCreditCardSnapshots,
+  },
+  {
+    version: 16,
+    name: "latest_imported_unbilled_snapshots",
+    up: retainLatestImportedUnbilledSnapshots,
   },
 ];
 

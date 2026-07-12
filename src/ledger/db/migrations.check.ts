@@ -172,7 +172,7 @@ function insertLegacyCardCapture(
     input.product ?? "credit-card-statements",
     input.capturedAt,
     input.capturedAt,
-    input.statementType ?? "billed",
+    input.statementType ?? "unbilled",
     input.card ?? "1234",
     transaction.id,
     transaction.amount,
@@ -181,7 +181,7 @@ function insertLegacyCardCapture(
 
 function resetCardsToVersion14(db: LedgerDatabase) {
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = 15;
+    DELETE FROM schema_migrations WHERE version >= 15;
     DELETE FROM credit_card_snapshots;
     DROP INDEX uq_credit_card_statement_lines_semantic_key;
     CREATE UNIQUE INDEX uq_credit_card_statement_lines_content_hash
@@ -243,7 +243,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -569,6 +569,10 @@ try {
     source: "june-full", capturedAt: "2026-06-30T08:00:00.000Z", transactions: transactions(9),
   });
   insertLegacyCardCapture(cardDb, {
+    source: "billed-history", capturedAt: "2026-06-30T07:00:00.000Z",
+    statementType: "billed", transactions: transactions(1),
+  });
+  insertLegacyCardCapture(cardDb, {
     source: "june-subset", capturedAt: "2026-06-30T09:00:00.000Z", transactions: transactions(2),
   });
   insertLegacyCardCapture(cardDb, {
@@ -610,19 +614,19 @@ try {
   migrateLedgerDb(cardDb);
 
   const snapshots = cardDb.prepare(`
-    SELECT source_file_id, as_of_date, currency, transaction_count, total_amount
+    SELECT source_file_id, statement_type, as_of_date, currency,
+      transaction_count, total_amount
     FROM credit_card_snapshots
     ORDER BY source_file_id
   `).all().map((row) => ({ ...row }));
   assert.deepEqual(snapshots, [
-    { source_file_id: "cathay-same-last4", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 40 },
-    { source_file_id: "esun-same-last4", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 30 },
-    { source_file_id: "july-full", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
-    { source_file_id: "june-full", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 9, total_amount: 45 },
-    { source_file_id: "next-day-subset", as_of_date: "2026-07-05", currency: "TWD", transaction_count: 1, total_amount: 1 },
-    { source_file_id: "superset-latest", as_of_date: "2026-07-04", currency: "TWD", transaction_count: 3, total_amount: 6 },
-    { source_file_id: "two-day-source", as_of_date: "2026-07-06", currency: "TWD", transaction_count: 1, total_amount: 10 },
-    { source_file_id: "two-day-source", as_of_date: "2026-07-07", currency: "TWD", transaction_count: 1, total_amount: 20 },
+    { source_file_id: "billed-history", statement_type: "billed", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 1, total_amount: 1 },
+    { source_file_id: "cathay-same-last4", statement_type: "unbilled", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 40 },
+    { source_file_id: "esun-same-last4", statement_type: "unbilled", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 30 },
+    { source_file_id: "july-full", statement_type: "unbilled", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
+    { source_file_id: "june-full", statement_type: "unbilled", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 9, total_amount: 45 },
+    { source_file_id: "next-day-subset", statement_type: "unbilled", as_of_date: "2026-07-05", currency: "TWD", transaction_count: 1, total_amount: 1 },
+    { source_file_id: "two-day-source", statement_type: "unbilled", as_of_date: "2026-07-07", currency: "TWD", transaction_count: 1, total_amount: 20 },
   ]);
   assert.equal((cardDb.prepare(`
     SELECT COUNT(*) AS count FROM credit_card_statement_lines
