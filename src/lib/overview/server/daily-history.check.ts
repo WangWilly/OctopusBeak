@@ -148,23 +148,27 @@ cardData.creditCardSnapshots = [
   cardSnapshot("june-late", "2026-06-30T10:00:00.000Z", 4680),
   cardSnapshot("older-day-captured-later", "2026-07-04T08:00:00.000Z", 999, "2026-07-01"),
   cardSnapshot("july-complete", "2026-07-03T08:00:00.000Z", 6120),
+  { ...cardSnapshot("billed-latest", "2026-07-12T07:00:00.000Z", 19000), statementType: "billed" },
+  cardSnapshot("latest-imported", "2026-07-12T08:00:00.000Z", 14844),
 ];
 cardData.sourceFiles = [
   sourceFile("june-partial", "2026-06-30"),
   sourceFile("july-partial", "2026-07-03"),
+  sourceFile("latest-imported", "2026-07-12"),
 ];
 cardData.creditCardStatementLines = [
   cardRow("june-partial", "2026-06-30T11:00:00.000Z", 160),
   cardRow("july-partial", "2026-07-03T09:00:00.000Z", 142),
+  cardRow("latest-imported", "2026-07-12T09:00:00.000Z", 14844),
 ];
 
 const cardAccount = buildAccountOverview(cardData).find((row) => row.kind === "credit-card");
 assert.ok(cardAccount);
-assert.deepEqual(buildDailyHistoryByAccount(cardData)[cardAccount.id]?.map((row) => ({
+const cardHistory = buildDailyHistoryByAccount(cardData)[cardAccount.id] ?? [];
+assert.deepEqual(cardHistory.map((row) => ({
   date: row.date,
   liabilities: row.liabilities,
 })), [
-  { date: "2026-06-30", liabilities: [{ currency: "TWD", value: 4680 }] },
-  { date: "2026-07-01", liabilities: [{ currency: "TWD", value: 999 }] },
-  { date: "2026-07-03", liabilities: [{ currency: "TWD", value: 6120 }] },
+  { date: "2026-07-12", liabilities: [{ currency: "TWD", value: 14844 }] },
 ]);
+assert.equal(cardHistory.some((row) => [160, 142].includes(row.liabilities[0]?.value ?? 0)), false);
