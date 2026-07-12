@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "./client.ts";
 import { migrateLedgerDb } from "./migrations.ts";
+import { TYPED_STATEMENT_TABLES } from "../source-csv-parsers.ts";
 
 const invoiceKey = "AB12345678|1783065600|24536806";
 
@@ -58,6 +59,9 @@ function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
       '${invoiceKey}', 'AB12345678', 0
     );
   `);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
+  }
   if (version === 10) {
     db.prepare(
       "INSERT INTO schema_migrations (version, name, applied_at) VALUES (10, ?, ?)",
@@ -115,6 +119,9 @@ const invalidLedgerDir = mkdtempSync(
 const categoryLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-category-migration-"),
 );
+const dedupeLedgerDir = mkdtempSync(
+  join(tmpdir(), "ledger-db-physical-dedupe-"),
+);
 
 try {
   const seeded = openLedgerDatabase(ledgerDir);
@@ -123,6 +130,9 @@ try {
     DROP TABLE personal_invoices;
     DELETE FROM schema_migrations WHERE version >= 4;
   `);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    seeded.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
+  }
   seeded.close();
 
   const migrated = openLedgerDatabase(ledgerDir);
@@ -141,7 +151,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
   );
   assert.ok(invoiceColumns.some((column) => column.name === "invoice_key"));
   assert.ok(itemColumns.some((column) => column.name === "item_key"));
@@ -324,12 +334,58 @@ try {
     /CHECK constraint failed/,
   );
   categoryDb.close();
+
+  const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
+  dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
+  for (const table of TYPED_STATEMENT_TABLES) {
+    dedupeDb.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
+  }
+  const insertAccountRow = dedupeDb.prepare(`
+    INSERT INTO account_transactions (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
+      dedupe_status, raw_payload_json, imported_at, created_at, currency
+    ) VALUES (?, ?, 'run', ?, ?, ?, ?, 'same-content', 'demo', 'statements',
+      ?, '{}', ?, ?, 'TWD')
+  `);
+  insertAccountRow.run(
+    "later", "later-file", "b.csv", 1, "source-later", "raw-later",
+    "duplicate", "2026-02-01T00:00:00.000Z", "2026-02-01T00:00:00.000Z",
+  );
+  insertAccountRow.run(
+    "tie-later-path", "tie-file", "z.csv", 1, "source-tie", "raw-tie",
+    "duplicate", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
+  );
+  insertAccountRow.run(
+    "canonical", "canonical-file", "a.csv", 1, "source-canonical", "raw-canonical",
+    "unique", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
+  );
+  migrateLedgerDb(dedupeDb);
+
+  const retained = dedupeDb.prepare(`
+    SELECT statement_row_id FROM account_transactions
+    WHERE content_hash = 'same-content'
+  `).all().map((row) => ({ ...row }));
+  const accountIndexes = dedupeDb.prepare(
+    "PRAGMA index_list(account_transactions)",
+  ).all() as Array<{ name: string; unique: number }>;
+
+  assert.deepEqual(retained, [{ statement_row_id: "canonical" }]);
+  assert.ok(accountIndexes.some((index) => (
+    index.name === "uq_account_transactions_content_hash" && index.unique === 1
+  )));
+  assert.throws(() => insertAccountRow.run(
+    "blocked", "blocked-file", "c.csv", 1, "source-blocked", "raw-blocked",
+    "duplicate", "2026-03-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z",
+  ), /UNIQUE constraint failed: account_transactions.content_hash/);
+  dedupeDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
     legacyLedgerDir,
     invalidLedgerDir,
     categoryLedgerDir,
+    dedupeLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }

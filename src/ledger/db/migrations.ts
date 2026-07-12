@@ -780,6 +780,30 @@ function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
   `);
 }
 
+function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`
+      DELETE FROM ${table}
+      WHERE statement_row_id IN (
+        SELECT statement_row_id
+        FROM (
+          SELECT
+            statement_row_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY content_hash
+              ORDER BY imported_at ASC, source_relative_path ASC,
+                source_row_index ASC, statement_row_id ASC
+            ) AS duplicate_rank
+          FROM ${table}
+        )
+        WHERE duplicate_rank > 1
+      );
+      CREATE UNIQUE INDEX uq_${table}_content_hash
+        ON ${table}(content_hash);
+    `);
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -835,6 +859,11 @@ const migrations: LedgerMigration[] = [
     version: 11,
     name: "personal_invoice_item_categories",
     up: addPersonalInvoiceItemCategories,
+  },
+  {
+    version: 12,
+    name: "physical_content_hash_deduplication",
+    up: physicallyDeduplicateStatementRows,
   },
 ];
 
