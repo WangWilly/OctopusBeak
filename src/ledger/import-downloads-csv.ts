@@ -289,7 +289,6 @@ const PERSONAL_INVOICE_UPDATE_COLUMNS = [
   "source_relative_path",
   "source_row_index",
   "source_hash",
-  "raw_row_hash",
   "content_hash",
   "raw_payload_json",
   "imported_at",
@@ -313,7 +312,6 @@ const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
   "source_relative_path",
   "source_row_index",
   "source_hash",
-  "raw_row_hash",
   "content_hash",
   "raw_payload_json",
   "imported_at",
@@ -423,7 +421,6 @@ function commonTypedRowFields(
     rawRowHash?: string;
     sourceHash?: string;
     contentHash?: string;
-    dedupeStatus?: string;
   },
 ) {
   const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
@@ -456,11 +453,9 @@ function commonTypedRowFields(
     source_relative_path: sourceRelativePath,
     source_row_index: row.sourceRowIndex,
     source_hash: sourceHash,
-    raw_row_hash: rawRowHash,
     content_hash: contentHash,
     bank: String(sourceFileRecord.bank ?? ""),
     product: String(sourceFileRecord.product ?? ""),
-    dedupe_status: row.dedupeStatus ?? "unique",
     raw_payload_json: JSON.stringify(row.rawPayload),
     imported_at: String(sourceFileRecord.importedAt ?? ""),
   };
@@ -475,7 +470,6 @@ function insertPersonalInvoiceStatementRow(
     rawRowHash?: string;
     sourceHash?: string;
     contentHash?: string;
-    dedupeStatus?: string;
   },
 ) {
   const commonFields = commonTypedRowFields(sourceFileRecord, row);
@@ -515,7 +509,6 @@ function insertTypedStatementRow(
     rawRowHash?: string;
     sourceHash?: string;
     contentHash?: string;
-    dedupeStatus?: string;
   },
 ): "inserted" | "duplicate" | "upserted" {
   const bank = String(sourceFileRecord.bank ?? "");
@@ -685,7 +678,6 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         rawRowHash: string;
         sourceHash: string;
         contentHash: string;
-        dedupeStatus?: string;
       };
     }> = [];
     const fileSummaries: FileImportSummary[] = [];
