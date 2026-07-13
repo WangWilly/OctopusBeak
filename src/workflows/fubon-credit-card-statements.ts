@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -20,6 +22,19 @@ type FubonCredentials = {
 };
 
 type CsvRow = Record<string, string>;
+type GridState = { currentPage?: string; currentPageSize?: string };
+type CaptureMetadata =
+  | {
+      snapshotMode: "full";
+      captureId: string;
+      capturedAt: string;
+      captureKinds: ["billed", "unbilled"];
+      completenessEvidence: Record<string, unknown>;
+    }
+  | {
+      snapshotMode: "partial";
+      completenessEvidence: Record<string, unknown>;
+    };
 
 const periodOffsetSchema = z.number().int().min(1).max(6);
 
@@ -230,14 +245,17 @@ function parseStatementCardLabel(cardLabel: string): {
 }
 
 function paymentStatusValue(description: string): string {
+  if (description.includes("網路繳款")) return "paid_by_online_banking";
   if (description.includes("行動銀行繳款")) return "paid_by_mobile_banking";
   if (description.includes("前期應繳總額")) return "previous_balance";
   return "";
 }
 
-function isPaymentStatusRow(cells: string[]): boolean {
+export function isFubonStatementSummaryRow(cells: string[]): boolean {
   const description = cells[1] ?? "";
-  return description.includes("前期應繳總額") || description.includes("行動銀行繳款");
+  return ["網路繳款", "行動銀行繳款", "前期應繳總額"].some((value) =>
+    description.includes(value),
+  );
 }
 
 function paymentStatusFromRows(
@@ -268,6 +286,8 @@ function metadataForRows(
   headers: readonly string[],
   paymentStatuses: PaymentStatus[],
   periods = unique(rows.map((row) => row.statement_period).filter(Boolean)),
+  capture: CaptureMetadata,
+  cardKeys: string[],
 ) {
   return {
     cardNumbers: unique(rows.map((row) => row.card_number).filter(Boolean)),
@@ -277,6 +297,15 @@ function metadataForRows(
     workflow: "fubonCreditCardStatements" as const,
     rowCount: rows.length,
     headers: [...headers],
+    ...capture,
+    ...(capture.snapshotMode === "full"
+      ? {
+          cardRowCounts: captureCardRowCounts(
+            cardKeys,
+            rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -285,7 +314,9 @@ async function writeCsvWithMetadata(
   rows: CsvRow[],
   headers: readonly string[],
   paymentStatuses: PaymentStatus[] = [],
-  periods?: string[],
+  periods: string[] | undefined,
+  capture: CaptureMetadata,
+  cardKeys: string[],
 ): Promise<GeneratedCsvFile> {
   const downloadsDir = join(
     process.cwd(),
@@ -299,7 +330,14 @@ async function writeCsvWithMetadata(
   const csvPath = join(downloadsDir, csvFilename);
   const jsonPath = join(downloadsDir, jsonFilename);
   const content = toCsv(rows, headers);
-  const metadata = metadataForRows(rows, headers, paymentStatuses, periods);
+  const metadata = metadataForRows(
+    rows,
+    headers,
+    paymentStatuses,
+    periods,
+    capture,
+    cardKeys,
+  );
   const jsonContent = `${JSON.stringify(
     {
       ...metadata,
@@ -593,6 +631,24 @@ async function readCells(row: Locator): Promise<string[]> {
   return values;
 }
 
+async function gridState(scope: BrowserScope): Promise<GridState> {
+  const fields = await scope.locator("input, select").evaluateAll((elements) =>
+    elements
+      .map((element) => ({
+        key: element.getAttribute("name") || element.id,
+        value: (element as HTMLInputElement | HTMLSelectElement).value,
+      }))
+      .filter(({ key }) => /currentpagesize|currentpage/i.test(key)),
+  );
+  return {
+    currentPage: fields.find(
+      ({ key }) => /currentpage/i.test(key) && !/currentpagesize/i.test(key),
+    )?.value,
+    currentPageSize: fields.find(({ key }) => /currentpagesize/i.test(key))
+      ?.value,
+  };
+}
+
 async function readStatementPeriodLabel(scope: BrowserScope): Promise<string> {
   const rows = statementSummaryTable(scope).locator("tr");
   await rows.nth(1).waitFor({ state: "attached", timeout: 60_000 });
@@ -675,9 +731,9 @@ async function readStatementRows(
       continue;
     }
 
-    if (isPaymentStatusRow(cells)) {
+    if (isFubonStatementSummaryRow(cells)) {
       if ((cells[1] ?? "").includes("前期應繳總額")) previousBalanceCells = cells;
-      if ((cells[1] ?? "").includes("行動銀行繳款")) paymentCells = cells;
+      if (/網路繳款|行動銀行繳款/.test(cells[1] ?? "")) paymentCells = cells;
       continue;
     }
 
@@ -755,6 +811,10 @@ async function readUnbilledRows(
   return details;
 }
 
+function cardKeyForRow(row: CsvRow): string {
+  return digitsOnly(row.card_number ?? "").slice(-4);
+}
+
 export async function runFubonCreditCardStatements(
   page: Page,
   input: FubonCreditCardStatementsInput,
@@ -764,6 +824,7 @@ export async function runFubonCreditCardStatements(
   const statementRows: CsvRow[] = [];
   const statementPeriods: string[] = [];
   const paymentStatuses: PaymentStatus[] = [];
+  const gridStates: GridState[] = [];
   for (const periodOffset of input.periodOffsets) {
     const scope = await selectStatementPeriod(page, periodOffset);
     const periodLabel = await readStatementPeriodLabel(scope);
@@ -775,6 +836,7 @@ export async function runFubonCreditCardStatements(
     );
     statementRows.push(...statementResult.rows);
     paymentStatuses.push(...statementResult.paymentStatuses);
+    gridStates.push(await gridState(scope));
   }
 
   const unbilledScope = await openUnbilledDetailsPage(page);
@@ -782,12 +844,50 @@ export async function runFubonCreditCardStatements(
     unbilledScope,
     input.unbilledCardNumbers,
   );
+  gridStates.push(await gridState(unbilledScope));
   const sortedStatementRows = statementRows
     .slice()
     .sort(compareRowsByConsumeDateDesc);
   const sortedUnbilledRows = unbilledRows
     .slice()
     .sort(compareRowsByConsumeDateDesc);
+  const cardKeys = [
+    ...new Set([...sortedStatementRows, ...sortedUnbilledRows].map(cardKeyForRow).filter(Boolean)),
+  ];
+  const isFullCapture =
+    input.periodOffsets.length === periodTabs.length &&
+    periodTabs.every((period) => input.periodOffsets.includes(period.offset)) &&
+    input.statementCardLabels.length === 0 &&
+    input.unbilledCardNumbers.length === 0 &&
+    gridStates.every(
+      (state) =>
+        state.currentPage === "1" &&
+        state.currentPageSize === String(2_147_483_647),
+    ) &&
+    [...sortedStatementRows, ...sortedUnbilledRows].every(
+      (row) => cardKeyForRow(row).length === 4,
+    );
+  const capture: CaptureMetadata = isFullCapture
+    ? {
+        snapshotMode: "full",
+        captureId: randomUUID(),
+        capturedAt: new Date().toISOString(),
+        captureKinds: ["billed", "unbilled"],
+        completenessEvidence: {
+          bank: "fubon",
+          periodOffsets: input.periodOffsets,
+          grids: gridStates,
+        },
+      }
+    : {
+        snapshotMode: "partial",
+        completenessEvidence: {
+          bank: "fubon",
+          reason: "scope_or_grid_not_proven_complete",
+          periodOffsets: input.periodOffsets,
+          grids: gridStates,
+        },
+      };
 
   const billedStatements = await writeCsvWithMetadata(
     "billed-statements",
@@ -795,6 +895,8 @@ export async function runFubonCreditCardStatements(
     billedHeaders,
     paymentStatuses,
     statementPeriods,
+    capture,
+    cardKeys,
   );
   const unbilledStatements = await writeCsvWithMetadata(
     "unbilled-statements",
@@ -802,6 +904,8 @@ export async function runFubonCreditCardStatements(
     unbilledHeaders,
     [],
     ["unbilled"],
+    capture,
+    cardKeys,
   );
 
   return {
