@@ -31,11 +31,12 @@ export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
 export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string, DailyHistoryRowDto[]> {
   const histories: Record<string, DailyHistoryRowDto[]> = {};
   const previousByAccount = new Map<string, Record<string, number>>();
+  const captureDates = new Set(data.creditCardCaptures.map((capture) => capture.capturedAt.slice(0, 10)));
 
   for (const point of dailyHistoryPoints(data)) {
     const accounts = buildAccountOverview(snapshotData(data, point));
     for (const account of accounts) {
-      if (point.captureId && (account.group !== "liability" || account.kind !== "credit-card")) continue;
+      if (point.captureId ? account.kind !== "credit-card" : captureDates.has(point.date) && account.kind === "credit-card") continue;
       const balance = amountBucket(account.amountLines);
       const previous = previousByAccount.get(account.id);
       const dailyChange = previous ? subtractBuckets(balance, previous) : {};
@@ -50,14 +51,12 @@ export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string
 type HistoryPoint = Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">;
 
 function dailyHistoryPoints(data: LedgerQueryData): HistoryPoint[] {
-  const verifiedCaptureIds = new Set(data.creditCardCaptureEntries.map((entry) => entry.captureId));
-  const captures = data.creditCardCaptures.filter((capture) => verifiedCaptureIds.has(capture.captureId));
-  const captureDates = new Set(captures.map((capture) => capture.capturedAt.slice(0, 10)));
+  const captures = data.creditCardCaptures;
   const dates = data.sourceFiles
     .map((source) => sourceFileDate(source))
     .concat(latestVerifiedCreditCardSnapshots(data).map((snapshot) => snapshot.asOfDate))
     .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
-    .filter((date) => date && !captureDates.has(date));
+    .filter(Boolean);
   const points = [
     ...dates.map((date) => ({ date })),
     ...captures.map((capture) => ({
