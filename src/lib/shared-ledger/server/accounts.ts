@@ -3,6 +3,8 @@ import type {
   accountTransactions,
   brokerageHoldings,
   brokerageTradeTransactions,
+  creditCardCaptureEntries,
+  creditCardCaptures,
   creditCardSnapshots,
   creditCardStatementLines,
   foreignCurrencyTransactions,
@@ -30,6 +32,8 @@ import type {
 type AccountTransaction = typeof accountTransactions.$inferSelect;
 type ForeignCurrencyTransaction = typeof foreignCurrencyTransactions.$inferSelect;
 type CreditCardStatementLine = typeof creditCardStatementLines.$inferSelect;
+type CreditCardCapture = typeof creditCardCaptures.$inferSelect;
+type CreditCardCaptureEntry = typeof creditCardCaptureEntries.$inferSelect;
 type CreditCardSnapshot = typeof creditCardSnapshots.$inferSelect;
 type LoanTransaction = typeof loanTransactions.$inferSelect;
 type FundHolding = typeof fundHoldings.$inferSelect;
@@ -57,6 +61,8 @@ export type LedgerQueryData = {
   accountTransactions: AccountTransaction[];
   foreignCurrencyTransactions: ForeignCurrencyTransaction[];
   creditCardStatementLines: CreditCardStatementLine[];
+  creditCardCaptures: CreditCardCapture[];
+  creditCardCaptureEntries: CreditCardCaptureEntry[];
   creditCardSnapshots: CreditCardSnapshot[];
   loanTransactions: LoanTransaction[];
   fundHoldings: FundHolding[];
@@ -77,6 +83,8 @@ export function emptyLedgerQueryData(): LedgerQueryData {
     accountTransactions: [],
     foreignCurrencyTransactions: [],
     creditCardStatementLines: [],
+    creditCardCaptures: [],
+    creditCardCaptureEntries: [],
     creditCardSnapshots: [],
     loanTransactions: [],
     fundHoldings: [],
@@ -150,7 +158,10 @@ export function buildRawPositions(data: LedgerQueryData): RawPosition[] {
   return [
     ...cashPositions(data.accountTransactions),
     ...foreignCashPositions(data.foreignCurrencyTransactions),
-    ...creditCardPositions(data.creditCardSnapshots, data.creditCardStatementLines),
+    ...creditCardPositions(
+      latestVerifiedCreditCardSnapshots(data),
+      latestVerifiedCreditCardRows(data),
+    ),
     ...loanPositions(data.loanTransactions),
     ...fundPositions(data.fundHoldings),
     ...brokeragePositions(data.brokerageHoldings),
@@ -164,7 +175,7 @@ export function buildTransactionsByAccount(
   const transactions: Array<[string, TransactionRowDto]> = [
     ...data.accountTransactions.map(bankTransactionDto),
     ...data.foreignCurrencyTransactions.map(foreignTransactionDto),
-    ...data.creditCardStatementLines.map(creditCardTransactionDto),
+    ...latestVerifiedCreditCardRows(data).map(creditCardTransactionDto),
     ...data.loanTransactions.map(loanTransactionDto),
     ...data.fundBuyTransactions.map(fundBuyTransactionDto),
     ...data.fundRedemptionTransactions.map(fundRedemptionTransactionDto),
@@ -182,6 +193,37 @@ export function buildTransactionsByAccount(
     rows.sort((left, right) => right.date.localeCompare(left.date));
   }
   return byAccount;
+}
+
+export function latestVerifiedCreditCardRows(data: LedgerQueryData) {
+  const latestCaptureByCard = latestVerifiedCreditCardCaptureIds(data);
+  const rowIds = new Set(data.creditCardCaptureEntries
+    .filter((entry) => latestCaptureByCard.get(creditCardCaptureEntryKey(entry)) === entry.captureId)
+    .map((entry) => entry.statementRowId));
+  return data.creditCardStatementLines.filter((row) => rowIds.has(row.statementRowId));
+}
+
+export function latestVerifiedCreditCardSnapshots(data: LedgerQueryData) {
+  const latestCaptureByCard = latestVerifiedCreditCardCaptureIds(data);
+  return data.creditCardSnapshots.filter((snapshot) => (
+    snapshot.captureId !== null
+    && latestCaptureByCard.get(creditCardSnapshotAccountKey(snapshot)) === snapshot.captureId
+  ));
+}
+
+function latestVerifiedCreditCardCaptureIds(data: LedgerQueryData) {
+  const captures = new Map(data.creditCardCaptures.map((capture) => [capture.captureId, capture]));
+  const latestCaptureByCard = new Map<string, string>();
+  for (const entry of data.creditCardCaptureEntries) {
+    const capture = captures.get(entry.captureId);
+    if (!capture) continue;
+    const card = creditCardCaptureEntryKey(entry);
+    const previous = captures.get(latestCaptureByCard.get(card) ?? "");
+    if (!previous || [capture.capturedAt, capture.captureId].join("|") > [previous.capturedAt, previous.captureId].join("|")) {
+      latestCaptureByCard.set(card, capture.captureId);
+    }
+  }
+  return latestCaptureByCard;
 }
 
 export function buildPositionsByAccount(
@@ -282,7 +324,7 @@ function creditCardPositions(snapshots: CreditCardSnapshot[], rows: CreditCardSt
     (row) => sortKey(row, row.consumeDate),
   ).map((row) => [creditCardAccountKey(row), row]));
 
-  return latestImportedUnbilledSnapshots(snapshots).map((snapshot) => {
+  return snapshots.filter((snapshot) => snapshot.statementType === "unbilled").map((snapshot) => {
     const row = latestRows.get(creditCardSnapshotAccountKey(snapshot));
     return {
       id: stableId("card-position", snapshot.bank, snapshot.product, snapshot.cardKey, snapshot.statementType),
@@ -997,6 +1039,10 @@ function loanSortKey(row: LoanTransaction) {
 
 function creditCardAccountKey(row: CreditCardStatementLine) {
   return [row.bank, row.product, creditCardNumberKey(row)].join("|");
+}
+
+function creditCardCaptureEntryKey(entry: CreditCardCaptureEntry) {
+  return [entry.bank, entry.product, entry.cardKey].join("|");
 }
 
 function creditCardSnapshotAccountKey(snapshot: CreditCardSnapshot) {
