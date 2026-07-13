@@ -298,20 +298,25 @@ async function queryStatements(
 }
 
 async function gridState(frame: Frame): Promise<GridState> {
-  const fields = await frame.locator("input, select").evaluateAll((elements) =>
-    elements
-      .map((element) => ({
-        key: element.getAttribute("name") || element.id,
-        value: (element as HTMLInputElement | HTMLSelectElement).value,
-      }))
-      .filter(({ key }) => /currentpagesize|currentpage/i.test(key)),
-  );
+  const fields = frame.locator("input, select");
+  let currentPage: string | undefined;
+  let currentPageSize: string | undefined;
+  const count = await fields.count();
+  for (let index = 0; index < count; index += 1) {
+    const field = fields.nth(index);
+    const key =
+      (await field.getAttribute("name")) ??
+      (await field.getAttribute("id")) ??
+      "";
+    if (/currentpagesize/i.test(key)) {
+      currentPageSize ??= await field.inputValue();
+    } else if (/currentpage/i.test(key)) {
+      currentPage ??= await field.inputValue();
+    }
+  }
   return {
-    currentPage: fields.find(
-      ({ key }) => /currentpage/i.test(key) && !/currentpagesize/i.test(key),
-    )?.value,
-    currentPageSize: fields.find(({ key }) => /currentpagesize/i.test(key))
-      ?.value,
+    currentPage,
+    currentPageSize,
   };
 }
 
