@@ -1117,6 +1117,93 @@ function addCreditCardCaptureStorage(db: LedgerDatabase) {
   `);
 }
 
+function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
+  db.exec(`
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL
+      )
+      WHERE row_number = 1
+    )
+    INSERT OR IGNORE INTO credit_card_captures (
+      capture_id, bank, product, captured_at, completeness_json
+    )
+    SELECT
+      'legacy-display:' || as_of_date,
+      'legacy',
+      'credit-card-history',
+      as_of_date || 'T00:00:00.000Z',
+      '{}'
+    FROM daily_last
+    GROUP BY as_of_date;
+
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date, bank, product, card_key, statement_type,
+        source_file_id,
+        -ROW_NUMBER() OVER (PARTITION BY as_of_date ORDER BY snapshot_id) AS source_row_index
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          bank,
+          product,
+          card_key,
+          statement_type,
+          source_file_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL
+      )
+      WHERE row_number = 1
+    )
+    INSERT OR IGNORE INTO credit_card_capture_entries (
+      capture_id, statement_row_id, source_file_id, source_row_index,
+      bank, product, card_key, statement_type
+    )
+    SELECT
+      'legacy-display:' || as_of_date,
+      'legacy-display:' || snapshot_id,
+      source_file_id,
+      source_row_index,
+      bank,
+      product,
+      card_key,
+      statement_type
+    FROM daily_last;
+
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL
+      )
+      WHERE row_number = 1
+    )
+    UPDATE credit_card_snapshots
+    SET capture_id = 'legacy-display:' || as_of_date
+    WHERE snapshot_id IN (SELECT snapshot_id FROM daily_last);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1202,6 +1289,11 @@ const migrations: LedgerMigration[] = [
     version: 17,
     name: "credit_card_capture_storage",
     up: addCreditCardCaptureStorage,
+  },
+  {
+    version: 18,
+    name: "legacy_credit_card_display_captures",
+    up: backfillLegacyCreditCardDisplayCaptures,
   },
 ];
 
