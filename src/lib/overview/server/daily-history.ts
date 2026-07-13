@@ -1,7 +1,7 @@
 import {
   buildAccountOverview,
   bucketToAmounts,
-  latestImportedUnbilledSnapshots,
+  latestVerifiedCreditCardSnapshots,
   totalsForAccounts,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
@@ -51,7 +51,7 @@ function dailyHistoryDates(data: LedgerQueryData) {
     ...new Set(
       data.sourceFiles
         .map((source) => sourceFileDate(source))
-        .concat(latestImportedUnbilledSnapshots(data.creditCardSnapshots).map((snapshot) => snapshot.asOfDate))
+        .concat(latestVerifiedCreditCardSnapshots(data).map((snapshot) => snapshot.asOfDate))
         .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
         .filter(Boolean)
         .sort(),
@@ -89,7 +89,18 @@ function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
 }
 
 function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
-  const latestUnbilledSnapshots = latestImportedUnbilledSnapshots(data.creditCardSnapshots);
+  const creditCardCaptures = data.creditCardCaptures.filter(
+    (capture) => capture.capturedAt.slice(0, 10) <= date,
+  );
+  const creditCardCaptureIds = new Set(creditCardCaptures.map((capture) => capture.captureId));
+  const creditCardCaptureEntries = data.creditCardCaptureEntries.filter(
+    (entry) => creditCardCaptureIds.has(entry.captureId),
+  );
+  const creditCardSnapshots = latestVerifiedCreditCardSnapshots({
+    ...data,
+    creditCardCaptures,
+    creditCardCaptureEntries,
+  }).filter((snapshot) => snapshot.asOfDate <= date);
   const sourceFileIds = new Set(
     data.sourceFiles
       .filter((source) => sourceFileDate(source) <= date)
@@ -101,7 +112,9 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     accountTransactions: data.accountTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     creditCardStatementLines: data.creditCardStatementLines.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    creditCardSnapshots: latestUnbilledSnapshots.filter((row) => row.asOfDate <= date),
+    creditCardCaptures,
+    creditCardCaptureEntries,
+    creditCardSnapshots,
     loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
     brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
