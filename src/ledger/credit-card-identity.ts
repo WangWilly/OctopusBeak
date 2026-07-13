@@ -18,7 +18,7 @@ export type CreditCardSemanticIdentity = {
 
 const text = (value: string | null | undefined) => value?.trim() ?? "";
 
-export function creditCardSemanticKey(input: CreditCardSemanticIdentity): string {
+export function creditCardContentKey(input: CreditCardSemanticIdentity): string {
   // ponytail: rows without a bank transaction sequence can collide; include it when the source exposes one.
   const keyMaterial = {
     bank: text(input.bank),
@@ -34,3 +34,5 @@ export function creditCardSemanticKey(input: CreditCardSemanticIdentity): string
   };
   return hashBytes(stableStringify(keyMaterial));
 }
+
+export const creditCardSemanticKey = creditCardContentKey;

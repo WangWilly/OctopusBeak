@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { creditCardSemanticKey } from "./credit-card-identity.ts";
+import {
+  creditCardContentKey,
+  creditCardSemanticKey,
+} from "./credit-card-identity.ts";
 
 const base = {
   bank: " esun ",
@@ -18,8 +21,8 @@ const base = {
 };
 
 assert.equal(
-  creditCardSemanticKey(base),
-  creditCardSemanticKey({
+  creditCardContentKey(base),
+  creditCardContentKey({
     ...base,
     bank: "esun",
     cardNumber: "3456",
@@ -29,6 +32,8 @@ assert.equal(
     importedAt: "2026-07-12T00:00:00.000Z",
   }),
 );
+
+assert.equal(creditCardSemanticKey(base), creditCardContentKey(base));
 
 for (const changed of [
   { bank: "other-bank" },
@@ -42,5 +47,5 @@ for (const changed of [
   { installmentAction: "installment" },
   { paymentStatus: "unpaid" },
 ]) {
-  assert.notEqual(creditCardSemanticKey(base), creditCardSemanticKey({ ...base, ...changed }));
+  assert.notEqual(creditCardContentKey(base), creditCardContentKey({ ...base, ...changed }));
 }
