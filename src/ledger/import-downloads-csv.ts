@@ -645,6 +645,78 @@ function parsedCreditCardRows(statementRows: ImportStatementRow[]): CreditCardRo
   return rows;
 }
 
+function persistedCreditCardEvidence(
+  db: LedgerDatabase,
+  sourceFileRecords: Record<string, unknown>[],
+) {
+  const captureIds = new Set(sourceFileRecords.flatMap((sourceFileRecord) => {
+    if (creditCardParser(sourceFileRecord).table !== "credit_card_statement_lines") {
+      return [];
+    }
+    const metadata = fullCaptureMetadata(
+      (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
+    );
+    return metadata ? [metadata.captureId] : [];
+  }));
+  if (captureIds.size === 0) {
+    return { sourceFileRecords: [], cardRows: [] as CreditCardRow[] };
+  }
+
+  const persistedSourceFileRecords: Record<string, unknown>[] = [];
+  const statementRows: ImportStatementRow[] = [];
+  const persistedRecords = db.prepare("SELECT record_json FROM source_files").all() as Array<{
+    record_json: string;
+  }>;
+  for (const { record_json } of persistedRecords) {
+    let sourceFileRecord: Record<string, unknown>;
+    try {
+      sourceFileRecord = JSON.parse(record_json) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (creditCardParser(sourceFileRecord).table !== "credit_card_statement_lines") {
+      continue;
+    }
+    const metadata = fullCaptureMetadata(
+      (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
+    );
+    if (!metadata || !captureIds.has(metadata.captureId)) continue;
+
+    persistedSourceFileRecords.push(sourceFileRecord);
+    const sourceFileId = sourceFileIdForPath(
+      String(sourceFileRecord.sourceRelativePath ?? ""),
+    );
+    const persistedRows = db.prepare(`
+      SELECT statement_row_id, source_row_index, source_hash, content_hash, raw_payload_json
+      FROM credit_card_statement_lines
+      WHERE source_file_id = ?
+    `).all(sourceFileId) as Array<{
+      statement_row_id: string;
+      source_row_index: number;
+      source_hash: string;
+      content_hash: string;
+      raw_payload_json: string;
+    }>;
+    for (const persistedRow of persistedRows) {
+      const rawPayload = JSON.parse(persistedRow.raw_payload_json) as Record<string, string>;
+      statementRows.push({
+        sourceFileRecord,
+        row: {
+          sourceRowIndex: persistedRow.source_row_index,
+          rawPayload,
+          rawRowHash: hashBytes(stableStringify(rawPayload)),
+          sourceHash: persistedRow.source_hash,
+          contentHash: persistedRow.content_hash,
+        },
+      });
+    }
+  }
+  return {
+    sourceFileRecords: persistedSourceFileRecords,
+    cardRows: parsedCreditCardRows(statementRows),
+  };
+}
+
 function fullCaptureMetadata(
   metadata: SourceMetadata | null,
 ): FullCreditCardCaptureMetadata | null {
@@ -1086,7 +1158,12 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
 
     const sourceFilesWritten = sourceFileRecords.length;
     const cardRows = parsedCreditCardRows(statementRows);
-    const verifiedCaptures = verifiedCreditCardCaptures(sourceFileRecords, cardRows);
+    const persistedEvidence = persistedCreditCardEvidence(db, sourceFileRecords);
+    const allCardRows = [...cardRows, ...persistedEvidence.cardRows];
+    const verifiedCaptures = verifiedCreditCardCaptures(
+      [...sourceFileRecords, ...persistedEvidence.sourceFileRecords],
+      allCardRows,
+    );
     const creditCardSourceHashes = new Set(statementRows
       .filter((item) => creditCardParser(item.sourceFileRecord).table === "credit_card_statement_lines")
       .map((item) => item.row.sourceHash));
@@ -1103,7 +1180,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         if (outcome === "duplicate") skippedDuplicateRows += 1;
         else importedRows += 1;
       }
-      insertVerifiedCreditCardState(db, cardRows, verifiedCaptures, startedAt);
+      insertVerifiedCreditCardState(db, allCardRows, verifiedCaptures, startedAt);
       importedRows += cardRows.length;
       finishedAt = new Date().toISOString();
       const runRecord = {
