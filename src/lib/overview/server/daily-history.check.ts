@@ -4,7 +4,7 @@ import {
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
-import { buildDailyHistoryByAccount } from "./daily-history.ts";
+import { buildDailyHistory, buildDailyHistoryByAccount } from "./daily-history.ts";
 
 type AccountTransaction = LedgerQueryData["accountTransactions"][number];
 type SourceFile = LedgerQueryData["sourceFiles"][number];
@@ -217,6 +217,22 @@ assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.captureId,
 ]);
 assert.equal(cardHistory.some((row) => [160, 142, 14844].includes(row.liabilities[0]?.value ?? 0)), false);
 
+const zeroCaptureData = emptyLedgerQueryData();
+zeroCaptureData.creditCardCaptures = [
+  cardCapture("verified-zero-entry", "2026-07-13T08:00:00.000Z"),
+];
+assert.deepEqual(
+  buildDailyHistory(zeroCaptureData).map((row) => [row.date, row.pointAt, row.captureId]),
+  [["2026-07-13", "2026-07-13T08:00:00.000Z", "verified-zero-entry"]],
+);
+
 const assetAccount = buildAccountOverview(cardData).find((row) => row.kind === "bank");
 assert.ok(assetAccount);
-assert.equal((buildDailyHistoryByAccount(cardData)[assetAccount.id] ?? []).some((row) => row.pointAt), false);
+assert.deepEqual(
+  (buildDailyHistoryByAccount(cardData)[assetAccount.id] ?? []).map((row) => [
+    row.date,
+    row.pointAt,
+    row.assets[0]?.value,
+  ]),
+  [["2026-07-12", undefined, 900]],
+);
