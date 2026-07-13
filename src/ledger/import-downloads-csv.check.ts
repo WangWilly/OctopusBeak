@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "./db/client.ts";
-import { importDownloadsCsv } from "./import-downloads-csv.ts";
+import { importDownloadsCsv, insertRecord } from "./import-downloads-csv.ts";
 
 const rootDir = await mkdtemp(join(tmpdir(), "einvoice-import-"));
 const downloadsDir = join(rootDir, "downloads");
@@ -262,16 +262,14 @@ const unchangedItemCount = unchangedDb.prepare(
   "SELECT COUNT(*) AS count FROM personal_invoice_items",
 ).get() as { count: number };
 const unchangedInvoice = unchangedDb.prepare(
-  "SELECT status, dedupe_status FROM personal_invoices",
+  "SELECT status FROM personal_invoices",
 ).get() as {
   status: string;
-  dedupe_status: string;
 };
 const unchangedItem = unchangedDb.prepare(
-  "SELECT item_product_name, dedupe_status FROM personal_invoice_items",
+  "SELECT item_product_name FROM personal_invoice_items",
 ).get() as {
   item_product_name: string;
-  dedupe_status: string;
 };
 unchangedDb.close();
 
@@ -279,11 +277,9 @@ assert.equal(unchangedInvoiceCount.count, 1);
 assert.equal(unchangedItemCount.count, 1);
 assert.deepEqual({ ...unchangedInvoice }, {
   status: "confirmed",
-  dedupe_status: "unique",
 });
 assert.deepEqual({ ...unchangedItem }, {
   item_product_name: "咖啡",
-  dedupe_status: "unique",
 });
 
 const sparseRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-sparse-"));
@@ -314,3 +310,355 @@ const sparseItem = sparseDb.prepare(
 ).get() as { category: string };
 sparseDb.close();
 assert.equal(sparseItem.category, "other");
+
+const ordinaryRootDir = await mkdtemp(join(tmpdir(), "ordinary-import-"));
+const ordinaryDownloadsDir = join(ordinaryRootDir, "downloads");
+const ordinaryOutputDir = join(ordinaryRootDir, "ledger");
+const ordinarySourceDir = join(ordinaryDownloadsDir, "ctbc-statements");
+await mkdir(ordinarySourceDir, { recursive: true });
+
+const accountHeaders = [
+  "帳務日期", "交易日期", "交易時間", "摘要",
+  "支出金額", "存入金額", "即時餘額", "附註",
+];
+const accountRow = {
+  帳務日期: "2026/07/03",
+  交易日期: "2026/07/02",
+  交易時間: "09:08:07",
+  摘要: "薪資",
+  支出金額: "0",
+  存入金額: "1234",
+  即時餘額: "5678",
+  附註: "公司入帳",
+};
+const accountCsv = (rows: Array<Record<string, string>>) =>
+  `${accountHeaders.join(",")}\n${rows
+    .map((row) => accountHeaders.map((header) => csvCell(row[header] ?? "")).join(","))
+    .join("\n")}\n`;
+const ordinaryInput = {
+  downloadsDir: ordinaryDownloadsDir,
+  outputDir: ordinaryOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+};
+
+await writeFile(join(ordinarySourceDir, "first.csv"), accountCsv([accountRow]), "utf8");
+const firstResult = await importDownloadsCsv(ordinaryInput);
+await writeFile(
+  join(ordinarySourceDir, "second.csv"),
+  accountCsv([accountRow, accountRow]),
+  "utf8",
+);
+const secondResult = await importDownloadsCsv(ordinaryInput);
+
+const ordinaryDb = openLedgerDatabase(ordinaryOutputDir, { readOnly: true });
+const accountRowCount = ordinaryDb.prepare(
+  "SELECT COUNT(*) AS count FROM account_transactions",
+).get() as { count: number };
+const secondRun = JSON.parse((ordinaryDb.prepare(
+  "SELECT record_json FROM import_runs ORDER BY rowid DESC LIMIT 1",
+).get() as { record_json: string }).record_json) as Record<string, unknown>;
+const secondCompletedEvent = JSON.parse((ordinaryDb.prepare(
+  "SELECT record_json FROM import_run_events WHERE event_type = 'completed' ORDER BY rowid DESC LIMIT 1",
+).get() as { record_json: string }).record_json) as Record<string, unknown>;
+ordinaryDb.close();
+
+assert.equal(firstResult.importedRows, 1);
+assert.equal(firstResult.skippedDuplicateRows, 0);
+assert.equal(secondResult.importedRows, 0);
+assert.equal(secondResult.skippedDuplicateRows, 2);
+assert.equal(accountRowCount.count, 1);
+assert.equal(secondRun.skippedDuplicateRows, 2);
+assert.equal(secondCompletedEvent.skippedDuplicateRows, 2);
+
+const failureRootDir = await mkdtemp(join(tmpdir(), "failed-insert-"));
+const failureDb = openLedgerDatabase(failureRootDir);
+assert.throws(() => insertRecord(failureDb, "account_transactions", {
+  statement_row_id: "invalid-row",
+  source_file_id: "invalid-file",
+  import_run_id: "invalid-run",
+  source_relative_path: "ctbc-statements/invalid.csv",
+  source_row_index: 1,
+  source_hash: "invalid-source",
+  content_hash: "invalid-content",
+  bank: "ctbc",
+  product: "statements",
+  currency: null,
+  raw_payload_json: "{}",
+  imported_at: "2026-07-12T00:00:00.000Z",
+}), /NOT NULL constraint failed: account_transactions.currency/);
+const rowsAfterFailedInsert = failureDb.prepare(
+  "SELECT COUNT(*) AS count FROM account_transactions",
+).get() as { count: number };
+assert.equal(rowsAfterFailedInsert.count, 0);
+failureDb.close();
+
+const cardHeaders = [
+  "statement_period", "card_number", "consume_date", "posting_date",
+  "description", "country_currency", "foreign_currency", "foreign_amount",
+  "twd_amount", "installment_action", "payment_status",
+];
+const cardCsv = (rows: Array<Record<string, string>>) =>
+  `${cardHeaders.join(",")}\n${rows
+    .map((row) => cardHeaders.map((header) => csvCell(row[header] ?? "")).join(","))
+    .join("\n")}\n`;
+const cardRows = [
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-1111",
+    consume_date: "2026-07-01", posting_date: "2026-07-02", description: "Coffee",
+    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "100",
+    twd_amount: "100", installment_action: "", payment_status: "unpaid",
+  },
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-1111",
+    consume_date: "2026-07-03", posting_date: "2026-07-04", description: "Lunch",
+    country_currency: "TWD", foreign_currency: "TWD", foreign_amount: "250",
+    twd_amount: "250", installment_action: "", payment_status: "unpaid",
+  },
+  {
+    statement_period: "2026-07", card_number: "4000-0000-0000-2222",
+    consume_date: "2026-07-05", posting_date: "2026-07-06", description: "Book",
+    country_currency: "USD", foreign_currency: "USD", foreign_amount: "15",
+    twd_amount: "480", installment_action: "", payment_status: "unpaid",
+  },
+];
+
+async function cardImportFixture() {
+  const root = await mkdtemp(join(tmpdir(), "card-snapshot-import-"));
+  const fixtureDownloadsDir = join(root, "downloads");
+  const fixtureOutputDir = join(root, "ledger");
+  const fixtureSourceDir = join(fixtureDownloadsDir, "esun-credit-card-statements");
+  await mkdir(fixtureSourceDir, { recursive: true });
+  const writeCapture = async (
+    name: string,
+    captureId: string,
+    capturedAt: string,
+    billedRows: Array<Record<string, string>>,
+    unbilledRows: Array<Record<string, string>>,
+    writeUnbilled = true,
+  ) => {
+    const metadata = (rows: Array<Record<string, string>>) => ({
+      snapshotMode: "full",
+      snapshotCapturedAt: capturedAt,
+      captureId,
+      capturedAt,
+      captureKinds: ["billed", "unbilled"],
+      cardRowCounts: { "1111": rows.length },
+      completenessEvidence: { bank: "esun" },
+    });
+    await writeFile(join(fixtureSourceDir, `${name}-billed.csv`), cardCsv(billedRows), "utf8");
+    await writeFile(
+      join(fixtureSourceDir, `${name}-billed.json`),
+      JSON.stringify(metadata(billedRows)),
+      "utf8",
+    );
+    if (!writeUnbilled) return;
+    await writeFile(
+      join(fixtureSourceDir, `${name}-unbilled.csv`),
+      cardCsv(unbilledRows),
+      "utf8",
+    );
+    await writeFile(
+      join(fixtureSourceDir, `${name}-unbilled.json`),
+      JSON.stringify(metadata(unbilledRows)),
+      "utf8",
+    );
+  };
+  return { fixtureDownloadsDir, fixtureOutputDir, fixtureSourceDir, writeCapture };
+}
+
+const fullCardFixture = await cardImportFixture();
+const firstCaptureId = "9d000000-0000-4000-8000-000000000001";
+const secondCaptureId = "9d000000-0000-4000-8000-000000000002";
+const partialCaptureId = "9d000000-0000-4000-8000-000000000003";
+const mismatchedCaptureId = "9d000000-0000-4000-8000-000000000004";
+const identicalCardRows = [cardRows[0], cardRows[0]];
+await fullCardFixture.writeCapture(
+  "first",
+  firstCaptureId,
+  "2026-07-12T08:09:10.000Z",
+  identicalCardRows,
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+await fullCardFixture.writeCapture(
+  "second",
+  secondCaptureId,
+  "2026-07-13T08:09:10.000Z",
+  identicalCardRows,
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+const fullCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
+const captureCount = (fullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures",
+).get() as { count: number }).count;
+assert.equal(captureCount, 2);
+const entryRows = fullCardDb.prepare(`
+  SELECT l.occurrence_index
+  FROM credit_card_capture_entries e
+  JOIN credit_card_statement_lines l ON l.statement_row_id = e.statement_row_id
+  WHERE e.capture_id = ?
+  ORDER BY e.source_row_index
+`).all(secondCaptureId) as Array<{ occurrence_index: number }>;
+const latestSnapshot = fullCardDb.prepare(`
+  SELECT transaction_count, total_amount
+  FROM credit_card_snapshots
+  WHERE capture_id = ? AND card_key = '1111' AND statement_type = 'billed'
+`).get(secondCaptureId) as { transaction_count: number; total_amount: number };
+const statementLineCountAfterSecondIdenticalCapture = (fullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines",
+).get() as { count: number }).count;
+const entryCount = (fullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries",
+).get() as { count: number }).count;
+const latestTransactionTypes = (fullCardDb.prepare(`
+  SELECT DISTINCT e.statement_type
+  FROM credit_card_capture_entries e
+  WHERE e.capture_id = ?
+  ORDER BY e.statement_type
+`).all(secondCaptureId) as Array<{ statement_type: string }>).map((row) => row.statement_type);
+const lastSeenAt = fullCardDb.prepare(`
+  SELECT last_seen_at FROM credit_card_statement_lines
+  WHERE occurrence_index = 0
+`).get() as { last_seen_at: string };
+fullCardDb.close();
+
+assert.deepEqual(entryRows.map((row) => row.occurrence_index), [0, 1]);
+assert.equal(latestSnapshot.transaction_count, 2);
+assert.equal(latestSnapshot.total_amount, 200);
+assert.equal(statementLineCountAfterSecondIdenticalCapture, 2);
+assert.equal(captureCount, 2);
+assert.equal(entryCount, 4);
+assert.deepEqual(latestTransactionTypes, ["billed"]);
+assert.equal(lastSeenAt.last_seen_at, "2026-07-13T08:09:10.000Z");
+
+const splitCardFixture = await cardImportFixture();
+const splitCaptureId = "9d000000-0000-4000-8000-000000000005";
+await splitCardFixture.writeCapture(
+  "split",
+  splitCaptureId,
+  "2026-07-16T08:09:10.000Z",
+  [cardRows[0]],
+  [],
+  false,
+);
+await importDownloadsCsv({
+  downloadsDir: splitCardFixture.fixtureDownloadsDir,
+  outputDir: splitCardFixture.fixtureOutputDir,
+});
+await splitCardFixture.writeCapture(
+  "split",
+  splitCaptureId,
+  "2026-07-16T08:09:10.000Z",
+  [cardRows[0]],
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: splitCardFixture.fixtureDownloadsDir,
+  outputDir: splitCardFixture.fixtureOutputDir,
+});
+const splitCardDb = openLedgerDatabase(splitCardFixture.fixtureOutputDir, { readOnly: true });
+const splitCaptureCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+const splitEntryCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+const splitSnapshotCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+splitCardDb.close();
+assert.equal(splitCaptureCount, 1);
+assert.equal(splitEntryCount, 1);
+assert.equal(splitSnapshotCount, 2);
+
+await fullCardFixture.writeCapture(
+  "partial",
+  partialCaptureId,
+  "2026-07-14T08:09:10.000Z",
+  [{ ...cardRows[0], description: "Partial only" }],
+  [],
+  false,
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+await fullCardFixture.writeCapture(
+  "mismatched",
+  mismatchedCaptureId,
+  "2026-07-15T08:09:10.000Z",
+  [{ ...cardRows[0], description: "Mismatched metadata" }],
+  [],
+);
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "mismatched-unbilled.json"),
+  JSON.stringify({
+    snapshotMode: "full",
+    captureId: mismatchedCaptureId,
+    capturedAt: "2026-07-15T08:09:10.000Z",
+    captureKinds: ["billed", "unbilled"],
+    cardRowCounts: { "2222": 0 },
+    completenessEvidence: { bank: "esun" },
+  }),
+  "utf8",
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "invalid-billed.csv"),
+  cardCsv([{ ...cardRows[0], description: "Invalid metadata evidence" }]),
+  "utf8",
+);
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "invalid-billed.json"),
+  "{not json",
+  "utf8",
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+const partialCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
+const partialCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const partialEntryCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const partialSnapshotCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const mismatchedCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(mismatchedCaptureId) as { count: number }).count;
+const partialCanonicalCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines WHERE description = 'Partial only'",
+).get() as { count: number }).count;
+const invalidSourceFileCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_files WHERE source_relative_path = 'esun-credit-card-statements/invalid-billed.csv'",
+).get() as { count: number }).count;
+const invalidCanonicalCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines WHERE description = 'Invalid metadata evidence'",
+).get() as { count: number }).count;
+const verifiedCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures",
+).get() as { count: number }).count;
+partialCardDb.close();
+assert.equal(partialCaptureCount, 0);
+assert.equal(partialEntryCount, 0);
+assert.equal(partialSnapshotCount, 0);
+assert.equal(mismatchedCaptureCount, 0);
+assert.equal(partialCanonicalCount, 1);
+assert.equal(invalidSourceFileCount, 1);
+assert.equal(invalidCanonicalCount, 1);
+assert.equal(verifiedCaptureCount, 2);

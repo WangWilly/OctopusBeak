@@ -20,7 +20,6 @@ export type TypedStatementTable = (typeof TYPED_STATEMENT_TABLES)[number];
 export type BuildFinancialDashboardInput = {
   ledgerDir: string;
   outputDir: string;
-  includeDuplicates: boolean;
 };
 
 export type BatchRecord = RawRecord & {
@@ -54,7 +53,6 @@ export type RawTransactionOccurrence = RawRecord & {
   sourceRowIndex: number;
   bank: string;
   product: string;
-  dedupeStatus: "unique" | "duplicate";
   typedPayload: Record<string, string>;
 };
 
@@ -199,9 +197,6 @@ export type FinancialModel = {
   sourceLedgerDir: string;
   sourceLedgerStore: "sqlite";
   counts: {
-    rawRows: number;
-    uniqueRows: number;
-    duplicateRows: number;
     normalizedTransactions: number;
     assetPositions: number;
     includedPositions: number;

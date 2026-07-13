@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { buildDailyHistory } from "../../overview/server/daily-history.ts";
-import { emptyLedgerQueryData } from "./accounts.ts";
+import { buildAccountOverview, buildTransactionsByAccount, emptyLedgerQueryData } from "./accounts.ts";
 import { mockLedgerQueryData } from "./mock-data.ts";
 
 const launchDate = new Date("2026-07-11T04:00:00.000Z");
@@ -9,6 +9,11 @@ const data = mockLedgerQueryData(launchDate);
 assert.ok(data.accountTransactions.length >= 6);
 assert.ok(data.foreignCurrencyTransactions.length >= 5);
 assert.ok(data.creditCardStatementLines.length >= 8);
+assert.ok(data.creditCardSnapshots.length >= 6);
+const creditCardAccounts = buildAccountOverview(data).filter((account) => account.kind === "credit-card");
+const transactionsByAccount = buildTransactionsByAccount(data);
+assert.equal(creditCardAccounts.length, 2);
+assert.ok(creditCardAccounts.every((account) => (transactionsByAccount[account.id]?.length ?? 0) > 0));
 assert.ok(data.loanTransactions.length >= 3);
 assert.ok(data.fundHoldings.length >= 4);
 assert.ok(data.fundBuyTransactions.length >= 3);
@@ -47,11 +52,12 @@ const liabilityHistory = buildDailyHistory({
   ...emptyLedgerQueryData(),
   sourceFiles: data.sourceFiles,
   creditCardStatementLines: data.creditCardStatementLines,
+  creditCardSnapshots: data.creditCardSnapshots,
   loanTransactions: data.loanTransactions,
   maicoinAccountSnapshots: data.maicoinAccountSnapshots,
 }).filter((row) => row.liabilities.length > 0);
-assert.ok(liabilityHistory.length >= 5);
-assert.ok(distinct(liabilityHistory.map((row) => JSON.stringify(row.liabilities))).length >= 5);
+assert.equal(liabilityHistory.length, 4);
+assert.equal(distinct(liabilityHistory.map((row) => JSON.stringify(row.liabilities))).length, 4);
 
 const rowsBySource = new Map<string, number>();
 for (const table of [

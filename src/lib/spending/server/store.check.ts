@@ -21,17 +21,16 @@ function insertInvoice(
   db.prepare(`
     INSERT INTO personal_invoices (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at, invoice_key,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, invoice_key,
       issued_at, invoice_id, amount, status, rebated, seller_name
-    ) VALUES (?, ?, 'run', 'invoices.csv', 1, ?, ?, ?, 'einvoice',
-      'personal-invoices', 'unique', '{}', '2026-02-01T00:00:00.000Z',
+    ) VALUES (?, ?, 'run', 'invoices.csv', 1, ?, ?, 'einvoice',
+      'personal-invoices', '{}', '2026-02-01T00:00:00.000Z',
       '2026-02-01T00:00:00.000Z', ?, ?, ?, ?, ?, 0, ?)
   `).run(
     `row-${input.invoiceKey}`,
     `source-${input.invoiceKey}`,
     `source-hash-${input.invoiceKey}`,
-    `raw-hash-${input.invoiceKey}`,
     `content-hash-${input.invoiceKey}`,
     input.invoiceKey,
     input.issuedAt === undefined ? 1769877000 : input.issuedAt,
@@ -56,19 +55,18 @@ function insertItem(
   db.prepare(`
     INSERT INTO personal_invoice_items (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at, item_key,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, item_key,
       invoice_key, item_sequence_number, item_quantity, item_unit_price,
       item_paid_amount, item_product_name, category
-    ) VALUES (?, ?, 'run', 'items.csv', ?, ?, ?, ?, 'einvoice',
-      'personal-invoices', 'unique', '{}', '2026-02-01T00:00:00.000Z',
+    ) VALUES (?, ?, 'run', 'items.csv', ?, ?, ?, 'einvoice',
+      'personal-invoices', '{}', '2026-02-01T00:00:00.000Z',
       '2026-02-01T00:00:00.000Z', ?, ?, ?, 1, ?, ?, ?, ?)
   `).run(
     `row-${input.itemKey}`,
     `source-${input.itemKey}`,
     input.sequence ?? 0,
     `source-hash-${input.itemKey}`,
-    `raw-hash-${input.itemKey}`,
     `content-hash-${input.itemKey}`,
     input.itemKey,
     input.invoiceKey,

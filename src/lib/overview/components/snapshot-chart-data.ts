@@ -1,4 +1,4 @@
-import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+import { historyPointKey, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
 
 type HistoryAmountKey = "netAssets" | "assets" | "liabilities" | "dailyChange";
 
@@ -35,20 +35,23 @@ export function buildSnapshotChartPoints(
   currency: string,
   amountKey: HistoryAmountKey,
 ): SnapshotChartPoint[] {
-  return rows
+  const offsets = new Map<number, number>();
+  return [...rows]
+    .sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right)))
     .map((row) => {
       const amount = row[amountKey].find((item) => item.currency === currency);
-      return amount
-        ? {
-            date: row.date,
-            dateLabel: row.date,
-            time: Date.parse(`${row.date}T00:00:00.000Z`),
-            value: amount.value,
-          }
-        : null;
+      if (!amount) return null;
+      const baseTime = Date.parse(row.pointAt ?? `${row.date}T00:00:00.000Z`);
+      const offset = offsets.get(baseTime) ?? 0;
+      offsets.set(baseTime, offset + 1);
+      return {
+        date: row.date,
+        dateLabel: row.pointAt ? row.pointAt.slice(0, 16).replace("T", " ") : row.date,
+        time: baseTime + offset,
+        value: amount.value,
+      };
     })
-    .filter((item): item is SnapshotChartPoint => item !== null)
-    .sort((left, right) => left.dateLabel.localeCompare(right.dateLabel));
+    .filter((item): item is SnapshotChartPoint => item !== null);
 }
 
 export function buildSnapshotDivergingSeries(
