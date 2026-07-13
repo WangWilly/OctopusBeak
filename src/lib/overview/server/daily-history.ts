@@ -100,11 +100,9 @@ function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
 }
 
 function snapshotData(data: LedgerQueryData, point: HistoryPoint): LedgerQueryData {
+  const pointKey = historyPointKey(point);
   const creditCardCaptures = data.creditCardCaptures.filter(
-    (capture) => point.pointAt
-      ? capture.capturedAt < point.pointAt
-        || (capture.capturedAt === point.pointAt && (!point.captureId || capture.captureId <= point.captureId))
-      : capture.capturedAt.slice(0, 10) <= point.date,
+    (capture) => `${capture.capturedAt}|${capture.captureId}` <= pointKey,
   );
   const creditCardCaptureIds = new Set(creditCardCaptures.map((capture) => capture.captureId));
   const creditCardCaptureEntries = data.creditCardCaptureEntries.filter(

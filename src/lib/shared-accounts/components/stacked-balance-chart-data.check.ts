@@ -97,6 +97,19 @@ assert.deepEqual(sameDayCaptures.series[0]?.data.map((point) => [point.dateLabel
   ["2026-07-12 08:00", Date.parse("2026-07-12T08:00:00.000Z") + 1, 180],
 ]);
 
+const carriedLoanBalance = buildStackedBalanceChartData({
+  accounts: [accounts[4]!, accounts[5]!],
+  dailyHistoryByAccount: {
+    "card-a": [row("2026-07-12", 0, 120, "2026-07-12T08:00:00.000Z", "capture-alpha")],
+    "loan-a": [row("2026-07-12", 0, 500)],
+  },
+  filter: "all",
+  currency: "TWD",
+  mode: "liability",
+});
+assert.deepEqual(carriedLoanBalance.series.find((series) => series.key === "loan")?.data.map((point) => point.value), [500, 500]);
+assert.deepEqual(carriedLoanBalance.totals.map((point) => point.value), [500, 620]);
+
 function account(id: string, label: string, kind: AccountKind, value: number): AccountRowDto {
   const group =
     kind === "credit-card" || kind === "loan" || kind === "other"

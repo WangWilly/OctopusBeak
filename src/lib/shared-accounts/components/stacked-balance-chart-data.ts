@@ -169,7 +169,11 @@ function sumForDate(
   mode: BalanceChartMode,
 ) {
   return accounts.reduce((sum, account) => {
-    const row = (dailyHistoryByAccount[account.id] ?? []).find((item) => historyPointKey(item) === date);
+    const row = (dailyHistoryByAccount[account.id] ?? []).reduce<DailyHistoryRowDto | undefined>(
+      (latest, item) =>
+        historyPointKey(item) <= date && (!latest || historyPointKey(item) > historyPointKey(latest)) ? item : latest,
+      undefined,
+    );
     const value = row?.[mode === "asset" ? "assets" : "liabilities"].find((amount) => amount.currency === currency)?.value ?? 0;
     return sum + (mode === "liability" ? Math.abs(value) : value);
   }, 0);
