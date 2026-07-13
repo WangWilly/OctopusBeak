@@ -5,19 +5,19 @@ import {
   totalsForAccounts,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
-import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "../../shared-ledger/types.ts";
+import { historyPointKey, type AccountRowDto, type CurrencyAmountDto, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
 
 export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
-  const rows = dailyHistoryDates(data);
+  const rows = dailyHistoryPoints(data);
   let previousNet: Record<string, number> | null = null;
 
-  return rows.map((date) => {
-    const accounts = buildAccountOverview(snapshotData(data, date));
+  return rows.map((point) => {
+    const accounts = buildAccountOverview(snapshotData(data, point));
     const totals = totalsForAccounts(accounts);
     const dailyChange = previousNet ? subtractBuckets(totals.net, previousNet) : {};
     previousNet = totals.net;
     return {
-      date,
+      ...point,
       netAssets: bucketToAmounts(totals.net),
       dailyChange: bucketToAmounts(dailyChange),
       assets: bucketToAmounts(addBuckets(totals.assets, totals.investments)),
@@ -32,43 +32,50 @@ export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string
   const histories: Record<string, DailyHistoryRowDto[]> = {};
   const previousByAccount = new Map<string, Record<string, number>>();
 
-  for (const date of dailyHistoryDates(data)) {
-    const accounts = buildAccountOverview(snapshotData(data, date));
+  for (const point of dailyHistoryPoints(data)) {
+    const accounts = buildAccountOverview(snapshotData(data, point));
     for (const account of accounts) {
       const balance = amountBucket(account.amountLines);
       const previous = previousByAccount.get(account.id);
       const dailyChange = previous ? subtractBuckets(balance, previous) : {};
       previousByAccount.set(account.id, balance);
-      histories[account.id] = [...(histories[account.id] ?? []), accountHistoryRow(date, account, balance, dailyChange)];
+      histories[account.id] = [...(histories[account.id] ?? []), accountHistoryRow(point, account, balance, dailyChange)];
     }
   }
 
   return histories;
 }
 
-function dailyHistoryDates(data: LedgerQueryData) {
-  const dates = [
-    ...new Set(
-      data.sourceFiles
-        .map((source) => sourceFileDate(source))
-        .concat(latestVerifiedCreditCardSnapshots(data).map((snapshot) => snapshot.asOfDate))
-        .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
-        .filter(Boolean)
-        .sort(),
-    ),
+type HistoryPoint = Pick<DailyHistoryRowDto, "date" | "pointAt">;
+
+function dailyHistoryPoints(data: LedgerQueryData): HistoryPoint[] {
+  const verifiedCaptureIds = new Set(data.creditCardCaptureEntries.map((entry) => entry.captureId));
+  const captures = data.creditCardCaptures.filter((capture) => verifiedCaptureIds.has(capture.captureId));
+  const captureDates = new Set(captures.map((capture) => capture.capturedAt.slice(0, 10)));
+  const dates = data.sourceFiles
+    .map((source) => sourceFileDate(source))
+    .concat(latestVerifiedCreditCardSnapshots(data).map((snapshot) => snapshot.asOfDate))
+    .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
+    .filter((date) => date && !captureDates.has(date));
+  const points = [
+    ...dates.map((date) => ({ date })),
+    ...captures.map((capture) => ({ date: capture.capturedAt.slice(0, 10), pointAt: capture.capturedAt })),
   ];
-  return dates.length > 0 ? dates : [new Date().toISOString().slice(0, 10)];
+  const unique = new Map(points.map((point) => [historyPointKey(point), point]));
+  return unique.size > 0
+    ? [...unique.values()].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right)))
+    : [{ date: new Date().toISOString().slice(0, 10) }];
 }
 
 function accountHistoryRow(
-  date: string,
+  point: HistoryPoint,
   account: AccountRowDto,
   balance: Record<string, number>,
   dailyChange: Record<string, number>,
 ): DailyHistoryRowDto {
   const amounts = bucketToAmounts(balance, { includeZero: true });
   return {
-    date,
+    ...point,
     netAssets: amounts,
     dailyChange: bucketToAmounts(dailyChange),
     assets: account.group === "liability" ? [] : amounts,
@@ -88,9 +95,9 @@ function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
   return (source.sourceFileModifiedAt || source.importedAt).slice(0, 10);
 }
 
-function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
+function snapshotData(data: LedgerQueryData, point: HistoryPoint): LedgerQueryData {
   const creditCardCaptures = data.creditCardCaptures.filter(
-    (capture) => capture.capturedAt.slice(0, 10) <= date,
+    (capture) => point.pointAt ? capture.capturedAt <= point.pointAt : capture.capturedAt.slice(0, 10) <= point.date,
   );
   const creditCardCaptureIds = new Set(creditCardCaptures.map((capture) => capture.captureId));
   const creditCardCaptureEntries = data.creditCardCaptureEntries.filter(
@@ -100,10 +107,10 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     ...data,
     creditCardCaptures,
     creditCardCaptureEntries,
-  }).filter((snapshot) => snapshot.asOfDate <= date);
+  }).filter((snapshot) => snapshot.asOfDate <= point.date);
   const sourceFileIds = new Set(
     data.sourceFiles
-      .filter((source) => sourceFileDate(source) <= date)
+      .filter((source) => sourceFileDate(source) <= point.date)
       .map((source) => source.sourceFileId),
   );
   return {
@@ -118,7 +125,7 @@ function snapshotData(data: LedgerQueryData, date: string): LedgerQueryData {
     loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
     fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
     brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    maicoinAccountSnapshots: data.maicoinAccountSnapshots.filter((row) => row.capturedAt.slice(0, 10) <= date),
+    maicoinAccountSnapshots: data.maicoinAccountSnapshots.filter((row) => row.capturedAt.slice(0, 10) <= point.date),
   };
 }
 

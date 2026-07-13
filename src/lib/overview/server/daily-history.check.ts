@@ -172,21 +172,21 @@ function cardCaptureEntry(captureId: string, row: CreditCardStatementLine) {
 
 const cardData = emptyLedgerQueryData();
 const earlyVerifiedCaptureId = "verified-early";
-const verifiedCaptureId = "verified-zero";
-const earlyVerifiedCardRow = cardRow("verified-early", "2026-07-11T08:00:00.000Z", 120);
-const verifiedCardRow = cardRow("verified-zero", "2026-07-12T08:00:00.000Z", 0);
+const verifiedCaptureId = "verified-late";
+const earlyVerifiedCardRow = cardRow("verified-early", "2026-07-12T08:00:00.000Z", 120);
+const verifiedCardRow = cardRow("verified-late", "2026-07-12T10:00:00.000Z", 180);
 cardData.creditCardSnapshots = [
   cardSnapshot("june-early", "2026-06-30T08:00:00.000Z", 4500),
   cardSnapshot("june-late", "2026-06-30T10:00:00.000Z", 4680),
   cardSnapshot("older-day-captured-later", "2026-07-04T08:00:00.000Z", 999, "2026-07-01"),
   cardSnapshot("july-complete", "2026-07-03T08:00:00.000Z", 6120),
-  { ...cardSnapshot("verified-early", "2026-07-11T08:00:00.000Z", 120), captureId: earlyVerifiedCaptureId },
-  { ...cardSnapshot("verified-zero", "2026-07-12T08:00:00.000Z", 0), captureId: verifiedCaptureId },
+  { ...cardSnapshot("verified-early", "2026-07-12T08:00:00.000Z", 120), captureId: earlyVerifiedCaptureId },
+  { ...cardSnapshot("verified-late", "2026-07-12T10:00:00.000Z", 180), captureId: verifiedCaptureId },
   cardSnapshot("legacy-later", "2026-07-13T08:00:00.000Z", 14844),
 ];
 cardData.creditCardCaptures = [
-  cardCapture(earlyVerifiedCaptureId, "2026-07-11T08:00:00.000Z"),
-  cardCapture(verifiedCaptureId, "2026-07-12T08:00:00.000Z"),
+  cardCapture(earlyVerifiedCaptureId, "2026-07-12T08:00:00.000Z"),
+  cardCapture(verifiedCaptureId, "2026-07-12T10:00:00.000Z"),
 ];
 cardData.creditCardCaptureEntries = [
   cardCaptureEntry(earlyVerifiedCaptureId, earlyVerifiedCardRow),
@@ -195,9 +195,8 @@ cardData.creditCardCaptureEntries = [
 cardData.sourceFiles = [
   sourceFile("june-partial", "2026-06-30"),
   sourceFile("july-partial", "2026-07-03"),
-  sourceFile("verified-early", "2026-07-11"),
-  sourceFile("verified-zero", "2026-07-12"),
-  sourceFile("legacy-later", "2026-07-13"),
+  sourceFile("verified-early", "2026-07-12"),
+  sourceFile("verified-late", "2026-07-12"),
 ];
 cardData.creditCardStatementLines = [
   cardRow("june-partial", "2026-06-30T11:00:00.000Z", 160),
@@ -209,14 +208,10 @@ cardData.creditCardStatementLines = [
 
 const cardAccount = buildAccountOverview(cardData).find((row) => row.kind === "credit-card");
 assert.ok(cardAccount);
-assert.deepEqual(cardAccount.amountLines, [{ currency: "TWD", value: 0 }]);
+assert.deepEqual(cardAccount.amountLines, [{ currency: "TWD", value: 180 }]);
 const cardHistory = buildDailyHistoryByAccount(cardData)[cardAccount.id] ?? [];
-assert.deepEqual(cardHistory.map((row) => ({
-  date: row.date,
-  liabilities: row.liabilities,
-})), [
-  { date: "2026-07-11", liabilities: [{ currency: "TWD", value: 120 }] },
-  { date: "2026-07-12", liabilities: [{ currency: "TWD", value: 0 }] },
-  { date: "2026-07-13", liabilities: [{ currency: "TWD", value: 0 }] },
+assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.liabilities[0]?.value]), [
+  ["2026-07-12", "2026-07-12T08:00:00.000Z", 120],
+  ["2026-07-12", "2026-07-12T10:00:00.000Z", 180],
 ]);
 assert.equal(cardHistory.some((row) => [160, 142, 14844].includes(row.liabilities[0]?.value ?? 0)), false);
