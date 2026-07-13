@@ -644,6 +644,9 @@ try {
   ).all() as Array<{ name: string }>;
   const captureEntryColumns = cardDb.prepare(
     "PRAGMA table_info(credit_card_capture_entries)",
+  ).all() as Array<{ name: string; pk: number }>;
+  const captureEntryIndexes = cardDb.prepare(
+    "PRAGMA index_list(credit_card_capture_entries)",
   ).all() as Array<{ name: string }>;
   const cardLineColumns = cardDb.prepare(
     "PRAGMA table_info(credit_card_statement_lines)",
@@ -665,6 +668,20 @@ try {
   ]) {
     assert.ok(captureEntryColumns.some((column) => column.name === name), name);
   }
+  assert.deepEqual(captureEntryColumns.filter((column) => column.pk > 0)
+    .sort((left, right) => left.pk - right.pk)
+    .map((column) => column.name), [
+    "capture_id", "source_file_id", "source_row_index",
+  ]);
+  assert.ok(captureEntryIndexes.some(
+    (index) => index.name === "idx_credit_card_capture_entries_latest",
+  ));
+  assert.throws(() => cardDb.prepare(`
+    INSERT INTO credit_card_capture_entries (
+      capture_id, statement_row_id, source_file_id, source_row_index,
+      bank, product, card_key, statement_type
+    ) VALUES ('capture', 'row', 'source', 1, 'bank', 'product', '1234', 'other')
+  `).run(), /CHECK constraint failed/);
   for (const name of [
     "content_key", "occurrence_index", "first_seen_at", "last_seen_at",
   ]) {
@@ -691,6 +708,25 @@ try {
   assert.equal((cardDb.prepare(
     "SELECT COUNT(*) AS count FROM credit_card_snapshots",
   ).get() as { count: number }).count, legacySnapshotCount);
+  const legacyBackfillRows = cardDb.prepare(`
+    SELECT content_key, semantic_key, occurrence_index,
+      first_seen_at, last_seen_at, imported_at
+    FROM credit_card_statement_lines
+  `).all() as Array<{
+    content_key: string;
+    semantic_key: string;
+    occurrence_index: number;
+    first_seen_at: string;
+    last_seen_at: string;
+    imported_at: string;
+  }>;
+  assert.ok(legacyBackfillRows.length > 0);
+  for (const row of legacyBackfillRows) {
+    assert.equal(row.content_key, row.semantic_key);
+    assert.equal(row.occurrence_index, 0);
+    assert.equal(row.first_seen_at, row.imported_at);
+    assert.equal(row.last_seen_at, row.imported_at);
+  }
 
   const contentOccurrenceIndex = cardIndexes.find(
     (index) => index.name === "uq_credit_card_statement_lines_content_occurrence",
