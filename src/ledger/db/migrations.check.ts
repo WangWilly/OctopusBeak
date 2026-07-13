@@ -256,7 +256,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -624,11 +624,7 @@ try {
     bank: "cathay", product: "cathay-credit-card-statements",
     transactions: [{ id: "cathay", amount: 40 }],
   });
-  cardDb.prepare(
-    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (17, ?, ?)",
-  ).run("credit_card_capture_storage", "2026-01-01T00:00:00.000Z");
   migrateLedgerDb(cardDb);
-  cardDb.exec("DELETE FROM schema_migrations WHERE version = 17");
   const legacyPayloadRows = cardDb.prepare(`
     SELECT statement_row_id, raw_payload_json
     FROM credit_card_statement_lines
@@ -637,7 +633,19 @@ try {
   const legacySnapshotCount = (cardDb.prepare(
     "SELECT COUNT(*) AS count FROM credit_card_snapshots",
   ).get() as { count: number }).count;
+  const legacyCaptureCountBeforeRerun = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count;
+  const legacyEntryCountBeforeRerun = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count;
   migrateLedgerDb(cardDb);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count, legacyCaptureCountBeforeRerun);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count, legacyEntryCountBeforeRerun);
 
   const captureColumns = cardDb.prepare(
     "PRAGMA table_info(credit_card_captures)",
@@ -691,15 +699,18 @@ try {
   assert.equal(cardIndexes.some(
     (index) => index.name === "uq_credit_card_statement_lines_semantic_key",
   ), false);
-  assert.equal((cardDb.prepare(
-    "SELECT COUNT(*) AS count FROM credit_card_captures",
-  ).get() as { count: number }).count, 0);
-  assert.equal((cardDb.prepare(
-    "SELECT COUNT(*) AS count FROM credit_card_capture_entries",
-  ).get() as { count: number }).count, 0);
-  assert.equal((cardDb.prepare(
-    "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id IS NOT NULL",
-  ).get() as { count: number }).count, 0);
+  const legacyCaptureCount = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count;
+  const legacyEntryCount = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count;
+  const legacySnapshotCountWithCapture = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id LIKE 'legacy-display:%'",
+  ).get() as { count: number }).count;
+  assert.ok(legacyCaptureCount > 0);
+  assert.ok(legacyEntryCount > 0);
+  assert.ok(legacySnapshotCountWithCapture > 0);
   assert.deepEqual(cardDb.prepare(`
     SELECT statement_row_id, raw_payload_json
     FROM credit_card_statement_lines
