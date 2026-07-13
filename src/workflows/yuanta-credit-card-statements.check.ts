@@ -6,6 +6,10 @@ const source = await readFile(
   "utf8",
 );
 
+assert.match(source, /export function hasUntraversedPager\(html: string\): boolean/);
+assert.match(source, /下一頁\|下頁\|上一頁\|上頁/);
+assert.match(source, /if \(hasUntraversedPager\(currentMonthHtml\)\)/);
+assert.match(source, /if \(hasUntraversedPager\(unbilledHtml\)\)/);
 assert.match(
   source,
   /const ready = await waitForCreditCardBillsReady\(\s*page,\s*undefined,\s*8_000,\s*\)\.catch\(\(\) => null\)/,
@@ -57,7 +61,10 @@ assert.doesNotMatch(
   /await openCreditCardBillsPage\(page\);\s+let currentMonthHtml = await readCurrentCreditCardBillsHtml\(page\)/,
 );
 assert.match(source, /const parsedMonth = parseCreditCardBillsHtml\(currentMonthHtml, month\.label\)/);
-assert.match(source, /parseCreditCardBillsHtml\(\s*await submitCreditCardUnbilled\(page\),\s*null,\s*false,\s*\)/);
+assert.match(
+  source,
+  /const unbilledHtml = await submitCreditCardUnbilled\(page\);[\s\S]*?parseCreditCardBillsHtml\(\s*unbilledHtml,\s*null,\s*false,\s*\)/,
+);
 assert.doesNotMatch(source, /const allMonthOptions = await readMonthOptions\(page\)/);
 assert.doesNotMatch(source, /await clickMonth\(page, month\)/);
 assert.doesNotMatch(source, /await parseStatementRows\(\s*page,/);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -8,6 +9,7 @@ import {
 } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
@@ -26,6 +28,18 @@ type MonthOption = {
 };
 
 type StatementKind = "unbilled" | "billed";
+type CaptureMetadata =
+  | {
+      snapshotMode: "full";
+      captureId: string;
+      capturedAt: string;
+      captureKinds: ["billed", "unbilled"];
+      completenessEvidence: Record<string, unknown>;
+    }
+  | {
+      snapshotMode: "partial";
+      completenessEvidence: Record<string, unknown>;
+    };
 
 type StatementRow = {
   creditCardNo: string;
@@ -724,6 +738,14 @@ function parseMonthOptionsFromHtml(html: string): MonthOption[] {
   return [...options.values()].sort((left, right) => left.index - right.index);
 }
 
+export function hasUntraversedPager(html: string): boolean {
+  return (
+    /<(?:a|button|input)\b[^>]*(?:href|onclick|class|id|name)=[^>]*(?:page|pager|next|prev)[^>]*>/i.test(
+      html,
+    ) || /下一頁|下頁|上一頁|上頁|第\s*\d+\s*頁/.test(stripHtml(html))
+  );
+}
+
 async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
   const rows = await table.locator("tr").all();
   const parsedRows: string[][] = [];
@@ -1114,10 +1136,16 @@ function statementRowsToCsv(kind: StatementKind, rows: StatementRow[]): string {
   return rowsToCsv(csvRows);
 }
 
+function cardKeyForRow(row: StatementRow): string {
+  return row.creditCardNo.replace(/\D/g, "").slice(-4);
+}
+
 async function writeStatementFile(
   nextTimestamp: () => string,
   kind: StatementKind,
   rows: StatementRow[],
+  capture: CaptureMetadata,
+  cardKeys: string[],
 ): Promise<TableFile> {
   const downloadsDir = creditCardDownloadsDir();
   await mkdir(downloadsDir, { recursive: true });
@@ -1151,6 +1179,15 @@ async function writeStatementFile(
           kind === "billed"
             ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
             : [],
+        ...capture,
+        ...(capture.snapshotMode === "full"
+          ? {
+              cardRowCounts: captureCardRowCounts(
+                cardKeys,
+                rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
+              ),
+            }
+          : {}),
       },
       null,
       2,
@@ -1336,6 +1373,9 @@ export default workflow("yuantaCreditCardStatements", {
     console.log("yuanta-credit-card-page-ready-complete", {
       durationMs: Date.now() - pageReadyStartedAt,
     });
+    if (hasUntraversedPager(currentMonthHtml)) {
+      throw new Error("YuanTa credit-card response has untraversed pagination.");
+    }
     const allMonthOptions = parseCreditCardBillsHtml(
       currentMonthHtml,
       null,
@@ -1382,6 +1422,9 @@ export default workflow("yuantaCreditCardStatements", {
       if (month.index !== 0) {
         currentMonthHtml = await submitCreditCardMonth(page, month);
       }
+      if (hasUntraversedPager(currentMonthHtml)) {
+        throw new Error("YuanTa credit-card response has untraversed pagination.");
+      }
       const parsedMonth = parseCreditCardBillsHtml(currentMonthHtml, month.label);
       const monthRows = parsedMonth.rows;
       billedRows.push(...monthRows);
@@ -1398,23 +1441,22 @@ export default workflow("yuantaCreditCardStatements", {
     }
 
     const files: TableFile[] = [];
-    let unbilledFile: TableFile | null = null;
+    let unbilledRows: StatementRow[] = [];
     if (input.includeUnbilled) {
       const unbilledStartedAt = Date.now();
       console.log("yuanta-credit-card-unbilled-start", {
         startedAt: new Date(unbilledStartedAt).toISOString(),
       });
       creditCardProgress(completedCreditCardSteps + 1);
-      const unbilledRows = parseCreditCardBillsHtml(
-        await submitCreditCardUnbilled(page),
+      const unbilledHtml = await submitCreditCardUnbilled(page);
+      if (hasUntraversedPager(unbilledHtml)) {
+        throw new Error("YuanTa credit-card response has untraversed pagination.");
+      }
+      unbilledRows = parseCreditCardBillsHtml(
+        unbilledHtml,
         null,
         false,
       ).rows;
-      unbilledFile = await writeStatementFile(
-        nextTimestamp,
-        "unbilled",
-        unbilledRows,
-      );
       completedCreditCardSteps += 1;
       console.log("yuanta-credit-card-unbilled-complete", {
         rowCount: unbilledRows.length,
@@ -1423,8 +1465,58 @@ export default workflow("yuantaCreditCardStatements", {
       creditCardProgress();
     }
 
-    if (unbilledFile) files.push(unbilledFile);
-    files.push(await writeStatementFile(nextTimestamp, "billed", billedRows));
+    const cardKeys = [
+      ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
+    ];
+    const isFullCapture =
+      !input.monthIndexes &&
+      input.includeUnbilled &&
+      [...billedRows, ...unbilledRows].every(
+        (row) => cardKeyForRow(row).length === 4,
+      );
+    const capture: CaptureMetadata = isFullCapture
+      ? {
+          snapshotMode: "full",
+          captureId: randomUUID(),
+          capturedAt: new Date().toISOString(),
+          captureKinds: ["billed", "unbilled"],
+          completenessEvidence: {
+            bank: "yuanta",
+            monthIndexes: allMonthOptions.map((month) => month.index),
+            unbilled: true,
+            pagination: "none",
+          },
+        }
+      : {
+          snapshotMode: "partial",
+          completenessEvidence: {
+            bank: "yuanta",
+            reason: "scope_not_full",
+            monthIndexes: monthOptions.map((month) => month.index),
+            unbilled: input.includeUnbilled,
+          },
+        };
+
+    if (input.includeUnbilled) {
+      files.push(
+        await writeStatementFile(
+          nextTimestamp,
+          "unbilled",
+          unbilledRows,
+          capture,
+          cardKeys,
+        ),
+      );
+    }
+    files.push(
+      await writeStatementFile(
+        nextTimestamp,
+        "billed",
+        billedRows,
+        capture,
+        cardKeys,
+      ),
+    );
 
     return {
       usedExistingSession: authResult.usedProfile,
