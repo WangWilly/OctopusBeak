@@ -68,6 +68,10 @@ function creditCardRow(
 ): CreditCardStatementLine {
   return {
     semanticKey: null,
+    contentKey: null,
+    occurrenceIndex: null,
+    firstSeenAt: null,
+    lastSeenAt: null,
     statementRowId: `card-${sourceRowIndex}`,
     sourceFileId: "source",
     importRunId: "run",
@@ -106,6 +110,7 @@ function creditCardSnapshot(
 ): CreditCardSnapshot {
   return {
     snapshotId,
+    captureId: null,
     sourceFileId: snapshotId,
     bank: "fubon",
     product: "credit-card-statements",

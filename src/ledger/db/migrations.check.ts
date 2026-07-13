@@ -183,12 +183,22 @@ function resetCardsToVersion14(db: LedgerDatabase) {
   db.exec(`
     DELETE FROM schema_migrations WHERE version >= 15;
     DELETE FROM credit_card_snapshots;
-    DROP INDEX uq_credit_card_statement_lines_semantic_key;
+    DROP TABLE IF EXISTS credit_card_capture_entries;
+    DROP TABLE IF EXISTS credit_card_captures;
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
     CREATE UNIQUE INDEX uq_credit_card_statement_lines_content_hash
       ON credit_card_statement_lines(content_hash);
     DROP INDEX uq_credit_card_snapshots_source_card_type;
     CREATE UNIQUE INDEX uq_credit_card_snapshots_source_card_type
       ON credit_card_snapshots(source_file_id, card_key, statement_type);
+  `);
+  db.exec(`
+    ALTER TABLE credit_card_statement_lines DROP COLUMN content_key;
+    ALTER TABLE credit_card_statement_lines DROP COLUMN occurrence_index;
+    ALTER TABLE credit_card_statement_lines DROP COLUMN first_seen_at;
+    ALTER TABLE credit_card_statement_lines DROP COLUMN last_seen_at;
+    ALTER TABLE credit_card_snapshots DROP COLUMN capture_id;
   `);
 }
 
@@ -199,6 +209,9 @@ try {
     DROP TABLE personal_invoices;
     DELETE FROM schema_migrations WHERE version >= 4;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
+    DROP TABLE IF EXISTS credit_card_capture_entries;
+    DROP TABLE IF EXISTS credit_card_captures;
   `);
   for (const table of TYPED_STATEMENT_TABLES) {
     if (
@@ -243,7 +256,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -264,7 +277,7 @@ try {
   assert.deepEqual(snapshotColumns.map((column) => column.name), [
     "snapshot_id", "source_file_id", "bank", "product", "card_key",
     "statement_type", "captured_at", "as_of_date", "currency",
-    "transaction_count", "total_amount",
+    "transaction_count", "total_amount", "capture_id",
   ]);
   const semanticKeyColumn = commonStatementColumns
     .get("credit_card_statement_lines")
@@ -486,7 +499,7 @@ try {
 
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
-  dedupeDb.exec("DROP INDEX uq_credit_card_statement_lines_semantic_key");
+  dedupeDb.exec("DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key");
   for (const table of TYPED_STATEMENT_TABLES) {
     dedupeDb.exec(`
       ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
@@ -611,7 +624,95 @@ try {
     bank: "cathay", product: "cathay-credit-card-statements",
     transactions: [{ id: "cathay", amount: 40 }],
   });
+  cardDb.prepare(
+    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (17, ?, ?)",
+  ).run("credit_card_capture_storage", "2026-01-01T00:00:00.000Z");
   migrateLedgerDb(cardDb);
+  cardDb.exec("DELETE FROM schema_migrations WHERE version = 17");
+  const legacyPayloadRows = cardDb.prepare(`
+    SELECT statement_row_id, raw_payload_json
+    FROM credit_card_statement_lines
+    ORDER BY statement_row_id
+  `).all().map((row) => ({ ...row }));
+  const legacySnapshotCount = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots",
+  ).get() as { count: number }).count;
+  migrateLedgerDb(cardDb);
+
+  const captureColumns = cardDb.prepare(
+    "PRAGMA table_info(credit_card_captures)",
+  ).all() as Array<{ name: string }>;
+  const captureEntryColumns = cardDb.prepare(
+    "PRAGMA table_info(credit_card_capture_entries)",
+  ).all() as Array<{ name: string }>;
+  const cardLineColumns = cardDb.prepare(
+    "PRAGMA table_info(credit_card_statement_lines)",
+  ).all() as Array<{ name: string }>;
+  const cardSnapshotColumns = cardDb.prepare(
+    "PRAGMA table_info(credit_card_snapshots)",
+  ).all() as Array<{ name: string }>;
+  const cardIndexes = cardDb.prepare(
+    "PRAGMA index_list(credit_card_statement_lines)",
+  ).all() as Array<{ name: string; unique: number }>;
+
+  for (const name of [
+    "capture_id", "bank", "product", "captured_at", "completeness_json",
+  ]) {
+    assert.ok(captureColumns.some((column) => column.name === name), name);
+  }
+  for (const name of [
+    "capture_id", "statement_row_id", "source_file_id", "source_row_index",
+  ]) {
+    assert.ok(captureEntryColumns.some((column) => column.name === name), name);
+  }
+  for (const name of [
+    "content_key", "occurrence_index", "first_seen_at", "last_seen_at",
+  ]) {
+    assert.ok(cardLineColumns.some((column) => column.name === name), name);
+  }
+  assert.ok(cardSnapshotColumns.some((column) => column.name === "capture_id"));
+  assert.equal(cardIndexes.some(
+    (index) => index.name === "uq_credit_card_statement_lines_semantic_key",
+  ), false);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_captures",
+  ).get() as { count: number }).count, 0);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_capture_entries",
+  ).get() as { count: number }).count, 0);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id IS NOT NULL",
+  ).get() as { count: number }).count, 0);
+  assert.deepEqual(cardDb.prepare(`
+    SELECT statement_row_id, raw_payload_json
+    FROM credit_card_statement_lines
+    ORDER BY statement_row_id
+  `).all().map((row) => ({ ...row })), legacyPayloadRows);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots",
+  ).get() as { count: number }).count, legacySnapshotCount);
+
+  const contentOccurrenceIndex = cardIndexes.find(
+    (index) => index.name === "uq_credit_card_statement_lines_content_occurrence",
+  );
+  assert.equal(contentOccurrenceIndex?.unique, 1);
+  const cardRows = cardDb.prepare(`
+    SELECT statement_row_id FROM credit_card_statement_lines
+    ORDER BY statement_row_id
+    LIMIT 2
+  `).all() as Array<{ statement_row_id: string }>;
+  assert.equal(cardRows.length, 2);
+  const setContentOccurrence = cardDb.prepare(`
+    UPDATE credit_card_statement_lines
+    SET content_key = ?, occurrence_index = ?
+    WHERE statement_row_id = ?
+  `);
+  setContentOccurrence.run("same-content", 0, cardRows[0].statement_row_id);
+  setContentOccurrence.run("same-content", 1, cardRows[1].statement_row_id);
+  assert.throws(
+    () => setContentOccurrence.run("same-content", 0, cardRows[1].statement_row_id),
+    /UNIQUE constraint failed/,
+  );
 
   const snapshots = cardDb.prepare(`
     SELECT source_file_id, statement_type, as_of_date, currency,
@@ -638,15 +739,9 @@ try {
   `).all().map((row) => ({ ...row })), [
     { statement_row_id: "equal-earlier-tx-1" },
   ]);
-  const cardIndexes = cardDb.prepare(
-    "PRAGMA index_list(credit_card_statement_lines)",
-  ).all() as Array<{ name: string; unique: number }>;
   assert.equal(cardIndexes.some((index) => (
     index.name === "uq_credit_card_statement_lines_content_hash"
   )), false);
-  assert.equal(cardIndexes.find((index) => (
-    index.name === "uq_credit_card_statement_lines_semantic_key"
-  ))?.unique, 1);
   cardDb.close();
 
   const invalidCardDb = openLedgerDatabase(invalidCardBackfillLedgerDir);

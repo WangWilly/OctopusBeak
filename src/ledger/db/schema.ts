@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const commonColumns = () => ({
   statementRowId: text("statement_row_id").primaryKey(),
@@ -82,6 +82,10 @@ export const foreignCurrencyTransactions = sqliteTable("foreign_currency_transac
 export const creditCardStatementLines = sqliteTable("credit_card_statement_lines", {
   ...commonColumns(),
   semanticKey: text("semantic_key"),
+  contentKey: text("content_key"),
+  occurrenceIndex: integer("occurrence_index"),
+  firstSeenAt: text("first_seen_at"),
+  lastSeenAt: text("last_seen_at"),
   statementType: text("statement_type").notNull(),
   statementPeriod: text("statement_period"),
   cardNumber: text("card_number"),
@@ -96,10 +100,44 @@ export const creditCardStatementLines = sqliteTable("credit_card_statement_lines
   twdAmount: real("twd_amount"),
   installmentAction: text("installment_action"),
   paymentStatus: text("payment_status"),
+}, (table) => [
+  uniqueIndex("uq_credit_card_statement_lines_content_occurrence")
+    .on(table.contentKey, table.occurrenceIndex)
+    .where(sql`${table.contentKey} IS NOT NULL AND ${table.occurrenceIndex} IS NOT NULL`),
+]);
+
+export const creditCardCaptures = sqliteTable("credit_card_captures", {
+  captureId: text("capture_id").primaryKey(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  completenessJson: text("completeness_json").notNull(),
 });
+
+export const creditCardCaptureEntries = sqliteTable("credit_card_capture_entries", {
+  captureId: text("capture_id").notNull(),
+  statementRowId: text("statement_row_id").notNull(),
+  sourceFileId: text("source_file_id").notNull(),
+  sourceRowIndex: integer("source_row_index").notNull(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  cardKey: text("card_key").notNull(),
+  statementType: text("statement_type").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.captureId, table.sourceFileId, table.sourceRowIndex] }),
+  index("idx_credit_card_capture_entries_latest").on(
+    table.bank,
+    table.product,
+    table.cardKey,
+    table.captureId,
+    table.statementType,
+  ),
+  check("ck_credit_card_capture_entries_statement_type", sql`${table.statementType} IN ('billed','unbilled')`),
+]);
 
 export const creditCardSnapshots = sqliteTable("credit_card_snapshots", {
   snapshotId: text("snapshot_id").primaryKey(),
+  captureId: text("capture_id"),
   sourceFileId: text("source_file_id").notNull(),
   bank: text("bank").notNull(),
   product: text("product").notNull(),
@@ -115,6 +153,7 @@ export const creditCardSnapshots = sqliteTable("credit_card_snapshots", {
     table.sourceFileId,
     table.cardKey,
     table.statementType,
+    table.asOfDate,
   ),
   index("idx_credit_card_snapshots_card_day").on(
     table.cardKey,
