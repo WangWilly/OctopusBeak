@@ -334,6 +334,23 @@ const maicoinPosition = buildPositionsByAccount(maicoinData)[maicoinAsset.id]?.[
 assert.equal(maicoinPosition?.metricLabel, "Return");
 assert.equal(maicoinPosition?.change, "100.00%");
 
+const latestMaicoinData = emptyLedgerQueryData();
+latestMaicoinData.maicoinAccountSnapshots = [
+  maicoinSnapshot(),
+  {
+    ...maicoinSpotSnapshot(),
+    capturedAt: "2026-06-28T12:00:00.000Z",
+    createdAt: "2026-06-28T12:00:00.000Z",
+    priceAt: "2026-06-28T12:00:00.000Z",
+  },
+];
+assert.deepEqual(
+  buildAccountOverview(latestMaicoinData)
+    .filter((row) => row.kind === "crypto" && row.group === "investment")
+    .map((row) => row.product),
+  ["Spot wallet"],
+);
+
 const maicoinHistoricalTradeData = emptyLedgerQueryData();
 maicoinHistoricalTradeData.maicoinAccountSnapshots = [
   {
