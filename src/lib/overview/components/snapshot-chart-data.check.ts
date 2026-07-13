@@ -52,12 +52,12 @@ assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange"), [
 assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets"), []);
 
 const sameDayCaptureRows: DailyHistoryRowDto[] = [
-  { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T10:00:00.000Z", netAssets: [{ currency: "TWD", value: 180 }] },
-  { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", netAssets: [{ currency: "TWD", value: 120 }] },
+  { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-bravo", netAssets: [{ currency: "TWD", value: 180 }] },
+  { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-alpha", netAssets: [{ currency: "TWD", value: 120 }] },
 ];
 assert.deepEqual(buildSnapshotChartPoints(sameDayCaptureRows, "TWD", "netAssets"), [
   { date: "2026-07-12", dateLabel: "2026-07-12 08:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 120 },
-  { date: "2026-07-12", dateLabel: "2026-07-12 10:00", time: Date.parse("2026-07-12T10:00:00.000Z"), value: 180 },
+  { date: "2026-07-12", dateLabel: "2026-07-12 08:00", time: Date.parse("2026-07-12T08:00:00.000Z") + 1, value: 180 },
 ]);
 
 const divergingSeries = buildSnapshotDivergingSeries(rows, "TWD");

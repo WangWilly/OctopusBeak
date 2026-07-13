@@ -53,15 +53,16 @@ export function buildStackedBalanceChartData(options: {
       (options.filter === "all" || account.kind === options.filter),
   );
   const dates = collectDates(accounts, options.dailyHistoryByAccount).slice(-limit);
+  const times = uniqueTimes(dates);
   const groups = options.filter === "all"
     ? groupByKind(accounts, options.mode)
     : accounts.map((account) => ({ key: account.id, label: account.label, accounts: [account] }));
   const series = groups
     .map((group, index) => {
-      const data = dates.map((date) => ({
+      const data = dates.map((date, index) => ({
         date,
         dateLabel: pointLabel(date),
-        time: dateTime(date),
+        time: times[index]!,
         value: sumForDate(group.accounts, options.dailyHistoryByAccount, date, options.currency, options.mode),
       }));
       return {
@@ -75,7 +76,7 @@ export function buildStackedBalanceChartData(options: {
   const totals = dates.map((date, index) => ({
     date,
     dateLabel: pointLabel(date),
-    time: dateTime(date),
+    time: times[index]!,
     value: series.reduce((sum, item) => sum + (item.data[index]?.value ?? 0), 0),
   }));
 
@@ -137,11 +138,23 @@ function labelForKind(kind: AccountKind) {
 }
 
 function dateTime(date: string) {
-  return Date.parse(date.length > 10 ? date : `${date}T00:00:00.000Z`);
+  const pointAt = date.split("|", 1)[0] ?? date;
+  return Date.parse(pointAt.length > 10 ? pointAt : `${pointAt}T00:00:00.000Z`);
+}
+
+function uniqueTimes(dates: string[]) {
+  const offsets = new Map<number, number>();
+  return dates.map((date) => {
+    const baseTime = dateTime(date);
+    const offset = offsets.get(baseTime) ?? 0;
+    offsets.set(baseTime, offset + 1);
+    return baseTime + offset;
+  });
 }
 
 function pointLabel(date: string) {
-  return date.length > 10 ? date.slice(0, 16).replace("T", " ") : date;
+  const pointAt = date.split("|", 1)[0] ?? date;
+  return pointAt.length > 10 ? pointAt.slice(0, 16).replace("T", " ") : pointAt;
 }
 
 function isAccountInMode(account: AccountRowDto, mode: BalanceChartMode) {

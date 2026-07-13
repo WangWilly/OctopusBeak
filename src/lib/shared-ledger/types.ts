@@ -12,6 +12,7 @@ export type SummaryMetricDto = {
 export type DailyHistoryRowDto = {
   date: string;
   pointAt?: string;
+  captureId?: string;
   netAssets: CurrencyAmountDto[];
   dailyChange: CurrencyAmountDto[];
   assets: CurrencyAmountDto[];
@@ -20,8 +21,8 @@ export type DailyHistoryRowDto = {
   positionCount: number;
 };
 
-export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt">) {
-  return row.pointAt ?? row.date;
+export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">) {
+  return row.pointAt ? `${row.pointAt}|${row.captureId ?? ""}` : row.date;
 }
 
 export type AccountGroup = "asset" | "liability" | "investment";
