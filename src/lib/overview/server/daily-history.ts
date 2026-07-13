@@ -36,7 +36,7 @@ export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string
   for (const point of dailyHistoryPoints(data)) {
     const accounts = buildAccountOverview(snapshotData(data, point));
     for (const account of accounts) {
-      if (point.captureId ? account.kind !== "credit-card" : captureDates.has(point.date) && account.kind === "credit-card") continue;
+      if (!point.captureId && captureDates.has(point.date) && account.kind === "credit-card") continue;
       const balance = amountBucket(account.amountLines);
       const previous = previousByAccount.get(account.id);
       const dailyChange = previous ? subtractBuckets(balance, previous) : {};
@@ -57,9 +57,18 @@ function dailyHistoryPoints(data: LedgerQueryData): HistoryPoint[] {
     .concat(latestVerifiedCreditCardSnapshots(data).map((snapshot) => snapshot.asOfDate))
     .concat(data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt.slice(0, 10)))
     .filter(Boolean);
+  const latestCaptureByDate = new Map<string, typeof captures[number]>();
+  for (const capture of captures) {
+    const date = capture.capturedAt.slice(0, 10);
+    const previous = latestCaptureByDate.get(date);
+    if (!previous || `${capture.capturedAt}|${capture.captureId}` > `${previous.capturedAt}|${previous.captureId}`) {
+      latestCaptureByDate.set(date, capture);
+    }
+  }
+  const captureDates = new Set(latestCaptureByDate.keys());
   const points = [
-    ...dates.map((date) => ({ date })),
-    ...captures.map((capture) => ({
+    ...dates.filter((date) => !captureDates.has(date)).map((date) => ({ date })),
+    ...latestCaptureByDate.values().map((capture) => ({
       date: capture.capturedAt.slice(0, 10),
       pointAt: capture.capturedAt,
       captureId: capture.captureId,

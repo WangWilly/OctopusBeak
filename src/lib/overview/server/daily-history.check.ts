@@ -212,15 +212,52 @@ assert.ok(cardAccount);
 assert.deepEqual(cardAccount.amountLines, [{ currency: "TWD", value: 180 }]);
 const cardHistory = buildDailyHistoryByAccount(cardData)[cardAccount.id] ?? [];
 assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.captureId, row.liabilities[0]?.value]), [
-  ["2026-07-12", "2026-07-12T08:00:00.000Z", earlyVerifiedCaptureId, 120],
   ["2026-07-12", "2026-07-12T08:00:00.000Z", verifiedCaptureId, 180],
 ]);
 assert.equal(cardHistory.some((row) => [160, 142, 14844].includes(row.liabilities[0]?.value ?? 0)), false);
-assert.deepEqual(
+assert.equal(
   buildDailyHistory(cardData)
-    .find((row) => row.date === "2026-07-12" && !row.pointAt)
-    ?.liabilities,
-  [],
+    .find((row) => row.date === "2026-07-12" && !row.pointAt),
+  undefined,
+);
+
+const legacyHistoryData = emptyLedgerQueryData();
+legacyHistoryData.sourceFiles = [
+  sourceFile("legacy-card-early", "2026-06-30"),
+  sourceFile("legacy-card-late", "2026-06-30"),
+];
+legacyHistoryData.creditCardSnapshots = [
+  cardSnapshot("legacy-card-early", "2026-06-30T08:00:00.000Z", 4500),
+  {
+    ...cardSnapshot("legacy-card-late", "2026-06-30T10:00:00.000Z", 4680),
+    captureId: "legacy-display:2026-06-30",
+  },
+  {
+    ...cardSnapshot("verified-card-current", "2026-06-30T12:00:00.000Z", 4700),
+    captureId: "verified-current",
+  },
+];
+legacyHistoryData.creditCardCaptures = [{
+  ...cardCapture("legacy-display:2026-06-30", "2026-06-30T00:00:00.000Z"),
+  completenessJson: "{}",
+}, cardCapture("verified-current", "2026-06-30T12:00:00.000Z")];
+const verifiedCurrentRow = cardRow("verified-card-current", "2026-06-30T12:00:00.000Z", 4700);
+legacyHistoryData.creditCardCaptureEntries = [
+  {
+    captureId: "legacy-display:2026-06-30",
+    statementRowId: "legacy-display:2026-06-30",
+    sourceFileId: "legacy-card-late",
+    sourceRowIndex: -1,
+    bank: "esun",
+    product: "credit-card-statements",
+    cardKey: "8397",
+    statementType: "unbilled",
+  },
+  cardCaptureEntry("verified-current", verifiedCurrentRow),
+];
+assert.deepEqual(
+  buildDailyHistory(legacyHistoryData).map((row) => [row.date, row.pointAt, row.captureId, row.liabilities]),
+  [["2026-06-30", "2026-06-30T12:00:00.000Z", "verified-current", [{ currency: "TWD", value: 4700 }]]],
 );
 
 const zeroCaptureData = emptyLedgerQueryData();
@@ -240,5 +277,5 @@ assert.deepEqual(
     row.pointAt,
     row.assets[0]?.value,
   ]),
-  [["2026-07-12", undefined, 900]],
+  [["2026-07-12", "2026-07-12T08:00:00.000Z", 900]],
 );
