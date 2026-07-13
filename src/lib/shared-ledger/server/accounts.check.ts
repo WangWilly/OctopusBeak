@@ -6,6 +6,7 @@ import {
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "./accounts.ts";
+import { buildDailyHistoryByAccount } from "../../overview/server/daily-history.ts";
 
 type ForeignCurrencyTransaction = LedgerQueryData["foreignCurrencyTransactions"][number];
 type CreditCardStatementLine = LedgerQueryData["creditCardStatementLines"][number];
@@ -344,11 +345,16 @@ latestMaicoinData.maicoinAccountSnapshots = [
     priceAt: "2026-06-28T12:00:00.000Z",
   },
 ];
+const latestMaicoinAccounts = buildAccountOverview(latestMaicoinData)
+  .filter((row) => row.kind === "crypto" && row.group === "investment");
+const inactiveMaicoinAccount = latestMaicoinAccounts.find((row) => row.product === "M-wallet");
+assert.ok(inactiveMaicoinAccount);
+assert.deepEqual(inactiveMaicoinAccount.amountLines, [{ currency: "TWD", value: 0 }]);
+assert.equal(inactiveMaicoinAccount.lastUpdated, "2026-06-28");
 assert.deepEqual(
-  buildAccountOverview(latestMaicoinData)
-    .filter((row) => row.kind === "crypto" && row.group === "investment")
-    .map((row) => row.product),
-  ["Spot wallet"],
+  buildDailyHistoryByAccount(latestMaicoinData)[inactiveMaicoinAccount.id]
+    ?.map((row) => [row.date, row.assets[0]?.value]),
+  [["2026-06-27", 200], ["2026-06-28", 0]],
 );
 
 const maicoinHistoricalTradeData = emptyLedgerQueryData();
