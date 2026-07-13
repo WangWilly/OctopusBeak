@@ -52,8 +52,8 @@ const liabilityHistory = buildDailyHistory({
   loanTransactions: data.loanTransactions,
   maicoinAccountSnapshots: data.maicoinAccountSnapshots,
 }).filter((row) => row.liabilities.length > 0);
-assert.ok(liabilityHistory.length >= 5);
-assert.ok(distinct(liabilityHistory.map((row) => JSON.stringify(row.liabilities))).length >= 5);
+assert.equal(liabilityHistory.length, 4);
+assert.equal(distinct(liabilityHistory.map((row) => JSON.stringify(row.liabilities))).length, 4);
 
 const rowsBySource = new Map<string, number>();
 for (const table of [

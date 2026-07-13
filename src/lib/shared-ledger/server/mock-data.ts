@@ -11,6 +11,8 @@ export const MOCK_LEDGER_TABLES = [
   { key: "accountTransactions", table: "account_transactions", label: "TWD bank rows" },
   { key: "foreignCurrencyTransactions", table: "foreign_currency_transactions", label: "Foreign cash rows" },
   { key: "creditCardStatementLines", table: "credit_card_statement_lines", label: "Credit card rows" },
+  { key: "creditCardCaptures", table: "credit_card_captures", label: "Credit card captures" },
+  { key: "creditCardCaptureEntries", table: "credit_card_capture_entries", label: "Credit card capture entries" },
   { key: "creditCardSnapshots", table: "credit_card_snapshots", label: "Credit card snapshots" },
   { key: "loanTransactions", table: "loan_transactions", label: "Loan rows" },
   { key: "fundHoldings", table: "fund_holdings", label: "Fund positions" },
@@ -35,6 +37,8 @@ export function mockLedgerQueryData(referenceDate = new Date()): LedgerQueryData
     accountTransactions,
     foreignCurrencyTransactions,
     creditCardStatementLines,
+    creditCardCaptures,
+    creditCardCaptureEntries,
     creditCardSnapshots,
     loanTransactions,
     fundHoldings,
@@ -512,6 +516,9 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "paid",
   },
 ];
+
+const creditCardCaptures: LedgerRow<"creditCardCaptures">[] = [];
+const creditCardCaptureEntries: LedgerRow<"creditCardCaptureEntries">[] = [];
 
 const creditCardSnapshots: LedgerRow<"creditCardSnapshots">[] = [
   cardSnapshot("card.2026-05-22", "1234", "billed", "2026-05-22", 440, 2),
