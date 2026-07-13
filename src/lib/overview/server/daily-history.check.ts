@@ -216,6 +216,12 @@ assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.captureId,
   ["2026-07-12", "2026-07-12T08:00:00.000Z", verifiedCaptureId, 180],
 ]);
 assert.equal(cardHistory.some((row) => [160, 142, 14844].includes(row.liabilities[0]?.value ?? 0)), false);
+assert.deepEqual(
+  buildDailyHistory(cardData)
+    .find((row) => row.date === "2026-07-12" && !row.pointAt)
+    ?.liabilities,
+  [],
+);
 
 const zeroCaptureData = emptyLedgerQueryData();
 zeroCaptureData.creditCardCaptures = [
