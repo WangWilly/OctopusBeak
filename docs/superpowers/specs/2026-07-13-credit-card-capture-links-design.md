@@ -17,8 +17,16 @@ as two unrelated rows. Retaining the earliest row then makes the UI stale.
 
 A workflow creates one `capture_id` and one `captured_at` value for all its
 billed and unbilled files. A capture is `verified_complete` only after the
-workflow has read every result page, proven the terminal page state, and matched
-the merged unique row count with the bank's declared total.
+workflow has read every available result page and recorded bank-specific
+completeness evidence. Identical rows are counted separately; completeness is
+never based on a transaction-content uniqueness assumption.
+
+Completeness evidence records both the bank-result row count and the exported
+purchase-row count. Bank-defined payment, settlement, and prior-balance summary
+rows are evidence only, not transactions: they cannot create a capture entry,
+appear in history, or affect any balance or snapshot total. For Fubon this
+includes, at minimum, `網路繳款`, `行動銀行繳款`, and `前期應繳總額`. Payment
+metadata may be retained separately when it is needed for statement context.
 
 Each sidecar contains the shared capture identifiers, status kind, expected row
 counts per card, and the set of billed/unbilled files belonging to the capture.
@@ -79,10 +87,25 @@ must be confirmed by the user.
 ## Workflow Discovery and Validation
 
 Use Libretto to inspect the live Esun, Fubon, and Yuanta credit-card result
-pages. For each bank, record the total-count source, next/last-page signal,
-page-change signal, and all-card/status coverage needed for a complete capture.
+pages. For each bank, record its available total-count or page-size signal,
+next/last-page signal when present, page-change signal when present, and
+all-card/status coverage needed for a complete capture.
 If CAPTCHA appears, stop at that state for the user to complete it before
 continuing. Do not guess selectors or treat a single visible page as complete.
+
+Live discovery on 2026-07-13 established the current contracts:
+
+- Esun renders its result in `#fcm01004:gridList_0_DataGridBody` with current
+  page `1` and page size `2147483647`; that maximum page size is the completion
+  signal for the result grid.
+- Fubon renders all observed statement and unbilled DataGrids on current page
+  `1` with page size `2147483647`; the workflow must verify this for every
+  selected statement period and the unbilled detail page. Its statement export
+  also excludes the non-purchase summary rows listed in the Capture Contract
+  before transaction counts and CSV rows are produced.
+- Yuanta exposes a finite set of month options in the bill-query response. The
+  workflow must fetch every currently exposed month plus the unbilled response,
+  and reject any result containing a pager control that it does not traverse.
 
 Each workflow receives a fixture-backed pure completeness check. Importer and
 read-model checks cover identical rows, billed-to-unbilled transitions, rejected
