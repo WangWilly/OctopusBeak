@@ -97,7 +97,10 @@ Live discovery on 2026-07-13 established the current contracts:
 
 - Esun renders its result in `#fcm01004:gridList_0_DataGridBody` with current
   page `1` and page size `2147483647`; that maximum page size is the completion
-  signal for the result grid.
+  signal for the result grid. On 2026-07-13 the bank rejects a start date
+  outside `2025/07/13` through `2026/07/13`, so one year is the entire
+  browser-accessible query interval; the workflow must not attempt older
+  ranges.
 - Fubon renders all observed statement and unbilled DataGrids on current page
   `1` with page size `2147483647`; the workflow must verify this for every
   selected statement period and the unbilled detail page. Its statement export
