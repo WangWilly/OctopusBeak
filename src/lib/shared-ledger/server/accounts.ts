@@ -442,8 +442,16 @@ function maicoinPositions(
   rows: MaicoinAccountSnapshot[],
   statementRows: MaicoinStatementRow[],
 ): RawPosition[] {
+  // ponytail: desktop captures all MAX wallet types together; load sync-run coverage if partial captures need display support.
+  const latestCaptureBySubAccount = new Map(
+    latestBy(rows, (row) => row.subAccount, (row) => row.capturedAt)
+      .map((row) => [row.subAccount, row.capturedAt]),
+  );
   const latestRows = latestBy(
-    rows.filter((row) => row.totalQuantity > 0 || maicoinDebtQuantity(row) > 0),
+    rows.filter((row) => (
+      row.capturedAt === latestCaptureBySubAccount.get(row.subAccount)
+      && (row.totalQuantity > 0 || maicoinDebtQuantity(row) > 0)
+    )),
     (row) => ["maicoin", row.subAccount, row.walletType, currency(row.currency)].join("|"),
     (row) => row.capturedAt,
   );
