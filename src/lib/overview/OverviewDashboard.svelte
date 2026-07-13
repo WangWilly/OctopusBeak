@@ -4,7 +4,7 @@
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
-  import type { SummaryMetricDto } from "$lib/shared-ledger/types.ts";
+  import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
@@ -23,7 +23,7 @@
     $t.common.importedAt(formatImportedAt(overview.importedAt));
   $: sideSubSensitive = netAmounts.length > 1;
   $: history = overview.dailyHistory;
-  $: snapshotHistory = [...history].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
+  $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
 
   function formatImportedAt(value: string | null) {
     return value?.slice(0, 16).replace("T", " ") ?? $t.common.notYet;

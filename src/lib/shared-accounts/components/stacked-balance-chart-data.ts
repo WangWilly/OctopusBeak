@@ -1,4 +1,4 @@
-import type { AccountKind, AccountRowDto, DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+import { historyPointKey, type AccountKind, type AccountRowDto, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
 
 export type BalanceChartMode = "asset" | "liability";
 export type BalanceChartFilter = AccountKind | "all";
@@ -53,15 +53,16 @@ export function buildStackedBalanceChartData(options: {
       (options.filter === "all" || account.kind === options.filter),
   );
   const dates = collectDates(accounts, options.dailyHistoryByAccount).slice(-limit);
+  const times = uniqueTimes(dates);
   const groups = options.filter === "all"
     ? groupByKind(accounts, options.mode)
     : accounts.map((account) => ({ key: account.id, label: account.label, accounts: [account] }));
   const series = groups
     .map((group, index) => {
-      const data = dates.map((date) => ({
+      const data = dates.map((date, index) => ({
         date,
-        dateLabel: date,
-        time: dateTime(date),
+        dateLabel: pointLabel(date),
+        time: times[index]!,
         value: sumForDate(group.accounts, options.dailyHistoryByAccount, date, options.currency, options.mode),
       }));
       return {
@@ -74,8 +75,8 @@ export function buildStackedBalanceChartData(options: {
     .filter((item) => item.data.some((point) => Math.abs(point.value) > EPSILON));
   const totals = dates.map((date, index) => ({
     date,
-    dateLabel: date,
-    time: dateTime(date),
+    dateLabel: pointLabel(date),
+    time: times[index]!,
     value: series.reduce((sum, item) => sum + (item.data[index]?.value ?? 0), 0),
   }));
 
@@ -114,7 +115,7 @@ function collectDates(
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>,
 ) {
   return [
-    ...new Set(accounts.flatMap((account) => (dailyHistoryByAccount[account.id] ?? []).map((row) => row.date))),
+    ...new Set(accounts.flatMap((account) => (dailyHistoryByAccount[account.id] ?? []).map(historyPointKey))),
   ].sort((left, right) => left.localeCompare(right));
 }
 
@@ -137,7 +138,23 @@ function labelForKind(kind: AccountKind) {
 }
 
 function dateTime(date: string) {
-  return Date.parse(`${date}T00:00:00.000Z`);
+  const pointAt = date.split("|", 1)[0] ?? date;
+  return Date.parse(pointAt.length > 10 ? pointAt : `${pointAt}T00:00:00.000Z`);
+}
+
+function uniqueTimes(dates: string[]) {
+  const offsets = new Map<number, number>();
+  return dates.map((date) => {
+    const baseTime = dateTime(date);
+    const offset = offsets.get(baseTime) ?? 0;
+    offsets.set(baseTime, offset + 1);
+    return baseTime + offset;
+  });
+}
+
+function pointLabel(date: string) {
+  const pointAt = date.split("|", 1)[0] ?? date;
+  return pointAt.length > 10 ? pointAt.slice(0, 16).replace("T", " ") : pointAt;
 }
 
 function isAccountInMode(account: AccountRowDto, mode: BalanceChartMode) {
@@ -152,7 +169,11 @@ function sumForDate(
   mode: BalanceChartMode,
 ) {
   return accounts.reduce((sum, account) => {
-    const row = (dailyHistoryByAccount[account.id] ?? []).find((item) => item.date === date);
+    const row = (dailyHistoryByAccount[account.id] ?? []).reduce<DailyHistoryRowDto | undefined>(
+      (latest, item) =>
+        historyPointKey(item) <= date && (!latest || historyPointKey(item) > historyPointKey(latest)) ? item : latest,
+      undefined,
+    );
     const value = row?.[mode === "asset" ? "assets" : "liabilities"].find((amount) => amount.currency === currency)?.value ?? 0;
     return sum + (mode === "liability" ? Math.abs(value) : value);
   }, 0);

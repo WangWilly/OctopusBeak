@@ -9,6 +9,7 @@ import {
 
 type ForeignCurrencyTransaction = LedgerQueryData["foreignCurrencyTransactions"][number];
 type CreditCardStatementLine = LedgerQueryData["creditCardStatementLines"][number];
+type CreditCardSnapshot = LedgerQueryData["creditCardSnapshots"][number];
 type LoanTransaction = LedgerQueryData["loanTransactions"][number];
 type MaicoinAccountSnapshot = LedgerQueryData["maicoinAccountSnapshots"][number];
 type MaicoinStatementRow = LedgerQueryData["maicoinStatementRows"][number];
@@ -25,11 +26,9 @@ function foreignRow(
     sourceRelativePath: "yuanta-foreign-currency-statements/example.csv",
     sourceRowIndex,
     sourceHash: "source-hash",
-    rawRowHash: `raw-${sourceRowIndex}`,
     contentHash: `content-${sourceRowIndex}`,
     bank: "yuanta",
     product: "foreign-currency-statements",
-    dedupeStatus: "unique",
     rawPayloadJson: "{}",
     importedAt: "2026-06-26T08:38:03.683Z",
     createdAt: "2026-06-26T08:38:03.683Z",
@@ -68,17 +67,20 @@ function creditCardRow(
   twdAmount: number,
 ): CreditCardStatementLine {
   return {
+    semanticKey: null,
+    contentKey: null,
+    occurrenceIndex: null,
+    firstSeenAt: null,
+    lastSeenAt: null,
     statementRowId: `card-${sourceRowIndex}`,
     sourceFileId: "source",
     importRunId: "run",
     sourceRelativePath: `fubon-credit-card-statements/${statementType}.csv`,
     sourceRowIndex,
     sourceHash: "source-hash",
-    rawRowHash: `card-raw-${sourceRowIndex}`,
     contentHash: `card-content-${sourceRowIndex}`,
     bank: "fubon",
     product: "credit-card-statements",
-    dedupeStatus: "duplicate",
     rawPayloadJson: "{}",
     importedAt,
     createdAt: importedAt,
@@ -99,41 +101,115 @@ function creditCardRow(
   };
 }
 
-const currentCardData = emptyLedgerQueryData();
-currentCardData.creditCardStatementLines = [
-  creditCardRow(1, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
-  creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
+function creditCardSnapshot(
+  snapshotId: string,
+  statementType: "billed" | "unbilled",
+  capturedAt: string,
+  totalAmount: number,
+  asOfDate = capturedAt.slice(0, 10),
+): CreditCardSnapshot {
+  return {
+    snapshotId,
+    captureId: null,
+    sourceFileId: snapshotId,
+    bank: "fubon",
+    product: "credit-card-statements",
+    cardKey: "4281",
+    statementType,
+    capturedAt,
+    asOfDate,
+    currency: "TWD",
+    transactionCount: 1,
+    totalAmount,
+  };
+}
+
+function creditCardCapture(captureId: string, capturedAt: string) {
+  return {
+    captureId,
+    bank: "fubon",
+    product: "credit-card-statements",
+    capturedAt,
+    completenessJson: "{}",
+  };
+}
+
+function creditCardCaptureEntry(captureId: string, row: CreditCardStatementLine, cardKey: string) {
+  return {
+    captureId,
+    statementRowId: row.statementRowId,
+    sourceFileId: row.sourceFileId,
+    sourceRowIndex: row.sourceRowIndex,
+    bank: row.bank,
+    product: row.product,
+    cardKey,
+    statementType: row.statementType,
+  };
+}
+
+const oldCaptureId = "capture-old";
+const latestCaptureId = "capture-latest";
+const otherCardCaptureId = "capture-other-card";
+const legacyUnbilled = creditCardRow(1, "unbilled", "4281", "2026-06-01T10:00:00.000Z", 111);
+const oldCaptureUnbilled = creditCardRow(2, "unbilled", "4281", "2026-06-02T10:00:00.000Z", 222);
+const latestCaptureBilled = {
+  ...creditCardRow(3, "billed", "4281", "2026-06-03T10:00:00.000Z", 333),
+  cardLabel: "Latest card",
+};
+const latestCaptureBilledDuplicate = {
+  ...creditCardRow(4, "billed", "4281", "2026-06-03T10:00:00.000Z", 333),
+  cardLabel: "Latest card",
+};
+const otherCardBilled = {
+  ...creditCardRow(5, "billed", "9999", "2026-06-03T10:00:00.000Z", 444),
+  cardLabel: "Other card",
+};
+const verifiedCardData = emptyLedgerQueryData();
+verifiedCardData.creditCardStatementLines = [
+  legacyUnbilled,
+  oldCaptureUnbilled,
+  latestCaptureBilled,
+  latestCaptureBilledDuplicate,
+  otherCardBilled,
+];
+verifiedCardData.creditCardCaptures = [
+  creditCardCapture(oldCaptureId, "2026-06-02T10:00:00.000Z"),
+  creditCardCapture(latestCaptureId, "2026-06-03T10:00:00.000Z"),
+  creditCardCapture(otherCardCaptureId, "2026-06-03T10:00:00.000Z"),
+];
+verifiedCardData.creditCardCaptureEntries = [
+  creditCardCaptureEntry(oldCaptureId, oldCaptureUnbilled, "4281"),
+  creditCardCaptureEntry(latestCaptureId, latestCaptureBilled, "4281"),
+  creditCardCaptureEntry(latestCaptureId, latestCaptureBilledDuplicate, "4281"),
+  creditCardCaptureEntry(otherCardCaptureId, otherCardBilled, "9999"),
+];
+verifiedCardData.creditCardSnapshots = [
+  { ...creditCardSnapshot("legacy-snapshot", "unbilled", "2026-06-04T10:00:00.000Z", 999), captureId: null },
+  { ...creditCardSnapshot("old-unbilled", "unbilled", "2026-06-02T10:00:00.000Z", 222), captureId: oldCaptureId },
+  { ...creditCardSnapshot("latest-billed", "billed", "2026-06-03T10:00:00.000Z", 666), captureId: latestCaptureId },
+  { ...creditCardSnapshot("latest-unbilled", "unbilled", "2026-06-03T10:00:00.000Z", 0), captureId: latestCaptureId },
+  { ...creditCardSnapshot("other-billed", "billed", "2026-06-03T10:00:00.000Z", 444), captureId: otherCardCaptureId, cardKey: "9999" },
+  { ...creditCardSnapshot("other-unbilled", "unbilled", "2026-06-03T10:00:00.000Z", 75), captureId: otherCardCaptureId, cardKey: "9999" },
 ];
 
-const currentCard = buildAccountOverview(currentCardData).find((row) => row.kind === "credit-card");
+const verifiedCards = buildAccountOverview(verifiedCardData).filter((row) => row.kind === "credit-card");
+const latestCard = verifiedCards.find((row) => row.label === "Latest card");
+const otherCard = verifiedCards.find((row) => row.label === "Other card");
 
-assert.ok(currentCard);
-assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 4005 }]);
-assert.equal(currentCard.transactionCount, 2);
+assert.equal(verifiedCards.length, 2);
+assert.ok(latestCard);
+assert.deepEqual(latestCard.amountLines, [{ currency: "TWD", value: 0 }]);
+assert.deepEqual(buildTransactionsByAccount(verifiedCardData)[latestCard.id]?.map((row) => row.type), ["billed", "billed"]);
+assert.ok(otherCard);
+assert.deepEqual(otherCard.amountLines, [{ currency: "TWD", value: 75 }]);
+assert.deepEqual(buildTransactionsByAccount(verifiedCardData)[otherCard.id]?.map((row) => row.type), ["billed"]);
 
-const reimportedCardData = emptyLedgerQueryData();
-reimportedCardData.creditCardStatementLines = [
-  creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 1000),
-  creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
-];
+const legacyOnlyCardData = emptyLedgerQueryData();
+legacyOnlyCardData.creditCardStatementLines = [creditCardRow(6, "unbilled", "0000", "2026-06-04T10:00:00.000Z", 123)];
+legacyOnlyCardData.creditCardSnapshots = [creditCardSnapshot("legacy-only", "unbilled", "2026-06-04T10:00:00.000Z", 123)];
 
-const reimportedCard = buildAccountOverview(reimportedCardData).find((row) => row.kind === "credit-card");
-
-assert.ok(reimportedCard);
-assert.deepEqual(reimportedCard.amountLines, [{ currency: "TWD", value: 4005 }]);
-assert.equal(reimportedCard.transactionCount, 1);
-
-const settledCardData = emptyLedgerQueryData();
-settledCardData.creditCardStatementLines = [
-  creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 4005),
-  creditCardRow(2, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
-];
-
-const settledCard = buildAccountOverview(settledCardData).find((row) => row.kind === "credit-card");
-
-assert.ok(settledCard);
-assert.deepEqual(settledCard.amountLines, [{ currency: "TWD", value: 0 }]);
-assert.equal(settledCard.transactionCount, 2);
+assert.equal(buildAccountOverview(legacyOnlyCardData).find((row) => row.kind === "credit-card"), undefined);
+assert.deepEqual(buildTransactionsByAccount(legacyOnlyCardData), {});
 
 function loanRow(sourceRowIndex: number, item: string, amount: number, balanceAfter: number): LoanTransaction {
   return {
@@ -143,11 +219,9 @@ function loanRow(sourceRowIndex: number, item: string, amount: number, balanceAf
     sourceRelativePath: "fubon-loan-statements/example.csv",
     sourceRowIndex,
     sourceHash: "source-hash",
-    rawRowHash: `loan-raw-${sourceRowIndex}`,
     contentHash: `loan-content-${sourceRowIndex}`,
     bank: "fubon",
     product: "loan-statements",
-    dedupeStatus: "unique",
     rawPayloadJson: "{}",
     importedAt: "2026-06-27T09:45:09.910Z",
     createdAt: "2026-06-27T09:45:09.910Z",

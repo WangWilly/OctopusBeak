@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -7,6 +8,7 @@ import {
 } from "libretto";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
+import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -17,6 +19,19 @@ type EsunCredentials = {
 };
 
 type StatementKind = "unbilled" | "billed";
+type GridState = { currentPage?: string; currentPageSize?: string };
+type CaptureMetadata =
+  | {
+      snapshotMode: "full";
+      captureId: string;
+      capturedAt: string;
+      captureKinds: ["billed", "unbilled"];
+      completenessEvidence: Record<string, unknown>;
+    }
+  | {
+      snapshotMode: "partial";
+      completenessEvidence: Record<string, unknown>;
+    };
 
 type StatementRow = {
   statementPeriod: string;
@@ -149,6 +164,13 @@ export function esunCreditCardStatementKind(
   return null;
 }
 
+export function isEsunCompleteGrid({
+  currentPage,
+  currentPageSize,
+}: GridState): boolean {
+  return currentPage === "1" && currentPageSize === String(2_147_483_647);
+}
+
 async function waitForFrame(
   page: Page,
   name: string,
@@ -275,6 +297,29 @@ async function queryStatements(
   return { frame, startDate, endDate };
 }
 
+async function gridState(frame: Frame): Promise<GridState> {
+  const fields = frame.locator("input, select");
+  let currentPage: string | undefined;
+  let currentPageSize: string | undefined;
+  const count = await fields.count();
+  for (let index = 0; index < count; index += 1) {
+    const field = fields.nth(index);
+    const key =
+      (await field.getAttribute("name")) ??
+      (await field.getAttribute("id")) ??
+      "";
+    if (/currentpagesize/i.test(key)) {
+      currentPageSize ??= await field.inputValue();
+    } else if (/currentpage/i.test(key)) {
+      currentPage ??= await field.inputValue();
+    }
+  }
+  return {
+    currentPage,
+    currentPageSize,
+  };
+}
+
 async function readStatementRows(
   frame: Frame,
   statementPeriod: string,
@@ -330,6 +375,10 @@ function statementKind(row: StatementRow): StatementKind {
   return row.paymentStatus;
 }
 
+function cardKeyForRow(row: StatementRow): string {
+  return row.cardNumber.replace(/\D/g, "").slice(-4);
+}
+
 function downloadsDir(): string {
   return join(process.cwd(), "downloads", "esun-credit-card-statements");
 }
@@ -338,6 +387,8 @@ async function writeStatementFile(
   nextTimestamp: () => string,
   kind: StatementKind,
   rows: StatementRow[],
+  capture: CaptureMetadata,
+  cardKeys: string[],
 ): Promise<TableFile> {
   const dir = downloadsDir();
   await mkdir(dir, { recursive: true });
@@ -369,6 +420,15 @@ async function writeStatementFile(
           kind === "billed"
             ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
             : [],
+        ...capture,
+        ...(capture.snapshotMode === "full"
+          ? {
+              cardRowCounts: captureCardRowCounts(
+                cardKeys,
+                rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
+              ),
+            }
+          : {}),
       },
       null,
       2,
@@ -425,16 +485,58 @@ export default workflow("esunCreditCardStatements", {
     const rows = await readStatementRows(frame, period);
     console.log("automation-progress: 80");
     const nextTimestamp = createTimestampGenerator();
+    const unbilledRows = rows.filter(
+      (row) => statementKind(row) === "unbilled",
+    );
+    const billedRows = rows.filter((row) => statementKind(row) === "billed");
+    const cardKeys = [
+      ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
+    ];
+    const completeGrid = await gridState(frame);
+    const isFullCapture =
+      !input.startDate &&
+      !input.endDate &&
+      isEsunCompleteGrid(completeGrid) &&
+      [...billedRows, ...unbilledRows].every(
+        (row) => cardKeyForRow(row).length === 4,
+      );
+    const capture: CaptureMetadata = isFullCapture
+      ? {
+          snapshotMode: "full",
+          captureId: randomUUID(),
+          capturedAt: new Date().toISOString(),
+          captureKinds: ["billed", "unbilled"],
+          completenessEvidence: {
+            bank: "esun",
+            range: "default_one_year",
+            grid: completeGrid,
+          },
+        }
+      : {
+          snapshotMode: "partial",
+          completenessEvidence: {
+            bank: "esun",
+            reason:
+              input.startDate || input.endDate
+                ? "date_range_override"
+                : "grid_not_proven_complete",
+            grid: completeGrid,
+          },
+        };
     const files = [
       await writeStatementFile(
         nextTimestamp,
         "unbilled",
-        rows.filter((row) => statementKind(row) === "unbilled"),
+        unbilledRows,
+        capture,
+        cardKeys,
       ),
       await writeStatementFile(
         nextTimestamp,
         "billed",
-        rows.filter((row) => statementKind(row) === "billed"),
+        billedRows,
+        capture,
+        cardKeys,
       ),
     ];
     console.log("automation-progress: 100");

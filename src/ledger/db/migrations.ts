@@ -3,7 +3,8 @@ import {
   sqliteAmount,
   TYPED_STATEMENT_TABLES,
 } from "../source-csv-parsers.ts";
-import { contentHashForRow } from "../content-hash.ts";
+import { contentHashForRow, hashBytes, stableStringify } from "../content-hash.ts";
+import { creditCardSemanticKey } from "../credit-card-identity.ts";
 import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
 import type { LedgerDatabase } from "./client.ts";
 
@@ -780,6 +781,484 @@ function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
   `);
 }
 
+function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
+  for (const table of TYPED_STATEMENT_TABLES) {
+    if (
+      table === "personal_invoices" || table === "personal_invoice_items"
+    ) continue;
+    db.exec(`
+      DELETE FROM ${table}
+      WHERE statement_row_id IN (
+        SELECT statement_row_id
+        FROM (
+          SELECT
+            statement_row_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY content_hash
+              ORDER BY imported_at ASC, source_relative_path ASC,
+                source_row_index ASC, statement_row_id ASC
+            ) AS duplicate_rank
+          FROM ${table}
+        )
+        WHERE duplicate_rank > 1
+      );
+      CREATE UNIQUE INDEX uq_${table}_content_hash
+        ON ${table}(content_hash);
+    `);
+  }
+}
+
+function retireDuplicateOccurrenceColumns(db: LedgerDatabase) {
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`
+      ALTER TABLE ${table} DROP COLUMN dedupe_status;
+      ALTER TABLE ${table} DROP COLUMN raw_row_hash;
+    `);
+  }
+}
+
+function createCreditCardSnapshots(db: LedgerDatabase) {
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "semantic_key",
+    "semantic_key TEXT",
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credit_card_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      source_file_id TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      card_key TEXT NOT NULL,
+      statement_type TEXT NOT NULL CHECK (statement_type IN ('billed','unbilled')),
+      captured_at TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      transaction_count INTEGER NOT NULL CHECK (transaction_count >= 0),
+      total_amount REAL NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_card_snapshots_source_card_type
+    ON credit_card_snapshots(source_file_id, card_key, statement_type);
+    CREATE INDEX IF NOT EXISTS idx_credit_card_snapshots_card_day
+    ON credit_card_snapshots(card_key, statement_type, as_of_date, captured_at);
+  `);
+}
+
+function backfillCreditCardSnapshots(db: LedgerDatabase) {
+  const rows = db.prepare(`
+    SELECT statement_row_id, source_file_id, source_relative_path,
+      source_row_index, bank, product, imported_at,
+      statement_type, card_number, consume_date, description,
+      foreign_currency, foreign_amount, twd_amount, installment_action,
+      payment_status
+    FROM credit_card_statement_lines
+  `).all() as Array<{
+    statement_row_id: string;
+    source_file_id: string;
+    source_relative_path: string;
+    source_row_index: number;
+    bank: string;
+    product: string;
+    imported_at: string;
+    statement_type: string;
+    card_number: string | null;
+    consume_date: string | null;
+    description: string | null;
+    foreign_currency: string | null;
+    foreign_amount: number | null;
+    twd_amount: number | null;
+    installment_action: string | null;
+    payment_status: string | null;
+  }>;
+  const updateSemanticKey = db.prepare(`
+    UPDATE credit_card_statement_lines
+    SET semantic_key = ?
+    WHERE statement_row_id = ? AND semantic_key IS NULL
+  `);
+  const captures = new Map<string, {
+    sourceFileId: string;
+    bank: string;
+    product: string;
+    cardKey: string;
+    statementType: string;
+    capturedAt: string;
+    keys: Set<string>;
+    totalAmount: number;
+  }>();
+
+  for (const row of rows) {
+    const semanticKey = creditCardSemanticKey({
+      bank: row.bank,
+      cardNumber: row.card_number,
+      statementType: row.statement_type,
+      consumeDate: row.consume_date,
+      description: row.description,
+      foreignCurrency: row.foreign_currency,
+      foreignAmount: row.foreign_amount,
+      twdAmount: row.twd_amount,
+      installmentAction: row.installment_action,
+      paymentStatus: row.payment_status,
+    });
+    updateSemanticKey.run(semanticKey, row.statement_row_id);
+    const cardKey = (row.card_number ?? "").replace(/\D/g, "").slice(-4);
+    const importDay = row.imported_at.slice(0, 10);
+    const captureKey = stableStringify([
+      row.source_file_id, cardKey, row.statement_type, importDay,
+    ]);
+    const existingCapture = captures.get(captureKey);
+    if (existingCapture && (
+      existingCapture.bank !== row.bank
+      || existingCapture.product !== row.product
+      || existingCapture.capturedAt !== row.imported_at
+    )) {
+      throw new Error(`Inconsistent credit-card capture provenance: ${captureKey}`);
+    }
+    const capture = existingCapture ?? {
+      sourceFileId: row.source_file_id,
+      bank: row.bank,
+      product: row.product,
+      cardKey,
+      statementType: row.statement_type,
+      capturedAt: row.imported_at,
+      keys: new Set<string>(),
+      totalAmount: 0,
+    };
+    if (!capture.keys.has(semanticKey)) {
+      capture.keys.add(semanticKey);
+      capture.totalAmount += row.twd_amount ?? 0;
+    }
+    captures.set(captureKey, capture);
+  }
+
+  db.exec(`
+    DROP INDEX uq_credit_card_statement_lines_content_hash;
+    DELETE FROM credit_card_statement_lines
+    WHERE statement_row_id IN (
+      SELECT statement_row_id
+      FROM (
+        SELECT statement_row_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY semantic_key
+            ORDER BY imported_at ASC, source_relative_path ASC,
+              source_row_index ASC, statement_row_id ASC
+          ) AS duplicate_rank
+        FROM credit_card_statement_lines
+      )
+      WHERE duplicate_rank > 1
+    );
+    DROP INDEX uq_credit_card_snapshots_source_card_type;
+    CREATE UNIQUE INDEX uq_credit_card_snapshots_source_card_type
+    ON credit_card_snapshots(source_file_id, card_key, statement_type, as_of_date);
+  `);
+
+  const byDay = new Map<string, Array<(typeof captures extends Map<string, infer T> ? T : never)>>();
+  for (const capture of captures.values()) {
+    const dayKey = stableStringify([
+      capture.bank, capture.product, capture.cardKey, capture.statementType,
+      capture.capturedAt.slice(0, 10),
+    ]);
+    const day = byDay.get(dayKey) ?? [];
+    day.push(capture);
+    byDay.set(dayKey, day);
+  }
+  const insertSnapshot = db.prepare(`
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, source_file_id, bank, product, card_key, statement_type,
+      captured_at, as_of_date, currency, transaction_count, total_amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TWD', ?, ?)
+  `);
+  for (const day of byDay.values()) {
+    day.sort((left, right) => (
+      left.capturedAt.localeCompare(right.capturedAt)
+      || left.sourceFileId.localeCompare(right.sourceFileId)
+    ));
+    let eligible = day[0];
+    for (let index = 1; index < day.length; index += 1) {
+      const candidate = day[index];
+      const properSubset = day.slice(0, index).some((earlier) => (
+        candidate.keys.size < earlier.keys.size
+        && [...candidate.keys].every((key) => earlier.keys.has(key))
+      ));
+      if (!properSubset) eligible = candidate;
+    }
+    insertSnapshot.run(
+      hashBytes(stableStringify([
+        "credit-card-snapshot", eligible.sourceFileId,
+        eligible.cardKey, eligible.statementType,
+        eligible.capturedAt.slice(0, 10),
+      ])).slice(0, 32),
+      eligible.sourceFileId,
+      eligible.bank,
+      eligible.product,
+      eligible.cardKey,
+      eligible.statementType,
+      eligible.capturedAt,
+      eligible.capturedAt.slice(0, 10),
+      eligible.keys.size,
+      eligible.totalAmount,
+    );
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX uq_credit_card_statement_lines_semantic_key
+    ON credit_card_statement_lines(semantic_key);
+  `);
+}
+
+function retainLatestImportedUnbilledSnapshots(db: LedgerDatabase) {
+  db.exec(`
+    DELETE FROM credit_card_snapshots
+    WHERE statement_type = 'unbilled'
+      AND snapshot_id IN (
+        SELECT snapshot_id
+        FROM (
+          SELECT snapshot_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY bank, product, card_key
+              ORDER BY captured_at DESC, snapshot_id DESC
+            ) AS snapshot_rank
+          FROM credit_card_snapshots
+          WHERE statement_type = 'unbilled'
+        )
+        WHERE snapshot_rank > 1
+      );
+  `);
+}
+
+function addCreditCardCaptureStorage(db: LedgerDatabase) {
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "content_key",
+    "content_key TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "occurrence_index",
+    "occurrence_index INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "first_seen_at",
+    "first_seen_at TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "last_seen_at",
+    "last_seen_at TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_snapshots",
+    "capture_id",
+    "capture_id TEXT",
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credit_card_captures (
+      capture_id TEXT PRIMARY KEY,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      completeness_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS credit_card_capture_entries (
+      capture_id TEXT NOT NULL,
+      statement_row_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      source_row_index INTEGER NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      card_key TEXT NOT NULL,
+      statement_type TEXT NOT NULL CHECK (statement_type IN ('billed','unbilled')),
+      PRIMARY KEY (capture_id, source_file_id, source_row_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_card_capture_entries_latest
+      ON credit_card_capture_entries(bank, product, card_key, capture_id, statement_type);
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
+    UPDATE credit_card_statement_lines
+    SET content_key = semantic_key
+    WHERE content_key IS NULL;
+    WITH legacy_rows AS (
+      SELECT
+        statement_row_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY content_key
+          ORDER BY imported_at, source_relative_path, source_row_index, statement_row_id
+        ) - 1 AS occurrence_index,
+        MIN(imported_at) OVER (PARTITION BY content_key) AS first_seen_at,
+        MAX(imported_at) OVER (PARTITION BY content_key) AS last_seen_at
+      FROM credit_card_statement_lines
+      WHERE content_key IS NOT NULL
+    )
+    UPDATE credit_card_statement_lines
+    SET
+      occurrence_index = (
+        SELECT legacy_rows.occurrence_index
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      ),
+      first_seen_at = (
+        SELECT legacy_rows.first_seen_at
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      ),
+      last_seen_at = (
+        SELECT legacy_rows.last_seen_at
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      )
+    WHERE statement_row_id IN (SELECT statement_row_id FROM legacy_rows);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_card_statement_lines_content_occurrence
+      ON credit_card_statement_lines(content_key, occurrence_index)
+      WHERE content_key IS NOT NULL AND occurrence_index IS NOT NULL;
+  `);
+}
+
+function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
+  db.exec(`
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL AND card_key <> ''
+      )
+      WHERE row_number = 1
+    )
+    INSERT OR IGNORE INTO credit_card_captures (
+      capture_id, bank, product, captured_at, completeness_json
+    )
+    SELECT
+      'legacy-display:' || as_of_date,
+      'legacy',
+      'credit-card-history',
+      as_of_date || 'T00:00:00.000Z',
+      '{}'
+    FROM daily_last
+    GROUP BY as_of_date;
+
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date, bank, product, card_key, statement_type,
+        source_file_id,
+        -ROW_NUMBER() OVER (PARTITION BY as_of_date ORDER BY snapshot_id) AS source_row_index
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          bank,
+          product,
+          card_key,
+          statement_type,
+          source_file_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL AND card_key <> ''
+      )
+      WHERE row_number = 1
+    )
+    INSERT OR IGNORE INTO credit_card_capture_entries (
+      capture_id, statement_row_id, source_file_id, source_row_index,
+      bank, product, card_key, statement_type
+    )
+    SELECT
+      'legacy-display:' || as_of_date,
+      'legacy-display:' || snapshot_id,
+      source_file_id,
+      source_row_index,
+      bank,
+      product,
+      card_key,
+      statement_type
+    FROM daily_last;
+
+    WITH daily_last AS (
+      SELECT snapshot_id, as_of_date
+      FROM (
+        SELECT
+          snapshot_id,
+          as_of_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY bank, product, card_key, as_of_date
+            ORDER BY captured_at DESC, snapshot_id DESC
+          ) AS row_number
+        FROM credit_card_snapshots
+        WHERE capture_id IS NULL AND card_key <> ''
+      )
+      WHERE row_number = 1
+    )
+    UPDATE credit_card_snapshots
+    SET capture_id = 'legacy-display:' || as_of_date
+    WHERE snapshot_id IN (SELECT snapshot_id FROM daily_last);
+  `);
+}
+
+function projectLegacyBilledSnapshotsForBalanceHistory(db: LedgerDatabase) {
+  db.exec(`
+    INSERT OR IGNORE INTO credit_card_snapshots (
+      snapshot_id, capture_id, source_file_id, bank, product, card_key,
+      statement_type, captured_at, as_of_date, currency,
+      transaction_count, total_amount
+    )
+    SELECT
+      'legacy-display-unbilled:' || billed.snapshot_id,
+      billed.capture_id,
+      billed.source_file_id,
+      billed.bank,
+      billed.product,
+      billed.card_key,
+      'unbilled',
+      billed.captured_at,
+      billed.as_of_date,
+      billed.currency,
+      billed.transaction_count,
+      billed.total_amount
+    FROM credit_card_snapshots AS billed
+    WHERE billed.capture_id LIKE 'legacy-display:%'
+      AND billed.statement_type = 'billed'
+      AND billed.card_key <> ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM credit_card_snapshots AS unbilled
+        WHERE unbilled.bank = billed.bank
+          AND unbilled.product = billed.product
+          AND unbilled.card_key = billed.card_key
+          AND unbilled.as_of_date = billed.as_of_date
+          AND unbilled.statement_type = 'unbilled'
+      );
+  `);
+}
+
+function excludeBlankLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
+  db.exec(`
+    UPDATE credit_card_snapshots
+    SET capture_id = NULL
+    WHERE card_key = '' AND capture_id LIKE 'legacy-display:%';
+
+    DELETE FROM credit_card_capture_entries
+    WHERE card_key = '' AND capture_id LIKE 'legacy-display:%';
+
+    DELETE FROM credit_card_captures
+    WHERE capture_id LIKE 'legacy-display:%'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM credit_card_capture_entries
+        WHERE credit_card_capture_entries.capture_id = credit_card_captures.capture_id
+      );
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -835,6 +1314,51 @@ const migrations: LedgerMigration[] = [
     version: 11,
     name: "personal_invoice_item_categories",
     up: addPersonalInvoiceItemCategories,
+  },
+  {
+    version: 12,
+    name: "physical_content_hash_deduplication",
+    up: physicallyDeduplicateStatementRows,
+  },
+  {
+    version: 13,
+    name: "retired_duplicate_occurrence_columns",
+    up: retireDuplicateOccurrenceColumns,
+  },
+  {
+    version: 14,
+    name: "credit_card_snapshots",
+    up: createCreditCardSnapshots,
+  },
+  {
+    version: 15,
+    name: "backfilled_credit_card_snapshots",
+    up: backfillCreditCardSnapshots,
+  },
+  {
+    version: 16,
+    name: "latest_imported_unbilled_snapshots",
+    up: retainLatestImportedUnbilledSnapshots,
+  },
+  {
+    version: 17,
+    name: "credit_card_capture_storage",
+    up: addCreditCardCaptureStorage,
+  },
+  {
+    version: 18,
+    name: "legacy_credit_card_display_captures",
+    up: backfillLegacyCreditCardDisplayCaptures,
+  },
+  {
+    version: 19,
+    name: "legacy_billed_snapshot_display_projections",
+    up: projectLegacyBilledSnapshotsForBalanceHistory,
+  },
+  {
+    version: 20,
+    name: "exclude_blank_legacy_credit_card_display_captures",
+    up: excludeBlankLegacyCreditCardDisplayCaptures,
   },
 ];
 

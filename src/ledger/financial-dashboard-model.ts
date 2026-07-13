@@ -2119,14 +2119,9 @@ export async function buildFinancialModel(input: BuildFinancialDashboardInput): 
   const importRunTimes = buildImportRunTimes(importRuns, batches);
   const typedRows = dashboardRows(ledgerRecords);
 
-  const rows = input.includeDuplicates
-    ? typedRows
-    : typedRows.filter((row) => row.dedupeStatus !== "duplicate");
+  const rows = typedRows;
   const sourceRows = new Map(rows.map((row) => [row.sourceHash, row]));
-  const keepRow = input.includeDuplicates
-    ? () => true
-    : (row: RawTransactionOccurrence) => row.dedupeStatus !== "duplicate";
-  const classifications = classifyDashboardData(ledgerRecords, keepRow);
+  const classifications = classifyDashboardData(ledgerRecords, () => true);
   const rawTransactions = classifications.flatMap((item) => item.transactions);
   const { transactions, duplicateCount: duplicateNormalizedTransactions } =
     dedupeTransactions(rawTransactions, sourceRows, importRunTimes);
@@ -2178,9 +2173,6 @@ export async function buildFinancialModel(input: BuildFinancialDashboardInput): 
     sourceLedgerDir: ledgerDir,
     sourceLedgerStore: ledgerRecords.source,
     counts: {
-      rawRows: typedRows.length,
-      uniqueRows: typedRows.filter((row) => row.dedupeStatus !== "duplicate").length,
-      duplicateRows: typedRows.filter((row) => row.dedupeStatus === "duplicate").length,
       normalizedTransactions: transactions.length,
       assetPositions: assetPositions.length,
       includedPositions: assetPositions.filter((position) => position.includeInTotals)

@@ -12,9 +12,20 @@ import {
 export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<LiabilitiesPageDto> {
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);
   try {
-    const [sourceFiles, creditCardStatementLines, loanTransactions, maicoinAccountSnapshots] = await Promise.all([
+    const [
+      sourceFiles,
+      creditCardStatementLines,
+      creditCardCaptures,
+      creditCardCaptureEntries,
+      creditCardSnapshots,
+      loanTransactions,
+      maicoinAccountSnapshots,
+    ] = await Promise.all([
       db.select().from(schema.sourceFiles).all(),
       db.select().from(schema.creditCardStatementLines).all(),
+      db.select().from(schema.creditCardCaptures).all(),
+      db.select().from(schema.creditCardCaptureEntries).all(),
+      db.select().from(schema.creditCardSnapshots).all(),
       db.select().from(schema.loanTransactions).all(),
       db.select().from(schema.maicoinAccountSnapshots).all(),
     ]);
@@ -23,6 +34,9 @@ export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<L
       ...emptyLedgerQueryData(),
       sourceFiles,
       creditCardStatementLines,
+      creditCardCaptures,
+      creditCardCaptureEntries,
+      creditCardSnapshots,
       loanTransactions,
       maicoinAccountSnapshots,
     };
