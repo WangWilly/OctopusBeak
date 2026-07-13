@@ -517,8 +517,26 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   },
 ];
 
-const creditCardCaptures: LedgerRow<"creditCardCaptures">[] = [];
-const creditCardCaptureEntries: LedgerRow<"creditCardCaptureEntries">[] = [];
+const creditCardCaptures: LedgerRow<"creditCardCaptures">[] = sourceFiles
+  .filter((source) => source.product === "credit-card")
+  .map((source) => ({
+    captureId: `mock-capture-${source.sourceFileId}`,
+    bank: source.bank,
+    product: source.product,
+    capturedAt: `${(source.sourceFileModifiedAt ?? source.importedAt).slice(0, 10)}T18:00:00.000Z`,
+    completenessJson: "{}",
+  }));
+
+const creditCardCaptureEntries: LedgerRow<"creditCardCaptureEntries">[] = creditCardStatementLines.map((row) => ({
+  captureId: `mock-capture-${row.sourceFileId}`,
+  statementRowId: row.statementRowId,
+  sourceFileId: row.sourceFileId,
+  sourceRowIndex: row.sourceRowIndex,
+  bank: row.bank,
+  product: row.product,
+  cardKey: (row.cardNumber ?? "").replace(/\D/g, "").slice(-4),
+  statementType: row.statementType,
+}));
 
 const creditCardSnapshots: LedgerRow<"creditCardSnapshots">[] = [
   cardSnapshot("card.2026-05-22", "1234", "billed", "2026-05-22", 440, 2),
@@ -539,7 +557,7 @@ function cardSnapshot(
 ): LedgerRow<"creditCardSnapshots"> {
   return {
     snapshotId: `mock-snapshot-${sourceFileId}-${cardKey}-${statementType}`,
-    captureId: null,
+    captureId: `mock-capture-${sourceFileId}`,
     sourceFileId,
     bank: "fubon",
     product: "credit-card",
