@@ -1025,6 +1025,98 @@ function retainLatestImportedUnbilledSnapshots(db: LedgerDatabase) {
   `);
 }
 
+function addCreditCardCaptureStorage(db: LedgerDatabase) {
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "content_key",
+    "content_key TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "occurrence_index",
+    "occurrence_index INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "first_seen_at",
+    "first_seen_at TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_statement_lines",
+    "last_seen_at",
+    "last_seen_at TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "credit_card_snapshots",
+    "capture_id",
+    "capture_id TEXT",
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credit_card_captures (
+      capture_id TEXT PRIMARY KEY,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      completeness_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS credit_card_capture_entries (
+      capture_id TEXT NOT NULL,
+      statement_row_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      source_row_index INTEGER NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      card_key TEXT NOT NULL,
+      statement_type TEXT NOT NULL CHECK (statement_type IN ('billed','unbilled')),
+      PRIMARY KEY (capture_id, source_file_id, source_row_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_card_capture_entries_latest
+      ON credit_card_capture_entries(bank, product, card_key, capture_id, statement_type);
+    DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
+    UPDATE credit_card_statement_lines
+    SET content_key = semantic_key
+    WHERE content_key IS NULL;
+    WITH legacy_rows AS (
+      SELECT
+        statement_row_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY content_key
+          ORDER BY imported_at, source_relative_path, source_row_index, statement_row_id
+        ) - 1 AS occurrence_index,
+        MIN(imported_at) OVER (PARTITION BY content_key) AS first_seen_at,
+        MAX(imported_at) OVER (PARTITION BY content_key) AS last_seen_at
+      FROM credit_card_statement_lines
+      WHERE content_key IS NOT NULL
+    )
+    UPDATE credit_card_statement_lines
+    SET
+      occurrence_index = (
+        SELECT legacy_rows.occurrence_index
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      ),
+      first_seen_at = (
+        SELECT legacy_rows.first_seen_at
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      ),
+      last_seen_at = (
+        SELECT legacy_rows.last_seen_at
+        FROM legacy_rows
+        WHERE legacy_rows.statement_row_id = credit_card_statement_lines.statement_row_id
+      )
+    WHERE statement_row_id IN (SELECT statement_row_id FROM legacy_rows);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_card_statement_lines_content_occurrence
+      ON credit_card_statement_lines(content_key, occurrence_index)
+      WHERE content_key IS NOT NULL AND occurrence_index IS NOT NULL;
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1105,6 +1197,11 @@ const migrations: LedgerMigration[] = [
     version: 16,
     name: "latest_imported_unbilled_snapshots",
     up: retainLatestImportedUnbilledSnapshots,
+  },
+  {
+    version: 17,
+    name: "credit_card_capture_storage",
+    up: addCreditCardCaptureStorage,
   },
 ];
 

@@ -97,6 +97,7 @@ function cardSnapshot(
 ): CreditCardSnapshot {
   return {
     snapshotId,
+    captureId: null,
     sourceFileId: snapshotId,
     bank: "esun",
     product: "credit-card-statements",
@@ -113,6 +114,10 @@ function cardSnapshot(
 function cardRow(sourceFileId: string, importedAt: string, twdAmount: number): CreditCardStatementLine {
   return {
     semanticKey: `semantic-${sourceFileId}`,
+    contentKey: null,
+    occurrenceIndex: null,
+    firstSeenAt: null,
+    lastSeenAt: null,
     statementRowId: `row-${sourceFileId}`,
     sourceFileId,
     importRunId: "run",

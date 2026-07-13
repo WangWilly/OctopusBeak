@@ -9,7 +9,7 @@ export const fullCreditCardCaptureMetadataSchema = z.object({
     z.string().regex(/^\d{4}$/),
     z.number().int().nonnegative(),
   ),
-  completenessEvidence: z.record(z.unknown()),
+  completenessEvidence: z.record(z.string(), z.unknown()),
 });
 
 export function captureCardRowCounts<T extends { cardKey: string }>(

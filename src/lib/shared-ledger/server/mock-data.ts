@@ -140,6 +140,21 @@ function common(sourceFileId: string, bank: string, product: string, sourceRowIn
   };
 }
 
+function creditCardCommon(
+  sourceFileId: string,
+  bank: string,
+  product: string,
+  sourceRowIndex: number,
+) {
+  return {
+    ...common(sourceFileId, bank, product, sourceRowIndex),
+    contentKey: null,
+    occurrenceIndex: null,
+    firstSeenAt: null,
+    lastSeenAt: null,
+  };
+}
+
 function json(value: Record<string, unknown>) {
   return JSON.stringify(value);
 }
@@ -353,7 +368,7 @@ const foreignCurrencyTransactions: LedgerRow<"foreignCurrencyTransactions">[] = 
 
 const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
   {
-    ...common("card.2026-06-25", "fubon", "credit-card", 1),
+    ...creditCardCommon("card.2026-06-25", "fubon", "credit-card", 1),
     semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
@@ -371,7 +386,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "unpaid",
   },
   {
-    ...common("card.2026-06-27", "fubon", "credit-card", 2),
+    ...creditCardCommon("card.2026-06-27", "fubon", "credit-card", 2),
     semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
@@ -389,7 +404,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "unpaid",
   },
   {
-    ...common("card.2026-05-22", "fubon", "credit-card", 3),
+    ...creditCardCommon("card.2026-05-22", "fubon", "credit-card", 3),
     semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
@@ -407,7 +422,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "paid",
   },
   {
-    ...common("card.2026-06-27", "fubon", "credit-card", 4),
+    ...creditCardCommon("card.2026-06-27", "fubon", "credit-card", 4),
     semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
@@ -425,7 +440,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "unpaid",
   },
   {
-    ...common("card.2026-06-26", "fubon", "credit-card", 5),
+    ...creditCardCommon("card.2026-06-26", "fubon", "credit-card", 5),
     semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
@@ -443,7 +458,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "unpaid",
   },
   {
-    ...common("card.2026-06-24", "fubon", "credit-card", 6),
+    ...creditCardCommon("card.2026-06-24", "fubon", "credit-card", 6),
     semanticKey: null,
     statementType: "unbilled",
     statementPeriod: "2026-06",
@@ -461,7 +476,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "unpaid",
   },
   {
-    ...common("card.2026-05-22", "fubon", "credit-card", 7),
+    ...creditCardCommon("card.2026-05-22", "fubon", "credit-card", 7),
     semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
@@ -479,7 +494,7 @@ const creditCardStatementLines: LedgerRow<"creditCardStatementLines">[] = [
     paymentStatus: "paid",
   },
   {
-    ...common("card.2026-05-22", "fubon", "credit-card", 8),
+    ...creditCardCommon("card.2026-05-22", "fubon", "credit-card", 8),
     semanticKey: null,
     statementType: "billed",
     statementPeriod: "2026-05",
@@ -517,6 +532,7 @@ function cardSnapshot(
 ): LedgerRow<"creditCardSnapshots"> {
   return {
     snapshotId: `mock-snapshot-${sourceFileId}-${cardKey}-${statementType}`,
+    captureId: null,
     sourceFileId,
     bank: "fubon",
     product: "credit-card",
