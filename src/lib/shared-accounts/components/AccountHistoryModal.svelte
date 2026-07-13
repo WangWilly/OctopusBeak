@@ -2,7 +2,7 @@
   import { t, translateKnownLabel } from "$lib/i18n/i18n.ts";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
-  import type { AccountRowDto, DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+  import { historyPointKey, type AccountRowDto, type DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 
   export let open = false;
   export let account: AccountRowDto | null = null;
@@ -14,7 +14,7 @@
     ...new Set(rows.flatMap((row) => row.netAssets.map((amount) => amount.currency))),
   ];
   $: if (!currencies.includes(currency)) currency = currencies[0] ?? "TWD";
-  $: chartRows = [...rows].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
+  $: chartRows = [...rows].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
 
   function closeOnEscape(event: KeyboardEvent) {
     if (open && event.key === "Escape") open = false;

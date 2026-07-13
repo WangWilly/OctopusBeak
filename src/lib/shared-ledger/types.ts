@@ -11,6 +11,7 @@ export type SummaryMetricDto = {
 
 export type DailyHistoryRowDto = {
   date: string;
+  pointAt?: string;
   netAssets: CurrencyAmountDto[];
   dailyChange: CurrencyAmountDto[];
   assets: CurrencyAmountDto[];
@@ -18,6 +19,10 @@ export type DailyHistoryRowDto = {
   accountChanges: string[];
   positionCount: number;
 };
+
+export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt">) {
+  return row.pointAt ?? row.date;
+}
 
 export type AccountGroup = "asset" | "liability" | "investment";
 
