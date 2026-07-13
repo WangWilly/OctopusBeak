@@ -443,6 +443,7 @@ function maicoinPositions(
   statementRows: MaicoinStatementRow[],
 ): RawPosition[] {
   // ponytail: desktop captures all MAX wallet types together; load sync-run coverage if partial captures need display support.
+  const walletKey = (row: MaicoinAccountSnapshot) => [row.subAccount, row.walletType].join("|");
   const latestCaptureBySubAccount = new Map(
     latestBy(rows, (row) => row.subAccount, (row) => row.capturedAt)
       .map((row) => [row.subAccount, row.capturedAt]),
@@ -455,8 +456,14 @@ function maicoinPositions(
     (row) => ["maicoin", row.subAccount, row.walletType, currency(row.currency)].join("|"),
     (row) => row.capturedAt,
   );
+  const activeAssetWallets = new Set(latestRows.filter((row) => row.totalQuantity > 0).map(walletKey));
+  const inactiveAssetRows = latestBy(
+    rows.filter((row) => row.totalQuantity > 0),
+    walletKey,
+    (row) => row.capturedAt,
+  ).filter((row) => !activeAssetWallets.has(walletKey(row)));
   const returns = maicoinReturnComponents(latestRows, statementRows);
-  return latestRows.flatMap((row) => {
+  const positions = latestRows.flatMap((row) => {
     const product = row.walletType === "m" ? "M-wallet" : "Spot wallet";
     const currencyCode = currency(row.currency);
     const returnComponents = returns.get(currencyCode) ?? [];
@@ -539,6 +546,26 @@ function maicoinPositions(
     }
     return positions;
   });
+  const inactiveAssets: RawPosition[] = inactiveAssetRows.map((row) => {
+    const product = row.walletType === "m" ? "M-wallet" : "Spot wallet";
+    const capturedAt = latestCaptureBySubAccount.get(row.subAccount) ?? row.capturedAt;
+    return {
+      id: stableId("maicoin-asset-zero", row.subAccount, row.walletType),
+      accountId: accountId("maicoin-asset", "maicoin", product, row.subAccount, "TWD"),
+      label: `MAX ${product}`,
+      institution: "MaiCoin MAX",
+      product,
+      group: "investment",
+      kind: "crypto",
+      typeLabel: "Crypto",
+      currency: "TWD",
+      value: 0,
+      asOfDate: capturedAt.slice(0, 10),
+      importedAt: capturedAt,
+      positionDetail: null,
+    };
+  });
+  return [...positions, ...inactiveAssets];
 }
 
 function maicoinDebtQuantity(row: MaicoinAccountSnapshot) {
