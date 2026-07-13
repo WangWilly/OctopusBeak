@@ -21,7 +21,12 @@ import {
   type SourceMetadata,
 } from "./source-csv-parsers.ts";
 import { classifyPersonalInvoiceItem } from "../lib/spending/categories.ts";
-import { creditCardSemanticKey } from "./credit-card-identity.ts";
+import { creditCardContentKey } from "./credit-card-identity.ts";
+import {
+  assignOccurrenceIndexes,
+  captureCardRowCounts,
+  fullCreditCardCaptureMetadataSchema,
+} from "./credit-card-capture.ts";
 
 const inputSchema = z.object({
   downloadsDir: z.string().default("downloads"),
@@ -84,16 +89,9 @@ type FileImportSummary = {
   rows: number;
 };
 
-const fullSnapshotMetadataSchema = z.object({
-  snapshotMode: z.literal("full"),
-  snapshotCapturedAt: z.string().datetime(),
-  cardRowCounts: z.record(
-    z.string().regex(/^\d{4}$/),
-    z.number().int().nonnegative(),
-  ),
-});
-
-type FullSnapshotMetadata = z.infer<typeof fullSnapshotMetadataSchema>;
+type FullCreditCardCaptureMetadata = z.infer<
+  typeof fullCreditCardCaptureMetadataSchema
+>;
 
 const RAW_LEDGER_SCHEMA_VERSION = "raw-ledger.v1";
 const IMPORTER_NAME = "import-downloads-csv";
@@ -210,11 +208,12 @@ async function sidecarMetadata(csvFile: string): Promise<SourceMetadata | null> 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    const metadata = parsed as SourceMetadata;
-    if (metadata.snapshotMode === "full") fullSnapshotMetadataSchema.parse(metadata);
-    return metadata;
+    return parsed as SourceMetadata;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+      || error instanceof SyntaxError
+    ) return null;
     throw error;
   }
 }
@@ -547,16 +546,16 @@ function insertTypedStatementRow(
     ...commonTypedRowFields(sourceFileRecord, row),
     ...parsedFields,
     ...(parser.table === "credit_card_statement_lines"
-      ? { semantic_key: semanticKeyForCreditCardFields(bank, parsedFields) }
+      ? { semantic_key: contentKeyForCreditCardFields(bank, parsedFields) }
       : {}),
   });
 }
 
-function semanticKeyForCreditCardFields(
+function contentKeyForCreditCardFields(
   bank: string,
   fields: Record<string, unknown>,
 ) {
-  return creditCardSemanticKey({
+  return creditCardContentKey({
     bank,
     cardNumber: String(fields.card_number ?? ""),
     statementType: String(fields.statement_type ?? ""),
@@ -570,95 +569,282 @@ function semanticKeyForCreditCardFields(
   });
 }
 
-function insertCreditCardSnapshots(
-  db: LedgerDatabase,
-  sourceFileRecords: Record<string, unknown>[],
-  statementRows: Array<{
-    sourceFileRecord: Record<string, unknown>;
-    row: { rawPayload: Record<string, string> };
-  }>,
-) {
-  const groups = new Map<string, {
-    sourceFileId: string;
-    bank: string;
-    product: string;
-    cardKey: string;
-    statementType: string;
-    capturedAt: string;
-    expectedCount: number;
-    transactions: Map<string, number>;
-  }>();
+type ImportStatementRow = {
+  sourceFileRecord: Record<string, unknown>;
+  row: {
+    sourceRowIndex: number;
+    rawPayload: Record<string, string>;
+    rawRowHash: string;
+    sourceHash: string;
+    contentHash: string;
+  };
+};
 
+type CreditCardRow = ImportStatementRow & {
+  sourceFileId: string;
+  bank: string;
+  product: string;
+  statementType: string;
+  cardKey: string;
+  contentKey: string;
+  fields: Record<string, unknown>;
+  statementRowId?: string;
+};
+
+type VerifiedCreditCardCapture = {
+  captureId: string;
+  capturedAt: string;
+  bank: string;
+  product: string;
+  metadata: FullCreditCardCaptureMetadata;
+  files: Array<{ sourceFileRecord: Record<string, unknown>; statementType: string }>;
+};
+
+function creditCardParser(sourceFileRecord: Record<string, unknown>) {
+  const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
+  return createSourceCsvParser({
+    bank: String(sourceFileRecord.bank ?? ""),
+    product: String(sourceFileRecord.product ?? ""),
+    sourceRelativePath,
+    metadata: (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
+    headers: Array.isArray(sourceFileRecord.headers)
+      ? sourceFileRecord.headers as string[]
+      : [],
+  });
+}
+
+function isFubonCreditCardSummary(
+  bank: string,
+  fields: Record<string, unknown>,
+) {
+  return bank === "fubon" && ["網路繳款", "行動銀行繳款", "前期應繳總額"].includes(
+    String(fields.description ?? "").trim(),
+  );
+}
+
+function parsedCreditCardRows(statementRows: ImportStatementRow[]): CreditCardRow[] {
+  const rows: CreditCardRow[] = [];
+  for (const item of statementRows) {
+    const parser = creditCardParser(item.sourceFileRecord);
+    if (parser.table !== "credit_card_statement_lines") continue;
+    const fields = parser.parseRow(item.row.rawPayload);
+    const bank = String(item.sourceFileRecord.bank ?? "");
+    if (isFubonCreditCardSummary(bank, fields)) continue;
+    const sourceRelativePath = String(item.sourceFileRecord.sourceRelativePath ?? "");
+    rows.push({
+      ...item,
+      sourceFileId: sourceFileIdForPath(sourceRelativePath),
+      bank,
+      product: String(item.sourceFileRecord.product ?? ""),
+      statementType: String(fields.statement_type ?? ""),
+      cardKey: String(fields.card_number ?? "").replace(/\D/g, "").slice(-4),
+      contentKey: contentKeyForCreditCardFields(bank, fields),
+      fields,
+    });
+  }
+  return rows;
+}
+
+function fullCaptureMetadata(
+  metadata: SourceMetadata | null,
+): FullCreditCardCaptureMetadata | null {
+  const parsed = fullCreditCardCaptureMetadataSchema.safeParse(metadata);
+  return parsed.success ? parsed.data : null;
+}
+
+function sameCardKeys(left: Record<string, number>, right: Record<string, number>) {
+  return stableStringify(Object.keys(left).sort()) === stableStringify(Object.keys(right).sort());
+}
+
+function verifiedCreditCardCaptures(
+  sourceFileRecords: Record<string, unknown>[],
+  cardRows: CreditCardRow[],
+) {
+  const candidates = new Map<string, Array<{
+    sourceFileRecord: Record<string, unknown>;
+    statementType: string;
+    metadata: FullCreditCardCaptureMetadata;
+  }>>();
   for (const sourceFileRecord of sourceFileRecords) {
-    const metadata = sourceFileRecord.sourceMetadata as SourceMetadata | null;
-    if (metadata?.snapshotMode !== "full") continue;
-    const snapshot = fullSnapshotMetadataSchema.parse(metadata) as FullSnapshotMetadata;
-    const bank = String(sourceFileRecord.bank ?? "");
-    const product = String(sourceFileRecord.product ?? "");
-    if (!product.endsWith("credit-card-statements")) continue;
+    if (creditCardParser(sourceFileRecord).table !== "credit_card_statement_lines") continue;
+    const metadata = fullCaptureMetadata(
+      (sourceFileRecord.sourceMetadata ?? null) as SourceMetadata | null,
+    );
+    if (!metadata) continue;
     const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
-    const sourceFileId = sourceFileIdForPath(sourceRelativePath);
     const statementType = sourceRelativePath.includes("unbilled") ? "unbilled" : "billed";
-    for (const [cardKey, expectedCount] of Object.entries(snapshot.cardRowCounts)) {
-      groups.set(stableStringify([sourceFileId, cardKey, statementType]), {
-        sourceFileId,
-        bank,
-        product,
-        cardKey,
+    const files = candidates.get(metadata.captureId) ?? [];
+    files.push({ sourceFileRecord, statementType, metadata });
+    candidates.set(metadata.captureId, files);
+  }
+
+  const verified = new Map<string, VerifiedCreditCardCapture>();
+  for (const [captureId, files] of candidates) {
+    if (files.length !== 2) continue;
+    const [first, second] = files;
+    if (
+      new Set(files.map((file) => file.statementType)).size !== 2
+      || !files.every((file) => file.metadata.capturedAt === first.metadata.capturedAt)
+      || !files.every((file) => (
+        String(file.sourceFileRecord.bank ?? "") === String(first.sourceFileRecord.bank ?? "")
+        && String(file.sourceFileRecord.product ?? "") === String(first.sourceFileRecord.product ?? "")
+      ))
+      || !files.every((file) => sameCardKeys(file.metadata.cardRowCounts, first.metadata.cardRowCounts))
+    ) continue;
+
+    const cardKeys = Object.keys(first.metadata.cardRowCounts);
+    const countsMatch = files.every((file) => {
+      const sourceFileId = sourceFileIdForPath(
+        String(file.sourceFileRecord.sourceRelativePath ?? ""),
+      );
+      return stableStringify(captureCardRowCounts(
+        cardKeys,
+        cardRows.filter((row) => row.sourceFileId === sourceFileId),
+      )) === stableStringify(file.metadata.cardRowCounts);
+    });
+    if (!countsMatch) continue;
+
+    verified.set(captureId, {
+      captureId,
+      capturedAt: first.metadata.capturedAt,
+      bank: String(first.sourceFileRecord.bank ?? ""),
+      product: String(first.sourceFileRecord.product ?? ""),
+      metadata: first.metadata,
+      files: files.map(({ sourceFileRecord, statementType }) => ({
+        sourceFileRecord,
         statementType,
-        capturedAt: snapshot.snapshotCapturedAt,
-        expectedCount,
-        transactions: new Map(),
+      })),
+    });
+  }
+  return verified;
+}
+
+function upsertCanonicalCreditCardLine(
+  db: LedgerDatabase,
+  row: CreditCardRow & { occurrenceIndex: number; seenAt: string },
+) {
+  const existing = db.prepare(`
+    SELECT statement_row_id FROM credit_card_statement_lines
+    WHERE content_key = ? AND occurrence_index = ?
+  `).get(row.contentKey, row.occurrenceIndex) as { statement_row_id: string } | undefined;
+  if (existing) {
+    db.prepare(`
+      UPDATE credit_card_statement_lines SET last_seen_at = ?
+      WHERE statement_row_id = ?
+    `).run(row.seenAt, existing.statement_row_id);
+    return existing.statement_row_id;
+  }
+  const record = {
+    ...commonTypedRowFields(row.sourceFileRecord, row.row),
+    ...row.fields,
+    semantic_key: row.contentKey,
+    content_key: row.contentKey,
+    occurrence_index: row.occurrenceIndex,
+    first_seen_at: row.seenAt,
+    last_seen_at: row.seenAt,
+  };
+  insertRecord(db, "credit_card_statement_lines", record);
+  return String(record.statement_row_id);
+}
+
+function insertVerifiedCreditCardState(
+  db: LedgerDatabase,
+  cardRows: CreditCardRow[],
+  captures: Map<string, VerifiedCreditCardCapture>,
+  seenAt: string,
+) {
+  const captureIdBySourceFileId = new Map<string, string>();
+  for (const capture of captures.values()) {
+    for (const file of capture.files) {
+      captureIdBySourceFileId.set(
+        sourceFileIdForPath(String(file.sourceFileRecord.sourceRelativePath ?? "")),
+        capture.captureId,
+      );
+    }
+  }
+
+  const canonicalGroups = new Map<string, CreditCardRow[]>();
+  for (const row of cardRows) {
+    const captureId = captureIdBySourceFileId.get(row.sourceFileId);
+    const groupKey = captureId ?? `source:${row.sourceFileId}`;
+    const rows = canonicalGroups.get(groupKey) ?? [];
+    rows.push(row);
+    canonicalGroups.set(groupKey, rows);
+  }
+  for (const [groupKey, rows] of canonicalGroups) {
+    const capture = captures.get(groupKey);
+    for (const { row, occurrenceIndex } of assignOccurrenceIndexes(rows.map((row) => ({
+      row,
+      contentKey: row.contentKey,
+      sourceRowIndex: row.row.sourceRowIndex,
+    })))) {
+      row.statementRowId = upsertCanonicalCreditCardLine(db, {
+        ...row,
+        occurrenceIndex,
+        seenAt: capture?.capturedAt ?? seenAt,
       });
     }
   }
 
-  for (const { sourceFileRecord, row } of statementRows) {
-    const metadata = sourceFileRecord.sourceMetadata as SourceMetadata | null;
-    if (metadata?.snapshotMode !== "full") continue;
-    const bank = String(sourceFileRecord.bank ?? "");
-    const product = String(sourceFileRecord.product ?? "");
-    const parser = createSourceCsvParser({
-      bank,
-      product,
-      sourceRelativePath: String(sourceFileRecord.sourceRelativePath ?? ""),
-      metadata,
-      headers: sourceFileRecord.headers as string[],
+  for (const capture of captures.values()) {
+    insertRecord(db, "credit_card_captures", {
+      capture_id: capture.captureId,
+      bank: capture.bank,
+      product: capture.product,
+      captured_at: capture.capturedAt,
+      completeness_json: JSON.stringify(capture.metadata.completenessEvidence),
     });
-    if (parser.table !== "credit_card_statement_lines") continue;
-    const fields = parser.parseRow(row.rawPayload);
-    const cardKey = String(fields.card_number ?? "").replace(/\D/g, "").slice(-4);
-    const statementType = String(fields.statement_type ?? "");
-    const groupKey = stableStringify([
-      sourceFileIdForPath(String(sourceFileRecord.sourceRelativePath ?? "")), cardKey, statementType,
-    ]);
-    const group = groups.get(groupKey);
-    if (!group) throw new Error(`Full snapshot metadata is missing card ${cardKey}`);
-    const semanticKey = semanticKeyForCreditCardFields(bank, fields);
-    group.transactions.set(semanticKey, Number(fields.twd_amount ?? 0));
-  }
-
-  for (const group of groups.values()) {
-    if (group.transactions.size !== group.expectedCount) {
-      throw new Error(
-        `Full snapshot card ${group.cardKey} expected ${group.expectedCount} rows, got ${group.transactions.size}`,
+    for (const row of cardRows) {
+      if (captureIdBySourceFileId.get(row.sourceFileId) !== capture.captureId) continue;
+      if (!row.statementRowId) throw new Error("Canonical credit-card row is missing");
+      db.prepare(`
+        INSERT INTO credit_card_capture_entries (
+          capture_id, statement_row_id, source_file_id, source_row_index,
+          bank, product, card_key, statement_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        capture.captureId,
+        row.statementRowId,
+        row.sourceFileId,
+        row.row.sourceRowIndex,
+        row.bank,
+        row.product,
+        row.cardKey,
+        row.statementType,
       );
     }
-    insertRecord(db, "credit_card_snapshots", {
-      snapshot_id: hashBytes(stableStringify([
-        "credit-card-snapshot", group.sourceFileId, group.cardKey, group.statementType,
-      ])).slice(0, 32),
-      source_file_id: group.sourceFileId,
-      bank: group.bank,
-      product: group.product,
-      card_key: group.cardKey,
-      statement_type: group.statementType,
-      captured_at: group.capturedAt,
-      as_of_date: group.capturedAt.slice(0, 10),
-      currency: "TWD",
-      transaction_count: group.transactions.size,
-      total_amount: [...group.transactions.values()].reduce((sum, amount) => sum + amount, 0),
-    });
+    for (const file of capture.files) {
+      const sourceFileId = sourceFileIdForPath(
+        String(file.sourceFileRecord.sourceRelativePath ?? ""),
+      );
+      for (const cardKey of Object.keys(capture.metadata.cardRowCounts)) {
+        const aggregate = db.prepare(`
+          SELECT COUNT(*) AS transaction_count, COALESCE(SUM(l.twd_amount), 0) AS total_amount
+          FROM credit_card_capture_entries e
+          JOIN credit_card_statement_lines l ON l.statement_row_id = e.statement_row_id
+          WHERE e.capture_id = ? AND e.card_key = ? AND e.statement_type = ?
+        `).get(capture.captureId, cardKey, file.statementType) as {
+          transaction_count: number;
+          total_amount: number;
+        };
+        insertRecord(db, "credit_card_snapshots", {
+          snapshot_id: hashBytes(stableStringify([
+            "credit-card-snapshot", capture.captureId, cardKey, file.statementType,
+          ])).slice(0, 32),
+          capture_id: capture.captureId,
+          source_file_id: sourceFileId,
+          bank: capture.bank,
+          product: capture.product,
+          card_key: cardKey,
+          statement_type: file.statementType,
+          captured_at: capture.capturedAt,
+          as_of_date: capture.capturedAt.slice(0, 10),
+          currency: "TWD",
+          transaction_count: aggregate.transaction_count,
+          total_amount: aggregate.total_amount,
+        });
+      }
+    }
   }
 }
 
@@ -798,16 +984,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
   try {
     const importedSourceFiles = importedSourceRelativePaths(db);
     const sourceFileRecords: Record<string, unknown>[] = [];
-    const statementRows: Array<{
-      sourceFileRecord: Record<string, unknown>;
-      row: {
-        sourceRowIndex: number;
-        rawPayload: Record<string, string>;
-        rawRowHash: string;
-        sourceHash: string;
-        contentHash: string;
-      };
-    }> = [];
+    const statementRows: ImportStatementRow[] = [];
     const fileSummaries: FileImportSummary[] = [];
 
     let scannedCsvFiles = 0;
@@ -908,6 +1085,11 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     }
 
     const sourceFilesWritten = sourceFileRecords.length;
+    const cardRows = parsedCreditCardRows(statementRows);
+    const verifiedCaptures = verifiedCreditCardCaptures(sourceFileRecords, cardRows);
+    const creditCardSourceHashes = new Set(statementRows
+      .filter((item) => creditCardParser(item.sourceFileRecord).table === "credit_card_statement_lines")
+      .map((item) => item.row.sourceHash));
     let finishedAt = "";
     db.exec("BEGIN");
     try {
@@ -915,11 +1097,14 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         insertSourceFile(db, sourceFileRecord);
       }
       for (const item of statementRows) {
+        if (creditCardSourceHashes.has(item.row.sourceHash)) continue;
+        activeSourceFile = String(item.sourceFileRecord.sourceFile ?? "");
         const outcome = insertTypedStatementRow(db, item.sourceFileRecord, item.row);
         if (outcome === "duplicate") skippedDuplicateRows += 1;
         else importedRows += 1;
       }
-      insertCreditCardSnapshots(db, sourceFileRecords, statementRows);
+      insertVerifiedCreditCardState(db, cardRows, verifiedCaptures, startedAt);
+      importedRows += cardRows.length;
       finishedAt = new Date().toISOString();
       const runRecord = {
         ...baseRecord("import_run"),

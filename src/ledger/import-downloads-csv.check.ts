@@ -423,110 +423,202 @@ const cardRows = [
   },
 ];
 
-async function cardImportFixture(metadata: Record<string, unknown>) {
+async function cardImportFixture() {
   const root = await mkdtemp(join(tmpdir(), "card-snapshot-import-"));
   const fixtureDownloadsDir = join(root, "downloads");
   const fixtureOutputDir = join(root, "ledger");
   const fixtureSourceDir = join(fixtureDownloadsDir, "esun-credit-card-statements");
   await mkdir(fixtureSourceDir, { recursive: true });
-  await writeFile(join(fixtureSourceDir, "billed.csv"), cardCsv(cardRows), "utf8");
-  await writeFile(join(fixtureSourceDir, "billed.json"), JSON.stringify(metadata), "utf8");
-  return { fixtureDownloadsDir, fixtureOutputDir };
+  const writeCapture = async (
+    name: string,
+    captureId: string,
+    capturedAt: string,
+    billedRows: Array<Record<string, string>>,
+    unbilledRows: Array<Record<string, string>>,
+    writeUnbilled = true,
+  ) => {
+    const metadata = (rows: Array<Record<string, string>>) => ({
+      snapshotMode: "full",
+      snapshotCapturedAt: capturedAt,
+      captureId,
+      capturedAt,
+      captureKinds: ["billed", "unbilled"],
+      cardRowCounts: { "1111": rows.length },
+      completenessEvidence: { bank: "esun" },
+    });
+    await writeFile(join(fixtureSourceDir, `${name}-billed.csv`), cardCsv(billedRows), "utf8");
+    await writeFile(
+      join(fixtureSourceDir, `${name}-billed.json`),
+      JSON.stringify(metadata(billedRows)),
+      "utf8",
+    );
+    if (!writeUnbilled) return;
+    await writeFile(
+      join(fixtureSourceDir, `${name}-unbilled.csv`),
+      cardCsv(unbilledRows),
+      "utf8",
+    );
+    await writeFile(
+      join(fixtureSourceDir, `${name}-unbilled.json`),
+      JSON.stringify(metadata(unbilledRows)),
+      "utf8",
+    );
+  };
+  return { fixtureDownloadsDir, fixtureOutputDir, fixtureSourceDir, writeCapture };
 }
 
-const fullCardFixture = await cardImportFixture({
-  snapshotMode: "full",
-  snapshotCapturedAt: "2026-07-12T08:09:10.000Z",
-  cardRowCounts: { "1111": 2, "2222": 1, "3333": 0 },
+const fullCardFixture = await cardImportFixture();
+const firstCaptureId = "9d000000-0000-4000-8000-000000000001";
+const secondCaptureId = "9d000000-0000-4000-8000-000000000002";
+const partialCaptureId = "9d000000-0000-4000-8000-000000000003";
+const mismatchedCaptureId = "9d000000-0000-4000-8000-000000000004";
+const identicalCardRows = [cardRows[0], cardRows[0]];
+await fullCardFixture.writeCapture(
+  "first",
+  firstCaptureId,
+  "2026-07-12T08:09:10.000Z",
+  identicalCardRows,
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
 });
+await fullCardFixture.writeCapture(
+  "second",
+  secondCaptureId,
+  "2026-07-13T08:09:10.000Z",
+  identicalCardRows,
+  [],
+);
 await importDownloadsCsv({
   downloadsDir: fullCardFixture.fixtureDownloadsDir,
   outputDir: fullCardFixture.fixtureOutputDir,
 });
 const fullCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
-const snapshots = (fullCardDb.prepare([
-  "SELECT s.source_file_id, f.source_file_id AS expected_source_file_id,",
-  "s.card_key, s.statement_type, s.captured_at, s.as_of_date, s.currency,",
-  "s.transaction_count, s.total_amount",
-  "FROM credit_card_snapshots s JOIN source_files f ON f.source_file_id = s.source_file_id",
-  "ORDER BY s.card_key",
-].join(" ")).all() as Array<Record<string, unknown>>).map((row) => ({ ...row }));
-const semanticKeyCount = fullCardDb.prepare(
-  "SELECT COUNT(semantic_key) AS count FROM credit_card_statement_lines",
-).get() as { count: number };
-fullCardDb.close();
-assert.deepEqual(snapshots, [
-  {
-    source_file_id: snapshots[0]?.source_file_id,
-    expected_source_file_id: snapshots[0]?.source_file_id,
-    card_key: "1111", statement_type: "billed",
-    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
-    currency: "TWD", transaction_count: 2, total_amount: 350,
-  },
-  {
-    source_file_id: snapshots[1]?.source_file_id,
-    expected_source_file_id: snapshots[1]?.source_file_id,
-    card_key: "2222", statement_type: "billed",
-    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
-    currency: "TWD", transaction_count: 1, total_amount: 480,
-  },
-  {
-    source_file_id: snapshots[2]?.source_file_id,
-    expected_source_file_id: snapshots[2]?.source_file_id,
-    card_key: "3333", statement_type: "billed",
-    captured_at: "2026-07-12T08:09:10.000Z", as_of_date: "2026-07-12",
-    currency: "TWD", transaction_count: 0, total_amount: 0,
-  },
-]);
-assert.equal(semanticKeyCount.count, 3);
-
-const legacyCardFixture = await cardImportFixture({ cardRowCounts: { "1111": 2, "2222": 1 } });
-await importDownloadsCsv({
-  downloadsDir: legacyCardFixture.fixtureDownloadsDir,
-  outputDir: legacyCardFixture.fixtureOutputDir,
-});
-const legacyCardDb = openLedgerDatabase(legacyCardFixture.fixtureOutputDir, { readOnly: true });
-assert.equal((legacyCardDb.prepare(
-  "SELECT COUNT(*) AS count FROM credit_card_snapshots",
-).get() as { count: number }).count, 0);
-legacyCardDb.close();
-
-const malformedCardFixture = await cardImportFixture({
-  snapshotMode: "full",
-  cardRowCounts: { "1111": 2, "2222": 1 },
-});
-await assert.rejects(() => importDownloadsCsv({
-  downloadsDir: malformedCardFixture.fixtureDownloadsDir,
-  outputDir: malformedCardFixture.fixtureOutputDir,
-}), /snapshotCapturedAt/);
-const malformedCardDb = openLedgerDatabase(malformedCardFixture.fixtureOutputDir, { readOnly: true });
-assert.equal((malformedCardDb.prepare(
+const captureCount = (fullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures",
+).get() as { count: number }).count;
+assert.equal(captureCount, 2);
+const entryRows = fullCardDb.prepare(`
+  SELECT l.occurrence_index
+  FROM credit_card_capture_entries e
+  JOIN credit_card_statement_lines l ON l.statement_row_id = e.statement_row_id
+  WHERE e.capture_id = ?
+  ORDER BY e.source_row_index
+`).all(secondCaptureId) as Array<{ occurrence_index: number }>;
+const latestSnapshot = fullCardDb.prepare(`
+  SELECT transaction_count, total_amount
+  FROM credit_card_snapshots
+  WHERE capture_id = ? AND card_key = '1111' AND statement_type = 'billed'
+`).get(secondCaptureId) as { transaction_count: number; total_amount: number };
+const statementLineCountAfterSecondIdenticalCapture = (fullCardDb.prepare(
   "SELECT COUNT(*) AS count FROM credit_card_statement_lines",
-).get() as { count: number }).count, 0);
-assert.equal((malformedCardDb.prepare(
-  "SELECT COUNT(*) AS count FROM credit_card_snapshots",
-).get() as { count: number }).count, 0);
-malformedCardDb.close();
+).get() as { count: number }).count;
+const entryCount = (fullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries",
+).get() as { count: number }).count;
+const latestTransactionTypes = (fullCardDb.prepare(`
+  SELECT DISTINCT e.statement_type
+  FROM credit_card_capture_entries e
+  WHERE e.capture_id = ?
+  ORDER BY e.statement_type
+`).all(secondCaptureId) as Array<{ statement_type: string }>).map((row) => row.statement_type);
+const lastSeenAt = fullCardDb.prepare(`
+  SELECT last_seen_at FROM credit_card_statement_lines
+  WHERE occurrence_index = 0
+`).get() as { last_seen_at: string };
+fullCardDb.close();
 
-for (const invalidCardKey of ["", "111", "card-1111"]) {
-  const invalidCardKeyFixture = await cardImportFixture({
+assert.deepEqual(entryRows.map((row) => row.occurrence_index), [0, 1]);
+assert.equal(latestSnapshot.transaction_count, 2);
+assert.equal(latestSnapshot.total_amount, 200);
+assert.equal(statementLineCountAfterSecondIdenticalCapture, 2);
+assert.equal(captureCount, 2);
+assert.equal(entryCount, 4);
+assert.deepEqual(latestTransactionTypes, ["billed"]);
+assert.equal(lastSeenAt.last_seen_at, "2026-07-13T08:09:10.000Z");
+
+await fullCardFixture.writeCapture(
+  "partial",
+  partialCaptureId,
+  "2026-07-14T08:09:10.000Z",
+  [{ ...cardRows[0], description: "Partial only" }],
+  [],
+  false,
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+await fullCardFixture.writeCapture(
+  "mismatched",
+  mismatchedCaptureId,
+  "2026-07-15T08:09:10.000Z",
+  [{ ...cardRows[0], description: "Mismatched metadata" }],
+  [],
+);
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "mismatched-unbilled.json"),
+  JSON.stringify({
     snapshotMode: "full",
-    snapshotCapturedAt: "2026-07-12T08:09:10.000Z",
-    cardRowCounts: { [invalidCardKey]: 2, "2222": 1 },
-  });
-  await assert.rejects(() => importDownloadsCsv({
-    downloadsDir: invalidCardKeyFixture.fixtureDownloadsDir,
-    outputDir: invalidCardKeyFixture.fixtureOutputDir,
-  }), /cardRowCounts/);
-  const invalidCardKeyDb = openLedgerDatabase(
-    invalidCardKeyFixture.fixtureOutputDir,
-    { readOnly: true },
-  );
-  assert.equal((invalidCardKeyDb.prepare(
-    "SELECT COUNT(*) AS count FROM credit_card_statement_lines",
-  ).get() as { count: number }).count, 0);
-  assert.equal((invalidCardKeyDb.prepare(
-    "SELECT COUNT(*) AS count FROM credit_card_snapshots",
-  ).get() as { count: number }).count, 0);
-  invalidCardKeyDb.close();
-}
+    captureId: mismatchedCaptureId,
+    capturedAt: "2026-07-15T08:09:10.000Z",
+    captureKinds: ["billed", "unbilled"],
+    cardRowCounts: { "2222": 0 },
+    completenessEvidence: { bank: "esun" },
+  }),
+  "utf8",
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "invalid-billed.csv"),
+  cardCsv([{ ...cardRows[0], description: "Invalid metadata evidence" }]),
+  "utf8",
+);
+await writeFile(
+  join(fullCardFixture.fixtureSourceDir, "invalid-billed.json"),
+  "{not json",
+  "utf8",
+);
+await importDownloadsCsv({
+  downloadsDir: fullCardFixture.fixtureDownloadsDir,
+  outputDir: fullCardFixture.fixtureOutputDir,
+});
+const partialCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
+const partialCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const partialEntryCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const partialSnapshotCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
+).get(partialCaptureId) as { count: number }).count;
+const mismatchedCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(mismatchedCaptureId) as { count: number }).count;
+const partialCanonicalCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines WHERE description = 'Partial only'",
+).get() as { count: number }).count;
+const invalidSourceFileCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_files WHERE source_relative_path = 'esun-credit-card-statements/invalid-billed.csv'",
+).get() as { count: number }).count;
+const invalidCanonicalCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_statement_lines WHERE description = 'Invalid metadata evidence'",
+).get() as { count: number }).count;
+const verifiedCaptureCount = (partialCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures",
+).get() as { count: number }).count;
+partialCardDb.close();
+assert.equal(partialCaptureCount, 0);
+assert.equal(partialEntryCount, 0);
+assert.equal(partialSnapshotCount, 0);
+assert.equal(mismatchedCaptureCount, 0);
+assert.equal(partialCanonicalCount, 1);
+assert.equal(invalidSourceFileCount, 1);
+assert.equal(invalidCanonicalCount, 1);
+assert.equal(verifiedCaptureCount, 2);
