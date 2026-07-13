@@ -746,6 +746,25 @@ export function hasUntraversedPager(html: string): boolean {
   );
 }
 
+export async function submitCreditCardMonthOptions(
+  monthOptions: MonthOption[],
+  submit: (month: MonthOption, position: number) => Promise<string>,
+  onResponse: (
+    month: MonthOption,
+    html: string,
+    position: number,
+  ) => Promise<void> | void,
+): Promise<void> {
+  for (let position = 0; position < monthOptions.length; position += 1) {
+    const month = monthOptions[position];
+    const html = await submit(month, position);
+    if (hasUntraversedPager(html)) {
+      throw new Error("YuanTa credit-card response has untraversed pagination.");
+    }
+    await onResponse(month, html, position);
+  }
+}
+
 async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
   const rows = await table.locator("tr").all();
   const parsedRows: string[][] = [];
@@ -1369,7 +1388,7 @@ export default workflow("yuantaCreditCardStatements", {
     console.log("yuanta-credit-card-page-ready-start", {
       startedAt: new Date(pageReadyStartedAt).toISOString(),
     });
-    let currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+    const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
     console.log("yuanta-credit-card-page-ready-complete", {
       durationMs: Date.now() - pageReadyStartedAt,
     });
@@ -1404,41 +1423,36 @@ export default workflow("yuantaCreditCardStatements", {
         }`,
       );
 
-    for (
-      let monthPosition = 0;
-      monthPosition < monthOptions.length;
-      monthPosition += 1
-    ) {
-      const month = monthOptions[monthPosition];
-      const monthStartedAt = Date.now();
-      console.log("yuanta-credit-card-month-start", {
-        index: monthPosition + 1,
-        total: monthOptions.length,
-        monthIndex: month.index,
-        period: month.label,
-        startedAt: new Date(monthStartedAt).toISOString(),
-      });
-      creditCardProgress(monthPosition + 1);
-      if (month.index !== 0) {
-        currentMonthHtml = await submitCreditCardMonth(page, month);
-      }
-      if (hasUntraversedPager(currentMonthHtml)) {
-        throw new Error("YuanTa credit-card response has untraversed pagination.");
-      }
-      const parsedMonth = parseCreditCardBillsHtml(currentMonthHtml, month.label);
-      const monthRows = parsedMonth.rows;
-      billedRows.push(...monthRows);
-      completedCreditCardSteps += 1;
-      console.log("yuanta-credit-card-month-complete", {
-        index: monthPosition + 1,
-        total: monthOptions.length,
-        monthIndex: month.index,
-        period: month.label,
-        rowCount: monthRows.length,
-        durationMs: Date.now() - monthStartedAt,
-      });
-      creditCardProgress();
-    }
+    let monthStartedAt = 0;
+    await submitCreditCardMonthOptions(
+      monthOptions,
+      async (month, monthPosition) => {
+        monthStartedAt = Date.now();
+        console.log("yuanta-credit-card-month-start", {
+          index: monthPosition + 1,
+          total: monthOptions.length,
+          monthIndex: month.index,
+          period: month.label,
+          startedAt: new Date(monthStartedAt).toISOString(),
+        });
+        creditCardProgress(monthPosition + 1);
+        return submitCreditCardMonth(page, month);
+      },
+      async (month, monthHtml, monthPosition) => {
+        const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
+        billedRows.push(...monthRows);
+        completedCreditCardSteps += 1;
+        console.log("yuanta-credit-card-month-complete", {
+          index: monthPosition + 1,
+          total: monthOptions.length,
+          monthIndex: month.index,
+          period: month.label,
+          rowCount: monthRows.length,
+          durationMs: Date.now() - monthStartedAt,
+        });
+        creditCardProgress();
+      },
+    );
 
     const files: TableFile[] = [];
     let unbilledRows: StatementRow[] = [];
