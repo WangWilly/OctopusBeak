@@ -1130,7 +1130,7 @@ function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
             ORDER BY captured_at DESC, snapshot_id DESC
           ) AS row_number
         FROM credit_card_snapshots
-        WHERE capture_id IS NULL
+        WHERE capture_id IS NULL AND card_key <> ''
       )
       WHERE row_number = 1
     )
@@ -1164,7 +1164,7 @@ function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
             ORDER BY captured_at DESC, snapshot_id DESC
           ) AS row_number
         FROM credit_card_snapshots
-        WHERE capture_id IS NULL
+        WHERE capture_id IS NULL AND card_key <> ''
       )
       WHERE row_number = 1
     )
@@ -1194,7 +1194,7 @@ function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
             ORDER BY captured_at DESC, snapshot_id DESC
           ) AS row_number
         FROM credit_card_snapshots
-        WHERE capture_id IS NULL
+        WHERE capture_id IS NULL AND card_key <> ''
       )
       WHERE row_number = 1
     )
@@ -1236,6 +1236,25 @@ function projectLegacyBilledSnapshotsForBalanceHistory(db: LedgerDatabase) {
           AND unbilled.card_key = billed.card_key
           AND unbilled.as_of_date = billed.as_of_date
           AND unbilled.statement_type = 'unbilled'
+      );
+  `);
+}
+
+function excludeBlankLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
+  db.exec(`
+    UPDATE credit_card_snapshots
+    SET capture_id = NULL
+    WHERE card_key = '' AND capture_id LIKE 'legacy-display:%';
+
+    DELETE FROM credit_card_capture_entries
+    WHERE card_key = '' AND capture_id LIKE 'legacy-display:%';
+
+    DELETE FROM credit_card_captures
+    WHERE capture_id LIKE 'legacy-display:%'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM credit_card_capture_entries
+        WHERE credit_card_capture_entries.capture_id = credit_card_captures.capture_id
       );
   `);
 }
@@ -1335,6 +1354,11 @@ const migrations: LedgerMigration[] = [
     version: 19,
     name: "legacy_billed_snapshot_display_projections",
     up: projectLegacyBilledSnapshotsForBalanceHistory,
+  },
+  {
+    version: 20,
+    name: "exclude_blank_legacy_credit_card_display_captures",
+    up: excludeBlankLegacyCreditCardDisplayCaptures,
   },
 ];
 

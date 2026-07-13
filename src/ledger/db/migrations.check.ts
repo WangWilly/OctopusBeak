@@ -256,7 +256,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -624,7 +624,29 @@ try {
     bank: "cathay", product: "cathay-credit-card-statements",
     transactions: [{ id: "cathay", amount: 40 }],
   });
+  insertLegacyCardCapture(cardDb, {
+    source: "legacy-valid-card", capturedAt: "2026-07-09T08:00:00.000Z", card: "4242",
+    transactions: [{ id: "valid", amount: 50 }],
+  });
+  insertLegacyCardCapture(cardDb, {
+    source: "legacy-blank-card", capturedAt: "2026-07-09T09:00:00.000Z", card: "",
+    transactions: [{ id: "blank", amount: 60 }],
+  });
   migrateLedgerDb(cardDb);
+  const validLegacySnapshot = cardDb.prepare(`
+    SELECT capture_id FROM credit_card_snapshots
+    WHERE source_file_id = 'legacy-valid-card' AND card_key = '4242'
+  `).get() as { capture_id: string | null } | undefined;
+  const blankLegacySnapshot = cardDb.prepare(`
+    SELECT capture_id FROM credit_card_snapshots
+    WHERE source_file_id = 'legacy-blank-card' AND card_key = ''
+  `).get() as { capture_id: string | null } | undefined;
+  assert.match(validLegacySnapshot?.capture_id ?? "", /^legacy-display:/);
+  assert.equal(blankLegacySnapshot?.capture_id, null);
+  assert.equal((cardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_capture_entries
+    WHERE source_file_id = 'legacy-blank-card' AND card_key = ''
+  `).get() as { count: number }).count, 0);
   const legacyPayloadRows = cardDb.prepare(`
     SELECT statement_row_id, raw_payload_json
     FROM credit_card_statement_lines
@@ -781,6 +803,8 @@ try {
     { source_file_id: "esun-same-last4", statement_type: "unbilled", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 30 },
     { source_file_id: "july-full", statement_type: "unbilled", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
     { source_file_id: "june-full", statement_type: "unbilled", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 9, total_amount: 45 },
+    { source_file_id: "legacy-blank-card", statement_type: "unbilled", as_of_date: "2026-07-09", currency: "TWD", transaction_count: 1, total_amount: 60 },
+    { source_file_id: "legacy-valid-card", statement_type: "unbilled", as_of_date: "2026-07-09", currency: "TWD", transaction_count: 1, total_amount: 50 },
     { source_file_id: "next-day-subset", statement_type: "unbilled", as_of_date: "2026-07-05", currency: "TWD", transaction_count: 1, total_amount: 1 },
     { source_file_id: "two-day-source", statement_type: "unbilled", as_of_date: "2026-07-07", currency: "TWD", transaction_count: 1, total_amount: 20 },
   ]);
@@ -797,6 +821,66 @@ try {
   assert.equal(cardIndexes.some((index) => (
     index.name === "uq_credit_card_statement_lines_content_hash"
   )), false);
+  cardDb.exec(`
+    UPDATE credit_card_snapshots
+    SET capture_id = 'legacy-display:2026-07-09'
+    WHERE source_file_id = 'legacy-blank-card' AND card_key = '';
+    INSERT INTO credit_card_capture_entries (
+      capture_id, statement_row_id, source_file_id, source_row_index,
+      bank, product, card_key, statement_type
+    ) VALUES (
+      'legacy-display:2026-07-09', 'legacy-display:legacy-blank-card',
+      'legacy-blank-card', -999, 'esun', 'credit-card-statements', '', 'unbilled'
+    );
+    INSERT INTO credit_card_snapshots (
+      snapshot_id, capture_id, source_file_id, bank, product, card_key,
+      statement_type, captured_at, as_of_date, currency,
+      transaction_count, total_amount
+    ) VALUES (
+      'legacy-blank-orphan', 'legacy-display:2026-07-10',
+      'legacy-blank-orphan', 'legacy', 'credit-card-history', '',
+      'unbilled', '2026-07-10T00:00:00.000Z', '2026-07-10', 'TWD', 0, 0
+    );
+    INSERT INTO credit_card_captures (
+      capture_id, bank, product, captured_at, completeness_json
+    ) VALUES (
+      'legacy-display:2026-07-10', 'legacy', 'credit-card-history',
+      '2026-07-10T00:00:00.000Z', '{}'
+    );
+    INSERT INTO credit_card_capture_entries (
+      capture_id, statement_row_id, source_file_id, source_row_index,
+      bank, product, card_key, statement_type
+    ) VALUES (
+      'legacy-display:2026-07-10', 'legacy-display:legacy-blank-orphan',
+      'legacy-blank-orphan', -1, 'legacy', 'credit-card-history', '', 'unbilled'
+    );
+    DELETE FROM schema_migrations WHERE version = 20;
+  `);
+  migrateLedgerDb(cardDb);
+  assert.equal((cardDb.prepare(`
+    SELECT capture_id FROM credit_card_snapshots
+    WHERE source_file_id = 'legacy-blank-card' AND card_key = ''
+  `).get() as { capture_id: string | null }).capture_id, null);
+  assert.equal((cardDb.prepare(`
+    SELECT capture_id FROM credit_card_snapshots
+    WHERE source_file_id = 'legacy-valid-card' AND card_key = '4242'
+  `).get() as { capture_id: string | null }).capture_id, "legacy-display:2026-07-09");
+  assert.equal((cardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_capture_entries
+    WHERE card_key = '' AND capture_id LIKE 'legacy-display:%'
+  `).get() as { count: number }).count, 0);
+  assert.equal((cardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_captures
+    WHERE capture_id = 'legacy-display:2026-07-09'
+  `).get() as { count: number }).count, 1);
+  assert.equal((cardDb.prepare(`
+    SELECT capture_id FROM credit_card_snapshots
+    WHERE snapshot_id = 'legacy-blank-orphan'
+  `).get() as { capture_id: string | null }).capture_id, null);
+  assert.equal((cardDb.prepare(`
+    SELECT COUNT(*) AS count FROM credit_card_captures
+    WHERE capture_id = 'legacy-display:2026-07-10'
+  `).get() as { count: number }).count, 0);
   cardDb.close();
 
   const invalidCardDb = openLedgerDatabase(invalidCardBackfillLedgerDir);
