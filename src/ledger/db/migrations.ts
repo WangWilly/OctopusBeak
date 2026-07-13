@@ -1204,6 +1204,42 @@ function backfillLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
   `);
 }
 
+function projectLegacyBilledSnapshotsForBalanceHistory(db: LedgerDatabase) {
+  db.exec(`
+    INSERT OR IGNORE INTO credit_card_snapshots (
+      snapshot_id, capture_id, source_file_id, bank, product, card_key,
+      statement_type, captured_at, as_of_date, currency,
+      transaction_count, total_amount
+    )
+    SELECT
+      'legacy-display-unbilled:' || billed.snapshot_id,
+      billed.capture_id,
+      billed.source_file_id,
+      billed.bank,
+      billed.product,
+      billed.card_key,
+      'unbilled',
+      billed.captured_at,
+      billed.as_of_date,
+      billed.currency,
+      billed.transaction_count,
+      billed.total_amount
+    FROM credit_card_snapshots AS billed
+    WHERE billed.capture_id LIKE 'legacy-display:%'
+      AND billed.statement_type = 'billed'
+      AND billed.card_key <> ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM credit_card_snapshots AS unbilled
+        WHERE unbilled.bank = billed.bank
+          AND unbilled.product = billed.product
+          AND unbilled.card_key = billed.card_key
+          AND unbilled.as_of_date = billed.as_of_date
+          AND unbilled.statement_type = 'unbilled'
+      );
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1294,6 +1330,11 @@ const migrations: LedgerMigration[] = [
     version: 18,
     name: "legacy_credit_card_display_captures",
     up: backfillLegacyCreditCardDisplayCaptures,
+  },
+  {
+    version: 19,
+    name: "legacy_billed_snapshot_display_projections",
+    up: projectLegacyBilledSnapshotsForBalanceHistory,
   },
 ];
 

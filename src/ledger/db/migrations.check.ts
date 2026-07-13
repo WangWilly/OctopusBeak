@@ -256,7 +256,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
   );
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
@@ -583,7 +583,7 @@ try {
   });
   insertLegacyCardCapture(cardDb, {
     source: "billed-history", capturedAt: "2026-06-30T07:00:00.000Z",
-    statementType: "billed", transactions: transactions(1),
+    card: "7777", statementType: "billed", transactions: transactions(1),
   });
   insertLegacyCardCapture(cardDb, {
     source: "june-subset", capturedAt: "2026-06-30T09:00:00.000Z", transactions: transactions(2),
@@ -639,6 +639,10 @@ try {
   const legacyEntryCountBeforeRerun = (cardDb.prepare(
     "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id LIKE 'legacy-display:%'",
   ).get() as { count: number }).count;
+  const legacyProjectionCountBeforeRerun = (cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE snapshot_id LIKE 'legacy-display-unbilled:%'",
+  ).get() as { count: number }).count;
+  assert.equal(legacyProjectionCountBeforeRerun, 1);
   migrateLedgerDb(cardDb);
   assert.equal((cardDb.prepare(
     "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id LIKE 'legacy-display:%'",
@@ -646,6 +650,9 @@ try {
   assert.equal((cardDb.prepare(
     "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id LIKE 'legacy-display:%'",
   ).get() as { count: number }).count, legacyEntryCountBeforeRerun);
+  assert.equal((cardDb.prepare(
+    "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE snapshot_id LIKE 'legacy-display-unbilled:%'",
+  ).get() as { count: number }).count, legacyProjectionCountBeforeRerun);
 
   const captureColumns = cardDb.prepare(
     "PRAGMA table_info(credit_card_captures)",
@@ -769,6 +776,7 @@ try {
   `).all().map((row) => ({ ...row }));
   assert.deepEqual(snapshots, [
     { source_file_id: "billed-history", statement_type: "billed", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 1, total_amount: 1 },
+    { source_file_id: "billed-history", statement_type: "unbilled", as_of_date: "2026-06-30", currency: "TWD", transaction_count: 1, total_amount: 1 },
     { source_file_id: "cathay-same-last4", statement_type: "unbilled", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 40 },
     { source_file_id: "esun-same-last4", statement_type: "unbilled", as_of_date: "2026-07-08", currency: "TWD", transaction_count: 1, total_amount: 30 },
     { source_file_id: "july-full", statement_type: "unbilled", as_of_date: "2026-07-03", currency: "TWD", transaction_count: 12, total_amount: 78 },
