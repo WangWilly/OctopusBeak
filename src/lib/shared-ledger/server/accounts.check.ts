@@ -124,72 +124,92 @@ function creditCardSnapshot(
   };
 }
 
-const currentCardData = emptyLedgerQueryData();
-currentCardData.creditCardStatementLines = [
-  creditCardRow(1, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
-  creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
+function creditCardCapture(captureId: string, capturedAt: string) {
+  return {
+    captureId,
+    bank: "fubon",
+    product: "credit-card-statements",
+    capturedAt,
+    completenessJson: "{}",
+  };
+}
+
+function creditCardCaptureEntry(captureId: string, row: CreditCardStatementLine, cardKey: string) {
+  return {
+    captureId,
+    statementRowId: row.statementRowId,
+    sourceFileId: row.sourceFileId,
+    sourceRowIndex: row.sourceRowIndex,
+    bank: row.bank,
+    product: row.product,
+    cardKey,
+    statementType: row.statementType,
+  };
+}
+
+const oldCaptureId = "capture-old";
+const latestCaptureId = "capture-latest";
+const otherCardCaptureId = "capture-other-card";
+const legacyUnbilled = creditCardRow(1, "unbilled", "4281", "2026-06-01T10:00:00.000Z", 111);
+const oldCaptureUnbilled = creditCardRow(2, "unbilled", "4281", "2026-06-02T10:00:00.000Z", 222);
+const latestCaptureBilled = {
+  ...creditCardRow(3, "billed", "4281", "2026-06-03T10:00:00.000Z", 333),
+  cardLabel: "Latest card",
+};
+const latestCaptureBilledDuplicate = {
+  ...creditCardRow(4, "billed", "4281", "2026-06-03T10:00:00.000Z", 333),
+  cardLabel: "Latest card",
+};
+const otherCardBilled = {
+  ...creditCardRow(5, "billed", "9999", "2026-06-03T10:00:00.000Z", 444),
+  cardLabel: "Other card",
+};
+const verifiedCardData = emptyLedgerQueryData();
+verifiedCardData.creditCardStatementLines = [
+  legacyUnbilled,
+  oldCaptureUnbilled,
+  latestCaptureBilled,
+  latestCaptureBilledDuplicate,
+  otherCardBilled,
 ];
-currentCardData.creditCardSnapshots = [
-  creditCardSnapshot("billed-current", "billed", "2026-06-27T09:00:00.000Z", 3000),
-  creditCardSnapshot("unbilled-old", "unbilled", "2026-06-26T10:00:00.000Z", 4005),
-  creditCardSnapshot("unbilled-current", "unbilled", "2026-06-27T10:00:00.000Z", 5000),
-  creditCardSnapshot("old-date-captured-later", "unbilled", "2026-06-28T10:00:00.000Z", 999, "2026-06-26"),
+verifiedCardData.creditCardCaptures = [
+  creditCardCapture(oldCaptureId, "2026-06-02T10:00:00.000Z"),
+  creditCardCapture(latestCaptureId, "2026-06-03T10:00:00.000Z"),
+  creditCardCapture(otherCardCaptureId, "2026-06-03T10:00:00.000Z"),
+];
+verifiedCardData.creditCardCaptureEntries = [
+  creditCardCaptureEntry(oldCaptureId, oldCaptureUnbilled, "4281"),
+  creditCardCaptureEntry(latestCaptureId, latestCaptureBilled, "4281"),
+  creditCardCaptureEntry(latestCaptureId, latestCaptureBilledDuplicate, "4281"),
+  creditCardCaptureEntry(otherCardCaptureId, otherCardBilled, "9999"),
+];
+verifiedCardData.creditCardSnapshots = [
+  { ...creditCardSnapshot("legacy-snapshot", "unbilled", "2026-06-04T10:00:00.000Z", 999), captureId: null },
+  { ...creditCardSnapshot("old-unbilled", "unbilled", "2026-06-02T10:00:00.000Z", 222), captureId: oldCaptureId },
+  { ...creditCardSnapshot("latest-billed", "billed", "2026-06-03T10:00:00.000Z", 666), captureId: latestCaptureId },
+  { ...creditCardSnapshot("latest-unbilled", "unbilled", "2026-06-03T10:00:00.000Z", 0), captureId: latestCaptureId },
+  { ...creditCardSnapshot("other-billed", "billed", "2026-06-03T10:00:00.000Z", 444), captureId: otherCardCaptureId, cardKey: "9999" },
+  { ...creditCardSnapshot("other-unbilled", "unbilled", "2026-06-03T10:00:00.000Z", 75), captureId: otherCardCaptureId, cardKey: "9999" },
 ];
 
-const currentCard = buildAccountOverview(currentCardData).find((row) => row.kind === "credit-card");
+const verifiedCards = buildAccountOverview(verifiedCardData).filter((row) => row.kind === "credit-card");
+const latestCard = verifiedCards.find((row) => row.label === "Latest card");
+const otherCard = verifiedCards.find((row) => row.label === "Other card");
 
-assert.ok(currentCard);
-assert.deepEqual(currentCard.amountLines, [{ currency: "TWD", value: 999 }]);
-assert.equal(currentCard.transactionCount, 2);
+assert.equal(verifiedCards.length, 2);
+assert.ok(latestCard);
+assert.deepEqual(latestCard.amountLines, [{ currency: "TWD", value: 0 }]);
+assert.deepEqual(buildTransactionsByAccount(verifiedCardData)[latestCard.id]?.map((row) => row.type), ["billed", "billed"]);
+assert.ok(otherCard);
+assert.deepEqual(otherCard.amountLines, [{ currency: "TWD", value: 75 }]);
+assert.deepEqual(buildTransactionsByAccount(verifiedCardData)[otherCard.id]?.map((row) => row.type), ["billed"]);
 
-const reimportedCardData = emptyLedgerQueryData();
-reimportedCardData.creditCardStatementLines = [
-  creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 1000),
-  creditCardRow(2, "unbilled", "356969******4281", "2026-06-27T09:45:09.910Z", 4005),
-];
-reimportedCardData.creditCardSnapshots = [
-  creditCardSnapshot("unbilled-reimported", "unbilled", "2026-06-27T10:00:00.000Z", 4005),
-];
+const legacyOnlyCardData = emptyLedgerQueryData();
+legacyOnlyCardData.creditCardStatementLines = [creditCardRow(6, "unbilled", "0000", "2026-06-04T10:00:00.000Z", 123)];
+legacyOnlyCardData.creditCardSnapshots = [creditCardSnapshot("legacy-only", "unbilled", "2026-06-04T10:00:00.000Z", 123)];
 
-const reimportedCard = buildAccountOverview(reimportedCardData).find((row) => row.kind === "credit-card");
-
-assert.ok(reimportedCard);
-assert.deepEqual(reimportedCard.amountLines, [{ currency: "TWD", value: 4005 }]);
-assert.equal(reimportedCard.transactionCount, 2);
-
-const settledCardData = emptyLedgerQueryData();
-settledCardData.creditCardStatementLines = [
-  creditCardRow(1, "unbilled", "356969******4281", "2026-06-26T09:45:09.910Z", 4005),
-  creditCardRow(2, "billed", "4281", "2026-06-27T09:45:09.910Z", 4005),
-];
-settledCardData.creditCardSnapshots = [
-  creditCardSnapshot("billed-settled", "billed", "2026-06-27T10:00:00.000Z", 0),
-];
-
-const settledCard = buildAccountOverview(settledCardData).find((row) => row.kind === "credit-card");
-
-assert.equal(settledCard, undefined);
-assert.deepEqual(Object.values(buildTransactionsByAccount(settledCardData)).map((rows) => rows.length), [2]);
-
-const latest8397Data = emptyLedgerQueryData();
-latest8397Data.creditCardStatementLines = [
-  { ...creditCardRow(1, "unbilled", "8397", "2026-07-03T09:00:00.000Z", 142), bank: "esun" },
-  { ...creditCardRow(2, "unbilled", "8397", "2026-07-12T09:00:00.000Z", 14844), bank: "esun" },
-];
-latest8397Data.creditCardSnapshots = [
-  { ...creditCardSnapshot("8397-billed", "billed", "2026-07-12T08:00:00.000Z", 19000), bank: "esun", cardKey: "8397" },
-  { ...creditCardSnapshot("8397-old", "unbilled", "2026-07-03T10:00:00.000Z", 6120), bank: "esun", cardKey: "8397" },
-  { ...creditCardSnapshot("8397-latest", "unbilled", "2026-07-12T10:00:00.000Z", 14844), bank: "esun", cardKey: "8397" },
-  { ...creditCardSnapshot("5678-billed", "billed", "2026-07-12T08:00:00.000Z", 9000), bank: "esun", cardKey: "5678" },
-  { ...creditCardSnapshot("5678-old", "unbilled", "2026-07-03T10:00:00.000Z", 300), bank: "esun", cardKey: "5678" },
-  { ...creditCardSnapshot("5678-latest", "unbilled", "2026-07-12T10:00:00.000Z", 700), bank: "esun", cardKey: "5678" },
-];
-const latestCards = buildAccountOverview(latest8397Data).filter((row) => row.kind === "credit-card");
-
-assert.equal(latestCards.length, 2);
-assert.ok(latestCards.some((row) => row.amountLines[0]?.value === 14844));
-assert.ok(latestCards.some((row) => row.amountLines[0]?.value === 700));
-assert.equal(latestCards.some((row) => row.amountLines[0]?.value === 19000), false);
+assert.equal(buildAccountOverview(legacyOnlyCardData).find((row) => row.kind === "credit-card"), undefined);
+assert.deepEqual(buildTransactionsByAccount(legacyOnlyCardData), {});
 
 function loanRow(sourceRowIndex: number, item: string, amount: number, balanceAfter: number): LoanTransaction {
   return {
