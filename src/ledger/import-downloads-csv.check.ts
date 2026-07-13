@@ -539,6 +539,46 @@ assert.equal(entryCount, 4);
 assert.deepEqual(latestTransactionTypes, ["billed"]);
 assert.equal(lastSeenAt.last_seen_at, "2026-07-13T08:09:10.000Z");
 
+const splitCardFixture = await cardImportFixture();
+const splitCaptureId = "9d000000-0000-4000-8000-000000000005";
+await splitCardFixture.writeCapture(
+  "split",
+  splitCaptureId,
+  "2026-07-16T08:09:10.000Z",
+  [cardRows[0]],
+  [],
+  false,
+);
+await importDownloadsCsv({
+  downloadsDir: splitCardFixture.fixtureDownloadsDir,
+  outputDir: splitCardFixture.fixtureOutputDir,
+});
+await splitCardFixture.writeCapture(
+  "split",
+  splitCaptureId,
+  "2026-07-16T08:09:10.000Z",
+  [cardRows[0]],
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: splitCardFixture.fixtureDownloadsDir,
+  outputDir: splitCardFixture.fixtureOutputDir,
+});
+const splitCardDb = openLedgerDatabase(splitCardFixture.fixtureOutputDir, { readOnly: true });
+const splitCaptureCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+const splitEntryCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+const splitSnapshotCount = (splitCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
+).get(splitCaptureId) as { count: number }).count;
+splitCardDb.close();
+assert.equal(splitCaptureCount, 1);
+assert.equal(splitEntryCount, 1);
+assert.equal(splitSnapshotCount, 2);
+
 await fullCardFixture.writeCapture(
   "partial",
   partialCaptureId,
