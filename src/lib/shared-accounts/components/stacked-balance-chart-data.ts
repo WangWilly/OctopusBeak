@@ -1,4 +1,4 @@
-import type { AccountKind, AccountRowDto, DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+import { historyPointKey, type AccountKind, type AccountRowDto, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
 
 export type BalanceChartMode = "asset" | "liability";
 export type BalanceChartFilter = AccountKind | "all";
@@ -60,7 +60,7 @@ export function buildStackedBalanceChartData(options: {
     .map((group, index) => {
       const data = dates.map((date) => ({
         date,
-        dateLabel: date,
+        dateLabel: pointLabel(date),
         time: dateTime(date),
         value: sumForDate(group.accounts, options.dailyHistoryByAccount, date, options.currency, options.mode),
       }));
@@ -74,7 +74,7 @@ export function buildStackedBalanceChartData(options: {
     .filter((item) => item.data.some((point) => Math.abs(point.value) > EPSILON));
   const totals = dates.map((date, index) => ({
     date,
-    dateLabel: date,
+    dateLabel: pointLabel(date),
     time: dateTime(date),
     value: series.reduce((sum, item) => sum + (item.data[index]?.value ?? 0), 0),
   }));
@@ -114,7 +114,7 @@ function collectDates(
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>,
 ) {
   return [
-    ...new Set(accounts.flatMap((account) => (dailyHistoryByAccount[account.id] ?? []).map((row) => row.date))),
+    ...new Set(accounts.flatMap((account) => (dailyHistoryByAccount[account.id] ?? []).map(historyPointKey))),
   ].sort((left, right) => left.localeCompare(right));
 }
 
@@ -137,7 +137,11 @@ function labelForKind(kind: AccountKind) {
 }
 
 function dateTime(date: string) {
-  return Date.parse(`${date}T00:00:00.000Z`);
+  return Date.parse(date.length > 10 ? date : `${date}T00:00:00.000Z`);
+}
+
+function pointLabel(date: string) {
+  return date.length > 10 ? date.slice(0, 16).replace("T", " ") : date;
 }
 
 function isAccountInMode(account: AccountRowDto, mode: BalanceChartMode) {
@@ -152,7 +156,7 @@ function sumForDate(
   mode: BalanceChartMode,
 ) {
   return accounts.reduce((sum, account) => {
-    const row = (dailyHistoryByAccount[account.id] ?? []).find((item) => item.date === date);
+    const row = (dailyHistoryByAccount[account.id] ?? []).find((item) => historyPointKey(item) === date);
     const value = row?.[mode === "asset" ? "assets" : "liabilities"].find((amount) => amount.currency === currency)?.value ?? 0;
     return sum + (mode === "liability" ? Math.abs(value) : value);
   }, 0);

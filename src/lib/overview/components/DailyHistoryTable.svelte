@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "$lib/i18n/i18n.ts";
-  import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+  import { historyPointKey, type DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
@@ -51,7 +51,7 @@
   }
 
   function sortValue(row: DailyHistoryRowDto, key: SortKey) {
-    if (key === "date") return row.date;
+    if (key === "date") return historyPointKey(row);
     return currencyValue(row[key]);
   }
 
@@ -77,6 +77,10 @@
       sortDirection = "desc";
     }
     page = 0;
+  }
+
+  function pointLabel(row: DailyHistoryRowDto) {
+    return row.pointAt ? row.pointAt.slice(0, 16).replace("T", " ") : row.date;
   }
 
 </script>
@@ -113,7 +117,7 @@
       <tbody>
         {#each pageRows as row}
           <tr>
-            <td>{row.date}</td>
+            <td>{pointLabel(row)}</td>
             <td class="right money">{formatCurrencyAmount(row.netAssets)}</td>
             {#if !compact}
               {@const dailyChange = currencyValue(row.dailyChange)}
