@@ -171,22 +171,22 @@ function cardCaptureEntry(captureId: string, row: CreditCardStatementLine) {
 }
 
 const cardData = emptyLedgerQueryData();
-const earlyVerifiedCaptureId = "verified-early";
-const verifiedCaptureId = "verified-late";
+const earlyVerifiedCaptureId = "verified-alpha";
+const verifiedCaptureId = "verified-bravo";
 const earlyVerifiedCardRow = cardRow("verified-early", "2026-07-12T08:00:00.000Z", 120);
-const verifiedCardRow = cardRow("verified-late", "2026-07-12T10:00:00.000Z", 180);
+const verifiedCardRow = cardRow("verified-late", "2026-07-12T08:00:00.000Z", 180);
 cardData.creditCardSnapshots = [
   cardSnapshot("june-early", "2026-06-30T08:00:00.000Z", 4500),
   cardSnapshot("june-late", "2026-06-30T10:00:00.000Z", 4680),
   cardSnapshot("older-day-captured-later", "2026-07-04T08:00:00.000Z", 999, "2026-07-01"),
   cardSnapshot("july-complete", "2026-07-03T08:00:00.000Z", 6120),
   { ...cardSnapshot("verified-early", "2026-07-12T08:00:00.000Z", 120), captureId: earlyVerifiedCaptureId },
-  { ...cardSnapshot("verified-late", "2026-07-12T10:00:00.000Z", 180), captureId: verifiedCaptureId },
+  { ...cardSnapshot("verified-late", "2026-07-12T08:00:00.000Z", 180), captureId: verifiedCaptureId },
   cardSnapshot("legacy-later", "2026-07-13T08:00:00.000Z", 14844),
 ];
 cardData.creditCardCaptures = [
   cardCapture(earlyVerifiedCaptureId, "2026-07-12T08:00:00.000Z"),
-  cardCapture(verifiedCaptureId, "2026-07-12T10:00:00.000Z"),
+  cardCapture(verifiedCaptureId, "2026-07-12T08:00:00.000Z"),
 ];
 cardData.creditCardCaptureEntries = [
   cardCaptureEntry(earlyVerifiedCaptureId, earlyVerifiedCardRow),
@@ -205,13 +205,18 @@ cardData.creditCardStatementLines = [
   verifiedCardRow,
   cardRow("legacy-later", "2026-07-13T09:00:00.000Z", 14844),
 ];
+cardData.accountTransactions = [bankRow("verified-early", 3, "2026-07-12", 900)];
 
 const cardAccount = buildAccountOverview(cardData).find((row) => row.kind === "credit-card");
 assert.ok(cardAccount);
 assert.deepEqual(cardAccount.amountLines, [{ currency: "TWD", value: 180 }]);
 const cardHistory = buildDailyHistoryByAccount(cardData)[cardAccount.id] ?? [];
-assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.liabilities[0]?.value]), [
-  ["2026-07-12", "2026-07-12T08:00:00.000Z", 120],
-  ["2026-07-12", "2026-07-12T10:00:00.000Z", 180],
+assert.deepEqual(cardHistory.map((row) => [row.date, row.pointAt, row.captureId, row.liabilities[0]?.value]), [
+  ["2026-07-12", "2026-07-12T08:00:00.000Z", earlyVerifiedCaptureId, 120],
+  ["2026-07-12", "2026-07-12T08:00:00.000Z", verifiedCaptureId, 180],
 ]);
 assert.equal(cardHistory.some((row) => [160, 142, 14844].includes(row.liabilities[0]?.value ?? 0)), false);
+
+const assetAccount = buildAccountOverview(cardData).find((row) => row.kind === "bank");
+assert.ok(assetAccount);
+assert.equal((buildDailyHistoryByAccount(cardData)[assetAccount.id] ?? []).some((row) => row.pointAt), false);

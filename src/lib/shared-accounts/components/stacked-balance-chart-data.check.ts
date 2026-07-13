@@ -83,18 +83,18 @@ const sameDayCaptures = buildStackedBalanceChartData({
   accounts: [accounts[4]!],
   dailyHistoryByAccount: {
     "card-a": [
-      row("2026-07-12", 0, 180, "2026-07-12T10:00:00.000Z"),
-      row("2026-07-12", 0, 120, "2026-07-12T08:00:00.000Z"),
+      row("2026-07-12", 0, 180, "2026-07-12T08:00:00.000Z", "capture-bravo"),
+      row("2026-07-12", 0, 120, "2026-07-12T08:00:00.000Z", "capture-alpha"),
     ],
   },
   filter: "all",
   currency: "TWD",
   mode: "liability",
 });
-assert.deepEqual(sameDayCaptures.dates, ["2026-07-12T08:00:00.000Z", "2026-07-12T10:00:00.000Z"]);
+assert.deepEqual(sameDayCaptures.dates, ["2026-07-12T08:00:00.000Z|capture-alpha", "2026-07-12T08:00:00.000Z|capture-bravo"]);
 assert.deepEqual(sameDayCaptures.series[0]?.data.map((point) => [point.dateLabel, point.time, point.value]), [
   ["2026-07-12 08:00", Date.parse("2026-07-12T08:00:00.000Z"), 120],
-  ["2026-07-12 10:00", Date.parse("2026-07-12T10:00:00.000Z"), 180],
+  ["2026-07-12 08:00", Date.parse("2026-07-12T08:00:00.000Z") + 1, 180],
 ]);
 
 function account(id: string, label: string, kind: AccountKind, value: number): AccountRowDto {
@@ -119,10 +119,11 @@ function account(id: string, label: string, kind: AccountKind, value: number): A
   };
 }
 
-function row(date: string, assets: number, liabilities: number, pointAt?: string): DailyHistoryRowDto {
+function row(date: string, assets: number, liabilities: number, pointAt?: string, captureId?: string): DailyHistoryRowDto {
   return {
     date,
     ...(pointAt ? { pointAt } : {}),
+    ...(captureId ? { captureId } : {}),
     netAssets: [{ currency: "TWD", value: assets - Math.abs(liabilities) }],
     dailyChange: [{ currency: "TWD", value: 0 }],
     assets: [{ currency: "TWD", value: assets }],

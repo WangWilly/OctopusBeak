@@ -35,6 +35,7 @@ export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string
   for (const point of dailyHistoryPoints(data)) {
     const accounts = buildAccountOverview(snapshotData(data, point));
     for (const account of accounts) {
+      if (point.captureId && (account.group !== "liability" || account.kind !== "credit-card")) continue;
       const balance = amountBucket(account.amountLines);
       const previous = previousByAccount.get(account.id);
       const dailyChange = previous ? subtractBuckets(balance, previous) : {};
@@ -46,7 +47,7 @@ export function buildDailyHistoryByAccount(data: LedgerQueryData): Record<string
   return histories;
 }
 
-type HistoryPoint = Pick<DailyHistoryRowDto, "date" | "pointAt">;
+type HistoryPoint = Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">;
 
 function dailyHistoryPoints(data: LedgerQueryData): HistoryPoint[] {
   const verifiedCaptureIds = new Set(data.creditCardCaptureEntries.map((entry) => entry.captureId));
@@ -59,7 +60,11 @@ function dailyHistoryPoints(data: LedgerQueryData): HistoryPoint[] {
     .filter((date) => date && !captureDates.has(date));
   const points = [
     ...dates.map((date) => ({ date })),
-    ...captures.map((capture) => ({ date: capture.capturedAt.slice(0, 10), pointAt: capture.capturedAt })),
+    ...captures.map((capture) => ({
+      date: capture.capturedAt.slice(0, 10),
+      pointAt: capture.capturedAt,
+      captureId: capture.captureId,
+    })),
   ];
   const unique = new Map(points.map((point) => [historyPointKey(point), point]));
   return unique.size > 0
@@ -97,7 +102,10 @@ function sourceFileDate(source: LedgerQueryData["sourceFiles"][number]) {
 
 function snapshotData(data: LedgerQueryData, point: HistoryPoint): LedgerQueryData {
   const creditCardCaptures = data.creditCardCaptures.filter(
-    (capture) => point.pointAt ? capture.capturedAt <= point.pointAt : capture.capturedAt.slice(0, 10) <= point.date,
+    (capture) => point.pointAt
+      ? capture.capturedAt < point.pointAt
+        || (capture.capturedAt === point.pointAt && (!point.captureId || capture.captureId <= point.captureId))
+      : capture.capturedAt.slice(0, 10) <= point.date,
   );
   const creditCardCaptureIds = new Set(creditCardCaptures.map((capture) => capture.captureId));
   const creditCardCaptureEntries = data.creditCardCaptureEntries.filter(

@@ -2,11 +2,12 @@
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
-  import type {
-    AccountKind,
-    AccountRowDto,
-    CurrencyAmountDto,
-    SummaryMetricDto,
+  import {
+    historyPointKey,
+    type AccountKind,
+    type AccountRowDto,
+    type CurrencyAmountDto,
+    type SummaryMetricDto,
   } from "$lib/shared-ledger/types.ts";
   import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
@@ -38,7 +39,7 @@
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
   );
-  $: chartRows = [...assets.dailyHistory].sort((left, right) => left.date.localeCompare(right.date)).slice(-30);
+  $: chartRows = [...assets.dailyHistory].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
   $: chartCurrencies = [
     ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
   ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));

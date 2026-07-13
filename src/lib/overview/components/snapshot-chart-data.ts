@@ -35,21 +35,24 @@ export function buildSnapshotChartPoints(
   currency: string,
   amountKey: HistoryAmountKey,
 ): SnapshotChartPoint[] {
-  return rows
+  const offsets = new Map<number, number>();
+  return [...rows]
+    .sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right)))
     .map((row) => {
       const amount = row[amountKey].find((item) => item.currency === currency);
-      const pointKey = historyPointKey(row);
+      const baseTime = Date.parse(row.pointAt ?? `${row.date}T00:00:00.000Z`);
+      const offset = offsets.get(baseTime) ?? 0;
+      offsets.set(baseTime, offset + 1);
       return amount
         ? {
             date: row.date,
             dateLabel: row.pointAt ? row.pointAt.slice(0, 16).replace("T", " ") : row.date,
-            time: Date.parse(row.pointAt ?? `${pointKey}T00:00:00.000Z`),
+            time: baseTime + offset,
             value: amount.value,
           }
         : null;
     })
-    .filter((item): item is SnapshotChartPoint => item !== null)
-    .sort((left, right) => left.time - right.time);
+    .filter((item): item is SnapshotChartPoint => item !== null);
 }
 
 export function buildSnapshotDivergingSeries(
