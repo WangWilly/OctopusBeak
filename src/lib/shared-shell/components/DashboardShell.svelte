@@ -1,5 +1,17 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { fade, fly } from "svelte/transition";
   import { t } from "$lib/i18n/i18n.ts";
+  import {
+    DISPLAY_SCALE_DEFAULT,
+    DISPLAY_SCALE_MAX,
+    DISPLAY_SCALE_MIN,
+    DISPLAY_SCALE_STEP,
+    applyDisplayScale,
+    displayScale,
+    displayScaleShortcut,
+    readStoredDisplayScale,
+  } from "$lib/settings/display-scale.ts";
   import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
@@ -18,8 +30,73 @@
   const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
   let sidebarCollapsed = readStoredSidebarCollapsed();
   let valuesVisible = readStoredValuesVisible();
+  let scaleHudVisible = false;
+  let scaleHudHovered = false;
+  let scaleHudFocusWithin = false;
+  let scaleHudTimer: ReturnType<typeof setTimeout> | null = null;
+  let reduceMotion = false;
 
   $: writeStoredValuesVisible(valuesVisible);
+
+  onMount(() => {
+    if (!window.octopusBeak?.display) return;
+    reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    applyDisplayScale(readStoredDisplayScale());
+    return clearScaleHudTimer;
+  });
+
+  function clearScaleHudTimer() {
+    if (scaleHudTimer) clearTimeout(scaleHudTimer);
+    scaleHudTimer = null;
+  }
+
+  function scheduleScaleHudDismissal() {
+    clearScaleHudTimer();
+    if (scaleHudHovered || scaleHudFocusWithin) return;
+    scaleHudTimer = setTimeout(() => { scaleHudVisible = false; }, 1400);
+  }
+
+  function revealScaleHud() {
+    scaleHudVisible = true;
+    scheduleScaleHudDismissal();
+  }
+
+  function changeDisplayScale(next: number) {
+    applyDisplayScale(next);
+    revealScaleHud();
+  }
+
+  function enterScaleHud() {
+    scaleHudHovered = true;
+    clearScaleHudTimer();
+  }
+
+  function leaveScaleHud() {
+    scaleHudHovered = false;
+    scheduleScaleHudDismissal();
+  }
+
+  function focusScaleHud() {
+    scaleHudFocusWithin = true;
+    clearScaleHudTimer();
+  }
+
+  function handleScaleHudFocusOut(event: FocusEvent) {
+    const next = event.relatedTarget as Node | null;
+    if (next && (event.currentTarget as HTMLElement).contains(next)) return;
+    scaleHudFocusWithin = false;
+    scheduleScaleHudDismissal();
+  }
+
+  function handleDisplayScaleKeydown(event: KeyboardEvent) {
+    if (!window.octopusBeak?.display) return;
+    const action = displayScaleShortcut(event);
+    if (!action) return;
+    event.preventDefault();
+    if (action === "decrease") changeDisplayScale($displayScale - DISPLAY_SCALE_STEP);
+    if (action === "increase") changeDisplayScale($displayScale + DISPLAY_SCALE_STEP);
+    if (action === "reset") changeDisplayScale(DISPLAY_SCALE_DEFAULT);
+  }
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
@@ -69,6 +146,8 @@
     },
   ] as const;
 </script>
+
+<svelte:window onkeydown={handleDisplayScaleKeydown} />
 
 <div class:values-hidden={!valuesVisible} class:sidebar-collapsed={sidebarCollapsed} class="shell-page">
   <aside class="sidebar">
@@ -132,11 +211,92 @@
       </div>
     </header>
 
+    {#if scaleHudVisible}
+      <div
+        class="display-scale-hud"
+        role="group"
+        aria-label={$t.settings.displaySize}
+        onmouseenter={enterScaleHud}
+        onmouseleave={leaveScaleHud}
+        onfocusin={focusScaleHud}
+        onfocusout={handleScaleHudFocusOut}
+        in:fly={{ y: reduceMotion ? 0 : -6, duration: reduceMotion ? 0 : 180 }}
+        out:fade={{ duration: reduceMotion ? 0 : 220 }}
+      >
+        <output aria-live="polite">{$displayScale}%</output>
+        <button
+          type="button"
+          aria-label={$t.settings.decreaseScale}
+          disabled={$displayScale <= DISPLAY_SCALE_MIN}
+          onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}
+        >−</button>
+        <button
+          type="button"
+          aria-label={$t.settings.increaseScale}
+          disabled={$displayScale >= DISPLAY_SCALE_MAX}
+          onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}
+        >+</button>
+        <button
+          type="button"
+          disabled={$displayScale === DISPLAY_SCALE_DEFAULT}
+          onclick={() => changeDisplayScale(DISPLAY_SCALE_DEFAULT)}
+        >{$t.settings.resetScale}</button>
+      </div>
+    {/if}
+
     <slot />
   </main>
 </div>
 
 <style>
+  .display-scale-hud {
+    position: fixed;
+    top: calc(var(--titlebar-safe-top, 0px) + 24px);
+    right: 24px;
+    z-index: 30;
+    min-height: 56px;
+    display: inline-flex;
+    align-items: stretch;
+    overflow: hidden;
+    border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+    border-radius: 999px;
+    background: color-mix(in oklch, var(--surface) 92%, transparent);
+    box-shadow: 0 16px 34px rgb(15 23 42 / 0.12);
+    backdrop-filter: blur(18px) saturate(1.08);
+  }
+
+  .display-scale-hud :is(output, button) {
+    min-width: 52px;
+    display: grid;
+    place-items: center;
+    padding: 0 16px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
+  }
+
+  .display-scale-hud output {
+    min-width: 92px;
+    border-left: 0;
+    font-size: 20px;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .display-scale-hud button {
+    min-height: 56px;
+    font-size: 20px;
+  }
+
+  .display-scale-hud button:last-child {
+    min-width: 78px;
+    font-size: 13px;
+    font-weight: 680;
+  }
+
+  .display-scale-hud button:hover:not(:disabled) { background: var(--surface-soft); }
+
   @media (max-width: 760px) {
     .nav-link,
     .shell-page.sidebar-collapsed .nav-link {

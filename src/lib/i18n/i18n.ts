@@ -351,6 +351,10 @@ const en = {
     languageDescription: "Choose the language used by the Electron app.",
     currentLanguage: (language: string) => `Current language: ${language}`,
     languageAria: "Language options",
+    displaySize: "Display size",
+    decreaseScale: "Decrease display size",
+    increaseScale: "Increase display size",
+    resetScale: "Reset",
   },
   knownLabels: {
     "Net position": "Net position",
@@ -724,6 +728,10 @@ const zh: typeof en = {
     languageDescription: "選擇 Electron app 使用的語言。",
     currentLanguage: (language) => `目前語言：${language}`,
     languageAria: "語言選項",
+    displaySize: "顯示大小",
+    decreaseScale: "縮小顯示",
+    increaseScale: "放大顯示",
+    resetScale: "重設",
   },
   knownLabels: {
     "Net position": "淨部位",
