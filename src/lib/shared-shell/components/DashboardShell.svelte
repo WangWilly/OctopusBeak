@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { t } from "$lib/i18n/i18n.ts";
   import {
@@ -64,13 +64,15 @@
     scheduleScaleHudDismissal();
   }
 
-  function changeDisplayScale(next: number, announce = false) {
+  async function changeDisplayScale(next: number, announce = false) {
     const previous = $displayScale;
     const normalized = applyDisplayScale(next);
+    revealScaleHud();
     if (announce && normalized !== previous) {
+      scaleAnnouncement = "";
+      await tick();
       scaleAnnouncement = `${$t.settings.displaySize}: ${normalized}%`;
     }
-    revealScaleHud();
   }
 
   function enterScaleHud() {
