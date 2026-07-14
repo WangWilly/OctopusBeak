@@ -83,6 +83,29 @@ test("concurrent finalization closes once", async () => {
   assert.equal(closeCalls, 1);
 });
 
+test("closing session refuses ownership from a new run", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const oldOwner = { taskId: "task-in-flight", taskRunId: "run-old", session: "ses-in-flight" };
+  ownAutomationSession({ ...oldOwner, pid: null });
+  const closing = finalizeExactOwnedAutomationSession(oldOwner, {
+    async closeSession() { await blocked; },
+    isExpectedDaemon() { return false; },
+    signalProcessGroup() {},
+    async wait() {},
+  });
+
+  assert.equal(ownAutomationSession({
+    taskId: oldOwner.taskId,
+    taskRunId: "run-new",
+    session: oldOwner.session,
+    pid: null,
+  }), false);
+  assert.equal(ownedAutomationSession(oldOwner.taskId)?.taskRunId, oldOwner.taskRunId);
+  release();
+  await closing;
+});
+
 test("exact-owner finalization leaves a replacement registered", async () => {
   let closeCalls = 0;
   ownAutomationSession({ taskId: "task-exact", taskRunId: "run-new", session: "ses-new", pid: null });

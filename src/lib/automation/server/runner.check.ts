@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { createTaskRun } from "./store.ts";
+import { createTaskRun, taskRunById } from "./store.ts";
+import {
+  finalizeExactOwnedAutomationSession,
+  ownAutomationSession,
+  ownedAutomationSession,
+} from "./session-lifecycle.ts";
 import {
   accumulateAutomationOutput,
   appendCleanupError,
@@ -17,6 +22,7 @@ import {
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
+  claimRunAutomationSession,
   resumeFailureMessage,
   resumeSessionFromLog,
   recoverAbandonedAutomationSessions,
@@ -251,6 +257,53 @@ test("persisted recovery continues after one cleanup failure", async () => {
     );
     assert.deepEqual(visited, ["run-1", "run-2"]);
   } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("failed initial session claim persists failure before spawn", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-in-flight-"));
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const oldOwner = {
+    taskId: "fubon-all-statements",
+    taskRunId: "run-old",
+    session: "ses-in-flight-runner",
+  };
+  ownAutomationSession({ ...oldOwner, pid: null });
+  const closing = finalizeExactOwnedAutomationSession(oldOwner, {
+    async closeSession() { await blocked; },
+    isExpectedDaemon() { return false; },
+    signalProcessGroup() {},
+    async wait() {},
+  });
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: oldOwner.taskId,
+      script: "libretto resume",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "in-flight.log"),
+    });
+    let spawnCalls = 0;
+    if (claimRunAutomationSession(db, run.taskRunId, {
+      ...oldOwner,
+      taskRunId: run.taskRunId,
+      pid: null,
+    })) spawnCalls += 1;
+
+    assert.equal(spawnCalls, 0);
+    assert.equal(taskRunById(db, run.taskRunId)?.status, "failed");
+    assert.match(taskRunById(db, run.taskRunId)?.errorMessage ?? "", /session.*closing/i);
+    assert.equal(ownedAutomationSession(oldOwner.taskId)?.taskRunId, oldOwner.taskRunId);
+    db.close();
+  } finally {
+    release();
+    await closing;
     rmSync(ledgerDir, { recursive: true, force: true });
   }
 });
