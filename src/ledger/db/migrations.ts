@@ -1259,6 +1259,21 @@ function excludeBlankLegacyCreditCardDisplayCaptures(db: LedgerDatabase) {
   `);
 }
 
+function createExchangeRates(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE exchange_rates (
+      rate_date TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      twd_per_unit REAL NOT NULL CHECK (twd_per_unit > 0),
+      source TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (rate_date, currency)
+    );
+    CREATE INDEX idx_exchange_rates_currency_date
+      ON exchange_rates(currency, rate_date);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1359,6 +1374,11 @@ const migrations: LedgerMigration[] = [
     version: 20,
     name: "exclude_blank_legacy_credit_card_display_captures",
     up: excludeBlankLegacyCreditCardDisplayCaptures,
+  },
+  {
+    version: 21,
+    name: "exchange_rates",
+    up: createExchangeRates,
   },
 ];
 

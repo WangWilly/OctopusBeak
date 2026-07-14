@@ -25,6 +25,7 @@ function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
   }
   db.exec(`
     DROP TABLE personal_invoice_items;
+    DROP TABLE IF EXISTS exchange_rates;
     CREATE TABLE personal_invoice_items (
       statement_row_id TEXT PRIMARY KEY,
       source_file_id TEXT NOT NULL,
@@ -183,6 +184,7 @@ function resetCardsToVersion14(db: LedgerDatabase) {
   db.exec(`
     DELETE FROM schema_migrations WHERE version >= 15;
     DELETE FROM credit_card_snapshots;
+    DROP TABLE IF EXISTS exchange_rates;
     DROP TABLE IF EXISTS credit_card_capture_entries;
     DROP TABLE IF EXISTS credit_card_captures;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
@@ -207,6 +209,7 @@ try {
   seeded.exec(`
     DROP TABLE personal_invoice_items;
     DROP TABLE personal_invoices;
+    DROP TABLE IF EXISTS exchange_rates;
     DELETE FROM schema_migrations WHERE version >= 4;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
@@ -256,8 +259,25 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
   );
+  const exchangeRateColumns = migrated.prepare(
+    "PRAGMA table_info(exchange_rates)",
+  ).all() as Array<{ name: string; notnull: number }>;
+  assert.deepEqual(exchangeRateColumns.map((column) => column.name), [
+    "rate_date",
+    "currency",
+    "twd_per_unit",
+    "source",
+    "fetched_at",
+  ]);
+  assert.ok(exchangeRateColumns.every((column) => column.notnull === 1));
+  assert.throws(() => migrated.prepare(`
+    INSERT INTO exchange_rates
+      (rate_date, currency, twd_per_unit, source, fetched_at)
+    VALUES
+      ('2026-07-14', 'USD', 0, 'frankfurter-v2', '2026-07-14T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
   for (const [table, columns] of commonStatementColumns) {
     const names = new Set(columns.map((column) => column.name));
     assert.equal(names.has("dedupe_status"), false, table);
@@ -498,7 +518,10 @@ try {
   categoryDb.close();
 
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
-  dedupeDb.exec("DELETE FROM schema_migrations WHERE version >= 12");
+  dedupeDb.exec(`
+    DROP TABLE IF EXISTS exchange_rates;
+    DELETE FROM schema_migrations WHERE version >= 12;
+  `);
   dedupeDb.exec("DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key");
   for (const table of TYPED_STATEMENT_TABLES) {
     dedupeDb.exec(`

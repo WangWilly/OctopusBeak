@@ -363,3 +363,15 @@ export const automationTaskRuns = sqliteTable("automation_task_runs", {
   logTail: text("log_tail").notNull(),
   recordJson: text("record_json").notNull(),
 });
+
+export const exchangeRates = sqliteTable("exchange_rates", {
+  rateDate: text("rate_date").notNull(),
+  currency: text("currency").notNull(),
+  twdPerUnit: real("twd_per_unit").notNull(),
+  source: text("source").notNull(),
+  fetchedAt: text("fetched_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.rateDate, table.currency] }),
+  index("idx_exchange_rates_currency_date").on(table.currency, table.rateDate),
+  check("ck_exchange_rates_twd_per_unit", sql`${table.twdPerUnit} > 0`),
+]);
