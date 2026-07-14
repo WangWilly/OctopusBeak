@@ -27,6 +27,11 @@ export type ViewerInspectResult = {
   rect: { x: number; y: number; width: number; height: number } | null;
 };
 
+export function displayScaleZoomFactor(percent: number) {
+  if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
+  return Math.min(1.5, Math.max(0.75, percent / 100));
+}
+
 export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
