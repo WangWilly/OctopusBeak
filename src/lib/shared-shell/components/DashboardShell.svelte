@@ -12,7 +12,6 @@
     displayScaleShortcut,
     readStoredDisplayScale,
   } from "$lib/settings/display-scale.ts";
-  import projectIcon from "../assets/project-icon.webp";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
@@ -37,6 +36,9 @@
   let scaleShortcutPlatform: "mac" | "other" = "other";
   let scaleAnnouncement = "";
   let reduceMotion = false;
+  let searchInput: HTMLInputElement | null = null;
+
+  const searchPopoverId = "dashboard-search-popover";
 
   $: writeStoredValuesVisible(valuesVisible);
 
@@ -107,6 +109,13 @@
     if (action === "reset") changeDisplayScale(DISPLAY_SCALE_DEFAULT, true);
   }
 
+  function focusSearchOnOpen(event: Event) {
+    const popover = event.currentTarget as HTMLElement;
+    setTimeout(() => {
+      if (popover.matches(":popover-open")) searchInput?.focus();
+    });
+  }
+
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     localStorage.setItem(sidebarStorageKey, sidebarCollapsed ? "1" : "0");
@@ -159,31 +168,67 @@
 <svelte:window onkeydown={handleDisplayScaleKeydown} />
 
 <div class:values-hidden={!valuesVisible} class:sidebar-collapsed={sidebarCollapsed} class="shell-page">
+  <header class="topbar">
+    <div class="topbar-controls">
+      <button
+        class="sidebar-toggle"
+        type="button"
+        aria-label={sidebarCollapsed ? $t.nav.expandSidebar : $t.nav.collapseSidebar}
+        aria-expanded={!sidebarCollapsed}
+        title={sidebarCollapsed ? $t.nav.expandSidebar : $t.nav.collapseSidebar}
+        onclick={toggleSidebar}
+      >
+        <svg class="sidebar-panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6M9 4v16" />
+        </svg>
+        {#if sidebarCollapsed}
+          <svg class="sidebar-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        {:else}
+          <svg class="sidebar-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        {/if}
+      </button>
+    </div>
+
+    <h1 class="topbar-title"><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
+
+    <div class="topbar-actions">
+      <slot name="topbar-actions">
+        {#if searchPlaceholder}
+          <button
+            class="topbar-tool search-trigger"
+            type="button"
+            aria-label={searchPlaceholder}
+            aria-controls={searchPopoverId}
+            popovertarget={searchPopoverId}
+          >
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="m20.7 19.3-4.2-4.2a7 7 0 1 0-1.4 1.4l4.2 4.2 1.4-1.4ZM5 11a6 6 0 1 1 12 0 6 6 0 0 1-12 0Z" />
+            </svg>
+          </button>
+          <div id={searchPopoverId} class="search-popover" popover="auto" ontoggle={focusSearchOnOpen}>
+            <input
+              class="search"
+              type="search"
+              bind:this={searchInput}
+              bind:value={search}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+            />
+          </div>
+        {:else if syncLabel}
+          <span class="chip good">{syncLabel}</span>
+        {/if}
+        <ValueVisibilityToggle bind:visible={valuesVisible} />
+      </slot>
+    </div>
+  </header>
+
   <aside class="sidebar">
     <div>
-      <div class="brand-row">
-        <a class="brand" href="#/overview" aria-label={$t.nav.homeAria}>
-          <span class="brand-mark">
-            <img class="brand-icon" src={projectIcon} alt="" width="32" height="32" aria-hidden="true" />
-          </span>
-          <span class="brand-copy">
-            <strong class="brand-title">OB</strong>
-            <span class="brand-subtitle">{$t.nav.personalPortfolio}</span>
-          </span>
-        </a>
-        <button
-          class="sidebar-toggle"
-          type="button"
-          aria-label={sidebarCollapsed ? $t.nav.expandSidebar : $t.nav.collapseSidebar}
-          aria-expanded={!sidebarCollapsed}
-          title={sidebarCollapsed ? $t.nav.expandSidebar : $t.nav.collapseSidebar}
-          onclick={toggleSidebar}
-        >
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path fill="currentColor" d="M15.5 5 8.5 12l7 7-1.4 1.4L5.7 12l8.4-8.4L15.5 5Z" />
-          </svg>
-        </button>
-      </div>
       <nav class="side-nav" aria-label={$t.nav.primary}>
         {#each nav as item}
           <a class:active={active === item.id} class="nav-link" href={item.href} aria-label={item.label}>
@@ -203,23 +248,6 @@
   </aside>
 
   <main class="page">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">{eyebrow}</p>
-        <h1>{title}</h1>
-      </div>
-      <div class="topbar-actions">
-        <slot name="topbar-actions">
-          {#if searchPlaceholder}
-            <input class="search" type="search" bind:value={search} placeholder={searchPlaceholder} aria-label={searchPlaceholder} />
-          {:else if syncLabel}
-            <span class="chip good">{syncLabel}</span>
-          {/if}
-          <ValueVisibilityToggle bind:visible={valuesVisible} />
-        </slot>
-      </div>
-    </header>
-
     {#if scaleHudVisible}
       <div
         class="display-scale-hud"
@@ -274,7 +302,7 @@
 
   .display-scale-hud {
     position: fixed;
-    top: calc(var(--titlebar-safe-top, 0px) + 24px);
+    top: calc(var(--topbar-height, 60px) + 24px);
     right: 24px;
     z-index: 30;
     min-height: 56px;
