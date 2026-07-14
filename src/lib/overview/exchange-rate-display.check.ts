@@ -39,3 +39,20 @@ const missing = convertDailyHistoryRows(rows, rates.filter((rate) => rate.curren
 assert.equal(missing.rows[0]?.exchangeRateMissing, true);
 assert.deepEqual(missing.rows[0]?.assets, rows[0]?.assets);
 assert.deepEqual(missing.rows[0]?.netAssets, rows[0]?.netAssets);
+
+let currencyReads = 0;
+const manyRates = Array.from({ length: 200 }, (_, index): ExchangeRateDto => new Proxy({
+  rateDate: `2026-06-${String(index % 28 + 1).padStart(2, "0")}`,
+  currency: index % 2 === 0 ? "USD" : "JPY",
+  twdPerUnit: index % 2 === 0 ? 32 : 0.2,
+}, {
+  get(target, property, receiver) {
+    if (property === "currency") currencyReads += 1;
+    return Reflect.get(target, property, receiver);
+  },
+}));
+convertDailyHistoryRows(Array.from({ length: 20 }, () => rows[0]!), manyRates, "USD");
+assert.ok(
+  currencyReads <= manyRates.length,
+  `expected rates to be grouped once, read currency ${currencyReads} times for ${manyRates.length} rates`,
+);
