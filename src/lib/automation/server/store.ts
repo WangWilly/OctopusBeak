@@ -152,6 +152,16 @@ export function taskRunById(db: LedgerDatabase, taskRunId: string) {
   return row ? rowToTaskRun(row) : null;
 }
 
+export function activeTaskRuns(db: LedgerDatabase): AutomationTaskRun[] {
+  const rows = db.prepare(`
+    SELECT *
+    FROM automation_task_runs
+    WHERE status IN ('running', 'waiting_for_human')
+    ORDER BY started_at ASC
+  `).all() as Record<string, unknown>[];
+  return rows.map(rowToTaskRun);
+}
+
 export function latestTaskRuns(db: LedgerDatabase) {
   const rows = db.prepare(`
     SELECT run.*
