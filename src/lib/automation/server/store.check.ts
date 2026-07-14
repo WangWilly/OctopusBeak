@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
 import {
+  activeTaskRuns,
   createTaskRun,
   importGateStatus,
   latestTaskRuns,
@@ -150,6 +151,31 @@ try {
   assert.equal(history[0]?.taskId, "hncb-statements");
   assert.equal(history[0]?.startedAt, "2026-06-30T04:01:40.000Z");
   assert.equal(history.at(-1)?.startedAt, "2026-06-30T04:00:01.000Z");
+
+  createTaskRun(db, {
+    taskId: "running-task",
+    script: "run:running-task",
+    kind: "crawler",
+    status: "running",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-06-30T05:00:00.000Z",
+    logPath: "data/automation/logs/running.log",
+  });
+  createTaskRun(db, {
+    taskId: "waiting-task",
+    script: "run:waiting-task",
+    kind: "crawler",
+    status: "waiting_for_human",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-06-30T05:01:00.000Z",
+    logPath: "data/automation/logs/waiting.log",
+  });
+  assert.deepEqual(
+    activeTaskRuns(db).map((item) => item.status).sort(),
+    ["running", "waiting_for_human"],
+  );
 
   db.close();
 } finally {

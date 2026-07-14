@@ -1,5 +1,7 @@
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { closeLibrettoSession, resumeSessionFromLog } from "./runner.ts";
+import { readLibrettoSessionState } from "./libretto-session.ts";
+import { resumeSessionFromLog } from "./runner.ts";
+import { finalizeOwnedAutomationSession, ownAutomationSession } from "./session-lifecycle.ts";
 import {
   latestTaskRuns,
   updateTaskRun,
@@ -42,7 +44,14 @@ export async function forceQuitHumanSessionForTask(
     const run = latestTaskRuns(db)[taskId];
     if (!run) throw new Error(`Automation task is not waiting for human input: ${taskId}`);
     const session = humanSessionFromRun(run, taskId);
-    await closeLibrettoSession(session);
+    const state = readLibrettoSessionState(session);
+    ownAutomationSession({
+      taskId,
+      taskRunId: run.taskRunId,
+      session,
+      pid: state?.pid ?? null,
+    });
+    await finalizeOwnedAutomationSession(taskId);
 
     updateTaskRun(db, run.taskRunId, {
       status: "failed",

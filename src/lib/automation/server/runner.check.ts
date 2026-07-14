@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   accumulateAutomationOutput,
+  appendCleanupError,
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
@@ -15,6 +16,7 @@ import {
   shouldAutoRunImport,
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
+  shouldRetainAutomationSession,
 } from "./runner.ts";
 
 assert.equal(createAutomationSessionId(() => "fixed-uuid"), "ses-octopus-fixed-uuid");
@@ -23,6 +25,14 @@ assert.equal(
   "ses-octopus-fixed-uuid",
 );
 assert.equal(automationSessionFromLog("no session"), null);
+assert.equal(shouldRetainAutomationSession("waiting_for_human"), true);
+assert.equal(shouldRetainAutomationSession("completed"), false);
+assert.equal(shouldRetainAutomationSession("failed"), false);
+assert.equal(
+  appendCleanupError("workflow failed", "IPC timeout"),
+  "workflow failed\nSession cleanup failed: IPC timeout",
+);
+assert.equal(appendCleanupError(null, "IPC timeout"), "Session cleanup failed: IPC timeout");
 
 assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
 assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");

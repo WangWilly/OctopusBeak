@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, appendFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -10,14 +10,22 @@ import {
   resolveTaskCommand,
 } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { validateLibrettoSessionName } from "./libretto-session.ts";
-import { closeLibrettoSession } from "./session-lifecycle.ts";
+import { readLibrettoSessionState, validateLibrettoSessionName } from "./libretto-session.ts";
+import {
+  armAutomationSessionTimeout,
+  closeLibrettoSession,
+  disarmAutomationSessionTimeout,
+  finalizeAllOwnedAutomationSessions,
+  finalizeOwnedAutomationSession,
+  ownAutomationSession,
+} from "./session-lifecycle.ts";
 import {
   automationBusinessTimezone,
   automationGroupEnabledStatus,
   readAutomationSettings,
 } from "./settings.ts";
 import {
+  activeTaskRuns,
   createTaskRun,
   importGateStatus,
   taskRunById,
@@ -42,6 +50,15 @@ export function createAutomationSessionId(uuid: () => string = randomUUID): stri
 
 export function automationSessionFromLog(output: string) {
   return output.match(/automation-session:\s+([A-Za-z0-9._-]+)/i)?.[1] ?? null;
+}
+
+export function shouldRetainAutomationSession(status: AutomationTaskStatus) {
+  return status === "waiting_for_human";
+}
+
+export function appendCleanupError(message: string | null, cleanup: string) {
+  const suffix = "Session cleanup failed: " + cleanup;
+  return message ? message + "\n" + suffix : suffix;
 }
 
 export function shouldMarkWaitingForHuman(output: string) {
@@ -194,12 +211,110 @@ export function startAutomationResume(
   });
 }
 
-export function cancelAutomationTask(taskId: string) {
+export async function cancelAutomationTask(taskId: string) {
   if (!activeTaskRunIds.has(taskId)) throw new Error(`Automation task is not running: ${taskId}`);
   const child = activeTaskChildren.get(taskId);
   if (!child) throw new Error(`Automation task has not started a process yet: ${taskId}`);
   child.kill("SIGTERM");
+  await finalizeOwnedAutomationSession(taskId);
   return { cancelled: taskId };
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sessionPid(session: string) {
+  try {
+    return readLibrettoSessionState(session)?.pid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function sessionFromRun(run: AutomationTaskRun) {
+  try {
+    const output = readFileSync(run.logPath, "utf8");
+    const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
+    if (session) return session;
+  } catch {
+    // The bounded log tail remains the recovery source when the log file is unavailable.
+  }
+  return automationSessionFromLog(run.logTail) ?? resumeSessionFromLog(run.logTail);
+}
+
+async function finalizePersistedRun(
+  db: ReturnType<typeof openLedgerDatabase>,
+  run: AutomationTaskRun,
+  reason: string,
+) {
+  const session = sessionFromRun(run);
+  const pid = session ? sessionPid(session) : null;
+  let cleanupError: string | null = null;
+  if (!session) {
+    cleanupError = "Missing Libretto session identity";
+  } else {
+    ownAutomationSession({ taskId: run.taskId, taskRunId: run.taskRunId, session, pid });
+    try {
+      await finalizeOwnedAutomationSession(run.taskId);
+    } catch (error) {
+      cleanupError = errorMessage(error);
+    }
+  }
+  updateTaskRun(db, run.taskRunId, {
+    status: "failed",
+    finishedAt: new Date().toISOString(),
+    exitCode: null,
+    signal: null,
+    errorMessage: cleanupError
+      ? appendCleanupError(run.errorMessage ?? reason, cleanupError)
+      : run.errorMessage ?? reason,
+  });
+  appendLog(
+    run.logPath,
+    `automation-session-finalize: session=${session ?? "unknown"} pid=${pid ?? "unknown"} cleanup-error=${cleanupError ?? "none"}\n`,
+  );
+}
+
+async function finalizePersistedActiveRuns(ledgerDir: string, reason: string) {
+  const db = openLedgerDatabase(ledgerDir);
+  const errors: unknown[] = [];
+  try {
+    for (const run of activeTaskRuns(db)) {
+      try {
+        await finalizePersistedRun(db, run, reason);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  } finally {
+    db.close();
+  }
+  if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
+}
+
+export async function recoverAbandonedAutomationSessions(
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  await finalizePersistedActiveRuns(ledgerDir, "App 前次異常結束");
+}
+
+export async function shutdownAutomationSessions(
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  for (const child of activeTaskChildren.values()) child.kill("SIGTERM");
+  const errors: unknown[] = [];
+  try {
+    await finalizeAllOwnedAutomationSessions();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await finalizePersistedActiveRuns(ledgerDir, "App 關閉，人工操作未完成");
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation sessions");
 }
 
 export async function runAutomationTask(
@@ -225,7 +340,14 @@ export async function runAutomationTask(
         `${task.id}-${Date.now()}-${attempt}.log`,
       );
       const env = automationProcessEnv();
-      const command = resolveTaskCommand(task, { resumeSession: options.resumeSession }, env);
+      const isLibrettoTask = task.command[0] === "libretto";
+      const session = isLibrettoTask
+        ? options.resumeSession ?? createAutomationSessionId()
+        : null;
+      const command = resolveTaskCommand(task, {
+        resumeSession: options.resumeSession,
+        session: options.resumeSession ? undefined : session ?? undefined,
+      }, env);
       const script = command.display;
       const run = createTaskRun(taskDb, {
         taskId: task.id,
@@ -238,21 +360,18 @@ export async function runAutomationTask(
         logPath,
       });
       activeTaskRunIds.set(task.id, run.taskRunId);
+      if (session) {
+        appendLog(logPath, "automation-session: " + session + "\n");
+        disarmAutomationSessionTimeout(task.id);
+        ownAutomationSession({
+          taskId: task.id,
+          taskRunId: run.taskRunId,
+          session,
+          pid: sessionPid(session),
+        });
+      }
       let logTail = "";
       let detectedResumeFailure: string | null = null;
-      let closeResumeSessionPromise: Promise<void> | null = null;
-      const closeResumeSessionAfterFailure = () => {
-        if (!options.resumeSession) return null;
-        closeResumeSessionPromise ??= closeLibrettoSession(
-          options.resumeSession,
-        ).catch((error: unknown) => {
-          console.warn("automation-resume-session-close-failed", {
-            session: options.resumeSession,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        });
-        return closeResumeSessionPromise;
-      };
 
       const result = await new Promise<{
         exitCode: number | null;
@@ -265,13 +384,18 @@ export async function runAutomationTask(
             chunk.toString("utf8"),
           );
           appendLog(logPath, output.logChunk);
+          if (session) {
+            ownAutomationSession({
+              taskId: task.id,
+              taskRunId: run.taskRunId,
+              session,
+              pid: sessionPid(session),
+            });
+          }
           logTail = output.logTail;
           detectedResumeFailure = output.resumeFailure;
           if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
             updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
-          }
-          if (detectedResumeFailure) {
-            void closeResumeSessionAfterFailure();
           }
         };
         const patchCommand = resolvePatchCommand(options, env);
@@ -309,7 +433,7 @@ export async function runAutomationTask(
       });
 
       const resumeFailure = detectedResumeFailure ?? resumeFailureMessage(logTail);
-      const status = result.error || resumeFailure
+      let status: AutomationTaskStatus = result.error || resumeFailure
         ? "failed"
         : nextAttemptStatus({
           kind: task.kind,
@@ -318,6 +442,17 @@ export async function runAutomationTask(
           exitCode: result.exitCode,
           waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
+      let taskError = result.error?.message
+        ?? resumeFailure
+        ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null);
+      if (session && !shouldRetainAutomationSession(status)) {
+        try {
+          await finalizeOwnedAutomationSession(task.id);
+        } catch (error) {
+          taskError = appendCleanupError(taskError, errorMessage(error));
+          if (status === "completed") status = "failed";
+        }
+      }
       if (isForceQuitRun(taskRunById(taskDb, run.taskRunId))) return { status: "failed" };
       updateTaskRun(taskDb, run.taskRunId, {
         status,
@@ -325,12 +460,35 @@ export async function runAutomationTask(
         exitCode: result.exitCode,
         signal: result.signal,
         logTail,
-        errorMessage: result.error?.message
-          ?? resumeFailure
-          ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null),
+        errorMessage: taskError,
       });
-      if (shouldCloseResumeSession({ status, resumeSession: options.resumeSession })) {
-        await closeResumeSessionAfterFailure();
+      if (session && shouldRetainAutomationSession(status)) {
+        armAutomationSessionTimeout(task.id, async () => {
+          const timeoutDb = openLedgerDatabase(ledgerDir);
+          try {
+            if (taskRunById(timeoutDb, run.taskRunId)?.status !== "waiting_for_human") return;
+            let timeoutError: string | null = null;
+            try {
+              await finalizeOwnedAutomationSession(task.id);
+            } catch (error) {
+              timeoutError = errorMessage(error);
+            }
+            if (taskRunById(timeoutDb, run.taskRunId)?.status !== "waiting_for_human") return;
+            updateTaskRun(timeoutDb, run.taskRunId, {
+              status: "failed",
+              finishedAt: new Date().toISOString(),
+              exitCode: null,
+              signal: null,
+              errorMessage: timeoutError
+                ? appendCleanupError("等待人工操作超過 20 分鐘", timeoutError)
+                : "等待人工操作超過 20 分鐘",
+            });
+          } catch (error) {
+            console.error("automation-session-timeout-failed", error);
+          } finally {
+            timeoutDb.close();
+          }
+        });
       }
       if (status !== "completed") return { status };
       const settings = readAutomationSettings();
