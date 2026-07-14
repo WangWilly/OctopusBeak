@@ -22,7 +22,7 @@ export function createBeforeQuitHandler(options: {
     const deadline = new Promise<void>((resolve) => {
       timer = timerDeps.setTimer(resolve, options.timeoutMs);
     });
-    void Promise.race([options.cleanup(), deadline]).finally(() => {
+    void Promise.race([options.cleanup(), deadline]).catch(() => {}).finally(() => {
       if (timer !== undefined) timerDeps.clearTimer(timer);
       quittingAllowed = true;
       options.quit();
