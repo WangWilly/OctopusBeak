@@ -1,4 +1,10 @@
 import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { createTaskRun } from "./store.ts";
 import {
   accumulateAutomationOutput,
   appendCleanupError,
@@ -13,6 +19,8 @@ import {
   parseAutomationProgress,
   resumeFailureMessage,
   resumeSessionFromLog,
+  recoverAbandonedAutomationSessions,
+  shutdownAutomationSessions,
   shouldAutoRunImport,
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
@@ -213,3 +221,51 @@ assert.equal(
   false,
 );
 assert.equal(shouldCloseResumeSession({ status: "failed" }), false);
+
+test("persisted recovery continues after one cleanup failure", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-recovery-"));
+  const visited: string[] = [];
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    for (const taskId of ["run-1", "run-2"]) {
+      createTaskRun(db, {
+        taskId,
+        script: taskId,
+        kind: "crawler",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+        logPath: join(ledgerDir, taskId + ".log"),
+      });
+    }
+    db.close();
+    await assert.rejects(
+      recoverAbandonedAutomationSessions(ledgerDir, {
+        async finalizeRun(_db, run) {
+          visited.push(run.taskId);
+          if (run.taskId === "run-1") throw new Error("first cleanup failed");
+        },
+      }),
+      AggregateError,
+    );
+    assert.deepEqual(visited, ["run-1", "run-2"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown continues persisted recovery after in-memory cleanup failure", async () => {
+  const calls: string[] = [];
+  await assert.rejects(
+    shutdownAutomationSessions("unused", {
+      async finalizeOwnedSessions() {
+        calls.push("memory");
+        throw new AggregateError([], "memory failed");
+      },
+      async finalizePersistedRuns() { calls.push("persisted"); },
+    }),
+    AggregateError,
+  );
+  assert.deepEqual(calls, ["memory", "persisted"]);
+});
