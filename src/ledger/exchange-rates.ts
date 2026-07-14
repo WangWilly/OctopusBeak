@@ -126,7 +126,8 @@ export async function syncExchangeRates(
     if (!response.ok) {
       throw new Error(`Frankfurter request failed: ${response.status}`);
     }
-    const parsed = apiResponseSchema.parse(await response.json());
+    const parsed = apiResponseSchema.parse(await response.json())
+      .filter((row) => currencies.includes(row.quote));
     for (const currency of currencies) {
       if (!parsed.some((row) => row.quote === currency)) {
         throw new Error(`Frankfurter response missing ${currency}`);

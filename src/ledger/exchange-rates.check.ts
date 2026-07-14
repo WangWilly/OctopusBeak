@@ -30,6 +30,7 @@ try {
   const validFetch: typeof fetch = async () => new Response(JSON.stringify([
     { date: "2026-07-11", base: "TWD", quote: "JPY", rate: 5 },
     { date: "2026-07-11", base: "TWD", quote: "USD", rate: 0.03125 },
+    { date: "2026-07-11", base: "TWD", quote: "EUR", rate: 0.027 },
   ]), { status: 200, headers: { "content-type": "application/json" } });
 
   const result = await syncExchangeRates(ledgerDir, history, {
@@ -39,7 +40,8 @@ try {
   assert.equal(result.written, 2);
 
   const db = openLedgerDatabase(ledgerDir);
-  assert.deepEqual(readExchangeRates(db), [
+  const rates = readExchangeRates(db);
+  assert.deepEqual(rates, [
     {
       rateDate: "2026-07-11",
       currency: "JPY",
@@ -55,6 +57,7 @@ try {
       fetchedAt: "2026-07-12T12:00:00.000Z",
     },
   ]);
+  assert.equal(rates.some((rate) => rate.currency === "EUR"), false);
   db.close();
 
   const invalidFetch: typeof fetch = async () => new Response(JSON.stringify([
