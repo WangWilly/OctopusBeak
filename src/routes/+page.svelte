@@ -98,7 +98,7 @@
   }
 
   .loading-status {
-    min-height: calc(100vh - var(--topbar-height, 60px));
+    min-height: calc(100vh - var(--topbar-height, 0px));
     margin: 0;
     display: flex;
     align-items: center;
