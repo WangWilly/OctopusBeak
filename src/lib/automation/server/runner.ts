@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -10,6 +11,7 @@ import {
   resolveTaskCommand,
 } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
+import { validateLibrettoSessionName } from "./libretto-session.ts";
 import {
   automationBusinessTimezone,
   automationGroupEnabledStatus,
@@ -31,6 +33,14 @@ import {
 
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskChildren = new Map<string, ChildProcess>();
+
+export function createAutomationSessionId(uuid: () => string = randomUUID): string {
+  return validateLibrettoSessionName("ses-octopus-" + uuid());
+}
+
+export function automationSessionFromLog(output: string) {
+  return output.match(/automation-session:\s+([A-Za-z0-9._-]+)/i)?.[1] ?? null;
+}
 
 export function shouldMarkWaitingForHuman(output: string) {
   return /manual-(?:auth|otp)-required|workflow paused|resume --session|\benter\b[^\r\n]*(?:captcha|otp|verification|certificate)/i.test(output);

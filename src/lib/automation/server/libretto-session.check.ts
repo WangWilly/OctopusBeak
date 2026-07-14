@@ -28,10 +28,16 @@ assert.deepEqual(
   {
     session: "ses-1p4q",
     port: 48321,
+    pid: 123,
     cdpEndpoint: undefined,
     viewport: undefined,
   },
 );
+assert.throws(() => parseLibrettoSessionState(JSON.stringify({
+  session: "ses-1p4q",
+  port: 48321,
+  pid: -1,
+})), /Invalid Libretto session pid/);
 
 assert.equal(
   cdpEndpointFromState({ session: "ses-1p4q", port: 48321 }),
