@@ -12,6 +12,7 @@
     displayScale,
     displayScaleShortcut,
     readStoredDisplayScale,
+    supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
@@ -44,7 +45,7 @@
   $: writeStoredValuesVisible(valuesVisible);
 
   onMount(() => {
-    if (!window.octopusBeak?.display) return;
+    if (!supportsDisplayScale(window.octopusBeak)) return;
     scaleShortcutPlatform = isMacPlatform(navigator) ? "mac" : "other";
     reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     applyDisplayScale(readStoredDisplayScale());
@@ -101,7 +102,7 @@
   }
 
   function handleDisplayScaleKeydown(event: KeyboardEvent) {
-    if (!window.octopusBeak?.display) return;
+    if (!supportsDisplayScale(window.octopusBeak)) return;
     const action = displayScaleShortcut(event, scaleShortcutPlatform);
     if (!action) return;
     event.preventDefault();

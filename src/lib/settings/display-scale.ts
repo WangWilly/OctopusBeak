@@ -6,6 +6,10 @@ export const DISPLAY_SCALE_STEP = 5;
 export const DISPLAY_SCALE_DEFAULT = 100;
 export const displayScaleStorageKey = "octopusbeak-display-scale";
 
+export function supportsDisplayScale(bridge: unknown) {
+  return typeof (bridge as { display?: { setScale?: unknown } } | null)?.display?.setScale === "function";
+}
+
 type DisplayScaleStorage = Pick<Storage, "getItem" | "setItem">;
 type DisplayScaleKeyEvent = Pick<
   KeyboardEvent,

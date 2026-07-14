@@ -9,6 +9,7 @@
     DISPLAY_SCALE_STEP,
     applyDisplayScale,
     displayScale,
+    supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
@@ -16,7 +17,7 @@
   let shortcutModifier = "Ctrl";
 
   onMount(() => {
-    displayScaleAvailable = Boolean(window.octopusBeak?.display);
+    displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
   });
 

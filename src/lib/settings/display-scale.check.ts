@@ -6,6 +6,7 @@ import {
   displayScaleStorageKey,
   normalizeDisplayScale,
   readStoredDisplayScale,
+  supportsDisplayScale,
 } from "./display-scale.ts";
 
 class MemoryStorage {
@@ -23,6 +24,9 @@ assert.equal(normalizeDisplayScale(72), 75);
 assert.equal(normalizeDisplayScale(153), 150);
 assert.equal(normalizeDisplayScale(103), 105);
 assert.equal(readStoredDisplayScale(storage), 100);
+assert.equal(supportsDisplayScale(undefined), false);
+assert.equal(supportsDisplayScale({ display: {} }), false);
+assert.equal(supportsDisplayScale({ display: { setScale() {} } }), true);
 
 storage.setItem(displayScaleStorageKey, "126");
 assert.equal(readStoredDisplayScale(storage), 125);
