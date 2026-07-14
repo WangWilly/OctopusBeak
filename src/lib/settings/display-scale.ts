@@ -36,7 +36,7 @@ export function applyDisplayScale(value: unknown, storage = browserStorage()) {
   const normalized = normalizeDisplayScale(value);
   displayScale.set(normalized);
   writeStoredDisplayScale(normalized, storage);
-  if (typeof window !== "undefined") window.octopusBeak?.display?.setScale(normalized);
+  if (typeof window !== "undefined") window.octopusBeak?.display?.setScale?.(normalized);
   return normalized;
 }
 

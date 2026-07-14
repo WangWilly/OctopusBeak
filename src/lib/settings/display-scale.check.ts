@@ -29,6 +29,13 @@ assert.equal(readStoredDisplayScale(storage), 125);
 assert.equal(applyDisplayScale(103, storage), 105);
 assert.equal(storage.getItem(displayScaleStorageKey), "105");
 
+Object.defineProperty(globalThis, "window", {
+  configurable: true,
+  value: { octopusBeak: { display: {} } },
+});
+assert.doesNotThrow(() => applyDisplayScale(100, storage));
+delete (globalThis as { window?: unknown }).window;
+
 const shortcut = (platform: "mac" | "other", key: string, extra = {}) => displayScaleShortcut({
   key,
   metaKey: platform === "mac",
