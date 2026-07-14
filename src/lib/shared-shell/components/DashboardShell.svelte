@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { fade, fly } from "svelte/transition";
+  import { isMacPlatform } from "$lib/desktop/platform.ts";
   import { t } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -44,7 +45,7 @@
 
   onMount(() => {
     if (!window.octopusBeak?.display) return;
-    scaleShortcutPlatform = navigator.platform.startsWith("Mac") ? "mac" : "other";
+    scaleShortcutPlatform = isMacPlatform(navigator) ? "mac" : "other";
     reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     applyDisplayScale(readStoredDisplayScale());
     return clearScaleHudTimer;
