@@ -34,12 +34,15 @@
   let scaleHudHovered = false;
   let scaleHudFocusWithin = false;
   let scaleHudTimer: ReturnType<typeof setTimeout> | null = null;
+  let scaleShortcutPlatform: "mac" | "other" = "other";
+  let scaleAnnouncement = "";
   let reduceMotion = false;
 
   $: writeStoredValuesVisible(valuesVisible);
 
   onMount(() => {
     if (!window.octopusBeak?.display) return;
+    scaleShortcutPlatform = navigator.platform.startsWith("Mac") ? "mac" : "other";
     reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     applyDisplayScale(readStoredDisplayScale());
     return clearScaleHudTimer;
@@ -61,8 +64,12 @@
     scheduleScaleHudDismissal();
   }
 
-  function changeDisplayScale(next: number) {
-    applyDisplayScale(next);
+  function changeDisplayScale(next: number, announce = false) {
+    const previous = $displayScale;
+    const normalized = applyDisplayScale(next);
+    if (announce && normalized !== previous) {
+      scaleAnnouncement = `${$t.settings.displaySize}: ${normalized}%`;
+    }
     revealScaleHud();
   }
 
@@ -90,12 +97,12 @@
 
   function handleDisplayScaleKeydown(event: KeyboardEvent) {
     if (!window.octopusBeak?.display) return;
-    const action = displayScaleShortcut(event);
+    const action = displayScaleShortcut(event, scaleShortcutPlatform);
     if (!action) return;
     event.preventDefault();
-    if (action === "decrease") changeDisplayScale($displayScale - DISPLAY_SCALE_STEP);
-    if (action === "increase") changeDisplayScale($displayScale + DISPLAY_SCALE_STEP);
-    if (action === "reset") changeDisplayScale(DISPLAY_SCALE_DEFAULT);
+    if (action === "decrease") changeDisplayScale($displayScale - DISPLAY_SCALE_STEP, true);
+    if (action === "increase") changeDisplayScale($displayScale + DISPLAY_SCALE_STEP, true);
+    if (action === "reset") changeDisplayScale(DISPLAY_SCALE_DEFAULT, true);
   }
 
   function toggleSidebar() {
@@ -223,7 +230,7 @@
         in:fly={{ y: reduceMotion ? 0 : -6, duration: reduceMotion ? 0 : 180 }}
         out:fade={{ duration: reduceMotion ? 0 : 220 }}
       >
-        <output aria-live="polite">{$displayScale}%</output>
+        <output>{$displayScale}%</output>
         <button
           type="button"
           aria-label={$t.settings.decreaseScale}
@@ -244,11 +251,25 @@
       </div>
     {/if}
 
+    <span class="visually-hidden" aria-live="polite">{scaleAnnouncement}</span>
+
     <slot />
   </main>
 </div>
 
 <style>
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .display-scale-hud {
     position: fixed;
     top: calc(var(--titlebar-safe-top, 0px) + 24px);
