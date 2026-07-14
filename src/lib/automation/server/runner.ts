@@ -19,6 +19,8 @@ import {
   finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
   ownAutomationSession,
+  ownedAutomationSession,
+  restoreAutomationSessionOwnership,
   type OwnedAutomationSession,
 } from "./session-lifecycle.ts";
 import {
@@ -176,14 +178,58 @@ export function claimRunAutomationSession(
   db: ReturnType<typeof openLedgerDatabase>,
   taskRunId: string,
   owner: OwnedAutomationSession,
+  options: { resumeSession?: string; resumeFrom?: AutomationTaskRun } = {},
 ) {
-  if (ownAutomationSession(owner)) return true;
+  const current = ownedAutomationSession(owner.taskId);
+  const resumeFrom = options.resumeFrom;
+  let claimError: unknown = null;
+  const isResumeHandoff = Boolean(
+    options.resumeSession
+      && options.resumeSession === owner.session
+      && resumeFrom?.status === "waiting_for_human"
+      && resumeFrom.taskId === owner.taskId
+      && resumeFrom.taskRunId !== taskRunId
+      && sessionFromRun(resumeFrom) === owner.session
+      && (!current
+        || (current.taskRunId === resumeFrom.taskRunId && current.session === owner.session)),
+  );
+  if ((!options.resumeSession || isResumeHandoff) && (!current || isResumeHandoff)) {
+    if (resumeFrom) {
+      const claimRejected = new Error("Automation session registry claim rejected");
+      let registryClaimed = false;
+      db.exec("BEGIN");
+      try {
+        updateTaskRun(db, resumeFrom.taskRunId, {
+          status: "completed",
+          finishedAt: new Date().toISOString(),
+          logTail: tail(`${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`),
+        });
+        if (!ownAutomationSession(owner)) throw claimRejected;
+        registryClaimed = true;
+        db.exec("COMMIT");
+        disarmAutomationSessionTimeout(owner.taskId);
+        return true;
+      } catch (error) {
+        try {
+          db.exec("ROLLBACK");
+        } finally {
+          if (registryClaimed) restoreAutomationSessionOwnership(owner, current);
+        }
+        claimError = error;
+      }
+    } else if (ownAutomationSession(owner)) {
+      disarmAutomationSessionTimeout(owner.taskId);
+      return true;
+    }
+  }
   updateTaskRun(db, taskRunId, {
     status: "failed",
     finishedAt: new Date().toISOString(),
     exitCode: null,
     signal: null,
-    errorMessage: "Automation session is still closing. Try again after cleanup finishes.",
+    errorMessage: claimError && errorMessage(claimError) !== "Automation session registry claim rejected"
+      ? `Automation session handoff failed: ${errorMessage(claimError)}`
+      : "Automation session is still closing. Try again after cleanup finishes.",
   });
   return false;
 }
@@ -240,6 +286,38 @@ export async function cancelAutomationTask(taskId: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function automationCleanupFailureDetails(
+  owner: OwnedAutomationSession,
+  error: unknown,
+) {
+  return {
+    taskRunId: owner.taskRunId,
+    sessionId: owner.session,
+    retainedPid: owner.pid,
+    error: errorMessage(error),
+  };
+}
+
+export async function finalizeTerminalAutomationSession(
+  owner: OwnedAutomationSession,
+  workflowError: string | null,
+  finalize: () => Promise<unknown> = () => finalizeExactOwnedAutomationSession(owner),
+) {
+  try {
+    await finalize();
+    return { errorMessage: workflowError, cleanupFailed: false };
+  } catch (error) {
+    console.error(
+      "automation-session-cleanup-failed",
+      automationCleanupFailureDetails(owner, error),
+    );
+    return {
+      errorMessage: appendCleanupError(workflowError, errorMessage(error)),
+      cleanupFailed: true,
+    };
+  }
 }
 
 function sessionPid(session: string) {
@@ -403,8 +481,18 @@ export async function runAutomationTask(
       } : null;
       if (session) {
         appendLog(logPath, "automation-session: " + session + "\n");
-        disarmAutomationSessionTimeout(task.id);
-        if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!)) {
+        const resumeFrom = options.resumeSession
+          ? activeTaskRuns(taskDb).find((candidate) =>
+            candidate.taskId === task.id
+            && candidate.taskRunId !== run.taskRunId
+            && candidate.status === "waiting_for_human"
+            && sessionFromRun(candidate) === options.resumeSession
+          )
+          : undefined;
+        if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
+          resumeSession: options.resumeSession,
+          resumeFrom,
+        })) {
           return { status: "failed" as const };
         }
       }
@@ -484,12 +572,14 @@ export async function runAutomationTask(
         ?? resumeFailure
         ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null);
       if (owner && !shouldRetainAutomationSession(status)) {
-        try {
-          await finalizeExactOwnedAutomationSession(owner);
-        } catch (error) {
-          taskError = appendCleanupError(taskError, errorMessage(error));
-          if (status === "completed") status = "failed";
-        }
+        const retainedOwner = ownedAutomationSession(task.id) ?? owner;
+        const cleanup = await finalizeTerminalAutomationSession(
+          retainedOwner,
+          taskError,
+          () => finalizeExactOwnedAutomationSession(owner),
+        );
+        taskError = cleanup.errorMessage;
+        if (cleanup.cleanupFailed && status === "completed") status = "failed";
       }
       if (isForceQuitRun(taskRunById(taskDb, run.taskRunId))) return { status: "failed" };
       updateTaskRun(taskDb, run.taskRunId, {

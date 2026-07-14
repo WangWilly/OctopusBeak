@@ -60,6 +60,29 @@ try {
     /Import is locked/,
   );
 
+  const waitingDb = openLedgerDatabase(dir);
+  try {
+    createTaskRun(waitingDb, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date(Date.now() + 1_000).toISOString(),
+      finishedAt: new Date().toISOString(),
+      exitCode: 0,
+      logPath: "data/automation/logs/fubon-waiting.log",
+      logTail: "Workflow paused. resume --session ses-fubon-waiting",
+    });
+  } finally {
+    waitingDb.close();
+  }
+  assert.throws(
+    () => api.assertAutomationTaskCanStart("fubon-all-statements", dir),
+    /waiting for human/i,
+  );
+
   const fakeCodec = {
     encrypt(text: string) {
       return Buffer.from(`safe:${text}`, "utf8").toString("base64");

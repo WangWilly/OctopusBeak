@@ -6,6 +6,7 @@ import { readLibrettoSessionState } from "./libretto-session.ts";
 export const WAITING_SESSION_TIMEOUT_MS = 20 * 60 * 1_000;
 const TERM_GRACE_MS = 1_500;
 const KILL_GRACE_MS = 300;
+const CLOSE_TIMEOUT_MS = 1_000;
 
 export type OwnedAutomationSession = {
   taskId: string;
@@ -16,9 +17,17 @@ export type OwnedAutomationSession = {
 
 export type FinalizeSessionDeps = {
   closeSession(session: string): Promise<void>;
+  terminateCloseSession?(session: string): void | Promise<void>;
+  startCloseSession?(session: string): CloseSessionHandle;
   isExpectedDaemon(pid: number, session: string): boolean;
   signalProcessGroup(pid: number, signal: NodeJS.Signals): void;
   wait(ms: number): Promise<void>;
+  timerDeps?: TimerDeps;
+};
+
+type CloseSessionHandle = {
+  completion: Promise<void>;
+  terminate(): Promise<void>;
 };
 
 export type TimerDeps = {
@@ -67,10 +76,30 @@ export function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
 
 const defaultFinalizeDeps: FinalizeSessionDeps = {
   closeSession: closeLibrettoSession,
+  startCloseSession: startLibrettoClose,
   isExpectedDaemon,
   signalProcessGroup,
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  ms: number,
+  timerDeps: TimerDeps,
+): Promise<{ timedOut: true } | { timedOut: false; value?: T; error?: unknown }> {
+  let timer: NodeJS.Timeout | number | undefined;
+  const result = await Promise.race([
+    promise.then(
+      (value) => ({ timedOut: false as const, value }),
+      (error: unknown) => ({ timedOut: false as const, error }),
+    ),
+    new Promise<{ timedOut: true }>((resolve) => {
+      timer = timerDeps.setTimer(() => resolve({ timedOut: true }), ms);
+    }),
+  ]);
+  if (timer !== undefined) timerDeps.clearTimer(timer);
+  return result;
+}
 
 function isExactOwner(
   current: OwnedAutomationSession | undefined,
@@ -99,6 +128,16 @@ export function claimAutomationSessionForCleanup(input: OwnedAutomationSession):
 
 export function ownedAutomationSession(taskId: string): OwnedAutomationSession | null {
   return ownedByTask.get(taskId) ?? null;
+}
+
+export function restoreAutomationSessionOwnership(
+  expected: Pick<OwnedAutomationSession, "taskId" | "taskRunId" | "session">,
+  previous: OwnedAutomationSession | null,
+): boolean {
+  if (!isExactOwner(ownedByTask.get(expected.taskId), expected)) return false;
+  if (previous) ownedByTask.set(expected.taskId, previous);
+  else ownedByTask.delete(expected.taskId);
+  return true;
 }
 
 export function armAutomationSessionTimeout(
@@ -141,10 +180,29 @@ async function closeOwnedSession(
     }
   }
   let closeError: unknown = null;
-  try {
-    await deps.closeSession(owned.session);
-  } catch (error) {
-    closeError = error;
+  const closeHandle = deps.startCloseSession?.(owned.session) ?? {
+    completion: deps.closeSession(owned.session),
+    terminate: async () => { await deps.terminateCloseSession?.(owned.session); },
+  };
+  const timerDeps = deps.timerDeps ?? defaultTimerDeps;
+  const closeResult = await settleWithin(closeHandle.completion, CLOSE_TIMEOUT_MS, timerDeps);
+  let helperTerminationError: Error | null = null;
+  if (closeResult.timedOut) {
+    const termination = await settleWithin(
+      closeHandle.terminate(),
+      KILL_GRACE_MS,
+      timerDeps,
+    );
+    if (termination.timedOut) {
+      helperTerminationError = new Error(
+        `Libretto close helper remained after ${KILL_GRACE_MS}ms termination deadline`,
+      );
+    }
+    closeError = termination.timedOut
+      ? helperTerminationError
+      : termination.error ?? new Error(`Libretto close timed out after ${CLOSE_TIMEOUT_MS}ms`);
+  } else {
+    closeError = closeResult.error ?? null;
   }
 
   if (pid === null) {
@@ -156,17 +214,25 @@ async function closeOwnedSession(
     }
     return;
   }
-  if (!deps.isExpectedDaemon(pid, owned.session)) return;
-
-  deps.signalProcessGroup(pid, "SIGTERM");
-  await deps.wait(TERM_GRACE_MS);
-  if (!deps.isExpectedDaemon(pid, owned.session)) return;
-
-  deps.signalProcessGroup(pid, "SIGKILL");
-  await deps.wait(KILL_GRACE_MS);
+  let daemonError: Error | null = null;
   if (deps.isExpectedDaemon(pid, owned.session)) {
-    throw new Error(`Libretto session ${owned.session} daemon ${pid} remained after SIGKILL`);
+    deps.signalProcessGroup(pid, "SIGTERM");
+    await deps.wait(TERM_GRACE_MS);
+    if (deps.isExpectedDaemon(pid, owned.session)) {
+      deps.signalProcessGroup(pid, "SIGKILL");
+      await deps.wait(KILL_GRACE_MS);
+      if (deps.isExpectedDaemon(pid, owned.session)) {
+        daemonError = new Error(
+          `Libretto session ${owned.session} daemon ${pid} remained after SIGKILL`,
+        );
+      }
+    }
   }
+  if (helperTerminationError && daemonError) {
+    throw new AggregateError([helperTerminationError, daemonError], helperTerminationError.message);
+  }
+  if (helperTerminationError) throw helperTerminationError;
+  if (daemonError) throw daemonError;
 }
 
 export async function finalizeOwnedAutomationSession(
@@ -215,18 +281,19 @@ export async function finalizeAllOwnedAutomationSessions(
   if (errors.length) throw new AggregateError(errors, "Failed to finalize owned Libretto sessions");
 }
 
-export async function closeLibrettoSession(session: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+function startLibrettoClose(session: string): CloseSessionHandle {
+  let child: ReturnType<typeof spawn>;
+  const completion = new Promise<void>((resolve, reject) => {
     const command = resolveLibrettoCommand(
       ["close", "--session", session],
       automationConfigEnv(),
     );
-    const child = spawn(command.command, command.args, {
+    child = spawn(command.command, command.args, {
       stdio: ["ignore", "ignore", "pipe"],
       env: command.env,
     });
     let errorText = "";
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr!.on("data", (chunk: Buffer) => {
       errorText = (errorText + chunk.toString("utf8")).slice(-4_000);
     });
     child.on("error", reject);
@@ -238,4 +305,15 @@ export async function closeLibrettoSession(session: string): Promise<void> {
       reject(new Error(errorText || `libretto close exited with code ${exitCode}`));
     });
   });
+  return {
+    completion,
+    async terminate() {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await completion.catch(() => {});
+    },
+  };
+}
+
+export async function closeLibrettoSession(session: string): Promise<void> {
+  await startLibrettoClose(session).completion;
 }

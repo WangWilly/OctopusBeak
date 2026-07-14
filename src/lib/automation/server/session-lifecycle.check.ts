@@ -65,6 +65,140 @@ test("hung daemon escalates through SIGKILL", async () => {
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
+test("never-settling graceful close is terminated before exact daemon escalation", async () => {
+  const signals: NodeJS.Signals[] = [];
+  let terminatedSession = "";
+  let checks = 0;
+  ownAutomationSession({
+    taskId: "task-close-timeout",
+    taskRunId: "run-close-timeout",
+    session: "ses-close-timeout",
+    pid: 126,
+  });
+  const finalizing = finalizeOwnedAutomationSession("task-close-timeout", {
+    closeSession: () => new Promise<void>(() => {}),
+    terminateCloseSession(session) { terminatedSession = session; },
+    isExpectedDaemon(pid, session) {
+      assert.equal(pid, 126);
+      assert.equal(session, "ses-close-timeout");
+      checks += 1;
+      return checks < 2;
+    },
+    signalProcessGroup(_pid, signal) { signals.push(signal); },
+    async wait() {},
+    timerDeps: {
+      setTimer(callback) {
+        if (terminatedSession === "") callback();
+        return 100;
+      },
+      clearTimer() {},
+    },
+  });
+
+  await Promise.race([
+    finalizing,
+    new Promise((_, reject) => setImmediate(() => reject(new Error("close deadline did not fire")))),
+  ]);
+  assert.equal(terminatedSession, "ses-close-timeout");
+  assert.deepEqual(signals, ["SIGTERM"]);
+});
+
+test("successful graceful close cancels its exact deadline", async () => {
+  let cleared: NodeJS.Timeout | number | undefined;
+  ownAutomationSession({
+    taskId: "task-close-deadline-clear",
+    taskRunId: "run-close-deadline-clear",
+    session: "ses-close-deadline-clear",
+    pid: null,
+  });
+  await finalizeOwnedAutomationSession("task-close-deadline-clear", {
+    async closeSession() {},
+    startCloseSession: () => ({ completion: Promise.resolve(), async terminate() {} }),
+    isExpectedDaemon() { return false; },
+    signalProcessGroup() {},
+    async wait() {},
+    timerDeps: {
+      setTimer() { return 101; },
+      clearTimer(timer) { cleared = timer; },
+    },
+  });
+  assert.equal(cleared, 101);
+});
+
+test("close timeout awaits exact helper exit before daemon escalation", async () => {
+  const events: string[] = [];
+  let fireDeadline: (() => void) | undefined;
+  let releaseTermination!: () => void;
+  const termination = new Promise<void>((resolve) => { releaseTermination = resolve; });
+  const terminate = async () => {
+    events.push("terminate-start");
+    await termination;
+    events.push("terminate-done");
+  };
+  ownAutomationSession({
+    taskId: "task-close-await-exit",
+    taskRunId: "run-close-await-exit",
+    session: "ses-close-await-exit",
+    pid: 127,
+  });
+  const finalizing = finalizeOwnedAutomationSession("task-close-await-exit", {
+    closeSession: () => new Promise<void>(() => {}),
+    terminateCloseSession: terminate,
+    startCloseSession: () => ({
+      completion: new Promise<void>(() => {}),
+      terminate,
+    }),
+    isExpectedDaemon() { events.push("verify-daemon"); return events.filter((event) => event === "verify-daemon").length < 2; },
+    signalProcessGroup(_pid, signal) { events.push(signal); },
+    async wait() {},
+    timerDeps: {
+      setTimer(callback) { fireDeadline = callback; return 102; },
+      clearTimer() {},
+    },
+  });
+
+  fireDeadline?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["terminate-start"]);
+  releaseTermination();
+  await finalizing;
+  assert.deepEqual(events, ["terminate-start", "terminate-done", "verify-daemon", "SIGTERM", "verify-daemon"]);
+});
+
+test("helper termination timeout rejects even when the owned daemon is absent", async () => {
+  const deadlines: Array<() => void> = [];
+  ownAutomationSession({
+    taskId: "task-helper-timeout-error",
+    taskRunId: "run-helper-timeout-error",
+    session: "ses-helper-timeout-error",
+    pid: 128,
+  });
+  const finalizing = finalizeOwnedAutomationSession("task-helper-timeout-error", {
+    closeSession: () => new Promise<void>(() => {}),
+    startCloseSession: () => ({
+      completion: new Promise<void>(() => {}),
+      terminate: () => new Promise<void>(() => {}),
+    }),
+    isExpectedDaemon(pid, session) {
+      assert.equal(pid, 128);
+      assert.equal(session, "ses-helper-timeout-error");
+      return false;
+    },
+    signalProcessGroup() { assert.fail("absent daemon must not be signalled"); },
+    async wait() {},
+    timerDeps: {
+      setTimer(callback) { deadlines.push(callback); return deadlines.length; },
+      clearTimer() {},
+    },
+  });
+
+  deadlines.shift()?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  deadlines.shift()?.();
+  await assert.rejects(finalizing, /close helper remained/i);
+  assert.equal(ownedAutomationSession("task-helper-timeout-error"), null);
+});
+
 test("concurrent finalization closes once", async () => {
   let closeCalls = 0;
   let release!: () => void;
@@ -74,7 +208,7 @@ test("concurrent finalization closes once", async () => {
     async closeSession() { closeCalls += 1; await blocked; },
     isExpectedDaemon() { return false; },
     signalProcessGroup() {},
-    async wait() {},
+    wait: () => new Promise<void>(() => {}),
   };
   const first = finalizeOwnedAutomationSession("task-3", deps);
   const second = finalizeOwnedAutomationSession("task-3", deps);
@@ -92,7 +226,7 @@ test("closing session refuses ownership from a new run", async () => {
     async closeSession() { await blocked; },
     isExpectedDaemon() { return false; },
     signalProcessGroup() {},
-    async wait() {},
+    wait: () => new Promise<void>(() => {}),
   });
 
   assert.equal(ownAutomationSession({

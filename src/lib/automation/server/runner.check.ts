@@ -4,8 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { createTaskRun, taskRunById } from "./store.ts";
+import { activeTaskRuns, createTaskRun, taskRunById } from "./store.ts";
 import {
+  armAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
   ownAutomationSession,
   ownedAutomationSession,
@@ -13,10 +14,12 @@ import {
 import {
   accumulateAutomationOutput,
   appendCleanupError,
+  automationCleanupFailureDetails,
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
   finalFailureMessage,
+  finalizeTerminalAutomationSession,
   isForceQuitRun,
   librettoRunCdpPatchCommand,
   liveTaskRunUpdate,
@@ -47,6 +50,51 @@ assert.equal(
   "workflow failed\nSession cleanup failed: IPC timeout",
 );
 assert.equal(appendCleanupError(null, "IPC timeout"), "Session cleanup failed: IPC timeout");
+assert.deepEqual(
+  automationCleanupFailureDetails({
+    taskId: "task-log",
+    taskRunId: "run-log",
+    session: "ses-log",
+    pid: 777,
+  }, new Error("IPC timeout")),
+  {
+    taskRunId: "run-log",
+    sessionId: "ses-log",
+    retainedPid: 777,
+    error: "IPC timeout",
+  },
+);
+
+test("terminal cleanup catch logs owner and appends the workflow error", async () => {
+  const messages: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { messages.push(args); };
+  try {
+    const result = await finalizeTerminalAutomationSession({
+      taskId: "task-terminal-log",
+      taskRunId: "run-terminal-log",
+      session: "ses-terminal-log",
+      pid: 888,
+    }, "workflow failed", async () => {
+      throw new Error("close timeout");
+    });
+    assert.deepEqual(result, {
+      errorMessage: "workflow failed\nSession cleanup failed: close timeout",
+      cleanupFailed: true,
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert.deepEqual(messages, [[
+    "automation-session-cleanup-failed",
+    {
+      taskRunId: "run-terminal-log",
+      sessionId: "ses-terminal-log",
+      retainedPid: 888,
+      error: "close timeout",
+    },
+  ]]);
+});
 
 assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
 assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
@@ -275,7 +323,7 @@ test("failed initial session claim persists failure before spawn", async () => {
     async closeSession() { await blocked; },
     isExpectedDaemon() { return false; },
     signalProcessGroup() {},
-    async wait() {},
+    wait: () => new Promise<void>(() => {}),
   });
   try {
     const db = openLedgerDatabase(ledgerDir);
@@ -304,6 +352,309 @@ test("failed initial session claim persists failure before spawn", async () => {
   } finally {
     release();
     await closing;
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("resume handoff terminals the matching waiting run after ownership claim", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-handoff-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const waiting = createTaskRun(db, {
+      taskId: "resume-handoff-task",
+      script: "libretto run",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T01:00:00.000Z",
+      logPath: join(ledgerDir, "waiting.log"),
+      logTail: "Workflow paused. run `npx libretto resume --session ses-resume-handoff`.",
+    });
+    const resumed = createTaskRun(db, {
+      taskId: "resume-handoff-task",
+      script: "libretto resume",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T01:01:00.000Z",
+      logPath: join(ledgerDir, "resumed.log"),
+    });
+    const previous = taskRunById(db, waiting.taskRunId)!;
+    let cleared = 0;
+    ownAutomationSession({
+      taskId: previous.taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-resume-handoff",
+      pid: 321,
+    });
+    armAutomationSessionTimeout(previous.taskId, async () => {}, {
+      setTimer() { return 91; },
+      clearTimer() { cleared += 1; },
+    });
+
+    assert.equal(claimRunAutomationSession(db, resumed.taskRunId, {
+      taskId: previous.taskId,
+      taskRunId: resumed.taskRunId,
+      session: "ses-resume-handoff",
+      pid: 321,
+    }, { resumeSession: "ses-resume-handoff", resumeFrom: previous }), true);
+    assert.equal(cleared, 1);
+    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "completed");
+    assert.match(taskRunById(db, waiting.taskRunId)?.logTail ?? "", new RegExp(resumed.taskRunId));
+    assert.deepEqual(activeTaskRuns(db).map((run) => run.taskRunId), [resumed.taskRunId]);
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("ordinary run cannot replace a waiting owner or cancel its timer", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-owner-race-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "owner-race-task",
+      script: "libretto run",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "new.log"),
+    });
+    ownAutomationSession({
+      taskId: "owner-race-task",
+      taskRunId: "waiting-run",
+      session: "ses-waiting-owner",
+      pid: 654,
+    });
+    let cleared = 0;
+    armAutomationSessionTimeout("owner-race-task", async () => {}, {
+      setTimer() { return 92; },
+      clearTimer() { cleared += 1; },
+    });
+
+    assert.equal(claimRunAutomationSession(db, run.taskRunId, {
+      taskId: "owner-race-task",
+      taskRunId: run.taskRunId,
+      session: "ses-new-owner",
+      pid: null,
+    }), false);
+    assert.equal(cleared, 0);
+    assert.equal(ownedAutomationSession("owner-race-task")?.taskRunId, "waiting-run");
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("resume DB failure preserves the waiting owner and timer", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-db-failure-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const waiting = createTaskRun(db, {
+      taskId: "resume-db-failure-task",
+      script: "libretto run",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T02:00:00.000Z",
+      logPath: join(ledgerDir, "waiting.log"),
+      logTail: "Workflow paused. run `npx libretto resume --session ses-resume-db-failure`.",
+    });
+    const resumed = createTaskRun(db, {
+      taskId: "resume-db-failure-task",
+      script: "libretto resume",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T02:01:00.000Z",
+      logPath: join(ledgerDir, "resumed.log"),
+    });
+    const previous = taskRunById(db, waiting.taskRunId)!;
+    ownAutomationSession({
+      taskId: previous.taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-resume-db-failure",
+      pid: 432,
+    });
+    let cleared = 0;
+    armAutomationSessionTimeout(previous.taskId, async () => {}, {
+      setTimer() { return 93; },
+      clearTimer() { cleared += 1; },
+    });
+    const failingDb = {
+      prepare() { throw new Error("DB update failed"); },
+    } as unknown as typeof db;
+    assert.throws(() => claimRunAutomationSession(failingDb, resumed.taskRunId, {
+      taskId: previous.taskId,
+      taskRunId: resumed.taskRunId,
+      session: "ses-resume-db-failure",
+      pid: 432,
+    }, { resumeSession: "ses-resume-db-failure", resumeFrom: previous }));
+    assert.equal(cleared, 0);
+    assert.equal(ownedAutomationSession(previous.taskId)?.taskRunId, previous.taskRunId);
+    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "waiting_for_human");
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("closing session rolls back resume handoff in one transaction", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-closing-"));
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const waiting = createTaskRun(db, {
+      taskId: "resume-closing-task",
+      script: "libretto run",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T03:00:00.000Z",
+      logPath: join(ledgerDir, "waiting.log"),
+      logTail: "Workflow paused. run `npx libretto resume --session ses-resume-closing`.",
+    });
+    const resumed = createTaskRun(db, {
+      taskId: "resume-closing-task",
+      script: "libretto resume",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T03:01:00.000Z",
+      logPath: join(ledgerDir, "resumed.log"),
+    });
+    const previous = taskRunById(db, waiting.taskRunId)!;
+    const previousOwner = {
+      taskId: previous.taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-resume-closing",
+      pid: 543,
+    };
+    ownAutomationSession(previousOwner);
+    const closing = finalizeExactOwnedAutomationSession(previousOwner, {
+      async closeSession() { await blocked; },
+      isExpectedDaemon() { return false; },
+      signalProcessGroup() {},
+      async wait() {},
+      timerDeps: {
+        setTimer() { return 94; },
+        clearTimer() {},
+      },
+    });
+    let cleared = 0;
+    armAutomationSessionTimeout(previous.taskId, async () => {}, {
+      setTimer() { return 95; },
+      clearTimer() { cleared += 1; },
+    });
+    const transactionSql: string[] = [];
+    const transactionDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "exec") {
+          return (sql: string) => {
+            transactionSql.push(sql);
+            return target.exec(sql);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    assert.equal(claimRunAutomationSession(transactionDb, resumed.taskRunId, {
+      taskId: previous.taskId,
+      taskRunId: resumed.taskRunId,
+      session: "ses-resume-closing",
+      pid: 543,
+    }, { resumeSession: "ses-resume-closing", resumeFrom: previous }), false);
+    assert.deepEqual(transactionSql, ["BEGIN", "ROLLBACK"]);
+    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "waiting_for_human");
+    assert.equal(taskRunById(db, resumed.taskRunId)?.status, "failed");
+    assert.equal(ownedAutomationSession(previous.taskId)?.taskRunId, previous.taskRunId);
+    assert.equal(cleared, 0);
+    db.close();
+    release();
+    await closing;
+  } finally {
+    release?.();
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("resume commit failure restores the exact owner without clearing its timer", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-commit-failure-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const waiting = createTaskRun(db, {
+      taskId: "resume-commit-failure-task",
+      script: "libretto run",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T04:00:00.000Z",
+      logPath: join(ledgerDir, "waiting.log"),
+      logTail: "Workflow paused. run `npx libretto resume --session ses-resume-commit-failure`.",
+    });
+    const resumed = createTaskRun(db, {
+      taskId: "resume-commit-failure-task",
+      script: "libretto resume",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T04:01:00.000Z",
+      logPath: join(ledgerDir, "resumed.log"),
+    });
+    const previous = taskRunById(db, waiting.taskRunId)!;
+    const previousOwner = {
+      taskId: previous.taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-resume-commit-failure",
+      pid: 654,
+    };
+    ownAutomationSession(previousOwner);
+    let cleared = 0;
+    armAutomationSessionTimeout(previous.taskId, async () => {}, {
+      setTimer() { return 96; },
+      clearTimer() { cleared += 1; },
+    });
+    const transactionSql: string[] = [];
+    const transactionDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "exec") {
+          return (sql: string) => {
+            transactionSql.push(sql);
+            if (sql === "COMMIT") throw new Error("commit failed");
+            return target.exec(sql);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    assert.equal(claimRunAutomationSession(transactionDb, resumed.taskRunId, {
+      taskId: previous.taskId,
+      taskRunId: resumed.taskRunId,
+      session: "ses-resume-commit-failure",
+      pid: 654,
+    }, { resumeSession: "ses-resume-commit-failure", resumeFrom: previous }), false);
+    assert.deepEqual(transactionSql, ["BEGIN", "COMMIT", "ROLLBACK"]);
+    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "waiting_for_human");
+    assert.equal(taskRunById(db, resumed.taskRunId)?.status, "failed");
+    assert.equal(ownedAutomationSession(previous.taskId)?.taskRunId, previous.taskRunId);
+    assert.equal(cleared, 0);
+    db.close();
+  } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
 });
