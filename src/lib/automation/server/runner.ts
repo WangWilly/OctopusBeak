@@ -19,6 +19,7 @@ import {
   finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
   ownAutomationSession,
+  type OwnedAutomationSession,
 } from "./session-lifecycle.ts";
 import {
   automationBusinessTimezone,
@@ -169,6 +170,22 @@ function claimTask(taskId: string) {
 function appendLog(logPath: string, chunk: string) {
   mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, chunk);
+}
+
+export function claimRunAutomationSession(
+  db: ReturnType<typeof openLedgerDatabase>,
+  taskRunId: string,
+  owner: OwnedAutomationSession,
+) {
+  if (ownAutomationSession(owner)) return true;
+  updateTaskRun(db, taskRunId, {
+    status: "failed",
+    finishedAt: new Date().toISOString(),
+    exitCode: null,
+    signal: null,
+    errorMessage: "Automation session is still closing. Try again after cleanup finishes.",
+  });
+  return false;
 }
 
 function tail(value: string) {
@@ -378,15 +395,18 @@ export async function runAutomationTask(
         logPath,
       });
       activeTaskRunIds.set(task.id, run.taskRunId);
+      const owner = session ? {
+        taskId: task.id,
+        taskRunId: run.taskRunId,
+        session,
+        pid: sessionPid(session),
+      } : null;
       if (session) {
         appendLog(logPath, "automation-session: " + session + "\n");
         disarmAutomationSessionTimeout(task.id);
-        ownAutomationSession({
-          taskId: task.id,
-          taskRunId: run.taskRunId,
-          session,
-          pid: sessionPid(session),
-        });
+        if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!)) {
+          return { status: "failed" as const };
+        }
       }
       let logTail = "";
       let detectedResumeFailure: string | null = null;
@@ -463,9 +483,9 @@ export async function runAutomationTask(
       let taskError = result.error?.message
         ?? resumeFailure
         ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null);
-      if (session && !shouldRetainAutomationSession(status)) {
+      if (owner && !shouldRetainAutomationSession(status)) {
         try {
-          await finalizeOwnedAutomationSession(task.id);
+          await finalizeExactOwnedAutomationSession(owner);
         } catch (error) {
           taskError = appendCleanupError(taskError, errorMessage(error));
           if (status === "completed") status = "failed";

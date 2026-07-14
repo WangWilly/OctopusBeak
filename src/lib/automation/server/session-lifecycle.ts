@@ -72,14 +72,6 @@ const defaultFinalizeDeps: FinalizeSessionDeps = {
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export function ownAutomationSession(input: OwnedAutomationSession): void {
-  const current = ownedByTask.get(input.taskId);
-  ownedByTask.set(input.taskId, {
-    ...input,
-    pid: input.pid ?? (current?.session === input.session ? current.pid : null),
-  });
-}
-
 function isExactOwner(
   current: OwnedAutomationSession | undefined,
   expected: Pick<OwnedAutomationSession, "taskId" | "taskRunId" | "session">,
@@ -89,11 +81,20 @@ function isExactOwner(
     && current.session === expected.session;
 }
 
+export function ownAutomationSession(input: OwnedAutomationSession): boolean {
+  const current = ownedByTask.get(input.taskId);
+  if (closingBySession.has(input.session) && !isExactOwner(current, input)) return false;
+  ownedByTask.set(input.taskId, {
+    ...input,
+    pid: input.pid ?? (current?.session === input.session ? current.pid : null),
+  });
+  return true;
+}
+
 export function claimAutomationSessionForCleanup(input: OwnedAutomationSession): boolean {
   const current = ownedByTask.get(input.taskId);
   if (current && !isExactOwner(current, input)) return false;
-  ownAutomationSession(input);
-  return true;
+  return ownAutomationSession(input);
 }
 
 export function ownedAutomationSession(taskId: string): OwnedAutomationSession | null {
