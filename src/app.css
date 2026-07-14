@@ -124,7 +124,7 @@ html.desktop-shell .topbar {
   -webkit-app-region: drag;
 }
 
-html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button"]) {
+html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button"], .search-popover) {
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
