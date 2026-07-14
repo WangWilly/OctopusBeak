@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   WAITING_SESSION_TIMEOUT_MS,
   armAutomationSessionTimeout,
+  claimAutomationSessionForCleanup,
+  finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
   ownAutomationSession,
   ownedAutomationSession,
@@ -79,6 +81,57 @@ test("concurrent finalization closes once", async () => {
   release();
   await Promise.all([first, second]);
   assert.equal(closeCalls, 1);
+});
+
+test("exact-owner finalization leaves a replacement registered", async () => {
+  let closeCalls = 0;
+  ownAutomationSession({ taskId: "task-exact", taskRunId: "run-new", session: "ses-new", pid: null });
+  const finalized = await finalizeExactOwnedAutomationSession(
+    { taskId: "task-exact", taskRunId: "run-old", session: "ses-old" },
+    {
+      async closeSession() { closeCalls += 1; },
+      isExpectedDaemon() { return false; },
+      signalProcessGroup() {},
+      async wait() {},
+    },
+  );
+  assert.equal(finalized, false);
+  assert.equal(closeCalls, 0);
+  assert.equal(ownedAutomationSession("task-exact")?.taskRunId, "run-new");
+});
+
+test("old timeout cannot close a resumed owner", async () => {
+  let timeout!: () => void;
+  let closeCalls = 0;
+  const oldOwner = { taskId: "task-resume", taskRunId: "run-old", session: "ses-shared" };
+  ownAutomationSession({ ...oldOwner, pid: null });
+  armAutomationSessionTimeout("task-resume", async () => {
+    await finalizeExactOwnedAutomationSession(oldOwner, {
+      async closeSession() { closeCalls += 1; },
+      isExpectedDaemon() { return false; },
+      signalProcessGroup() {},
+      async wait() {},
+    });
+  }, {
+    setTimer(callback) { timeout = callback; return 21; },
+    clearTimer() {},
+  });
+  ownAutomationSession({ taskId: "task-resume", taskRunId: "run-new", session: "ses-shared", pid: null });
+  timeout();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closeCalls, 0);
+  assert.equal(ownedAutomationSession("task-resume")?.taskRunId, "run-new");
+});
+
+test("cleanup claim refuses a different owner", () => {
+  ownAutomationSession({ taskId: "task-claim", taskRunId: "run-new", session: "ses-new", pid: 7 });
+  assert.equal(claimAutomationSessionForCleanup({
+    taskId: "task-claim",
+    taskRunId: "run-old",
+    session: "ses-old",
+    pid: null,
+  }), false);
+  assert.equal(ownedAutomationSession("task-claim")?.taskRunId, "run-new");
 });
 
 test("state read failure does not prevent graceful close", async () => {

@@ -16,6 +16,7 @@ import {
   closeLibrettoSession,
   disarmAutomationSessionTimeout,
   finalizeAllOwnedAutomationSessions,
+  finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
   ownAutomationSession,
 } from "./session-lifecycle.ts";
@@ -276,13 +277,17 @@ async function finalizePersistedRun(
   );
 }
 
-async function finalizePersistedActiveRuns(ledgerDir: string, reason: string) {
+async function finalizePersistedActiveRuns(
+  ledgerDir: string,
+  reason: string,
+  finalizeRun: typeof finalizePersistedRun = finalizePersistedRun,
+) {
   const db = openLedgerDatabase(ledgerDir);
   const errors: unknown[] = [];
   try {
     for (const run of activeTaskRuns(db)) {
       try {
-        await finalizePersistedRun(db, run, reason);
+        await finalizeRun(db, run, reason);
       } catch (error) {
         errors.push(error);
       }
@@ -295,22 +300,35 @@ async function finalizePersistedActiveRuns(ledgerDir: string, reason: string) {
 
 export async function recoverAbandonedAutomationSessions(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  dependencies: { finalizeRun?: typeof finalizePersistedRun } = {},
 ) {
-  await finalizePersistedActiveRuns(ledgerDir, "App 前次異常結束");
+  await finalizePersistedActiveRuns(
+    ledgerDir,
+    "App 前次異常結束",
+    dependencies.finalizeRun,
+  );
 }
 
 export async function shutdownAutomationSessions(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  dependencies: Partial<{
+    finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
+    finalizePersistedRuns: typeof finalizePersistedActiveRuns;
+  }> = {},
 ) {
   for (const child of activeTaskChildren.values()) child.kill("SIGTERM");
   const errors: unknown[] = [];
+  const finalizeOwnedSessions = dependencies.finalizeOwnedSessions
+    ?? finalizeAllOwnedAutomationSessions;
+  const finalizePersistedRuns = dependencies.finalizePersistedRuns
+    ?? finalizePersistedActiveRuns;
   try {
-    await finalizeAllOwnedAutomationSessions();
+    await finalizeOwnedSessions();
   } catch (error) {
     errors.push(error);
   }
   try {
-    await finalizePersistedActiveRuns(ledgerDir, "App 關閉，人工操作未完成");
+    await finalizePersistedRuns(ledgerDir, "App 關閉，人工操作未完成");
   } catch (error) {
     errors.push(error);
   }
@@ -463,13 +481,18 @@ export async function runAutomationTask(
         errorMessage: taskError,
       });
       if (session && shouldRetainAutomationSession(status)) {
+        const timeoutOwner = {
+          taskId: task.id,
+          taskRunId: run.taskRunId,
+          session,
+        };
         armAutomationSessionTimeout(task.id, async () => {
           const timeoutDb = openLedgerDatabase(ledgerDir);
           try {
             if (taskRunById(timeoutDb, run.taskRunId)?.status !== "waiting_for_human") return;
             let timeoutError: string | null = null;
             try {
-              await finalizeOwnedAutomationSession(task.id);
+              await finalizeExactOwnedAutomationSession(timeoutOwner);
             } catch (error) {
               timeoutError = errorMessage(error);
             }

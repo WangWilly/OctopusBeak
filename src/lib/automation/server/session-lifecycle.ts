@@ -80,6 +80,22 @@ export function ownAutomationSession(input: OwnedAutomationSession): void {
   });
 }
 
+function isExactOwner(
+  current: OwnedAutomationSession | undefined,
+  expected: Pick<OwnedAutomationSession, "taskId" | "taskRunId" | "session">,
+) {
+  return current?.taskId === expected.taskId
+    && current.taskRunId === expected.taskRunId
+    && current.session === expected.session;
+}
+
+export function claimAutomationSessionForCleanup(input: OwnedAutomationSession): boolean {
+  const current = ownedByTask.get(input.taskId);
+  if (current && !isExactOwner(current, input)) return false;
+  ownAutomationSession(input);
+  return true;
+}
+
 export function ownedAutomationSession(taskId: string): OwnedAutomationSession | null {
   return ownedByTask.get(taskId) ?? null;
 }
@@ -91,7 +107,9 @@ export function armAutomationSessionTimeout(
 ): void {
   const previous = timeoutByTask.get(taskId);
   if (previous !== undefined) clearTimerByTask.get(taskId)?.(previous);
-  const timer = timerDeps.setTimer(() => {
+  let timer: NodeJS.Timeout | number;
+  timer = timerDeps.setTimer(() => {
+    if (timeoutByTask.get(taskId) !== timer) return;
     timeoutByTask.delete(taskId);
     clearTimerByTask.delete(taskId);
     void onTimeout();
@@ -156,7 +174,16 @@ export async function finalizeOwnedAutomationSession(
 ): Promise<void> {
   const owned = ownedByTask.get(taskId);
   if (!owned) return;
-  disarmAutomationSessionTimeout(taskId);
+  await finalizeExactOwnedAutomationSession(owned, deps);
+}
+
+export async function finalizeExactOwnedAutomationSession(
+  expected: Pick<OwnedAutomationSession, "taskId" | "taskRunId" | "session">,
+  deps: FinalizeSessionDeps = defaultFinalizeDeps,
+): Promise<boolean> {
+  const owned = ownedByTask.get(expected.taskId);
+  if (!owned || !isExactOwner(owned, expected)) return false;
+  disarmAutomationSessionTimeout(expected.taskId);
 
   let closing = closingBySession.get(owned.session);
   if (!closing) {
@@ -168,8 +195,11 @@ export async function finalizeOwnedAutomationSession(
   try {
     await closing;
   } finally {
-    if (ownedByTask.get(taskId)?.session === owned.session) ownedByTask.delete(taskId);
+    if (isExactOwner(ownedByTask.get(expected.taskId), expected)) {
+      ownedByTask.delete(expected.taskId);
+    }
   }
+  return true;
 }
 
 export async function finalizeAllOwnedAutomationSessions(
