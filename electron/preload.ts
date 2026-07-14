@@ -1,7 +1,13 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
 
 const api: OctopusBeakApi = {
+  display: {
+    setScale(percent) {
+      if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
+      webFrame.setZoomFactor(Math.min(1.5, Math.max(0.75, percent / 100)));
+    },
+  },
   overview: {
     load: () => ipcRenderer.invoke("overview:load"),
   },
