@@ -1,7 +1,11 @@
 <script lang="ts">
   import { t } from "$lib/i18n/i18n.ts";
   import { historyPointKey, type DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
+  import {
+    formatAmountLines,
+    formatMoney,
+    formatSignedAmountLines,
+  } from "$lib/shared-money/money.ts";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
   type SortDirection = "asc" | "desc";
@@ -41,7 +45,15 @@
   $: rangeStart = sortedRows.length === 0 ? 0 : page * pageSize + 1;
   $: rangeEnd = Math.min((page + 1) * pageSize, sortedRows.length);
 
-  function formatCurrencyAmount(amounts: DailyHistoryRowDto["netAssets"], signed = false) {
+  function formatCurrencyAmount(
+    row: DailyHistoryRowDto,
+    key: Exclude<SortKey, "date">,
+    signed = false,
+  ) {
+    const amounts = row[key];
+    if (row.exchangeRateMissing) {
+      return signed ? formatSignedAmountLines(amounts) : formatAmountLines(amounts);
+    }
     const amount = amounts.find((item) => item.currency === currency);
     return amount ? formatMoney(amount, { signed }) : "--";
   }
@@ -117,8 +129,17 @@
       <tbody>
         {#each pageRows as row}
           <tr>
-            <td>{pointLabel(row)}</td>
-            <td class="right money">{formatCurrencyAmount(row.netAssets)}</td>
+            <td>
+              {pointLabel(row)}
+              {#if row.exchangeRateMissing}
+                <span class="rate-note missing" title={$t.historyTable.missingExchangeRate}>!</span>
+              {:else if row.exchangeRateDates?.length}
+                <span class="rate-note" title={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}>
+                  FX
+                </span>
+              {/if}
+            </td>
+            <td class="right money">{formatCurrencyAmount(row, "netAssets")}</td>
             {#if !compact}
               {@const dailyChange = currencyValue(row.dailyChange)}
               <td
@@ -126,13 +147,13 @@
                 class:amount-positive={dailyChange > 0}
                 class:amount-negative={dailyChange < 0}
               >
-                {formatCurrencyAmount(row.dailyChange, true)}
+                {formatCurrencyAmount(row, "dailyChange", true)}
               </td>
-              <td class="right money">{formatCurrencyAmount(row.assets)}</td>
-              <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
+              <td class="right money">{formatCurrencyAmount(row, "assets")}</td>
+              <td class="right money">{formatCurrencyAmount(row, "liabilities")}</td>
             {:else}
-              <td class="right money">{formatCurrencyAmount(row.assets)}</td>
-              <td class="right money">{formatCurrencyAmount(row.liabilities)}</td>
+              <td class="right money">{formatCurrencyAmount(row, "assets")}</td>
+              <td class="right money">{formatCurrencyAmount(row, "liabilities")}</td>
             {/if}
           </tr>
         {:else}
@@ -307,6 +328,17 @@
   }
 
   .amount-negative {
+    color: var(--danger);
+  }
+
+  .rate-note {
+    margin-left: var(--space-2);
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .rate-note.missing {
     color: var(--danger);
   }
 </style>
