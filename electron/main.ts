@@ -1,6 +1,11 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
+import {
+  recoverAbandonedAutomationSessions,
+  shutdownAutomationSessions,
+} from "../src/lib/automation/server/runner.ts";
+import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
@@ -31,6 +36,12 @@ let currentPreloadPath: string | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
+const handleBeforeQuit = createBeforeQuitHandler({
+  cleanup: () => shutdownAutomationSessions(),
+  quit: () => app.quit(),
+  timeoutMs: 5_000,
+});
+app.on("before-quit", handleBeforeQuit);
 
 function projectRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, "app");
@@ -133,6 +144,9 @@ async function start() {
   }));
   process.chdir(userData);
   migrateLedgerBeforeWindow();
+  await recoverAbandonedAutomationSessions().catch((error) => {
+    console.warn("automation-session-startup-recovery-failed", error);
+  });
   registerAutomationCredentialSafeStorage();
   registerOctopusBeakIpc();
   currentRendererUrl = rendererEntry(appRoot);
