@@ -52,12 +52,16 @@ function isExpectedDaemon(pid: number, session: string) {
     && command.includes('\"session\":\"' + session + '\"');
 }
 
-function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
+export function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
   try {
     process.kill(-pid, signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    process.kill(pid, signal);
+    try {
+      process.kill(pid, signal);
+    } catch (fallbackError) {
+      if ((fallbackError as NodeJS.ErrnoException).code !== "ESRCH") throw fallbackError;
+    }
   }
 }
 
@@ -108,9 +112,15 @@ async function closeOwnedSession(
   owned: OwnedAutomationSession,
   deps: FinalizeSessionDeps,
 ): Promise<void> {
-  const pid = owned.pid
-    ?? readLibrettoSessionState(owned.session)?.pid
-    ?? null;
+  let pid = owned.pid;
+  let readError: unknown = null;
+  if (pid === null) {
+    try {
+      pid = readLibrettoSessionState(owned.session)?.pid ?? null;
+    } catch (error) {
+      readError = error;
+    }
+  }
   let closeError: unknown = null;
   try {
     await deps.closeSession(owned.session);
@@ -119,7 +129,12 @@ async function closeOwnedSession(
   }
 
   if (pid === null) {
-    if (closeError) throw new Error(`Could not close Libretto session ${owned.session}: ${String(closeError)}`);
+    if (closeError) {
+      const readContext = readError ? ` state read: ${String(readError)};` : "";
+      throw new Error(
+        `Could not close Libretto session ${owned.session}:${readContext} graceful close: ${String(closeError)}`,
+      );
+    }
     return;
   }
   if (!deps.isExpectedDaemon(pid, owned.session)) return;

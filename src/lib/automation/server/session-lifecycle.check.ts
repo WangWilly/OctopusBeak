@@ -6,6 +6,7 @@ import {
   finalizeOwnedAutomationSession,
   ownAutomationSession,
   ownedAutomationSession,
+  signalProcessGroup,
 } from "./session-lifecycle.ts";
 
 test("waiting timeout is exactly twenty minutes", () => {
@@ -78,4 +79,50 @@ test("concurrent finalization closes once", async () => {
   release();
   await Promise.all([first, second]);
   assert.equal(closeCalls, 1);
+});
+
+test("state read failure does not prevent graceful close", async () => {
+  let closeCalls = 0;
+  ownAutomationSession({ taskId: "task-bad-state", taskRunId: "run-bad-state", session: "../bad-state", pid: null });
+  await finalizeOwnedAutomationSession("task-bad-state", {
+    async closeSession() { closeCalls += 1; },
+    isExpectedDaemon() { return false; },
+    signalProcessGroup() {},
+    async wait() {},
+  });
+  assert.equal(closeCalls, 1);
+});
+
+test("state read and graceful close failures retain both contexts", async () => {
+  ownAutomationSession({ taskId: "task-double-failure", taskRunId: "run-double-failure", session: "../double-failure", pid: null });
+  await assert.rejects(
+    finalizeOwnedAutomationSession("task-double-failure", {
+      async closeSession() { throw new Error("graceful close failed"); },
+      isExpectedDaemon() { return false; },
+      signalProcessGroup() {},
+      async wait() {},
+    }),
+    (error: Error) => {
+      assert.match(error.message, /Invalid Libretto session/);
+      assert.match(error.message, /graceful close failed/);
+      return true;
+    },
+  );
+});
+
+test("signal succeeds when group and process both disappear", () => {
+  const originalKill = process.kill;
+  const attemptedPids: number[] = [];
+  process.kill = ((pid: number) => {
+    attemptedPids.push(pid);
+    const error = new Error("gone") as NodeJS.ErrnoException;
+    error.code = "ESRCH";
+    throw error;
+  }) as typeof process.kill;
+  try {
+    signalProcessGroup(42, "SIGTERM");
+  } finally {
+    process.kill = originalKill;
+  }
+  assert.deepEqual(attemptedPids, [-42, 42]);
 });
