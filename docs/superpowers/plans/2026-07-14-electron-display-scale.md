@@ -226,13 +226,14 @@ const api: OctopusBeakApi = {
     setScale(percent) {
       if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
       webFrame.setZoomFactor(Math.min(1.5, Math.max(0.75, percent / 100)));
+      ipcRenderer.send("display:setScale", percent);
     },
   },
   // keep the existing overview/assets/liabilities/spending/automation members
 };
 ```
 
-Do not add an IPC channel; `webFrame` is the native renderer zoom API and the preload bridge is already the renderer trust boundary.
+The preload also sends `display:setScale` to the main process. Renderer zoom does not reposition macOS's native traffic lights, so the main process validates the payload and updates `BrowserWindow.setWindowButtonPosition` for the selected scale.
 
 - [ ] **Step 4: Run the contract, type, and Electron builds**
 
