@@ -98,7 +98,6 @@
   }
 
   .loading-status {
-    width: 100vw;
     min-height: 100vh;
     margin: 0;
     display: flex;
