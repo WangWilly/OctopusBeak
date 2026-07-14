@@ -97,6 +97,9 @@ export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process
   const model = loadAutomationDesktopModel(ledgerDir);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
+  if (row.status === "waiting_for_human") {
+    throw new Error("Task is waiting for human input. Resume or force quit it first.");
+  }
   if (row.status === "locked") {
     throw new Error("Import is locked until all crawler dependencies complete for the business day.");
   }
