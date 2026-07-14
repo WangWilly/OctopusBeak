@@ -1,4 +1,4 @@
-import { ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
@@ -21,8 +21,15 @@ import {
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { loadSpending, updateSpendingItemCategory } from "../src/lib/spending/server/store.ts";
+import { trafficLightPositionForScale } from "./window-options.ts";
 
 export function registerOctopusBeakIpc() {
+  ipcMain.on("display:setScale", (event, percent: number) => {
+    if (process.platform !== "darwin") return;
+    BrowserWindow.fromWebContents(event.sender)?.setWindowButtonPosition(
+      trafficLightPositionForScale(percent),
+    );
+  });
   ipcMain.handle("overview:load", () => loadOverview());
   ipcMain.handle("assets:load", () => loadAssets());
   ipcMain.handle("liabilities:load", () => loadLiabilities());

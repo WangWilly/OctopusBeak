@@ -5,13 +5,27 @@ type IntegratedTitleBarOptions = Pick<
   "titleBarStyle" | "trafficLightPosition" | "titleBarOverlay"
 >;
 
+const defaultTrafficLightPosition = { x: 14, y: 23 } as const;
+const trafficLightRadius = 7;
+
+export function trafficLightPositionForScale(percent: number) {
+  if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
+  const zoomFactor = Math.min(1.5, Math.max(0.75, percent / 100));
+  return {
+    x: defaultTrafficLightPosition.x,
+    y: Math.round(
+      (defaultTrafficLightPosition.y + trafficLightRadius) * zoomFactor - trafficLightRadius,
+    ),
+  };
+}
+
 export function integratedTitleBarOptions(
   platform: NodeJS.Platform = process.platform,
 ): Partial<IntegratedTitleBarOptions> {
   if (platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 14, y: 14 },
+      trafficLightPosition: trafficLightPositionForScale(100),
     };
   }
 

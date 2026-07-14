@@ -1,10 +1,14 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
-import { displayScaleZoomFactor, type OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import {
+  displayScaleZoomFactor,
+  type OctopusBeakApi,
+} from "../src/lib/desktop/api.ts";
 
 const api: OctopusBeakApi = {
   display: {
     setScale(percent) {
       webFrame.setZoomFactor(displayScaleZoomFactor(percent));
+      ipcRenderer.send("display:setScale", percent);
     },
   },
   overview: {
