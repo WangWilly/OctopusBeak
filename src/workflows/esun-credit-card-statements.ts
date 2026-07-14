@@ -203,11 +203,15 @@ async function waitForSignedInState(page: Page): Promise<void> {
   await frame.locator("a", { hasText: "登出" }).waitFor({ timeout: 60_000 });
 }
 
-async function acceptDuplicateLoginIfPresent(frame: Frame): Promise<void> {
+export async function acceptDuplicateLoginIfPresent(frame: Frame): Promise<void> {
   const confirmButton = frame
     .locator(".ui-dialog button, .ui-dialog a")
     .filter({ hasText: /確定|確認|是|OK/i })
     .first();
+  await confirmButton
+    .or(frame.locator("a", { hasText: "登出" }))
+    .first()
+    .waitFor({ timeout: 60_000 });
   if (await confirmButton.isVisible().catch(() => false)) {
     await confirmButton.click();
   }
