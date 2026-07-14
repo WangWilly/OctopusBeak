@@ -8,8 +8,11 @@ type IntegratedTitleBarOptions = Pick<
 const defaultTrafficLightPosition = { x: 14, y: 23 } as const;
 const trafficLightRadius = 7;
 
+export const isFiniteDisplayScale = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
 export function trafficLightPositionForScale(percent: number) {
-  if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
+  if (!isFiniteDisplayScale(percent)) throw new TypeError("Display scale must be finite.");
   const zoomFactor = Math.min(1.5, Math.max(0.75, percent / 100));
   return {
     x: defaultTrafficLightPosition.x,
