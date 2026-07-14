@@ -28,6 +28,9 @@ export type ViewerInspectResult = {
 };
 
 export type OctopusBeakApi = {
+  display: {
+    setScale(percent: number): void;
+  };
   overview: {
     load(): Promise<OverviewPageDto>;
   };

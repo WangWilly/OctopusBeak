@@ -18,3 +18,12 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:viewerInput",
   "automation:forceQuit",
 ]);
+
+import type { OctopusBeakApi } from "./api.ts";
+
+const displayApi: OctopusBeakApi["display"] = {
+  setScale(percent) {
+    assert.equal(percent, 100);
+  },
+};
+displayApi.setScale(100);
