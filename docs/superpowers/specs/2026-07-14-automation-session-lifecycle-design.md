@@ -16,7 +16,7 @@ This ownership gap allows sessions to accumulate across daily automation runs. I
 
 ## Session Ownership
 
-The automation runner owns every Libretto session started for an App task. It extracts the session ID from the existing task output, reads the Libretto session state as soon as it is available, and associates both the session ID and daemon PID with the current task run in memory. Retaining the PID lets the runner verify shutdown even if Libretto clears its state file during a nominal close. The existing task log remains the persisted source used to recover a session ID after an abnormal App exit; no new database field is required.
+The automation runner owns every Libretto session started for an App task. It generates the session ID before spawning Libretto, passes that ID through `--session`, writes it to the existing task log, and associates the session ID and daemon PID with the current task run in memory. Retaining the PID lets the runner verify shutdown even if Libretto clears its state file during a nominal close. The existing task log remains the persisted source used to recover a session ID after an abnormal App exit; no new database field is required.
 
 All terminal paths use one idempotent session-finalization operation:
 
