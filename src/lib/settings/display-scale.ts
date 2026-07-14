@@ -16,6 +16,7 @@ export type DisplayScaleAction = "decrease" | "increase" | "reset";
 export const displayScale = writable(DISPLAY_SCALE_DEFAULT);
 
 export function normalizeDisplayScale(value: unknown) {
+  if (typeof value === "string" && !value.trim()) return DISPLAY_SCALE_DEFAULT;
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return DISPLAY_SCALE_DEFAULT;
   const stepped = Math.round(numeric / DISPLAY_SCALE_STEP) * DISPLAY_SCALE_STEP;
@@ -39,8 +40,14 @@ export function applyDisplayScale(value: unknown, storage = browserStorage()) {
   return normalized;
 }
 
-export function displayScaleShortcut(event: DisplayScaleKeyEvent): DisplayScaleAction | null {
-  if (event.defaultPrevented || event.altKey || (!event.metaKey && !event.ctrlKey)) return null;
+export function displayScaleShortcut(
+  event: DisplayScaleKeyEvent,
+  platform: "mac" | "other",
+): DisplayScaleAction | null {
+  const modifier = platform === "mac"
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
+  if (event.defaultPrevented || event.altKey || !modifier) return null;
   if (event.key === "-") return "decrease";
   if (event.key === "+" || event.key === "=") return "increase";
   if (event.key === "0") return "reset";

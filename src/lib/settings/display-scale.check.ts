@@ -17,6 +17,8 @@ class MemoryStorage {
 const storage = new MemoryStorage();
 assert.equal(normalizeDisplayScale(undefined), DISPLAY_SCALE_DEFAULT);
 assert.equal(normalizeDisplayScale("bad"), DISPLAY_SCALE_DEFAULT);
+assert.equal(normalizeDisplayScale(""), DISPLAY_SCALE_DEFAULT);
+assert.equal(normalizeDisplayScale("   "), DISPLAY_SCALE_DEFAULT);
 assert.equal(normalizeDisplayScale(72), 75);
 assert.equal(normalizeDisplayScale(153), 150);
 assert.equal(normalizeDisplayScale(103), 105);
@@ -27,21 +29,26 @@ assert.equal(readStoredDisplayScale(storage), 125);
 assert.equal(applyDisplayScale(103, storage), 105);
 assert.equal(storage.getItem(displayScaleStorageKey), "105");
 
-const shortcut = (key: string, extra = {}) => displayScaleShortcut({
+const shortcut = (platform: "mac" | "other", key: string, extra = {}) => displayScaleShortcut({
   key,
-  metaKey: true,
-  ctrlKey: false,
+  metaKey: platform === "mac",
+  ctrlKey: platform === "other",
   altKey: false,
   defaultPrevented: false,
   ...extra,
-});
-assert.equal(shortcut("-"), "decrease");
-assert.equal(shortcut("="), "increase");
-assert.equal(shortcut("+"), "increase");
-assert.equal(shortcut("0"), "reset");
-assert.equal(shortcut("-", { metaKey: false, ctrlKey: true }), "decrease");
-assert.equal(shortcut("=", { metaKey: false, ctrlKey: true }), "increase");
-assert.equal(shortcut("0", { metaKey: false, ctrlKey: true }), "reset");
-assert.equal(shortcut("0", { altKey: true }), null);
-assert.equal(shortcut("0", { defaultPrevented: true }), null);
-assert.equal(shortcut("0", { metaKey: false }), null);
+}, platform);
+assert.equal(shortcut("mac", "-"), "decrease");
+assert.equal(shortcut("mac", "="), "increase");
+assert.equal(shortcut("mac", "+"), "increase");
+assert.equal(shortcut("mac", "0"), "reset");
+assert.equal(shortcut("mac", "0", { metaKey: false, ctrlKey: true }), null);
+assert.equal(shortcut("mac", "0", { ctrlKey: true }), null);
+assert.equal(shortcut("other", "-"), "decrease");
+assert.equal(shortcut("other", "="), "increase");
+assert.equal(shortcut("other", "+"), "increase");
+assert.equal(shortcut("other", "0"), "reset");
+assert.equal(shortcut("other", "0", { metaKey: true, ctrlKey: false }), null);
+assert.equal(shortcut("other", "0", { metaKey: true }), null);
+assert.equal(shortcut("mac", "0", { altKey: true }), null);
+assert.equal(shortcut("mac", "0", { defaultPrevented: true }), null);
+assert.equal(shortcut("mac", "0", { metaKey: false }), null);
