@@ -21,11 +21,12 @@ import {
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { loadSpending, updateSpendingItemCategory } from "../src/lib/spending/server/store.ts";
-import { trafficLightPositionForScale } from "./window-options.ts";
+import { isFiniteDisplayScale, trafficLightPositionForScale } from "./window-options.ts";
 
 export function registerOctopusBeakIpc() {
-  ipcMain.on("display:setScale", (event, percent: number) => {
+  ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
+    if (!isFiniteDisplayScale(percent)) return;
     BrowserWindow.fromWebContents(event.sender)?.setWindowButtonPosition(
       trafficLightPositionForScale(percent),
     );
