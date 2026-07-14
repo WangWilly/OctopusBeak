@@ -60,6 +60,7 @@ const en = {
     liabilityExposure: "Liability exposure",
     dailyAssetChanges: "Daily asset changes",
     dailyAssetChangesBaseCurrency: "Daily asset changes base currency",
+    exchangeRatesThrough: (date: string) => `Rates through ${date}`,
   },
   assets: {
     eyebrow: "Assets",
@@ -195,6 +196,8 @@ const en = {
     paginationAria: "Daily history pagination",
     prev: "Prev",
     next: "Next",
+    rateDates: (dates: string) => `Rate date ${dates}`,
+    missingExchangeRate: "Missing exchange rate; showing native currencies",
   },
   allocation: {
     defaultTitle: "Allocation",
@@ -442,6 +445,7 @@ const zh: typeof en = {
     liabilityExposure: "負債曝險",
     dailyAssetChanges: "每日資產變化",
     dailyAssetChangesBaseCurrency: "每日資產變化基準幣別",
+    exchangeRatesThrough: (date) => `匯率資料截至 ${date}`,
   },
   assets: {
     eyebrow: "資產",
@@ -576,6 +580,8 @@ const zh: typeof en = {
     paginationAria: "每日歷史分頁",
     prev: "上一頁",
     next: "下一頁",
+    rateDates: (dates) => `匯率日期 ${dates}`,
+    missingExchangeRate: "缺少匯率，顯示原幣金額",
   },
   allocation: {
     defaultTitle: "配置",

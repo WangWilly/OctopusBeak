@@ -1,13 +1,20 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import {
+    convertDailyHistoryRows,
+    dailyHistoryCurrencies,
+  } from "$lib/overview/exchange-rate-display.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
+
+  const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
 
   export let overview: OverviewPageDto;
 
@@ -23,7 +30,19 @@
     $t.common.importedAt(formatImportedAt(overview.importedAt));
   $: sideSubSensitive = netAmounts.length > 1;
   $: history = overview.dailyHistory;
+  $: dailyCurrencies = dailyHistoryCurrencies(history);
+  $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
+  $: convertedDailyHistory = convertDailyHistoryRows(
+    history,
+    overview.exchangeRates,
+    dailyCurrency,
+  ).rows;
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+
+  onMount(() => {
+    const stored = localStorage.getItem(dailyCurrencyStorageKey);
+    dailyCurrency = stored && dailyCurrencies.includes(stored) ? stored : "TWD";
+  });
 
   function formatImportedAt(value: string | null) {
     return value?.slice(0, 16).replace("T", " ") ?? $t.common.notYet;
@@ -31,6 +50,11 @@
 
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
+  }
+
+  function selectDailyCurrency(event: Event) {
+    dailyCurrency = selectValue(event);
+    localStorage.setItem(dailyCurrencyStorageKey, dailyCurrency);
   }
 
   function translateSummaryMetric(metric: SummaryMetricDto, dictionary: Translation): SummaryMetricDto {
@@ -112,18 +136,22 @@
           <select
             id="daily-base-currency"
             aria-label={$t.overview.dailyAssetChangesBaseCurrency}
-            bind:value={dailyCurrency}
-            onchange={(event) => (dailyCurrency = selectValue(event))}
-            oninput={(event) => (dailyCurrency = selectValue(event))}
+            value={dailyCurrency}
+            onchange={selectDailyCurrency}
           >
-            <option>TWD</option>
-            <option>USD</option>
-            <option>JPY</option>
+            {#each dailyCurrencies as currency}
+              <option value={currency}>{currency}</option>
+            {/each}
           </select>
         </label>
+        {#if overview.latestExchangeRateDate}
+          <span class="chip">
+            {$t.overview.exchangeRatesThrough(overview.latestExchangeRateDate)}
+          </span>
+        {/if}
       </div>
       {#key dailyCurrency}
-        <DailyHistoryTable rows={history} currency={dailyCurrency} paginate />
+        <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
       {/key}
     </section>
   </div>
