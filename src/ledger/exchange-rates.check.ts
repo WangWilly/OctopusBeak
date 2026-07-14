@@ -28,9 +28,9 @@ try {
   assert.deepEqual(requiredExchangeRateCurrencies(history), ["JPY", "USD"]);
 
   const validFetch: typeof fetch = async () => new Response(JSON.stringify([
-    { date: "2026-07-11", base: "TWD", quote: "JPY", rate: 5 },
-    { date: "2026-07-11", base: "TWD", quote: "USD", rate: 0.03125 },
-    { date: "2026-07-11", base: "TWD", quote: "EUR", rate: 0.027 },
+    { date: "2026-07-12", base: "TWD", quote: "JPY", rate: 5 },
+    { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.03125 },
+    { date: "2026-07-12", base: "TWD", quote: "EUR", rate: 0.027 },
   ]), { status: 200, headers: { "content-type": "application/json" } });
 
   const result = await syncExchangeRates(ledgerDir, history, {
@@ -43,14 +43,14 @@ try {
   const rates = readExchangeRates(db);
   assert.deepEqual(rates, [
     {
-      rateDate: "2026-07-11",
+      rateDate: "2026-07-12",
       currency: "JPY",
       twdPerUnit: 0.2,
       source: "frankfurter-v2",
       fetchedAt: "2026-07-12T12:00:00.000Z",
     },
     {
-      rateDate: "2026-07-11",
+      rateDate: "2026-07-12",
       currency: "USD",
       twdPerUnit: 32,
       source: "frankfurter-v2",
@@ -60,19 +60,35 @@ try {
   assert.equal(rates.some((rate) => rate.currency === "EUR"), false);
   db.close();
 
-  const invalidFetch: typeof fetch = async () => new Response(JSON.stringify([
-    { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0 },
-  ]), { status: 200, headers: { "content-type": "application/json" } });
-  await assert.rejects(
-    syncExchangeRates(ledgerDir, history, {
-      fetchImpl: invalidFetch,
-      now: () => new Date("2026-07-12T18:00:00.000Z"),
-    }),
-  );
+  async function assertRejectedWithoutChangingCache(responseRows: unknown[]) {
+    const invalidFetch: typeof fetch = async () => new Response(JSON.stringify(responseRows), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    await assert.rejects(
+      syncExchangeRates(ledgerDir, history, {
+        fetchImpl: invalidFetch,
+        now: () => new Date("2026-07-12T18:00:00.000Z"),
+      }),
+    );
 
-  const unchangedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-  assert.equal(readExchangeRates(unchangedDb).length, 2);
-  unchangedDb.close();
+    const unchangedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    assert.deepEqual(readExchangeRates(unchangedDb), rates);
+    unchangedDb.close();
+  }
+
+  await assertRejectedWithoutChangingCache([
+    { date: "2026-02-30", base: "TWD", quote: "USD", rate: 0.03125 },
+    { date: "2026-07-12", base: "TWD", quote: "JPY", rate: 5 },
+  ]);
+  await assertRejectedWithoutChangingCache([
+    { date: "2026-07-13", base: "TWD", quote: "USD", rate: 0.03125 },
+    { date: "2026-07-12", base: "TWD", quote: "JPY", rate: 5 },
+  ]);
+  await assertRejectedWithoutChangingCache([
+    { date: "2026-07-12", base: "TWD", quote: "USD", rate: Number.MIN_VALUE },
+    { date: "2026-07-12", base: "TWD", quote: "JPY", rate: 5 },
+  ]);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

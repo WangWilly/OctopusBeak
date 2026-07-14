@@ -132,9 +132,19 @@
             <td>
               {pointLabel(row)}
               {#if row.exchangeRateMissing}
-                <span class="rate-note missing" title={$t.historyTable.missingExchangeRate}>!</span>
+                <span
+                  class="rate-note missing"
+                  role="img"
+                  aria-label={$t.historyTable.missingExchangeRate}
+                  title={$t.historyTable.missingExchangeRate}
+                >!</span>
               {:else if row.exchangeRateDates?.length}
-                <span class="rate-note" title={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}>
+                <span
+                  class="rate-note"
+                  role="img"
+                  aria-label={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}
+                  title={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}
+                >
                   FX
                 </span>
               {/if}

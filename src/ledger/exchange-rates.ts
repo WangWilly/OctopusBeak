@@ -6,7 +6,7 @@ const API_URL = "https://api.frankfurter.dev/v2/rates";
 const SOURCE = "frankfurter-v2";
 const AMOUNT_KEYS = ["netAssets", "dailyChange", "assets", "liabilities"] as const;
 const apiRowSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date: z.iso.date(),
   base: z.literal("TWD"),
   quote: z.string().regex(/^[A-Z]{3}$/),
   rate: z.number().positive().finite(),
@@ -128,19 +128,28 @@ export async function syncExchangeRates(
     }
     const parsed = apiResponseSchema.parse(await response.json())
       .filter((row) => currencies.includes(row.quote));
+    if (parsed.some((row) => row.date < from || row.date > to)) {
+      throw new Error(`Frankfurter response date outside ${from}..${to}`);
+    }
     for (const currency of currencies) {
       if (!parsed.some((row) => row.quote === currency)) {
         throw new Error(`Frankfurter response missing ${currency}`);
       }
     }
     const fetchedAt = now.toISOString();
-    const rows = parsed.map((row): ExchangeRateRecord => ({
-      rateDate: row.date,
-      currency: row.quote,
-      twdPerUnit: 1 / row.rate,
-      source: SOURCE,
-      fetchedAt,
-    }));
+    const rows = parsed.map((row): ExchangeRateRecord => {
+      const twdPerUnit = 1 / row.rate;
+      if (!Number.isFinite(twdPerUnit) || twdPerUnit <= 0) {
+        throw new Error(`Frankfurter response has invalid inverse rate for ${row.quote}`);
+      }
+      return {
+        rateDate: row.date,
+        currency: row.quote,
+        twdPerUnit,
+        source: SOURCE,
+        fetchedAt,
+      };
+    });
     upsertExchangeRates(db, rows);
     return { requestedCurrencies: currencies, from, to, written: rows.length };
   } finally {
