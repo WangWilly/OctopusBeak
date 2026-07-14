@@ -6,12 +6,12 @@ import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import {
-  resolveLibrettoCommand,
   resolvePatchCommand,
   resolveTaskCommand,
 } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
+import { closeLibrettoSession } from "./session-lifecycle.ts";
 import {
   automationBusinessTimezone,
   automationGroupEnabledStatus,
@@ -30,6 +30,8 @@ import {
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
+
+export { closeLibrettoSession };
 
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskChildren = new Map<string, ChildProcess>();
@@ -166,31 +168,6 @@ export function accumulateAutomationOutput(
     logTail: tail(combined),
     resumeFailure: state.resumeFailure ?? resumeFailureMessage(combined),
   };
-}
-
-export async function closeLibrettoSession(session: string) {
-  await new Promise<void>((resolve, reject) => {
-    const command = resolveLibrettoCommand(
-      ["close", "--session", session],
-      automationProcessEnv(),
-    );
-    const child = spawn(command.command, command.args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: command.env,
-    });
-    let errorText = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      errorText = tail(errorText + chunk.toString("utf8"));
-    });
-    child.on("error", reject);
-    child.on("close", (exitCode) => {
-      if (exitCode === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(errorText || `libretto close exited with code ${exitCode}`));
-    });
-  });
 }
 
 export function startAutomationTask(
