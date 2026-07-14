@@ -27,6 +27,8 @@ import {
   captureCardRowCounts,
   fullCreditCardCaptureMetadataSchema,
 } from "./credit-card-capture.ts";
+import { syncExchangeRates } from "./exchange-rates.ts";
+import { loadOverview } from "../lib/overview/server/load-overview.ts";
 
 const inputSchema = z.object({
   downloadsDir: z.string().default("downloads"),
@@ -1237,6 +1239,14 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       files: fileSummaries,
     };
     db.close();
+    try {
+      const { dailyHistory } = await loadOverview(outputDir);
+      await syncExchangeRates(outputDir, dailyHistory);
+    } catch (error) {
+      console.warn(
+        `exchange-rate-sync-warning: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     return result;
   } catch (error) {
     insertRunEvent(db, {
