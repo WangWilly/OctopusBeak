@@ -6,6 +6,8 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
+    "test": "node --no-warnings --experimental-strip-types --test \"src/**/*.check.ts\" \"src/**/*.test.ts\" \"electron/**/*.check.ts\" \"electron/**/*.check.cjs\" \"scripts/**/*.check.mjs\"",
+    "test:ci": "mkdir -p reports && node --no-warnings --experimental-strip-types --experimental-test-coverage --test --test-reporter=spec --test-reporter-destination=reports/test-summary.txt --test-reporter=junit --test-reporter-destination=reports/junit.xml \"src/**/*.check.ts\" \"src/**/*.test.ts\" \"electron/**/*.check.ts\" \"electron/**/*.check.cjs\" \"scripts/**/*.check.mjs\"",
     "postinstall": "node scripts/patch-libretto-run-cdp.mjs",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
