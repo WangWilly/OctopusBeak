@@ -4,6 +4,7 @@ import { join } from "node:path";
 export type LibrettoSessionState = {
   session: string;
   port: number;
+  pid?: number;
   cdpEndpoint?: string;
   viewport?: { width: number; height: number };
 };
@@ -29,6 +30,7 @@ export function parseLibrettoSessionState(text: string): LibrettoSessionState {
   const raw = JSON.parse(text) as {
     session?: unknown;
     port?: unknown;
+    pid?: unknown;
     cdpEndpoint?: unknown;
     viewport?: unknown;
   };
@@ -37,12 +39,17 @@ export function parseLibrettoSessionState(text: string): LibrettoSessionState {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid Libretto session port: ${raw.port}`);
   }
+  const pid = raw.pid === undefined ? undefined : Number(raw.pid);
+  if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
+    throw new Error("Invalid Libretto session pid: " + String(raw.pid));
+  }
   const viewport = raw.viewport && typeof raw.viewport === "object"
     ? raw.viewport as { width: number; height: number }
     : undefined;
   return {
     session,
     port,
+    pid,
     cdpEndpoint: typeof raw.cdpEndpoint === "string" ? raw.cdpEndpoint : undefined,
     viewport,
   };

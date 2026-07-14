@@ -88,18 +88,22 @@ export function resolveNodeScriptCommand(
 
 export function resolveTaskCommand(
   task: AutomationTask,
-  options: { resumeSession?: string } = {},
+  options: { resumeSession?: string; session?: string } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedAutomationCommand {
   if (options.resumeSession) {
     return resolveLibrettoCommand(["resume", "--session", options.resumeSession], env);
   }
 
+  const sessionArgs = options.session ? ["--session", options.session] : [];
+
   if (!isDesktopRuntime(env)) {
     return {
       display: task.script,
       command: "npm",
-      args: ["run", task.script],
+      args: task.command[0] === "libretto" && sessionArgs.length > 0
+        ? ["run", task.script, "--", ...sessionArgs]
+        : ["run", task.script],
       env,
     };
   }
@@ -107,7 +111,7 @@ export function resolveTaskCommand(
   const [runtime, ...args] = task.command;
   if (runtime === "libretto") {
     return {
-      ...resolveLibrettoCommand(args, env),
+      ...resolveLibrettoCommand([...args, ...sessionArgs], env),
       display: task.script,
     };
   }

@@ -40,6 +40,10 @@ assert.deepEqual(
     },
   },
 );
+assert.deepEqual(
+  resolveTaskCommand(fubon, { session: "ses-octopus-123" }, env).args.slice(-2),
+  ["--session", "ses-octopus-123"],
+);
 
 const importTask = taskById("import-downloads-csv");
 assert.ok(importTask);
@@ -60,6 +64,10 @@ assert.deepEqual(
     args: ["run", "run:fubon-all-statements"],
     env: { PATH: "/usr/bin" },
   },
+);
+assert.deepEqual(
+  resolveTaskCommand(fubon, { session: "ses-octopus-123" }, { PATH: "/usr/bin" }).args,
+  ["run", "run:fubon-all-statements", "--", "--session", "ses-octopus-123"],
 );
 
 const eInvoice = taskById("einvoice-personal-invoices");

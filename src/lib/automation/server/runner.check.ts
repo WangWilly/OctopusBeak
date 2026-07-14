@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   accumulateAutomationOutput,
+  automationSessionFromLog,
   automationProcessEnv,
+  createAutomationSessionId,
   finalFailureMessage,
   isForceQuitRun,
   librettoRunCdpPatchCommand,
@@ -14,6 +16,13 @@ import {
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
 } from "./runner.ts";
+
+assert.equal(createAutomationSessionId(() => "fixed-uuid"), "ses-octopus-fixed-uuid");
+assert.equal(
+  automationSessionFromLog("automation-session: ses-octopus-fixed-uuid\n"),
+  "ses-octopus-fixed-uuid",
+);
+assert.equal(automationSessionFromLog("no session"), null);
 
 assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
 assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
