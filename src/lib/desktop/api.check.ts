@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { octopusBeakApiChannels } from "./api.ts";
+import { displayScaleZoomFactor, octopusBeakApiChannels } from "./api.ts";
 
 assert.deepEqual([...octopusBeakApiChannels], [
   "overview:load",
@@ -27,3 +27,13 @@ const displayApi: OctopusBeakApi["display"] = {
   },
 };
 displayApi.setScale(100);
+
+assert.equal(displayScaleZoomFactor(75), 0.75);
+assert.equal(displayScaleZoomFactor(100), 1);
+assert.equal(displayScaleZoomFactor(150), 1.5);
+assert.equal(displayScaleZoomFactor(50), 0.75);
+assert.equal(displayScaleZoomFactor(200), 1.5);
+assert.throws(
+  () => displayScaleZoomFactor(Number.NaN),
+  { name: "TypeError", message: "Display scale must be finite." },
+);
