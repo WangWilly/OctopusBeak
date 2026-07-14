@@ -3,6 +3,12 @@ export type CurrencyAmountDto = {
   value: number;
 };
 
+export type ExchangeRateDto = {
+  rateDate: string;
+  currency: string;
+  twdPerUnit: number;
+};
+
 export type SummaryMetricDto = {
   label: string;
   amounts: CurrencyAmountDto[];
@@ -17,6 +23,8 @@ export type DailyHistoryRowDto = {
   dailyChange: CurrencyAmountDto[];
   assets: CurrencyAmountDto[];
   liabilities: CurrencyAmountDto[];
+  exchangeRateDates?: string[];
+  exchangeRateMissing?: boolean;
   accountChanges: string[];
   positionCount: number;
 };

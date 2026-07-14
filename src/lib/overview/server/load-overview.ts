@@ -25,6 +25,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       brokerageHoldings,
       maicoinAccountSnapshots,
       maicoinStatementRows,
+      exchangeRates,
     ] = await Promise.all([
       db.select().from(schema.sourceFiles).all(),
       db.select().from(schema.accountTransactions).all(),
@@ -38,6 +39,11 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       db.select().from(schema.brokerageHoldings).all(),
       db.select().from(schema.maicoinAccountSnapshots).all(),
       db.select().from(schema.maicoinStatementRows).all(),
+      db.select({
+        rateDate: schema.exchangeRates.rateDate,
+        currency: schema.exchangeRates.currency,
+        twdPerUnit: schema.exchangeRates.twdPerUnit,
+      }).from(schema.exchangeRates).all(),
     ]);
 
     const data: LedgerQueryData = {
@@ -62,6 +68,9 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       summary: buildSummaryMetrics(accounts),
       dailyHistory: buildDailyHistory(data),
       accounts,
+      exchangeRates,
+      latestExchangeRateDate:
+        exchangeRates.map((rate) => rate.rateDate).sort().at(-1) ?? null,
     };
   } finally {
     sqlite.close();
