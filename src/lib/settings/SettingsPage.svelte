@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { isMacPlatform } from "$lib/desktop/platform.ts";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -16,7 +17,7 @@
 
   onMount(() => {
     displayScaleAvailable = Boolean(window.octopusBeak?.display);
-    shortcutModifier = navigator.platform.startsWith("Mac") ? "⌘" : "Ctrl";
+    shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
   });
 
   function chooseLocale(value: Locale) {
