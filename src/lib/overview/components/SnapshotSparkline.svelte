@@ -59,7 +59,7 @@
   }
 
   function shortDate(value: unknown) {
-    return formatSnapshotAxisLabel(value, $systemTimezone, $locale);
+    return formatSnapshotAxisLabel(value, $systemTimezone, $locale, chartPoints);
   }
 
   function shortAmount(value: unknown) {
@@ -75,7 +75,13 @@
     const existing = data.find((point) => point.time === time);
     if (existing) return existing;
     const date = new Date(time).toISOString().slice(0, 10);
-    return { date, dateLabel: date, time, value: 0 };
+    return {
+      date,
+      dateLabel: date,
+      axisLabel: formatSnapshotAxisLabel(time, $systemTimezone, $locale, chartPoints),
+      time,
+      value: 0,
+    };
   }
 
   function translateDivergingSeries(key: SnapshotDivergingSeriesKey, dictionary: Translation) {

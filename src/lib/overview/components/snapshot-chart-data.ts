@@ -6,6 +6,7 @@ type HistoryAmountKey = "netAssets" | "assets" | "liabilities" | "dailyChange";
 export type SnapshotChartPoint = {
   date: string;
   dateLabel: string;
+  axisLabel: string;
   time: number;
   value: number;
 };
@@ -31,10 +32,18 @@ const DIVERGING_SERIES: Array<{
   { key: "liabilities", label: "Liabilities", amountKey: "liabilities", color: "oklch(50% 0.07 35)", sign: -1 },
 ];
 
-export function formatSnapshotAxisLabel(value: unknown, timeZone: string, locale: string) {
+export function formatSnapshotAxisLabel(
+  value: unknown,
+  timeZone: string,
+  locale: string,
+  points: SnapshotChartPoint[] = [],
+) {
+  const time = value instanceof Date ? value.getTime() : typeof value === "number" ? value : null;
+  const preserved = time === null ? undefined : points.find((point) => point.time === time)?.axisLabel;
+  if (preserved) return preserved;
   const text = String(value);
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value.slice(5);
-  const date = value instanceof Date ? value : typeof value === "number" ? new Date(value) : null;
+  const date = value instanceof Date ? value : typeof value === "number" || typeof value === "string" ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return text.length >= 10 ? text.slice(5, 10) : text;
   const parts = new Intl.DateTimeFormat(locale, { timeZone, month: "2-digit", day: "2-digit" }).formatToParts(date);
   return `${parts.find((part) => part.type === "month")?.value}-${parts.find((part) => part.type === "day")?.value}`;
@@ -59,6 +68,7 @@ export function buildSnapshotChartPoints(
       return {
         date: row.date,
         dateLabel: formatUtcDateTime(row.pointAt ?? row.date, timeZone, locale),
+        axisLabel: formatSnapshotAxisLabel(row.pointAt ?? row.date, timeZone, locale),
         time: baseTime + offset,
         value: amount.value,
       };
