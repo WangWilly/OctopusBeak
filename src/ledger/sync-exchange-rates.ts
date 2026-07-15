@@ -34,11 +34,16 @@ function scheduledAtUtc(argv: string[]) {
     throw new Error(`Unknown arguments: ${argv.join(" ")}`);
   }
   const value = argv[1];
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/.exec(value);
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString() !== value) {
+  const normalized = Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString();
+  const expected = match
+    ? `${match[1]}.${(match[2] ?? "").padEnd(3, "0").slice(0, 3)}Z`
+    : "";
+  if (!match || normalized !== expected) {
     throw new Error(`Invalid --scheduled-at-utc: ${value}`);
   }
-  return value;
+  return normalized;
 }
 
 export async function runExchangeRateSyncCommand(
