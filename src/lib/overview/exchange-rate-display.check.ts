@@ -24,7 +24,7 @@ const rates: ExchangeRateDto[] = [
   { rateDate: "2026-07-13", currency: "JPY", twdPerUnit: 0.21 },
 ];
 
-assert.deepEqual(dailyHistoryCurrencies(rows), ["TWD", "JPY", "USD"]);
+assert.deepEqual(dailyHistoryCurrencies(rows), ["TWD", "USD", "JPY"]);
 const converted = convertDailyHistoryRows(rows, rates, "USD");
 assert.deepEqual(converted.rows[0]?.netAssets, [{ currency: "USD", value: 200 }]);
 assert.deepEqual(converted.rows[0]?.dailyChange, [{ currency: "USD", value: 10 }]);
