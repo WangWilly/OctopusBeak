@@ -146,14 +146,14 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
     },
     reschedule() {
       if (!running) return;
-      generation += 1;
-      if (timer !== undefined) deps.clearTimer(timer);
-      timer = undefined;
       try {
         const selected = readSchedule();
         const { latestOccurrenceUtc } = selected.schedule;
+        if (latestOccurrenceUtc !== lastConsideredOccurrenceUtc) generation += 1;
         const expectedGeneration = generation;
         consider(latestOccurrenceUtc, expectedGeneration);
+        if (timer !== undefined) deps.clearTimer(timer);
+        timer = undefined;
         armNext(selected);
       } catch (error) {
         report(error);

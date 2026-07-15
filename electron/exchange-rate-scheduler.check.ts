@@ -169,32 +169,26 @@ test("stop cancels a due check waiting on success lookup", async () => {
   assert.deepEqual(h.starts, []);
 });
 
-test("reschedule cancels a due check waiting on success lookup", async () => {
+test("same-occurrence reschedule preserves a pending success lookup", async () => {
   const success = deferred<boolean>();
-  let lookups = 0;
-  const h = harness({
-    hasSuccessSince: () => lookups++ === 0 ? success.promise : true,
-  });
+  const h = harness({ hasSuccessSince: () => success.promise });
   h.scheduler.start();
   await settle();
   h.scheduler.reschedule();
   success.resolve(false);
   await settle();
-  assert.deepEqual(h.starts, []);
+  assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
 });
 
-test("reschedule cancels a due check waiting on active-task lookup", async () => {
+test("same-occurrence reschedule preserves a pending active-task lookup", async () => {
   const active = deferred<boolean>();
-  let activeChecks = 0;
-  const h = harness({
-    isTaskActive: () => activeChecks++ === 0 ? active.promise : true,
-  });
+  const h = harness({ isTaskActive: () => active.promise });
   h.scheduler.start();
   await settle();
   h.scheduler.reschedule();
   active.resolve(false);
   await settle();
-  assert.deepEqual(h.starts, []);
+  assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
 });
 
 test("stop cancels a due check waiting on active-task lookup", async () => {
@@ -258,6 +252,33 @@ test("reschedule runs a genuinely changed latest occurrence exactly once", async
 
   assert.deepEqual(h.starts, [newlyDue]);
   assert.equal(h.timers.length, 2);
+});
+
+test("changed-occurrence reschedule cancels a stale pending lookup", async () => {
+  let settings: SystemSettingsDto = {
+    systemTimezone: "Asia/Taipei",
+    exchangeRateUpdateTime: "10:00",
+  };
+  const staleOccurrence = "2026-07-14T02:00:00.000Z";
+  const newlyDue = "2026-07-15T00:00:00.000Z";
+  const stale = deferred<boolean>();
+  const h = harness({
+    readSettings: () => settings,
+    hasSuccessSince: (occurrenceUtc) => (
+      occurrenceUtc === staleOccurrence ? stale.promise : false
+    ),
+  });
+  h.setNow("2026-07-15T01:00:00.000Z");
+  h.scheduler.start();
+  await settle();
+
+  settings = { ...settings, exchangeRateUpdateTime: "08:00" };
+  h.scheduler.reschedule();
+  await settle();
+  stale.resolve(false);
+  await settle();
+
+  assert.deepEqual(h.starts, [newlyDue]);
 });
 
 test("unchanged settings do not reconsider a satisfied or active occurrence", async () => {
@@ -334,17 +355,34 @@ test("lookup and start errors are reported without crashing or double-starting",
   assert.equal(start.timers.length, 1);
 });
 
-test("reschedule reports settings errors without throwing", () => {
+test("reschedule settings errors preserve the in-flight attempt and timer", async () => {
   const settingsError = new Error("settings failed");
+  const success = deferred<boolean>();
   let fail = false;
   const h = harness({
     readSettings: () => {
       if (fail) throw settingsError;
       return taipei;
     },
+    hasSuccessSince: () => success.promise,
   });
+  h.setNow("2026-07-15T21:00:00.000Z");
   h.scheduler.start();
+  await settle();
+  const oldTimer = h.timers[0];
   fail = true;
   assert.doesNotThrow(() => h.scheduler.reschedule());
   assert.deepEqual(h.errors, [settingsError]);
+  assert.deepEqual(h.cleared, []);
+
+  fail = false;
+  h.setNow("2026-07-15T22:00:00.000Z");
+  oldTimer.callback();
+  success.resolve(false);
+  await settle();
+  assert.deepEqual(h.starts, [
+    "2026-07-14T22:00:00.000Z",
+    "2026-07-15T22:00:00.000Z",
+  ]);
+  assert.equal(h.timers.length, 2);
 });
