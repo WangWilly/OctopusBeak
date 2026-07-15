@@ -537,7 +537,7 @@ export async function dismissPasswordChangeReminderIfPresent(
     name: "暫不變更",
     exact: true,
   });
-  if (!(await postpone.isVisible({ timeout: 2_000 }).catch(() => false))) return;
+  if (!(await postpone.isVisible({ timeout: 2_000 }))) return;
 
   await postpone.click();
   await settleAfterNavigation(page);
