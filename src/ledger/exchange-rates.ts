@@ -43,7 +43,12 @@ export function requiredExchangeRateCurrencies(history: DailyHistoryRowDto[]) {
     .sort();
 }
 
-export function readExchangeRates(db: LedgerDatabase): ExchangeRateRecord[] {
+export function readExchangeRates(
+  db: LedgerDatabase,
+  currencies?: string[],
+): ExchangeRateRecord[] {
+  if (currencies?.length === 0) return [];
+  const placeholders = currencies?.map(() => "?").join(", ");
   return (db.prepare(`
     SELECT
       rate_date AS rateDate,
@@ -52,8 +57,9 @@ export function readExchangeRates(db: LedgerDatabase): ExchangeRateRecord[] {
       source,
       fetched_at AS fetchedAt
     FROM exchange_rates
+    ${placeholders ? `WHERE currency IN (${placeholders})` : ""}
     ORDER BY currency, rate_date
-  `).all() as ExchangeRateRecord[]).map((row) => ({ ...row }));
+  `).all(...(currencies ?? [])) as ExchangeRateRecord[]).map((row) => ({ ...row }));
 }
 
 function synchronizationStart(
@@ -126,7 +132,7 @@ export async function syncExchangeRates(
       request.requiredFrom,
       to,
       currencies,
-      readExchangeRates(db),
+      readExchangeRates(db, currencies),
     );
     if (!from || from > to) {
       return { requestedCurrencies: currencies, from, to, written: 0 };

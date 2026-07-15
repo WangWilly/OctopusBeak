@@ -140,6 +140,11 @@ try {
       (rate_date, currency, twd_per_unit, source, fetched_at)
     VALUES (?, 'JPY', 0.22, 'frankfurter-v2', ?)
   `).run("2026-07-08", "2026-07-12T12:00:00.000Z");
+  assert.deepEqual(
+    readExchangeRates(unequalCacheDb, ["JPY"]).map((rate) => rate.currency),
+    ["JPY", "JPY"],
+  );
+  assert.deepEqual(readExchangeRates(unequalCacheDb, []), []);
   unequalCacheDb.close();
 
   const unequalCache = await syncExchangeRates(ledgerDir, {
