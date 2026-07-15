@@ -82,13 +82,23 @@ test("records only an explicitly supplied scheduled UTC timestamp", async () => 
   await runExchangeRateSyncCommand(scheduled.options);
   assert.equal(scheduled.records[0]?.scheduledAtUtc, "2026-07-14T22:00:00.000Z");
 
+  const noFraction = harness({
+    argv: ["--scheduled-at-utc", "2026-07-14T22:00:00Z"],
+  });
+  await runExchangeRateSyncCommand(noFraction.options);
+  assert.equal(noFraction.records[0]?.scheduledAtUtc, "2026-07-14T22:00:00.000Z");
+
   const manual = harness();
   await runExchangeRateSyncCommand(manual.options);
   assert.equal(manual.records[0]?.scheduledAtUtc, null);
 });
 
 test("invalid scheduled timestamp is audited as a failure and rejected", async () => {
-  for (const value of ["not-a-date", "2026-02-30T22:00:00.000Z"]) {
+  for (const value of [
+    "not-a-date",
+    "2026-02-30T22:00:00.000Z",
+    "2026-07-14T22:00:00",
+  ]) {
     const { options, records } = harness({ argv: ["--scheduled-at-utc", value] });
     await assert.rejects(runExchangeRateSyncCommand(options), /Invalid --scheduled-at-utc/);
     assert.equal(records.length, 1);
