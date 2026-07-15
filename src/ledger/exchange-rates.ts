@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { openLedgerDatabase, type LedgerDatabase } from "./db/client.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
+import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 
 const API_URL = "https://api.frankfurter.dev/v2/rates";
 const SOURCE = "frankfurter-v2";
@@ -55,17 +56,21 @@ export function readExchangeRates(db: LedgerDatabase): ExchangeRateRecord[] {
 }
 
 function synchronizationStart(
-  history: DailyHistoryRowDto[],
+  requiredFrom: string,
+  to: string,
   currencies: string[],
   cached: ExchangeRateRecord[],
 ) {
-  const earliest = history.map((row) => row.date).sort()[0];
-  if (!earliest) return null;
-  return currencies.map((currency) => {
+  return currencies.flatMap((currency) => {
     const rows = cached.filter((row) => row.currency === currency);
     const first = rows[0]?.rateDate;
     const last = rows.at(-1)?.rateDate;
-    return !first || first > earliest ? earliest : last ?? earliest;
+    if (!first || first > requiredFrom) return requiredFrom;
+    if (last && last >= to) return [];
+    const next = new Date(`${last}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    const nextDate = next.toISOString().slice(0, 10);
+    return nextDate < requiredFrom ? requiredFrom : nextDate;
   }).sort()[0] ?? null;
 }
 
@@ -99,19 +104,26 @@ function upsertExchangeRates(db: LedgerDatabase, rows: ExchangeRateRecord[]) {
 
 export async function syncExchangeRates(
   ledgerDir: string,
-  history: DailyHistoryRowDto[],
+  request: ExchangeRateRequest,
   options: SyncOptions = {},
 ): Promise<ExchangeRateSyncResult> {
   const now = (options.now ?? (() => new Date()))();
   const to = now.toISOString().slice(0, 10);
-  const currencies = requiredExchangeRateCurrencies(history);
-  if (currencies.length === 0) {
-    return { requestedCurrencies: [], from: null, to, written: 0 };
+  const currencies = [...new Set(request.currencies)]
+    .filter((currency) => currency !== "TWD" && currency !== "UNKNOWN")
+    .sort();
+  if (currencies.length === 0 || !request.requiredFrom) {
+    return { requestedCurrencies: currencies, from: null, to, written: 0 };
   }
 
   const db = openLedgerDatabase(ledgerDir);
   try {
-    const from = synchronizationStart(history, currencies, readExchangeRates(db));
+    const from = synchronizationStart(
+      request.requiredFrom,
+      to,
+      currencies,
+      readExchangeRates(db),
+    );
     if (!from || from > to) {
       return { requestedCurrencies: currencies, from, to, written: 0 };
     }
