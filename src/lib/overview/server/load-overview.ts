@@ -7,6 +7,7 @@ import {
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
 import { buildSummaryMetrics } from "../../shared-ledger/server/summary.ts";
+import { requiredExchangeRateCurrencies } from "../../../ledger/exchange-rates.ts";
 import { buildDailyHistory } from "./daily-history.ts";
 
 export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<OverviewPageDto> {
@@ -25,7 +26,6 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       brokerageHoldings,
       maicoinAccountSnapshots,
       maicoinStatementRows,
-      exchangeRates,
     ] = await Promise.all([
       db.select().from(schema.sourceFiles).all(),
       db.select().from(schema.accountTransactions).all(),
@@ -39,11 +39,6 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       db.select().from(schema.brokerageHoldings).all(),
       db.select().from(schema.maicoinAccountSnapshots).all(),
       db.select().from(schema.maicoinStatementRows).all(),
-      db.select({
-        rateDate: schema.exchangeRates.rateDate,
-        currency: schema.exchangeRates.currency,
-        twdPerUnit: schema.exchangeRates.twdPerUnit,
-      }).from(schema.exchangeRates).all(),
     ]);
 
     const data: LedgerQueryData = {
@@ -62,15 +57,45 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       maicoinStatementRows,
     };
     const accounts = buildAccountOverview(data);
+    const dailyHistory = buildDailyHistory(data);
+    const firstDate = dailyHistory[0]?.date;
+    const lastDate = dailyHistory.at(-1)?.date;
+    const currencies = requiredExchangeRateCurrencies(dailyHistory);
+    const placeholders = currencies.map(() => "?").join(", ");
+    const exchangeRates: OverviewPageDto["exchangeRates"] =
+      !firstDate || !lastDate || currencies.length === 0
+        ? []
+        : (sqlite.prepare(`
+            SELECT
+              rate_date AS rateDate,
+              currency,
+              twd_per_unit AS twdPerUnit
+            FROM exchange_rates AS rate
+            WHERE currency IN (${placeholders})
+              AND rate_date <= ?
+              AND (
+                rate_date >= ?
+                OR rate_date = (
+                  SELECT MAX(rate_date)
+                  FROM exchange_rates AS prior
+                  WHERE prior.currency = rate.currency
+                    AND prior.rate_date < ?
+                )
+              )
+            ORDER BY currency, rate_date
+          `).all(...currencies, lastDate, firstDate, firstDate) as OverviewPageDto["exchangeRates"])
+            .map((rate) => ({ ...rate }));
 
     return {
       importedAt: latestImportedAt(data),
       summary: buildSummaryMetrics(accounts),
-      dailyHistory: buildDailyHistory(data),
+      dailyHistory,
       accounts,
       exchangeRates,
-      latestExchangeRateDate:
-        exchangeRates.map((rate) => rate.rateDate).sort().at(-1) ?? null,
+      latestExchangeRateDate: exchangeRates.reduce<string | null>(
+        (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,
+        null,
+      ),
     };
   } finally {
     sqlite.close();

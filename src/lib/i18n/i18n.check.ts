@@ -32,6 +32,15 @@ assert.equal(translations.en.automation.historyFinishedTime("Asia/Taipei"), "Fin
 assert.equal(translations["zh-TW"].automation.latestTime("Asia/Taipei"), "最新（Asia/Taipei）");
 assert.equal(translations["zh-TW"].automation.historyStartedTime("Asia/Taipei"), "開始（Asia/Taipei）");
 assert.equal(translations["zh-TW"].automation.historyFinishedTime("Asia/Taipei"), "完成（Asia/Taipei）");
+assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
+assert.equal(
+  translations.en.historyTable.rateDates(["2026-07-10", "2026-07-11"]),
+  "Rate dates: 2026-07-10, 2026-07-11",
+);
+assert.equal(
+  translations["zh-TW"].historyTable.rateDates(["2026-07-10", "2026-07-11"]),
+  "匯率日期：2026-07-10、2026-07-11",
+);
 
 function keys(value: unknown, prefix = ""): string[] {
   if (!value || typeof value !== "object") return [prefix];

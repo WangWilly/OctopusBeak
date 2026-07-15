@@ -5,6 +5,7 @@ import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 
 const API_URL = "https://api.frankfurter.dev/v2/rates";
 const SOURCE = "frankfurter-v2";
+const RATE_LOOKBACK_DAYS = 7;
 const AMOUNT_KEYS = ["netAssets", "dailyChange", "assets", "liabilities"] as const;
 const apiRowSchema = z.object({
   date: z.iso.date(),
@@ -61,16 +62,19 @@ function synchronizationStart(
   currencies: string[],
   cached: ExchangeRateRecord[],
 ) {
+  const coverageFrom = new Date(`${requiredFrom}T00:00:00.000Z`);
+  coverageFrom.setUTCDate(coverageFrom.getUTCDate() - RATE_LOOKBACK_DAYS);
+  const coverageDate = coverageFrom.toISOString().slice(0, 10);
   return currencies.flatMap((currency) => {
     const rows = cached.filter((row) => row.currency === currency);
     const first = rows[0]?.rateDate;
     const last = rows.at(-1)?.rateDate;
-    if (!first || first > requiredFrom) return requiredFrom;
+    if (!first || first > requiredFrom) return coverageDate;
     if (last && last >= to) return [];
     const next = new Date(`${last}T00:00:00.000Z`);
     next.setUTCDate(next.getUTCDate() + 1);
     const nextDate = next.toISOString().slice(0, 10);
-    return nextDate < requiredFrom ? requiredFrom : nextDate;
+    return nextDate < coverageDate ? coverageDate : nextDate;
   }).sort()[0] ?? null;
 }
 

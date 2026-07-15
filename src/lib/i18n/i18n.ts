@@ -196,7 +196,7 @@ const en = {
     paginationAria: "Daily history pagination",
     prev: "Prev",
     next: "Next",
-    rateDates: (dates: string) => `Rate date ${dates}`,
+    rateDates: (dates: string[]) => `${dates.length === 1 ? "Rate date" : "Rate dates"}: ${dates.join(", ")}`,
     missingExchangeRate: "Missing exchange rate; showing native currencies",
   },
   allocation: {
@@ -588,7 +588,7 @@ const zh: typeof en = {
     paginationAria: "每日歷史分頁",
     prev: "上一頁",
     next: "下一頁",
-    rateDates: (dates) => `匯率日期 ${dates}`,
+    rateDates: (dates) => `匯率日期：${dates.join("、")}`,
     missingExchangeRate: "缺少匯率，顯示原幣金額",
   },
   allocation: {

@@ -144,8 +144,8 @@
                 <span
                   class="rate-note"
                   role="img"
-                  aria-label={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}
-                  title={$t.historyTable.rateDates(row.exchangeRateDates.join(", "))}
+                  aria-label={$t.historyTable.rateDates(row.exchangeRateDates)}
+                  title={$t.historyTable.rateDates(row.exchangeRateDates)}
                 >
                   FX
                 </span>
