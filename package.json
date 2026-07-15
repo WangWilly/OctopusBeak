@@ -54,6 +54,7 @@
     "run:einvoice-personal-invoices": "libretto run src/workflows/einvoice-personal-invoices.ts --headless",
     "run:import-downloads-csv": "node --no-warnings --experimental-strip-types src/ledger/import-downloads-csv.ts",
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
+    "run:exchange-rates": "node --no-warnings --experimental-strip-types src/ledger/sync-exchange-rates.ts",
     "run:migrate-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/migrate-ledger-db.ts",
     "run:seed-mock-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/seed-mock-ledger-db.ts",
     "privacy-check": ".githooks/pre-commit",
