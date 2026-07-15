@@ -475,7 +475,7 @@
                   <div class="task-name">
                     <strong>{taskLabel(task, $t)}</strong>
                     <span>{task.script}</span>
-                    <span>{$t.automation.latestUtc}: {latestTaskTime(task)}</span>
+                    <span>{$t.automation.latestTime($systemTimezone)}: {latestTaskTime(task)}</span>
                   </div>
                 </td>
                 <td>
@@ -601,8 +601,8 @@
             <tr>
               <th>{$t.automation.task}</th>
               <th>{$t.automation.status}</th>
-              <th>{$t.automation.historyStartedUtc}</th>
-              <th>{$t.automation.historyFinishedUtc}</th>
+              <th>{$t.automation.historyStartedTime($systemTimezone)}</th>
+              <th>{$t.automation.historyFinishedTime($systemTimezone)}</th>
               <th>{$t.automation.historyError}</th>
             </tr>
           </thead>
