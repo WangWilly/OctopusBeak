@@ -6,6 +6,7 @@ import {
 import { contentHashForRow, hashBytes, stableStringify } from "../content-hash.ts";
 import { creditCardSemanticKey } from "../credit-card-identity.ts";
 import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
+import { sourceTransactionAtUtc } from "../source-timezones.ts";
 import type { LedgerDatabase } from "./client.ts";
 
 type LedgerMigration = {
@@ -1274,6 +1275,42 @@ function createExchangeRates(db: LedgerDatabase) {
   `);
 }
 
+function addBankTransactionUtcInstants(db: LedgerDatabase) {
+  for (const table of [
+    "account_transactions",
+    "foreign_currency_transactions",
+  ]) {
+    addColumnIfMissing(db, table, "transaction_at_utc", "transaction_at_utc TEXT");
+    const rows = db.prepare(`
+      SELECT statement_row_id, bank, product, transaction_date, transaction_time
+      FROM ${table}
+    `).all() as Array<{
+      statement_row_id: string;
+      bank: string;
+      product: string;
+      transaction_date: string | null;
+      transaction_time: string | null;
+    }>;
+    const update = db.prepare(`
+      UPDATE ${table} SET transaction_at_utc = ? WHERE statement_row_id = ?
+    `);
+    for (const row of rows) {
+      let instant: string | null = null;
+      try {
+        instant = sourceTransactionAtUtc(
+          row.bank,
+          row.transaction_date,
+          row.transaction_time,
+          row.product,
+        );
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+      }
+      if (instant) update.run(instant, row.statement_row_id);
+    }
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1379,6 +1416,11 @@ const migrations: LedgerMigration[] = [
     version: 21,
     name: "exchange_rates",
     up: createExchangeRates,
+  },
+  {
+    version: 22,
+    name: "bank_transaction_utc_instants",
+    up: addBankTransactionUtcInstants,
   },
 ];
 

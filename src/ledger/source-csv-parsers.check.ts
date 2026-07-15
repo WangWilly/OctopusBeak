@@ -41,6 +41,7 @@ assert.deepEqual(
     accounting_date: "2026-07-03",
     transaction_date: "2026-07-02",
     transaction_time: "09:08:07",
+    transaction_at_utc: "2026-07-02T01:08:07.000Z",
     description: "薪資",
     withdrawal_amount: 0,
     deposit_amount: 1234,
@@ -76,6 +77,7 @@ assert.deepEqual(
     accounting_date: "2026-07-04",
     transaction_date: "2026-07-04",
     transaction_time: "09:15:02",
+    transaction_at_utc: "2026-07-04T01:15:02.000Z",
     description: "薪資",
     withdrawal_amount: null,
     deposit_amount: 123.45,
@@ -96,15 +98,25 @@ assert.equal(
   "account_transactions",
 );
 
+const sinopacForeignParser = createSourceCsvParser({
+  bank: "sinopac",
+  product: "foreign-statements",
+  sourceRelativePath: "sinopac-foreign-statements/example.csv",
+  metadata: { 帳號: "123456 永豐", 幣別: "USD" },
+  headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
+});
+assert.equal(sinopacForeignParser.table, "foreign_currency_transactions");
+const sinopacForeignRow = sinopacForeignParser.parseRow({
+  帳務日期: "2026/07/15",
+  交易日期: "2026/07/15",
+  交易時間: "12:02:03",
+  摘要: "換匯",
+});
+assert.equal(sinopacForeignRow.transaction_date, "2026-07-15");
+assert.equal(sinopacForeignRow.transaction_time, "12:02:03");
 assert.equal(
-  createSourceCsvParser({
-    bank: "sinopac",
-    product: "foreign-statements",
-    sourceRelativePath: "sinopac-foreign-statements/example.csv",
-    metadata: { 帳號: "123456 永豐", 幣別: "USD" },
-    headers: ["帳務日期", "交易日期", "交易時間", "摘要"],
-  }).table,
-  "foreign_currency_transactions",
+  sinopacForeignRow.transaction_at_utc,
+  "2026-07-15T04:02:03.000Z",
 );
 
 assert.equal(

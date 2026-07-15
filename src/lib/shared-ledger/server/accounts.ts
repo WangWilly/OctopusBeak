@@ -807,6 +807,7 @@ function bankTransactionDto(row: AccountTransaction): [string, TransactionRowDto
     accountId("cash", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)),
     {
       date: row.transactionDate ?? row.accountingDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: row.transactionAtUtc,
       label: row.description?.trim() || "Bank transaction",
       type: amount >= 0 ? "Deposit" : "Withdrawal",
       amount,
@@ -822,6 +823,7 @@ function foreignTransactionDto(row: ForeignCurrencyTransaction): [string, Transa
     accountId("foreign", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)),
     {
       date: row.transactionDate ?? row.accountingDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: row.transactionAtUtc,
       label: row.description?.trim() || "Foreign-currency transaction",
       type: amount >= 0 ? "Credit" : "Debit",
       amount,
@@ -836,6 +838,7 @@ function creditCardTransactionDto(row: CreditCardStatementLine): [string, Transa
     accountId("card", row.bank, row.product, creditCardNumberKey(row), "TWD"),
     {
       date: row.consumeDate ?? row.postingDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: row.description?.trim() || "Credit-card line",
       type: row.statementType || "Card",
       amount: row.twdAmount ?? row.foreignAmount ?? 0,
@@ -850,6 +853,7 @@ function loanTransactionDto(row: LoanTransaction): [string, TransactionRowDto] {
     accountId("loan", row.bank, row.product, row.accountNumber ?? "", "TWD"),
     {
       date: row.tradeDate ?? row.postingDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: row.item?.trim() || "Loan transaction",
       type: "Loan",
       amount: -(row.amount ?? 0),
@@ -864,6 +868,7 @@ function fundBuyTransactionDto(row: FundBuyTransaction): [string, TransactionRow
     accountId("fund", row.bank, row.product, "positions", "TWD"),
     {
       date: row.investmentDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: row.fundName?.trim() || "Fund buy",
       type: "Buy",
       amount: -(row.investmentAmount ?? 0),
@@ -878,6 +883,7 @@ function fundRedemptionTransactionDto(row: FundRedemptionTransaction): [string, 
     accountId("fund", row.bank, row.product, "positions", "TWD"),
     {
       date: row.redemptionDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: row.fundName?.trim() || "Fund redemption",
       type: "Redemption",
       amount: row.netDepositAmount ?? row.redemptionInvestmentAmount ?? 0,
@@ -892,6 +898,7 @@ function fundCashDividendDto(row: FundCashDividend): [string, TransactionRowDto]
     accountId("fund", row.bank, row.product, "positions", "TWD"),
     {
       date: row.depositDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: row.fundName?.trim() || "Fund dividend",
       type: "Dividend",
       amount: row.distributionAmount ?? 0,
@@ -906,6 +913,7 @@ function fundConversionTransactionDto(row: FundConversionTransaction): [string, 
     accountId("fund", row.bank, row.product, "positions", "TWD"),
     {
       date: row.conversionOutDate ?? row.conversionInDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: [row.fromFundName, row.toFundName].filter(Boolean).join(" -> ") || "Fund conversion",
       type: "Conversion",
       amount: row.conversionInvestmentAmount ?? 0,
@@ -920,6 +928,7 @@ function brokerageTransactionDto(row: BrokerageTradeTransaction): [string, Trans
     accountId("brokerage", row.bank, row.product, row.accountNumber ?? "", currency(row.currency)),
     {
       date: row.tradeDate ?? row.importedAt.slice(0, 10),
+      occurredAtUtc: null,
       label: [row.productCode, row.productName].filter(Boolean).join(" ") || "Brokerage trade",
       type: row.action || row.tradeType || "Trade",
       amount: row.settlementAmount ?? row.grossAmount ?? 0,
@@ -946,6 +955,7 @@ function maicoinTransactionDtos(
       const signedVolume = row.side === "ask" ? -volume : volume;
       return [[account, {
         date,
+        occurredAtUtc: row.occurredAt,
         label: row.market ?? "MAX trade",
         type: row.side === "ask" ? "Sell" : row.side === "bid" ? "Buy" : "Trade",
         amount: signedVolume,
@@ -958,6 +968,7 @@ function maicoinTransactionDtos(
       return [
         [account, {
           date,
+          occurredAtUtc: row.occurredAt,
           label: "MAX convert",
           type: "Convert out",
           amount: -amount(raw.from_amount),
@@ -966,6 +977,7 @@ function maicoinTransactionDtos(
         }],
         [account, {
           date,
+          occurredAtUtc: row.occurredAt,
           label: "MAX convert",
           type: "Convert in",
           amount: amount(raw.to_amount),
@@ -979,6 +991,7 @@ function maicoinTransactionDtos(
     const signed = row.rowType === "withdrawal" ? -value : value;
     return [[account, {
       date,
+      occurredAtUtc: row.occurredAt,
       label: `MAX ${row.rowType}`,
       type: row.rowType,
       amount: signed,
