@@ -33,7 +33,8 @@ try {
   const envLocalPath = join(dir, ".env.local");
 
   writeAutomationSettingsFile(settingsPath, {
-    AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+    SYSTEM_TIMEZONE: "Asia/Taipei",
+    EXCHANGE_RATE_UPDATE_TIME: "06:00",
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
@@ -43,7 +44,8 @@ try {
   });
 
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
-    AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+    SYSTEM_TIMEZONE: "Asia/Taipei",
+    EXCHANGE_RATE_UPDATE_TIME: "06:00",
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
@@ -63,11 +65,15 @@ try {
   });
 
   assert.deepEqual(splitAutomationUpdates({
+    SYSTEM_TIMEZONE: "Asia/Tokyo",
+    EXCHANGE_RATE_UPDATE_TIME: "07:30",
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
     [fubonPasswordKey]: "pw",
     MAX_SUB_ACCOUNT: "main",
   }), {
     settings: {
+      SYSTEM_TIMEZONE: "Asia/Tokyo",
+      EXCHANGE_RATE_UPDATE_TIME: "07:30",
       LIBRETTO_CLOUD_FUBON_ENABLED: true,
       MAX_SUB_ACCOUNT: "main",
     },
@@ -99,7 +105,8 @@ try {
 
   migrateAutomationEnvFile({ envPath, settingsPath, credentialsPath });
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
-    AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
+    SYSTEM_TIMEZONE: "Asia/Taipei",
+    EXCHANGE_RATE_UPDATE_TIME: "06:00",
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
