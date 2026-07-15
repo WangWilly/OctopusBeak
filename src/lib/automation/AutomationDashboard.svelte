@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type { AutomationPageModel, AutomationTaskHistoryRow, AutomationTaskRow } from "./types.ts";
 
   type CredentialGroup = {
@@ -92,7 +94,7 @@
   }
 
   function formatTime(value: string | null) {
-    return value?.slice(0, 19).replace("T", " ") ?? "--";
+    return formatUtcDateTime(value, $systemTimezone, $locale) || "--";
   }
 
   function latestTaskTime(task: AutomationTaskRow) {

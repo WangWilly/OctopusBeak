@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { t, translateKnownLabel } from "$lib/i18n/i18n.ts";
+  import { locale, t, translateKnownLabel } from "$lib/i18n/i18n.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   type SortKey = "date" | "label" | "type" | "amount" | "note";
   type SortDirection = "asc" | "desc";
@@ -103,7 +105,7 @@
           <tbody>
             {#each sortedRows as row}
               <tr>
-                <td>{row.date}</td>
+                <td>{formatUtcDateTime(row.occurredAtUtc ?? row.date, $systemTimezone, $locale)}</td>
                 <td>{row.label}</td>
                 <td>{translateKnownLabel($t, row.type)}</td>
                 <td
