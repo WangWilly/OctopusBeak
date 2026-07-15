@@ -530,6 +530,19 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
+export async function dismissPasswordChangeReminderIfPresent(
+  page: Page,
+): Promise<void> {
+  const postpone = page.getByRole("button", {
+    name: "暫不變更",
+    exact: true,
+  });
+  if (!(await postpone.isVisible({ timeout: 2_000 }).catch(() => false))) return;
+
+  await postpone.click();
+  await settleAfterNavigation(page);
+}
+
 async function grantYuantaBrowserPermissions(page: Page): Promise<void> {
   await page.context().grantPermissions(["local-network-access"], {
     origin: "https://global.yuanta.com.tw",
@@ -1098,6 +1111,7 @@ export default workflow("yuantaTradeStatements", {
           ),
           authSession,
         );
+        await dismissPasswordChangeReminderIfPresent(authPage);
         await dismissPersonalMessageIfPresent(authPage);
         await acceptDisclaimerIfPresent(authPage);
         await authPage.locator("#btnLogout").waitFor({ timeout: 120_000 });
