@@ -59,6 +59,7 @@
   onMount(() => {
     void window.octopusBeak.settings.load().then((value) => {
       applySystemSettings(value);
+    }).catch((error) => console.warn("system-settings-load-failed", error)).finally(() => {
       initialized = true;
       normalizeRoute();
     });
