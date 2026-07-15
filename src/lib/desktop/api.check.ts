@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { displayScaleZoomFactor, octopusBeakApiChannels } from "./api.ts";
 
 assert.deepEqual([...octopusBeakApiChannels], [
+  "settings:load",
+  "settings:save",
   "overview:load",
   "assets:load",
   "liabilities:load",

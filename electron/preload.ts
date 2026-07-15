@@ -11,6 +11,10 @@ const api: OctopusBeakApi = {
       ipcRenderer.send("display:setScale", percent);
     },
   },
+  settings: {
+    load: () => ipcRenderer.invoke("settings:load"),
+    save: (input) => ipcRenderer.invoke("settings:save", input),
+  },
   overview: {
     load: () => ipcRenderer.invoke("overview:load"),
   },

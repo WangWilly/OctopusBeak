@@ -4,6 +4,7 @@ import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type { SpendingCategory } from "$lib/spending/categories.ts";
 import type { SpendingPageDto } from "$lib/spending/model.ts";
+import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -36,6 +37,10 @@ export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
   };
+  settings: {
+    load(): Promise<SystemSettingsDto>;
+    save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
+  };
   overview: {
     load(): Promise<OverviewPageDto>;
   };
@@ -64,6 +69,8 @@ export type OctopusBeakApi = {
 };
 
 export const octopusBeakApiChannels = [
+  "settings:load",
+  "settings:save",
   "overview:load",
   "assets:load",
   "liabilities:load",
