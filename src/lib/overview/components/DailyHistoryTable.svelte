@@ -40,6 +40,12 @@
         { key: "assets", label: $t.historyTable.assets, right: true },
         { key: "liabilities", label: $t.historyTable.liabilities, right: true },
       ];
+  $: hasMissingRates = rows.some((row) => row.exchangeRateMissing === true);
+  $: if (hasMissingRates && sortKey !== "date") {
+    sortKey = "date";
+    sortDirection = "desc";
+    page = 0;
+  }
   $: sortedRows = sortRows(rows, sortKey, sortDirection);
   $: totalPages = paginate ? Math.max(1, Math.ceil(sortedRows.length / pageSize)) : 1;
   $: if (page >= totalPages) page = totalPages - 1;
@@ -54,7 +60,8 @@
   ) {
     const amounts = row[key];
     if (row.exchangeRateMissing) {
-      return signed ? formatSignedAmountLines(amounts) : formatAmountLines(amounts);
+      const formatted = signed ? formatSignedAmountLines(amounts) : formatAmountLines(amounts);
+      return formatted.replaceAll(" / ", "\n");
     }
     const amount = amounts.find((item) => item.currency === currency);
     return amount ? formatMoney(amount, { signed }) : "--";
@@ -84,6 +91,7 @@
   }
 
   function toggleSort(key: SortKey) {
+    if (key !== "date" && hasMissingRates) return;
     if (sortKey === key) {
       sortDirection = sortDirection === "asc" ? "desc" : "asc";
     } else {
@@ -105,21 +113,25 @@
       <thead>
         <tr>
           {#each columns as column}
+            {@const sortDisabled = column.key !== "date" && hasMissingRates}
             <th
               class:right={column.right}
-              aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+              aria-sort={!sortDisabled && sortKey === column.key
+                ? (sortDirection === "asc" ? "ascending" : "descending")
+                : "none"}
             >
               <button
                 class="sort-button"
                 class:right={column.right}
-                class:sorted={sortKey === column.key}
+                class:sorted={!sortDisabled && sortKey === column.key}
                 type="button"
+                disabled={sortDisabled}
                 onclick={() => toggleSort(column.key)}
               >
                 <span>{column.label}</span>
                 <span
-                  class:active={sortKey === column.key}
-                  class:asc={sortKey === column.key && sortDirection === "asc"}
+                  class:active={!sortDisabled && sortKey === column.key}
+                  class:asc={!sortDisabled && sortKey === column.key && sortDirection === "asc"}
                   class="sort-mark"
                   aria-hidden="true"
                 ></span>
@@ -130,16 +142,13 @@
       </thead>
       <tbody>
         {#each pageRows as row}
-          <tr>
+          <tr class:missing-rate-row={row.exchangeRateMissing}>
             <td>
               {pointLabel(row)}
               {#if row.exchangeRateMissing}
-                <span
-                  class="rate-note missing"
-                  role="img"
-                  aria-label={$t.historyTable.missingExchangeRate}
-                  title={$t.historyTable.missingExchangeRate}
-                >!</span>
+                <span class="rate-note missing">
+                  {$t.historyTable.missingExchangeRate}
+                </span>
               {:else if row.exchangeRateDates?.length}
                 <span
                   class="rate-note"
@@ -248,6 +257,18 @@
     white-space: nowrap;
   }
 
+  .missing-rate-row td {
+    height: auto;
+    padding-top: var(--space-4);
+    padding-bottom: var(--space-4);
+    vertical-align: top;
+  }
+
+  .missing-rate-row .money {
+    white-space: pre-line;
+    line-height: 1.65;
+  }
+
   .sort-button {
     width: 100%;
     min-height: var(--history-header-height);
@@ -268,12 +289,22 @@
     justify-content: flex-end;
   }
 
-  .sort-button:hover,
-  .sort-button:focus-visible,
+  .sort-button:not(:disabled):hover,
+  .sort-button:not(:disabled):focus-visible,
   .sort-button.sorted {
     color: var(--fg);
     background: var(--surface-soft);
     outline: none;
+  }
+
+  .sort-button:disabled {
+    cursor: not-allowed;
+    color: var(--muted);
+    background: transparent;
+  }
+
+  .sort-button:disabled .sort-mark {
+    display: none;
   }
 
   .sort-mark {
@@ -351,6 +382,15 @@
   }
 
   .rate-note.missing {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    margin: var(--space-2) 0 0;
+    padding: 3px 7px;
+    border: 1px solid color-mix(in oklch, var(--danger) 28%, var(--border));
+    border-radius: 999px;
     color: var(--danger);
+    background: color-mix(in oklch, var(--danger) 9%, white);
+    white-space: normal;
   }
 </style>
