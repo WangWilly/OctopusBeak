@@ -61,6 +61,7 @@ export type AccountRowDto = {
 
 export type TransactionRowDto = {
   date: string;
+  occurredAtUtc: string | null;
   label: string;
   type: string;
   amount: number;

@@ -49,6 +49,7 @@ function bankRow(sourceFileId: string, sourceRowIndex: number, date: string, bal
     accountingDate: date,
     transactionDate: date,
     transactionTime: "09:30:00",
+    transactionAtUtc: null,
     description: "balance",
     withdrawalAmount: null,
     depositAmount: null,

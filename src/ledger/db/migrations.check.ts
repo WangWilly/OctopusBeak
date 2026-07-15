@@ -140,6 +140,9 @@ const cardBackfillLedgerDir = mkdtempSync(
 const invalidCardBackfillLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-invalid-card-backfill-"),
 );
+const transactionUtcLedgerDir = mkdtempSync(
+  join(tmpdir(), "ledger-db-transaction-utc-"),
+);
 
 function insertLegacyCardCapture(
   db: LedgerDatabase,
@@ -259,7 +262,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -285,6 +288,15 @@ try {
     assert.equal(names.has("content_hash"), true, table);
     assert.equal(names.has("source_hash"), true, table);
     assert.equal(names.has("raw_payload_json"), true, table);
+  }
+  for (const table of [
+    "account_transactions",
+    "foreign_currency_transactions",
+  ] as const) {
+    const instant = commonStatementColumns.get(table)?.find(
+      (column) => column.name === "transaction_at_utc",
+    );
+    assert.equal(instant?.notnull, 0, table);
   }
   assert.ok(invoiceColumns.some((column) => column.name === "invoice_key"));
   assert.ok(itemColumns.some((column) => column.name === "item_key"));
@@ -928,6 +940,70 @@ try {
     WHERE name = 'uq_credit_card_statement_lines_content_hash'
   `).get() as { count: number }).count, 1);
   invalidCardDb.close();
+
+  const transactionUtcDb = openLedgerDatabase(transactionUtcLedgerDir);
+  transactionUtcDb.exec(`
+    DELETE FROM schema_migrations WHERE version = 22;
+    ALTER TABLE account_transactions DROP COLUMN transaction_at_utc;
+    ALTER TABLE foreign_currency_transactions DROP COLUMN transaction_at_utc;
+  `);
+  const insertLegacyTransaction = (table: string) => transactionUtcDb.prepare(`
+    INSERT INTO ${table} (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, currency,
+      transaction_date, transaction_time
+    ) VALUES (?, ?, 'run', 'legacy.csv', ?, ?, ?, ?, ?, '{}',
+      '2026-07-15T05:00:00.000Z', '2026-07-15T05:00:00.000Z', ?, ?, ?)
+  `);
+  insertLegacyTransaction("account_transactions").run(
+    "known", "known-source", 1, "known-source-hash", "known-content",
+    "ctbc", "statements", "TWD", "2026-07-15", "12:02:03",
+  );
+  insertLegacyTransaction("account_transactions").run(
+    "date-only", "date-source", 2, "date-source-hash", "date-content",
+    "ctbc", "statements", "TWD", "2026-07-15", null,
+  );
+  insertLegacyTransaction("account_transactions").run(
+    "unknown", "unknown-source", 3, "unknown-source-hash", "unknown-content",
+    "future-bank", "statements", "TWD", "2026-07-15", "12:02:03",
+  );
+  insertLegacyTransaction("foreign_currency_transactions").run(
+    "foreign-known", "foreign-source", 1, "foreign-source-hash", "foreign-content",
+    "yuanta", "foreign-currency-statements", "USD", "2026-07-15", "12:02:03",
+  );
+  migrateLedgerDb(transactionUtcDb);
+  const utcRows = transactionUtcDb.prepare(`
+    SELECT statement_row_id, transaction_date, transaction_time, transaction_at_utc
+    FROM account_transactions
+    ORDER BY source_row_index
+  `).all().map((row) => ({ ...row }));
+  assert.deepEqual(utcRows, [
+    {
+      statement_row_id: "known",
+      transaction_date: "2026-07-15",
+      transaction_time: "12:02:03",
+      transaction_at_utc: "2026-07-15T04:02:03.000Z",
+    },
+    {
+      statement_row_id: "date-only",
+      transaction_date: "2026-07-15",
+      transaction_time: null,
+      transaction_at_utc: null,
+    },
+    {
+      statement_row_id: "unknown",
+      transaction_date: "2026-07-15",
+      transaction_time: "12:02:03",
+      transaction_at_utc: null,
+    },
+  ]);
+  assert.equal((transactionUtcDb.prepare(`
+    SELECT transaction_at_utc FROM foreign_currency_transactions
+    WHERE statement_row_id = 'foreign-known'
+  `).get() as { transaction_at_utc: string | null }).transaction_at_utc,
+  "2026-07-15T04:02:03.000Z");
+  transactionUtcDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
@@ -937,6 +1013,7 @@ try {
     dedupeLedgerDir,
     cardBackfillLedgerDir,
     invalidCardBackfillLedgerDir,
+    transactionUtcLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }

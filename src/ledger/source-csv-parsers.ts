@@ -1,3 +1,5 @@
+import { sourceTransactionAtUtc } from "./source-timezones.ts";
+
 export type SourceMetadata = Record<string, unknown>;
 
 export type TypedStatementTable =
@@ -390,13 +392,20 @@ function bankTransactionFields(context: ParserContext) {
   const transactionDate = normalizeDateValue(
     firstPayloadCell(rawPayload, ["交易日期", "帳務日期"]),
   );
+  const transactionTime = normalizeTimePart(payloadCell(rawPayload, "交易時間"));
   return {
     account_name: accountName,
     account_number: accountNumber,
     currency: normalizeCurrencyCode("TWD"),
     accounting_date: accountingDate,
     transaction_date: transactionDate,
-    transaction_time: normalizeTimePart(payloadCell(rawPayload, "交易時間")),
+    transaction_time: transactionTime,
+    transaction_at_utc: sourceTransactionAtUtc(
+      context.bank,
+      transactionDate,
+      transactionTime,
+      context.product,
+    ),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
     withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
     deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
@@ -415,6 +424,7 @@ function foreignCurrencyTransactionFields(context: ParserContext) {
   const transactionDate = normalizeDateValue(
     firstPayloadCell(rawPayload, ["交易日期", "帳務日期"]),
   );
+  const transactionTime = normalizeTimePart(payloadCell(rawPayload, "交易時間"));
   const metadataCurrency = metadataCell(metadata, "幣別");
   return {
     account_name: accountName,
@@ -428,7 +438,13 @@ function foreignCurrencyTransactionFields(context: ParserContext) {
     ),
     accounting_date: accountingDate,
     transaction_date: transactionDate,
-    transaction_time: normalizeTimePart(payloadCell(rawPayload, "交易時間")),
+    transaction_time: transactionTime,
+    transaction_at_utc: sourceTransactionAtUtc(
+      context.bank,
+      transactionDate,
+      transactionTime,
+      context.product,
+    ),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
     withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
     deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
