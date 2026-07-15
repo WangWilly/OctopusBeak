@@ -48,6 +48,7 @@
   function sortValue(row: TransactionRowDto, key: SortKey) {
     if (key === "amount") return row.amount;
     if (key === "note") return row.note ?? "";
+    if (key === "date") return row.occurredAtUtc ?? row.date;
     return row[key];
   }
 
