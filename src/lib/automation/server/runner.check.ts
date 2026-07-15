@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -20,6 +20,7 @@ import {
   createAutomationSessionId,
   finalFailureMessage,
   finalizeTerminalAutomationSession,
+  hasActiveAutomationTask,
   isForceQuitRun,
   librettoRunCdpPatchCommand,
   liveTaskRunUpdate,
@@ -34,6 +35,7 @@ import {
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
   shouldRetainAutomationSession,
+  startAutomationTask,
 } from "./runner.ts";
 
 assert.equal(createAutomationSessionId(() => "fixed-uuid"), "ses-octopus-fixed-uuid");
@@ -672,4 +674,76 @@ test("shutdown continues persisted recovery after in-memory cleanup failure", as
     AggregateError,
   );
   assert.deepEqual(calls, ["memory", "persisted"]);
+});
+
+test("scheduled exchange-rate starts append schedule context only to that task", async () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-scheduled-run-"));
+  const ledgerDir = join(root, "ledger");
+  const capturePath = join(root, "capture.json");
+  const script = `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));\n`;
+  const oldEnv = {
+    OCTOPUSBEAK_DESKTOP: process.env.OCTOPUSBEAK_DESKTOP,
+    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
+    OCTOPUSBEAK_NODE_PATH: process.env.OCTOPUSBEAK_NODE_PATH,
+    CAPTURE_PATH: process.env.CAPTURE_PATH,
+  };
+  mkdirSync(join(root, "src", "ledger"), { recursive: true });
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  writeFileSync(join(root, "src", "ledger", "sync-exchange-rates.ts"), script);
+  writeFileSync(join(root, "src", "ledger", "import-downloads-csv.ts"), script);
+  writeFileSync(join(root, "scripts", "patch-libretto-run-cdp.mjs"), "");
+  process.env.OCTOPUSBEAK_DESKTOP = "1";
+  process.env.OCTOPUSBEAK_APP_ROOT = root;
+  process.env.OCTOPUSBEAK_NODE_PATH = process.execPath;
+  process.env.CAPTURE_PATH = capturePath;
+
+  const waitForCapture = async () => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        return JSON.parse(readFileSync(capturePath, "utf8"));
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    throw new Error("Timed out waiting for automation command capture");
+  };
+  const waitForIdle = async (taskId: string) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!hasActiveAutomationTask()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for ${taskId} to finish`);
+  };
+  try {
+    startAutomationTask("exchange-rates", ledgerDir, {
+      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
+    });
+    assert.deepEqual(await waitForCapture(), [
+      "--scheduled-at-utc",
+      "2026-07-14T22:00:00.000Z",
+    ]);
+    await waitForIdle("exchange-rates");
+
+    rmSync(capturePath);
+    startAutomationTask("exchange-rates", ledgerDir);
+    assert.deepEqual(await waitForCapture(), []);
+    await waitForIdle("exchange-rates");
+
+    rmSync(capturePath);
+    startAutomationTask("import-downloads-csv", ledgerDir, {
+      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
+    });
+    assert.deepEqual(await waitForCapture(), []);
+    await waitForIdle("import-downloads-csv");
+    assert.throws(
+      () => startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc: "tomorrow" }),
+      /Invalid scheduledAtUtc/,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(oldEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
