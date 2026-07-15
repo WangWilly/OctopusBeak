@@ -26,6 +26,12 @@ assert.equal(translations["zh-TW"].spending.title, "個人消費");
 assert.equal(translations["zh-TW"].spending.monthlyEyebrow, "每月消費");
 assert.equal(translations["zh-TW"].spending.dailyEyebrow, "每日明細");
 assert.equal(translations["zh-TW"].spending.invoiceEyebrow, "發票資料");
+assert.equal(translations.en.automation.latestTime("Asia/Taipei"), "Latest (Asia/Taipei)");
+assert.equal(translations.en.automation.historyStartedTime("Asia/Taipei"), "Started (Asia/Taipei)");
+assert.equal(translations.en.automation.historyFinishedTime("Asia/Taipei"), "Finished (Asia/Taipei)");
+assert.equal(translations["zh-TW"].automation.latestTime("Asia/Taipei"), "最新（Asia/Taipei）");
+assert.equal(translations["zh-TW"].automation.historyStartedTime("Asia/Taipei"), "開始（Asia/Taipei）");
+assert.equal(translations["zh-TW"].automation.historyFinishedTime("Asia/Taipei"), "完成（Asia/Taipei）");
 
 function keys(value: unknown, prefix = ""): string[] {
   if (!value || typeof value !== "object") return [prefix];
