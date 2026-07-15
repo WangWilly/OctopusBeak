@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import {
   createSourceCsvParser,
   normalizeCurrencyCode,
@@ -50,6 +51,15 @@ assert.deepEqual(
     fx_rate: null,
   },
 );
+
+test("bank rows keep invalid local dates without a UTC instant", () => {
+  const row = ctbcParser.parseRow({
+    帳務日期: "2026/02/30",
+    交易日期: "2026/02/30",
+    交易時間: "12:02:03",
+  });
+  assert.equal(row.transaction_at_utc, null);
+});
 
 const postParser = createSourceCsvParser({
   bank: "post",
@@ -118,6 +128,15 @@ assert.equal(
   sinopacForeignRow.transaction_at_utc,
   "2026-07-15T04:02:03.000Z",
 );
+
+test("foreign-currency rows keep invalid local dates without a UTC instant", () => {
+  const row = sinopacForeignParser.parseRow({
+    帳務日期: "2026/02/30",
+    交易日期: "2026/02/30",
+    交易時間: "12:02:03",
+  });
+  assert.equal(row.transaction_at_utc, null);
+});
 
 assert.equal(
   createSourceCsvParser({

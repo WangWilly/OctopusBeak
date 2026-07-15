@@ -369,6 +369,19 @@ function currencyFromRelativePath(sourceRelativePath: string): string {
   return normalizeCurrencyCode(match?.[1], "TWD");
 }
 
+function transactionAtUtcOrNull(
+  context: ParserContext,
+  date: string,
+  time: string,
+): string | null {
+  try {
+    return sourceTransactionAtUtc(context.bank, date, time, context.product);
+  } catch (error) {
+    if (error instanceof RangeError) return null;
+    throw error;
+  }
+}
+
 function accountIdentity(context: ParserContext) {
   const metadataAccount =
     metadataCell(context.metadata, "帳號") ||
@@ -400,12 +413,7 @@ function bankTransactionFields(context: ParserContext) {
     accounting_date: accountingDate,
     transaction_date: transactionDate,
     transaction_time: transactionTime,
-    transaction_at_utc: sourceTransactionAtUtc(
-      context.bank,
-      transactionDate,
-      transactionTime,
-      context.product,
-    ),
+    transaction_at_utc: transactionAtUtcOrNull(context, transactionDate, transactionTime),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
     withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
     deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
@@ -439,12 +447,7 @@ function foreignCurrencyTransactionFields(context: ParserContext) {
     accounting_date: accountingDate,
     transaction_date: transactionDate,
     transaction_time: transactionTime,
-    transaction_at_utc: sourceTransactionAtUtc(
-      context.bank,
-      transactionDate,
-      transactionTime,
-      context.product,
-    ),
+    transaction_at_utc: transactionAtUtcOrNull(context, transactionDate, transactionTime),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
     withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
     deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
