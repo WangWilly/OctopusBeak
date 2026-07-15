@@ -156,8 +156,8 @@
               {@const dailyChange = currencyValue(row.dailyChange)}
               <td
                 class="right money"
-                class:amount-positive={dailyChange > 0}
-                class:amount-negative={dailyChange < 0}
+                class:amount-positive={!row.exchangeRateMissing && dailyChange > 0}
+                class:amount-negative={!row.exchangeRateMissing && dailyChange < 0}
               >
                 {formatCurrencyAmount(row, "dailyChange", true)}
               </td>
