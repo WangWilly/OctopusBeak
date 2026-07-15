@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { systemSettings, validateSystemSettings } from "./system-settings.ts";
 
 assert.deepEqual(systemSettings({}), {
@@ -9,3 +10,10 @@ assert.equal(systemSettings({ AUTOMATION_BUSINESS_TIMEZONE: "Asia/Tokyo" }).syst
 assert.throws(() => validateSystemSettings({ systemTimezone: "Mars/Base", exchangeRateUpdateTime: "06:00" }));
 assert.throws(() => validateSystemSettings({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "6:00" }));
 assert.throws(() => validateSystemSettings({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "24:00" }));
+
+const settingsPageSource = readFileSync(new URL("./SettingsPage.svelte", import.meta.url), "utf8");
+assert.match(
+  settingsPageSource,
+  /\$: timezoneOptions = timezones\.includes\(selectedTimezone\)\s*\? timezones\s*:\s*\[selectedTimezone, \.\.\.timezones\]/,
+);
+assert.match(settingsPageSource, /\{#each timezoneOptions as timezone\}/);

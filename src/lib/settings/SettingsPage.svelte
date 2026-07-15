@@ -22,6 +22,9 @@
   let displayScaleAvailable = false;
   let shortcutModifier = "Ctrl";
   let selectedTimezone = $systemTimezone;
+  $: timezoneOptions = timezones.includes(selectedTimezone)
+    ? timezones
+    : [selectedTimezone, ...timezones];
   let selectedUpdateTime = $exchangeRateUpdateTime;
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
@@ -74,7 +77,7 @@
         <label>
           <span>{$t.settings.systemTimezone}</span>
           <select bind:value={selectedTimezone}>
-            {#each timezones as timezone}<option value={timezone}>{timezone}</option>{/each}
+            {#each timezoneOptions as timezone}<option value={timezone}>{timezone}</option>{/each}
           </select>
         </label>
         <label>
