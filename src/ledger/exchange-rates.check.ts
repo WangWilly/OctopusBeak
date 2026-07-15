@@ -33,11 +33,14 @@ try {
     currencies: ["USD"],
   };
 
-  const validFetch: typeof fetch = async () => new Response(JSON.stringify([
-    { date: "2026-01-03", base: "TWD", quote: "USD", rate: 0.03125 },
-    { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.03125 },
-    { date: "2026-07-12", base: "TWD", quote: "EUR", rate: 0.027 },
-  ]), { status: 200, headers: { "content-type": "application/json" } });
+  const validFetch: typeof fetch = async (input) => {
+    assert.equal(new URL(input.toString()).searchParams.get("from"), "2025-12-27");
+    return new Response(JSON.stringify([
+      { date: "2026-01-03", base: "TWD", quote: "USD", rate: 0.03125 },
+      { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.03125 },
+      { date: "2026-07-12", base: "TWD", quote: "EUR", rate: 0.027 },
+    ]), { status: 200, headers: { "content-type": "application/json" } });
+  };
 
   const result = await syncExchangeRates(ledgerDir, request, {
     fetchImpl: validFetch,
@@ -117,14 +120,14 @@ try {
     currencies: ["USD"],
   }, {
     fetchImpl: async (input) => {
-      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-14");
+      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-13");
       return new Response(JSON.stringify([
         { date: "2026-07-14", base: "TWD", quote: "USD", rate: 0.03125 },
       ]), { status: 200, headers: { "content-type": "application/json" } });
     },
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
-  assert.equal(missingRange.from, "2026-07-14");
+  assert.equal(missingRange.from, "2026-07-13");
 
   const unequalCacheDb = openLedgerDatabase(ledgerDir);
   unequalCacheDb.prepare(`
@@ -144,7 +147,7 @@ try {
     currencies: ["USD", "JPY"],
   }, {
     fetchImpl: async (input) => {
-      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-11");
+      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-09");
       return new Response(JSON.stringify([
         { date: "2026-07-11", base: "TWD", quote: "JPY", rate: 4.5 },
         { date: "2026-07-11", base: "TWD", quote: "USD", rate: 0.03125 },
@@ -152,7 +155,7 @@ try {
     },
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
-  assert.equal(unequalCache.from, "2026-07-11");
+  assert.equal(unequalCache.from, "2026-07-09");
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
