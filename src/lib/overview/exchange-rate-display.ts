@@ -5,7 +5,7 @@ import type {
 } from "../shared-ledger/types.ts";
 
 const AMOUNT_KEYS = ["netAssets", "dailyChange", "assets", "liabilities"] as const;
-const CURRENCY_ORDER = ["TWD", "JPY", "USD"];
+const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
 
 type SelectedRate = {
   rateDate: string | null;
