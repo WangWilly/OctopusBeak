@@ -2,11 +2,18 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
 import {
+  activeAutomationTaskIds,
   recoverAbandonedAutomationSessions,
   shutdownAutomationSessions,
+  startAutomationTask,
 } from "../src/lib/automation/server/runner.ts";
+import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { hasSuccessfulTaskRunSince } from "../src/lib/automation/server/store.ts";
+import { systemSettings } from "../src/lib/settings/system-settings.ts";
+import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
+import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
@@ -33,11 +40,15 @@ let mainWindow: BrowserWindow | null = null;
 let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
+let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 const handleBeforeQuit = createBeforeQuitHandler({
-  cleanup: () => shutdownAutomationSessions(),
+  cleanup: () => {
+    scheduler?.stop();
+    return shutdownAutomationSessions();
+  },
   quit: () => app.quit(),
   timeoutMs: 5_000,
 });
@@ -148,7 +159,28 @@ async function start() {
     console.warn("automation-session-startup-recovery-failed", error);
   });
   registerAutomationCredentialSafeStorage();
-  registerOctopusBeakIpc();
+  const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
+  scheduler = createExchangeRateScheduler({
+    now: () => new Date(),
+    setTimer: (callback, ms) => setTimeout(callback, ms),
+    clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
+    readSettings: () => systemSettings(readAutomationSettings()),
+    hasSuccessSince: (occurrenceUtc) => {
+      const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+      try {
+        return hasSuccessfulTaskRunSince(db, "exchange-rates", occurrenceUtc);
+      } finally {
+        db.close();
+      }
+    },
+    isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
+    startTask: (scheduledAtUtc) => {
+      startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });
+    },
+    reportError: (error) => console.error("exchange-rate-scheduler-error", error),
+  });
+  registerOctopusBeakIpc({ onSystemSettingsChanged: scheduler.reschedule });
+  scheduler.start();
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
   await createWindow(currentRendererUrl, currentPreloadPath);
