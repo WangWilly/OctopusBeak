@@ -67,6 +67,12 @@ assert.deepEqual(
   },
 );
 
+test("persisted session recovery uses a bounded log read", () => {
+  const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /readFileSync\(run\.logPath/);
+  assert.match(source, /readSync\([^;]+SESSION_LOG_PREFIX_BYTES/s);
+});
+
 test("terminal cleanup catch logs owner and appends the workflow error", async () => {
   const messages: unknown[][] = [];
   const originalError = console.error;

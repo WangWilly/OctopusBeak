@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -47,6 +47,7 @@ export { closeLibrettoSession };
 
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskChildren = new Map<string, ChildProcess>();
+const SESSION_LOG_PREFIX_BYTES = 4_000;
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
@@ -347,7 +348,15 @@ function sessionPid(session: string) {
 
 function sessionFromRun(run: AutomationTaskRun) {
   try {
-    const output = readFileSync(run.logPath, "utf8");
+    const buffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
+    const descriptor = openSync(run.logPath, "r");
+    let length: number;
+    try {
+      length = readSync(descriptor, buffer, 0, SESSION_LOG_PREFIX_BYTES, 0);
+    } finally {
+      closeSync(descriptor);
+    }
+    const output = buffer.toString("utf8", 0, length);
     const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
     if (session) return session;
   } catch {
