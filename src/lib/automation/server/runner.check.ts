@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { activeTaskRuns, createTaskRun, taskRunById } from "./store.ts";
+import { activeTaskRuns, createTaskRun, latestTaskRuns, taskRunById } from "./store.ts";
 import {
   armAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
@@ -686,12 +686,17 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
     OCTOPUSBEAK_NODE_PATH: process.env.OCTOPUSBEAK_NODE_PATH,
     CAPTURE_PATH: process.env.CAPTURE_PATH,
+    PATH: process.env.PATH,
   };
+  mkdirSync(join(root, "bin"), { recursive: true });
   mkdirSync(join(root, "src", "ledger"), { recursive: true });
   mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(join(root, "src", "ledger", "sync-exchange-rates.ts"), script);
   writeFileSync(join(root, "src", "ledger", "import-downloads-csv.ts"), script);
   writeFileSync(join(root, "scripts", "patch-libretto-run-cdp.mjs"), "");
+  const fakeNpm = join(root, "bin", "npm");
+  writeFileSync(fakeNpm, `#!/usr/bin/env node\n${script}`);
+  chmodSync(fakeNpm, 0o755);
   process.env.OCTOPUSBEAK_DESKTOP = "1";
   process.env.OCTOPUSBEAK_APP_ROOT = root;
   process.env.OCTOPUSBEAK_NODE_PATH = process.execPath;
@@ -723,8 +728,31 @@ test("scheduled exchange-rate starts append schedule context only to that task",
       "2026-07-14T22:00:00.000Z",
     ]);
     await waitForIdle("exchange-rates");
+    const db = openLedgerDatabase(ledgerDir);
+    assert.equal(
+      latestTaskRuns(db)["exchange-rates"]?.script,
+      "run:exchange-rates --scheduled-at-utc 2026-07-14T22:00:00.000Z",
+    );
+    db.close();
 
     rmSync(capturePath);
+    delete process.env.OCTOPUSBEAK_DESKTOP;
+    process.env.PATH = `${join(root, "bin")}:${oldEnv.PATH ?? ""}`;
+    startAutomationTask("exchange-rates", ledgerDir, {
+      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
+    });
+    assert.deepEqual(await waitForCapture(), [
+      "run",
+      "run:exchange-rates",
+      "--",
+      "--scheduled-at-utc",
+      "2026-07-14T22:00:00.000Z",
+    ]);
+    await waitForIdle("exchange-rates");
+
+    rmSync(capturePath);
+    process.env.OCTOPUSBEAK_DESKTOP = "1";
+    process.env.PATH = oldEnv.PATH;
     startAutomationTask("exchange-rates", ledgerDir);
     assert.deepEqual(await waitForCapture(), []);
     await waitForIdle("exchange-rates");
