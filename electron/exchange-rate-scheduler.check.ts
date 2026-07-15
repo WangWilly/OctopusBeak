@@ -1,0 +1,168 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { SystemSettingsDto } from "../src/lib/settings/system-settings.ts";
+import {
+  createExchangeRateScheduler,
+  exchangeRateSchedule,
+} from "./exchange-rate-scheduler.ts";
+
+const taipei: SystemSettingsDto = {
+  systemTimezone: "Asia/Taipei",
+  exchangeRateUpdateTime: "06:00",
+};
+
+test("schedule selects today's occurrence before and after 06:00 in Taipei", () => {
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-07-15T21:59:00Z"), taipei), {
+    latestOccurrenceUtc: "2026-07-14T22:00:00.000Z",
+    nextOccurrenceUtc: "2026-07-15T22:00:00.000Z",
+  });
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-07-15T22:01:00Z"), taipei), {
+    latestOccurrenceUtc: "2026-07-15T22:00:00.000Z",
+    nextOccurrenceUtc: "2026-07-16T22:00:00.000Z",
+  });
+});
+
+test("schedule keeps 06:00 local across New York DST", () => {
+  const settings: SystemSettingsDto = {
+    systemTimezone: "America/New_York",
+    exchangeRateUpdateTime: "06:00",
+  };
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-03-07T12:00:00Z"), settings), {
+    latestOccurrenceUtc: "2026-03-07T11:00:00.000Z",
+    nextOccurrenceUtc: "2026-03-08T10:00:00.000Z",
+  });
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-11-01T12:00:00Z"), settings), {
+    latestOccurrenceUtc: "2026-11-01T11:00:00.000Z",
+    nextOccurrenceUtc: "2026-11-02T11:00:00.000Z",
+  });
+});
+
+type Timer = { callback: () => void; ms: number };
+
+function harness(overrides: Partial<Parameters<typeof createExchangeRateScheduler>[0]> = {}) {
+  let currentNow = new Date("2026-07-15T23:00:00Z");
+  const timers: Timer[] = [];
+  const cleared: Timer[] = [];
+  const starts: string[] = [];
+  const errors: unknown[] = [];
+  const deps: Parameters<typeof createExchangeRateScheduler>[0] = {
+    now: () => currentNow,
+    setTimer: (callback, ms) => {
+      const timer = { callback, ms };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => cleared.push(timer as Timer),
+    readSettings: () => taipei,
+    hasSuccessSince: () => false,
+    isTaskActive: () => false,
+    startTask: (scheduledAtUtc) => { starts.push(scheduledAtUtc); },
+    reportError: (error) => errors.push(error),
+    ...overrides,
+  };
+  return {
+    scheduler: createExchangeRateScheduler(deps),
+    timers,
+    cleared,
+    starts,
+    errors,
+    setNow: (value: string) => { currentNow = new Date(value); },
+  };
+}
+
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("startup catch-up starts once with the missed occurrence", async () => {
+  const h = harness();
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
+  assert.equal(h.timers.length, 1);
+});
+
+test("startup catch-up lookup does not block startup", async () => {
+  let lookedUp = false;
+  const h = harness({ hasSuccessSince: () => { lookedUp = true; return false; } });
+  h.scheduler.start();
+  assert.equal(lookedUp, false);
+  await settle();
+  assert.equal(lookedUp, true);
+});
+
+test("a manual success after the occurrence suppresses startup catch-up", async () => {
+  const h = harness({ hasSuccessSince: () => true });
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, []);
+  assert.equal(h.timers.length, 1);
+});
+
+test("a failed prior run does not satisfy the next startup", async () => {
+  let successful = false;
+  const starts: string[] = [];
+  const overrides = {
+    hasSuccessSince: () => successful,
+    startTask: (scheduledAtUtc: string) => { starts.push(scheduledAtUtc); },
+  };
+  const first = harness(overrides);
+  first.scheduler.start();
+  await settle();
+  first.scheduler.stop();
+  const second = harness(overrides);
+  second.scheduler.start();
+  await settle();
+  assert.deepEqual(starts, ["2026-07-15T22:00:00.000Z", "2026-07-15T22:00:00.000Z"]);
+});
+
+test("an active exchange-rate task suppresses a duplicate start", async () => {
+  const h = harness({ isTaskActive: () => true });
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, []);
+});
+
+test("the next occurrence fires once and arms the following day", async () => {
+  let lookups = 0;
+  const h = harness({ hasSuccessSince: () => lookups++ === 0 });
+  h.setNow("2026-07-15T21:00:00Z");
+  h.scheduler.start();
+  await settle();
+  assert.equal(h.timers.length, 1);
+  h.setNow("2026-07-15T22:00:00Z");
+  h.timers[0].callback();
+  h.timers[0].callback();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
+  assert.equal(h.timers.length, 2);
+  assert.equal(h.timers[1].ms, 86_400_000);
+});
+
+test("reschedule clears the old timer and uses changed settings", () => {
+  let settings = taipei;
+  const h = harness({ readSettings: () => settings });
+  h.setNow("2026-07-15T21:00:00Z");
+  h.scheduler.start();
+  const oldTimer = h.timers[0];
+  settings = { systemTimezone: "America/New_York", exchangeRateUpdateTime: "07:30" };
+  h.scheduler.reschedule();
+  assert.deepEqual(h.cleared, [oldTimer]);
+  assert.equal(h.timers.length, 2);
+  assert.equal(h.timers[1].ms, Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z"));
+});
+
+test("lookup and start errors are reported without crashing or double-starting", async () => {
+  const lookupError = new Error("lookup failed");
+  const lookup = harness({ hasSuccessSince: () => { throw lookupError; } });
+  assert.doesNotThrow(() => lookup.scheduler.start());
+  await settle();
+  assert.deepEqual(lookup.errors, [lookupError]);
+  assert.deepEqual(lookup.starts, []);
+
+  const startError = new Error("start failed");
+  const start = harness({ startTask: () => { throw startError; } });
+  start.scheduler.start();
+  await settle();
+  assert.deepEqual(start.errors, [startError]);
+  assert.deepEqual(start.starts, []);
+  assert.equal(start.timers.length, 1);
+});
