@@ -213,8 +213,9 @@ export function claimRunAutomationSession(
       db.exec("BEGIN");
       try {
         updateTaskRun(db, resumeFrom.taskRunId, {
-          status: "completed",
+          status: "failed",
           finishedAt: new Date().toISOString(),
+          errorMessage: `Superseded by resume handoff: ${taskRunId}`,
           logTail: tail(`${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`),
         });
         if (!ownAutomationSession(owner)) throw claimRejected;

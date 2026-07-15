@@ -409,7 +409,11 @@ test("resume handoff terminals the matching waiting run after ownership claim", 
       pid: 321,
     }, { resumeSession: "ses-resume-handoff", resumeFrom: previous }), true);
     assert.equal(cleared, 1);
-    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "completed");
+    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "failed");
+    assert.equal(
+      taskRunById(db, waiting.taskRunId)?.errorMessage,
+      `Superseded by resume handoff: ${resumed.taskRunId}`,
+    );
     assert.match(taskRunById(db, waiting.taskRunId)?.logTail ?? "", new RegExp(resumed.taskRunId));
     assert.deepEqual(activeTaskRuns(db).map((run) => run.taskRunId), [resumed.taskRunId]);
     db.close();
