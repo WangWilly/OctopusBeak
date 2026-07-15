@@ -125,6 +125,34 @@ try {
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
   assert.equal(missingRange.from, "2026-07-14");
+
+  const unequalCacheDb = openLedgerDatabase(ledgerDir);
+  unequalCacheDb.prepare(`
+    INSERT INTO exchange_rates
+      (rate_date, currency, twd_per_unit, source, fetched_at)
+    VALUES (?, 'JPY', 0.22, 'frankfurter-v2', ?)
+  `).run("2026-01-03", "2026-07-12T12:00:00.000Z");
+  unequalCacheDb.prepare(`
+    INSERT INTO exchange_rates
+      (rate_date, currency, twd_per_unit, source, fetched_at)
+    VALUES (?, 'JPY', 0.22, 'frankfurter-v2', ?)
+  `).run("2026-07-08", "2026-07-12T12:00:00.000Z");
+  unequalCacheDb.close();
+
+  const unequalCache = await syncExchangeRates(ledgerDir, {
+    requiredFrom: "2026-07-11",
+    currencies: ["USD", "JPY"],
+  }, {
+    fetchImpl: async (input) => {
+      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-11");
+      return new Response(JSON.stringify([
+        { date: "2026-07-11", base: "TWD", quote: "JPY", rate: 4.5 },
+        { date: "2026-07-11", base: "TWD", quote: "USD", rate: 0.03125 },
+      ]), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    now: () => new Date("2026-07-15T12:00:00.000Z"),
+  });
+  assert.equal(unequalCache.from, "2026-07-11");
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

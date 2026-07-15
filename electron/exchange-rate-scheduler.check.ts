@@ -162,7 +162,10 @@ test("stop cancels a due check waiting on success lookup", async () => {
 
 test("reschedule cancels a due check waiting on success lookup", async () => {
   const success = deferred<boolean>();
-  const h = harness({ hasSuccessSince: () => success.promise });
+  let lookups = 0;
+  const h = harness({
+    hasSuccessSince: () => lookups++ === 0 ? success.promise : true,
+  });
   h.scheduler.start();
   await settle();
   h.scheduler.reschedule();
@@ -173,7 +176,10 @@ test("reschedule cancels a due check waiting on success lookup", async () => {
 
 test("reschedule cancels a due check waiting on active-task lookup", async () => {
   const active = deferred<boolean>();
-  const h = harness({ isTaskActive: () => active.promise });
+  let activeChecks = 0;
+  const h = harness({
+    isTaskActive: () => activeChecks++ === 0 ? active.promise : true,
+  });
   h.scheduler.start();
   await settle();
   h.scheduler.reschedule();
@@ -220,6 +226,52 @@ test("reschedule clears the old timer and uses changed settings", () => {
   assert.deepEqual(h.cleared, [oldTimer]);
   assert.equal(h.timers.length, 2);
   assert.equal(h.timers[1].ms, Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z"));
+});
+
+test("reschedule runs a newly due occurrence exactly once", async () => {
+  let settings: SystemSettingsDto = {
+    systemTimezone: "Asia/Taipei",
+    exchangeRateUpdateTime: "10:00",
+  };
+  const newlyDue = "2026-07-15T00:00:00.000Z";
+  const h = harness({
+    readSettings: () => settings,
+    hasSuccessSince: (occurrenceUtc) => occurrenceUtc !== newlyDue,
+  });
+  h.setNow("2026-07-15T01:00:00.000Z");
+  h.scheduler.start();
+  await settle();
+
+  settings = { ...settings, exchangeRateUpdateTime: "08:00" };
+  h.scheduler.reschedule();
+  h.timers[0].callback();
+  await settle();
+
+  assert.deepEqual(h.starts, [newlyDue]);
+  assert.equal(h.timers.length, 2);
+});
+
+test("reschedule does not duplicate a satisfied or active occurrence", async () => {
+  for (const state of ["successful", "active"] as const) {
+    let settings: SystemSettingsDto = {
+      systemTimezone: "Asia/Taipei",
+      exchangeRateUpdateTime: "10:00",
+    };
+    const h = harness({
+      readSettings: () => settings,
+      hasSuccessSince: () => state === "successful",
+      isTaskActive: () => state === "active",
+    });
+    h.setNow("2026-07-15T01:00:00.000Z");
+    h.scheduler.start();
+    await settle();
+
+    settings = { ...settings, exchangeRateUpdateTime: "08:00" };
+    h.scheduler.reschedule();
+    await settle();
+
+    assert.deepEqual(h.starts, [], state);
+  }
 });
 
 test("timers arm at the first valid minute after DST gaps and overlaps", () => {

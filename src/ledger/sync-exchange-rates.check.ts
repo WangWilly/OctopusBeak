@@ -67,6 +67,33 @@ test("sync failure appends one failure record and rethrows", async () => {
   }]);
 });
 
+test("request-load failure appends one honest empty-context failure", async () => {
+  const failure = new Error("overview unavailable");
+  const { options, records } = harness({
+    loadRequest: async () => { throw failure; },
+  });
+  await assert.rejects(runExchangeRateSyncCommand(options), failure);
+  assert.deepEqual(records, [{
+    scheduledAtUtc: null,
+    startedAtUtc: "2026-07-14T22:00:01.000Z",
+    finishedAtUtc: "2026-07-14T22:00:02.000Z",
+    requiredFrom: null,
+    currencies: [],
+    status: "failed",
+    error: "overview unavailable",
+  }]);
+});
+
+test("audit failure warns without replacing the original sync error", async () => {
+  const failure = new Error("network down");
+  const { options, warnings } = harness({
+    sync: async () => { throw failure; },
+    appendAudit: () => { throw new Error("disk full"); },
+  });
+  await assert.rejects(runExchangeRateSyncCommand(options), failure);
+  assert.deepEqual(warnings, ["exchange-rate-audit-log-warning: disk full\n"]);
+});
+
 test("audit failure warns without changing a successful sync result", async () => {
   const { options, warnings } = harness({
     appendAudit: () => { throw new Error("disk full"); },

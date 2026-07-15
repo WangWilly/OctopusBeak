@@ -142,7 +142,15 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
       generation += 1;
       if (timer !== undefined) deps.clearTimer(timer);
       timer = undefined;
-      armNext();
+      try {
+        const selected = readSchedule();
+        const { latestOccurrenceUtc } = selected.schedule;
+        const expectedGeneration = generation;
+        queueMicrotask(() => { void attempt(latestOccurrenceUtc, expectedGeneration); });
+        armNext(selected);
+      } catch (error) {
+        report(error);
+      }
     },
     stop() {
       running = false;

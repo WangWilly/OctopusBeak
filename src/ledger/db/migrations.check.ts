@@ -968,6 +968,10 @@ try {
     "unknown", "unknown-source", 3, "unknown-source-hash", "unknown-content",
     "future-bank", "statements", "TWD", "2026-07-15", "12:02:03",
   );
+  insertLegacyTransaction("account_transactions").run(
+    "malformed", "malformed-source", 4, "malformed-source-hash", "malformed-content",
+    "ctbc", "statements", "TWD", "2026-02-30", "12:02:03",
+  );
   insertLegacyTransaction("foreign_currency_transactions").run(
     "foreign-known", "foreign-source", 1, "foreign-source-hash", "foreign-content",
     "yuanta", "foreign-currency-statements", "USD", "2026-07-15", "12:02:03",
@@ -994,6 +998,12 @@ try {
     {
       statement_row_id: "unknown",
       transaction_date: "2026-07-15",
+      transaction_time: "12:02:03",
+      transaction_at_utc: null,
+    },
+    {
+      statement_row_id: "malformed",
+      transaction_date: "2026-02-30",
       transaction_time: "12:02:03",
       transaction_at_utc: null,
     },
