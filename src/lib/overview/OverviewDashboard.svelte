@@ -5,6 +5,7 @@
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import {
+    allExchangeRatesMissing,
     convertDailyHistoryRows,
     dailyHistoryCurrencies,
   } from "$lib/overview/exchange-rate-display.ts";
@@ -37,6 +38,12 @@
     overview.exchangeRates,
     dailyCurrency,
   ).rows;
+  $: twdDailyHistory = convertDailyHistoryRows(
+    history,
+    overview.exchangeRates,
+    "TWD",
+  ).rows;
+  $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
 
   onMount(() => {
@@ -131,19 +138,25 @@
     <section class="card daily-card">
       <div class="panel-title">
         <h2>{$t.overview.dailyAssetChanges}</h2>
-        <label class="chip select-chip" for="daily-base-currency">
-          {$t.common.base}
-          <select
-            id="daily-base-currency"
-            aria-label={$t.overview.dailyAssetChangesBaseCurrency}
-            value={dailyCurrency}
-            onchange={selectDailyCurrency}
-          >
-            {#each dailyCurrencies as currency}
-              <option value={currency}>{currency}</option>
-            {/each}
-          </select>
-        </label>
+        {#if allDailyRatesMissing}
+          <span class="chip missing-rate-status" role="status">
+            {$t.overview.exchangeRatesMissingNative}
+          </span>
+        {:else if dailyCurrencies.length > 1}
+          <label class="chip select-chip" for="daily-base-currency">
+            {$t.common.base}
+            <select
+              id="daily-base-currency"
+              aria-label={$t.overview.dailyAssetChangesBaseCurrency}
+              value={dailyCurrency}
+              onchange={selectDailyCurrency}
+            >
+              {#each dailyCurrencies as currency}
+                <option value={currency}>{currency}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
         {#if overview.latestExchangeRateDate}
           <span class="chip">
             {$t.overview.exchangeRatesThrough(overview.latestExchangeRateDate)}
@@ -162,5 +175,11 @@
     min-width: 0;
     display: grid;
     gap: var(--space-4);
+  }
+
+  .missing-rate-status {
+    color: var(--danger);
+    border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
+    background: color-mix(in oklch, var(--danger) 9%, white);
   }
 </style>

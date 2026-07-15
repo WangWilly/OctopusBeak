@@ -60,6 +60,7 @@ const en = {
     liabilityExposure: "Liability exposure",
     dailyAssetChanges: "Daily asset changes",
     dailyAssetChangesBaseCurrency: "Daily asset changes base currency",
+    exchangeRatesMissingNative: "Missing exchange rates · showing native currencies",
     exchangeRatesThrough: (date: string) => `Rates through ${date}`,
   },
   assets: {
@@ -453,6 +454,7 @@ const zh: typeof en = {
     liabilityExposure: "負債曝險",
     dailyAssetChanges: "每日資產變化",
     dailyAssetChangesBaseCurrency: "每日資產變化基準幣別",
+    exchangeRatesMissingNative: "缺少匯率・顯示原幣",
     exchangeRatesThrough: (date) => `匯率資料截至 ${date}`,
   },
   assets: {

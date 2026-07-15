@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { DailyHistoryRowDto, ExchangeRateDto } from "../shared-ledger/types.ts";
 import {
+  allExchangeRatesMissing,
   convertDailyHistoryRows,
   dailyHistoryCurrencies,
 } from "./exchange-rate-display.ts";
@@ -39,6 +40,10 @@ const missing = convertDailyHistoryRows(rows, rates.filter((rate) => rate.curren
 assert.equal(missing.rows[0]?.exchangeRateMissing, true);
 assert.deepEqual(missing.rows[0]?.assets, rows[0]?.assets);
 assert.deepEqual(missing.rows[0]?.netAssets, rows[0]?.netAssets);
+assert.equal(allExchangeRatesMissing([]), false);
+assert.equal(allExchangeRatesMissing(converted.rows), false);
+assert.equal(allExchangeRatesMissing(missing.rows), true);
+assert.equal(allExchangeRatesMissing([...converted.rows, ...missing.rows]), false);
 
 let currencyReads = 0;
 const manyRates = Array.from({ length: 200 }, (_, index): ExchangeRateDto => new Proxy({
