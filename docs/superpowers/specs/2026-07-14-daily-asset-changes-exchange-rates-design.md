@@ -71,6 +71,26 @@ Changing the selector updates only these history values:
 
 Account changes, Positions, the Overview summary strip, account rows, dialogs, and all other pages keep their current behavior. Helper text beside the selector shows the newest cached rate date. Each converted row uses and exposes its own effective rate date rather than reusing the newest rate.
 
+### Rate-availability states
+
+The panel has three explicit states:
+
+1. **Rates complete:** show the display-currency selector and converted single-currency values.
+2. **Rates partially missing:** keep the selector. Rows that can be converted stay single-currency; each affected date shows a visible `匯率缺失・顯示原幣` badge and native-currency amounts stacked one currency per line.
+3. **Rates completely missing:** when foreign-currency conversion is required and no history row can be converted, replace the selector in the same header position with a non-interactive `缺少匯率・顯示原幣` status. All affected rows use the same stacked native-currency layout.
+
+If the history contains only TWD, no external rate is required. Do not show a missing-rate warning; hide the single-choice selector because it has no useful action.
+
+Missing rows expand vertically as needed. Currency codes and values remain paired on one line, but different currencies never share a line. The missing-rate state must be visible text, not a tooltip-only exclamation mark.
+
+### Sorting
+
+Date sorting is always available.
+
+If any row in the full history dataset is missing a required exchange rate, disable sorting for Net assets, Daily change, Assets, and Liabilities. The amount headers remain visible but their buttons are disabled, show no sort arrow or hover treatment, and expose the disabled state to assistive technology. This check uses the full dataset, not the current page, so pagination cannot change sorting behavior.
+
+If a refresh introduces a missing-rate row while an amount column is selected, reset sorting to Date descending. Amount sorting becomes available again automatically only when every row can be converted, and then uses the selected display currency as before.
+
 ## Failure Handling
 
 - Apply a short request timeout.
@@ -79,7 +99,8 @@ Account changes, Positions, the Overview summary strip, account rows, dialogs, a
 - Do not write any part of an invalid response.
 - Do not delete previously cached rows when a refresh fails.
 - Record the failure in the automation log while preserving CSV import success.
-- If a history row lacks any rate required for conversion, show its existing native-currency bucket and a missing-rate indication instead of an estimated aggregate.
+- If a history row lacks any rate required for conversion, show its existing native-currency bucket in stacked lines and a visible missing-rate indication instead of an estimated aggregate.
+- Keep the selector for partial availability; replace it with the missing-rate status only when foreign-currency conversion is required and no history row can be converted.
 
 ## Verification
 
@@ -90,6 +111,10 @@ Use the existing Node test runner and the smallest focused checks that cover the
 3. An invalid API response leaves existing database rows unchanged.
 4. A synchronization failure does not make a successful CSV import fail.
 5. Selecting another currency updates the four Daily asset changes values and leaves other Overview content unchanged.
+6. A partially missing dataset keeps the selector, stacks native currencies only on affected dates, and disables all amount sorting.
+7. A completely missing dataset replaces the selector with the missing-rate status and disables all amount sorting.
+8. A TWD-only dataset shows neither a redundant selector nor a missing-rate warning.
+9. Once every row is convertible, amount sorting is restored; introducing a missing row resets an active amount sort to Date descending.
 
 Run the repository's canonical test and typecheck commands after implementation.
 
@@ -101,6 +126,9 @@ Run the repository's canonical test and typecheck commands after implementation.
 - Daily asset changes can be displayed in TWD or a currency present in its history.
 - Each row uses its own date or the nearest earlier available business-day rate.
 - Missing rates never produce a misleading converted total.
+- Missing native-currency values remain legible without overlapping adjacent columns.
+- Partial rate availability preserves the display-currency selector; complete rate absence replaces it with a clear native-currency fallback status.
+- Date sorting always works. Amount sorting is unavailable whenever any history row lacks a required rate.
 - No display behavior outside Daily asset changes changes in this pilot.
 
 ## Deferred Scope
