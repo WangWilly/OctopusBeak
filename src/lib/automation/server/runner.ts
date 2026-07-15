@@ -480,7 +480,9 @@ export async function runAutomationTask(
         session: options.resumeSession ? undefined : session ?? undefined,
       }, env);
       if (task.id === "exchange-rates" && options.scheduledAtUtc) {
+        if (command.command === "npm") command.args.push("--");
         command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
+        command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
       }
       const script = command.display;
       const run = createTaskRun(taskDb, {
