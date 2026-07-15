@@ -7,6 +7,7 @@ import {
   type AutomationSettingsFile,
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
+import { systemSettings } from "../../settings/system-settings.ts";
 
 export const AUTOMATION_ENV_PATH = ".env";
 
@@ -26,8 +27,7 @@ export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) 
 }
 
 export function automationBusinessTimezone(settings: AutomationSettingsFile = readAutomationSettings()) {
-  const value = settings.AUTOMATION_BUSINESS_TIMEZONE ?? process.env.AUTOMATION_BUSINESS_TIMEZONE;
-  return typeof value === "string" && value.trim() ? value : "Asia/Taipei";
+  return systemSettings(settings).systemTimezone;
 }
 
 export function automationGroupEnabledStatus(
