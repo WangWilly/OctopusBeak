@@ -19,6 +19,7 @@ function foreignRow(
   sourceRowIndex: number,
   transactionTime: string,
   balanceAfter: number,
+  transactionAtUtc: string,
 ): ForeignCurrencyTransaction {
   return {
     statementRowId: `row-${sourceRowIndex}`,
@@ -40,6 +41,7 @@ function foreignRow(
     accountingDate: "2026-06-02",
     transactionDate: "2026-06-02",
     transactionTime,
+    transactionAtUtc,
     description: "test",
     withdrawalAmount: null,
     depositAmount: null,
@@ -51,14 +53,52 @@ function foreignRow(
 
 const data = emptyLedgerQueryData();
 data.foreignCurrencyTransactions = [
-  foreignRow(14, "17:27:58", 0),
-  foreignRow(16, "12:39:36", 5255.12),
+  foreignRow(14, "17:27:58", 0, "2026-06-02T09:27:58.000Z"),
+  foreignRow(16, "12:39:36", 5255.12, "2026-06-02T04:39:36.000Z"),
 ];
 
 const account = buildAccountOverview(data).find((row) => row.kind === "foreign");
 
 assert.ok(account);
 assert.deepEqual(account.amountLines, [{ currency: "USD", value: 0 }]);
+assert.deepEqual(
+  Object.values(buildTransactionsByAccount(data)).flat()
+    .map((row) => row.occurredAtUtc),
+  ["2026-06-02T09:27:58.000Z", "2026-06-02T04:39:36.000Z"],
+);
+
+const bankData = emptyLedgerQueryData();
+bankData.accountTransactions = [{
+  statementRowId: "bank-row",
+  sourceFileId: "source",
+  importRunId: "run",
+  sourceRelativePath: "ctbc-statements/example.csv",
+  sourceRowIndex: 1,
+  sourceHash: "source-hash",
+  contentHash: "content-hash",
+  bank: "ctbc",
+  product: "statements",
+  rawPayloadJson: "{}",
+  importedAt: "2026-07-15T05:00:00.000Z",
+  createdAt: "2026-07-15T05:00:00.000Z",
+  accountName: "Account",
+  accountNumber: "123456",
+  currency: "TWD",
+  accountingDate: "2026-07-15",
+  transactionDate: "2026-07-15",
+  transactionTime: "12:02:03",
+  transactionAtUtc: "2026-07-15T04:02:03.000Z",
+  description: "test",
+  withdrawalAmount: null,
+  depositAmount: 1,
+  balanceAfter: 1,
+  note: null,
+  fxRate: null,
+}];
+assert.equal(
+  Object.values(buildTransactionsByAccount(bankData)).flat()[0]?.occurredAtUtc,
+  "2026-07-15T04:02:03.000Z",
+);
 
 function creditCardRow(
   sourceRowIndex: number,
