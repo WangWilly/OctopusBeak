@@ -21,15 +21,39 @@ import {
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { loadSpending, updateSpendingItemCategory } from "../src/lib/spending/server/store.ts";
+import {
+  readAutomationSettings,
+} from "../src/lib/automation/server/settings.ts";
+import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import {
+  systemSettings,
+  validateSystemSettings,
+  type SystemSettingsDto,
+} from "../src/lib/settings/system-settings.ts";
 import { isFiniteDisplayScale, trafficLightPositionForScale } from "./window-options.ts";
 
-export function registerOctopusBeakIpc() {
+export function registerOctopusBeakIpc({
+  onSystemSettingsChanged,
+}: {
+  onSystemSettingsChanged?: (settings: SystemSettingsDto) => void | Promise<void>;
+} = {}) {
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
     BrowserWindow.fromWebContents(event.sender)?.setWindowButtonPosition(
       trafficLightPositionForScale(percent),
     );
+  });
+  ipcMain.handle("settings:load", () => systemSettings(readAutomationSettings()));
+  ipcMain.handle("settings:save", async (_event, input: SystemSettingsDto) => {
+    const value = validateSystemSettings(input);
+    writeAutomationSettings({
+      ...readAutomationSettings(),
+      SYSTEM_TIMEZONE: value.systemTimezone,
+      EXCHANGE_RATE_UPDATE_TIME: value.exchangeRateUpdateTime,
+    });
+    await onSystemSettingsChanged?.(value);
+    return value;
   });
   ipcMain.handle("overview:load", () => loadOverview());
   ipcMain.handle("assets:load", () => loadAssets());

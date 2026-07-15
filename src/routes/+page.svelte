@@ -10,6 +10,7 @@
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
 
@@ -20,6 +21,7 @@
     | { status: "ready"; data: T };
 
   let route: RouteId = "overview";
+  let initialized = false;
   let overview: LoadState<OverviewPageDto> = { status: "loading" };
   let assets: LoadState<AssetsPageDto> = { status: "loading" };
   let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
@@ -55,13 +57,19 @@
   }
 
   onMount(() => {
-    normalizeRoute();
+    void window.octopusBeak.settings.load().then((value) => {
+      applySystemSettings(value);
+      initialized = true;
+      normalizeRoute();
+    });
     addEventListener("hashchange", normalizeRoute);
     return () => removeEventListener("hashchange", normalizeRoute);
   });
 </script>
 
-{#if route === "overview"}
+{#if !initialized}
+  <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+{:else if route === "overview"}
   {#if overview.status === "ready"}<OverviewDashboard overview={overview.data} />{/if}
   {#if overview.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if overview.status === "error"}<p class="status">{overview.message}</p>{/if}
