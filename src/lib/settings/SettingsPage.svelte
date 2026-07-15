@@ -11,10 +11,20 @@
     displayScale,
     supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
+  import {
+    applySystemSettings,
+    exchangeRateUpdateTime,
+    systemTimezone,
+  } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
+  const timezones = ["Asia/Taipei", "Asia/Tokyo", "America/New_York", "Europe/London", "UTC"];
   let displayScaleAvailable = false;
   let shortcutModifier = "Ctrl";
+  let selectedTimezone = $systemTimezone;
+  let selectedUpdateTime = $exchangeRateUpdateTime;
+  let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
+  let saveError = "";
 
   onMount(() => {
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
@@ -23,6 +33,24 @@
 
   function chooseLocale(value: Locale) {
     setLocale(value);
+  }
+
+  async function saveSystemSettings() {
+    saveStatus = "pending";
+    saveError = "";
+    try {
+      const value = await window.octopusBeak.settings.save({
+        systemTimezone: selectedTimezone,
+        exchangeRateUpdateTime: selectedUpdateTime,
+      });
+      applySystemSettings(value);
+      selectedTimezone = value.systemTimezone;
+      selectedUpdateTime = value.exchangeRateUpdateTime;
+      saveStatus = "success";
+    } catch (error) {
+      saveError = error instanceof Error ? error.message : String(error);
+      saveStatus = "error";
+    }
   }
 </script>
 
@@ -35,6 +63,32 @@
   sideSub={$t.settings.sideSub}
 >
   <div class="content settings-content">
+    <section class="card">
+      <div class="panel-title">
+        <div>
+          <h2>{$t.settings.systemSettings}</h2>
+          <p class="lead">{$t.settings.systemSettingsDescription}</p>
+        </div>
+      </div>
+      <form class="system-settings-body" onsubmit={(event) => { event.preventDefault(); void saveSystemSettings(); }}>
+        <label>
+          <span>{$t.settings.systemTimezone}</span>
+          <select bind:value={selectedTimezone}>
+            {#each timezones as timezone}<option value={timezone}>{timezone}</option>{/each}
+          </select>
+        </label>
+        <label>
+          <span>{$t.settings.exchangeRateUpdateTime}</span>
+          <input type="time" step="60" bind:value={selectedUpdateTime} />
+        </label>
+        <button class="button" type="submit" disabled={saveStatus === "pending"}>
+          {saveStatus === "pending" ? $t.settings.saving : $t.common.save}
+        </button>
+        {#if saveStatus === "success"}<p class="save-feedback" role="status">{$t.settings.settingsSaved}</p>{/if}
+        {#if saveStatus === "error"}<p class="save-feedback error" role="alert">{$t.settings.settingsSaveFailed(saveError)}</p>{/if}
+      </form>
+    </section>
+
     <section class="card">
       <div class="panel-title">
         <div>
@@ -120,6 +174,20 @@
     padding: var(--space-5);
   }
 
+  .system-settings-body {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(180px, 1fr) auto;
+    align-items: end;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .system-settings-body label { display: grid; gap: var(--space-2); color: var(--muted); font-size: 13px; }
+  .system-settings-body select,
+  .system-settings-body input { min-height: 40px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
+  .save-feedback { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 13px; }
+  .save-feedback.error { color: var(--danger, #b42318); }
+
   .language-options {
     display: flex;
     flex-wrap: wrap;
@@ -167,6 +235,7 @@
   .display-scale-range { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 
   @media (max-width: 760px) {
+    .system-settings-body { grid-template-columns: 1fr; }
     .display-scale-body { grid-template-columns: 1fr; }
     .display-scale-shortcuts { grid-column: auto; align-items: flex-start; flex-direction: column; }
     .display-scale-range { grid-column: auto; }
