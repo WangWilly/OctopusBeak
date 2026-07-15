@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import {
   buildSnapshotChartPoints,
   buildSnapshotDivergingSeries,
+  formatSnapshotAxisLabel,
   selectSnapshotDivergingSeries,
 } from "./snapshot-chart-data.ts";
 import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 
 const timeZone = "Asia/Taipei";
 const locale = "en-CA";
+
+assert.equal(formatSnapshotAxisLabel(Date.parse("2026-07-12T20:00:00.000Z"), timeZone, locale), "07-13");
+assert.equal(formatSnapshotAxisLabel("2026-07-12", timeZone, locale), "07-12");
 
 const rows: DailyHistoryRowDto[] = [
   {

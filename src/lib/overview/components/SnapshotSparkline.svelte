@@ -7,6 +7,7 @@
   import {
     buildSnapshotChartPoints,
     buildSnapshotDivergingSeries,
+    formatSnapshotAxisLabel,
     selectSnapshotDivergingSeries,
     type SnapshotChartPoint,
     type SnapshotDivergingSeries,
@@ -58,19 +59,7 @@
   }
 
   function shortDate(value: unknown) {
-    if (value instanceof Date && !Number.isNaN(value.getTime())) return monthDay(value);
-    if (typeof value === "number") {
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) return monthDay(date);
-    }
-    const text = String(value);
-    return text.length >= 10 ? text.slice(5, 10) : text;
-  }
-
-  function monthDay(value: Date) {
-    const month = String(value.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(value.getUTCDate()).padStart(2, "0");
-    return `${month}-${day}`;
+    return formatSnapshotAxisLabel(value, $systemTimezone, $locale);
   }
 
   function shortAmount(value: unknown) {
