@@ -73,6 +73,10 @@ export function dailyHistoryCurrencies(rows: DailyHistoryRowDto[]) {
   });
 }
 
+export function allExchangeRatesMissing(rows: DailyHistoryRowDto[]) {
+  return rows.length > 0 && rows.every((row) => row.exchangeRateMissing === true);
+}
+
 export function convertDailyHistoryRows(
   rows: DailyHistoryRowDto[],
   rates: ExchangeRateDto[],
