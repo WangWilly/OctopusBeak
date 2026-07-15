@@ -37,6 +37,23 @@ test("schedule keeps 06:00 local across New York DST", () => {
   });
 });
 
+test("schedule advances past New York DST gaps and overlaps", () => {
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-03-08T06:00:00Z"), {
+    systemTimezone: "America/New_York",
+    exchangeRateUpdateTime: "02:30",
+  }), {
+    latestOccurrenceUtc: "2026-03-07T07:30:00.000Z",
+    nextOccurrenceUtc: "2026-03-08T07:00:00.000Z",
+  });
+  assert.deepEqual(exchangeRateSchedule(new Date("2026-11-01T06:30:00Z"), {
+    systemTimezone: "America/New_York",
+    exchangeRateUpdateTime: "01:30",
+  }), {
+    latestOccurrenceUtc: "2026-10-31T05:30:00.000Z",
+    nextOccurrenceUtc: "2026-11-01T07:00:00.000Z",
+  });
+});
+
 type Timer = { callback: () => void; ms: number };
 
 function harness(overrides: Partial<Parameters<typeof createExchangeRateScheduler>[0]> = {}) {
@@ -71,6 +88,12 @@ function harness(overrides: Partial<Parameters<typeof createExchangeRateSchedule
 }
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 test("startup catch-up starts once with the missed occurrence", async () => {
   const h = harness();
@@ -121,6 +144,55 @@ test("an active exchange-rate task suppresses a duplicate start", async () => {
   assert.deepEqual(h.starts, []);
 });
 
+test("stop cancels a due check waiting on success lookup", async () => {
+  const success = deferred<boolean>();
+  let activeChecks = 0;
+  const h = harness({
+    hasSuccessSince: () => success.promise,
+    isTaskActive: () => { activeChecks += 1; return false; },
+  });
+  h.scheduler.start();
+  await settle();
+  h.scheduler.stop();
+  success.resolve(false);
+  await settle();
+  assert.equal(activeChecks, 0);
+  assert.deepEqual(h.starts, []);
+});
+
+test("reschedule cancels a due check waiting on success lookup", async () => {
+  const success = deferred<boolean>();
+  const h = harness({ hasSuccessSince: () => success.promise });
+  h.scheduler.start();
+  await settle();
+  h.scheduler.reschedule();
+  success.resolve(false);
+  await settle();
+  assert.deepEqual(h.starts, []);
+});
+
+test("reschedule cancels a due check waiting on active-task lookup", async () => {
+  const active = deferred<boolean>();
+  const h = harness({ isTaskActive: () => active.promise });
+  h.scheduler.start();
+  await settle();
+  h.scheduler.reschedule();
+  active.resolve(false);
+  await settle();
+  assert.deepEqual(h.starts, []);
+});
+
+test("stop cancels a due check waiting on active-task lookup", async () => {
+  const active = deferred<boolean>();
+  const h = harness({ isTaskActive: () => active.promise });
+  h.scheduler.start();
+  await settle();
+  h.scheduler.stop();
+  active.resolve(false);
+  await settle();
+  assert.deepEqual(h.starts, []);
+});
+
 test("the next occurrence fires once and arms the following day", async () => {
   let lookups = 0;
   const h = harness({ hasSuccessSince: () => lookups++ === 0 });
@@ -150,6 +222,38 @@ test("reschedule clears the old timer and uses changed settings", () => {
   assert.equal(h.timers[1].ms, Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z"));
 });
 
+test("timers arm at the first valid minute after DST gaps and overlaps", () => {
+  let settings: SystemSettingsDto = {
+    systemTimezone: "America/New_York",
+    exchangeRateUpdateTime: "02:30",
+  };
+  const h = harness({ readSettings: () => settings });
+  h.setNow("2026-03-08T06:00:00Z");
+  h.scheduler.start();
+  assert.equal(h.timers[0]?.ms, 3_600_000);
+
+  settings = {
+    systemTimezone: "America/New_York",
+    exchangeRateUpdateTime: "01:30",
+  };
+  h.setNow("2026-11-01T06:30:00Z");
+  h.scheduler.reschedule();
+  assert.equal(h.timers[1]?.ms, 1_800_000);
+});
+
+test("a skipped local date is reported and the following date is armed", () => {
+  const h = harness({
+    readSettings: () => ({
+      systemTimezone: "Pacific/Apia",
+      exchangeRateUpdateTime: "23:00",
+    }),
+  });
+  h.setNow("2011-12-30T09:30:00Z");
+  h.scheduler.start();
+  assert.equal(h.errors.length, 1);
+  assert.equal(h.timers[0]?.ms, 84_600_000);
+});
+
 test("lookup and start errors are reported without crashing or double-starting", async () => {
   const lookupError = new Error("lookup failed");
   const lookup = harness({ hasSuccessSince: () => { throw lookupError; } });
@@ -165,4 +269,19 @@ test("lookup and start errors are reported without crashing or double-starting",
   assert.deepEqual(start.errors, [startError]);
   assert.deepEqual(start.starts, []);
   assert.equal(start.timers.length, 1);
+});
+
+test("reschedule reports settings errors without throwing", () => {
+  const settingsError = new Error("settings failed");
+  let fail = false;
+  const h = harness({
+    readSettings: () => {
+      if (fail) throw settingsError;
+      return taipei;
+    },
+  });
+  h.scheduler.start();
+  fail = true;
+  assert.doesNotThrow(() => h.scheduler.reschedule());
+  assert.deepEqual(h.errors, [settingsError]);
 });

@@ -32,20 +32,48 @@ function addDays(date: string, days: number) {
   return value.toISOString().slice(0, 10);
 }
 
-export function exchangeRateSchedule(now: Date, settings: SystemSettingsDto) {
+function occurrenceOnDate(date: string, settings: SystemSettingsDto) {
+  const [hour, minute] = settings.exchangeRateUpdateTime.split(":").map(Number);
+  for (let localMinute = hour * 60 + minute; localMinute < 24 * 60; localMinute += 1) {
+    const time = `${String(Math.floor(localMinute / 60)).padStart(2, "0")}:${String(localMinute % 60).padStart(2, "0")}:00`;
+    try {
+      return zonedDateTimeToUtc(date, time, settings.systemTimezone);
+    } catch (error) {
+      if (error instanceof RangeError && error.message.startsWith("Local date-time is nonexistent or ambiguous:")) continue;
+      throw error;
+    }
+  }
+}
+
+function scheduleDetails(now: Date, settings: SystemSettingsDto) {
   const today = localDate(now, settings.systemTimezone);
-  const occurrence = (date: string) => zonedDateTimeToUtc(
-    date,
-    `${settings.exchangeRateUpdateTime}:00`,
-    settings.systemTimezone,
-  );
-  const todayOccurrence = occurrence(today);
-  const latestDate = now.getTime() >= Date.parse(todayOccurrence) ? today : addDays(today, -1);
-  const nextDate = addDays(latestDate, 1);
-  return {
-    latestOccurrenceUtc: occurrence(latestDate),
-    nextOccurrenceUtc: occurrence(nextDate),
+  const skippedDates = new Set<string>();
+  const findOccurrence = (date: string, direction: -1 | 1) => {
+    for (let offset = 0; offset < 366; offset += 1) {
+      const candidateDate = addDays(date, offset * direction);
+      const occurrence = occurrenceOnDate(candidateDate, settings);
+      if (occurrence) return occurrence;
+      skippedDates.add(candidateDate);
+    }
+    throw new RangeError(`No valid exchange-rate schedule occurrence near ${date}`);
   };
+  const todayOccurrence = occurrenceOnDate(today, settings);
+  if (!todayOccurrence) skippedDates.add(today);
+  const occurredToday = todayOccurrence && now.getTime() >= Date.parse(todayOccurrence);
+  return {
+    latestOccurrenceUtc: occurredToday
+      ? todayOccurrence
+      : findOccurrence(addDays(today, -1), -1),
+    nextOccurrenceUtc: todayOccurrence && !occurredToday
+      ? todayOccurrence
+      : findOccurrence(addDays(today, 1), 1),
+    skippedDates: [...skippedDates],
+  };
+}
+
+export function exchangeRateSchedule(now: Date, settings: SystemSettingsDto) {
+  const { latestOccurrenceUtc, nextOccurrenceUtc } = scheduleDetails(now, settings);
+  return { latestOccurrenceUtc, nextOccurrenceUtc };
 }
 
 export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependencies) {
@@ -59,18 +87,29 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
 
   const attempt = async (occurrenceUtc: string, expectedGeneration: number) => {
     try {
-      if (await deps.hasSuccessSince(occurrenceUtc)) return;
-      if (!running || generation !== expectedGeneration || await deps.isTaskActive()) return;
+      const current = () => running && generation === expectedGeneration;
+      const successful = await deps.hasSuccessSince(occurrenceUtc);
+      if (!current() || successful) return;
+      const active = await deps.isTaskActive();
+      if (!current() || active) return;
       await deps.startTask(occurrenceUtc);
     } catch (error) {
       report(error);
     }
   };
 
-  const armNext = () => {
+  const readSchedule = () => {
+    const now = deps.now();
+    const schedule = scheduleDetails(now, deps.readSettings());
+    for (const date of schedule.skippedDates) {
+      report(new RangeError(`No valid exchange-rate schedule minute on ${date}`));
+    }
+    return { now, schedule };
+  };
+
+  const armNext = (selected?: ReturnType<typeof readSchedule>) => {
     try {
-      const now = deps.now();
-      const { nextOccurrenceUtc } = exchangeRateSchedule(now, deps.readSettings());
+      const { now, schedule: { nextOccurrenceUtc } } = selected ?? readSchedule();
       const token = deps.setTimer(() => {
         if (!running || timer !== token) return;
         timer = undefined;
@@ -89,13 +128,14 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
       if (running) return;
       running = true;
       try {
-        const { latestOccurrenceUtc } = exchangeRateSchedule(deps.now(), deps.readSettings());
+        const selected = readSchedule();
+        const { latestOccurrenceUtc } = selected.schedule;
         const expectedGeneration = generation;
         queueMicrotask(() => { void attempt(latestOccurrenceUtc, expectedGeneration); });
+        armNext(selected);
       } catch (error) {
         report(error);
       }
-      armNext();
     },
     reschedule() {
       if (!running) return;
