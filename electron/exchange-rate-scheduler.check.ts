@@ -120,11 +120,10 @@ test("a manual success after the occurrence suppresses startup catch-up", async 
   assert.equal(h.timers.length, 1);
 });
 
-test("a failed prior run does not satisfy the next startup", async () => {
-  let successful = false;
+test("a new scheduler instance retries an unsatisfied occurrence", async () => {
   const starts: string[] = [];
   const overrides = {
-    hasSuccessSince: () => successful,
+    hasSuccessSince: () => false,
     startTask: (scheduledAtUtc: string) => { starts.push(scheduledAtUtc); },
   };
   const first = harness(overrides);
@@ -142,6 +141,16 @@ test("an active exchange-rate task suppresses a duplicate start", async () => {
   h.scheduler.start();
   await settle();
   assert.deepEqual(h.starts, []);
+});
+
+test("unchanged settings do not retry an unsatisfied occurrence", async () => {
+  const h = harness();
+  h.scheduler.start();
+  await settle();
+  h.scheduler.reschedule();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
+  assert.equal(h.timers.length, 2);
 });
 
 test("stop cancels a due check waiting on success lookup", async () => {
@@ -228,7 +237,7 @@ test("reschedule clears the old timer and uses changed settings", () => {
   assert.equal(h.timers[1].ms, Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z"));
 });
 
-test("reschedule runs a newly due occurrence exactly once", async () => {
+test("reschedule runs a genuinely changed latest occurrence exactly once", async () => {
   let settings: SystemSettingsDto = {
     systemTimezone: "Asia/Taipei",
     exchangeRateUpdateTime: "10:00",
@@ -251,26 +260,28 @@ test("reschedule runs a newly due occurrence exactly once", async () => {
   assert.equal(h.timers.length, 2);
 });
 
-test("reschedule does not duplicate a satisfied or active occurrence", async () => {
+test("unchanged settings do not reconsider a satisfied or active occurrence", async () => {
   for (const state of ["successful", "active"] as const) {
-    let settings: SystemSettingsDto = {
-      systemTimezone: "Asia/Taipei",
-      exchangeRateUpdateTime: "10:00",
-    };
+    let successLookups = 0;
+    let activeLookups = 0;
     const h = harness({
-      readSettings: () => settings,
-      hasSuccessSince: () => state === "successful",
-      isTaskActive: () => state === "active",
+      hasSuccessSince: () => {
+        successLookups += 1;
+        return state === "successful";
+      },
+      isTaskActive: () => {
+        activeLookups += 1;
+        return state === "active";
+      },
     });
-    h.setNow("2026-07-15T01:00:00.000Z");
     h.scheduler.start();
     await settle();
-
-    settings = { ...settings, exchangeRateUpdateTime: "08:00" };
     h.scheduler.reschedule();
     await settle();
 
     assert.deepEqual(h.starts, [], state);
+    assert.equal(successLookups, 1, state);
+    assert.equal(activeLookups, state === "active" ? 1 : 0, state);
   }
 });
 
