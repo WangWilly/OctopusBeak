@@ -46,14 +46,43 @@ const rows: DailyHistoryRowDto[] = [
   },
 ];
 
+const losAngelesDateOnlyPoints = buildSnapshotChartPoints(
+  [rows[1]!],
+  "TWD",
+  "netAssets",
+  "America/Los_Angeles",
+  locale,
+);
+assert.equal(
+  formatSnapshotAxisLabel(
+    losAngelesDateOnlyPoints[0]!.time,
+    "America/Los_Angeles",
+    locale,
+    losAngelesDateOnlyPoints,
+  ),
+  "07-01",
+);
+
+const taipeiStructuredPoints = buildSnapshotChartPoints(
+  [{ ...rows[0]!, pointAt: "2026-07-12T20:00:00.000Z" }],
+  "TWD",
+  "netAssets",
+  timeZone,
+  locale,
+);
+assert.equal(
+  formatSnapshotAxisLabel(taipeiStructuredPoints[0]!.time, timeZone, locale, taipeiStructuredPoints),
+  "07-13",
+);
+
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "netAssets", timeZone, locale), [
-  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", axisLabel: "07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", axisLabel: "07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange", timeZone, locale), [
-  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 5 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -10 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", axisLabel: "07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 5 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", axisLabel: "07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -10 },
 ]);
 
 assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets", timeZone, locale), []);
@@ -63,8 +92,8 @@ const sameDayCaptureRows: DailyHistoryRowDto[] = [
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-alpha", netAssets: [{ currency: "TWD", value: 120 }] },
 ];
 assert.deepEqual(buildSnapshotChartPoints(sameDayCaptureRows, "TWD", "netAssets", timeZone, locale), [
-  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 120 },
-  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z") + 1, value: 180 },
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", axisLabel: "07-12", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 120 },
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", axisLabel: "07-12", time: Date.parse("2026-07-12T08:00:00.000Z") + 1, value: 180 },
 ]);
 
 const sameTimestampFilteredRows: DailyHistoryRowDto[] = [
@@ -72,7 +101,7 @@ const sameTimestampFilteredRows: DailyHistoryRowDto[] = [
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-bravo", netAssets: [{ currency: "TWD", value: 180 }] },
 ];
 assert.deepEqual(buildSnapshotChartPoints(sameTimestampFilteredRows, "TWD", "netAssets", timeZone, locale), [
-  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 180 },
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", axisLabel: "07-12", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 180 },
 ]);
 
 const divergingSeries = buildSnapshotDivergingSeries(rows, "TWD", timeZone, locale);
@@ -83,18 +112,18 @@ assert.deepEqual(
 );
 
 assert.deepEqual(divergingSeries[0].data, [
-  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", axisLabel: "07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", axisLabel: "07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
 ]);
 
 assert.deepEqual(divergingSeries[1].data, [
-  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 150 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 160 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", axisLabel: "07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 150 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", axisLabel: "07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 160 },
 ]);
 
 assert.deepEqual(divergingSeries[2].data, [
-  { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: -50 },
-  { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -40 },
+  { date: "2026-07-01", dateLabel: "2026-07-01", axisLabel: "07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: -50 },
+  { date: "2026-07-02", dateLabel: "2026-07-02", axisLabel: "07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -40 },
 ]);
 
 assert.deepEqual(
