@@ -80,6 +80,7 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
   let timer: unknown;
   let running = false;
   let generation = 0;
+  let lastConsideredOccurrenceUtc: string | undefined;
 
   const report = (error: unknown) => {
     try { deps.reportError(error); } catch {}
@@ -96,6 +97,12 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
     } catch (error) {
       report(error);
     }
+  };
+
+  const consider = (occurrenceUtc: string, expectedGeneration: number) => {
+    if (occurrenceUtc === lastConsideredOccurrenceUtc) return;
+    lastConsideredOccurrenceUtc = occurrenceUtc;
+    queueMicrotask(() => { void attempt(occurrenceUtc, expectedGeneration); });
   };
 
   const readSchedule = () => {
@@ -115,7 +122,7 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
         timer = undefined;
         const expectedGeneration = generation;
         armNext();
-        void attempt(nextOccurrenceUtc, expectedGeneration);
+        consider(nextOccurrenceUtc, expectedGeneration);
       }, Math.max(0, Date.parse(nextOccurrenceUtc) - now.getTime()));
       timer = token;
     } catch (error) {
@@ -131,7 +138,7 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
         const selected = readSchedule();
         const { latestOccurrenceUtc } = selected.schedule;
         const expectedGeneration = generation;
-        queueMicrotask(() => { void attempt(latestOccurrenceUtc, expectedGeneration); });
+        consider(latestOccurrenceUtc, expectedGeneration);
         armNext(selected);
       } catch (error) {
         report(error);
@@ -146,7 +153,7 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
         const selected = readSchedule();
         const { latestOccurrenceUtc } = selected.schedule;
         const expectedGeneration = generation;
-        queueMicrotask(() => { void attempt(latestOccurrenceUtc, expectedGeneration); });
+        consider(latestOccurrenceUtc, expectedGeneration);
         armNext(selected);
       } catch (error) {
         report(error);
