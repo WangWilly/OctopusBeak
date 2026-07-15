@@ -6,6 +6,7 @@ import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/clie
 import {
   activeTaskRuns,
   createTaskRun,
+  hasSuccessfulTaskRunSince,
   importGateStatus,
   latestTaskRuns,
   recentTaskRuns,
@@ -176,6 +177,55 @@ try {
     activeTaskRuns(db).map((item) => item.status).sort(),
     ["running", "waiting_for_human"],
   );
+
+  const occurrence = "2026-07-14T22:00:00.000Z";
+  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), false);
+  for (const [status, finishedAt] of [
+    ["running", null],
+    ["failed", "2026-07-14T22:01:00.000Z"],
+    ["completed", "2026-07-14T21:59:59.999Z"],
+  ] as const) {
+    createTaskRun(db, {
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status,
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-07-14T21:00:00.000Z",
+      finishedAt,
+      logPath: `data/automation/logs/exchange-rates-${status}.log`,
+    });
+  }
+  const cancelled = createTaskRun(db, {
+    taskId: "exchange-rates",
+    script: "run:exchange-rates",
+    kind: "sync",
+    status: "running",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-07-14T21:00:00.000Z",
+    logPath: "data/automation/logs/exchange-rates-cancelled.log",
+  });
+  db.prepare(`
+    UPDATE automation_task_runs
+    SET status = 'cancelled', finished_at = ?
+    WHERE task_run_id = ?
+  `).run("2026-07-14T22:02:00.000Z", cancelled.taskRunId);
+  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), false);
+  createTaskRun(db, {
+    taskId: "exchange-rates",
+    script: "run:exchange-rates",
+    kind: "sync",
+    status: "completed",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: occurrence,
+    finishedAt: occurrence,
+    exitCode: 0,
+    logPath: "data/automation/logs/exchange-rates-completed.log",
+  });
+  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), true);
 
   db.close();
 } finally {

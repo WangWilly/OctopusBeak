@@ -48,6 +48,18 @@ export { closeLibrettoSession };
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskChildren = new Map<string, ChildProcess>();
 
+export type StartAutomationTaskOptions = {
+  scheduledAtUtc?: string;
+};
+
+function validateScheduledAtUtc(value: string | undefined) {
+  if (value !== undefined && (
+    Number.isNaN(Date.parse(value)) || new Date(value).toISOString() !== value
+  )) {
+    throw new Error(`Invalid scheduledAtUtc: ${value}`);
+  }
+}
+
 export function createAutomationSessionId(uuid: () => string = randomUUID): string {
   return validateLibrettoSessionName("ses-octopus-" + uuid());
 }
@@ -254,10 +266,15 @@ export function accumulateAutomationOutput(
 export function startAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  options: StartAutomationTaskOptions = {},
 ) {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  validateScheduledAtUtc(options.scheduledAtUtc);
   claimTask(taskId);
-  void runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
+  void runAutomationTask(taskId, ledgerDir, {
+    claimed: true,
+    scheduledAtUtc: options.scheduledAtUtc,
+  }).catch((error) => {
     console.error("automation-task-run-failed", error);
   });
 }
@@ -433,10 +450,11 @@ export async function shutdownAutomationSessions(
 export async function runAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  options: { claimed?: boolean; resumeSession?: string } = {},
+  options: StartAutomationTaskOptions & { claimed?: boolean; resumeSession?: string } = {},
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  validateScheduledAtUtc(options.scheduledAtUtc);
   if (!options.claimed) claimTask(taskId);
 
   let db: ReturnType<typeof openLedgerDatabase> | null = null;
@@ -461,6 +479,9 @@ export async function runAutomationTask(
         resumeSession: options.resumeSession,
         session: options.resumeSession ? undefined : session ?? undefined,
       }, env);
+      if (task.id === "exchange-rates" && options.scheduledAtUtc) {
+        command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
+      }
       const script = command.display;
       const run = createTaskRun(taskDb, {
         taskId: task.id,

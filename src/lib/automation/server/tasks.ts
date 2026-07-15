@@ -268,6 +268,21 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
   {
+    id: "exchange-rates",
+    label: "Exchange rates",
+    script: "run:exchange-rates",
+    command: [
+      "node",
+      "--no-warnings",
+      "--experimental-strip-types",
+      "src/ledger/sync-exchange-rates.ts",
+    ],
+    kind: "sync",
+    credentialKeys: [],
+    dependencies: [],
+    maxAttempts: 1,
+  },
+  {
     id: "sync-maicoin",
     label: "MaiCoin sync",
     script: "run:sync-maicoin",

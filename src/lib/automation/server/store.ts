@@ -194,6 +194,21 @@ export function todayTaskRunIds(
   return rows.map((row) => row.task_id);
 }
 
+export function hasSuccessfulTaskRunSince(
+  db: LedgerDatabase,
+  taskId: string,
+  occurrence: string,
+) {
+  return Boolean(db.prepare(`
+    SELECT 1
+    FROM automation_task_runs
+    WHERE task_id = ?
+      AND status = 'completed'
+      AND finished_at >= ?
+    LIMIT 1
+  `).get(taskId, occurrence));
+}
+
 export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
   const rows = db.prepare(`
     SELECT
