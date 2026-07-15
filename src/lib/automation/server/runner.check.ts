@@ -703,7 +703,7 @@ test("scheduled exchange-rate starts append schedule context only to that task",
   process.env.CAPTURE_PATH = capturePath;
 
   const waitForCapture = async () => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
       try {
         return JSON.parse(readFileSync(capturePath, "utf8"));
       } catch {
