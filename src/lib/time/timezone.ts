@@ -96,5 +96,5 @@ export function formatUtcDateTime(
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  }).format(date);
+  }).format(date).replace(/\s+/gu, " ");
 }
