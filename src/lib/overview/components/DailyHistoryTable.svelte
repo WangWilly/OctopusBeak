@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { t } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { historyPointKey, type DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
   import {
     formatAmountLines,
     formatMoney,
     formatSignedAmountLines,
   } from "$lib/shared-money/money.ts";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
   type SortDirection = "asc" | "desc";
@@ -92,7 +94,7 @@
   }
 
   function pointLabel(row: DailyHistoryRowDto) {
-    return row.pointAt ? row.pointAt.slice(0, 16).replace("T", " ") : row.date;
+    return formatUtcDateTime(row.pointAt ?? row.date, $systemTimezone, $locale);
   }
 
 </script>

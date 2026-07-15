@@ -1,4 +1,5 @@
 import { historyPointKey, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
+import { formatUtcDateTime } from "../../time/timezone.ts";
 
 type HistoryAmountKey = "netAssets" | "assets" | "liabilities" | "dailyChange";
 
@@ -34,6 +35,8 @@ export function buildSnapshotChartPoints(
   rows: DailyHistoryRowDto[],
   currency: string,
   amountKey: HistoryAmountKey,
+  timeZone: string,
+  locale: string,
 ): SnapshotChartPoint[] {
   const offsets = new Map<number, number>();
   return [...rows]
@@ -46,7 +49,7 @@ export function buildSnapshotChartPoints(
       offsets.set(baseTime, offset + 1);
       return {
         date: row.date,
-        dateLabel: row.pointAt ? row.pointAt.slice(0, 16).replace("T", " ") : row.date,
+        dateLabel: formatUtcDateTime(row.pointAt ?? row.date, timeZone, locale),
         time: baseTime + offset,
         value: amount.value,
       };
@@ -57,12 +60,14 @@ export function buildSnapshotChartPoints(
 export function buildSnapshotDivergingSeries(
   rows: DailyHistoryRowDto[],
   currency: string,
+  timeZone: string,
+  locale: string,
 ): SnapshotDivergingSeries[] {
   return DIVERGING_SERIES.map((series) => ({
     key: series.key,
     label: series.label,
     color: series.color,
-    data: buildSnapshotChartPoints(rows, currency, series.amountKey).map((point) => {
+    data: buildSnapshotChartPoints(rows, currency, series.amountKey, timeZone, locale).map((point) => {
       const value = series.sign === -1 ? -Math.abs(point.value) : point.value;
       return { ...point, value };
     }),

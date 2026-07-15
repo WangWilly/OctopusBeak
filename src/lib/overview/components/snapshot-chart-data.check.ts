@@ -6,6 +6,9 @@ import {
 } from "./snapshot-chart-data.ts";
 import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
 
+const timeZone = "Asia/Taipei";
+const locale = "en-CA";
+
 const rows: DailyHistoryRowDto[] = [
   {
     date: "2026-07-02",
@@ -39,36 +42,36 @@ const rows: DailyHistoryRowDto[] = [
   },
 ];
 
-assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "netAssets"), [
+assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "netAssets", timeZone, locale), [
   { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 100 },
   { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: 120 },
 ]);
 
-assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange"), [
+assert.deepEqual(buildSnapshotChartPoints(rows, "TWD", "dailyChange", timeZone, locale), [
   { date: "2026-07-01", dateLabel: "2026-07-01", time: Date.parse("2026-07-01T00:00:00.000Z"), value: 5 },
   { date: "2026-07-02", dateLabel: "2026-07-02", time: Date.parse("2026-07-02T00:00:00.000Z"), value: -10 },
 ]);
 
-assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets"), []);
+assert.deepEqual(buildSnapshotChartPoints(rows, "JPY", "netAssets", timeZone, locale), []);
 
 const sameDayCaptureRows: DailyHistoryRowDto[] = [
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-bravo", netAssets: [{ currency: "TWD", value: 180 }] },
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-alpha", netAssets: [{ currency: "TWD", value: 120 }] },
 ];
-assert.deepEqual(buildSnapshotChartPoints(sameDayCaptureRows, "TWD", "netAssets"), [
-  { date: "2026-07-12", dateLabel: "2026-07-12 08:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 120 },
-  { date: "2026-07-12", dateLabel: "2026-07-12 08:00", time: Date.parse("2026-07-12T08:00:00.000Z") + 1, value: 180 },
+assert.deepEqual(buildSnapshotChartPoints(sameDayCaptureRows, "TWD", "netAssets", timeZone, locale), [
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 120 },
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z") + 1, value: 180 },
 ]);
 
 const sameTimestampFilteredRows: DailyHistoryRowDto[] = [
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-alpha", netAssets: [] },
   { ...rows[0]!, date: "2026-07-12", pointAt: "2026-07-12T08:00:00.000Z", captureId: "capture-bravo", netAssets: [{ currency: "TWD", value: 180 }] },
 ];
-assert.deepEqual(buildSnapshotChartPoints(sameTimestampFilteredRows, "TWD", "netAssets"), [
-  { date: "2026-07-12", dateLabel: "2026-07-12 08:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 180 },
+assert.deepEqual(buildSnapshotChartPoints(sameTimestampFilteredRows, "TWD", "netAssets", timeZone, locale), [
+  { date: "2026-07-12", dateLabel: "2026-07-12, 16:00:00", time: Date.parse("2026-07-12T08:00:00.000Z"), value: 180 },
 ]);
 
-const divergingSeries = buildSnapshotDivergingSeries(rows, "TWD");
+const divergingSeries = buildSnapshotDivergingSeries(rows, "TWD", timeZone, locale);
 
 assert.deepEqual(
   divergingSeries.map((series) => series.key),

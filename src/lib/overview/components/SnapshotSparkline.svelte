@@ -1,7 +1,8 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import {
     buildSnapshotChartPoints,
@@ -23,9 +24,9 @@
 
   let selectedSeriesKeys: SnapshotDivergingSeriesKey[] = [];
 
-  $: points = buildSnapshotChartPoints(rows, currency, amountKey);
+  $: points = buildSnapshotChartPoints(rows, currency, amountKey, $systemTimezone, $locale);
   $: divergingSeries = diverging
-    ? buildSnapshotDivergingSeries(rows, currency).map((series) => ({
+    ? buildSnapshotDivergingSeries(rows, currency, $systemTimezone, $locale).map((series) => ({
         ...series,
         label: translateDivergingSeries(series.key, $t),
       }))
