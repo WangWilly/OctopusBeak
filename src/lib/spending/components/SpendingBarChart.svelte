@@ -111,6 +111,15 @@
     transformScale = detail.scale;
   }
 
+  function panChart(direction: -1 | 1) {
+    const transform = chartContext?.transform;
+    if (!transform) return;
+    transform.setTranslate({
+      x: transform.translate.x + direction * stageWidth * 0.2,
+      y: transform.translate.y,
+    });
+  }
+
   function axisLabel(value: unknown) {
     return dateLabel(String(value).replace(/:(invoice|account)$/u, ""), true);
   }
@@ -202,8 +211,10 @@
 
   {#if hasTransform}
     <div class="spending-transform-controls" aria-label="Chart transform controls">
+      <button type="button" data-action="pan-left" aria-label="Earlier" onclick={() => panChart(1)}>←</button>
       <button type="button" data-action="zoom-in" onclick={() => chartContext?.transform.zoomIn()}>+</button>
       <button type="button" data-action="zoom-out" onclick={() => chartContext?.transform.zoomOut()}>−</button>
+      <button type="button" data-action="pan-right" aria-label="Later" onclick={() => panChart(-1)}>→</button>
       <button
         type="button"
         data-action="reset"
