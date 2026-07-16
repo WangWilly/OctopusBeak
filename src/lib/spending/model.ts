@@ -68,6 +68,8 @@ export type SpendingAccountRecord = {
   state: SpendingState;
   automaticState: SpendingState;
   automaticReason: SpendingReason;
+  automaticCategory: SpendingCategory;
+  duplicateInvoiceKey?: string;
   manual: boolean;
   date: string;
   label: string;
@@ -118,6 +120,7 @@ export type SpendingModel = {
   months: string[];
   monthlyRows: MonthlySpendingRow[];
   selectedMonth: string | null;
+  selectedCategory?: SpendingCategory;
   selectedMonthSummary: SpendingMonthSummary;
   dailyRows: DailySpendingRow[];
   presentCategories: SpendingCategory[];
@@ -303,6 +306,8 @@ export function buildSpendingModel(
       state: override?.state ?? automatic.state,
       automaticState: automatic.state,
       automaticReason: automatic.reason,
+      automaticCategory: automatic.category,
+      duplicateInvoiceKey: automatic.invoiceKey,
       manual: override !== undefined,
       date: row.date,
       label: row.description ?? row.note ?? row.bank,
@@ -398,6 +403,7 @@ export function buildSpendingModel(
     months,
     monthlyRows: [...monthly.values()].sort((left, right) => left.month.localeCompare(right.month)),
     selectedMonth: activeMonth,
+    selectedCategory,
     selectedMonthSummary,
     dailyRows: [...daily.values()].sort((left, right) => left.date.localeCompare(right.date)),
     presentCategories: SPENDING_CATEGORY_IDS.filter((category) => present.has(category)),
@@ -405,6 +411,93 @@ export function buildSpendingModel(
     accountRecords,
     excludedAccountRecords: selectedAccountRecords.filter((record) => record.state === "excluded"),
     pendingAccountRecords: selectedAccountRecords.filter((record) => record.state === "pending"),
+    recordsByDate,
+  };
+}
+
+export function applySpendingAccountOverride(
+  model: SpendingModel,
+  statementRowId: string,
+  state: SpendingState | null,
+  category: SpendingCategory | null = null,
+): SpendingModel {
+  const previous = model.accountRecords.find((record) => record.statementRowId === statementRowId);
+  if (!previous) return model;
+
+  const record: SpendingAccountRecord = {
+    ...previous,
+    state: state ?? previous.automaticState,
+    category: state === null ? previous.automaticCategory : category ?? previous.category,
+    manual: state !== null,
+  };
+  const accountRecords = model.accountRecords.map((candidate) =>
+    candidate.statementRowId === statementRowId ? record : candidate
+  );
+  const month = record.date.slice(0, 7);
+  const oldAmount = previous.state === "included" ? previous.amount : 0;
+  const newAmount = record.state === "included" ? record.amount : 0;
+  const adjust = <T extends SpendingSourceAmounts & { total: number }>(row: T): T => {
+    const account = { ...row.account };
+    if (oldAmount) account[previous.category] -= oldAmount;
+    if (newAmount) account[record.category] += newAmount;
+    return { ...row, total: row.total - oldAmount + newAmount, account };
+  };
+  const monthlyRows = model.monthlyRows.map((row) => row.month === month ? adjust(row) : row);
+  const dailyRows = (
+    model.dailyRows.some((row) => row.date === record.date) || !newAmount
+      ? model.dailyRows
+      : [...model.dailyRows, { date: record.date, total: 0, ...sourceAmounts() }]
+  ).map((row) => row.date === record.date ? adjust(row) : row)
+    .filter((row) => row.total !== 0)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const selectedAccountRecords = accountRecords.filter((candidate) =>
+    candidate.date.slice(0, 7) === model.selectedMonth
+  );
+  const invoiceRecords = model.recordsByDate.flatMap((group) => group.records)
+    .filter((candidate): candidate is SpendingInvoiceRecord => candidate.source === "invoice")
+    .map((invoice) => ({
+      ...invoice,
+      accountStatementRowIds: selectedAccountRecords
+        .filter((candidate) =>
+          candidate.duplicateInvoiceKey === invoice.invoiceKey && candidate.state === "excluded"
+        )
+        .map((candidate) => candidate.statementRowId),
+    }));
+  const displayRecords: SpendingDisplayRecord[] = [
+    ...invoiceRecords,
+    ...selectedAccountRecords.filter((candidate) =>
+      !(candidate.duplicateInvoiceKey && candidate.state === "excluded") &&
+      (!model.selectedCategory || candidate.category === model.selectedCategory)
+    ),
+  ];
+  const recordsByDate = [...Map.groupBy(displayRecords, (candidate) => candidate.date)]
+    .map(([date, records]) => ({
+      date,
+      records,
+      includedTotal: records.reduce(
+        (total, candidate) => total + (candidate.state === "included" ? candidate.amount : 0),
+        0,
+      ),
+      excludedCount: records.filter((candidate) => candidate.state === "excluded").length,
+      pendingCount: records.filter((candidate) => candidate.state === "pending").length,
+    }))
+    .sort((left, right) => right.date.localeCompare(left.date));
+
+  return {
+    ...model,
+    monthlyRows,
+    selectedMonthSummary: model.selectedMonth === month
+      ? {
+          ...model.selectedMonthSummary,
+          total: model.selectedMonthSummary.total - oldAmount + newAmount,
+          accountCount: model.selectedMonthSummary.accountCount - Number(Boolean(oldAmount)) +
+            Number(Boolean(newAmount)),
+        }
+      : model.selectedMonthSummary,
+    dailyRows,
+    accountRecords,
+    excludedAccountRecords: selectedAccountRecords.filter((candidate) => candidate.state === "excluded"),
+    pendingAccountRecords: selectedAccountRecords.filter((candidate) => candidate.state === "pending"),
     recordsByDate,
   };
 }

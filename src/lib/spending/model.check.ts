@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  applySpendingAccountOverride,
   buildSpendingModel,
   type SpendingAccountRecord,
   type SpendingAccountTransactionInput,
@@ -439,3 +440,59 @@ assert.equal(manualDuplicateGroup?.records
   .reduce((total, record) => total + record.amount, 0), 200);
 assert.equal(manualDuplicate.dailyRows.find((row) => row.date === "2026-02-01")?.total, 200);
 assert.equal(JSON.parse(JSON.stringify({ invoices })).invoices.length, invoices.length);
+
+const includedTransfer = applySpendingAccountOverride(latest, "transfer", "included", "shopping");
+const includedTransferRecord = includedTransfer.accountRecords.find((record) =>
+  record.statementRowId === "transfer"
+);
+assert.deepEqual(
+  includedTransferRecord && {
+    state: includedTransferRecord.state,
+    category: includedTransferRecord.category,
+    manual: includedTransferRecord.manual,
+  },
+  { state: "included", category: "shopping", manual: true },
+);
+assert.deepEqual(includedTransfer.selectedMonthSummary, {
+  total: 21_736,
+  invoiceCount: 0,
+  accountCount: 3,
+});
+assert.equal(
+  includedTransfer.monthlyRows.find((row) => row.month === "2026-07")?.account.shopping,
+  1_500,
+);
+assert.equal(
+  includedTransfer.dailyRows.find((row) => row.date === "2026-07-14")?.account.shopping,
+  1_500,
+);
+assert.equal(includedTransfer.pendingAccountRecords.some((record) => record.statementRowId === "transfer"), false);
+assert.deepEqual(
+  includedTransfer.recordsByDate.find((group) => group.date === "2026-07-14") && {
+    includedTotal: includedTransfer.recordsByDate.find((group) => group.date === "2026-07-14")?.includedTotal,
+    excludedCount: includedTransfer.recordsByDate.find((group) => group.date === "2026-07-14")?.excludedCount,
+    pendingCount: includedTransfer.recordsByDate.find((group) => group.date === "2026-07-14")?.pendingCount,
+  },
+  { includedTotal: 1_500, excludedCount: 1, pendingCount: 0 },
+);
+
+const restoredCardPayment = applySpendingAccountOverride(latest, "card-payment", null);
+const restoredCardPaymentRecord = restoredCardPayment.accountRecords.find((record) =>
+  record.statementRowId === "card-payment"
+);
+assert.deepEqual(
+  restoredCardPaymentRecord && {
+    state: restoredCardPaymentRecord.state,
+    category: restoredCardPaymentRecord.category,
+    manual: restoredCardPaymentRecord.manual,
+  },
+  { state: "excluded", category: "other", manual: false },
+);
+assert.deepEqual(restoredCardPayment.selectedMonthSummary, {
+  total: 880,
+  invoiceCount: 0,
+  accountCount: 1,
+});
+assert.equal(restoredCardPayment.excludedAccountRecords.some((record) =>
+  record.statementRowId === "card-payment"
+), true);

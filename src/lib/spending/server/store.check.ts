@@ -402,6 +402,15 @@ try {
     january.recordsByDate.flatMap((group) => group.records).map((record) => record.key).sort(),
     ["account:january-account-spend", "invoice:january-invoice"],
   );
+  const januaryFood = loadSpending(ledgerDir, {
+    selectedMonth: "2026-01",
+    selectedCategory: "food",
+  });
+  assert.equal(januaryFood.selectedCategory, "food");
+  assert.deepEqual(
+    januaryFood.recordsByDate.flatMap((group) => group.records).map((record) => record.key),
+    ["invoice:january-invoice"],
+  );
 } finally {
   rmSync(ledgerDir, { recursive: true, force: true });
 }
