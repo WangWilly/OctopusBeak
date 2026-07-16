@@ -226,9 +226,8 @@
         data={buckets}
         x="bucketKey"
         brush={interactionProps.brush}
-        transform={interactionProps.transform
-          ? { ...interactionProps.transform, onTransform: updateTransform }
-          : undefined}
+        transform={interactionProps.transform}
+        onTransform={updateTransform}
         {series}
         seriesLayout="stack"
         {yDomain}
