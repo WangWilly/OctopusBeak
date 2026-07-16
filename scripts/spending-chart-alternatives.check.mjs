@@ -54,16 +54,20 @@ try {
   });
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(({ model }) => {
+    window.__spendingLoadCount = 0;
     window.octopusBeak = {
       settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
       spending: {
-        load: async ({ selectedMonth } = {}) => ({
-          ...model,
-          selectedMonth: selectedMonth ?? model.selectedMonth,
-          selectedMonthSummary: selectedMonth
-            ? { ...model.selectedMonthSummary, total: model.monthlyRows.find((row) => row.month === selectedMonth)?.total ?? 0 }
-            : model.selectedMonthSummary,
-        }),
+        load: async ({ selectedMonth } = {}) => {
+          window.__spendingLoadCount += 1;
+          return {
+            ...model,
+            selectedMonth: selectedMonth ?? model.selectedMonth,
+            selectedMonthSummary: selectedMonth
+              ? { ...model.selectedMonthSummary, total: model.monthlyRows.find((row) => row.month === selectedMonth)?.total ?? 0 }
+              : model.selectedMonthSummary,
+          };
+        },
         updateTransactionOverride: async () => {},
         updateItemCategory: async () => {},
       },
@@ -71,38 +75,52 @@ try {
   }, { model });
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
-  const prototype = page.locator(".monthly-panel [data-chart-concept]");
-  await prototype.waitFor();
-  assert.equal(await page.locator(".monthly-panel [data-concept-option]").count(), 3);
-  assert.equal(await prototype.getAttribute("data-chart-concept"), "overview");
-  assert.ok(await prototype.locator("svg.lc-layout-svg").count() > 0);
-  assert.ok(await prototype.locator("[data-overview-detail]").count() === 1);
-  await page.screenshot({ path: "/tmp/spending-chart-overview.png", fullPage: true });
+  const chart = page.locator('.monthly-panel [data-interaction="pan-zoom"]');
+  await chart.waitFor();
+  assert.equal(await page.locator(".monthly-panel [data-chart-concept]").count(), 0);
+  assert.equal(await page.locator(".monthly-panel [data-concept-option]").count(), 0);
+  assert.equal(
+    await chart.locator(
+      '[data-action="pan-left"], [data-action="pan-right"], [data-action="zoom-in"], [data-action="zoom-out"]',
+    ).count(),
+    0,
+  );
+  assert.equal(await chart.locator('[data-action="reset"]').count(), 0);
+  assert.equal(await chart.getAttribute("data-at-start"), "true");
+  assert.equal(await chart.getAttribute("data-at-end"), "true");
 
-  await page.locator('[data-concept-option="timeline"]').click();
-  const panZoom = page.locator('.monthly-panel [data-chart-concept="timeline"] [data-interaction="pan-zoom"]');
-  await panZoom.waitFor();
-  assert.equal(await panZoom.locator('[data-action="pan-left"]').count(), 1);
-  assert.equal(await panZoom.locator('[data-action="pan-right"]').count(), 1);
-  await panZoom.locator('[data-action="zoom-in"]').click();
+  const stage = chart.locator(".spending-bar-stage");
+  await stage.hover();
+  await page.keyboard.down("Meta");
+  await page.mouse.wheel(0, -600);
+  await page.keyboard.up("Meta");
   await page.waitForFunction(() => Number(
-    document.querySelector('.monthly-panel [data-chart-concept="timeline"] [data-interaction="pan-zoom"]')
-      ?.getAttribute("data-transform-scale"),
+    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-transform-scale"),
   ) > 1);
-  assert.ok(Number(await panZoom.getAttribute("data-transform-scale")) > 1);
+  assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
 
-  await page.locator('[data-concept-option="focus-context"]').click();
-  const focus = page.locator('.monthly-panel [data-chart-concept="focus-context"]');
-  await focus.waitFor();
-  assert.equal(await focus.locator(".lc-brush-context").count(), 1);
-  const range = focus.locator('input[type="range"]');
-  const initialStart = await focus.getAttribute("data-focus-start");
-  await range.press("Home");
-  await page.waitForFunction((previous) =>
-    document.querySelector('[data-chart-concept="focus-context"]')?.getAttribute("data-focus-start") !== previous,
-  initialStart);
-  assert.notEqual(await focus.getAttribute("data-focus-start"), initialStart);
-  await page.screenshot({ path: "/tmp/spending-chart-focus-context.png", fullPage: true });
+  const loadCountBeforeDrag = await page.evaluate(() => window.__spendingLoadCount);
+  const box = await stage.boundingBox();
+  assert.ok(box);
+  await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.5, { steps: 8 });
+  assert.equal(await chart.getAttribute("data-moving"), "true");
+  assert.equal(await chart.locator("[data-visible-range]").count(), 1);
+  await page.mouse.up();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-moving") === "false"
+  );
+  assert.notEqual(await chart.getAttribute("data-transform-translate-x"), "0");
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), loadCountBeforeDrag);
+
+  await chart.locator('[data-action="reset"]').click();
+  await page.waitForFunction(() => Number(
+    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-transform-scale"),
+  ) === 1);
+  await chart.locator(".lc-tooltip-rect").first().click();
+  await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeDrag);
+  await page.screenshot({ path: "/tmp/spending-chart-grab-glide.png", fullPage: true });
 
   assert.deepEqual(errors, []);
 } finally {
