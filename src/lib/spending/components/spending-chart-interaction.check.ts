@@ -1,5 +1,28 @@
 import assert from "node:assert/strict";
-import { spendingChartInteractionProps } from "./spending-chart-interaction.ts";
+import {
+  spendingChartInteractionProps,
+  spendingChartViewport,
+} from "./spending-chart-interaction.ts";
+
+assert.equal(spendingChartViewport(0, 1000, 1, 0), null);
+assert.deepEqual(spendingChartViewport(24, 1000, 1, 0), {
+  startIndex: 0,
+  endIndex: 23,
+  atStart: true,
+  atEnd: true,
+});
+assert.deepEqual(spendingChartViewport(24, 1000, 2, 0), {
+  startIndex: 0,
+  endIndex: 11,
+  atStart: true,
+  atEnd: false,
+});
+assert.deepEqual(spendingChartViewport(24, 1000, 2, -1000), {
+  startIndex: 12,
+  endIndex: 23,
+  atStart: false,
+  atEnd: true,
+});
 
 assert.deepEqual(spendingChartInteractionProps("static"), { brush: false, transform: undefined });
 assert.deepEqual(spendingChartInteractionProps("brush"), {
