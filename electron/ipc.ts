@@ -24,6 +24,7 @@ import {
   loadSpending,
   updateSpendingItemCategory,
   updateSpendingTransactionOverride,
+  type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
 import {
@@ -63,7 +64,9 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("overview:load", () => loadOverview());
   ipcMain.handle("assets:load", () => loadAssets());
   ipcMain.handle("liabilities:load", () => loadLiabilities());
-  ipcMain.handle("spending:load", () => loadSpending());
+  ipcMain.handle("spending:load", (_event, input: SpendingLoadInput | undefined) =>
+    loadSpending(undefined, input)
+  );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
     return { ok: true as const };

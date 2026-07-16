@@ -4,7 +4,10 @@ import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type { SpendingCategory } from "$lib/spending/categories.ts";
 import type { SpendingPageDto } from "$lib/spending/model.ts";
-import type { SpendingOverrideUpdate } from "$lib/spending/server/store.ts";
+import type {
+  SpendingLoadInput,
+  SpendingOverrideUpdate,
+} from "$lib/spending/server/store.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
@@ -52,7 +55,7 @@ export type OctopusBeakApi = {
     load(): Promise<LiabilitiesPageDto>;
   };
   spending: {
-    load(): Promise<SpendingPageDto>;
+    load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
     updateItemCategory(input: { itemKey: string; category: SpendingCategory }): Promise<{ ok: true }>;
     updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
