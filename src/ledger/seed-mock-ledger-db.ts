@@ -66,7 +66,57 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
       ...data.sourceFiles.map(sourceFileRecord),
       sourceFileRecord(invoiceData.sourceFile),
     ]);
-    insertRows(db, "account_transactions", data.accountTransactions);
+    insertRows(db, "account_transactions", [
+      ...data.accountTransactions,
+      {
+        ...commonRow(importRunId, importedAt, "account.2026-06-27", "fubon", "deposit", 6),
+        accountName: "富邦薪轉帳戶",
+        accountNumber: "MOCK-PAYROLL",
+        currency: "TWD",
+        accountingDate: relativeIso(referenceDate, -1, 10, 20).slice(0, 10),
+        transactionDate: relativeIso(referenceDate, -1, 10, 20).slice(0, 10),
+        transactionTime: "10:20:00",
+        transactionAtUtc: relativeIso(referenceDate, -1, 10, 20),
+        description: "金融卡消費 咖啡店",
+        withdrawalAmount: 180,
+        depositAmount: null,
+        balanceAfter: 117400,
+        note: null,
+        fxRate: null,
+      },
+      {
+        ...commonRow(importRunId, importedAt, "account.2026-06-27", "fubon", "deposit", 7),
+        accountName: "富邦薪轉帳戶",
+        accountNumber: "MOCK-PAYROLL",
+        currency: "TWD",
+        accountingDate: relativeIso(referenceDate, -2, 9, 15).slice(0, 10),
+        transactionDate: relativeIso(referenceDate, -2, 9, 15).slice(0, 10),
+        transactionTime: "09:15:00",
+        transactionAtUtc: relativeIso(referenceDate, -2, 9, 15),
+        description: "繳信用卡",
+        withdrawalAmount: 8888,
+        depositAmount: null,
+        balanceAfter: 108512,
+        note: null,
+        fxRate: null,
+      },
+      {
+        ...commonRow(importRunId, importedAt, "account.2026-06-27", "fubon", "deposit", 8),
+        accountName: "富邦數位備用金",
+        accountNumber: "MOCK-EMERGENCY",
+        currency: "TWD",
+        accountingDate: relativeIso(referenceDate, -3, 12, 40).slice(0, 10),
+        transactionDate: relativeIso(referenceDate, -3, 12, 40).slice(0, 10),
+        transactionTime: "12:40:00",
+        transactionAtUtc: relativeIso(referenceDate, -3, 12, 40),
+        description: "房租轉帳轉入",
+        withdrawalAmount: null,
+        depositAmount: 28000,
+        balanceAfter: 445000,
+        note: null,
+        fxRate: null,
+      },
+    ]);
     insertRows(db, "foreign_currency_transactions", data.foreignCurrencyTransactions);
     insertRows(db, "credit_card_statement_lines", data.creditCardStatementLines);
     insertRows(db, "loan_transactions", data.loanTransactions);

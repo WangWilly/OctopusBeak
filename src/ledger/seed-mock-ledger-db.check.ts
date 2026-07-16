@@ -11,14 +11,14 @@ const ledgerDir = await mkdtemp(join(tmpdir(), "octopusbeak-mock-ledger-"));
 seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
 
 const spending = loadSpending(ledgerDir);
-const months = new Set(spending.invoices.map((invoice) =>
-  new Date(invoice.issuedAt * 1000).toISOString().slice(0, 7)
-));
-const categories = new Set(spending.invoices.flatMap((invoice) =>
+const spendingByMonth = spending.months.map((selectedMonth) =>
+  loadSpending(ledgerDir, { selectedMonth })
+);
+const categories = new Set(spendingByMonth.flatMap((month) => month.invoices).flatMap((invoice) =>
   invoice.items.map((item) => item.category)
 ));
 
-assert.equal(months.size, 4);
+assert.equal(spending.months.length, 4);
 assert.deepEqual([...categories].sort(), [...SPENDING_CATEGORY_IDS].sort());
 assert.ok(spending.invoices.some((invoice) => invoice.items.length > 1));
 assert.ok(new Set(
@@ -26,6 +26,20 @@ assert.ok(new Set(
     .filter((invoice) => new Date(invoice.issuedAt * 1000).toISOString().startsWith("2026-07"))
     .map((invoice) => new Date(invoice.issuedAt * 1000).toISOString().slice(0, 10)),
 ).size >= 3);
+
+const accountRecords = spendingByMonth.flatMap((month) => month.accountRecords);
+assert.ok(accountRecords.some((record) =>
+  record.state === "included" && record.automaticReason === "direct_purchase"
+));
+assert.ok(accountRecords.some((record) =>
+  record.state === "excluded" && record.automaticReason === "credit_card_payment"
+));
+assert.ok(accountRecords.some((record) =>
+  record.state === "excluded" && record.automaticReason === "internal_transfer"
+));
+assert.ok(accountRecords.some((record) =>
+  record.state === "pending" && record.automaticReason === "cash_withdrawal"
+));
 
 const db = openLedgerDatabase(ledgerDir, { readOnly: true });
 const invoiceCounts = db.prepare(`
@@ -46,7 +60,7 @@ const typedCounts = db.prepare(`
 db.close();
 
 assert.equal(invoiceCounts.voided, 1);
-assert.equal(invoiceCounts.total, spending.invoices.length + 1);
+assert.equal(invoiceCounts.total, spendingByMonth.flatMap((month) => month.invoices).length + 1);
 assert.deepEqual(automationStatuses.map((row) => row.status), ["completed", "failed"]);
 assert.ok(typedCounts.accounts > 0);
 assert.ok(typedCounts.brokerage > 0);
