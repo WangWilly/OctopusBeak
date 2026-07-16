@@ -181,7 +181,13 @@ function sourceAmounts(): SpendingSourceAmounts {
 }
 
 function normalizedText(value: string | null): string {
-  return (value ?? "").normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  return (value ?? "")
+    .replace(/\u3000/g, " ")
+    .replace(/[\uFF01-\uFF5E]/g, (character) =>
+      String.fromCharCode(character.charCodeAt(0) - 0xFEE0)
+    )
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 function nearbyDate(left: string, right: string): boolean {
@@ -291,11 +297,6 @@ export function buildSpendingModel(
   const accountRecords = accountTransactions.map((row): SpendingAccountRecord => {
     const automatic = automaticAccountDecision(row, counterpartDeposits, invoices, cardPayments);
     const override = overrideById.get(row.statementRowId);
-    if (automatic.invoiceKey) {
-      const ids = duplicateInvoiceRows.get(automatic.invoiceKey) ?? [];
-      ids.push(row.statementRowId);
-      duplicateInvoiceRows.set(automatic.invoiceKey, ids);
-    }
     const record: SpendingAccountRecord = {
       key: `account:${row.statementRowId}`,
       source: "account",
@@ -309,6 +310,11 @@ export function buildSpendingModel(
       amount: row.amount,
       category: override?.category ?? automatic.category,
     };
+    if (automatic.invoiceKey && record.state === "excluded") {
+      const ids = duplicateInvoiceRows.get(automatic.invoiceKey) ?? [];
+      ids.push(row.statementRowId);
+      duplicateInvoiceRows.set(automatic.invoiceKey, ids);
+    }
     const month = row.date.slice(0, 7);
     const monthlyRow = monthly.get(month) ?? { month, total: 0, ...sourceAmounts() };
     if (record.state === "included") {
@@ -370,7 +376,7 @@ export function buildSpendingModel(
       row.account[record.category] += record.amount;
       daily.set(record.date, row);
     }
-    if (record.automaticReason !== "invoice_duplicate" &&
+    if (!(record.automaticReason === "invoice_duplicate" && record.state === "excluded") &&
       (!selectedCategory || record.category === selectedCategory)) {
       displayRecords.push(record);
     }
