@@ -10,7 +10,7 @@
   } from "./categories.ts";
   import DailySpendingModal from "./components/DailySpendingModal.svelte";
   import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
-  import SpendingBarChart from "./components/SpendingBarChart.svelte";
+  import SpendingChartAlternatives from "./components/SpendingChartAlternatives.svelte";
   import { applySpendingAccountOverride } from "./model.ts";
   import type {
     SpendingAccountRecord,
@@ -314,11 +314,9 @@
           </div>
         </div>
         <div class="spending-chart-pad">
-          <SpendingBarChart
+          <SpendingChartAlternatives
             rows={model.monthlyRows}
-            kind="month"
             selectedKey={selectedMonth ?? model.selectedMonth}
-            label={$t.spending.monthlyChartAria}
             onBarClick={(month) => void selectMonth(month)}
           />
         </div>
@@ -591,7 +589,9 @@
   }
 
   .spending-panel-title {
-    justify-content: flex-start;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-4);
   }
 
   .panel-heading,
@@ -970,7 +970,8 @@
     }
 
     .chart-note,
-    .invoice-header {
+    .invoice-header,
+    .spending-panel-title {
       align-items: start;
       flex-direction: column;
     }
