@@ -1,70 +1,61 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { createServer } from "vite";
 
+const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
+await server.listen();
+const address = server.httpServer?.address();
+assert.ok(address && typeof address === "object");
 const browser = await chromium.launch({ headless: true });
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  await page.goto(new URL("../docs/prototypes/spending-chart-alternatives.html", import.meta.url).href);
+  await page.goto(`http://127.0.0.1:${address.port}/spending-chart-study`);
+  await page.locator("[data-study]").first().waitFor();
 
-  const prototype = page.locator('[data-prototype="brush-pan-zoom"]');
-  assert.equal(await prototype.count(), 1);
-  assert.equal(await prototype.getAttribute("data-mode"), "overview");
-  assert.equal(await prototype.getAttribute("data-domain-start"), "0");
-  assert.equal(await prototype.getAttribute("data-domain-end"), "29");
+  assert.equal(await page.locator("[data-study]").count(), 3);
+  for (const id of ["brush", "pan-zoom", "brush-pan-zoom"]) {
+    assert.ok(await page.locator(`[data-study="${id}"] svg.lc-layout-svg`).count() > 0);
+  }
 
-  const plot = prototype.locator("[data-plot]");
-  const box = await plot.boundingBox();
-  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.5);
+  const brush = page.locator('[data-study="brush"] .lc-brush-context');
+  const brushBox = await brush.boundingBox();
+  assert.ok(brushBox);
+  await page.mouse.move(brushBox.x + brushBox.width * 0.2, brushBox.y + brushBox.height * 0.5);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.3 + 4, box.y + box.height * 0.5);
+  await page.mouse.move(brushBox.x + brushBox.width * 0.5, brushBox.y + brushBox.height * 0.5);
   await page.mouse.up();
-  assert.equal(await plot.locator("[data-brush-overlay]").getAttribute("hidden"), "");
-  assert.equal(await plot.evaluate(element => element.classList.contains("dragging")), false);
+  assert.equal(await page.locator('[data-study="brush"] .lc-brush-range').count(), 1);
 
+  const panZoom = page.locator('[data-study="pan-zoom"] [data-interaction="pan-zoom"]');
+  await panZoom.locator('[data-action="zoom-in"]').click();
+  await page.waitForFunction(() => Number(
+    document.querySelector('[data-study="pan-zoom"] [data-interaction="pan-zoom"]')
+      ?.getAttribute("data-transform-scale"),
+  ) > 1);
+  assert.ok(Number(await panZoom.getAttribute("data-transform-scale")) > 1);
+
+  const combined = page.locator('[data-study="brush-pan-zoom"] .lc-brush-context');
+  await combined.scrollIntoViewIfNeeded();
+  const combinedBox = await combined.boundingBox();
+  assert.ok(combinedBox);
+  await page.mouse.move(combinedBox.x + combinedBox.width * 0.2, combinedBox.y + combinedBox.height * 0.5);
   await page.mouse.down();
-  await plot.dispatchEvent("pointercancel");
-  assert.equal(await plot.locator("[data-brush-overlay]").getAttribute("hidden"), "");
-  assert.equal(await plot.evaluate(element => element.classList.contains("dragging")), false);
+  await page.mouse.move(combinedBox.x + combinedBox.width * 0.55, combinedBox.y + combinedBox.height * 0.5);
   await page.mouse.up();
-
-  await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.5);
-  await page.mouse.down();
-  await plot.dispatchEvent("pointerup", {
-    clientX: box.x + box.width * 0.82,
-    clientY: box.y + box.height * 0.5,
-    pointerId: 1
-  });
-  await page.mouse.up();
-  assert.equal(await prototype.getAttribute("data-mode"), "detail");
-
-  const brushedStart = await prototype.getAttribute("data-domain-start");
-  await prototype.locator('[data-action="pan-left"]').click();
-  assert.notEqual(await prototype.getAttribute("data-domain-start"), brushedStart);
-  await prototype.locator('[data-action="reset"]').click();
-  assert.equal(await prototype.getAttribute("data-domain-start"), "0");
-  assert.equal(await prototype.getAttribute("data-domain-end"), "29");
-
-  assert.match(await plot.getAttribute("aria-label"), /arrow.*pan.*plus.*minus.*zoom.*home.*reset/i);
-  await plot.focus();
-  await page.keyboard.press("Shift+=");
-  const keyboardStart = await prototype.getAttribute("data-domain-start");
-  await page.keyboard.press("ArrowLeft");
-  assert.notEqual(await prototype.getAttribute("data-domain-start"), keyboardStart);
-  await page.keyboard.press("ArrowRight");
-  assert.equal(await prototype.getAttribute("data-domain-start"), keyboardStart);
-  await page.keyboard.press("Shift+=");
-  await page.keyboard.press("Shift+=");
-  assert.equal(await prototype.getAttribute("data-mode"), "detail");
-  const detailWidth = Number(await prototype.getAttribute("data-domain-end")) - Number(await prototype.getAttribute("data-domain-start")) + 1;
-  await page.keyboard.press("-");
-  const zoomedOutWidth = Number(await prototype.getAttribute("data-domain-end")) - Number(await prototype.getAttribute("data-domain-start")) + 1;
-  assert.ok(zoomedOutWidth > detailWidth);
-  await page.keyboard.press("Home");
-  assert.equal(await prototype.getAttribute("data-domain-start"), "0");
-  assert.equal(await prototype.getAttribute("data-domain-end"), "29");
-  assert.equal(await prototype.getAttribute("data-mode"), "overview");
-  assert.doesNotMatch(await page.locator("body").innerText(), /(?:6|12|24) months/i);
+  const combinedChart = page.locator('[data-study="brush-pan-zoom"] [data-interaction="brush-pan-zoom"]');
+  await page.waitForFunction(() => Number(
+    document.querySelector('[data-study="brush-pan-zoom"] [data-interaction="brush-pan-zoom"]')
+      ?.getAttribute("data-transform-scale"),
+  ) > 1);
+  assert.ok(Number(await combinedChart.getAttribute("data-transform-scale")) > 1);
+  await combinedChart.locator('[data-action="reset"]').click();
+  await page.waitForFunction(() => Number(
+    document.querySelector('[data-study="brush-pan-zoom"] [data-interaction="brush-pan-zoom"]')
+      ?.getAttribute("data-transform-scale"),
+  ) === 1);
+  assert.equal(Number(await combinedChart.getAttribute("data-transform-scale")), 1);
 } finally {
   await browser.close();
+  await server.close();
 }
