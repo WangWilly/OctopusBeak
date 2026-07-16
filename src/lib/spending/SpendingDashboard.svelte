@@ -10,7 +10,7 @@
   } from "./categories.ts";
   import DailySpendingModal from "./components/DailySpendingModal.svelte";
   import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
-  import SpendingChartAlternatives from "./components/SpendingChartAlternatives.svelte";
+  import SpendingBarChart from "./components/SpendingBarChart.svelte";
   import { applySpendingAccountOverride } from "./model.ts";
   import type {
     SpendingAccountRecord,
@@ -314,8 +314,10 @@
           </div>
         </div>
         <div class="spending-chart-pad">
-          <SpendingChartAlternatives
+          <SpendingBarChart
             rows={model.monthlyRows}
+            kind="month"
+            interaction="pan-zoom"
             selectedKey={selectedMonth ?? model.selectedMonth}
             onBarClick={(month) => void selectMonth(month)}
           />
