@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
   buildSpendingModel,
+  type SpendingAccountRecord,
   type SpendingAccountTransactionInput,
   type SpendingCardPaymentInput,
+  type SpendingInvoiceRecord,
   type SpendingInvoiceDto,
 } from "./model.ts";
 
@@ -338,7 +340,9 @@ assert.deepEqual(latest.pendingAccountRecords.map((row) => row.statementRowId), 
 
 const duplicateInvoice = february.recordsByDate
   .flatMap((group) => group.records)
-  .find((record) => record.source === "invoice" && record.invoiceKey === "feb-boundary");
+  .find((record): record is SpendingInvoiceRecord =>
+    record.source === "invoice" && record.invoiceKey === "feb-boundary"
+  );
 assert.deepEqual(duplicateInvoice?.accountStatementRowIds, ["invoice-duplicate"]);
 assert.equal(february.excludedAccountRecords.some((row) => row.statementRowId === "invoice-duplicate"), true);
 assert.equal(february.pendingAccountRecords.some((row) => row.statementRowId === "blank-merchant"), true);
@@ -413,9 +417,13 @@ const manualDuplicate = buildSpendingModel({
 });
 const manualDuplicateGroup = manualDuplicate.recordsByDate.find((group) => group.date === "2026-02-01");
 const manualDuplicateInvoice = manualDuplicateGroup?.records
-  .find((record) => record.source === "invoice" && record.invoiceKey === "feb-boundary");
+  .find((record): record is SpendingInvoiceRecord =>
+    record.source === "invoice" && record.invoiceKey === "feb-boundary"
+  );
 const manualDuplicateAccount = manualDuplicateGroup?.records
-  .find((record) => record.source === "account" && record.statementRowId === "invoice-duplicate");
+  .find((record): record is SpendingAccountRecord =>
+    record.source === "account" && record.statementRowId === "invoice-duplicate"
+  );
 assert.deepEqual(manualDuplicateInvoice?.accountStatementRowIds, []);
 assert.deepEqual(
   manualDuplicateAccount && {
