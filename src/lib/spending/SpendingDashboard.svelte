@@ -11,7 +11,11 @@
   import DailySpendingModal from "./components/DailySpendingModal.svelte";
   import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
   import SpendingBarChart from "./components/SpendingBarChart.svelte";
-  import { buildSpendingModel, type SpendingInvoiceDto, type SpendingPageDto } from "./model.ts";
+  import type {
+    SpendingInvoiceDto,
+    SpendingModel,
+    SpendingPageDto,
+  } from "./model.ts";
 
   export let spending: SpendingPageDto;
 
@@ -28,7 +32,7 @@
   let savingItemKeys = new Set<string>();
   let errorItemKeys = new Set<string>();
 
-  $: model = buildSpendingModel(spending.invoices, selectedMonth, selectedCategory);
+  $: model = spending as SpendingModel;
   $: monthFormatter = new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" });
   $: invoiceDateFormatter = new Intl.DateTimeFormat($locale, {
     year: "numeric",
@@ -198,7 +202,7 @@
           <SpendingBarChart
             rows={model.monthlyRows}
             kind="month"
-            selectedKey={model.selectedMonth}
+            selectedKey={selectedMonth ?? model.selectedMonth}
             label={$t.spending.monthlyChartAria}
             onBarClick={(month) => void selectMonth(month)}
           />
@@ -215,7 +219,7 @@
             <button
               class="filter-btn month-button"
               type="button"
-              aria-pressed={month === model.selectedMonth}
+              aria-pressed={month === (selectedMonth ?? model.selectedMonth)}
               onclick={() => void selectMonth(month)}
             >
               {formatMonth(month)}
@@ -336,6 +340,7 @@
         month={activeMonthLabel}
         total={model.selectedMonthSummary.total}
         invoiceCount={model.selectedMonthSummary.invoiceCount}
+        accountCount={model.selectedMonthSummary.accountCount}
         rows={model.dailyRows}
         onClose={closeDailyModal}
       />
@@ -355,13 +360,13 @@
 
 <style>
   .spending-dashboard {
-    --spending-food: oklch(63% 0.15 38);
-    --spending-daily: oklch(59% 0.14 150);
-    --spending-transport: oklch(58% 0.14 245);
-    --spending-shopping: oklch(61% 0.14 310);
-    --spending-home: oklch(70% 0.13 88);
-    --spending-leisure: oklch(61% 0.12 190);
-    --spending-other: oklch(58% 0.025 250);
+    --spending-food: oklch(52% 0.11 250);
+    --spending-daily: oklch(52% 0.09 170);
+    --spending-transport: oklch(56% 0.10 70);
+    --spending-shopping: oklch(53% 0.08 320);
+    --spending-home: oklch(50% 0.07 35);
+    --spending-leisure: oklch(49% 0.06 215);
+    --spending-other: oklch(46% 0.035 250);
 
     display: grid;
     gap: var(--space-6);
