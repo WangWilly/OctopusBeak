@@ -11,6 +11,7 @@
   } from "$lib/spending/model.ts";
   import {
     spendingChartInteractionProps,
+    spendingChartViewport,
     type SpendingChartInteraction,
   } from "./spending-chart-interaction.ts";
 
@@ -42,9 +43,18 @@
   let selectedCategories: SpendingCategory[] = [];
   let chartContext: BarChartProps<SourceBucket>["context"];
   let transformScale = 1;
+  let transformTranslateX = 0;
+  let transformDragging = false;
 
   $: interactionProps = spendingChartInteractionProps(interaction);
   $: hasTransform = interactionProps.transform !== undefined;
+  $: viewport = spendingChartViewport(rows.length, stageWidth, transformScale, transformTranslateX);
+  $: visibleRange = viewport
+    ? $t.spending.chartVisibleRange(
+        dateLabel(rowKey(rows[viewport.startIndex]), false),
+        dateLabel(rowKey(rows[viewport.endIndex]), false),
+      )
+    : "";
   $: selectedCategorySet = new Set(selectedCategories);
   $: visibleCategories = SPENDING_CATEGORY_IDS.filter(
     (category) => selectedCategories.length === 0 || selectedCategorySet.has(category),
@@ -107,17 +117,17 @@
     onBarClick?.(detail.data.periodKey);
   }
 
-  function updateTransform(detail: { scale: number }) {
+  function updateTransform(detail: { scale: number; translate: { x: number; y: number } }) {
     transformScale = detail.scale;
+    transformTranslateX = detail.translate.x;
   }
 
-  function panChart(direction: -1 | 1) {
-    const transform = chartContext?.transform;
-    if (!transform) return;
-    transform.setTranslate({
-      x: transform.translate.x + direction * stageWidth * 0.2,
-      y: transform.translate.y,
-    });
+  function startTransformDrag() {
+    transformDragging = true;
+  }
+
+  function endTransformDrag() {
+    transformDragging = false;
   }
 
   function axisLabel(value: unknown) {
@@ -190,6 +200,10 @@
   class="spending-bar-chart"
   data-interaction={interaction}
   data-transform-scale={transformScale}
+  data-transform-translate-x={transformTranslateX}
+  data-moving={transformDragging}
+  data-at-start={viewport?.atStart ?? true}
+  data-at-end={viewport?.atEnd ?? true}
 >
   <ul class="spending-chart-summary" aria-label={displayLabel}>
     {#each rows as row (rowKey(row))}
@@ -209,24 +223,10 @@
     {/each}
   </ul>
 
-  {#if hasTransform}
-    <div class="spending-transform-controls" aria-label="Chart transform controls">
-      <button type="button" data-action="pan-left" aria-label="Earlier" onclick={() => panChart(1)}>←</button>
-      <button type="button" data-action="zoom-in" onclick={() => chartContext?.transform.zoomIn()}>+</button>
-      <button type="button" data-action="zoom-out" onclick={() => chartContext?.transform.zoomOut()}>−</button>
-      <button type="button" data-action="pan-right" aria-label="Later" onclick={() => panChart(-1)}>→</button>
-      <button
-        type="button"
-        data-action="reset"
-        disabled={transformScale <= 1}
-        onclick={() => chartContext?.transform.reset()}
-      >Reset</button>
-    </div>
-  {/if}
-
   {#if hasData}
     <div
       class="spending-bar-stage"
+      class:dragging={transformDragging}
       role="img"
       aria-label={ariaLabel}
       bind:clientWidth={stageWidth}
@@ -239,6 +239,8 @@
         brush={interactionProps.brush}
         transform={interactionProps.transform}
         onTransform={updateTransform}
+        ondragstart={startTransformDrag}
+        ondragend={endTransformDrag}
         {series}
         seriesLayout="stack"
         {yDomain}
@@ -333,11 +335,31 @@
         {/snippet}
         </BarChart>
       {/if}
+      {#if hasTransform && transformDragging && visibleRange}
+        <span class="spending-visible-range" data-visible-range>{visibleRange}</span>
+      {/if}
+      {#if hasTransform && viewport && !viewport.atStart}
+        <span class="spending-chart-edge spending-chart-edge-left" aria-hidden="true"></span>
+      {/if}
+      {#if hasTransform && viewport && !viewport.atEnd}
+        <span class="spending-chart-edge spending-chart-edge-right" aria-hidden="true"></span>
+      {/if}
     </div>
 
   {:else}
     <div class="spending-bar-stage spending-chart-empty" role="img" aria-label={ariaLabel}>
       {$t.spending.noChartData}
+    </div>
+  {/if}
+
+  {#if hasTransform}
+    <div class="spending-navigation-hint">
+      <span>{$t.spending.chartDragHint}</span>
+      {#if transformScale > 1}
+        <button type="button" data-action="reset" onclick={() => chartContext?.transform.reset()}>
+          {$t.spending.chartReset}
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -373,8 +395,19 @@
   }
 
   .spending-bar-stage {
+    position: relative;
     width: 100%;
     height: 320px;
+  }
+
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage,
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage :global(.spending-bar-segment) {
+    cursor: grab;
+  }
+
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging,
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging :global(.spending-bar-segment) {
+    cursor: grabbing;
   }
 
   .spending-bar-stage :global(.lc-layout-svg) {
@@ -383,7 +416,8 @@
     display: block;
   }
 
-  .spending-bar-stage :global(.spending-bar-segment) {
+  .spending-bar-chart[data-interaction="static"] .spending-bar-stage :global(.spending-bar-segment),
+  .spending-bar-chart[data-interaction="brush"] .spending-bar-stage :global(.spending-bar-segment) {
     cursor: pointer;
   }
 
@@ -400,29 +434,65 @@
     font-weight: 800;
   }
 
-  .spending-transform-controls {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-2);
-    padding: 0 16px 8px;
+  .spending-visible-range {
+    position: absolute;
+    z-index: 4;
+    top: 10px;
+    left: 50%;
+    padding: 5px 9px;
+    border-radius: var(--radius-pill);
+    background: color-mix(in oklch, var(--fg) 92%, transparent);
+    color: var(--surface);
+    font-size: 11px;
+    font-weight: 700;
+    pointer-events: none;
+    transform: translateX(-50%);
   }
 
-  .spending-transform-controls button {
-    min-width: 36px;
+  .spending-chart-edge {
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    bottom: 0;
+    width: 64px;
+    pointer-events: none;
+  }
+
+  .spending-chart-edge-left {
+    left: 0;
+    background: linear-gradient(90deg, var(--surface), transparent);
+  }
+
+  .spending-chart-edge-right {
+    right: 0;
+    background: linear-gradient(-90deg, var(--surface), transparent);
+  }
+
+  .spending-navigation-hint {
     min-height: 32px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    padding: 2px 20px 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .spending-navigation-hint button {
+    padding: 2px 0;
+    border: 0;
+    background: transparent;
     color: var(--fg);
     font: inherit;
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 
-  .spending-transform-controls button:disabled {
-    opacity: 0.4;
-  }
-
-  .spending-transform-controls button:focus-visible {
+  .spending-navigation-hint button:focus-visible {
     outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .spending-chart-summary {
@@ -549,5 +619,12 @@
     color: var(--muted);
     font-size: 14px;
     font-weight: 700;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spending-visible-range,
+    .spending-chart-edge {
+      transition: none;
+    }
   }
 </style>
