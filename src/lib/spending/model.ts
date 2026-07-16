@@ -89,10 +89,6 @@ export type SpendingInvoiceRecord = {
 
 export type SpendingDisplayRecord = SpendingInvoiceRecord | SpendingAccountRecord;
 
-export type SpendingPageDto = {
-  invoices: SpendingInvoiceDto[];
-};
-
 export type SpendingCategoryAmounts = Record<SpendingCategory, number>;
 export type SpendingSourceAmounts = {
   invoice: SpendingCategoryAmounts;
@@ -131,6 +127,8 @@ export type SpendingModel = {
   pendingAccountRecords: SpendingAccountRecord[];
   recordsByDate: SpendingDateGroup[];
 };
+
+export type SpendingPageDto = SpendingModel;
 
 export type BuildSpendingModelInput = {
   invoices: readonly SpendingInvoiceDto[];

@@ -363,6 +363,45 @@ try {
     () => updateSpendingItemCategory({ itemKey: "missing", category: "food" }, ledgerDir),
     /No spending item found for key: missing/,
   );
+
+  const januaryDb = openLedgerDatabase(ledgerDir);
+  insertInvoice(januaryDb, {
+    invoiceKey: "january-invoice",
+    invoiceId: "IJ12345678",
+    status: "confirmed",
+    amount: 70,
+    issuedAt: Date.UTC(2026, 0, 15, 12) / 1000,
+  });
+  insertItem(januaryDb, {
+    itemKey: "january-item",
+    invoiceKey: "january-invoice",
+    sequence: 1,
+    paidAmount: 70,
+    productName: "January meal",
+    category: "food",
+  });
+  insertAccountTransaction(januaryDb, {
+    statementRowId: "january-account-spend",
+    accountNumber: "111",
+    date: "2026-01-15",
+    description: "簽帳消費",
+    withdrawalAmount: 30,
+  });
+  januaryDb.close();
+
+  const january = loadSpending(ledgerDir, { selectedMonth: "2026-01" });
+  assert.equal(january.selectedMonth, "2026-01");
+  assert.deepEqual(january.selectedMonthSummary, {
+    total: 100,
+    invoiceCount: 1,
+    accountCount: 1,
+  });
+  assert.deepEqual(january.dailyRows.map((row) => [row.date, row.total]), [["2026-01-15", 100]]);
+  assert.deepEqual(january.invoices.map((invoice) => invoice.invoiceKey), ["january-invoice"]);
+  assert.deepEqual(
+    january.recordsByDate.flatMap((group) => group.records).map((record) => record.key).sort(),
+    ["account:january-account-spend", "invoice:january-invoice"],
+  );
 } finally {
   rmSync(ledgerDir, { recursive: true, force: true });
 }

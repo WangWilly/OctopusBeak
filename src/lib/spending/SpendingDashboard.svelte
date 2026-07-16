@@ -13,7 +13,6 @@
   import SpendingBarChart from "./components/SpendingBarChart.svelte";
   import type {
     SpendingInvoiceDto,
-    SpendingModel,
     SpendingPageDto,
   } from "./model.ts";
 
@@ -32,7 +31,7 @@
   let savingItemKeys = new Set<string>();
   let errorItemKeys = new Set<string>();
 
-  $: model = spending as SpendingModel;
+  $: model = spending;
   $: monthFormatter = new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" });
   $: invoiceDateFormatter = new Intl.DateTimeFormat($locale, {
     year: "numeric",
@@ -69,8 +68,19 @@
   });
 
   async function selectMonth(month: string) {
+    const previousSpending = spending;
+    const previousMonth = selectedMonth;
+    const previousCategory = selectedCategory;
     selectedMonth = month;
     selectedCategory = undefined;
+    try {
+      spending = await window.octopusBeak.spending.load({ selectedMonth: month });
+      selectedMonth = undefined;
+    } catch {
+      spending = previousSpending;
+      selectedMonth = previousMonth;
+      selectedCategory = previousCategory;
+    }
     await tick();
     scrollSelectedMonthIntoView();
   }
@@ -141,6 +151,7 @@
 
   function replaceItemCategory(itemKey: string, category: SpendingCategory) {
     spending = {
+      ...spending,
       invoices: spending.invoices.map((invoice) => invoice.items.some((item) => item.itemKey === itemKey)
         ? {
             ...invoice,
@@ -184,7 +195,7 @@
   {sideSub}
 >
   <div class="content spending-dashboard">
-    {#if spending.invoices.length === 0}
+    {#if model.months.length === 0}
       <section class="card spending-empty">
         <h2>{$t.spending.noSpendingTitle}</h2>
         <p>{$t.spending.noSpendingBody}</p>
