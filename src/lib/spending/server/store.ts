@@ -1,9 +1,15 @@
 import { DEFAULT_LEDGER_DIR, openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { isSpendingCategory, type SpendingCategory } from "../categories.ts";
 import type {
+  SpendingAccountTransactionInput,
+  SpendingCardPaymentInput,
   SpendingInvoiceDto,
-  SpendingPageDto,
+  SpendingModel,
+  SpendingOverrideDto,
+  SpendingReason,
+  SpendingState,
 } from "../model.ts";
+import { buildSpendingModel } from "../model.ts";
 
 type SpendingRow = {
   invoice_key: string;
@@ -22,7 +28,42 @@ type SpendingRow = {
   category: SpendingCategory | null;
 };
 
-export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingPageDto {
+type AccountRow = {
+  statement_row_id: string;
+  bank: string;
+  account_number: string | null;
+  currency: string;
+  date: string;
+  description: string | null;
+  note: string | null;
+  withdrawal_amount: number | null;
+  deposit_amount: number | null;
+};
+
+type CardPaymentRow = { date: string; twd_amount: number };
+
+type OverrideRow = {
+  statement_row_id: string;
+  state: SpendingState;
+  category: SpendingCategory | null;
+  automatic_state: SpendingState;
+  automatic_reason: SpendingReason | null;
+  updated_at: string;
+};
+
+const SPENDING_STATES = new Set<SpendingState>(["included", "excluded", "pending"]);
+
+export type SpendingOverrideUpdate =
+  | { statementRowId: string; state: null }
+  | {
+    statementRowId: string;
+    state: SpendingState;
+    category: SpendingCategory | null;
+    automaticState: SpendingState;
+    automaticReason: SpendingReason | null;
+  };
+
+export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingModel {
   const db = openLedgerDatabase(ledgerDir);
   try {
     const rows = db.prepare(`
@@ -47,6 +88,26 @@ export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingPageDto {
       ORDER BY invoices.issued_at, invoices.invoice_key,
         items.item_sequence_number, items.item_key
     `).all("confirmed") as SpendingRow[];
+    const accountRows = db.prepare(`
+      SELECT statement_row_id, bank, account_number, currency,
+        COALESCE(transaction_date, accounting_date) AS date,
+        description, note, withdrawal_amount, deposit_amount
+      FROM account_transactions
+      WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
+        AND COALESCE(transaction_date, accounting_date) IS NOT NULL
+      ORDER BY date, statement_row_id
+    `).all() as AccountRow[];
+    const cardPaymentRows = db.prepare(`
+      SELECT COALESCE(consume_date, posting_date) AS date, twd_amount
+      FROM credit_card_statement_lines
+      WHERE twd_amount < 0
+        AND COALESCE(consume_date, posting_date) IS NOT NULL
+    `).all() as CardPaymentRow[];
+    const overrideRows = db.prepare(`
+      SELECT statement_row_id, state, category, automatic_state,
+        automatic_reason, updated_at
+      FROM spending_transaction_overrides
+    `).all() as OverrideRow[];
 
     const invoices: SpendingInvoiceDto[] = [];
     const invoicesByKey = new Map<string, SpendingInvoiceDto>();
@@ -84,7 +145,95 @@ export function loadSpending(ledgerDir = DEFAULT_LEDGER_DIR): SpendingPageDto {
         });
       }
     }
-    return { invoices };
+    const accountTransaction = (row: AccountRow, amount: number): SpendingAccountTransactionInput => ({
+      statementRowId: row.statement_row_id,
+      bank: row.bank,
+      accountNumber: row.account_number,
+      currency: row.currency,
+      date: row.date,
+      description: row.description,
+      note: row.note,
+      amount,
+    });
+    const accountTransactions = accountRows
+      .filter((row) => Number(row.withdrawal_amount) > 0)
+      .map((row) => accountTransaction(row, Number(row.withdrawal_amount)));
+    const counterpartDeposits = accountRows
+      .filter((row) => Number(row.deposit_amount) > 0)
+      .map((row) => accountTransaction(row, Number(row.deposit_amount)));
+    const cardPayments: SpendingCardPaymentInput[] = cardPaymentRows.map((row) => ({
+      date: row.date,
+      amount: Math.abs(Number(row.twd_amount)),
+    }));
+    const overrides: SpendingOverrideDto[] = overrideRows.map((row) => ({
+      statementRowId: row.statement_row_id,
+      state: row.state,
+      category: row.category,
+      automaticState: row.automatic_state,
+      automaticReason: row.automatic_reason,
+      updatedAt: row.updated_at,
+    }));
+    return buildSpendingModel({
+      invoices,
+      accountTransactions,
+      counterpartDeposits,
+      cardPayments,
+      overrides,
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export function updateSpendingTransactionOverride(
+  input: SpendingOverrideUpdate,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): void {
+  if (typeof input.statementRowId !== "string" || input.statementRowId.trim() === "") {
+    throw new Error("Spending statement row id is required");
+  }
+  if (input.state !== null && !SPENDING_STATES.has(input.state)) {
+    throw new Error(`Unknown spending state: ${String(input.state)}`);
+  }
+  if (input.state !== null && input.category !== null && !isSpendingCategory(input.category)) {
+    throw new Error(`Unknown spending category: ${String(input.category)}`);
+  }
+  if (input.state !== null && !SPENDING_STATES.has(input.automaticState)) {
+    throw new Error(`Unknown automatic spending state: ${String(input.automaticState)}`);
+  }
+
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    if (input.state === null) {
+      db.prepare(`
+        DELETE FROM spending_transaction_overrides WHERE statement_row_id = ?
+      `).run(input.statementRowId);
+      return;
+    }
+    if (!db.prepare(`
+      SELECT 1 FROM account_transactions WHERE statement_row_id = ?
+    `).get(input.statementRowId)) {
+      throw new Error(`No account transaction found for statement row id: ${input.statementRowId}`);
+    }
+    db.prepare(`
+      INSERT INTO spending_transaction_overrides (
+        statement_row_id, state, category, automatic_state,
+        automatic_reason, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(statement_row_id) DO UPDATE SET
+        state = excluded.state,
+        category = excluded.category,
+        automatic_state = excluded.automatic_state,
+        automatic_reason = excluded.automatic_reason,
+        updated_at = excluded.updated_at
+    `).run(
+      input.statementRowId,
+      input.state,
+      input.category,
+      input.automaticState,
+      input.automaticReason,
+      new Date().toISOString(),
+    );
   } finally {
     db.close();
   }

@@ -3,8 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
-import { buildSpendingModel } from "../model.ts";
-import { loadSpending, updateSpendingItemCategory } from "./store.ts";
+import {
+  loadSpending,
+  updateSpendingItemCategory,
+  updateSpendingTransactionOverride,
+} from "./store.ts";
 
 const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
 
@@ -78,6 +81,59 @@ function insertItem(
   );
 }
 
+function insertAccountTransaction(
+  db: LedgerDatabase,
+  input: {
+    statementRowId: string;
+    accountNumber: string;
+    date: string;
+    description: string;
+    withdrawalAmount?: number;
+    depositAmount?: number;
+  },
+) {
+  db.prepare(`
+    INSERT INTO account_transactions (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, account_number, currency,
+      transaction_date, description, withdrawal_amount, deposit_amount
+    ) VALUES (?, ?, 'run', 'account.csv', 1, ?, ?, 'test-bank',
+      'account-transactions', '{}', '2026-02-01T00:00:00.000Z',
+      '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?)
+  `).run(
+    input.statementRowId,
+    `source-${input.statementRowId}`,
+    `source-hash-${input.statementRowId}`,
+    `content-hash-${input.statementRowId}`,
+    input.accountNumber,
+    input.date,
+    input.description,
+    input.withdrawalAmount ?? null,
+    input.depositAmount ?? null,
+  );
+}
+
+function insertCardStatementLine(db: LedgerDatabase, statementRowId: string, amount: number) {
+  db.prepare(`
+    INSERT INTO credit_card_statement_lines (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, statement_type,
+      consume_date, description, twd_amount
+    ) VALUES (?, ?, 'run', 'card.csv', 1, ?, ?, 'test-bank',
+      'credit-card-statements', '{}', '2026-02-01T00:00:00.000Z',
+      '2026-02-01T00:00:00.000Z', 'billed', '2026-02-01',
+      '信用卡繳款', ?)
+  `).run(
+    statementRowId,
+    `source-${statementRowId}`,
+    `source-hash-${statementRowId}`,
+    `content-hash-${statementRowId}`,
+    amount,
+  );
+}
+
 try {
   const db = openLedgerDatabase(ledgerDir);
   insertInvoice(db, {
@@ -145,6 +201,29 @@ try {
     productName: "Excluded",
     category: "shopping",
   });
+  insertAccountTransaction(db, {
+    statementRowId: "mirrored-transfer",
+    accountNumber: "111",
+    date: "2026-02-01",
+    description: "轉帳",
+    withdrawalAmount: 200,
+  });
+  insertAccountTransaction(db, {
+    statementRowId: "counterpart-deposit",
+    accountNumber: "222",
+    date: "2026-02-02",
+    description: "轉入",
+    depositAmount: 200,
+  });
+  insertAccountTransaction(db, {
+    statementRowId: "card-payment",
+    accountNumber: "111",
+    date: "2026-02-02",
+    description: "自動扣款",
+    withdrawalAmount: 300,
+  });
+  insertCardStatementLine(db, "card-purchase-line", 200);
+  insertCardStatementLine(db, "card-payment-line", -300);
   db.close();
 
   const loaded = loadSpending(ledgerDir);
@@ -167,18 +246,101 @@ try {
       ?.items[0]?.sequence,
     null,
   );
-  assert.deepEqual(buildSpendingModel(confirmedInvoice ? [confirmedInvoice] : []).monthlyRows, [{
+  assert.deepEqual(loaded.monthlyRows, [{
     month: "2026-02",
-    total: 100,
-    food: 40,
-    daily: 20,
-    transport: 0,
-    shopping: 0,
-    home: 40,
-    leisure: 0,
-    other: 0,
+    total: 105,
+    invoice: {
+      food: 40,
+      daily: 20,
+      transport: 0,
+      shopping: 0,
+      home: 40,
+      leisure: 0,
+      other: 5,
+    },
+    account: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
   }]);
+  assert.equal(
+    loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
+      ?.automaticReason,
+    "internal_transfer",
+  );
+  assert.equal(
+    loaded.accountRecords.find((row) => row.statementRowId === "card-payment")
+      ?.automaticReason,
+    "credit_card_payment",
+  );
+  assert.equal(loaded.recordsByDate.flatMap((group) => group.records).length, 4);
   assert.equal(Object.hasOwn(confirmedInvoice ?? {}, "rawPayloadJson"), false);
+
+  updateSpendingTransactionOverride({
+    statementRowId: "card-payment",
+    state: "included",
+    category: "home",
+    automaticState: "excluded",
+    automaticReason: "credit_card_payment",
+  }, ledgerDir);
+  const overridden = loadSpending(ledgerDir);
+  assert.equal(
+    overridden.accountRecords.find((row) => row.statementRowId === "card-payment")?.state,
+    "included",
+  );
+  assert.equal(overridden.monthlyRows[0]?.account.home, 300);
+
+  updateSpendingTransactionOverride({ statementRowId: "card-payment", state: null }, ledgerDir);
+  assert.equal(
+    loadSpending(ledgerDir).accountRecords.find((row) => row.statementRowId === "card-payment")
+      ?.state,
+    "excluded",
+  );
+  assert.throws(
+    () => updateSpendingTransactionOverride({
+      statementRowId: " ",
+      state: "included",
+      category: "home",
+      automaticState: "excluded",
+      automaticReason: "credit_card_payment",
+    }, ledgerDir),
+    /statement row id is required/i,
+  );
+  assert.throws(
+    () => updateSpendingTransactionOverride({
+      statementRowId: "card-payment",
+      state: "invalid" as never,
+      category: "home",
+      automaticState: "excluded",
+      automaticReason: "credit_card_payment",
+    }, ledgerDir),
+    /Unknown spending state: invalid/,
+  );
+  assert.throws(
+    () => updateSpendingTransactionOverride({
+      statementRowId: "card-payment",
+      state: "included",
+      category: "invalid" as never,
+      automaticState: "excluded",
+      automaticReason: "credit_card_payment",
+    }, ledgerDir),
+    /Unknown spending category: invalid/,
+  );
+  assert.throws(
+    () => updateSpendingTransactionOverride({
+      statementRowId: "missing",
+      state: "included",
+      category: "home",
+      automaticState: "excluded",
+      automaticReason: "credit_card_payment",
+    }, ledgerDir),
+    /No account transaction found for statement row id: missing/,
+  );
 
   updateSpendingItemCategory({ itemKey: "confirmed-item-2", category: "leisure" }, ledgerDir);
   assert.equal(
