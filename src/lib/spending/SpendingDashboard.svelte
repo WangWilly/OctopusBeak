@@ -38,7 +38,6 @@
   let pendingCategories: Partial<Record<string, SpendingCategory>> = {};
   let showExcludedRecords = false;
   let loadRequestSequence = 0;
-  let overrideRequestSequence = 0;
 
   $: model = spending;
   $: monthFormatter = new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" });
@@ -68,6 +67,7 @@
       )
     : $t.spending.noSpendingTitle;
   $: activeCategory = selectedCategory ?? model.selectedCategory;
+  $: transactionSaving = savingRecordIds.size > 0;
   $: visibleRecordGroups = buildVisibleRecordGroups(model, activeCategory, showExcludedRecords);
   $: visibleRecordCount = visibleRecordGroups.reduce((count, group) => count + group.records.length, 0);
   $: selectedInvoice = selectedInvoiceKey
@@ -79,6 +79,7 @@
   });
 
   async function selectMonth(month: string) {
+    if (savingRecordIds.size > 0) return;
     const requestSequence = ++loadRequestSequence;
     const previousSpending = spending;
     const previousCategory = selectedCategory;
@@ -100,6 +101,7 @@
   }
 
   async function selectCategory(category: SpendingCategory | undefined) {
+    if (savingRecordIds.size > 0) return;
     const requestSequence = ++loadRequestSequence;
     const previousSpending = spending;
     const previousCategory = selectedCategory;
@@ -127,8 +129,9 @@
         selectedCategory: activeCategory,
       });
       if (requestSequence === loadRequestSequence) spending = loaded;
-    } catch {
+    } catch (error) {
       if (requestSequence === loadRequestSequence) spending = snapshot;
+      throw error;
     }
   }
 
@@ -137,8 +140,7 @@
     state: SpendingState | null,
     category: SpendingCategory | null = record.category,
   ) {
-    if (savingRecordIds.has(record.statementRowId)) return;
-    const requestSequence = ++overrideRequestSequence;
+    if (savingRecordIds.size > 0) return;
     ++loadRequestSequence;
     const snapshot = spending;
     savingRecordIds = new Set(savingRecordIds).add(record.statementRowId);
@@ -155,13 +157,13 @@
             automaticState: record.automaticState,
             automaticReason: record.automaticReason,
           });
+      await reloadSelectedSpending(snapshot);
     } catch {
-      if (requestSequence === overrideRequestSequence) spending = snapshot;
+      spending = snapshot;
       errorRecordIds = new Set(errorRecordIds).add(record.statementRowId);
     } finally {
       savingRecordIds = new Set(savingRecordIds);
       savingRecordIds.delete(record.statementRowId);
-      if (savingRecordIds.size === 0) await reloadSelectedSpending(spending);
     }
   }
 
@@ -268,26 +270,22 @@
     category: SpendingCategory | undefined,
     includeExcluded: boolean,
   ): SpendingDateGroup[] {
-    const records = source.recordsByDate.flatMap((group) => group.records)
-      .filter((record) => includeExcluded || record.state !== "excluded");
-    if (includeExcluded) {
-      const keys = new Set(records.map((record) => record.key));
-      records.push(...source.excludedAccountRecords.filter((record) =>
-        !keys.has(record.key) && (!category || record.category === category)
-      ));
-    }
-    return [...Map.groupBy(records, (record) => record.date)]
-      .map(([date, dayRecords]) => ({
-        date,
-        records: dayRecords,
-        includedTotal: dayRecords.reduce(
-          (total, record) => total + (record.state === "included" ? record.amount : 0),
-          0,
-        ),
-        excludedCount: dayRecords.filter((record) => record.state === "excluded").length,
-        pendingCount: dayRecords.filter((record) => record.state === "pending").length,
-      }))
-      .sort((left, right) => right.date.localeCompare(left.date));
+    const displayedKeys = new Set(source.recordsByDate.flatMap((group) => group.records)
+      .map((record) => record.key));
+    const missingExcluded = Map.groupBy(source.excludedAccountRecords.filter((record) =>
+      !displayedKeys.has(record.key) && (!category || record.category === category)
+    ), (record) => record.date);
+    return source.recordsByDate.map((group) => {
+      const extra = missingExcluded.get(group.date) ?? [];
+      return {
+        ...group,
+        records: [
+          ...group.records.filter((record) => includeExcluded || record.state !== "excluded"),
+          ...(includeExcluded ? extra : []),
+        ],
+        excludedCount: group.excludedCount + extra.length,
+      };
+    });
   }
 
 </script>
@@ -336,6 +334,7 @@
             <button
               class="filter-btn month-button"
               type="button"
+              disabled={transactionSaving}
               aria-pressed={month === (selectedMonth ?? model.selectedMonth)}
               onclick={() => void selectMonth(month)}
             >
@@ -391,6 +390,7 @@
               bind:this={allCategoryFilter}
               class="filter-btn"
               type="button"
+              disabled={transactionSaving}
               aria-pressed={!activeCategory}
               onclick={() => void selectCategory(undefined)}
             >
@@ -400,6 +400,7 @@
               <button
                 class="filter-btn"
                 type="button"
+                disabled={transactionSaving}
                 aria-pressed={activeCategory === category}
                 onclick={() => void selectCategory(category)}
               >
@@ -467,7 +468,8 @@
                         <div class="record-main">
                           <strong class="merchant-name">{record.label}</strong>
                           <div class="record-meta">
-                            <span>{record.manual
+                            <span>{$t.spending.accountSource}</span>
+                            <span>· {record.manual
                               ? $t.spending.manualReason
                               : $t.spending.reasons[record.automaticReason]}</span>
                             <span class="category-chip category-{record.category}">
@@ -487,7 +489,7 @@
                             <select
                               aria-label={$t.spending.pendingCategory}
                               value={pendingCategory(record)}
-                              disabled={savingRecordIds.has(record.statementRowId)}
+                              disabled={transactionSaving}
                               onchange={(event) => setPendingCategory(record, event.currentTarget.value)}
                             >
                               {#each SPENDING_CATEGORY_IDS as category}
@@ -497,27 +499,33 @@
                             <div class="pending-buttons">
                               <button
                                 type="button"
-                                disabled={savingRecordIds.has(record.statementRowId)}
+                                disabled={transactionSaving}
                                 onclick={() => void updateTransactionState(record, "included", pendingCategory(record))}
                               >{$t.spending.includeExpense}</button>
                               <button
                                 type="button"
-                                disabled={savingRecordIds.has(record.statementRowId)}
+                                disabled={transactionSaving}
                                 onclick={() => void updateTransactionState(record, "excluded")}
                               >{$t.spending.excludeExpense}</button>
                             </div>
                           {:else if record.manual}
                             <button
                               type="button"
-                              disabled={savingRecordIds.has(record.statementRowId)}
+                              disabled={transactionSaving}
                               onclick={() => void updateTransactionState(record, null)}
                             >{$t.spending.restoreAutomatic}</button>
                           {:else if record.state === "excluded"}
                             <button
                               type="button"
-                              disabled={savingRecordIds.has(record.statementRowId)}
+                              disabled={transactionSaving}
                               onclick={() => void updateTransactionState(record, "included")}
                             >{$t.spending.restoreExpense}</button>
+                          {:else if record.state === "included"}
+                            <button
+                              type="button"
+                              disabled={transactionSaving}
+                              onclick={() => void updateTransactionState(record, "excluded")}
+                            >{$t.spending.excludeExpense}</button>
                           {/if}
                           {#if savingRecordIds.has(record.statementRowId)}
                             <span class="saving-label" role="status">{$t.spending.savingOverride}</span>
