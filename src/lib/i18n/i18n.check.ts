@@ -23,6 +23,18 @@ assert.equal(translations.en.nav.spending, "Spending");
 assert.equal(translations["zh-TW"].nav.spending, "消費");
 assert.equal(translations.en.spending.title, "Personal spending");
 assert.equal(translations["zh-TW"].spending.title, "個人消費");
+assert.equal(translations.en.spending.chartDragHint, "Drag to browse · Command/Control + scroll to zoom");
+assert.equal(translations["zh-TW"].spending.chartDragHint, "拖曳瀏覽 · Command／Control＋滾輪縮放");
+assert.equal(
+  translations.en.spending.chartVisibleRange("Jan 2026", "Dec 2026"),
+  "Visible: Jan 2026–Dec 2026",
+);
+assert.equal(
+  translations["zh-TW"].spending.chartVisibleRange("2026年1月", "2026年12月"),
+  "目前顯示：2026年1月–2026年12月",
+);
+assert.equal(translations.en.spending.chartReset, "Reset view");
+assert.equal(translations["zh-TW"].spending.chartReset, "重設檢視");
 assert.equal(translations["zh-TW"].spending.monthlyEyebrow, "每月消費");
 assert.equal(translations["zh-TW"].spending.dailyEyebrow, "每日明細");
 assert.equal(translations["zh-TW"].spending.invoiceEyebrow, "發票資料");
