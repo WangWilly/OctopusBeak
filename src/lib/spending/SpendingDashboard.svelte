@@ -71,7 +71,6 @@
   async function selectMonth(month: string) {
     const requestSequence = ++monthRequestSequence;
     const previousSpending = spending;
-    const previousMonth = selectedMonth;
     const previousCategory = selectedCategory;
     selectedMonth = month;
     selectedCategory = undefined;
@@ -83,7 +82,7 @@
     } catch {
       if (requestSequence !== monthRequestSequence) return;
       spending = previousSpending;
-      selectedMonth = previousMonth;
+      selectedMonth = undefined;
       selectedCategory = previousCategory;
     }
     await tick();
