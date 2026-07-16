@@ -226,7 +226,8 @@ function automaticAccountDecision(
       text.includes(accountNumber);
   })) return excluded("internal_transfer");
   if (deposits.some((deposit) =>
-    deposit.accountNumber !== row.accountNumber && deposit.currency === row.currency &&
+    normalizedText(deposit.accountNumber) !== normalizedText(row.accountNumber) &&
+    deposit.currency === row.currency &&
     deposit.amount === row.amount && nearbyDate(deposit.date, row.date)
   )) return excluded("internal_transfer");
 
