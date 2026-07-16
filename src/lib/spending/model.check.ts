@@ -386,6 +386,19 @@ assert.deepEqual(
   [],
 );
 
+const sameAccountTransfer = buildSpendingModel({
+  invoices: [],
+  accountTransactions: [{
+    ...accountRow("same-account-transfer", 500, "轉帳", "2026-07-16"),
+    accountNumber: "123-456",
+  }],
+  counterpartDeposits: [depositRow("123456", 500, "2026-07-16")],
+});
+assert.deepEqual(
+  sameAccountTransfer.accountRecords.map((record) => [record.state, record.automaticReason]),
+  [["pending", "ambiguous_transfer"]],
+);
+
 const manualDuplicate = buildSpendingModel({
   ...input,
   selectedMonth: "2026-02",
