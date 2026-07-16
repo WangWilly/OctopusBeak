@@ -20,7 +20,12 @@ import {
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
-import { loadSpending, updateSpendingItemCategory } from "../src/lib/spending/server/store.ts";
+import {
+  loadSpending,
+  updateSpendingItemCategory,
+  updateSpendingTransactionOverride,
+  type SpendingOverrideUpdate,
+} from "../src/lib/spending/server/store.ts";
 import {
   readAutomationSettings,
 } from "../src/lib/automation/server/settings.ts";
@@ -61,6 +66,10 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("spending:load", () => loadSpending());
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
+    return { ok: true as const };
+  });
+  ipcMain.handle("spending:updateTransactionOverride", (_event, input: SpendingOverrideUpdate) => {
+    updateSpendingTransactionOverride(input);
     return { ok: true as const };
   });
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());

@@ -27,6 +27,7 @@ const api: OctopusBeakApi = {
   spending: {
     load: () => ipcRenderer.invoke("spending:load"),
     updateItemCategory: (input) => ipcRenderer.invoke("spending:updateItemCategory", input),
+    updateTransactionOverride: (input) => ipcRenderer.invoke("spending:updateTransactionOverride", input),
   },
   automation: {
     load: () => ipcRenderer.invoke("automation:load"),
