@@ -4,6 +4,7 @@ import { createServer } from "vite";
 
 const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
 await server.listen();
+await server.watcher.close();
 const address = server.httpServer?.address();
 assert.ok(address && typeof address === "object");
 const browser = await chromium.launch({ headless: true });
@@ -19,12 +20,14 @@ try {
   }
 
   const brush = page.locator('[data-study="brush"] .lc-brush-context');
+  await brush.scrollIntoViewIfNeeded();
   const brushBox = await brush.boundingBox();
   assert.ok(brushBox);
   await page.mouse.move(brushBox.x + brushBox.width * 0.2, brushBox.y + brushBox.height * 0.5);
   await page.mouse.down();
   await page.mouse.move(brushBox.x + brushBox.width * 0.5, brushBox.y + brushBox.height * 0.5);
   await page.mouse.up();
+  await page.locator('[data-study="brush"] .lc-brush-range').waitFor();
   assert.equal(await page.locator('[data-study="brush"] .lc-brush-range').count(), 1);
 
   const panZoom = page.locator('[data-study="pan-zoom"] [data-interaction="pan-zoom"]');
