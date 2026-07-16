@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BarChart, Text, Tooltip, type TextProps } from "layerchart";
+  import { BarChart, Text, Tooltip, type BarChartProps, type TextProps } from "layerchart";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -9,6 +9,10 @@
     MonthlySpendingRow,
     SpendingCategoryAmounts,
   } from "$lib/spending/model.ts";
+  import {
+    spendingChartInteractionProps,
+    type SpendingChartInteraction,
+  } from "./spending-chart-interaction.ts";
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
   type SourceBucket = SpendingCategoryAmounts & {
@@ -32,10 +36,15 @@
   export let selectedKey: string | null = null;
   export let label = "";
   export let onBarClick: ((key: string) => void) | null = null;
+  export let interaction: SpendingChartInteraction = "static";
 
   let stageWidth = 0;
   let selectedCategories: SpendingCategory[] = [];
+  let chartContext: BarChartProps<SourceBucket>["context"];
+  let transformScale = 1;
 
+  $: interactionProps = spendingChartInteractionProps(interaction);
+  $: hasTransform = interactionProps.transform !== undefined;
   $: selectedCategorySet = new Set(selectedCategories);
   $: visibleCategories = SPENDING_CATEGORY_IDS.filter(
     (category) => selectedCategories.length === 0 || selectedCategorySet.has(category),
@@ -96,6 +105,10 @@
 
   function selectTooltip(_event: MouseEvent, detail: { data: SourceBucket }) {
     onBarClick?.(detail.data.periodKey);
+  }
+
+  function updateTransform(detail: { scale: number }) {
+    transformScale = detail.scale;
   }
 
   function axisLabel(value: unknown) {
@@ -164,7 +177,11 @@
   />
 {/snippet}
 
-<div class="spending-bar-chart">
+<div
+  class="spending-bar-chart"
+  data-interaction={interaction}
+  data-transform-scale={transformScale}
+>
   <ul class="spending-chart-summary" aria-label={displayLabel}>
     {#each rows as row (rowKey(row))}
       <li>
@@ -183,6 +200,19 @@
     {/each}
   </ul>
 
+  {#if hasTransform}
+    <div class="spending-transform-controls" aria-label="Chart transform controls">
+      <button type="button" data-action="zoom-in" onclick={() => chartContext?.transform.zoomIn()}>+</button>
+      <button type="button" data-action="zoom-out" onclick={() => chartContext?.transform.zoomOut()}>−</button>
+      <button
+        type="button"
+        data-action="reset"
+        disabled={transformScale <= 1}
+        onclick={() => chartContext?.transform.reset()}
+      >Reset</button>
+    </div>
+  {/if}
+
   {#if hasData}
     <div
       class="spending-bar-stage"
@@ -192,8 +222,13 @@
     >
       {#if stageWidth > 0}
         <BarChart
+        bind:context={chartContext}
         data={buckets}
         x="bucketKey"
+        brush={interactionProps.brush}
+        transform={interactionProps.transform
+          ? { ...interactionProps.transform, onTransform: updateTransform }
+          : undefined}
         {series}
         seriesLayout="stack"
         {yDomain}
@@ -353,6 +388,31 @@
   .spending-bar-stage :global(.spending-selected-label) {
     fill: var(--fg);
     font-weight: 800;
+  }
+
+  .spending-transform-controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    padding: 0 16px 8px;
+  }
+
+  .spending-transform-controls button {
+    min-width: 36px;
+    min-height: 32px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+  }
+
+  .spending-transform-controls button:disabled {
+    opacity: 0.4;
+  }
+
+  .spending-transform-controls button:focus-visible {
+    outline: 2px solid var(--accent);
   }
 
   .spending-chart-summary {
