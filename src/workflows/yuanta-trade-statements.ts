@@ -537,7 +537,18 @@ export async function dismissPasswordChangeReminderIfPresent(
     name: "暫不變更",
     exact: true,
   });
-  if (!(await postpone.isVisible({ timeout: 2_000 }))) return;
+  const visible = await postpone
+    .isVisible({ timeout: 2_000 })
+    .catch((error: unknown) => {
+      if (
+        error instanceof Error &&
+        error.message.includes("Execution context was destroyed")
+      ) {
+        return false;
+      }
+      throw error;
+    });
+  if (!visible) return;
 
   await postpone.click();
   await settleAfterNavigation(page);
