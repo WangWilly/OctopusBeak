@@ -8,6 +8,7 @@
   export let month: string;
   export let total: number;
   export let invoiceCount: number;
+  export let accountCount: number;
   export let rows: readonly DailySpendingRow[] = [];
   export let onClose: () => void | Promise<void> = () => {};
 
@@ -59,11 +60,11 @@
         <p class="eyebrow">{$t.spending.dailyEyebrow}</p>
         <h2 id="daily-spending-title">{$t.spending.dailyTitle(month)}</h2>
         <div class="daily-modal-summary">
-          <span>{$t.spending.monthTotal}</span>
+          <span>{$t.spending.confirmedTotal}</span>
           <strong class="money" data-sensitive>
             {formatMoney({ currency: "TWD", value: total }, { locale: $locale })}
           </strong>
-          <span>{$t.spending.invoiceCount(invoiceCount)}</span>
+          <span>{$t.spending.sourceCount(invoiceCount, accountCount)}</span>
         </div>
       </div>
       <button

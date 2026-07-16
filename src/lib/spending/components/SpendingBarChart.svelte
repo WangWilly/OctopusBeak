@@ -4,18 +4,27 @@
   import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { SPENDING_CATEGORY_IDS, type SpendingCategory } from "$lib/spending/categories.ts";
-  import type { DailySpendingRow, MonthlySpendingRow } from "$lib/spending/model.ts";
+  import type {
+    DailySpendingRow,
+    MonthlySpendingRow,
+    SpendingCategoryAmounts,
+  } from "$lib/spending/model.ts";
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
+  type SourceBucket = SpendingCategoryAmounts & {
+    bucketKey: string;
+    periodKey: string;
+    source: "invoice" | "account";
+  };
 
   const categoryColors: Record<SpendingCategory, string> = {
-    food: "var(--spending-food, oklch(63% 0.15 38))",
-    daily: "var(--spending-daily, oklch(59% 0.14 150))",
-    transport: "var(--spending-transport, oklch(58% 0.14 245))",
-    shopping: "var(--spending-shopping, oklch(61% 0.14 310))",
-    home: "var(--spending-home, oklch(70% 0.13 88))",
-    leisure: "var(--spending-leisure, oklch(61% 0.12 190))",
-    other: "var(--spending-other, oklch(58% 0.025 250))",
+    food: "var(--spending-food, oklch(52% 0.11 250))",
+    daily: "var(--spending-daily, oklch(52% 0.09 170))",
+    transport: "var(--spending-transport, oklch(56% 0.10 70))",
+    shopping: "var(--spending-shopping, oklch(53% 0.08 320))",
+    home: "var(--spending-home, oklch(50% 0.07 35))",
+    leisure: "var(--spending-leisure, oklch(49% 0.06 215))",
+    other: "var(--spending-other, oklch(46% 0.035 250))",
   };
 
   export let rows: readonly SpendingChartRow[] = [];
@@ -36,24 +45,33 @@
     label: $t.spending.categories[key],
     color: categoryColors[key],
   }));
-  $: stackExtents = rows.flatMap((row) => [
-    visibleCategories.reduce((total, category) => total + Math.min(0, row[category]), 0),
-    visibleCategories.reduce((total, category) => total + Math.max(0, row[category]), 0),
+  $: buckets = rows.flatMap((row) => ([
+    { ...row.invoice, bucketKey: `${rowKey(row)}:invoice`, periodKey: rowKey(row), source: "invoice" },
+    { ...row.account, bucketKey: `${rowKey(row)}:account`, periodKey: rowKey(row), source: "account" },
+  ] satisfies SourceBucket[]));
+  $: periodTicks = rows.map((row) => `${rowKey(row)}:invoice`);
+  $: stackExtents = buckets.flatMap((bucket) => [
+    visibleCategories.reduce((total, category) => total + Math.min(0, bucket[category]), 0),
+    visibleCategories.reduce((total, category) => total + Math.max(0, bucket[category]), 0),
   ]);
   $: yAxis = buildSparklineYAxis([0, ...stackExtents]);
   $: hasNegative = stackExtents.some((value) => value < 0);
   $: yDomain = [hasNegative ? yAxis.min : 0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => hasNegative || tick >= 0);
-  $: hasData = rows.length > 0 && rows.some((row) =>
-    visibleCategories.some((category) => row[category] !== 0)
+  $: hasData = buckets.length > 0 && buckets.some((bucket) =>
+    visibleCategories.some((category) => bucket[category] !== 0)
   );
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
   $: ariaLabel = selectedKey ? `${displayLabel}: ${axisLabel(selectedKey)}` : displayLabel;
   $: selectedRow = rows.find((row) => rowKey(row) === selectedKey);
   $: selectedExtents = selectedRow
     ? [
-        visibleCategories.reduce((total, category) => total + Math.min(0, selectedRow[category]), 0),
-        visibleCategories.reduce((total, category) => total + Math.max(0, selectedRow[category]), 0),
+        Math.min(...([selectedRow.invoice, selectedRow.account].map((amounts) =>
+          visibleCategories.reduce((total, category) => total + Math.min(0, amounts[category]), 0)
+        ))),
+        Math.max(...([selectedRow.invoice, selectedRow.account].map((amounts) =>
+          visibleCategories.reduce((total, category) => total + Math.max(0, amounts[category]), 0)
+        ))),
       ]
     : null;
   $: compactAmount = new Intl.NumberFormat($locale, { maximumFractionDigits: 1, notation: "compact" });
@@ -72,16 +90,16 @@
     }
   }
 
-  function selectBar(_event: MouseEvent, detail: { data: SpendingChartRow }) {
-    onBarClick?.(rowKey(detail.data));
+  function selectBar(_event: MouseEvent, detail: { data: SourceBucket }) {
+    onBarClick?.(detail.data.periodKey);
   }
 
-  function selectTooltip(_event: MouseEvent, detail: { data: SpendingChartRow }) {
-    onBarClick?.(rowKey(detail.data));
+  function selectTooltip(_event: MouseEvent, detail: { data: SourceBucket }) {
+    onBarClick?.(detail.data.periodKey);
   }
 
   function axisLabel(value: unknown) {
-    return dateLabel(String(value), true);
+    return dateLabel(String(value).replace(/:(invoice|account)$/u, ""), true);
   }
 
   function tooltipLabel(row: SpendingChartRow) {
@@ -102,16 +120,36 @@
     return typeof value === "number" ? compactAmount.format(value) : String(value);
   }
 
+  function sourceTotal(row: SpendingChartRow, source: "invoice" | "account") {
+    return SPENDING_CATEGORY_IDS.reduce((total, category) => total + row[source][category], 0);
+  }
+
+  function tooltipRow(bucket: SourceBucket | null | undefined) {
+    return bucket ? rows.find((row) => rowKey(row) === bucket.periodKey) : undefined;
+  }
+
   function tooltipValue(row: SpendingChartRow | null | undefined, category: SpendingCategory) {
-    return row?.[category] ?? 0;
+    return row ? row.invoice[category] + row.account[category] : 0;
   }
 
   function rowSummary(row: SpendingChartRow) {
     return [
       tooltipLabel(row),
+      `${$t.spending.invoiceSource}: ${formatMoney(
+        { currency: "TWD", value: sourceTotal(row, "invoice") },
+        { locale: $locale },
+      )}`,
+      `${$t.spending.accountSource}: ${formatMoney(
+        { currency: "TWD", value: sourceTotal(row, "account") },
+        { locale: $locale },
+      )}`,
+      `${$t.spending.confirmedTotal}: ${formatMoney(
+        { currency: "TWD", value: row.total },
+        { locale: $locale },
+      )}`,
       ...SPENDING_CATEGORY_IDS.map((category) =>
         `${$t.spending.categories[category]}: ${formatMoney(
-          { currency: "TWD", value: row[category] },
+          { currency: "TWD", value: tooltipValue(row, category) },
           { locale: $locale },
         )}`
       ),
@@ -154,8 +192,8 @@
     >
       {#if stageWidth > 0}
         <BarChart
-        data={rows}
-        x={rowKey}
+        data={buckets}
+        x="bucketKey"
         {series}
         seriesLayout="stack"
         {yDomain}
@@ -166,15 +204,16 @@
         legend={false}
         tooltipContext={{ mode: "band", findTooltipData: "closest" }}
         padding={{ top: 16, right: 16, bottom: 36, left: 58 }}
-        bandPadding={0.36}
+        bandPadding={kind === "month" ? 0.58 : 0.66}
         height={320}
         onBarClick={selectBar}
         onTooltipClick={selectTooltip}
         props={{
-          bars: { class: "spending-bar-segment", stroke: "var(--surface)", strokeWidth: 1, radius: 2 },
+          bars: { class: "spending-bar-segment", stroke: "var(--surface)", strokeWidth: 1, radius: 9 },
           xAxis: {
             class: "sparkline-axis",
             format: axisLabel,
+            ticks: periodTicks,
             tickLabel: xTick,
             tickSpacing: kind === "month" ? 52 : 40,
           },
@@ -189,18 +228,19 @@
       >
         {#snippet aboveMarks({ context })}
           {#if selectedKey && selectedExtents}
-            {@const x = Number(context.xScale(selectedKey))}
-            {@const width = Number(context.xScale.bandwidth?.() ?? 0)}
+            {@const invoiceX = Number(context.xScale(`${selectedKey}:invoice`))}
+            {@const accountX = Number(context.xScale(`${selectedKey}:account`))}
+            {@const bucketWidth = Number(context.xScale.bandwidth?.() ?? 0)}
             {@const y1 = Number(context.yScale(selectedExtents[0]))}
             {@const y2 = Number(context.yScale(selectedExtents[1]))}
-            {#if [x, width, y1, y2].every(Number.isFinite) && width > 0}
+            {#if [invoiceX, accountX, bucketWidth, y1, y2].every(Number.isFinite) && bucketWidth > 0}
               <rect
                 class="spending-selected-band"
-                x={x - 4}
+                x={invoiceX - 4}
                 y={Math.min(y1, y2) - 4}
-                width={width + 8}
+                width={accountX + bucketWidth - invoiceX + 8}
                 height={Math.abs(y2 - y1) + 8}
-                rx="5"
+                rx="10"
               ></rect>
             {/if}
           {/if}
@@ -209,13 +249,35 @@
         {#snippet tooltip({ context })}
           <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
             {#snippet children({ data })}
+              {@const row = tooltipRow(data)}
               <div class="sparkline-tooltip-body spending-tooltip">
-                <span>{data ? tooltipLabel(data) : ""}</span>
+                <span>{row ? tooltipLabel(row) : ""}</span>
+                <div class="spending-tooltip-row">
+                  <span>{$t.spending.invoiceSource}</span>
+                  <strong data-sensitive>{formatMoney(
+                    { currency: "TWD", value: row ? sourceTotal(row, "invoice") : 0 },
+                    { locale: $locale },
+                  )}</strong>
+                </div>
+                <div class="spending-tooltip-row">
+                  <span>{$t.spending.accountSource}</span>
+                  <strong data-sensitive>{formatMoney(
+                    { currency: "TWD", value: row ? sourceTotal(row, "account") : 0 },
+                    { locale: $locale },
+                  )}</strong>
+                </div>
+                <div class="spending-tooltip-row spending-tooltip-total">
+                  <span>{$t.spending.confirmedTotal}</span>
+                  <strong data-sensitive>{formatMoney(
+                    { currency: "TWD", value: row?.total ?? 0 },
+                    { locale: $locale },
+                  )}</strong>
+                </div>
                 {#each series as item}
                   <div class="spending-tooltip-row">
                     <span>{item.label}</span>
                     <strong data-sensitive>{formatMoney(
-                      { currency: "TWD", value: tooltipValue(data, item.key) },
+                      { currency: "TWD", value: tooltipValue(row, item.key) },
                       { locale: $locale },
                     )}</strong>
                   </div>
@@ -235,6 +297,10 @@
   {/if}
 
   {#if rows.length > 0}
+    <div class="spending-source-key" aria-label={$t.spending.sourceKeyAria}>
+      <span>{$t.spending.leftSource}</span>
+      <span>{$t.spending.rightSource}</span>
+    </div>
     <div class="spending-legend" role="group" aria-label={$t.spending.categoryLegendAria}>
       {#each SPENDING_CATEGORY_IDS as category}
         <button
@@ -344,6 +410,20 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .spending-tooltip-total {
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .spending-source-key {
+    display: flex;
+    justify-content: center;
+    gap: 22px;
+    padding: 6px 20px 0;
+    color: var(--muted);
+    font-size: 11px;
   }
 
   .spending-legend {
