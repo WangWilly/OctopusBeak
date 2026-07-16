@@ -63,11 +63,14 @@ export type SpendingOverrideUpdate =
     automaticReason: SpendingReason | null;
   };
 
-export type SpendingLoadInput = { selectedMonth?: string };
+export type SpendingLoadInput = {
+  selectedMonth?: string;
+  selectedCategory?: SpendingCategory;
+};
 
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
-  { selectedMonth }: SpendingLoadInput = {},
+  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
 ): SpendingModel {
   const db = openLedgerDatabase(ledgerDir);
   try {
@@ -185,6 +188,7 @@ export function loadSpending(
       cardPayments,
       overrides,
       selectedMonth,
+      selectedCategory,
     });
   } finally {
     db.close();
