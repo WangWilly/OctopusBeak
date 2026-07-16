@@ -1311,6 +1311,24 @@ function addBankTransactionUtcInstants(db: LedgerDatabase) {
   }
 }
 
+function createSpendingTransactionOverrides(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE spending_transaction_overrides (
+      statement_row_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL CHECK (state IN ('included', 'excluded', 'pending')),
+      category TEXT CHECK (
+        category IS NULL OR category IN (
+          'food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other'
+        )
+      ),
+      automatic_state TEXT NOT NULL
+        CHECK (automatic_state IN ('included', 'excluded', 'pending')),
+      automatic_reason TEXT,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1421,6 +1439,11 @@ const migrations: LedgerMigration[] = [
     version: 22,
     name: "bank_transaction_utc_instants",
     up: addBankTransactionUtcInstants,
+  },
+  {
+    version: 23,
+    name: "spending_transaction_overrides",
+    up: createSpendingTransactionOverrides,
   },
 ];
 
