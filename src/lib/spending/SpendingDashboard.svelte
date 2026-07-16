@@ -30,6 +30,7 @@
   let invoiceModalTrigger: HTMLButtonElement | null = null;
   let savingItemKeys = new Set<string>();
   let errorItemKeys = new Set<string>();
+  let monthRequestSequence = 0;
 
   $: model = spending;
   $: monthFormatter = new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" });
@@ -68,15 +69,19 @@
   });
 
   async function selectMonth(month: string) {
+    const requestSequence = ++monthRequestSequence;
     const previousSpending = spending;
     const previousMonth = selectedMonth;
     const previousCategory = selectedCategory;
     selectedMonth = month;
     selectedCategory = undefined;
     try {
-      spending = await window.octopusBeak.spending.load({ selectedMonth: month });
+      const loaded = await window.octopusBeak.spending.load({ selectedMonth: month });
+      if (requestSequence !== monthRequestSequence) return;
+      spending = loaded;
       selectedMonth = undefined;
     } catch {
+      if (requestSequence !== monthRequestSequence) return;
       spending = previousSpending;
       selectedMonth = previousMonth;
       selectedCategory = previousCategory;
