@@ -7,23 +7,27 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(new URL("../docs/prototypes/spending-chart-alternatives.html", import.meta.url).href);
 
-  assert.equal(await page.locator("[data-concept]").count(), 3);
+  const prototype = page.locator('[data-prototype="brush-pan-zoom"]');
+  assert.equal(await prototype.count(), 1);
+  assert.equal(await prototype.getAttribute("data-mode"), "overview");
+  assert.equal(await prototype.getAttribute("data-domain-start"), "0");
+  assert.equal(await prototype.getAttribute("data-domain-end"), "29");
+
+  const plot = prototype.locator("[data-plot]");
+  const box = await plot.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.82, box.y + box.height * 0.5);
+  await page.mouse.up();
+  assert.equal(await prototype.getAttribute("data-mode"), "detail");
+
+  const brushedStart = await prototype.getAttribute("data-domain-start");
+  await prototype.locator('[data-action="pan-left"]').click();
+  assert.notEqual(await prototype.getAttribute("data-domain-start"), brushedStart);
+  await prototype.locator('[data-action="reset"]').click();
+  assert.equal(await prototype.getAttribute("data-domain-start"), "0");
+  assert.equal(await prototype.getAttribute("data-domain-end"), "29");
   assert.doesNotMatch(await page.locator("body").innerText(), /(?:6|12|24) months/i);
-
-  const overview = page.locator('[data-concept="overview"]');
-  const beforeMonth = await overview.getAttribute("data-selected-month");
-  await overview.locator("[data-month]").nth(2).click();
-  assert.notEqual(await overview.getAttribute("data-selected-month"), beforeMonth);
-
-  const timeline = page.locator('[data-concept="timeline"]');
-  const beforeScroll = await timeline.getAttribute("data-scroll-index");
-  await timeline.locator('[data-action="next"]').click();
-  assert.notEqual(await timeline.getAttribute("data-scroll-index"), beforeScroll);
-
-  const focus = page.locator('[data-concept="focus-context"]');
-  const beforeWindow = await focus.getAttribute("data-window-start");
-  await focus.locator('[data-action="window-next"]').click();
-  assert.notEqual(await focus.getAttribute("data-window-start"), beforeWindow);
 } finally {
   await browser.close();
 }
