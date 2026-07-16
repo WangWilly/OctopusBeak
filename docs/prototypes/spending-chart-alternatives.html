@@ -116,7 +116,7 @@
         </div>
       </div>
 
-      <div data-plot tabindex="0" aria-label="Interactive monthly spending chart"></div>
+      <div data-plot tabindex="0" aria-label="Interactive monthly spending chart. Use Arrow keys to pan, Plus and Minus to zoom, and Home to reset."></div>
       <p class="sr-only" data-visible-summary aria-live="polite"></p>
       <div class="summary" aria-hidden="true"><span data-visible-count></span><strong data-visible-total></strong></div>
     </section>
@@ -299,6 +299,7 @@
 
     plot.addEventListener("pointerup", event => {
       if (!drag) return;
+      drag.lastX = pointerX(event);
       const box = plot.getBoundingClientRect();
       const width = domainEnd - domainStart + 1;
       const delta = drag.lastX - drag.startX;
@@ -331,6 +332,20 @@
     plot.addEventListener("dblclick", event => {
       const box = plot.getBoundingClientRect();
       zoom(-1, Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)));
+    });
+
+    plot.addEventListener("keydown", event => {
+      const action = {
+        ArrowLeft: () => pan(-1),
+        ArrowRight: () => pan(1),
+        "+": () => zoom(-1),
+        "=": () => zoom(-1),
+        "-": () => zoom(1),
+        Home: reset
+      }[event.key];
+      if (!action) return;
+      event.preventDefault();
+      action();
     });
 
     prototype.querySelector('[data-action="zoom-in"]').addEventListener("click", () => zoom(-1));
