@@ -261,6 +261,15 @@
       tooltip.style.top = `${top}px`;
     }
 
+    function clearDrag() {
+      drag = null;
+      plot.classList.remove("dragging");
+      const overlay = plot.querySelector("[data-brush-overlay]");
+      overlay.hidden = true;
+      overlay.style.left = "0";
+      overlay.style.width = "0";
+    }
+
     plot.addEventListener("pointerdown", event => {
       if (event.button !== 0) return;
       const brushing = prototype.dataset.mode === "overview" || event.shiftKey;
@@ -303,9 +312,10 @@
         const offset = Math.round(delta / box.width * width);
         setDomain(domainStart - offset, domainEnd - offset);
       }
-      drag = null;
-      plot.classList.remove("dragging");
+      clearDrag();
     });
+
+    plot.addEventListener("pointercancel", clearDrag);
 
     plot.addEventListener("wheel", event => {
       const box = plot.getBoundingClientRect();

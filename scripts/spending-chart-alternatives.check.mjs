@@ -15,6 +15,19 @@ try {
 
   const plot = prototype.locator("[data-plot]");
   const box = await plot.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.3 + 4, box.y + box.height * 0.5);
+  await page.mouse.up();
+  assert.equal(await plot.locator("[data-brush-overlay]").getAttribute("hidden"), "");
+  assert.equal(await plot.evaluate(element => element.classList.contains("dragging")), false);
+
+  await page.mouse.down();
+  await plot.dispatchEvent("pointercancel");
+  assert.equal(await plot.locator("[data-brush-overlay]").getAttribute("hidden"), "");
+  assert.equal(await plot.evaluate(element => element.classList.contains("dragging")), false);
+  await page.mouse.up();
+
   await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.5);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.82, box.y + box.height * 0.5);
