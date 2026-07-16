@@ -344,4 +344,77 @@ assert.equal(february.excludedAccountRecords.some((row) => row.statementRowId ==
 assert.equal(february.pendingAccountRecords.some((row) => row.statementRowId === "blank-merchant"), true);
 assert.equal(february.recordsByDate.flatMap((group) => group.records)
   .some((record) => record.key === "account:invoice-duplicate"), false);
+
+const compatibilityInvoice: SpendingInvoiceDto = {
+  ...invoices[1],
+  invoiceKey: "compatibility-merchant",
+  invoiceId: "COMPAT01",
+  amount: 77,
+  sellerName: "SHOP1",
+  items: [{
+    ...invoices[1].items[0],
+    itemKey: "compatibility-merchant-item",
+    paidAmount: 77,
+    unitPrice: 77,
+  }],
+};
+const compatibilityModel = buildSpendingModel({
+  invoices: [compatibilityInvoice],
+  accountTransactions: [
+    accountRow("compatibility-merchant", 77, "ＳＨＯＰ①", "2026-02-01"),
+    accountRow("compatibility-account", 42, "轉帳至９８７６⑤", "2026-02-01"),
+  ],
+  counterpartDeposits: [depositRow("98765", 99, "2026-02-01")],
+  selectedMonth: "2026-02",
+});
+assert.deepEqual(
+  compatibilityModel.accountRecords.map((record) => [
+    record.statementRowId,
+    record.state,
+    record.automaticReason,
+  ]),
+  [
+    ["compatibility-merchant", "pending", "unclassified"],
+    ["compatibility-account", "pending", "ambiguous_transfer"],
+  ],
+);
+assert.deepEqual(
+  compatibilityModel.recordsByDate
+    .flatMap((group) => group.records)
+    .find((record) => record.source === "invoice")
+    ?.accountStatementRowIds,
+  [],
+);
+
+const manualDuplicate = buildSpendingModel({
+  ...input,
+  selectedMonth: "2026-02",
+  overrides: [...input.overrides, {
+    statementRowId: "invoice-duplicate",
+    state: "included",
+    category: "food",
+    automaticState: "excluded",
+    automaticReason: "invoice_duplicate",
+    updatedAt: "2026-07-16T00:00:00.000Z",
+  } as const],
+});
+const manualDuplicateGroup = manualDuplicate.recordsByDate.find((group) => group.date === "2026-02-01");
+const manualDuplicateInvoice = manualDuplicateGroup?.records
+  .find((record) => record.source === "invoice" && record.invoiceKey === "feb-boundary");
+const manualDuplicateAccount = manualDuplicateGroup?.records
+  .find((record) => record.source === "account" && record.statementRowId === "invoice-duplicate");
+assert.deepEqual(manualDuplicateInvoice?.accountStatementRowIds, []);
+assert.deepEqual(
+  manualDuplicateAccount && {
+    state: manualDuplicateAccount.state,
+    manual: manualDuplicateAccount.manual,
+    amount: manualDuplicateAccount.amount,
+  },
+  { state: "included", manual: true, amount: 100 },
+);
+assert.equal(manualDuplicateGroup?.includedTotal, 200);
+assert.equal(manualDuplicateGroup?.records
+  .filter((record) => record.state === "included")
+  .reduce((total, record) => total + record.amount, 0), 200);
+assert.equal(manualDuplicate.dailyRows.find((row) => row.date === "2026-02-01")?.total, 200);
 assert.equal(JSON.parse(JSON.stringify({ invoices })).invoices.length, invoices.length);
