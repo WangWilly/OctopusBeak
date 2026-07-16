@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { buildSpendingModel, type SpendingInvoiceDto } from "./model.ts";
+import {
+  buildSpendingModel,
+  type SpendingAccountTransactionInput,
+  type SpendingCardPaymentInput,
+  type SpendingInvoiceDto,
+} from "./model.ts";
 
 const invoices: SpendingInvoiceDto[] = [
   {
@@ -26,7 +31,7 @@ const invoices: SpendingInvoiceDto[] = [
     issuedAt: Date.parse("2026-01-31T16:30:00Z") / 1000,
     amount: 100,
     sellerBusinessAccountNumber: "12345678",
-    sellerName: "Boundary seller",
+    sellerName: "測試，商店",
     sellerAddr: "Taipei",
     items: [
       {
@@ -117,53 +122,149 @@ const invoices: SpendingInvoiceDto[] = [
   },
 ];
 
-const latest = buildSpendingModel(invoices);
-assert.deepEqual(latest.months, ["2026-01", "2026-02", "2026-03"]);
-assert.equal(latest.selectedMonth, "2026-03");
+function accountRow(
+  statementRowId: string,
+  amount: number,
+  description: string | null,
+  date: string,
+): SpendingAccountTransactionInput {
+  return {
+    statementRowId,
+    bank: "test",
+    accountNumber: "123456789",
+    currency: "TWD",
+    date,
+    description,
+    note: null,
+    amount,
+  };
+}
 
-const february = buildSpendingModel(invoices, "2026-02");
+function depositRow(
+  accountNumber: string,
+  amount: number,
+  date: string,
+): SpendingAccountTransactionInput {
+  return {
+    ...accountRow(`deposit:${accountNumber}:${date}`, amount, "轉入", date),
+    accountNumber,
+  };
+}
+
+function cardPaymentRow(amount: number, date: string): SpendingCardPaymentInput {
+  return { amount, date };
+}
+
+const accountTransactions: SpendingAccountTransactionInput[] = [
+  accountRow("direct", 880, "簽帳消費 好市多", "2026-07-16"),
+  accountRow("card-payment", 19_356, "玉山信用卡款", "2026-07-16"),
+  accountRow("card-payment-match", 600, "自動扣款", "2026-07-16"),
+  accountRow("loan-payment", 1_000, "放款繳款", "2026-07-15"),
+  accountRow("self-transfer", 5_000, "自轉", "2026-07-15"),
+  accountRow("mirrored", 3_000, "轉帳", "2026-07-14"),
+  accountRow("transfer", 1_500, "轉帳", "2026-07-14"),
+  accountRow("cash", 2_000, "提款", "2026-07-13"),
+  accountRow("plain-payment", 300, "繳費", "2026-07-12"),
+  accountRow("invoice-duplicate", 100, "測試商店", "2026-02-01"),
+  accountRow("blank-merchant", 100, null, "2026-02-01"),
+];
+
+const input = {
+  invoices,
+  accountTransactions,
+  counterpartDeposits: [depositRow("other-account", 3_000, "2026-07-15")],
+  cardPayments: [cardPaymentRow(600, "2026-07-15")],
+  overrides: [{
+    statementRowId: "card-payment",
+    state: "included" as const,
+    category: "home" as const,
+    automaticState: "excluded" as const,
+    automaticReason: "credit_card_payment" as const,
+    updatedAt: "2026-07-16T00:00:00.000Z",
+  }],
+};
+
+const latest = buildSpendingModel(input);
+assert.deepEqual(latest.months, ["2026-01", "2026-02", "2026-03", "2026-07"]);
+assert.equal(latest.selectedMonth, "2026-07");
+
+const february = buildSpendingModel({ ...input, selectedMonth: "2026-02" });
 assert.deepEqual(february.monthlyRows.map((row) => row.month), [
   "2026-01",
   "2026-02",
   "2026-03",
+  "2026-07",
 ]);
 assert.deepEqual(
   february.monthlyRows.find((row) => row.month === "2026-02"),
   {
     month: "2026-02",
     total: 180,
-    food: 70,
-    daily: 30,
-    transport: 0,
-    shopping: 30,
-    home: 0,
-    leisure: 0,
-    other: 50,
+    invoice: {
+      food: 70,
+      daily: 30,
+      transport: 0,
+      shopping: 30,
+      home: 0,
+      leisure: 0,
+      other: 50,
+    },
+    account: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
   },
 );
-assert.deepEqual(february.selectedMonthSummary, { total: 180, invoiceCount: 3 });
+assert.deepEqual(february.selectedMonthSummary, { total: 180, invoiceCount: 3, accountCount: 0 });
 assert.deepEqual(february.dailyRows, [
   {
     date: "2026-02-01",
     total: 100,
-    food: 70,
-    daily: 30,
-    transport: 0,
-    shopping: 0,
-    home: 0,
-    leisure: 0,
-    other: 0,
+    invoice: {
+      food: 70,
+      daily: 30,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
+    account: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
   },
   {
     date: "2026-02-02",
     total: 80,
-    food: 0,
-    daily: 0,
-    transport: 0,
-    shopping: 30,
-    home: 0,
-    leisure: 0,
-    other: 50,
+    invoice: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 30,
+      home: 0,
+      leisure: 0,
+      other: 50,
+    },
+    account: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
   },
 ]);
 assert.deepEqual(february.presentCategories, ["food", "daily", "shopping", "other"]);
@@ -173,6 +274,74 @@ assert.deepEqual(february.invoices.map((invoice) => invoice.invoiceKey), [
   "feb-shopping",
 ]);
 
-const food = buildSpendingModel(invoices, "2026-02", "food");
+const food = buildSpendingModel({ ...input, selectedMonth: "2026-02", selectedCategory: "food" });
 assert.deepEqual(food.invoices.map((invoice) => invoice.invoiceKey), ["feb-boundary"]);
+
+assert.deepEqual(
+  Object.fromEntries(latest.accountRecords.map((row) => [row.statementRowId, {
+    state: row.state,
+    automaticState: row.automaticState,
+    reason: row.automaticReason,
+    manual: row.manual,
+    category: row.category,
+  }])),
+  {
+    direct: { state: "included", automaticState: "included", reason: "direct_purchase", manual: false, category: "other" },
+    "card-payment": { state: "included", automaticState: "excluded", reason: "credit_card_payment", manual: true, category: "home" },
+    "card-payment-match": { state: "excluded", automaticState: "excluded", reason: "credit_card_payment", manual: false, category: "other" },
+    "loan-payment": { state: "excluded", automaticState: "excluded", reason: "loan_payment", manual: false, category: "other" },
+    "self-transfer": { state: "excluded", automaticState: "excluded", reason: "internal_transfer", manual: false, category: "other" },
+    mirrored: { state: "excluded", automaticState: "excluded", reason: "internal_transfer", manual: false, category: "other" },
+    transfer: { state: "pending", automaticState: "pending", reason: "ambiguous_transfer", manual: false, category: "other" },
+    cash: { state: "pending", automaticState: "pending", reason: "cash_withdrawal", manual: false, category: "other" },
+    "plain-payment": { state: "pending", automaticState: "pending", reason: "unclassified", manual: false, category: "other" },
+    "invoice-duplicate": { state: "excluded", automaticState: "excluded", reason: "invoice_duplicate", manual: false, category: "food" },
+    "blank-merchant": { state: "pending", automaticState: "pending", reason: "unclassified", manual: false, category: "other" },
+  },
+);
+assert.deepEqual(latest.selectedMonthSummary, { total: 20_236, invoiceCount: 0, accountCount: 2 });
+assert.deepEqual(latest.monthlyRows.find((row) => row.month === "2026-07"), {
+  month: "2026-07",
+  total: 20_236,
+  invoice: { food: 0, daily: 0, transport: 0, shopping: 0, home: 0, leisure: 0, other: 0 },
+  account: { food: 0, daily: 0, transport: 0, shopping: 0, home: 19_356, leisure: 0, other: 880 },
+});
+assert.deepEqual(latest.dailyRows, [{
+  date: "2026-07-16",
+  total: 20_236,
+  invoice: { food: 0, daily: 0, transport: 0, shopping: 0, home: 0, leisure: 0, other: 0 },
+  account: { food: 0, daily: 0, transport: 0, shopping: 0, home: 19_356, leisure: 0, other: 880 },
+}]);
+assert.deepEqual(latest.recordsByDate.map((group) => ({
+  date: group.date,
+  includedTotal: group.includedTotal,
+  excludedCount: group.excludedCount,
+  pendingCount: group.pendingCount,
+})), [
+  { date: "2026-07-16", includedTotal: 20_236, excludedCount: 1, pendingCount: 0 },
+  { date: "2026-07-15", includedTotal: 0, excludedCount: 2, pendingCount: 0 },
+  { date: "2026-07-14", includedTotal: 0, excludedCount: 1, pendingCount: 1 },
+  { date: "2026-07-13", includedTotal: 0, excludedCount: 0, pendingCount: 1 },
+  { date: "2026-07-12", includedTotal: 0, excludedCount: 0, pendingCount: 1 },
+]);
+assert.deepEqual(latest.excludedAccountRecords.map((row) => row.statementRowId), [
+  "card-payment-match",
+  "loan-payment",
+  "self-transfer",
+  "mirrored",
+]);
+assert.deepEqual(latest.pendingAccountRecords.map((row) => row.statementRowId), [
+  "transfer",
+  "cash",
+  "plain-payment",
+]);
+
+const duplicateInvoice = february.recordsByDate
+  .flatMap((group) => group.records)
+  .find((record) => record.source === "invoice" && record.invoiceKey === "feb-boundary");
+assert.deepEqual(duplicateInvoice?.accountStatementRowIds, ["invoice-duplicate"]);
+assert.equal(february.excludedAccountRecords.some((row) => row.statementRowId === "invoice-duplicate"), true);
+assert.equal(february.pendingAccountRecords.some((row) => row.statementRowId === "blank-merchant"), true);
+assert.equal(february.recordsByDate.flatMap((group) => group.records)
+  .some((record) => record.key === "account:invoice-duplicate"), false);
 assert.equal(JSON.parse(JSON.stringify({ invoices })).invoices.length, invoices.length);
