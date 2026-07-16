@@ -26,6 +26,7 @@ function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
   db.exec(`
     DROP TABLE personal_invoice_items;
     DROP TABLE IF EXISTS exchange_rates;
+    DROP TABLE IF EXISTS spending_transaction_overrides;
     CREATE TABLE personal_invoice_items (
       statement_row_id TEXT PRIMARY KEY,
       source_file_id TEXT NOT NULL,
@@ -143,6 +144,9 @@ const invalidCardBackfillLedgerDir = mkdtempSync(
 const transactionUtcLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-transaction-utc-"),
 );
+const spendingOverrideLedgerDir = mkdtempSync(
+  join(tmpdir(), "spending-overrides-"),
+);
 
 function insertLegacyCardCapture(
   db: LedgerDatabase,
@@ -188,6 +192,7 @@ function resetCardsToVersion14(db: LedgerDatabase) {
     DELETE FROM schema_migrations WHERE version >= 15;
     DELETE FROM credit_card_snapshots;
     DROP TABLE IF EXISTS exchange_rates;
+    DROP TABLE IF EXISTS spending_transaction_overrides;
     DROP TABLE IF EXISTS credit_card_capture_entries;
     DROP TABLE IF EXISTS credit_card_captures;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
@@ -213,6 +218,7 @@ try {
     DROP TABLE personal_invoice_items;
     DROP TABLE personal_invoices;
     DROP TABLE IF EXISTS exchange_rates;
+    DROP TABLE IF EXISTS spending_transaction_overrides;
     DELETE FROM schema_migrations WHERE version >= 4;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key;
     DROP INDEX IF EXISTS uq_credit_card_statement_lines_content_occurrence;
@@ -262,7 +268,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -532,6 +538,7 @@ try {
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec(`
     DROP TABLE IF EXISTS exchange_rates;
+    DROP TABLE IF EXISTS spending_transaction_overrides;
     DELETE FROM schema_migrations WHERE version >= 12;
   `);
   dedupeDb.exec("DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key");
@@ -1014,6 +1021,23 @@ try {
   `).get() as { transaction_at_utc: string | null }).transaction_at_utc,
   "2026-07-15T04:02:03.000Z");
   transactionUtcDb.close();
+
+  const spendingOverrideDb = openLedgerDatabase(spendingOverrideLedgerDir);
+  spendingOverrideDb.prepare(`
+    INSERT INTO spending_transaction_overrides (
+      statement_row_id, state, category, automatic_state,
+      automatic_reason, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "account-row-1", "included", "food", "excluded",
+    "credit_card_payment", "2026-07-16T00:00:00.000Z",
+  );
+  assert.throws(() => spendingOverrideDb.prepare(`
+    INSERT INTO spending_transaction_overrides (
+      statement_row_id, state, automatic_state, updated_at
+    ) VALUES ('bad', 'unknown', 'pending', '2026-07-16T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
+  spendingOverrideDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
@@ -1024,6 +1048,7 @@ try {
     cardBackfillLedgerDir,
     invalidCardBackfillLedgerDir,
     transactionUtcLedgerDir,
+    spendingOverrideLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
