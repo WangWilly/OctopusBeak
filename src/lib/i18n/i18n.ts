@@ -111,6 +111,9 @@ const en = {
     confirmedTotal: "Confirmed total",
     monthlyHint: "Select a chart bar or month below to view daily details",
     categoryHint: "Categories are based on seller and item names",
+    chartDragHint: "Drag to browse · Command/Control + scroll to zoom",
+    chartVisibleRange: (start: string, end: string) => `Visible: ${start}–${end}`,
+    chartReset: "Reset view",
     datasetStatus: (invoices: number, accounts: number, start: string, end: string) =>
       `${start}-${end} / ${invoices} invoices and ${accounts} account records`,
     monthSelectorAria: "Select month",
@@ -544,6 +547,9 @@ const zh: typeof en = {
     confirmedTotal: "已確認合計",
     monthlyHint: "點選柱狀圖或下方月份即可查看每日明細",
     categoryHint: "分類依商家與品項名稱整理",
+    chartDragHint: "拖曳瀏覽 · Command／Control＋滾輪縮放",
+    chartVisibleRange: (start, end) => `目前顯示：${start}–${end}`,
+    chartReset: "重設檢視",
     datasetStatus: (invoices, accounts, start, end) =>
       `${start}-${end} / ${invoices} 張發票與 ${accounts} 筆帳戶支出`,
     monthSelectorAria: "切換月份",
