@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
-import { dismissPasswordChangeReminderIfPresent } from "./yuanta-trade-statements.ts";
+import {
+  dismissPasswordChangeReminderIfPresent,
+  fillTradeLoginForm,
+} from "./yuanta-trade-statements.ts";
 
 function fakePage(reminderVisible: boolean | Error) {
   let clicks = 0;
@@ -59,4 +62,27 @@ test("ignores navigation races while checking the YuanTa password reminder", asy
   );
   await dismissPasswordChangeReminderIfPresent(navigating.page);
   assert.equal(navigating.clicks(), 0);
+});
+
+test("removes focus from the YuanTa password field after filling credentials", async () => {
+  const actions: string[] = [];
+  const page = {
+    goto: async () => actions.push("goto"),
+    locator: (selector: string) => ({
+      fill: async (value: string) => actions.push(`fill:${selector}:${value}`),
+      blur: async () => actions.push(`blur:${selector}`),
+    }),
+  } as unknown as Page;
+
+  await fillTradeLoginForm(page, {
+    yuanta_trade_user_id: "user",
+    yuanta_trade_password: "password",
+  });
+
+  assert.deepEqual(actions, [
+    "goto",
+    "fill:#loginid:user",
+    "fill:#loginPWD:password",
+    "blur:#loginPWD",
+  ]);
 });
