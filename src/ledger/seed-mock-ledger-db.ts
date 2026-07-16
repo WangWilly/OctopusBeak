@@ -63,7 +63,10 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
       },
     ]);
     insertRows(db, "source_files", [
-      ...data.sourceFiles.map(sourceFileRecord),
+      ...data.sourceFiles.map((row) => sourceFileRecord({
+        ...row,
+        rowCount: row.sourceFileId === "account.2026-06-27" ? 8 : row.rowCount,
+      })),
       sourceFileRecord(invoiceData.sourceFile),
     ]);
     insertRows(db, "account_transactions", [

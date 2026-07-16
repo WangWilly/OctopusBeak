@@ -27,18 +27,32 @@ assert.ok(new Set(
     .map((invoice) => new Date(invoice.issuedAt * 1000).toISOString().slice(0, 10)),
 ).size >= 3);
 
-const accountRecords = spendingByMonth.flatMap((month) => month.accountRecords);
-assert.ok(accountRecords.some((record) =>
-  record.state === "included" && record.automaticReason === "direct_purchase"
+assert.equal(spending.selectedMonth, "2026-07");
+assert.ok(spending.recordsByDate.every((group) =>
+  group.date.startsWith(spending.selectedMonth!) &&
+  group.records.every((record) => record.date === group.date)
 ));
-assert.ok(accountRecords.some((record) =>
-  record.state === "excluded" && record.automaticReason === "credit_card_payment"
+assert.ok(spending.recordsByDate.flatMap((group) => group.records).some((record) =>
+  record.source === "account" &&
+  record.statementRowId === "mock-account.2026-06-27.6" &&
+  record.label === "金融卡消費 咖啡店" &&
+  record.state === "included" &&
+  record.automaticReason === "direct_purchase"
 ));
-assert.ok(accountRecords.some((record) =>
-  record.state === "excluded" && record.automaticReason === "internal_transfer"
+assert.ok(spending.excludedAccountRecords.some((record) =>
+  record.statementRowId === "mock-account.2026-06-27.7" &&
+  record.label === "繳信用卡" &&
+  record.automaticReason === "credit_card_payment"
 ));
-assert.ok(accountRecords.some((record) =>
-  record.state === "pending" && record.automaticReason === "cash_withdrawal"
+assert.ok(spending.excludedAccountRecords.some((record) =>
+  record.statementRowId === "mock-account.2026-06-27.2" &&
+  record.label === "房租轉帳" &&
+  record.automaticReason === "internal_transfer"
+));
+assert.ok(spending.pendingAccountRecords.some((record) =>
+  record.statementRowId === "mock-account.2026-06-27.5" &&
+  record.label === "ATM 提款" &&
+  record.automaticReason === "cash_withdrawal"
 ));
 
 const db = openLedgerDatabase(ledgerDir, { readOnly: true });
@@ -57,6 +71,9 @@ const typedCounts = db.prepare(`
     (SELECT COUNT(*) FROM brokerage_holdings) AS brokerage,
     (SELECT COUNT(*) FROM personal_invoice_items) AS invoice_items
 `).get() as { accounts: number; brokerage: number; invoice_items: number };
+const accountSource = db.prepare(`
+  SELECT row_count FROM source_files WHERE source_file_id = ?
+`).get("account.2026-06-27") as { row_count: number };
 db.close();
 
 assert.equal(invoiceCounts.voided, 1);
@@ -65,6 +82,7 @@ assert.deepEqual(automationStatuses.map((row) => row.status), ["completed", "fai
 assert.ok(typedCounts.accounts > 0);
 assert.ok(typedCounts.brokerage > 0);
 assert.ok(typedCounts.invoice_items > 0);
+assert.equal(accountSource.row_count, 8);
 
 const editableItem = spending.invoices[0]?.items[0];
 assert.ok(editableItem);
