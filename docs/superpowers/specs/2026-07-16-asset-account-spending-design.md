@@ -14,6 +14,19 @@ Preserve the current page order and visual language:
 
 Do not add summary metrics, equations, or other metadata above the monthly chart. The daily bar chart remains in `DailySpendingModal`; it is not embedded in the records card.
 
+## Approved Chart Design
+
+Use the low-chroma OKLCH palette already established by the overview, assets, and liabilities charts: muted blue, green, ochre, plum, rust, teal, and slate. Apply the same category color consistently in monthly and daily charts.
+
+Each month or day is one rounded group containing two narrow stacked bars:
+
+- Left bar: electronic-invoice spending.
+- Right bar: included asset-account spending.
+
+Each source bar remains stacked by spending category. Clip the full bar to a rounded shape, retain subtle surface-colored separators between category segments, and keep horizontal grid lines and compact value axes consistent with the other financial charts.
+
+Selecting a month outlines the complete two-bar group with a rounded focus band. It must not imply that only one source is selected. The legend identifies category colors, while a short source key establishes the fixed left/right order. Tooltips show invoice subtotal, account subtotal, category breakdown, and combined confirmed total.
+
 The records card combines electronic invoices and asset-account transactions, grouped by local calendar date from newest to oldest. Each date header shows the confirmed daily total and counts of excluded or pending records. The records area has its own vertical scroll; its current date header is sticky until the next date replaces it.
 
 Immediately below the category filters, show a single disclosure such as `另有 3 筆自動排除交易 · 不計入每日合計` with a `查看與修改` action. This disclosure stays above the date groups rather than at the end of the list.
@@ -59,6 +72,7 @@ For each account transaction:
 3. Mark unmatched ambiguous outflows as pending.
 4. Merge included invoices and account transactions into date groups.
 5. Calculate monthly and daily totals from included records only.
+6. Produce category amounts separately for invoice and account sources so the paired charts never infer source from display text.
 
 The renderer receives display-ready records with source, state, reason, category, and stable key. Classification and total calculation remain server-side so all consumers use the same result.
 
@@ -70,11 +84,11 @@ Keyboard users can reach filters, disclosure actions, records, and override cont
 
 ## Verification
 
-Add one focused model check covering included, excluded, pending, duplicate invoice/account purchase, and manual-override precedence. Add one store check proving overrides survive reload. Verify the live Electron screen through CDP at `#/spending`, including date-header stickiness, the daily modal, and changing an excluded record back to included.
+Add one focused model check covering included, excluded, pending, duplicate invoice/account purchase, manual-override precedence, and per-source chart totals. Add one store check proving overrides survive reload. Verify the live Electron screen through CDP at `#/spending`, including paired rounded bars, full-group month selection, date-header stickiness, the daily modal, and changing an excluded record back to included.
 
 ## Out Of Scope
 
 - Merchant-wide rule editing.
 - Machine-learning classification.
 - A separate reconciliation dashboard.
-- Replacing the existing monthly or daily charts.
+- Chart types beyond the approved paired, category-stacked bars.
