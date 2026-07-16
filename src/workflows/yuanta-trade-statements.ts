@@ -636,7 +636,7 @@ async function completeCertificateIfPresent(
   await settleAfterNavigation(page);
 }
 
-async function fillTradeLoginForm(
+export async function fillTradeLoginForm(
   page: Page,
   credentials: YuantaTradeCredentials,
 ): Promise<void> {
@@ -646,6 +646,7 @@ async function fillTradeLoginForm(
   await page.goto(TRADE_LOGIN_URL, { waitUntil: "domcontentloaded" });
   await page.locator("#loginid").fill(userId);
   await page.locator("#loginPWD").fill(password);
+  await page.locator("#loginPWD").blur();
 }
 
 async function checkYuantaCustomerBox(page: Page): Promise<void> {
