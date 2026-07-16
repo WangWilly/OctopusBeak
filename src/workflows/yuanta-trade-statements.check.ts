@@ -50,3 +50,13 @@ test("propagates errors while checking the YuanTa password reminder", async () =
     /page closed/,
   );
 });
+
+test("ignores navigation races while checking the YuanTa password reminder", async () => {
+  const navigating = fakePage(
+    new Error(
+      "page.evaluate: Execution context was destroyed, most likely because of a navigation",
+    ),
+  );
+  await dismissPasswordChangeReminderIfPresent(navigating.page);
+  assert.equal(navigating.clicks(), 0);
+});
