@@ -9,6 +9,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "liabilities:load",
   "spending:load",
   "spending:updateItemCategory",
+  "spending:updateTransactionOverride",
   "automation:load",
   "automation:saveCredentials",
   "automation:run",
