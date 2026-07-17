@@ -387,7 +387,8 @@
                     fill={categoryColors[datum.category]}
                     stroke="var(--surface)"
                     strokeWidth={1}
-                    radius={9}
+                    radius={5}
+                    rounded="edge"
                     onclick={() => onBarClick?.(datum.periodKey)}
                   />
                 {/each}
