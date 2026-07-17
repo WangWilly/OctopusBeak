@@ -528,7 +528,7 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 }
 
 .balance-chart {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .balance-chart .sparkline {
