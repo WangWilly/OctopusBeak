@@ -4,11 +4,11 @@
   import { formatMoney } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
-    SPENDING_CATEGORY_IDS,
     isSpendingCategory,
     type SpendingCategory,
   } from "./categories.ts";
   import DailySpendingModal from "./components/DailySpendingModal.svelte";
+  import AccountTransactionReviewModal from "./components/AccountTransactionReviewModal.svelte";
   import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
   import SpendingBarChart from "./components/SpendingBarChart.svelte";
   import { applySpendingAccountOverride } from "./model.ts";
@@ -16,6 +16,7 @@
     SpendingAccountRecord,
     SpendingDateGroup,
     SpendingPageDto,
+    SpendingSource,
     SpendingState,
   } from "./model.ts";
 
@@ -31,12 +32,14 @@
   let selectedInvoiceKey: string | undefined;
   let dailyModalTrigger: HTMLButtonElement | null = null;
   let invoiceModalTrigger: HTMLButtonElement | null = null;
+  let selectedAccountStatementRowId: string | undefined;
+  let accountModalTrigger: HTMLButtonElement | null = null;
   let savingItemKeys = new Set<string>();
   let errorItemKeys = new Set<string>();
   let savingRecordIds = new Set<string>();
   let errorRecordIds = new Set<string>();
-  let pendingCategories: Partial<Record<string, SpendingCategory>> = {};
   let showExcludedRecords = false;
+  let selectedSource: SpendingSource | undefined;
   let loadRequestSequence = 0;
 
   $: model = spending;
@@ -47,6 +50,12 @@
     weekday: "long",
     timeZone: "UTC",
   });
+  $: shortDateFormatter = new Intl.DateTimeFormat($locale, {
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+  $: weekdayFormatter = new Intl.DateTimeFormat($locale, { weekday: "long", timeZone: "UTC" });
   $: activeMonthLabel = model.selectedMonth ? formatMonth(model.selectedMonth) : "";
   $: sideValue = model.selectedMonth
     ? formatMoney(
@@ -68,10 +77,18 @@
     : $t.spending.noSpendingTitle;
   $: activeCategory = selectedCategory ?? model.selectedCategory;
   $: transactionSaving = savingRecordIds.size > 0;
-  $: visibleRecordGroups = buildVisibleRecordGroups(model, activeCategory, showExcludedRecords);
+  $: visibleRecordGroups = buildVisibleRecordGroups(
+    model,
+    activeCategory,
+    showExcludedRecords,
+    selectedSource,
+  );
   $: visibleRecordCount = visibleRecordGroups.reduce((count, group) => count + group.records.length, 0);
   $: selectedInvoice = selectedInvoiceKey
     ? spending.invoices.find((invoice) => invoice.invoiceKey === selectedInvoiceKey) ?? null
+    : null;
+  $: selectedAccountRecord = selectedAccountStatementRowId
+    ? model.accountRecords.find((record) => record.statementRowId === selectedAccountStatementRowId) ?? null
     : null;
 
   onMount(() => {
@@ -139,8 +156,8 @@
     record: SpendingAccountRecord,
     state: SpendingState | null,
     category: SpendingCategory | null = record.category,
-  ) {
-    if (savingRecordIds.size > 0) return;
+  ): Promise<boolean> {
+    if (savingRecordIds.size > 0) return false;
     ++loadRequestSequence;
     const snapshot = spending;
     savingRecordIds = new Set(savingRecordIds).add(record.statementRowId);
@@ -158,13 +175,30 @@
             automaticReason: record.automaticReason,
           });
       await reloadSelectedSpending(snapshot);
+      return true;
     } catch {
       spending = snapshot;
       errorRecordIds = new Set(errorRecordIds).add(record.statementRowId);
+      return false;
     } finally {
       savingRecordIds = new Set(savingRecordIds);
       savingRecordIds.delete(record.statementRowId);
     }
+  }
+
+  function openAccountModal(event: MouseEvent, statementRowId: string) {
+    accountModalTrigger = event.currentTarget as HTMLButtonElement;
+    selectedAccountStatementRowId = statementRowId;
+  }
+
+  async function closeAccountModal() {
+    const trigger = accountModalTrigger;
+    selectedAccountStatementRowId = undefined;
+    accountModalTrigger = null;
+    await tick();
+    const fallback = categoryFilters?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')
+      ?? allCategoryFilter;
+    (trigger?.isConnected ? trigger : fallback)?.focus();
   }
 
   function openDailyModal(event: MouseEvent) {
@@ -256,36 +290,46 @@
     return recordDateFormatter.format(new Date(`${date}T00:00:00Z`));
   }
 
-  function pendingCategory(record: SpendingAccountRecord) {
-    return pendingCategories[record.statementRowId] ?? record.category;
+  function formatShortDate(date: string) {
+    return shortDateFormatter.format(new Date(`${date}T00:00:00Z`));
   }
 
-  function setPendingCategory(record: SpendingAccountRecord, value: string) {
-    if (!isSpendingCategory(value)) return;
-    pendingCategories = { ...pendingCategories, [record.statementRowId]: value };
+  function formatWeekday(date: string) {
+    return weekdayFormatter.format(new Date(`${date}T00:00:00Z`));
   }
 
   function buildVisibleRecordGroups(
     source: SpendingPageDto,
     category: SpendingCategory | undefined,
     includeExcluded: boolean,
+    recordSource: SpendingSource | undefined,
   ): SpendingDateGroup[] {
     const displayedKeys = new Set(source.recordsByDate.flatMap((group) => group.records)
       .map((record) => record.key));
     const missingExcluded = Map.groupBy(source.excludedAccountRecords.filter((record) =>
-      !displayedKeys.has(record.key) && (!category || record.category === category)
+      (!recordSource || recordSource === "account")
+      && !displayedKeys.has(record.key)
+      && (!category || record.category === category)
     ), (record) => record.date);
     return source.recordsByDate.map((group) => {
       const extra = missingExcluded.get(group.date) ?? [];
+      const records = [
+        ...group.records.filter((record) =>
+          (!recordSource || record.source === recordSource)
+          && (includeExcluded || record.state !== "excluded")
+        ),
+        ...(includeExcluded ? extra : []),
+      ];
       return {
         ...group,
-        records: [
-          ...group.records.filter((record) => includeExcluded || record.state !== "excluded"),
-          ...(includeExcluded ? extra : []),
-        ],
+        records,
+        includedTotal: records.reduce(
+          (total, record) => record.state === "included" ? total + record.amount : total,
+          0,
+        ),
         excludedCount: group.excludedCount + extra.length,
       };
-    });
+    }).filter((group) => group.records.length > 0);
   }
 
 </script>
@@ -321,10 +365,6 @@
             selectedKey={selectedMonth ?? model.selectedMonth}
             onBarClick={(month) => void selectMonth(month)}
           />
-        </div>
-        <div class="chart-note">
-          <span>{$t.spending.monthlyHint}</span>
-          <span>{$t.spending.categoryHint}</span>
         </div>
       </section>
 
@@ -367,19 +407,65 @@
                   { locale: $locale },
                 )}
               </strong>
-              <span>{$t.spending.confirmedCount(confirmedCount)}</span>
             </div>
           </div>
           <div class="invoice-heading">
             <p class="eyebrow">{$t.spending.recordsEyebrow}</p>
             <h2>{$t.spending.dailyRecords}</h2>
             <p class="panel-meta" role="status" aria-live="polite">
-              {$t.spending.resultCount(visibleRecordCount)} · {$t.spending.newestFirst}
+              {$t.spending.resultCount(visibleRecordCount)}
             </p>
+            {#if model.excludedAccountRecords.length > 0}
+              <div class="excluded-control">
+                <button
+                  class="excluded-button"
+                  type="button"
+                  data-excluded-toggle
+                  aria-label={$t.spending.excludedButtonAria(model.excludedAccountRecords.length)}
+                  aria-expanded={showExcludedRecords}
+                  onclick={() => showExcludedRecords = !showExcludedRecords}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2 5h20"></path>
+                    <path d="M6 12h12"></path>
+                    <path d="M9 19h6"></path>
+                  </svg>
+                </button>
+                <span class="excluded-tooltip" role="tooltip">
+                  {$t.spending.excludedTooltip(model.excludedAccountRecords.length)}
+                </span>
+              </div>
+            {/if}
           </div>
         </div>
 
         <div class="invoice-tools">
+          <div class="source-filters" role="group" aria-label={$t.spending.sourceFilterAria}>
+            <button
+              class="filter-btn"
+              type="button"
+              data-source-filter="all"
+              disabled={transactionSaving}
+              aria-pressed={!selectedSource}
+              onclick={() => selectedSource = undefined}
+            >{$t.spending.allSources}</button>
+            <button
+              class="filter-btn"
+              type="button"
+              data-source-filter="invoice"
+              disabled={transactionSaving}
+              aria-pressed={selectedSource === "invoice"}
+              onclick={() => selectedSource = "invoice"}
+            >{$t.spending.invoiceSource}</button>
+            <button
+              class="filter-btn"
+              type="button"
+              data-source-filter="account"
+              disabled={transactionSaving}
+              aria-pressed={selectedSource === "account"}
+              onclick={() => selectedSource = "account"}
+            >{$t.spending.accountSource}</button>
+          </div>
           <div
             class="category-filters"
             bind:this={categoryFilters}
@@ -408,31 +494,22 @@
               </button>
             {/each}
           </div>
-          {#if model.excludedAccountRecords.length > 0}
-            <div class="excluded-disclosure">
-              <span>{$t.spending.excludedDisclosure(model.excludedAccountRecords.length)}</span>
-              <button
-                type="button"
-                aria-expanded={showExcludedRecords}
-                onclick={() => showExcludedRecords = !showExcludedRecords}
-              >
-                {showExcludedRecords ? $t.spending.hideExcluded : $t.spending.reviewExcluded}
-              </button>
-            </div>
-          {/if}
         </div>
 
-        <div class="record-list" bind:this={recordList}>
+        <div class="record-list" bind:this={recordList} data-spending-ledger>
+          <div class="ledger-columns" aria-hidden="true">
+            <span data-ledger-column>{$t.spending.ledgerDate}</span>
+            <span data-ledger-column>{$t.spending.ledgerTransaction}</span>
+            <span data-ledger-column>{$t.spending.ledgerAmount}</span>
+          </div>
           {#if visibleRecordGroups.length > 0}
             {#each visibleRecordGroups as group (group.date)}
-              <section class="record-day">
-                <header class="date-head">
-                  <strong>{formatRecordDate(group.date)}</strong>
-                  <span>{$t.spending.daySummary(
-                    formatMoney({ currency: "TWD", value: group.includedTotal }, { locale: $locale }),
-                    group.excludedCount,
-                    group.pendingCount,
-                  )}</span>
+              <section class="record-day" aria-labelledby={`spending-day-${group.date}`}>
+                <header class="day-summary" id={`spending-day-${group.date}`} data-day-summary>
+                  <span>{formatShortDate(group.date)}</span>
+                  <strong class="money" data-sensitive>
+                    {formatMoney({ currency: "TWD", value: group.includedTotal }, { locale: $locale })}
+                  </strong>
                 </header>
                 <div class="record-rows">
                   {#each group.records as record (record.key)}
@@ -447,6 +524,10 @@
                         )}
                         onclick={(event) => openInvoiceModal(event, record.invoiceKey)}
                       >
+                        <span class="record-date">
+                          <strong>{formatShortDate(record.date)}</strong>
+                          <small>{formatWeekday(record.date)}</small>
+                        </span>
                         <div class="record-main">
                           <strong class="merchant-name">{record.label}</strong>
                           <div class="record-meta">
@@ -456,82 +537,49 @@
                                 {$t.spending.categories[category]}
                               </span>
                             {/each}
+                            <span class="status-chip included">{$t.spending.invoiceStatus}</span>
                           </div>
                         </div>
                         <strong class="record-amount money" data-sensitive>
                           {formatMoney({ currency: "TWD", value: record.amount }, { locale: $locale })}
                         </strong>
-                        <span class="status-chip included">{$t.spending.invoiceStatus}</span>
                       </button>
                     {:else}
-                      <div class="record-row account-row">
+                      <button
+                        class="record-row account-row"
+                        class:pending-row={record.state === "pending"}
+                        type="button"
+                        data-account-row={record.statementRowId}
+                        disabled={transactionSaving}
+                        aria-label={$t.spending.reviewTransactionAria(
+                          record.label,
+                          formatRecordDate(record.date),
+                          formatMoney({ currency: record.currency, value: record.amount }, { locale: $locale }),
+                        )}
+                        onclick={(event) => openAccountModal(event, record.statementRowId)}
+                      >
+                        <span class="record-date">
+                          <strong>{formatShortDate(record.date)}</strong>
+                          <small>{record.time || formatWeekday(record.date)}</small>
+                        </span>
                         <div class="record-main">
                           <strong class="merchant-name">{record.label}</strong>
                           <div class="record-meta">
                             <span>{$t.spending.accountSource}</span>
-                            <span>· {record.manual
-                              ? $t.spending.manualReason
-                              : $t.spending.reasons[record.automaticReason]}</span>
+                            {#if record.accountNumber}<span>· {record.accountNumber}</span>{/if}
                             <span class="category-chip category-{record.category}">
                               {$t.spending.categories[record.category]}
                             </span>
+                            <span class="status-chip {record.state}">{$t.spending.states[record.state]}</span>
                           </div>
                           {#if errorRecordIds.has(record.statementRowId)}
                             <span class="record-error" role="alert">{$t.spending.overrideError}</span>
                           {/if}
                         </div>
                         <strong class="record-amount money" data-sensitive>
-                          {formatMoney({ currency: "TWD", value: record.amount }, { locale: $locale })}
+                          {formatMoney({ currency: record.currency, value: record.amount }, { locale: $locale })}
                         </strong>
-                        <div class="record-actions">
-                          <span class="status-chip {record.state}">{$t.spending.states[record.state]}</span>
-                          {#if record.state === "pending" && !record.manual}
-                            <select
-                              aria-label={$t.spending.pendingCategory}
-                              value={pendingCategory(record)}
-                              disabled={transactionSaving}
-                              onchange={(event) => setPendingCategory(record, event.currentTarget.value)}
-                            >
-                              {#each SPENDING_CATEGORY_IDS as category}
-                                <option value={category}>{$t.spending.categories[category]}</option>
-                              {/each}
-                            </select>
-                            <div class="pending-buttons">
-                              <button
-                                type="button"
-                                disabled={transactionSaving}
-                                onclick={() => void updateTransactionState(record, "included", pendingCategory(record))}
-                              >{$t.spending.includeExpense}</button>
-                              <button
-                                type="button"
-                                disabled={transactionSaving}
-                                onclick={() => void updateTransactionState(record, "excluded")}
-                              >{$t.spending.excludeExpense}</button>
-                            </div>
-                          {:else if record.manual}
-                            <button
-                              type="button"
-                              disabled={transactionSaving}
-                              onclick={() => void updateTransactionState(record, null)}
-                            >{$t.spending.restoreAutomatic}</button>
-                          {:else if record.state === "excluded"}
-                            <button
-                              type="button"
-                              disabled={transactionSaving}
-                              onclick={() => void updateTransactionState(record, "included")}
-                            >{$t.spending.restoreExpense}</button>
-                          {:else if record.state === "included"}
-                            <button
-                              type="button"
-                              disabled={transactionSaving}
-                              onclick={() => void updateTransactionState(record, "excluded")}
-                            >{$t.spending.excludeExpense}</button>
-                          {/if}
-                          {#if savingRecordIds.has(record.statementRowId)}
-                            <span class="saving-label" role="status">{$t.spending.savingOverride}</span>
-                          {/if}
-                        </div>
-                      </div>
+                      </button>
                     {/if}
                   {/each}
                 </div>
@@ -565,6 +613,16 @@
         {errorItemKeys}
         onClose={closeInvoiceModal}
         onCategoryChange={updateItemCategory}
+      />
+    {/if}
+
+    {#if selectedAccountRecord}
+      <AccountTransactionReviewModal
+        record={selectedAccountRecord}
+        saving={savingRecordIds.has(selectedAccountRecord.statementRowId)}
+        error={errorRecordIds.has(selectedAccountRecord.statementRowId)}
+        onClose={closeAccountModal}
+        onSave={updateTransactionState}
       />
     {/if}
   </div>
@@ -616,15 +674,6 @@
     overflow: hidden;
   }
 
-  .chart-note {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: 0 var(--space-5) var(--space-4);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
   .month-toolbar,
   .month-tabs {
     min-width: 0;
@@ -653,6 +702,7 @@
   }
 
   .month-tabs::-webkit-scrollbar,
+  .invoice-tools::-webkit-scrollbar,
   .category-filters::-webkit-scrollbar {
     display: none;
   }
@@ -707,56 +757,98 @@
     line-height: 1;
   }
 
-  .invoice-summary-value span {
-    color: var(--muted);
-    font-size: 12px;
-  }
-
   .invoice-heading {
     justify-items: end;
     text-align: right;
   }
 
+  .excluded-control {
+    position: relative;
+    margin-top: 4px;
+  }
+
+  .excluded-button {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+  }
+
+  .excluded-button[aria-expanded="true"] {
+    background: var(--surface-soft);
+  }
+
+  .excluded-button svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 2;
+  }
+
+  .excluded-tooltip {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 7px);
+    z-index: 4;
+    width: max-content;
+    max-width: min(280px, 80vw);
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--fg) 94%, transparent);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: left;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(3px);
+    transition: opacity 120ms ease, transform 120ms ease;
+  }
+
+  .excluded-control:hover .excluded-tooltip,
+  .excluded-control:focus-within .excluded-tooltip {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
   .invoice-tools {
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+    scrollbar-width: none;
     border-bottom: 1px solid var(--border);
   }
 
+  .source-filters,
   .category-filters {
     min-width: 0;
     display: flex;
     gap: var(--space-2);
     padding: var(--space-4) var(--space-5);
-    overflow-x: auto;
-    scrollbar-width: none;
   }
 
+  .source-filters {
+    flex: 0 0 auto;
+    padding-right: var(--space-4);
+    border-right: 1px solid var(--border);
+  }
+
+  .category-filters {
+    flex: 0 0 auto;
+    padding-left: var(--space-4);
+  }
+
+  .source-filters .filter-btn,
   .category-filters .filter-btn {
     flex: 0 0 auto;
     white-space: nowrap;
-  }
-
-  .excluded-disclosure {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: 10px var(--space-5);
-    border-top: 1px solid var(--border);
-    background: var(--surface-soft);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .excluded-disclosure button,
-  .record-actions button {
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--accent);
-    font: inherit;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    cursor: pointer;
   }
 
   .record-list {
@@ -770,27 +862,51 @@
     min-width: 0;
   }
 
-  .date-head {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    display: flex;
+  .ledger-columns,
+  .day-summary,
+  .record-row {
+    grid-template-columns: 120px minmax(0, 1fr) auto;
+  }
+
+  .ledger-columns,
+  .day-summary {
+    display: grid;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-4);
     padding: 9px var(--space-5);
-    border-block: 1px solid var(--border);
     background: var(--surface-soft);
     color: var(--muted);
     font-size: 12px;
   }
 
-  .date-head strong {
-    color: var(--fg);
+  .ledger-columns {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .ledger-columns span:last-child,
+  .day-summary strong {
+    text-align: right;
+  }
+
+  .day-summary {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .day-summary span {
+    grid-column: 2;
+  }
+
+  .day-summary strong {
+    grid-column: 3;
+    color: var(--muted);
   }
 
   .record-rows {
-    padding-inline: var(--space-5);
     background: var(--surface);
   }
 
@@ -799,27 +915,26 @@
     min-width: 0;
     min-height: 76px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(104px, auto);
     align-items: center;
     gap: var(--space-4);
-    padding: 12px 0;
+    padding: 14px var(--space-5);
     border: 0;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
     color: var(--fg);
-  }
-
-  .invoice-row {
     font: inherit;
     text-align: left;
-    cursor: pointer;
   }
 
-  .invoice-row:hover {
+  .pending-row {
+    background: color-mix(in oklch, var(--warn) 4%, var(--surface));
+  }
+
+  .record-row:hover {
     background: var(--surface-soft);
   }
 
-  .invoice-row:focus-visible {
+  .record-row:focus-visible {
     position: relative;
     z-index: 1;
     outline: 2px solid var(--accent);
@@ -836,6 +951,21 @@
     gap: 4px;
   }
 
+  .record-date {
+    display: grid;
+    gap: 1px;
+  }
+
+  .record-date strong {
+    font-size: 14px;
+  }
+
+  .record-date small {
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
   .record-meta {
     min-width: 0;
     display: flex;
@@ -847,33 +977,10 @@
   }
 
   .record-amount {
+    justify-self: end;
     font-size: 14px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-  }
-
-  .record-actions {
-    min-width: 104px;
-    display: grid;
-    justify-items: end;
-    gap: 5px;
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .record-actions select {
-    max-width: 150px;
-    min-height: 30px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface);
-    color: var(--fg);
-    font: inherit;
-  }
-
-  .pending-buttons {
-    display: flex;
-    gap: var(--space-2);
   }
 
   .status-chip {
@@ -971,15 +1078,10 @@
       padding-inline: var(--space-2);
     }
 
-    .chart-note,
     .invoice-header,
     .spending-panel-title {
       align-items: start;
       flex-direction: column;
-    }
-
-    .chart-note {
-      display: flex;
     }
 
     .invoice-heading {
@@ -988,9 +1090,9 @@
     }
 
     .category-filters,
-    .excluded-disclosure,
-    .date-head,
-    .record-rows {
+    .ledger-columns,
+    .day-summary,
+    .record-row {
       padding-inline: var(--space-4);
     }
 
@@ -999,15 +1101,8 @@
     }
 
     .record-row {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: 72px minmax(0, 1fr) auto;
       gap: var(--space-3);
-    }
-
-    .record-actions,
-    .invoice-row > .status-chip {
-      grid-column: 1 / -1;
-      justify-items: start;
-      justify-self: start;
     }
   }
 </style>

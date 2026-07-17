@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   applySpendingAccountOverride,
   buildSpendingModel,
+  parseTransferDestination,
   type SpendingAccountRecord,
   type SpendingAccountTransactionInput,
   type SpendingCardPaymentInput,
@@ -137,11 +138,24 @@ function accountRow(
     accountNumber: "123456789",
     currency: "TWD",
     date,
+    time: null,
     description,
     note: null,
     amount,
   };
 }
+
+assert.deepEqual(parseTransferDestination("06600000102281740 7097230279900200"), {
+  bankCode: "066",
+  accountNumber: "00000102281740",
+});
+assert.deepEqual(parseTransferDestination("0022016000081100"), {
+  bankCode: "002",
+  accountNumber: "2016000081100",
+});
+assert.equal(parseTransferDestination("reference 06600000102281740"), null);
+assert.equal(parseTransferDestination("066-short"), null);
+assert.equal(parseTransferDestination(null), null);
 
 function depositRow(
   accountNumber: string,
@@ -165,7 +179,13 @@ const accountTransactions: SpendingAccountTransactionInput[] = [
   accountRow("loan-payment", 1_000, "放款繳款", "2026-07-15"),
   accountRow("self-transfer", 5_000, "自轉", "2026-07-15"),
   accountRow("mirrored", 3_000, "轉帳", "2026-07-14"),
-  accountRow("transfer", 1_500, "轉帳", "2026-07-14"),
+  {
+    ...accountRow("transfer", 1_500, "轉帳", "2026-07-14"),
+    bank: "line-bank",
+    accountNumber: "21732000021051",
+    time: "17:27:28",
+    note: "06600000102281740 7097230279900200",
+  },
   accountRow("cash", 2_000, "提款", "2026-07-13"),
   accountRow("plain-payment", 300, "繳費", "2026-07-12"),
   accountRow("invoice-duplicate", 100, "測試商店", "2026-02-01"),
@@ -190,6 +210,31 @@ const input = {
 const latest = buildSpendingModel(input);
 assert.deepEqual(latest.months, ["2026-01", "2026-02", "2026-03", "2026-07"]);
 assert.equal(latest.selectedMonth, "2026-07");
+assert.deepEqual(
+  latest.accountRecords.find((record) => record.statementRowId === "transfer"),
+  {
+    key: "account:transfer",
+    source: "account",
+    statementRowId: "transfer",
+    state: "pending",
+    automaticState: "pending",
+    automaticReason: "ambiguous_transfer",
+    automaticCategory: "other",
+    duplicateInvoiceKey: undefined,
+    manual: false,
+    date: "2026-07-14",
+    time: "17:27:28",
+    label: "轉帳",
+    bank: "line-bank",
+    accountNumber: "21732000021051",
+    currency: "TWD",
+    note: "06600000102281740 7097230279900200",
+    destinationBankCode: "066",
+    destinationAccountNumber: "00000102281740",
+    amount: 1_500,
+    category: "other",
+  },
+);
 
 const february = buildSpendingModel({ ...input, selectedMonth: "2026-02" });
 assert.deepEqual(february.monthlyRows.map((row) => row.month), [
