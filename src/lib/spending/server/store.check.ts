@@ -87,7 +87,9 @@ function insertAccountTransaction(
     statementRowId: string;
     accountNumber: string;
     date: string;
+    transactionTime?: string;
     description: string;
+    note?: string;
     withdrawalAmount?: number;
     depositAmount?: number;
   },
@@ -97,10 +99,11 @@ function insertAccountTransaction(
       statement_row_id, source_file_id, import_run_id, source_relative_path,
       source_row_index, source_hash, content_hash, bank, product,
       raw_payload_json, imported_at, created_at, account_number, currency,
-      transaction_date, description, withdrawal_amount, deposit_amount
+      transaction_date, transaction_time, description, note,
+      withdrawal_amount, deposit_amount
     ) VALUES (?, ?, 'run', 'account.csv', 1, ?, ?, 'test-bank',
       'account-transactions', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?)
+      '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?, ?, ?)
   `).run(
     input.statementRowId,
     `source-${input.statementRowId}`,
@@ -108,7 +111,9 @@ function insertAccountTransaction(
     `content-hash-${input.statementRowId}`,
     input.accountNumber,
     input.date,
+    input.transactionTime ?? null,
     input.description,
+    input.note ?? null,
     input.withdrawalAmount ?? null,
     input.depositAmount ?? null,
   );
@@ -205,7 +210,9 @@ try {
     statementRowId: "mirrored-transfer",
     accountNumber: "111",
     date: "2026-02-01",
+    transactionTime: "17:27:28",
     description: "轉帳",
+    note: "06600000102281740 7097230279900200",
     withdrawalAmount: 200,
   });
   insertAccountTransaction(db, {
@@ -272,6 +279,22 @@ try {
     loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
       ?.automaticReason,
     "internal_transfer",
+  );
+  assert.deepEqual(
+    loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer") && {
+      time: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")?.time,
+      note: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")?.note,
+      destinationBankCode: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
+        ?.destinationBankCode,
+      destinationAccountNumber: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
+        ?.destinationAccountNumber,
+    },
+    {
+      time: "17:27:28",
+      note: "06600000102281740 7097230279900200",
+      destinationBankCode: "066",
+      destinationAccountNumber: "00000102281740",
+    },
   );
   assert.equal(
     loaded.accountRecords.find((row) => row.statementRowId === "card-payment")
