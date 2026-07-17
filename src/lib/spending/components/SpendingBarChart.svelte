@@ -80,6 +80,7 @@
   let transformDragging = false;
   let pendingTransform: TransformDetail | undefined;
   let transformFrame: number | undefined;
+  let roundedBarKeys = new Set<string>();
 
   $: interactionProps = spendingChartInteractionProps(interaction);
   $: hasTransform = interactionProps.transform !== undefined;
@@ -145,6 +146,21 @@
     groupBy: "source",
     stackBy: "category",
   }) as GroupStackDatum[];
+  $: {
+    const keys = new Set<string>();
+    for (const row of renderedRows) {
+      for (const source of sources) {
+        for (let index = visibleCategories.length - 1; index >= 0; index -= 1) {
+          const category = visibleCategories[index];
+          if (row[source][category] > 0) {
+            keys.add(barKey(rowKey(row), source, category));
+            break;
+          }
+        }
+      }
+    }
+    roundedBarKeys = keys;
+  }
   $: periodHitData = renderedRows.map((row) => ({
     periodKey: rowKey(row),
     source: "invoice" as const,
@@ -194,6 +210,10 @@
 
   function rowKey(row: SpendingChartRow) {
     return "month" in row ? row.month : row.date;
+  }
+
+  function barKey(periodKey: string, source: SpendingSource, category: SpendingCategory) {
+    return `${periodKey}:${source}:${category}`;
   }
 
   function toggleCategory(category: SpendingCategory) {
@@ -351,6 +371,7 @@
   data-initial-translate-x={initialTransform.translateX}
   data-rendered-months={renderedRows.length}
   data-rendered-buckets={renderedRows.length * sources.length}
+  data-rounded-bars={roundedBarKeys.size}
   data-moving={transformDragging}
   data-at-start={viewport?.atStart ?? true}
   data-at-end={viewport?.atEnd ?? true}
@@ -452,8 +473,8 @@
                     fill={categoryColors[datum.category]}
                     stroke="var(--surface)"
                     strokeWidth={1}
-                    radius={5}
-                    rounded="edge"
+                    radius={roundedBarKeys.has(barKey(datum.periodKey, datum.source, datum.category)) ? 5 : 0}
+                    rounded="top"
                   />
                 {/each}
               </CanvasChartClipPath>
@@ -513,7 +534,7 @@
               </SvgChartClipPath>
             </Layer>
 
-            <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
+            <Tooltip.Root {context} class="sparkline-tooltip" variant="none">
               {#snippet children({ data })}
                 {@const row = tooltipRow(data)}
                 <div class="sparkline-tooltip-body spending-tooltip">
