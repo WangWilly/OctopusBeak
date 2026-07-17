@@ -18,10 +18,12 @@ const months = Array.from({ length: 30 }, (_, index) => {
 const monthlyRows = months.map((month, index) => {
   const invoice = index === 20 ? emptyCategoryAmounts : categoryAmounts(12 + (index % 6));
   const account = index === 20 ? emptyCategoryAmounts : categoryAmounts(index % 4);
+  const pendingAccount = index === 24 ? { ...emptyCategoryAmounts, other: 8_400 } : emptyCategoryAmounts;
   return {
     month,
     invoice,
     account,
+    pendingAccount,
     total: categories.reduce((total, category) => total + invoice[category] + account[category], 0),
   };
 });
@@ -88,6 +90,17 @@ try {
   assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
   assert.equal(await chart.getAttribute("data-rendered-months"), "20");
   assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  const confirmedToggle = page.locator('[data-chart-state="confirmed"]');
+  const pendingToggle = page.locator('[data-chart-state="pending"]');
+  assert.equal(await confirmedToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(await pendingToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(await chart.getAttribute("data-show-pending"), "false");
+  await pendingToggle.click();
+  assert.equal(await pendingToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(await chart.getAttribute("data-show-pending"), "true");
+  assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), /Pending.*TWD 8,400/u);
+  assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), new RegExp(`Confirmed total.*TWD ${monthlyRows[24].total.toLocaleString("en-US")}`, "u"));
   assert.equal(await chart.getAttribute("data-rounded-bars"), "38");
   assert.equal(await chart.locator("[data-spending-bar]").count(), 0);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));

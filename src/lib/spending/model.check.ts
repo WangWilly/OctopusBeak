@@ -266,6 +266,15 @@ assert.deepEqual(
       leisure: 0,
       other: 0,
     },
+    pendingAccount: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 100,
+    },
   },
 );
 assert.deepEqual(february.selectedMonthSummary, { total: 180, invoiceCount: 3, accountCount: 0 });
@@ -353,6 +362,7 @@ assert.deepEqual(latest.monthlyRows.find((row) => row.month === "2026-07"), {
   total: 20_236,
   invoice: { food: 0, daily: 0, transport: 0, shopping: 0, home: 0, leisure: 0, other: 0 },
   account: { food: 0, daily: 0, transport: 0, shopping: 0, home: 19_356, leisure: 0, other: 880 },
+  pendingAccount: { food: 0, daily: 0, transport: 0, shopping: 0, home: 0, leisure: 0, other: 3_800 },
 });
 assert.deepEqual(latest.dailyRows, [{
   date: "2026-07-16",

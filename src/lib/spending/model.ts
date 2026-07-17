@@ -118,6 +118,7 @@ export type SpendingSourceAmounts = {
 export type MonthlySpendingRow = SpendingSourceAmounts & {
   month: string;
   total: number;
+  pendingAccount: SpendingCategoryAmounts;
 };
 export type DailySpendingRow = SpendingSourceAmounts & {
   date: string;
@@ -306,7 +307,12 @@ export function buildSpendingModel(
     amounts[reconciliationCategory] += invoice.amount - itemTotal;
     categories.add(reconciliationCategory);
 
-    const row = monthly.get(month) ?? { month, total: 0, ...sourceAmounts() };
+    const row = monthly.get(month) ?? {
+      month,
+      total: 0,
+      ...sourceAmounts(),
+      pendingAccount: categoryAmounts(),
+    };
     row.total += invoice.amount;
     addCategoryAmounts(row.invoice, amounts);
     monthly.set(month, row);
@@ -347,10 +353,17 @@ export function buildSpendingModel(
       duplicateInvoiceRows.set(automatic.invoiceKey, ids);
     }
     const month = row.date.slice(0, 7);
-    const monthlyRow = monthly.get(month) ?? { month, total: 0, ...sourceAmounts() };
+    const monthlyRow = monthly.get(month) ?? {
+      month,
+      total: 0,
+      ...sourceAmounts(),
+      pendingAccount: categoryAmounts(),
+    };
     if (record.state === "included") {
       monthlyRow.total += record.amount;
       monthlyRow.account[record.category] += record.amount;
+    } else if (record.state === "pending") {
+      monthlyRow.pendingAccount[record.category] += record.amount;
     }
     monthly.set(month, monthlyRow);
     return record;
