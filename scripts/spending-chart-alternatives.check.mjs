@@ -88,6 +88,7 @@ try {
   assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
   assert.equal(await chart.getAttribute("data-rendered-months"), "20");
   assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  assert.equal(await chart.getAttribute("data-rounded-bars"), "38");
   assert.equal(await chart.locator("[data-spending-bar]").count(), 0);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));
   const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
@@ -188,7 +189,9 @@ try {
 
   const populatedMonthHitTarget = chart.locator(`[data-period-hit="${months[24]}"]`);
   await populatedMonthHitTarget.hover();
-  assert.equal(await chart.locator(".spending-tooltip").isVisible(), true);
+  const tooltip = page.locator(".spending-tooltip");
+  assert.equal(await tooltip.isVisible(), true);
+  assert.equal(await tooltip.evaluate((element) => element.closest(".spending-bar-stage") === null), true);
   const loadCountBeforeTooltipClick = await page.evaluate(() => window.__spendingLoadCount);
   await populatedMonthHitTarget.click();
   await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeTooltipClick);
