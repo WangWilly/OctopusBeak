@@ -1323,7 +1323,13 @@ function createSpendingTransactionOverrides(db: LedgerDatabase) {
       ),
       automatic_state TEXT NOT NULL
         CHECK (automatic_state IN ('included', 'excluded', 'pending')),
-      automatic_reason TEXT,
+      automatic_reason TEXT CHECK (
+        automatic_reason IS NULL OR automatic_reason IN (
+          'direct_purchase', 'credit_card_payment', 'loan_payment',
+          'internal_transfer', 'invoice_duplicate', 'ambiguous_transfer',
+          'cash_withdrawal', 'unclassified'
+        )
+      ),
       updated_at TEXT NOT NULL
     );
   `);

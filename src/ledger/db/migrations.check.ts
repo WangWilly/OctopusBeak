@@ -1037,6 +1037,11 @@ try {
       statement_row_id, state, automatic_state, updated_at
     ) VALUES ('bad', 'unknown', 'pending', '2026-07-16T00:00:00.000Z')
   `).run(), /CHECK constraint failed/);
+  assert.throws(() => spendingOverrideDb.prepare(`
+    INSERT INTO spending_transaction_overrides (
+      statement_row_id, state, automatic_state, automatic_reason, updated_at
+    ) VALUES ('bad-reason', 'included', 'pending', 'unknown', '2026-07-16T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
   spendingOverrideDb.close();
 } finally {
   for (const directory of [
