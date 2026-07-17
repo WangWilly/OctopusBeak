@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { BarChart, Text, Tooltip, type BarChartProps, type TextProps } from "layerchart";
+  import { onDestroy } from "svelte";
+  import { Tooltip } from "layerchart";
+  import { BarChart, Rect, Text, type TextProps } from "layerchart/canvas";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -14,6 +16,10 @@
     spendingChartViewport,
     type SpendingChartInteraction,
   } from "./spending-chart-interaction.ts";
+  import {
+    spendingChartInitialTransform,
+    spendingChartRenderWindow,
+  } from "./spending-chart-window.ts";
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
   type SourceBucket = SpendingCategoryAmounts & {
@@ -21,6 +27,9 @@
     periodKey: string;
     source: "invoice" | "account";
   };
+  type TransformDetail = { scale: number; translate: { x: number; y: number } };
+
+  const horizontalPadding = 58 + 16;
 
   const categoryColors: Record<SpendingCategory, string> = {
     food: "var(--spending-food, oklch(52% 0.11 250))",
@@ -41,14 +50,48 @@
 
   let stageWidth = 0;
   let selectedCategories: SpendingCategory[] = [];
-  let chartContext: BarChartProps<SourceBucket>["context"];
-  let transformScale = 1;
-  let transformTranslateX = 0;
+  let chartResetKey = 0;
+  let transformScale: number | undefined;
+  let transformTranslateX: number | undefined;
   let transformDragging = false;
+  let pendingTransform: TransformDetail | undefined;
+  let transformFrame: number | undefined;
 
   $: interactionProps = spendingChartInteractionProps(interaction);
   $: hasTransform = interactionProps.transform !== undefined;
-  $: viewport = spendingChartViewport(rows.length, stageWidth, transformScale, transformTranslateX);
+  $: plotWidth = Math.max(0, stageWidth - horizontalPadding);
+  $: initialTransform = spendingChartInitialTransform(rows.length, plotWidth);
+  $: currentTransformScale = hasTransform ? transformScale ?? initialTransform.scale : 1;
+  $: currentTransformTranslateX = hasTransform
+    ? transformTranslateX ?? initialTransform.translateX
+    : 0;
+  $: chartTransform = interactionProps.transform
+    ? {
+        ...interactionProps.transform,
+        initialScale: initialTransform.scale,
+        initialTranslate: { x: initialTransform.translateX, y: 0 },
+      }
+    : undefined;
+  $: viewport = spendingChartViewport(
+    rows.length,
+    plotWidth,
+    currentTransformScale,
+    currentTransformTranslateX,
+  );
+  $: renderWindow = hasTransform
+    ? spendingChartRenderWindow(rows.length, viewport)
+    : rows.length > 0 ? { startIndex: 0, endIndex: rows.length } : null;
+  $: renderedRows = renderWindow
+    ? rows.slice(renderWindow.startIndex, renderWindow.endIndex)
+    : [];
+  $: shortDateFormatter = new Intl.DateTimeFormat($locale, kind === "month"
+    ? { year: "2-digit", month: "2-digit", timeZone: "UTC" }
+    : { month: "numeric", day: "numeric", timeZone: "UTC" }
+  );
+  $: longDateFormatter = new Intl.DateTimeFormat($locale, kind === "month"
+    ? { year: "numeric", month: "long", timeZone: "UTC" }
+    : { month: "long", day: "numeric", timeZone: "UTC" }
+  );
   $: visibleRange = viewport
     ? $t.spending.chartVisibleRange(
         dateLabel(rowKey(rows[viewport.startIndex]), false),
@@ -64,12 +107,17 @@
     label: $t.spending.categories[key],
     color: categoryColors[key],
   }));
-  $: buckets = rows.flatMap((row) => ([
+  $: allBuckets = rows.flatMap((row) => ([
     { ...row.invoice, bucketKey: `${rowKey(row)}:invoice`, periodKey: rowKey(row), source: "invoice" },
     { ...row.account, bucketKey: `${rowKey(row)}:account`, periodKey: rowKey(row), source: "account" },
   ] satisfies SourceBucket[]));
+  $: buckets = renderedRows.flatMap((row) => ([
+    { ...row.invoice, bucketKey: `${rowKey(row)}:invoice`, periodKey: rowKey(row), source: "invoice" },
+    { ...row.account, bucketKey: `${rowKey(row)}:account`, periodKey: rowKey(row), source: "account" },
+  ] satisfies SourceBucket[]));
+  $: fullBucketKeys = allBuckets.map((bucket) => bucket.bucketKey);
   $: periodTicks = rows.map((row) => `${rowKey(row)}:invoice`);
-  $: stackExtents = buckets.flatMap((bucket) => [
+  $: stackExtents = allBuckets.flatMap((bucket) => [
     visibleCategories.reduce((total, category) => total + Math.min(0, bucket[category]), 0),
     visibleCategories.reduce((total, category) => total + Math.max(0, bucket[category]), 0),
   ]);
@@ -77,7 +125,7 @@
   $: hasNegative = stackExtents.some((value) => value < 0);
   $: yDomain = [hasNegative ? yAxis.min : 0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => hasNegative || tick >= 0);
-  $: hasData = buckets.length > 0 && buckets.some((bucket) =>
+  $: hasData = allBuckets.length > 0 && allBuckets.some((bucket) =>
     visibleCategories.some((category) => bucket[category] !== 0)
   );
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
@@ -94,6 +142,12 @@
       ]
     : null;
   $: compactAmount = new Intl.NumberFormat($locale, { maximumFractionDigits: 1, notation: "compact" });
+  $: transformChanged = Math.abs(currentTransformScale - initialTransform.scale) > 0.001 ||
+    Math.abs(currentTransformTranslateX - initialTransform.translateX) > 0.1;
+
+  onDestroy(() => {
+    if (transformFrame !== undefined) cancelAnimationFrame(transformFrame);
+  });
 
   function rowKey(row: SpendingChartRow) {
     return "month" in row ? row.month : row.date;
@@ -117,9 +171,18 @@
     onBarClick?.(detail.data.periodKey);
   }
 
-  function updateTransform(detail: { scale: number; translate: { x: number; y: number } }) {
-    transformScale = detail.scale;
-    transformTranslateX = detail.translate.x;
+  function updateTransform(detail: TransformDetail) {
+    pendingTransform = detail;
+    if (transformFrame === undefined) transformFrame = requestAnimationFrame(flushTransform);
+  }
+
+  function flushTransform() {
+    if (pendingTransform) {
+      transformScale = pendingTransform.scale;
+      transformTranslateX = pendingTransform.translate.x;
+    }
+    pendingTransform = undefined;
+    transformFrame = undefined;
   }
 
   function startTransformDrag() {
@@ -127,7 +190,18 @@
   }
 
   function endTransformDrag() {
+    if (transformFrame !== undefined) cancelAnimationFrame(transformFrame);
+    flushTransform();
     transformDragging = false;
+  }
+
+  function resetTransform() {
+    if (transformFrame !== undefined) cancelAnimationFrame(transformFrame);
+    pendingTransform = undefined;
+    transformFrame = undefined;
+    transformScale = undefined;
+    transformTranslateX = undefined;
+    chartResetKey += 1;
   }
 
   function axisLabel(value: unknown) {
@@ -142,10 +216,7 @@
     const [year, month, day = 1] = value.split("-").map(Number);
     if (!year || !month || !day) return value;
     const date = new Date(Date.UTC(year, month - 1, day));
-    return new Intl.DateTimeFormat($locale, kind === "month"
-      ? { year: short ? "2-digit" : "numeric", month: short ? "2-digit" : "long", timeZone: "UTC" }
-      : { month: short ? "numeric" : "long", day: "numeric", timeZone: "UTC" }
-    ).format(date);
+    return (short ? shortDateFormatter : longDateFormatter).format(date);
   }
 
   function shortAmount(value: unknown) {
@@ -190,17 +261,23 @@
 </script>
 
 {#snippet xTick({ props }: { props: TextProps })}
+  {@const selected = props.value === axisLabel(selectedKey)}
   <Text
     {...props}
-    class={`${props.class ?? ""}${props.value === axisLabel(selectedKey) ? " spending-selected-label" : ""}`}
+    fill={selected ? "var(--fg)" : props.fill}
+    font-weight={selected ? 800 : props["font-weight"]}
   />
 {/snippet}
 
 <div
   class="spending-bar-chart"
   data-interaction={interaction}
-  data-transform-scale={transformScale}
-  data-transform-translate-x={transformTranslateX}
+  data-transform-scale={currentTransformScale}
+  data-transform-translate-x={currentTransformTranslateX}
+  data-initial-scale={initialTransform.scale}
+  data-initial-translate-x={initialTransform.translateX}
+  data-rendered-months={renderedRows.length}
+  data-rendered-buckets={buckets.length}
   data-moving={transformDragging}
   data-at-start={viewport?.atStart ?? true}
   data-at-end={viewport?.atEnd ?? true}
@@ -232,12 +309,13 @@
       bind:clientWidth={stageWidth}
     >
       {#if stageWidth > 0}
+        {#key chartResetKey}
         <BarChart
-        bind:context={chartContext}
         data={buckets}
         x="bucketKey"
+        xDomain={fullBucketKeys}
         brush={interactionProps.brush}
-        transform={interactionProps.transform}
+        transform={chartTransform}
         onTransform={updateTransform}
         ondragstart={startTransformDrag}
         ondragend={endTransformDrag}
@@ -248,6 +326,9 @@
         yNice={false}
         axis={true}
         grid={{ y: true }}
+        highlight={{
+          area: { fill: "color-mix(in oklch, var(--fg) 6%, transparent)" },
+        }}
         legend={false}
         tooltipContext={{ mode: "band", findTooltipData: "closest" }}
         padding={{ top: 16, right: 16, bottom: 36, left: 58 }}
@@ -281,14 +362,16 @@
             {@const y1 = Number(context.yScale(selectedExtents[0]))}
             {@const y2 = Number(context.yScale(selectedExtents[1]))}
             {#if [invoiceX, accountX, bucketWidth, y1, y2].every(Number.isFinite) && bucketWidth > 0}
-              <rect
-                class="spending-selected-band"
+              <Rect
                 x={invoiceX - 4}
                 y={Math.min(y1, y2) - 4}
                 width={accountX + bucketWidth - invoiceX + 8}
                 height={Math.abs(y2 - y1) + 8}
-                rx="10"
-              ></rect>
+                rx={10}
+                fill="none"
+                stroke="var(--fg)"
+                strokeWidth={2}
+              />
             {/if}
           {/if}
         {/snippet}
@@ -334,6 +417,7 @@
           </Tooltip.Root>
         {/snippet}
         </BarChart>
+        {/key}
       {/if}
       {#if hasTransform && transformDragging && visibleRange}
         <span class="spending-visible-range" data-visible-range>{visibleRange}</span>
@@ -355,8 +439,8 @@
   {#if hasTransform}
     <div class="spending-navigation-hint">
       <span>{$t.spending.chartDragHint}</span>
-      {#if transformScale > 1}
-        <button type="button" data-action="reset" onclick={() => chartContext?.transform.reset()}>
+      {#if transformChanged}
+        <button type="button" data-action="reset" onclick={resetTransform}>
           {$t.spending.chartReset}
         </button>
       {/if}
@@ -400,38 +484,23 @@
     height: 320px;
   }
 
-  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage,
-  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage :global(.spending-bar-segment) {
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage {
     cursor: grab;
   }
 
-  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging,
-  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging :global(.spending-bar-segment) {
+  .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging {
     cursor: grabbing;
   }
 
-  .spending-bar-stage :global(.lc-layout-svg) {
+  .spending-bar-stage :global(.lc-layout-canvas) {
     width: 100%;
     height: 100%;
     display: block;
   }
 
-  .spending-bar-chart[data-interaction="static"] .spending-bar-stage :global(.spending-bar-segment),
-  .spending-bar-chart[data-interaction="brush"] .spending-bar-stage :global(.spending-bar-segment) {
+  .spending-bar-chart[data-interaction="static"] .spending-bar-stage,
+  .spending-bar-chart[data-interaction="brush"] .spending-bar-stage {
     cursor: pointer;
-  }
-
-  .spending-bar-stage :global(.spending-selected-band) {
-    fill: none;
-    stroke: var(--fg);
-    stroke-width: 2;
-    pointer-events: none;
-    vector-effect: non-scaling-stroke;
-  }
-
-  .spending-bar-stage :global(.spending-selected-label) {
-    fill: var(--fg);
-    font-weight: 800;
   }
 
   .spending-visible-range {
@@ -621,10 +690,4 @@
     font-weight: 700;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .spending-visible-range,
-    .spending-chart-edge {
-      transition: none;
-    }
-  }
 </style>
