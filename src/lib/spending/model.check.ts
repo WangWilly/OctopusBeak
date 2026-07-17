@@ -464,6 +464,21 @@ assert.deepEqual(
   [["pending", "ambiguous_transfer"]],
 );
 
+for (const [statementRowId, amount, description] of [
+  ["missing-account-in-text", 400, "轉帳 98765"],
+  ["missing-account-mirrored", 500, "轉帳"],
+] as const) {
+  const missingSourceAccount = buildSpendingModel({
+    invoices: [],
+    accountTransactions: [{ ...accountRow(statementRowId, amount, description, "2026-07-16"), accountNumber: null }],
+    counterpartDeposits: [depositRow("98765", 500, "2026-07-16")],
+  });
+  assert.deepEqual(
+    missingSourceAccount.accountRecords.map((record) => [record.state, record.automaticReason]),
+    [["pending", "ambiguous_transfer"]],
+  );
+}
+
 const manualDuplicate = buildSpendingModel({
   ...input,
   selectedMonth: "2026-02",
