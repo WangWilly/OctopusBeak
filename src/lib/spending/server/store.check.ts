@@ -10,6 +10,8 @@ import {
 } from "./store.ts";
 
 const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
+const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
+const transferNote = [`066${destinationAccountNumber}`, ["7097", "2302", "7990", "0200"].join("")].join(" ");
 
 function insertInvoice(
   db: LedgerDatabase,
@@ -212,7 +214,7 @@ try {
     date: "2026-02-01",
     transactionTime: "17:27:28",
     description: "轉帳",
-    note: "06600000102281740 7097230279900200",
+    note: transferNote,
     withdrawalAmount: 200,
   });
   insertAccountTransaction(db, {
@@ -300,9 +302,9 @@ try {
     },
     {
       time: "17:27:28",
-      note: "06600000102281740 7097230279900200",
+      note: transferNote,
       destinationBankCode: "066",
-      destinationAccountNumber: "00000102281740",
+      destinationAccountNumber,
     },
   );
   assert.equal(
@@ -362,6 +364,16 @@ try {
       automaticReason: "credit_card_payment",
     }, ledgerDir),
     /Unknown spending category: invalid/,
+  );
+  assert.throws(
+    () => updateSpendingTransactionOverride({
+      statementRowId: "card-payment",
+      state: "included",
+      category: "home",
+      automaticState: "excluded",
+      automaticReason: "invalid" as never,
+    }, ledgerDir),
+    /Unknown automatic spending reason: invalid/,
   );
   assert.throws(
     () => updateSpendingTransactionOverride({

@@ -37,8 +37,8 @@ The database has no normalized destination-account field. The UI will therefore 
 
 A small pure function in `src/lib/spending/model.ts` will inspect only the first whitespace-delimited note token. It recognizes a 16- or 17-digit token as a three-digit bank code followed by a 13- or 14-digit account number. Examples:
 
-- `06600000102281740 7097230279900200` becomes bank code `066`, account `00000102281740`;
-- `0022016000081100` becomes bank code `002`, account `2016000081100`.
+- a 17-digit token beginning with `066` becomes bank code `066` plus its 14-digit account suffix;
+- a 16-digit token beginning with `002` becomes bank code `002` plus its 13-digit account suffix.
 
 Anything else returns no destination. The modal then shows the localized unavailable value while retaining the original note verbatim. This narrow rule limits inference to a bank-code-plus-account-like shape without claiming that the inferred value is authoritative.
 

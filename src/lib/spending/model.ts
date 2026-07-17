@@ -26,15 +26,17 @@ export type SpendingInvoiceDto = {
 
 export type SpendingState = "included" | "excluded" | "pending";
 export type SpendingSource = "invoice" | "account";
-export type SpendingReason =
-  | "direct_purchase"
-  | "credit_card_payment"
-  | "loan_payment"
-  | "internal_transfer"
-  | "invoice_duplicate"
-  | "ambiguous_transfer"
-  | "cash_withdrawal"
-  | "unclassified";
+export const SPENDING_REASONS = [
+  "direct_purchase",
+  "credit_card_payment",
+  "loan_payment",
+  "internal_transfer",
+  "invoice_duplicate",
+  "ambiguous_transfer",
+  "cash_withdrawal",
+  "unclassified",
+] as const;
+export type SpendingReason = typeof SPENDING_REASONS[number];
 
 export type SpendingAccountTransactionInput = {
   statementRowId: string;
@@ -476,13 +478,21 @@ export function applySpendingAccountOverride(
   const month = record.date.slice(0, 7);
   const oldAmount = previous.state === "included" ? previous.amount : 0;
   const newAmount = record.state === "included" ? record.amount : 0;
+  const oldPendingAmount = previous.state === "pending" ? previous.amount : 0;
+  const newPendingAmount = record.state === "pending" ? record.amount : 0;
   const adjust = <T extends SpendingSourceAmounts & { total: number }>(row: T): T => {
     const account = { ...row.account };
     if (oldAmount) account[previous.category] -= oldAmount;
     if (newAmount) account[record.category] += newAmount;
     return { ...row, total: row.total - oldAmount + newAmount, account };
   };
-  const monthlyRows = model.monthlyRows.map((row) => row.month === month ? adjust(row) : row);
+  const monthlyRows = model.monthlyRows.map((row) => {
+    if (row.month !== month) return row;
+    const pendingAccount = { ...row.pendingAccount };
+    if (oldPendingAmount) pendingAccount[previous.category] -= oldPendingAmount;
+    if (newPendingAmount) pendingAccount[record.category] += newPendingAmount;
+    return { ...adjust(row), pendingAccount };
+  });
   const dailyRows = (
     model.dailyRows.some((row) => row.date === record.date) || !newAmount
       ? model.dailyRows

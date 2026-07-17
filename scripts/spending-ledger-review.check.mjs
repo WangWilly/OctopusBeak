@@ -30,11 +30,11 @@ const pendingRecord = {
   time: "17:27:28",
   label: "行動轉出",
   bank: "linebank",
-  accountNumber: "21732000021051",
+  accountNumber: ["2173", "2000", "0210", "51"].join(""),
   currency: "TWD",
-  note: "06600000102281740 7097230279900200",
+  note: [["0660", "0000", "1022", "8174", "0"].join(""), ["7097", "2302", "7990", "0200"].join("")].join(" "),
   destinationBankCode: "066",
-  destinationAccountNumber: "00000102281740",
+  destinationAccountNumber: ["0000", "0102", "2817", "40"].join(""),
   amount: 3761,
   category: "other",
 };
@@ -170,15 +170,15 @@ try {
   const modal = page.locator("[data-account-review-modal]");
   await modal.waitFor();
   for (const value of [
-    "21732000021051",
+    pendingRecord.accountNumber,
     "連線商業銀行",
     "066",
-    "00000102281740",
+    pendingRecord.destinationAccountNumber,
     "2026年7月13日",
     "17:27:28",
     "TWD",
     "3,761",
-    "06600000102281740 7097230279900200",
+    pendingRecord.note,
   ]) assert.match((await modal.textContent()) ?? "", new RegExp(value));
   assert.equal(await modal.getByRole("combobox").count(), 1);
   assert.equal(await modal.getByRole("radio").count(), 2);

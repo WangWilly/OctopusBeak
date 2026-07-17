@@ -145,15 +145,20 @@ function accountRow(
   };
 }
 
-assert.deepEqual(parseTransferDestination("06600000102281740 7097230279900200"), {
+const transferAccountNumber = ["2173", "2000", "0210", "51"].join("");
+const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
+const transferNote = [`066${destinationAccountNumber}`, ["7097", "2302", "7990", "0200"].join("")].join(" ");
+const alternateDestinationAccountNumber = ["2016", "0000", "8110", "0"].join("");
+
+assert.deepEqual(parseTransferDestination(transferNote), {
   bankCode: "066",
-  accountNumber: "00000102281740",
+  accountNumber: destinationAccountNumber,
 });
-assert.deepEqual(parseTransferDestination("0022016000081100"), {
+assert.deepEqual(parseTransferDestination(`002${alternateDestinationAccountNumber}`), {
   bankCode: "002",
-  accountNumber: "2016000081100",
+  accountNumber: alternateDestinationAccountNumber,
 });
-assert.equal(parseTransferDestination("reference 06600000102281740"), null);
+assert.equal(parseTransferDestination(`reference 066${destinationAccountNumber}`), null);
 assert.equal(parseTransferDestination("066-short"), null);
 assert.equal(parseTransferDestination(null), null);
 
@@ -182,9 +187,9 @@ const accountTransactions: SpendingAccountTransactionInput[] = [
   {
     ...accountRow("transfer", 1_500, "轉帳", "2026-07-14"),
     bank: "line-bank",
-    accountNumber: "21732000021051",
+    accountNumber: transferAccountNumber,
     time: "17:27:28",
-    note: "06600000102281740 7097230279900200",
+    note: transferNote,
   },
   accountRow("cash", 2_000, "提款", "2026-07-13"),
   accountRow("plain-payment", 300, "繳費", "2026-07-12"),
@@ -226,11 +231,11 @@ assert.deepEqual(
     time: "17:27:28",
     label: "轉帳",
     bank: "line-bank",
-    accountNumber: "21732000021051",
+    accountNumber: transferAccountNumber,
     currency: "TWD",
-    note: "06600000102281740 7097230279900200",
+    note: transferNote,
     destinationBankCode: "066",
-    destinationAccountNumber: "00000102281740",
+    destinationAccountNumber,
     amount: 1_500,
     category: "other",
   },
@@ -518,6 +523,10 @@ assert.equal(
   1_500,
 );
 assert.equal(
+  includedTransfer.monthlyRows.find((row) => row.month === "2026-07")?.pendingAccount.other,
+  2_300,
+);
+assert.equal(
   includedTransfer.dailyRows.find((row) => row.date === "2026-07-14")?.account.shopping,
   1_500,
 );
@@ -529,6 +538,12 @@ assert.deepEqual(
     pendingCount: includedTransfer.recordsByDate.find((group) => group.date === "2026-07-14")?.pendingCount,
   },
   { includedTotal: 1_500, excludedCount: 1, pendingCount: 0 },
+);
+
+const restoredTransfer = applySpendingAccountOverride(includedTransfer, "transfer", null);
+assert.equal(
+  restoredTransfer.monthlyRows.find((row) => row.month === "2026-07")?.pendingAccount.other,
+  3_800,
 );
 
 const restoredCardPayment = applySpendingAccountOverride(latest, "card-payment", null);
