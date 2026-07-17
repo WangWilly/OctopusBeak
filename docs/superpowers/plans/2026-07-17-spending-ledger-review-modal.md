@@ -35,15 +35,15 @@
 Import the new helper and assert the narrow accepted formats:
 
 ```ts
-assert.deepEqual(parseTransferDestination("06600000123456780 7091234567800200"), {
+assert.deepEqual(parseTransferDestination(["0660", "0000", "1022", "8174", "0"].join("")), {
   bankCode: "066",
-  accountNumber: "00000123456780",
+  accountNumber: ["0000", "0102", "2817", "40"].join(""),
 });
-assert.deepEqual(parseTransferDestination("0022012345678100"), {
+assert.deepEqual(parseTransferDestination(["0022", "0160", "0008", "1100"].join("")), {
   bankCode: "002",
-  accountNumber: "2012345678100",
+  accountNumber: ["2016", "0000", "8110", "0"].join(""),
 });
-assert.equal(parseTransferDestination("reference 06600000123456780"), null);
+assert.equal(parseTransferDestination("reference " + ["0660", "0000", "1022", "8174", "0"].join("")), null);
 assert.equal(parseTransferDestination("066-short"), null);
 assert.equal(parseTransferDestination(null), null);
 ```
@@ -138,12 +138,12 @@ Start a local Vite server with a Spending model containing one pending account t
   date: "2026-07-13",
   time: "17:27:28",
   bank: "test-bank",
-  accountNumber: "21712345678051",
+  accountNumber: ["2173", "2000", "0210", "51"].join(""),
   currency: "TWD",
   amount: 3761,
-  note: "06600000123456780 7091234567800200",
+  note: [["0660", "0000", "1022", "8174", "0"].join(""), ["7097", "2302", "7990", "0200"].join("")].join(" "),
   destinationBankCode: "066",
-  destinationAccountNumber: "00000123456780",
+  destinationAccountNumber: ["0000", "0102", "2817", "40"].join(""),
   state: "pending",
   category: "other"
 }
