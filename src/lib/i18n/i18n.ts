@@ -114,6 +114,8 @@ const en = {
     chartDragHint: "Drag to browse · Command/Control + scroll to zoom",
     chartVisibleRange: (start: string, end: string) => `Visible: ${start}–${end}`,
     chartReset: "Reset view",
+    chartRangeAria: "Chart range",
+    chartRangeLabel: (months: number) => `${months} months`,
     datasetStatus: (invoices: number, accounts: number, start: string, end: string) =>
       `${start}-${end} / ${invoices} invoices and ${accounts} account records`,
     monthSelectorAria: "Select month",
@@ -550,6 +552,8 @@ const zh: typeof en = {
     chartDragHint: "拖曳瀏覽 · Command／Control＋滾輪縮放",
     chartVisibleRange: (start, end) => `目前顯示：${start}–${end}`,
     chartReset: "重設檢視",
+    chartRangeAria: "圖表範圍",
+    chartRangeLabel: (months) => `${months} 個月`,
     datasetStatus: (invoices, accounts, start, end) =>
       `${start}-${end} / ${invoices} 張發票與 ${accounts} 筆帳戶支出`,
     monthSelectorAria: "切換月份",

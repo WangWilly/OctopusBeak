@@ -261,11 +261,21 @@ function findTransactionHeaderIndex(rows: string[][]): number {
   return index;
 }
 
-function normalizeTransactionRows(rows: string[][]): string[][] {
+function normalizeHncbTransactionDate(value: string): string {
+  const match = value.match(/^(\d{4})(\/\d{2}\/\d{2})$/);
+  if (!match) return value;
+  const year = Number(match[1]);
+  return `${year < 1911 ? year + 1911 : year}${match[2]}`;
+}
+
+export function normalizeHncbTransactionRows(rows: string[][]): string[][] {
   const headerIndex = findTransactionHeaderIndex(rows);
   return rows
     .slice(headerIndex + 1)
     .map((row) => sourceTransactionHeaders.map((_, index) => cleanText(row[index])))
+    .map((row) => row.map((value, index) =>
+      index === 0 || index === 2 ? normalizeHncbTransactionDate(value) : value
+    ))
     .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
 }
 
@@ -283,7 +293,7 @@ function parseStatementExport(
     accountId: digitsOnly(account) || safeFilename(fallbackAccount),
     queryPeriod: metadataValue(metadataRows, "資料起訖日"),
     currency: metadataValue(metadataRows, "幣別"),
-    rows: normalizeTransactionRows(transactionRows),
+    rows: normalizeHncbTransactionRows(transactionRows),
   };
 }
 
