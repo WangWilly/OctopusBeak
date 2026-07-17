@@ -1,7 +1,17 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Tooltip } from "layerchart";
-  import { BarChart, Rect, Text, type TextProps } from "layerchart/canvas";
+  import {
+    Axis,
+    Bar,
+    Chart,
+    groupStackData,
+    Highlight,
+    Layer,
+    Rect,
+    Text,
+    Tooltip,
+    type TextProps,
+  } from "layerchart";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -9,7 +19,6 @@
   import type {
     DailySpendingRow,
     MonthlySpendingRow,
-    SpendingCategoryAmounts,
   } from "$lib/spending/model.ts";
   import {
     spendingChartInteractionProps,
@@ -22,14 +31,22 @@
   } from "./spending-chart-window.ts";
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
-  type SourceBucket = SpendingCategoryAmounts & {
-    bucketKey: string;
+  type SpendingSource = "invoice" | "account";
+  type LongDatum = {
     periodKey: string;
-    source: "invoice" | "account";
+    source: SpendingSource;
+    category: SpendingCategory;
+    value: number;
+  };
+  type GroupStackDatum = LongDatum & {
+    keys: Record<string, unknown>;
+    values: number[];
+    data: LongDatum[];
   };
   type TransformDetail = { scale: number; translate: { x: number; y: number } };
 
   const horizontalPadding = 58 + 16;
+  const sources: SpendingSource[] = ["invoice", "account"];
 
   const categoryColors: Record<SpendingCategory, string> = {
     food: "var(--spending-food, oklch(52% 0.11 250))",
@@ -107,40 +124,35 @@
     label: $t.spending.categories[key],
     color: categoryColors[key],
   }));
-  $: allBuckets = rows.flatMap((row) => ([
-    { ...row.invoice, bucketKey: `${rowKey(row)}:invoice`, periodKey: rowKey(row), source: "invoice" },
-    { ...row.account, bucketKey: `${rowKey(row)}:account`, periodKey: rowKey(row), source: "account" },
-  ] satisfies SourceBucket[]));
-  $: buckets = renderedRows.flatMap((row) => ([
-    { ...row.invoice, bucketKey: `${rowKey(row)}:invoice`, periodKey: rowKey(row), source: "invoice" },
-    { ...row.account, bucketKey: `${rowKey(row)}:account`, periodKey: rowKey(row), source: "account" },
-  ] satisfies SourceBucket[]));
-  $: fullBucketKeys = allBuckets.map((bucket) => bucket.bucketKey);
-  $: periodTicks = rows.map((row) => `${rowKey(row)}:invoice`);
-  $: stackExtents = allBuckets.flatMap((bucket) => [
-    visibleCategories.reduce((total, category) => total + Math.min(0, bucket[category]), 0),
-    visibleCategories.reduce((total, category) => total + Math.max(0, bucket[category]), 0),
+  $: sourceAmounts = rows.flatMap((row) => sources.map((source) => row[source]));
+  $: longData = renderedRows.flatMap((row) => sources.flatMap((source) =>
+    visibleCategories.map((category) => ({
+      periodKey: rowKey(row),
+      source,
+      category,
+      value: row[source][category],
+    }))
+  ));
+  $: groupedData = groupStackData(longData, {
+    xKey: "periodKey",
+    groupBy: "source",
+    stackBy: "category",
+  }) as GroupStackDatum[];
+  $: periodKeys = rows.map(rowKey);
+  $: stackExtents = sourceAmounts.flatMap((amounts) => [
+    visibleCategories.reduce((total, category) => total + Math.min(0, amounts[category]), 0),
+    visibleCategories.reduce((total, category) => total + Math.max(0, amounts[category]), 0),
   ]);
   $: yAxis = buildSparklineYAxis([0, ...stackExtents]);
   $: hasNegative = stackExtents.some((value) => value < 0);
   $: yDomain = [hasNegative ? yAxis.min : 0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => hasNegative || tick >= 0);
-  $: hasData = allBuckets.length > 0 && allBuckets.some((bucket) =>
-    visibleCategories.some((category) => bucket[category] !== 0)
+  $: hasData = sourceAmounts.length > 0 && sourceAmounts.some((amounts) =>
+    visibleCategories.some((category) => amounts[category] !== 0)
   );
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
   $: ariaLabel = selectedKey ? `${displayLabel}: ${axisLabel(selectedKey)}` : displayLabel;
-  $: selectedRow = rows.find((row) => rowKey(row) === selectedKey);
-  $: selectedExtents = selectedRow
-    ? [
-        Math.min(...([selectedRow.invoice, selectedRow.account].map((amounts) =>
-          visibleCategories.reduce((total, category) => total + Math.min(0, amounts[category]), 0)
-        ))),
-        Math.max(...([selectedRow.invoice, selectedRow.account].map((amounts) =>
-          visibleCategories.reduce((total, category) => total + Math.max(0, amounts[category]), 0)
-        ))),
-      ]
-    : null;
+  $: selectedVisible = selectedKey !== null && renderedRows.some((row) => rowKey(row) === selectedKey);
   $: compactAmount = new Intl.NumberFormat($locale, { maximumFractionDigits: 1, notation: "compact" });
   $: transformChanged = Math.abs(currentTransformScale - initialTransform.scale) > 0.001 ||
     Math.abs(currentTransformTranslateX - initialTransform.translateX) > 0.1;
@@ -161,14 +173,6 @@
     } else {
       selectedCategories = [...selectedCategories, category];
     }
-  }
-
-  function selectBar(_event: MouseEvent, detail: { data: SourceBucket }) {
-    onBarClick?.(detail.data.periodKey);
-  }
-
-  function selectTooltip(_event: MouseEvent, detail: { data: SourceBucket }) {
-    onBarClick?.(detail.data.periodKey);
   }
 
   function updateTransform(detail: TransformDetail) {
@@ -227,8 +231,8 @@
     return SPENDING_CATEGORY_IDS.reduce((total, category) => total + row[source][category], 0);
   }
 
-  function tooltipRow(bucket: SourceBucket | null | undefined) {
-    return bucket ? rows.find((row) => rowKey(row) === bucket.periodKey) : undefined;
+  function tooltipRow(datum: GroupStackDatum | null | undefined) {
+    return datum ? rows.find((row) => rowKey(row) === datum.periodKey) : undefined;
   }
 
   function tooltipValue(row: SpendingChartRow | null | undefined, category: SpendingCategory) {
@@ -271,13 +275,14 @@
 
 <div
   class="spending-bar-chart"
+  data-chart-layout="group-stack"
   data-interaction={interaction}
   data-transform-scale={currentTransformScale}
   data-transform-translate-x={currentTransformTranslateX}
   data-initial-scale={initialTransform.scale}
   data-initial-translate-x={initialTransform.translateX}
   data-rendered-months={renderedRows.length}
-  data-rendered-buckets={buckets.length}
+  data-rendered-buckets={renderedRows.length * sources.length}
   data-moving={transformDragging}
   data-at-start={viewport?.atStart ?? true}
   data-at-end={viewport?.atEnd ?? true}
@@ -310,113 +315,126 @@
     >
       {#if stageWidth > 0}
         {#key chartResetKey}
-        <BarChart
-        data={buckets}
-        x="bucketKey"
-        xDomain={fullBucketKeys}
-        brush={interactionProps.brush}
-        transform={chartTransform}
-        onTransform={updateTransform}
-        ondragstart={startTransformDrag}
-        ondragend={endTransformDrag}
-        {series}
-        seriesLayout="stack"
-        {yDomain}
-        yBaseline={0}
-        yNice={false}
-        axis={true}
-        grid={{ y: true }}
-        highlight={{
-          area: { fill: "color-mix(in oklch, var(--fg) 6%, transparent)" },
-        }}
-        legend={false}
-        tooltipContext={{ mode: "band", findTooltipData: "closest" }}
-        padding={{ top: 16, right: 16, bottom: 36, left: 58 }}
-        bandPadding={kind === "month" ? 0.58 : 0.66}
-        height={320}
-        onBarClick={selectBar}
-        onTooltipClick={selectTooltip}
-        props={{
-          bars: { class: "spending-bar-segment", stroke: "var(--surface)", strokeWidth: 1, radius: 9 },
-          xAxis: {
-            class: "sparkline-axis",
-            format: axisLabel,
-            ticks: periodTicks,
-            tickLabel: xTick,
-            tickSpacing: kind === "month" ? 52 : 40,
-          },
-          yAxis: {
-            class: "sparkline-axis",
-            format: shortAmount,
-            ticks: yTicks,
-            tickLabelProps: { "data-sensitive": "" },
-          },
-          grid: { class: "sparkline-grid" },
-        }}
-      >
-        {#snippet aboveMarks({ context })}
-          {#if selectedKey && selectedExtents}
-            {@const invoiceX = Number(context.xScale(`${selectedKey}:invoice`))}
-            {@const accountX = Number(context.xScale(`${selectedKey}:account`))}
-            {@const bucketWidth = Number(context.xScale.bandwidth?.() ?? 0)}
-            {@const y1 = Number(context.yScale(selectedExtents[0]))}
-            {@const y2 = Number(context.yScale(selectedExtents[1]))}
-            {#if [invoiceX, accountX, bucketWidth, y1, y2].every(Number.isFinite) && bucketWidth > 0}
-              <Rect
-                x={invoiceX - 4}
-                y={Math.min(y1, y2) - 4}
-                width={accountX + bucketWidth - invoiceX + 8}
-                height={Math.abs(y2 - y1) + 8}
-                rx={10}
-                fill="none"
-                stroke="var(--fg)"
-                strokeWidth={2}
+        <Chart
+          data={groupedData}
+          x="periodKey"
+          xDomain={periodKeys}
+          y="values"
+          x1="source"
+          x1Domain={sources}
+          x1Range={({ xScale }) => [0, xScale.bandwidth?.() ?? 0]}
+          c="category"
+          cDomain={visibleCategories}
+          cRange={visibleCategories.map((category) => categoryColors[category])}
+          brush={interactionProps.brush}
+          transform={chartTransform}
+          onTransform={updateTransform}
+          ondragstart={startTransformDrag}
+          ondragend={endTransformDrag}
+          {yDomain}
+          yBaseline={0}
+          yNice={false}
+          bandPadding={kind === "month" ? 0.42 : 0.5}
+          groupPadding={0.12}
+          tooltipContext={{ mode: "band" }}
+          padding={{ top: 16, right: 16, bottom: 36, left: 58 }}
+          height={320}
+        >
+          {#snippet children({ context })}
+            <Layer>
+              {#if selectedKey && selectedVisible}
+                {@const selectedX = Number(context.xScale(selectedKey))}
+                {@const selectedWidth = Number(context.xScale.bandwidth?.() ?? 0)}
+                {#if Number.isFinite(selectedX) && selectedWidth > 0}
+                  <Rect
+                    data-selected-period={selectedKey}
+                    x={selectedX}
+                    y={0}
+                    width={selectedWidth}
+                    height={context.height}
+                    fill="color-mix(in oklch, var(--fg) 6%, transparent)"
+                    pointer-events="none"
+                  />
+                {/if}
+              {/if}
+              <Axis
+                placement="left"
+                grid={{ class: "sparkline-grid" }}
+                rule
+                classes={{ root: "sparkline-axis" }}
+                format={shortAmount}
+                ticks={yTicks}
+                tickLabelProps={{ "data-sensitive": "" }}
               />
-            {/if}
-          {/if}
-        {/snippet}
+              <Axis
+                placement="bottom"
+                rule
+                classes={{ root: "sparkline-axis" }}
+                format={axisLabel}
+                ticks={periodKeys}
+                tickLabel={xTick}
+                tickSpacing={kind === "month" ? 52 : 40}
+              />
+              <g>
+                {#each groupedData as datum (datum.periodKey + datum.source + datum.category)}
+                  <Bar
+                    data={datum}
+                    tooltip
+                    data-spending-bar
+                    data-period={datum.periodKey}
+                    data-source={datum.source}
+                    data-category={datum.category}
+                    fill={categoryColors[datum.category]}
+                    stroke="var(--surface)"
+                    strokeWidth={1}
+                    radius={9}
+                    onclick={() => onBarClick?.(datum.periodKey)}
+                  />
+                {/each}
+              </g>
+              <Highlight area={{ fill: "color-mix(in oklch, var(--fg) 5%, transparent)" }} />
+            </Layer>
 
-        {#snippet tooltip({ context })}
-          <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
-            {#snippet children({ data })}
-              {@const row = tooltipRow(data)}
-              <div class="sparkline-tooltip-body spending-tooltip">
-                <span>{row ? tooltipLabel(row) : ""}</span>
-                <div class="spending-tooltip-row">
-                  <span>{$t.spending.invoiceSource}</span>
-                  <strong data-sensitive>{formatMoney(
-                    { currency: "TWD", value: row ? sourceTotal(row, "invoice") : 0 },
-                    { locale: $locale },
-                  )}</strong>
-                </div>
-                <div class="spending-tooltip-row">
-                  <span>{$t.spending.accountSource}</span>
-                  <strong data-sensitive>{formatMoney(
-                    { currency: "TWD", value: row ? sourceTotal(row, "account") : 0 },
-                    { locale: $locale },
-                  )}</strong>
-                </div>
-                <div class="spending-tooltip-row spending-tooltip-total">
-                  <span>{$t.spending.confirmedTotal}</span>
-                  <strong data-sensitive>{formatMoney(
-                    { currency: "TWD", value: row?.total ?? 0 },
-                    { locale: $locale },
-                  )}</strong>
-                </div>
-                {#each series as item}
+            <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
+              {#snippet children({ data })}
+                {@const row = tooltipRow(data)}
+                <div class="sparkline-tooltip-body spending-tooltip">
+                  <span>{row ? tooltipLabel(row) : ""}</span>
                   <div class="spending-tooltip-row">
-                    <span>{item.label}</span>
+                    <span>{$t.spending.invoiceSource}</span>
                     <strong data-sensitive>{formatMoney(
-                      { currency: "TWD", value: tooltipValue(row, item.key) },
+                      { currency: "TWD", value: row ? sourceTotal(row, "invoice") : 0 },
                       { locale: $locale },
                     )}</strong>
                   </div>
-                {/each}
-              </div>
-            {/snippet}
-          </Tooltip.Root>
-        {/snippet}
-        </BarChart>
+                  <div class="spending-tooltip-row">
+                    <span>{$t.spending.accountSource}</span>
+                    <strong data-sensitive>{formatMoney(
+                      { currency: "TWD", value: row ? sourceTotal(row, "account") : 0 },
+                      { locale: $locale },
+                    )}</strong>
+                  </div>
+                  <div class="spending-tooltip-row spending-tooltip-total">
+                    <span>{$t.spending.confirmedTotal}</span>
+                    <strong data-sensitive>{formatMoney(
+                      { currency: "TWD", value: row?.total ?? 0 },
+                      { locale: $locale },
+                    )}</strong>
+                  </div>
+                  {#each series as item}
+                    <div class="spending-tooltip-row">
+                      <span>{item.label}</span>
+                      <strong data-sensitive>{formatMoney(
+                        { currency: "TWD", value: tooltipValue(row, item.key) },
+                        { locale: $locale },
+                      )}</strong>
+                    </div>
+                  {/each}
+                </div>
+              {/snippet}
+            </Tooltip.Root>
+          {/snippet}
+        </Chart>
         {/key}
       {/if}
       {#if hasTransform && transformDragging && visibleRange}
@@ -490,12 +508,6 @@
 
   .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage.dragging {
     cursor: grabbing;
-  }
-
-  .spending-bar-stage :global(.lc-layout-canvas) {
-    width: 100%;
-    height: 100%;
-    display: block;
   }
 
   .spending-bar-chart[data-interaction="static"] .spending-bar-stage,
