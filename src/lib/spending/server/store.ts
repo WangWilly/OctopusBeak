@@ -9,7 +9,7 @@ import type {
   SpendingReason,
   SpendingState,
 } from "../model.ts";
-import { buildSpendingModel } from "../model.ts";
+import { buildSpendingModel, SPENDING_REASONS } from "../model.ts";
 
 type SpendingRow = {
   invoice_key: string;
@@ -53,6 +53,7 @@ type OverrideRow = {
 };
 
 const SPENDING_STATES = new Set<SpendingState>(["included", "excluded", "pending"]);
+const SPENDING_REASON_SET = new Set<SpendingReason>(SPENDING_REASONS);
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -212,6 +213,10 @@ export function updateSpendingTransactionOverride(
   }
   if (input.state !== null && !SPENDING_STATES.has(input.automaticState)) {
     throw new Error(`Unknown automatic spending state: ${String(input.automaticState)}`);
+  }
+  if (input.state !== null && input.automaticReason !== null &&
+    !SPENDING_REASON_SET.has(input.automaticReason)) {
+    throw new Error(`Unknown automatic spending reason: ${String(input.automaticReason)}`);
   }
 
   const db = openLedgerDatabase(ledgerDir);
