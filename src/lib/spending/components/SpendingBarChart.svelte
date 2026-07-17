@@ -175,6 +175,10 @@
     }
   }
 
+  function selectHighlight(_event: MouseEvent, detail: { data: GroupStackDatum }) {
+    onBarClick?.(detail.data.periodKey);
+  }
+
   function updateTransform(detail: TransformDetail) {
     pendingTransform = detail;
     if (transformFrame === undefined) transformFrame = requestAnimationFrame(flushTransform);
@@ -336,7 +340,7 @@
           yNice={false}
           bandPadding={kind === "month" ? 0.42 : 0.5}
           groupPadding={0.12}
-          tooltipContext={{ mode: "band" }}
+          tooltipContext={{ mode: "band", onclick: selectHighlight }}
           padding={{ top: 16, right: 16, bottom: 36, left: 58 }}
           height={320}
         >
