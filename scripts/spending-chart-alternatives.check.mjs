@@ -8,7 +8,7 @@ function categoryAmounts(seed) {
   return Object.fromEntries(categories.map((category, index) => [category, (seed + index * 7) * 90]));
 }
 
-const months = Array.from({ length: 24 }, (_, index) => {
+const months = Array.from({ length: 30 }, (_, index) => {
   const date = new Date(Date.UTC(2024, 7 + index, 1));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 });
@@ -77,6 +77,13 @@ try {
 
   const chart = page.locator('.monthly-panel [data-interaction="pan-zoom"]');
   await chart.waitFor();
+  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 1);
+  assert.equal(await chart.locator(".spending-bar-segment").count(), 0);
+  assert.equal(await chart.getAttribute("data-rendered-months"), "20");
+  assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  const initialScale = Number(await chart.getAttribute("data-initial-scale"));
+  const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
+  assert.ok(initialScale > 1);
   assert.equal(await page.locator(".monthly-panel [data-chart-concept]").count(), 0);
   assert.equal(await page.locator(".monthly-panel [data-concept-option]").count(), 0);
   assert.equal(
@@ -86,39 +93,48 @@ try {
     0,
   );
   assert.equal(await chart.locator('[data-action="reset"]').count(), 0);
-  assert.equal(await chart.getAttribute("data-at-start"), "true");
+  assert.equal(await chart.getAttribute("data-at-start"), "false");
   assert.equal(await chart.getAttribute("data-at-end"), "true");
 
   const stage = chart.locator(".spending-bar-stage");
-  await stage.hover();
-  await page.keyboard.down("Meta");
-  await page.mouse.wheel(0, -600);
-  await page.keyboard.up("Meta");
-  await page.waitForFunction(() => Number(
-    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-transform-scale"),
-  ) > 1);
-  assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
-
   const loadCountBeforeDrag = await page.evaluate(() => window.__spendingLoadCount);
   const box = await stage.boundingBox();
   assert.ok(box);
-  await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5);
+  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.5);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.5, { steps: 8 });
+  await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5, { steps: 8 });
   assert.equal(await chart.getAttribute("data-moving"), "true");
   assert.equal(await chart.locator("[data-visible-range]").count(), 1);
   await page.mouse.up();
   await page.waitForFunction(() =>
     document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-moving") === "false"
   );
-  assert.notEqual(await chart.getAttribute("data-transform-translate-x"), "0");
+  assert.notEqual(Number(await chart.getAttribute("data-transform-translate-x")), initialTranslateX);
+  const renderedMonthsAfterDrag = Number(await chart.getAttribute("data-rendered-months"));
+  assert.ok(renderedMonthsAfterDrag <= 23, `rendered ${renderedMonthsAfterDrag} months after drag`);
   assert.equal(await page.evaluate(() => window.__spendingLoadCount), loadCountBeforeDrag);
+  assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
 
   await chart.locator('[data-action="reset"]').click();
-  await page.waitForFunction(() => Number(
-    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-transform-scale"),
-  ) === 1);
-  await chart.locator(".lc-tooltip-rect").first().click();
+  await page.waitForFunction(({ scale, translateX }) => {
+    const root = document.querySelector('[data-interaction="pan-zoom"]');
+    return Math.abs(Number(root?.getAttribute("data-transform-scale")) - scale) < 0.001 &&
+      Math.abs(Number(root?.getAttribute("data-transform-translate-x")) - translateX) < 0.1;
+  }, { scale: initialScale, translateX: initialTranslateX });
+
+  let tooltipPoint;
+  for (const yRatio of [0.8, 0.7, 0.6, 0.5]) {
+    for (let xRatio = 0.2; xRatio <= 0.9; xRatio += 0.05) {
+      await page.mouse.move(box.x + box.width * xRatio, box.y + box.height * yRatio);
+      if (await chart.locator(".spending-tooltip").isVisible().catch(() => false)) {
+        tooltipPoint = { x: box.x + box.width * xRatio, y: box.y + box.height * yRatio };
+        break;
+      }
+    }
+    if (tooltipPoint) break;
+  }
+  assert.ok(tooltipPoint);
+  await page.mouse.click(tooltipPoint.x, tooltipPoint.y);
   await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeDrag);
   await page.screenshot({ path: "/tmp/spending-chart-grab-glide.png", fullPage: true });
 
