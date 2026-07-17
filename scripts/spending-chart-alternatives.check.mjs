@@ -87,6 +87,11 @@ try {
   assert.equal(await chart.getAttribute("data-rendered-months"), "20");
   assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
   assert.equal(await chart.locator("[data-spending-bar]").count(), 20 * 2 * categories.length);
+  const selectedStackRadii = await chart
+    .locator(`[data-spending-bar][data-period="${months.at(-1)}"][data-source="invoice"]`)
+    .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute("rx"))));
+  assert.equal(selectedStackRadii.some((radius) => radius === 0), true);
+  assert.equal(selectedStackRadii.filter((radius) => radius > 0).length <= 2, true);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));
   const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
   assert.ok(initialScale > 1);
