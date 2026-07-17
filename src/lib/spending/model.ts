@@ -42,6 +42,7 @@ export type SpendingAccountTransactionInput = {
   accountNumber: string | null;
   currency: string;
   date: string;
+  time: string | null;
   description: string | null;
   note: string | null;
   amount: number;
@@ -72,10 +73,28 @@ export type SpendingAccountRecord = {
   duplicateInvoiceKey?: string;
   manual: boolean;
   date: string;
+  time: string | null;
   label: string;
+  bank: string;
+  accountNumber: string | null;
+  currency: string;
+  note: string | null;
+  destinationBankCode: string | null;
+  destinationAccountNumber: string | null;
   amount: number;
   category: SpendingCategory;
 };
+
+export type SpendingTransferDestination = {
+  bankCode: string;
+  accountNumber: string;
+};
+
+export function parseTransferDestination(note: string | null): SpendingTransferDestination | null {
+  const token = note?.trim().split(/\s+/u)[0];
+  if (!token || !/^\d{16,17}$/u.test(token)) return null;
+  return { bankCode: token.slice(0, 3), accountNumber: token.slice(3) };
+}
 
 export type SpendingInvoiceRecord = {
   key: string;
@@ -299,6 +318,7 @@ export function buildSpendingModel(
   const accountRecords = accountTransactions.map((row): SpendingAccountRecord => {
     const automatic = automaticAccountDecision(row, counterpartDeposits, invoices, cardPayments);
     const override = overrideById.get(row.statementRowId);
+    const destination = parseTransferDestination(row.note);
     const record: SpendingAccountRecord = {
       key: `account:${row.statementRowId}`,
       source: "account",
@@ -310,7 +330,14 @@ export function buildSpendingModel(
       duplicateInvoiceKey: automatic.invoiceKey,
       manual: override !== undefined,
       date: row.date,
+      time: row.time,
       label: row.description ?? row.note ?? row.bank,
+      bank: row.bank,
+      accountNumber: row.accountNumber,
+      currency: row.currency,
+      note: row.note,
+      destinationBankCode: destination?.bankCode ?? null,
+      destinationAccountNumber: destination?.accountNumber ?? null,
       amount: row.amount,
       category: override?.category ?? automatic.category,
     };

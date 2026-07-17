@@ -34,6 +34,7 @@ type AccountRow = {
   account_number: string | null;
   currency: string;
   date: string;
+  transaction_time: string | null;
   description: string | null;
   note: string | null;
   withdrawal_amount: number | null;
@@ -99,7 +100,7 @@ export function loadSpending(
     const accountRows = db.prepare(`
       SELECT statement_row_id, bank, account_number, currency,
         COALESCE(transaction_date, accounting_date) AS date,
-        description, note, withdrawal_amount, deposit_amount
+        transaction_time, description, note, withdrawal_amount, deposit_amount
       FROM account_transactions
       WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
         AND COALESCE(transaction_date, accounting_date) IS NOT NULL
@@ -159,6 +160,7 @@ export function loadSpending(
       accountNumber: row.account_number,
       currency: row.currency,
       date: row.date,
+      time: row.transaction_time,
       description: row.description,
       note: row.note,
       amount,
