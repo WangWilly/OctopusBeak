@@ -35,6 +35,10 @@ assert.equal(
 );
 assert.equal(translations.en.spending.chartReset, "Reset view");
 assert.equal(translations["zh-TW"].spending.chartReset, "重設檢視");
+assert.equal(translations.en.spending.chartRangeAria, "Chart range");
+assert.equal(translations["zh-TW"].spending.chartRangeAria, "圖表範圍");
+assert.equal(translations.en.spending.chartRangeLabel(12), "12 months");
+assert.equal(translations["zh-TW"].spending.chartRangeLabel(12), "12 個月");
 assert.equal(translations["zh-TW"].spending.monthlyEyebrow, "每月消費");
 assert.equal(translations["zh-TW"].spending.dailyEyebrow, "每日明細");
 assert.equal(translations["zh-TW"].spending.invoiceEyebrow, "發票資料");

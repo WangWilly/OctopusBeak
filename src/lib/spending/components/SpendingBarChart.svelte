@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import {
     Axis,
     Bar,
@@ -12,6 +12,8 @@
     Tooltip,
     type TextProps,
   } from "layerchart";
+  import { ChartClipPath as CanvasChartClipPath } from "layerchart/canvas";
+  import { ChartClipPath as SvgChartClipPath } from "layerchart/svg";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -44,6 +46,7 @@
     data: LongDatum[];
   };
   type TransformDetail = { scale: number; translate: { x: number; y: number } };
+  type BandScale = ((value: string) => unknown) & { bandwidth?: () => number };
 
   const horizontalPadding = 58 + 16;
   const sources: SpendingSource[] = ["invoice", "account"];
@@ -66,6 +69,10 @@
   export let interaction: SpendingChartInteraction = "static";
 
   let stageWidth = 0;
+  let latestStageWidth = 0;
+  let stageElement: HTMLDivElement;
+  let resizeSurface: HTMLDivElement;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let selectedCategories: SpendingCategory[] = [];
   let chartResetKey = 0;
   let transformScale: number | undefined;
@@ -138,6 +145,15 @@
     groupBy: "source",
     stackBy: "category",
   }) as GroupStackDatum[];
+  $: periodHitData = renderedRows.map((row) => ({
+    periodKey: rowKey(row),
+    source: "invoice" as const,
+    category: visibleCategories[0] ?? "food",
+    value: 0,
+    values: [0, 0],
+    keys: {},
+    data: [],
+  }));
   $: periodKeys = rows.map(rowKey);
   $: stackExtents = sourceAmounts.flatMap((amounts) => [
     visibleCategories.reduce((total, category) => total + Math.min(0, amounts[category]), 0),
@@ -161,6 +177,21 @@
     if (transformFrame !== undefined) cancelAnimationFrame(transformFrame);
   });
 
+  onMount(() => {
+    const shell = stageElement.closest(".shell-page");
+    const observer = new ResizeObserver(([entry]) => resizeChart(entry.contentRect.width));
+    const finishSidebarResize = (event: Event) => {
+      if ((event as TransitionEvent).propertyName === "grid-template-columns") commitChartWidth();
+    };
+    observer.observe(stageElement);
+    shell?.addEventListener("transitionend", finishSidebarResize);
+    return () => {
+      observer.disconnect();
+      shell?.removeEventListener("transitionend", finishSidebarResize);
+      if (resizeTimer) clearTimeout(resizeTimer);
+    };
+  });
+
   function rowKey(row: SpendingChartRow) {
     return "month" in row ? row.month : row.date;
   }
@@ -182,6 +213,27 @@
   function updateTransform(detail: TransformDetail) {
     pendingTransform = detail;
     if (transformFrame === undefined) transformFrame = requestAnimationFrame(flushTransform);
+  }
+
+  function resizeChart(width: number) {
+    latestStageWidth = width;
+    if (stageWidth === 0) {
+      stageWidth = width;
+      return;
+    }
+    resizeSurface.style.transform = `scaleX(${width / stageWidth})`;
+    resizeSurface.style.willChange = "transform";
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(commitChartWidth, 80);
+  }
+
+  async function commitChartWidth() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = undefined;
+    if (latestStageWidth > 0) stageWidth = latestStageWidth;
+    await tick();
+    resizeSurface.style.transform = "";
+    resizeSurface.style.willChange = "";
   }
 
   function flushTransform() {
@@ -229,6 +281,18 @@
 
   function shortAmount(value: unknown) {
     return typeof value === "number" ? compactAmount.format(value) : String(value);
+  }
+
+  function bandGeometry(
+    xScale: BandScale,
+    key: string,
+    _transformScale: number,
+    _transformTranslateX: number,
+  ) {
+    return {
+      x: Number(xScale(key)),
+      width: Number(xScale.bandwidth?.() ?? 0),
+    };
   }
 
   function sourceTotal(row: SpendingChartRow, source: "invoice" | "account") {
@@ -315,11 +379,17 @@
       class:dragging={transformDragging}
       role="img"
       aria-label={ariaLabel}
-      bind:clientWidth={stageWidth}
+      bind:this={stageElement}
     >
       {#if stageWidth > 0}
+        <div
+          class="spending-chart-resize-surface"
+          bind:this={resizeSurface}
+          style:width={`${stageWidth}px`}
+        >
         {#key chartResetKey}
         <Chart
+          width={stageWidth}
           data={groupedData}
           x="periodKey"
           xDomain={periodKeys}
@@ -345,10 +415,16 @@
           height={320}
         >
           {#snippet children({ context })}
-            <Layer>
+            <Layer type="svg" zIndex={0}>
               {#if selectedKey && selectedVisible}
-                {@const selectedX = Number(context.xScale(selectedKey))}
-                {@const selectedWidth = Number(context.xScale.bandwidth?.() ?? 0)}
+                {@const selectedBand = bandGeometry(
+                  context.xScale,
+                  selectedKey,
+                  currentTransformScale,
+                  currentTransformTranslateX,
+                )}
+                {@const selectedX = selectedBand.x}
+                {@const selectedWidth = selectedBand.width}
                 {#if Number.isFinite(selectedX) && selectedWidth > 0}
                   <Rect
                     data-selected-period={selectedKey}
@@ -361,6 +437,28 @@
                   />
                 {/if}
               {/if}
+            </Layer>
+            <Layer
+              type="canvas"
+              zIndex={1}
+              pointerEvents={false}
+              disableHitCanvas
+              data-spending-bars-canvas
+            >
+              <CanvasChartClipPath>
+                {#each groupedData as datum (datum.periodKey + datum.source + datum.category)}
+                  <Bar
+                    data={datum}
+                    fill={categoryColors[datum.category]}
+                    stroke="var(--surface)"
+                    strokeWidth={1}
+                    radius={5}
+                    rounded="edge"
+                  />
+                {/each}
+              </CanvasChartClipPath>
+            </Layer>
+            <Layer type="svg" zIndex={2} pointerEvents={false}>
               <Axis
                 placement="left"
                 grid={{ class: "sparkline-grid" }}
@@ -379,25 +477,40 @@
                 tickLabel={xTick}
                 tickSpacing={kind === "month" ? 52 : 40}
               />
-              <g>
-                {#each groupedData as datum (datum.periodKey + datum.source + datum.category)}
-                  <Bar
-                    data={datum}
-                    tooltip
-                    data-spending-bar
-                    data-period={datum.periodKey}
-                    data-source={datum.source}
-                    data-category={datum.category}
-                    fill={categoryColors[datum.category]}
-                    stroke="var(--surface)"
-                    strokeWidth={1}
-                    radius={5}
-                    rounded="edge"
+              <Highlight area={{ fill: "color-mix(in oklch, var(--fg) 5%, transparent)" }} />
+            </Layer>
+            <Layer type="svg" zIndex={3}>
+              <SvgChartClipPath>
+                {#each periodHitData as datum (datum.periodKey)}
+                  {@const hitBand = bandGeometry(
+                    context.xScale,
+                    datum.periodKey,
+                    currentTransformScale,
+                    currentTransformTranslateX,
+                  )}
+                  <rect
+                    data-period-hit={datum.periodKey}
+                    role="button"
+                    tabindex="0"
+                    aria-label={axisLabel(datum.periodKey)}
+                    x={hitBand.x}
+                    y={0}
+                    width={hitBand.width}
+                    height={context.height}
+                    fill="transparent"
+                    onpointerenter={(event) => context.tooltip.show(event, datum)}
+                    onpointermove={(event) => context.tooltip.show(event, datum)}
+                    onpointerleave={() => context.tooltip.hide()}
                     onclick={() => onBarClick?.(datum.periodKey)}
+                    onkeydown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onBarClick?.(datum.periodKey);
+                      }
+                    }}
                   />
                 {/each}
-              </g>
-              <Highlight area={{ fill: "color-mix(in oklch, var(--fg) 5%, transparent)" }} />
+              </SvgChartClipPath>
             </Layer>
 
             <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
@@ -441,6 +554,7 @@
           {/snippet}
         </Chart>
         {/key}
+        </div>
       {/if}
       {#if hasTransform && transformDragging && visibleRange}
         <span class="spending-visible-range" data-visible-range>{visibleRange}</span>
@@ -505,6 +619,12 @@
     position: relative;
     width: 100%;
     height: 320px;
+    overflow: hidden;
+  }
+
+  .spending-chart-resize-surface {
+    height: 100%;
+    transform-origin: left top;
   }
 
   .spending-bar-chart[data-interaction="pan-zoom"] .spending-bar-stage {
@@ -518,6 +638,12 @@
   .spending-bar-chart[data-interaction="static"] .spending-bar-stage,
   .spending-bar-chart[data-interaction="brush"] .spending-bar-stage {
     cursor: pointer;
+  }
+
+  :global([data-period-hit]:focus-visible) {
+    fill: color-mix(in oklch, var(--accent) 8%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2;
   }
 
   .spending-visible-range {
