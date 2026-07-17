@@ -77,10 +77,16 @@ try {
 
   const chart = page.locator('.monthly-panel [data-interaction="pan-zoom"]');
   await chart.waitFor();
-  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 1);
-  assert.equal(await chart.locator(".spending-bar-segment").count(), 0);
+  assert.equal(await chart.getAttribute("data-chart-layout"), "group-stack");
+  assert.equal(await chart.locator('[data-spending-bar][data-source="invoice"]').count() > 0, true);
+  assert.equal(await chart.locator('[data-spending-bar][data-source="account"]').count() > 0, true);
+  assert.equal(await chart.locator("[data-selected-period]").count(), 1);
+  assert.equal(await chart.locator("[data-selection-outline]").count(), 0);
+  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 0);
+  assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
   assert.equal(await chart.getAttribute("data-rendered-months"), "20");
   assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  assert.equal(await chart.locator("[data-spending-bar]").count(), 20 * 2 * categories.length);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));
   const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
   assert.ok(initialScale > 1);
