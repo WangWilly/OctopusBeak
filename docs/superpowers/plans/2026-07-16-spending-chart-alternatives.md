@@ -2,100 +2,92 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build one standalone HTML comparison page containing three interactive Spending chart alternatives without the 6/12/24-month control.
+**Goal:** Replace the brush/pan/zoom prototype with one standalone HTML page containing three interactive alternatives to the 6/12/24-month control.
 
-**Architecture:** Keep the prototype isolated from production code in one dependency-free HTML file. Use inline SVG for representative charts, native scrolling for the timeline, pointer events for drag interactions, and one Playwright smoke check for the user-visible behaviors.
+**Architecture:** Keep the prototype isolated from production Spending code. One dependency-free HTML file owns the shared mock data, styles, markup, and interactions; one Playwright smoke check verifies all three concepts and their primary actions.
 
-**Tech Stack:** HTML, CSS, browser JavaScript, inline SVG, Playwright.
+**Tech Stack:** Native HTML, CSS, JavaScript, existing Playwright dependency.
 
 ## Global Constraints
 
-- Do not modify production Spending components or ledger data.
-- Create exactly three concepts: overview and drilldown, horizontal timeline, and focus plus context.
-- Do not render a 6/12/24-month segmented control in any concept.
-- The HTML must open directly without a server or build step.
-- Preserve keyboard focus, descriptive labels, responsive layout, and reduced-motion support.
+- Modify only the standalone prototype and its smoke check.
+- Do not use LayerChart brush-band, transform pan/zoom, or a 6/12/24-month segmented control.
+- Preserve the current desktop app's neutral visual language and spending-category colors.
+- Support keyboard focus, descriptive labels, reduced motion, and responsive layouts.
+- Do not change production Spending components or ledger data.
 
 ---
 
-### Task 1: Interactive comparison page
+### Task 1: Restore the three-concept comparison prototype
 
 **Files:**
-- Create: `docs/prototypes/spending-chart-alternatives.html`
-- Create: `scripts/spending-chart-alternatives.check.mjs`
+- Modify: `scripts/spending-chart-alternatives.check.mjs`
+- Modify: `docs/prototypes/spending-chart-alternatives.html`
 
 **Interfaces:**
-- Produces: `[data-concept="overview"]`, `[data-concept="timeline"]`, and `[data-concept="focus-context"]` prototype panels.
-- Produces: `data-selected-month`, `data-scroll-index`, and `data-window-start` state attributes for smoke verification.
+- Consumes: no production interface; representative monthly data is local to the HTML file.
+- Produces: `[data-concept="overview"]`, `[data-concept="timeline"]`, and `[data-concept="focus-context"]` with observable state attributes used by the smoke check.
 
-- [x] **Step 1: Write the failing smoke check**
-
-Create a Playwright check that opens the HTML file and asserts all three concept panels exist, the forbidden `6 months`, `12 months`, and `24 months` labels do not exist, selecting an overview month changes `data-selected-month`, timeline navigation changes `data-scroll-index`, and moving the focus window changes `data-window-start`.
+- [ ] **Step 1: Replace the smoke check with assertions for the approved concepts**
 
 ```js
-import assert from "node:assert/strict";
-import { pathToFileURL } from "node:url";
-import { chromium } from "playwright";
-
-const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-await page.goto(pathToFileURL(new URL("../docs/prototypes/spending-chart-alternatives.html", import.meta.url).pathname).href);
 assert.equal(await page.locator("[data-concept]").count(), 3);
 assert.doesNotMatch(await page.locator("body").innerText(), /(?:6|12|24) months/i);
+
 const overview = page.locator('[data-concept="overview"]');
 const beforeMonth = await overview.getAttribute("data-selected-month");
 await overview.locator("[data-month]").nth(2).click();
 assert.notEqual(await overview.getAttribute("data-selected-month"), beforeMonth);
+
 const timeline = page.locator('[data-concept="timeline"]');
 const beforeScroll = await timeline.getAttribute("data-scroll-index");
 await timeline.locator('[data-action="next"]').click();
 assert.notEqual(await timeline.getAttribute("data-scroll-index"), beforeScroll);
+
 const focus = page.locator('[data-concept="focus-context"]');
 const beforeWindow = await focus.getAttribute("data-window-start");
 await focus.locator('[data-action="window-next"]').click();
 assert.notEqual(await focus.getAttribute("data-window-start"), beforeWindow);
-await browser.close();
 ```
 
-- [x] **Step 2: Run the smoke check and verify RED**
+- [ ] **Step 2: Run the smoke check and verify the current one-concept prototype fails**
 
 Run: `node scripts/spending-chart-alternatives.check.mjs`
 
-Expected: FAIL because `docs/prototypes/spending-chart-alternatives.html` does not exist.
+Expected: FAIL because the current page contains one `[data-prototype="brush-pan-zoom"]` and no `[data-concept]` elements.
 
-- [x] **Step 3: Build the minimal standalone HTML**
+- [ ] **Step 3: Replace the prototype with the approved comparison implementation**
 
-Create one document with:
+Use the already-reviewed implementation from repository commit `e393e74c` as the exact baseline for `docs/prototypes/spending-chart-alternatives.html`. It contains:
 
 ```html
-<nav aria-label="Design concepts">Overview + drilldown · Horizontal timeline · Focus + context</nav>
-<section data-concept="overview" data-selected-month="2026-07"></section>
-<section data-concept="timeline" data-scroll-index="18"></section>
-<section data-concept="focus-context" data-window-start="18"></section>
+<section class="concept" id="overview">
+  <div class="app-frame" data-concept="overview" data-selected-month="2026-07">…</div>
+</section>
+<section class="concept" id="timeline">
+  <div class="app-frame" data-concept="timeline" data-scroll-index="18">…</div>
+</section>
+<section class="concept" id="focus-context">
+  <div class="app-frame" data-concept="focus-context" data-window-start="18">…</div>
+</section>
 ```
 
-Fill the panels from one shared monthly dataset. Concept A updates its category detail on month selection. Concept B uses an overflow container plus previous/next controls and pointer drag. Concept C uses a full-history overview with an adjustable focus window and a detailed chart derived from that window. Keep all CSS and JavaScript inline.
+The same file supplies local mock months, reusable category metadata, native click/keyboard controls, horizontal drag/scroll behavior, the focus range input, responsive CSS, focus-visible styles, and reduced-motion handling. Do not add dependencies or extract abstractions.
 
-- [x] **Step 4: Run the smoke check and verify GREEN**
+- [ ] **Step 4: Run the focused smoke check**
 
 Run: `node scripts/spending-chart-alternatives.check.mjs`
 
-Expected: exit 0.
+Expected: exits `0` with no output.
 
-- [x] **Step 5: Verify repository health**
+- [ ] **Step 5: Run project validation**
 
-Run:
+Run: `npm run typecheck`
 
-```bash
-npm run typecheck
-git diff --check
-```
+Expected: exits `0` with no Svelte or TypeScript errors.
 
-Expected: both exit 0.
+- [ ] **Step 6: Review the diff without committing unrelated user changes**
 
-- [x] **Step 6: Commit the prototype**
+Run: `git diff --check -- docs/prototypes/spending-chart-alternatives.html scripts/spending-chart-alternatives.check.mjs`
 
-```bash
-git add docs/prototypes/spending-chart-alternatives.html scripts/spending-chart-alternatives.check.mjs docs/superpowers/plans/2026-07-16-spending-chart-alternatives.md
-git commit -m "docs: prototype spending chart alternatives"
-```
+Expected: exits `0` with no whitespace errors.

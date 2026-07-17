@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import type { Frame, Page } from "playwright";
-import { ensureHncbStatementForm } from "./hncb-statements.ts";
+import {
+  ensureHncbStatementForm,
+  normalizeHncbTransactionRows,
+} from "./hncb-statements.ts";
+
+const normalizedRows = normalizeHncbTransactionRows([
+  ["交易日期", "交易時間", "帳務日期"],
+  ["0113/08/19", "12:34:56", "0113/08/20"],
+  ["2025/08/19", "12:34:56", "2025/08/20"],
+]);
+assert.deepEqual(normalizedRows.map((row) => row.slice(0, 3)), [
+  ["2024/08/19", "12:34:56", "2024/08/20"],
+  ["2025/08/19", "12:34:56", "2025/08/20"],
+]);
 
 const page = {} as Page;
 const currentFrame = {} as Frame;

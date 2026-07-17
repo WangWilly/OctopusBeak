@@ -8,14 +8,16 @@ function categoryAmounts(seed) {
   return Object.fromEntries(categories.map((category, index) => [category, (seed + index * 7) * 90]));
 }
 
+const emptyCategoryAmounts = Object.fromEntries(categories.map((category) => [category, 0]));
+
 const months = Array.from({ length: 30 }, (_, index) => {
   const date = new Date(Date.UTC(2024, 7 + index, 1));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 });
 
 const monthlyRows = months.map((month, index) => {
-  const invoice = categoryAmounts(12 + (index % 6));
-  const account = categoryAmounts(index % 4);
+  const invoice = index === 20 ? emptyCategoryAmounts : categoryAmounts(12 + (index % 6));
+  const account = index === 20 ? emptyCategoryAmounts : categoryAmounts(index % 4);
   return {
     month,
     invoice,
@@ -27,8 +29,8 @@ const monthlyRows = months.map((month, index) => {
 const model = {
   months,
   monthlyRows,
-  selectedMonth: months.at(-1),
-  selectedMonthSummary: { total: monthlyRows.at(-1).total, invoiceCount: 16, accountCount: 4 },
+  selectedMonth: months[24],
+  selectedMonthSummary: { total: monthlyRows[24].total, invoiceCount: 16, accountCount: 4 },
   selectedCategory: undefined,
   dailyRows: [],
   presentCategories: categories,
@@ -77,21 +79,16 @@ try {
 
   const chart = page.locator('.monthly-panel [data-interaction="pan-zoom"]');
   await chart.waitFor();
+  assert.equal(await page.locator(".shell-page.sidebar-resize-snap").count(), 0);
   assert.equal(await chart.getAttribute("data-chart-layout"), "group-stack");
-  assert.equal(await chart.locator('[data-spending-bar][data-source="invoice"]').count() > 0, true);
-  assert.equal(await chart.locator('[data-spending-bar][data-source="account"]').count() > 0, true);
+  assert.equal(await chart.locator('canvas[data-spending-bars-canvas]').count(), 1);
   assert.equal(await chart.locator("[data-selected-period]").count(), 1);
   assert.equal(await chart.locator("[data-selection-outline]").count(), 0);
-  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 0);
+  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 1);
   assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
   assert.equal(await chart.getAttribute("data-rendered-months"), "20");
   assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
-  assert.equal(await chart.locator("[data-spending-bar]").count(), 20 * 2 * categories.length);
-  const selectedStackRadii = await chart
-    .locator(`[data-spending-bar][data-period="${months.at(-1)}"][data-source="invoice"]`)
-    .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute("rx"))));
-  assert.equal(selectedStackRadii.some((radius) => radius === 0), true);
-  assert.equal(selectedStackRadii.filter((radius) => radius > 0).length <= 2, true);
+  assert.equal(await chart.locator("[data-spending-bar]").count(), 0);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));
   const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
   assert.ok(initialScale > 1);
@@ -106,8 +103,31 @@ try {
   assert.equal(await chart.locator('[data-action="reset"]').count(), 0);
   assert.equal(await chart.getAttribute("data-at-start"), "false");
   assert.equal(await chart.getAttribute("data-at-end"), "true");
+  const selectedBandBeforeDrag = await chart.locator("[data-selected-period]").boundingBox();
+  assert.ok(selectedBandBeforeDrag);
 
   const stage = chart.locator(".spending-bar-stage");
+  const chartRoot = stage.locator(".lc-root-container");
+  const initialStageWidth = await stage.evaluate((element) => element.clientWidth);
+  const initialChartWidth = await chartRoot.evaluate((element) => element.clientWidth);
+  assert.equal(initialChartWidth, initialStageWidth);
+  await page.locator(".sidebar-toggle").click();
+  await page.waitForFunction(
+    (width) => Math.abs(document.querySelector(".spending-bar-stage")?.clientWidth - width) > 8,
+    initialStageWidth,
+  );
+  assert.equal(await chartRoot.evaluate((element) => element.clientWidth), initialChartWidth);
+  await page.waitForFunction(() => {
+    const stageElement = document.querySelector(".spending-bar-stage");
+    const chartElement = stageElement?.querySelector(".lc-root-container");
+    return Math.abs((stageElement?.clientWidth ?? 0) - (chartElement?.clientWidth ?? -1)) <= 1;
+  });
+  await page.locator(".sidebar-toggle").click();
+  await page.waitForFunction(
+    (width) => Math.abs(document.querySelector(".spending-bar-stage")?.clientWidth - width) <= 1,
+    initialStageWidth,
+  );
+
   const loadCountBeforeDrag = await page.evaluate(() => window.__spendingLoadCount);
   const box = await stage.boundingBox();
   assert.ok(box);
@@ -121,10 +141,31 @@ try {
     document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-moving") === "false"
   );
   assert.notEqual(Number(await chart.getAttribute("data-transform-translate-x")), initialTranslateX);
+  const selectedBandAfterDrag = await chart.locator("[data-selected-period]").boundingBox();
+  assert.ok(selectedBandAfterDrag);
+  assert.notEqual(selectedBandAfterDrag.x, selectedBandBeforeDrag.x);
   const renderedMonthsAfterDrag = Number(await chart.getAttribute("data-rendered-months"));
   assert.ok(renderedMonthsAfterDrag <= 23, `rendered ${renderedMonthsAfterDrag} months after drag`);
   assert.equal(await page.evaluate(() => window.__spendingLoadCount), loadCountBeforeDrag);
   assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
+  const paintedBounds = await chart.locator('canvas[data-spending-bars-canvas]').evaluate((canvas) => {
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Missing canvas context");
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let minX = canvas.width;
+    let maxX = -1;
+    for (let y = 0; y < canvas.height; y += 1) {
+      for (let x = 0; x < canvas.width; x += 1) {
+        if (pixels[(y * canvas.width + x) * 4 + 3] > 0) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+        }
+      }
+    }
+    return { minX, maxX, scale: canvas.width / canvas.clientWidth, width: canvas.width };
+  });
+  assert.ok(paintedBounds.minX >= 58 * paintedBounds.scale, JSON.stringify(paintedBounds));
+  assert.ok(paintedBounds.maxX <= paintedBounds.width - 16 * paintedBounds.scale, JSON.stringify(paintedBounds));
 
   await chart.locator('[data-action="reset"]').click();
   await page.waitForFunction(({ scale, translateX }) => {
@@ -133,20 +174,24 @@ try {
       Math.abs(Number(root?.getAttribute("data-transform-translate-x")) - translateX) < 0.1;
   }, { scale: initialScale, translateX: initialTranslateX });
 
-  let tooltipPoint;
-  for (const yRatio of [0.8, 0.7, 0.6, 0.5]) {
-    for (let xRatio = 0.2; xRatio <= 0.9; xRatio += 0.05) {
-      await page.mouse.move(box.x + box.width * xRatio, box.y + box.height * yRatio);
-      if (await chart.locator(".spending-tooltip").isVisible().catch(() => false)) {
-        tooltipPoint = { x: box.x + box.width * xRatio, y: box.y + box.height * yRatio };
-        break;
-      }
-    }
-    if (tooltipPoint) break;
-  }
-  assert.ok(tooltipPoint);
-  await page.mouse.click(tooltipPoint.x, tooltipPoint.y);
-  await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeDrag);
+  const emptyMonth = months[20];
+  const emptyMonthHitTarget = chart.locator(`[data-period-hit="${emptyMonth}"]`);
+  assert.equal(await emptyMonthHitTarget.count(), 1);
+  const loadCountBeforeEmptyMonthClick = await page.evaluate(() => window.__spendingLoadCount);
+  await emptyMonthHitTarget.click();
+  await page.waitForFunction(
+    ({ previous, month }) =>
+      window.__spendingLoadCount > previous &&
+      document.querySelector(`[data-selected-period="${month}"]`) !== null,
+    { previous: loadCountBeforeEmptyMonthClick, month: emptyMonth },
+  );
+
+  const populatedMonthHitTarget = chart.locator(`[data-period-hit="${months[24]}"]`);
+  await populatedMonthHitTarget.hover();
+  assert.equal(await chart.locator(".spending-tooltip").isVisible(), true);
+  const loadCountBeforeTooltipClick = await page.evaluate(() => window.__spendingLoadCount);
+  await populatedMonthHitTarget.click();
+  await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeTooltipClick);
   await page.screenshot({ path: "/tmp/spending-chart-grab-glide.png", fullPage: true });
 
   assert.deepEqual(errors, []);
