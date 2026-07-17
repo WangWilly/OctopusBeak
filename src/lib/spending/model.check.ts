@@ -479,6 +479,16 @@ for (const [statementRowId, amount, description] of [
   );
 }
 
+const missingDepositAccount = buildSpendingModel({
+  invoices: [],
+  accountTransactions: [accountRow("missing-deposit-account", 500, "轉帳", "2026-07-16")],
+  counterpartDeposits: [{ ...depositRow("98765", 500, "2026-07-16"), accountNumber: null }],
+});
+assert.deepEqual(
+  missingDepositAccount.accountRecords.map((record) => [record.state, record.automaticReason]),
+  [["pending", "ambiguous_transfer"]],
+);
+
 const manualDuplicate = buildSpendingModel({
   ...input,
   selectedMonth: "2026-02",
