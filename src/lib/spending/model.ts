@@ -236,6 +236,7 @@ function automaticAccountDecision(
   cardPayments: readonly SpendingCardPaymentInput[],
 ): { state: SpendingState; reason: SpendingReason; category: SpendingCategory; invoiceKey?: string } {
   const text = normalizedText(`${row.description ?? ""}${row.note ?? ""}`);
+  const sourceAccountNumber = normalizedText(row.accountNumber);
   const excluded = (reason: SpendingReason, category: SpendingCategory = "other") =>
     ({ state: "excluded" as const, reason, category });
 
@@ -243,13 +244,13 @@ function automaticAccountDecision(
   if (/(信用卡款|信用卡費|繳信用卡)/u.test(text) || cardPayments.some(
     (payment) => payment.amount === row.amount && nearbyDate(payment.date, row.date),
   )) return excluded("credit_card_payment");
-  if (text.includes("自轉") || deposits.some((deposit) => {
+  if (text.includes("自轉") || sourceAccountNumber.length > 0 && deposits.some((deposit) => {
     const accountNumber = normalizedText(deposit.accountNumber);
-    return accountNumber.length > 0 && accountNumber !== normalizedText(row.accountNumber) &&
+    return accountNumber.length > 0 && accountNumber !== sourceAccountNumber &&
       text.includes(accountNumber);
   })) return excluded("internal_transfer");
-  if (deposits.some((deposit) =>
-    normalizedText(deposit.accountNumber) !== normalizedText(row.accountNumber) &&
+  if (sourceAccountNumber.length > 0 && deposits.some((deposit) =>
+    normalizedText(deposit.accountNumber) !== sourceAccountNumber &&
     deposit.currency === row.currency &&
     deposit.amount === row.amount && nearbyDate(deposit.date, row.date)
   )) return excluded("internal_transfer");
