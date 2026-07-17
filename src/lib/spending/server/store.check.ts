@@ -274,6 +274,15 @@ try {
       leisure: 0,
       other: 0,
     },
+    pendingAccount: {
+      food: 0,
+      daily: 0,
+      transport: 0,
+      shopping: 0,
+      home: 0,
+      leisure: 0,
+      other: 0,
+    },
   }]);
   assert.equal(
     loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
