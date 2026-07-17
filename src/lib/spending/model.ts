@@ -249,11 +249,12 @@ function automaticAccountDecision(
     return accountNumber.length > 0 && accountNumber !== sourceAccountNumber &&
       text.includes(accountNumber);
   })) return excluded("internal_transfer");
-  if (sourceAccountNumber.length > 0 && deposits.some((deposit) =>
-    normalizedText(deposit.accountNumber) !== sourceAccountNumber &&
-    deposit.currency === row.currency &&
-    deposit.amount === row.amount && nearbyDate(deposit.date, row.date)
-  )) return excluded("internal_transfer");
+  if (sourceAccountNumber.length > 0 && deposits.some((deposit) => {
+    const accountNumber = normalizedText(deposit.accountNumber);
+    return accountNumber.length > 0 && accountNumber !== sourceAccountNumber &&
+      deposit.currency === row.currency &&
+      deposit.amount === row.amount && nearbyDate(deposit.date, row.date);
+  })) return excluded("internal_transfer");
 
   const invoice = matchingInvoice(row, invoices);
   if (invoice) return {
