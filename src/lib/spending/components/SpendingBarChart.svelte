@@ -34,10 +34,11 @@
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
   type SpendingSource = "invoice" | "account";
+  type SpendingStackKey = SpendingCategory | "pending";
   type LongDatum = {
     periodKey: string;
     source: SpendingSource;
-    category: SpendingCategory;
+    category: SpendingStackKey;
     value: number;
   };
   type GroupStackDatum = LongDatum & {
@@ -60,6 +61,15 @@
     leisure: "var(--spending-leisure, oklch(49% 0.06 215))",
     other: "var(--spending-other, oklch(46% 0.035 250))",
   };
+  const emptyAmounts: Record<SpendingCategory, number> = {
+    food: 0,
+    daily: 0,
+    transport: 0,
+    shopping: 0,
+    home: 0,
+    leisure: 0,
+    other: 0,
+  };
 
   export let rows: readonly SpendingChartRow[] = [];
   export let kind: "month" | "day" = "month";
@@ -67,6 +77,7 @@
   export let label = "";
   export let onBarClick: ((key: string) => void) | null = null;
   export let interaction: SpendingChartInteraction = "static";
+  export let showPending = false;
 
   let stageWidth = 0;
   let latestStageWidth = 0;
@@ -132,14 +143,23 @@
     label: $t.spending.categories[key],
     color: categoryColors[key],
   }));
-  $: sourceAmounts = rows.flatMap((row) => sources.map((source) => row[source]));
   $: longData = renderedRows.flatMap((row) => sources.flatMap((source) =>
-    visibleCategories.map((category) => ({
-      periodKey: rowKey(row),
-      source,
-      category,
-      value: row[source][category],
-    }))
+    [
+      ...visibleCategories.map((category) => ({
+        periodKey: rowKey(row),
+        source,
+        category,
+        value: row[source][category],
+      })),
+      ...(source === "account" && showPending && kind === "month"
+        ? [{
+            periodKey: rowKey(row),
+            source,
+            category: "pending" as const,
+            value: pendingTotal(row, visibleCategories),
+          }]
+        : []),
+    ]
   ));
   $: groupedData = groupStackData(longData, {
     xKey: "periodKey",
@@ -150,9 +170,13 @@
     const keys = new Set<string>();
     for (const row of renderedRows) {
       for (const source of sources) {
+        if (source === "account" && showPending && kind === "month" && pendingTotal(row, visibleCategories) > 0) {
+          keys.add(barKey(rowKey(row), source, "pending"));
+          continue;
+        }
         for (let index = visibleCategories.length - 1; index >= 0; index -= 1) {
           const category = visibleCategories[index];
-          if (row[source][category] > 0) {
+          if (amountsForSource(row, source)[category] > 0) {
             keys.add(barKey(rowKey(row), source, category));
             break;
           }
@@ -171,17 +195,22 @@
     data: [],
   }));
   $: periodKeys = rows.map(rowKey);
-  $: stackExtents = sourceAmounts.flatMap((amounts) => [
-    visibleCategories.reduce((total, category) => total + Math.min(0, amounts[category]), 0),
-    visibleCategories.reduce((total, category) => total + Math.max(0, amounts[category]), 0),
-  ]);
+  $: stackExtents = rows.flatMap((row) => sources.flatMap((source) => {
+    const pending = source === "account" && showPending && kind === "month"
+      ? pendingTotal(row, visibleCategories)
+      : 0;
+    return [
+      visibleCategories.reduce((total, category) => total + Math.min(0, row[source][category]), 0)
+        + Math.min(0, pending),
+      visibleCategories.reduce((total, category) => total + Math.max(0, row[source][category]), 0)
+        + Math.max(0, pending),
+    ];
+  }));
   $: yAxis = buildSparklineYAxis([0, ...stackExtents]);
   $: hasNegative = stackExtents.some((value) => value < 0);
   $: yDomain = [hasNegative ? yAxis.min : 0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => hasNegative || tick >= 0);
-  $: hasData = sourceAmounts.length > 0 && sourceAmounts.some((amounts) =>
-    visibleCategories.some((category) => amounts[category] !== 0)
-  );
+  $: hasData = stackExtents.some((value) => value !== 0);
   $: displayLabel = label || (kind === "month" ? $t.spending.monthlyTitle : $t.spending.dailyChart);
   $: ariaLabel = selectedKey ? `${displayLabel}: ${axisLabel(selectedKey)}` : displayLabel;
   $: selectedVisible = selectedKey !== null && renderedRows.some((row) => rowKey(row) === selectedKey);
@@ -212,7 +241,7 @@
     return "month" in row ? row.month : row.date;
   }
 
-  function barKey(periodKey: string, source: SpendingSource, category: SpendingCategory) {
+  function barKey(periodKey: string, source: SpendingSource, category: SpendingStackKey) {
     return `${periodKey}:${source}:${category}`;
   }
 
@@ -315,8 +344,21 @@
     };
   }
 
-  function sourceTotal(row: SpendingChartRow, source: "invoice" | "account") {
-    return SPENDING_CATEGORY_IDS.reduce((total, category) => total + row[source][category], 0);
+  function amountsForSource(row: SpendingChartRow, source: SpendingSource | "pending") {
+    if (source === "pending") {
+      return "pendingAccount" in row ? row.pendingAccount : emptyAmounts;
+    }
+    return row[source];
+  }
+
+  function sourceTotal(row: SpendingChartRow, source: SpendingSource | "pending") {
+    const amounts = amountsForSource(row, source);
+    return SPENDING_CATEGORY_IDS.reduce((total, category) => total + amounts[category], 0);
+  }
+
+  function pendingTotal(row: SpendingChartRow, categories: readonly SpendingCategory[]) {
+    const amounts = amountsForSource(row, "pending");
+    return categories.reduce((total, category) => total + amounts[category], 0);
   }
 
   function tooltipRow(datum: GroupStackDatum | null | undefined) {
@@ -327,7 +369,7 @@
     return row ? row.invoice[category] + row.account[category] : 0;
   }
 
-  function rowSummary(row: SpendingChartRow) {
+  function rowSummary(row: SpendingChartRow, includePending: boolean) {
     return [
       tooltipLabel(row),
       `${$t.spending.invoiceSource}: ${formatMoney(
@@ -338,6 +380,10 @@
         { currency: "TWD", value: sourceTotal(row, "account") },
         { locale: $locale },
       )}`,
+      ...(includePending && kind === "month" ? [`${$t.spending.pendingAmount}: ${formatMoney(
+        { currency: "TWD", value: sourceTotal(row, "pending") },
+        { locale: $locale },
+      )}`] : []),
       `${$t.spending.confirmedTotal}: ${formatMoney(
         { currency: "TWD", value: row.total },
         { locale: $locale },
@@ -371,6 +417,7 @@
   data-initial-translate-x={initialTransform.translateX}
   data-rendered-months={renderedRows.length}
   data-rendered-buckets={renderedRows.length * sources.length}
+  data-show-pending={showPending && kind === "month"}
   data-rounded-bars={roundedBarKeys.size}
   data-moving={transformDragging}
   data-at-start={viewport?.atStart ?? true}
@@ -379,12 +426,12 @@
   <ul class="spending-chart-summary" aria-label={displayLabel}>
     {#each rows as row (rowKey(row))}
       <li>
-        <span class="spending-row-summary">{rowSummary(row)}</span>
+        <span class="spending-row-summary">{rowSummary(row, showPending)}</span>
         {#if onBarClick}
           <button
             class="spending-row-action"
             type="button"
-            aria-label={`${displayLabel}: ${rowSummary(row)}`}
+            aria-label={`${displayLabel}: ${rowSummary(row, showPending)}`}
             onclick={() => onBarClick?.(rowKey(row))}
           >
             {tooltipLabel(row)}
@@ -419,8 +466,11 @@
           x1Domain={sources}
           x1Range={({ xScale }) => [0, xScale.bandwidth?.() ?? 0]}
           c="category"
-          cDomain={visibleCategories}
-          cRange={visibleCategories.map((category) => categoryColors[category])}
+          cDomain={[...visibleCategories, ...(showPending && kind === "month" ? ["pending" as const] : [])]}
+          cRange={[
+            ...visibleCategories.map((category) => categoryColors[category]),
+            ...(showPending && kind === "month" ? ["var(--warn)"] : []),
+          ]}
           brush={interactionProps.brush}
           transform={chartTransform}
           onTransform={updateTransform}
@@ -470,9 +520,11 @@
                 {#each groupedData as datum (datum.periodKey + datum.source + datum.category)}
                   <Bar
                     data={datum}
-                    fill={categoryColors[datum.category]}
-                    stroke="var(--surface)"
-                    strokeWidth={1}
+                    fill={datum.category === "pending"
+                      ? "color-mix(in oklch, var(--warn) 18%, transparent)"
+                      : categoryColors[datum.category]}
+                    stroke={datum.category === "pending" ? "none" : "var(--surface)"}
+                    strokeWidth={datum.category === "pending" ? 0 : 1}
                     radius={roundedBarKeys.has(barKey(datum.periodKey, datum.source, datum.category)) ? 5 : 0}
                     rounded="top"
                   />
@@ -553,6 +605,15 @@
                       { locale: $locale },
                     )}</strong>
                   </div>
+                  {#if showPending && kind === "month"}
+                    <div class="spending-tooltip-row spending-tooltip-pending">
+                      <span>{$t.spending.pendingAmount}</span>
+                      <strong data-sensitive>{formatMoney(
+                        { currency: "TWD", value: row ? sourceTotal(row, "pending") : 0 },
+                        { locale: $locale },
+                      )}</strong>
+                    </div>
+                  {/if}
                   <div class="spending-tooltip-row spending-tooltip-total">
                     <span>{$t.spending.confirmedTotal}</span>
                     <strong data-sensitive>{formatMoney(
@@ -624,6 +685,12 @@
           <span class="spending-legend-label">{$t.spending.categories[category]}</span>
         </button>
       {/each}
+      {#if showPending && kind === "month"}
+        <span class="spending-legend-item spending-pending-key">
+          <span class="spending-legend-swatch"></span>
+          <span class="spending-legend-label">{$t.spending.pendingAmount}</span>
+        </span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -790,6 +857,10 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .spending-tooltip-pending {
+    color: var(--warn);
+  }
+
   .spending-source-key {
     display: flex;
     justify-content: center;
@@ -825,6 +896,15 @@
 
   .spending-legend-item.selected {
     opacity: 1;
+  }
+
+  .spending-pending-key {
+    opacity: 1;
+  }
+
+  .spending-pending-key .spending-legend-swatch {
+    border: 1px solid var(--warn);
+    background: color-mix(in oklch, var(--warn) 18%, transparent);
   }
 
   .spending-legend-item:focus-visible {

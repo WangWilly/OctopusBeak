@@ -58,6 +58,7 @@ const model = {
     total: 1999,
     invoice: { ...amounts, food: 1999 },
     account: amounts,
+    pendingAccount: { ...amounts, other: 3761 },
   }],
   selectedMonth: "2026-07",
   selectedMonthSummary: { total: 1999, invoiceCount: 1, accountCount: 0 },

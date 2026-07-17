@@ -39,6 +39,7 @@
   let savingRecordIds = new Set<string>();
   let errorRecordIds = new Set<string>();
   let showExcludedRecords = false;
+  let showPendingChart = false;
   let selectedSource: SpendingSource | undefined;
   let loadRequestSequence = 0;
 
@@ -356,12 +357,27 @@
             <h2>{$t.spending.monthlyTitle}</h2>
             <p class="panel-meta" role="status">{datasetStatus}</p>
           </div>
+          <div class="chart-state-toggle" role="group" aria-label={$t.spending.chartStateFilterAria}>
+            <button
+              type="button"
+              data-chart-state="confirmed"
+              aria-pressed={!showPendingChart}
+              onclick={() => showPendingChart = false}
+            >{$t.spending.confirmedOnly}</button>
+            <button
+              type="button"
+              data-chart-state="pending"
+              aria-pressed={showPendingChart}
+              onclick={() => showPendingChart = true}
+            >{$t.spending.includePending}</button>
+          </div>
         </div>
         <div class="spending-chart-pad">
           <SpendingBarChart
             rows={model.monthlyRows}
             kind="month"
             interaction="pan-zoom"
+            showPending={showPendingChart}
             selectedKey={selectedMonth ?? model.selectedMonth}
             onBarClick={(month) => void selectMonth(month)}
           />
@@ -652,6 +668,38 @@
     align-items: end;
     justify-content: space-between;
     gap: var(--space-4);
+  }
+
+  .chart-state-toggle {
+    display: inline-flex;
+    flex: 0 0 auto;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+  }
+
+  .chart-state-toggle button {
+    min-height: 30px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: calc(var(--radius) - 3px);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .chart-state-toggle button[aria-pressed="true"] {
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: 0 1px 3px rgb(15 23 42 / 0.08);
+  }
+
+  .chart-state-toggle button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .panel-heading,
