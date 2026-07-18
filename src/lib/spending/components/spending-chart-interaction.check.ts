@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   spendingChartInteractionProps,
   spendingChartViewport,
 } from "./spending-chart-interaction.ts";
+
+const chartSource = readFileSync(new URL("./SpendingBarChart.svelte", import.meta.url), "utf8");
 
 assert.equal(spendingChartViewport(0, 1000, 1, 0), null);
 assert.deepEqual(spendingChartViewport(24, 1000, 1, 0), {
@@ -49,3 +52,5 @@ assert.deepEqual(spendingChartInteractionProps("brush-pan-zoom"), {
     scaleExtent: [1, 6],
   },
 });
+
+assert.match(chartSource, /export let interaction: SpendingChartInteraction = "pan-zoom";/);

@@ -76,7 +76,7 @@
   export let selectedKey: string | null = null;
   export let label = "";
   export let onBarClick: ((key: string) => void) | null = null;
-  export let interaction: SpendingChartInteraction = "static";
+  export let interaction: SpendingChartInteraction = "pan-zoom";
   export let showPending = false;
 
   let stageWidth = 0;

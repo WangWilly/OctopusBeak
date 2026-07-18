@@ -16,7 +16,7 @@
   import { buildCenteredSparklineYAxis, buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
 
   type HistoryAmountKey = "netAssets" | "assets" | "liabilities";
-  type PlotPoint = SnapshotChartPoint & { position: number };
+  type PlotPoint = SnapshotChartPoint & { position: string };
 
   export let rows: DailyHistoryRowDto[] = [];
   export let currency = "TWD";
@@ -37,15 +37,15 @@
   $: selectedSeriesKeySet = new Set(selectedSeriesKeys);
   $: chartPoints = diverging ? visibleDivergingSeries.flatMap((series) => series.data) : points;
   $: axisTimes = [...new Set(chartPoints.map((point) => point.time))].sort((left, right) => left - right);
-  $: xValues = axisTimes.map((_, index) => index);
-  $: positionByTime = new Map(axisTimes.map((time, index) => [time, index]));
+  $: xValues = axisTimes.map((_, index) => String(index));
+  $: positionByTime = new Map(axisTimes.map((time, index) => [time, String(index)]));
   $: plottedPoints = points.map((point) => ({ ...point, position: positionByTime.get(point.time)! }));
   $: plottedDivergingSeries = visibleDivergingSeries.map((series) => ({
     ...series,
     data: series.data.map((point) => ({ ...point, position: positionByTime.get(point.time)! })),
   }));
   $: plottedChartPoints = diverging ? plottedDivergingSeries.flatMap((series) => series.data) : plottedPoints;
-  $: xDomain = xValues.length > 1 ? [xValues[0], xValues[xValues.length - 1]] : xValues;
+  $: xDomain = xValues;
   $: timelinePoints = xValues.map((position) => timelinePoint(position, plottedChartPoints));
   $: yAxis = diverging
     ? buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
@@ -68,10 +68,12 @@
   }
 
   function shortDate(value: unknown) {
-    if (typeof value !== "number") return String(value ?? "");
-    const index = Math.max(0, Math.min(axisTimes.length - 1, Math.round(value)));
+    if (typeof value !== "string") return String(value ?? "");
+    const index = Number(value);
     const time = axisTimes[index];
-    return formatSnapshotAxisLabel(typeof time === "number" ? time : value, $systemTimezone, $locale, chartPoints);
+    return typeof time === "number"
+      ? formatSnapshotAxisLabel(time, $systemTimezone, $locale, chartPoints)
+      : "";
   }
 
   function shortAmount(value: unknown) {
@@ -83,10 +85,10 @@
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
   }
 
-  function timelinePoint(position: number, data: PlotPoint[]): PlotPoint {
+  function timelinePoint(position: string, data: PlotPoint[]): PlotPoint {
     const existing = data.find((point) => point.position === position);
     if (existing) return existing;
-    const time = axisTimes[position] ?? 0;
+    const time = axisTimes[Number(position)] ?? 0;
     const date = new Date(time).toISOString().slice(0, 10);
     return {
       date,
@@ -114,6 +116,7 @@
           flatData={timelinePoints}
           x="position"
           y="value"
+          transform={{ mode: "domain", axis: "x" }}
           series={plottedDivergingSeries}
           seriesLayout="overlap"
           {xDomain}
@@ -123,7 +126,7 @@
           axis={true}
           grid={{ y: true }}
           legend={false}
-          tooltipContext={{ mode: "bisect-x", findTooltipData: "closest" }}
+          tooltipContext={{ mode: "band" }}
           motion={{ type: "tween", duration: 180 }}
           padding={{ top: 12, right: 12, bottom: 24, left: 56 }}
           points={false}
@@ -180,13 +183,14 @@
         data={plottedPoints}
         x="position"
         y="value"
+        transform={{ mode: "domain", axis: "x" }}
         {xDomain}
         {yDomain}
         yBaseline={null}
         yNice
         axis={true}
         grid={{ y: true }}
-        tooltipContext={{ mode: "bisect-x", findTooltipData: "closest" }}
+        tooltipContext={{ mode: "band" }}
         padding={{ top: 12, right: 12, bottom: 24, left: 48 }}
         points={points.length === 1 ? { r: 5, class: "sparkline-dot" } : false}
         height={220}
@@ -230,6 +234,10 @@
 
   .snapshot-diverging-stage {
     height: 220px;
+  }
+
+  .sparkline :global(.lc-layout-svg) {
+    overflow: hidden;
   }
 
   :global(.snapshot-diverging-area) {
