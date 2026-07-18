@@ -1,5 +1,5 @@
 import { historyPointKey, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
-import { formatUtcDateTime } from "../../time/timezone.ts";
+import { formatUtcDate } from "../../time/timezone.ts";
 
 type HistoryAmountKey = "netAssets" | "assets" | "liabilities" | "dailyChange";
 
@@ -67,7 +67,7 @@ export function buildSnapshotChartPoints(
       offsets.set(baseTime, offset + 1);
       return {
         date: row.date,
-        dateLabel: formatUtcDateTime(row.pointAt ?? row.date, timeZone, locale),
+        dateLabel: formatUtcDate(row.pointAt ?? row.date, timeZone, locale),
         axisLabel: formatSnapshotAxisLabel(row.pointAt ?? row.date, timeZone, locale),
         time: baseTime + offset,
         value: amount.value,

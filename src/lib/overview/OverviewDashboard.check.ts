@@ -18,3 +18,5 @@ test("daily FX selector is replaced only when every TWD conversion fails", () =>
     /\{#if allDailyRatesMissing\}[\s\S]*exchangeRatesMissingNative[\s\S]*\{:else if dailyCurrencies\.length > 1\}[\s\S]*daily-base-currency/,
   );
 });
+
+assert.match(source, /formatUtcDateTime\(value, \$systemTimezone, \$locale\)/);

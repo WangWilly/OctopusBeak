@@ -3,7 +3,7 @@
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
-  import { formatUtcDateTime } from "$lib/time/timezone.ts";
+  import { formatUtcDate } from "$lib/time/timezone.ts";
 
   type SortKey = "date" | "label" | "type" | "amount" | "note";
   type SortDirection = "asc" | "desc";
@@ -106,7 +106,7 @@
           <tbody>
             {#each sortedRows as row}
               <tr>
-                <td>{formatUtcDateTime(row.occurredAtUtc ?? row.date, $systemTimezone, $locale)}</td>
+                <td>{formatUtcDate(row.occurredAtUtc ?? row.date, $systemTimezone, $locale)}</td>
                 <td>{row.label}</td>
                 <td>{translateKnownLabel($t, row.type)}</td>
                 <td
