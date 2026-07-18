@@ -10,3 +10,5 @@ test("balance chart tooltips can escape the chart padding", () => {
 });
 
 assert.match(source, /formatUtcDate\(new Date\(value\)\.toISOString\(\), \$systemTimezone, \$locale\)/);
+assert.match(source, /x="position"/);
+assert.match(source, /tickSpacing: 80/);

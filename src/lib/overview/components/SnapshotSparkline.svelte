@@ -16,6 +16,7 @@
   import { buildCenteredSparklineYAxis, buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
 
   type HistoryAmountKey = "netAssets" | "assets" | "liabilities";
+  type PlotPoint = SnapshotChartPoint & { position: number };
 
   export let rows: DailyHistoryRowDto[] = [];
   export let currency = "TWD";
@@ -35,9 +36,17 @@
   $: visibleDivergingSeries = selectSnapshotDivergingSeries(divergingSeries, selectedSeriesKeys);
   $: selectedSeriesKeySet = new Set(selectedSeriesKeys);
   $: chartPoints = diverging ? visibleDivergingSeries.flatMap((series) => series.data) : points;
-  $: xValues = [...new Set(chartPoints.map((point) => point.time))].sort((left, right) => left - right);
+  $: axisTimes = [...new Set(chartPoints.map((point) => point.time))].sort((left, right) => left - right);
+  $: xValues = axisTimes.map((_, index) => index);
+  $: positionByTime = new Map(axisTimes.map((time, index) => [time, index]));
+  $: plottedPoints = points.map((point) => ({ ...point, position: positionByTime.get(point.time)! }));
+  $: plottedDivergingSeries = visibleDivergingSeries.map((series) => ({
+    ...series,
+    data: series.data.map((point) => ({ ...point, position: positionByTime.get(point.time)! })),
+  }));
+  $: plottedChartPoints = diverging ? plottedDivergingSeries.flatMap((series) => series.data) : plottedPoints;
   $: xDomain = xValues.length > 1 ? [xValues[0], xValues[xValues.length - 1]] : xValues;
-  $: timelinePoints = xValues.map((time) => timelinePoint(time, chartPoints));
+  $: timelinePoints = xValues.map((position) => timelinePoint(position, plottedChartPoints));
   $: yAxis = diverging
     ? buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
     : buildSparklineYAxis(chartPoints.map((point) => point.value));
@@ -59,7 +68,10 @@
   }
 
   function shortDate(value: unknown) {
-    return formatSnapshotAxisLabel(value, $systemTimezone, $locale, chartPoints);
+    if (typeof value !== "number") return String(value ?? "");
+    const index = Math.max(0, Math.min(axisTimes.length - 1, Math.round(value)));
+    const time = axisTimes[index];
+    return formatSnapshotAxisLabel(typeof time === "number" ? time : value, $systemTimezone, $locale, chartPoints);
   }
 
   function shortAmount(value: unknown) {
@@ -71,14 +83,16 @@
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
   }
 
-  function timelinePoint(time: number, data: SnapshotChartPoint[]): SnapshotChartPoint {
-    const existing = data.find((point) => point.time === time);
+  function timelinePoint(position: number, data: PlotPoint[]): PlotPoint {
+    const existing = data.find((point) => point.position === position);
     if (existing) return existing;
+    const time = axisTimes[position] ?? 0;
     const date = new Date(time).toISOString().slice(0, 10);
     return {
       date,
       dateLabel: date,
       axisLabel: formatSnapshotAxisLabel(time, $systemTimezone, $locale, chartPoints),
+      position,
       time,
       value: 0,
     };
@@ -98,9 +112,9 @@
         <AreaChart
           data={timelinePoints}
           flatData={timelinePoints}
-          x="time"
+          x="position"
           y="value"
-          series={visibleDivergingSeries}
+          series={plottedDivergingSeries}
           seriesLayout="overlap"
           {xDomain}
           {yDomain}
@@ -117,7 +131,7 @@
           props={{
             area: { class: "snapshot-diverging-area" },
             line: { class: "snapshot-diverging-line" },
-            xAxis: { class: "sparkline-axis", format: shortDate, ticks: xValues },
+            xAxis: { class: "sparkline-axis", format: shortDate, tickSpacing: 80 },
             yAxis: {
               class: "sparkline-axis",
               format: shortAmount,
@@ -163,8 +177,8 @@
   {:else}
     <div class="sparkline" role="img" aria-label={ariaLabel}>
       <AreaChart
-        data={points}
-        x="time"
+        data={plottedPoints}
+        x="position"
         y="value"
         {xDomain}
         {yDomain}
@@ -179,7 +193,7 @@
         props={{
           area: { class: "sparkline-area" },
           line: { class: "sparkline-line" },
-          xAxis: { class: "sparkline-axis", format: shortDate, ticks: xValues },
+          xAxis: { class: "sparkline-axis", format: shortDate, tickSpacing: 80 },
           yAxis: {
             class: "sparkline-axis",
             format: shortAmount,
