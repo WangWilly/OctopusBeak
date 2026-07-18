@@ -23,8 +23,8 @@ assert.equal(translations.en.nav.spending, "Spending");
 assert.equal(translations["zh-TW"].nav.spending, "消費");
 assert.equal(translations.en.spending.title, "Personal spending");
 assert.equal(translations["zh-TW"].spending.title, "個人消費");
-assert.equal(translations.en.spending.chartDragHint, "Drag to browse · Command/Control + scroll to zoom");
-assert.equal(translations["zh-TW"].spending.chartDragHint, "拖曳瀏覽 · Command／Control＋滾輪縮放");
+assert.equal(translations.en.spending.chartDragHint, "Drag or horizontal scroll to browse · Pinch to zoom");
+assert.equal(translations["zh-TW"].spending.chartDragHint, "拖曳或左右滾輪瀏覽 · 觸控板縮放");
 assert.equal(
   translations.en.spending.chartVisibleRange("Jan 2026", "Dec 2026"),
   "Visible: Jan 2026–Dec 2026",

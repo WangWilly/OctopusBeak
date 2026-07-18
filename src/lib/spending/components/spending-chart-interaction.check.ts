@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  constrainSpendingChartTransform,
   spendingChartInteractionProps,
   spendingChartViewport,
 } from "./spending-chart-interaction.ts";
@@ -26,6 +27,14 @@ assert.deepEqual(spendingChartViewport(24, 1000, 2, -1000), {
   atStart: false,
   atEnd: true,
 });
+assert.deepEqual(constrainSpendingChartTransform(1000, { scale: 2, translate: { x: 250, y: 3 } }), {
+  scale: 2,
+  translate: { x: 0, y: 0 },
+});
+assert.deepEqual(constrainSpendingChartTransform(1000, { scale: 2, translate: { x: -1500, y: 3 } }), {
+  scale: 2,
+  translate: { x: -1000, y: 0 },
+});
 
 assert.deepEqual(spendingChartInteractionProps("static"), { brush: false, transform: undefined });
 assert.deepEqual(spendingChartInteractionProps("brush"), {
@@ -38,7 +47,7 @@ assert.deepEqual(spendingChartInteractionProps("pan-zoom"), {
     mode: "domain",
     axis: "x",
     scrollMode: "scale",
-    scrollActivationKey: "meta",
+    scrollActivationKey: "control",
     scaleExtent: [1, 6],
   },
 });
@@ -48,9 +57,13 @@ assert.deepEqual(spendingChartInteractionProps("brush-pan-zoom"), {
     mode: "domain",
     axis: "x",
     scrollMode: "scale",
-    scrollActivationKey: "meta",
+    scrollActivationKey: "control",
     scaleExtent: [1, 6],
   },
 });
 
 assert.match(chartSource, /export let interaction: SpendingChartInteraction = "pan-zoom";/);
+assert.match(chartSource, /bind:context=\{chartContext\}/);
+assert.match(chartSource, /onwheel=\{panWithWheel\}/);
+assert.match(chartSource, /event\.deltaX === 0/);
+assert.match(chartSource, /\$: renderedRows = rows;/);

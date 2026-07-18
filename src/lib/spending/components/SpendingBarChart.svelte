@@ -23,13 +23,13 @@
     MonthlySpendingRow,
   } from "$lib/spending/model.ts";
   import {
+    constrainSpendingChartTransform,
     spendingChartInteractionProps,
     spendingChartViewport,
     type SpendingChartInteraction,
   } from "./spending-chart-interaction.ts";
   import {
     spendingChartInitialTransform,
-    spendingChartRenderWindow,
   } from "./spending-chart-window.ts";
 
   type SpendingChartRow = MonthlySpendingRow | DailySpendingRow;
@@ -92,6 +92,7 @@
   let pendingTransform: TransformDetail | undefined;
   let transformFrame: number | undefined;
   let roundedBarKeys = new Set<string>();
+  let chartContext: any;
 
   $: interactionProps = spendingChartInteractionProps(interaction);
   $: hasTransform = interactionProps.transform !== undefined;
@@ -106,6 +107,7 @@
         ...interactionProps.transform,
         initialScale: initialTransform.scale,
         initialTranslate: { x: initialTransform.translateX, y: 0 },
+        constrain: (transform: TransformDetail) => constrainSpendingChartTransform(plotWidth, transform),
       }
     : undefined;
   $: viewport = spendingChartViewport(
@@ -114,12 +116,7 @@
     currentTransformScale,
     currentTransformTranslateX,
   );
-  $: renderWindow = hasTransform
-    ? spendingChartRenderWindow(rows.length, viewport)
-    : rows.length > 0 ? { startIndex: 0, endIndex: rows.length } : null;
-  $: renderedRows = renderWindow
-    ? rows.slice(renderWindow.startIndex, renderWindow.endIndex)
-    : [];
+  $: renderedRows = rows;
   $: shortDateFormatter = new Intl.DateTimeFormat($locale, kind === "month"
     ? { year: "2-digit", month: "2-digit", timeZone: "UTC" }
     : { month: "numeric", day: "numeric", timeZone: "UTC" }
@@ -262,6 +259,13 @@
   function updateTransform(detail: TransformDetail) {
     pendingTransform = detail;
     if (transformFrame === undefined) transformFrame = requestAnimationFrame(flushTransform);
+  }
+
+  function panWithWheel(event: WheelEvent) {
+    const transform = chartContext?.transform;
+    if (!hasTransform || !transform || event.ctrlKey || event.deltaX === 0) return;
+    event.preventDefault();
+    transform.setTranslate({ x: transform.translate.x - event.deltaX, y: 0 });
   }
 
   function resizeChart(width: number) {
@@ -447,6 +451,7 @@
       class:dragging={transformDragging}
       role="img"
       aria-label={ariaLabel}
+      onwheel={panWithWheel}
       bind:this={stageElement}
     >
       {#if stageWidth > 0}
@@ -457,6 +462,7 @@
         >
         {#key chartResetKey}
         <Chart
+          bind:context={chartContext}
           width={stageWidth}
           data={groupedData}
           x="periodKey"
