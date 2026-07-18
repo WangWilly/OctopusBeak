@@ -11,4 +11,9 @@ test("balance chart tooltips can escape the chart padding", () => {
 
 assert.match(source, /formatUtcDate\(new Date\(value\)\.toISOString\(\), \$systemTimezone, \$locale\)/);
 assert.match(source, /x="position"/);
+assert.match(source, /xValues = axisTimes\.map\(\(_, index\) => String\(index\)\)/);
+assert.match(source, /xDomain = xValues;/);
 assert.match(source, /tickSpacing: 80/);
+assert.match(source, /transform=\{\{ mode: "domain", axis: "x" \}\}/);
+assert.match(source, /tooltipContext=\{\{ mode: "band" \}\}/);
+assert.match(source, /\.stacked-balance-chart :global\(\.lc-layout-svg\)\s*\{[^}]*overflow:\s*hidden;/);

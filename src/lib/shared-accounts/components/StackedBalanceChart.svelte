@@ -17,7 +17,7 @@
 
   let selectedSeriesKeys: string[] = [];
   let lastSignature = "";
-  type PlotPoint = StackedBalanceChartData["totals"][number] & { position: number };
+  type PlotPoint = StackedBalanceChartData["totals"][number] & { position: string };
 
   $: if (chart.signature !== lastSignature) {
     selectedSeriesKeys = [];
@@ -26,14 +26,14 @@
   $: visibleChart = selectStackedBalanceChartSeries(chart, selectedSeriesKeys);
   $: selectedKeySet = new Set(selectedSeriesKeys);
   $: axisTimes = visibleChart.totals.map((point) => point.time);
-  $: xValues = axisTimes.map((_, index) => index);
-  $: positionByTime = new Map(axisTimes.map((time, index) => [time, index]));
+  $: xValues = axisTimes.map((_, index) => String(index));
+  $: positionByTime = new Map(axisTimes.map((time, index) => [time, String(index)]));
   $: plottedTotals = visibleChart.totals.map((point) => ({ ...point, position: positionByTime.get(point.time)! }));
   $: plottedSeries = visibleChart.series.map((series) => ({
     ...series,
     data: series.data.map((point) => ({ ...point, position: positionByTime.get(point.time)! })),
   }));
-  $: xDomain = xValues.length > 1 ? [xValues[0], xValues[xValues.length - 1]] : xValues;
+  $: xDomain = xValues;
   $: yAxis = buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
   $: yDomain = [0, yAxis.max];
   $: yTicks = yAxis.ticks.filter((tick) => tick >= 0);
@@ -53,10 +53,10 @@
   }
 
   function shortDate(value: unknown) {
-    if (typeof value !== "number") return String(value ?? "");
-    const index = Math.max(0, Math.min(axisTimes.length - 1, Math.round(value)));
+    if (typeof value !== "string") return String(value ?? "");
+    const index = Number(value);
     const time = axisTimes[index];
-    return formatSnapshotAxisLabel(typeof time === "number" ? time : value, $systemTimezone, $locale);
+    return typeof time === "number" ? formatSnapshotAxisLabel(time, $systemTimezone, $locale) : "";
   }
 
   function tooltipDate(value: unknown) {
@@ -82,6 +82,7 @@
         flatData={plottedTotals}
         x="position"
         y="value"
+        transform={{ mode: "domain", axis: "x" }}
         series={plottedSeries}
         seriesLayout="stack"
         {xDomain}
@@ -91,7 +92,7 @@
         axis={true}
         grid={{ y: true }}
         legend={false}
-        tooltipContext={{ mode: "bisect-x", findTooltipData: "closest" }}
+        tooltipContext={{ mode: "band" }}
         motion={{ type: "tween", duration: 180 }}
         padding={{ top: 12, right: 14, bottom: 28, left: 56 }}
         height={260}
@@ -148,6 +149,10 @@
 {/if}
 
 <style>
+  .stacked-balance-chart :global(.lc-layout-svg) {
+    overflow: hidden;
+  }
+
   .stacked-balance-chart {
     min-height: 286px;
   }
