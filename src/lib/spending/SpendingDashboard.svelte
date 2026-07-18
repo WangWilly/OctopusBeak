@@ -25,6 +25,8 @@
   let selectedMonth: string | undefined;
   let selectedCategory: SpendingCategory | undefined;
   let monthTabs: HTMLDivElement | null = null;
+  let monthTabsDragStart: { x: number; scrollLeft: number } | null = null;
+  let monthTabsDragged = false;
   let categoryFilters: HTMLDivElement | null = null;
   let allCategoryFilter: HTMLButtonElement | null = null;
   let recordList: HTMLDivElement | null = null;
@@ -280,6 +282,25 @@
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
+  function startMonthTabsDrag(event: PointerEvent) {
+    if (event.button !== 0 || !monthTabs) return;
+    monthTabsDragStart = { x: event.clientX, scrollLeft: monthTabs.scrollLeft };
+    monthTabsDragged = false;
+    monthTabs.setPointerCapture(event.pointerId);
+  }
+
+  function dragMonthTabs(event: PointerEvent) {
+    if (!monthTabs || !monthTabsDragStart) return;
+    const distance = event.clientX - monthTabsDragStart.x;
+    monthTabsDragged ||= Math.abs(distance) > 4;
+    monthTabs.scrollLeft = monthTabsDragStart.scrollLeft - distance;
+  }
+
+  function stopMonthTabsDrag() {
+    monthTabsDragStart = null;
+    if (monthTabsDragged) setTimeout(() => monthTabsDragged = false);
+  }
+
   function formatMonth(month: string) {
     const [year, monthNumber] = month.split("-").map(Number);
     return year && monthNumber
@@ -385,14 +406,24 @@
       </section>
 
       <div class="month-toolbar">
-        <div class="month-tabs" bind:this={monthTabs} role="group" aria-label={$t.spending.monthSelectorAria}>
+        <div
+          class="month-tabs"
+          class:dragging={monthTabsDragStart !== null}
+          bind:this={monthTabs}
+          role="group"
+          aria-label={$t.spending.monthSelectorAria}
+          onpointerdown={startMonthTabsDrag}
+          onpointermove={dragMonthTabs}
+          onpointerup={stopMonthTabsDrag}
+          onpointercancel={stopMonthTabsDrag}
+        >
           {#each model.months as month}
             <button
               class="filter-btn month-button"
               type="button"
               disabled={transactionSaving}
               aria-pressed={month === (selectedMonth ?? model.selectedMonth)}
-              onclick={() => void selectMonth(month)}
+              onclick={() => { if (!monthTabsDragged) void selectMonth(month); }}
             >
               {formatMonth(month)}
             </button>
@@ -747,7 +778,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--surface);
+    cursor: grab;
   }
+
+  .month-tabs.dragging { cursor: grabbing; }
 
   .month-tabs::-webkit-scrollbar,
   .invoice-tools::-webkit-scrollbar,
