@@ -286,13 +286,15 @@
     if (event.button !== 0 || !monthTabs) return;
     monthTabsDragStart = { x: event.clientX, scrollLeft: monthTabs.scrollLeft };
     monthTabsDragged = false;
-    monthTabs.setPointerCapture(event.pointerId);
   }
 
   function dragMonthTabs(event: PointerEvent) {
     if (!monthTabs || !monthTabsDragStart) return;
     const distance = event.clientX - monthTabsDragStart.x;
-    monthTabsDragged ||= Math.abs(distance) > 4;
+    if (!monthTabsDragged && Math.abs(distance) > 4) {
+      monthTabsDragged = true;
+      monthTabs.setPointerCapture(event.pointerId);
+    }
     monthTabs.scrollLeft = monthTabsDragStart.scrollLeft - distance;
   }
 
