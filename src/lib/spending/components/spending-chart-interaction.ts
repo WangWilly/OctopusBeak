@@ -3,6 +3,7 @@ import type { BarChartProps } from "layerchart";
 export type SpendingChartInteraction = "static" | "brush" | "pan-zoom" | "brush-pan-zoom";
 
 type InteractionProps = Pick<BarChartProps<unknown>, "brush" | "transform">;
+type SpendingChartTransform = { scale: number; translate: { x: number; y: number } };
 
 export type SpendingChartViewport = {
   startIndex: number;
@@ -15,9 +16,20 @@ const transform: NonNullable<InteractionProps["transform"]> = {
   mode: "domain",
   axis: "x",
   scrollMode: "scale",
-  scrollActivationKey: "meta",
+  scrollActivationKey: "control",
   scaleExtent: [1, 6],
 };
+
+export function constrainSpendingChartTransform(
+  width: number,
+  transform: SpendingChartTransform,
+): SpendingChartTransform {
+  const minX = width - width * transform.scale;
+  return {
+    ...transform,
+    translate: { x: Math.max(minX, Math.min(0, transform.translate.x)), y: 0 },
+  };
+}
 
 export function spendingChartViewport(
   rowCount: number,
