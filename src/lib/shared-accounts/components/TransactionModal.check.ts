@@ -6,5 +6,5 @@ const source = readFileSync(new URL("./TransactionModal.svelte", import.meta.url
 
 test("date sorting uses the timestamp displayed by the transaction table", () => {
   assert.match(source, /if \(key === "date"\) return row\.occurredAtUtc \?\? row\.date;/);
-  assert.match(source, /formatUtcDateTime\(row\.occurredAtUtc \?\? row\.date,/);
+  assert.match(source, /formatUtcDate\(row\.occurredAtUtc \?\? row\.date,/);
 });

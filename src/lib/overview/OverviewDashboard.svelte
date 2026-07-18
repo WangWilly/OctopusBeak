@@ -3,7 +3,7 @@
   import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     allExchangeRatesMissing,
     convertDailyHistoryRows,
@@ -14,6 +14,8 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
 
@@ -52,7 +54,9 @@
   });
 
   function formatImportedAt(value: string | null) {
-    return value?.slice(0, 16).replace("T", " ") ?? $t.common.notYet;
+    return value
+      ? formatUtcDateTime(value, $systemTimezone, $locale).replace(/:\d{2}$/, "")
+      : $t.common.notYet;
   }
 
   function selectValue(event: Event) {

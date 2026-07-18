@@ -98,3 +98,23 @@ export function formatUtcDateTime(
     hourCycle: "h23",
   }).format(date).replace(/\s+/gu, " ");
 }
+
+export function formatUtcDate(
+  value: string | null | undefined,
+  timeZone: string,
+  locale: string,
+): string {
+  if (!value) return "";
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!dateOnly && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
+    throw new RangeError(`UTC date-time requires an explicit offset: ${value}`);
+  }
+  const date = new Date(dateOnly ? `${value}T00:00:00.000Z` : value);
+  if (!Number.isFinite(date.getTime())) throw new RangeError(`Invalid UTC date-time: ${value}`);
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: dateOnly ? "UTC" : timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}

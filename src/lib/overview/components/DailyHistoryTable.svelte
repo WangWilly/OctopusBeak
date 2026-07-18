@@ -7,7 +7,7 @@
     formatMoney,
     formatSignedAmountLines,
   } from "$lib/shared-money/money.ts";
-  import { formatUtcDateTime } from "$lib/time/timezone.ts";
+  import { formatUtcDate } from "$lib/time/timezone.ts";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
   type SortDirection = "asc" | "desc";
@@ -102,7 +102,7 @@
   }
 
   function pointLabel(row: DailyHistoryRowDto) {
-    return formatUtcDateTime(row.pointAt ?? row.date, $systemTimezone, $locale);
+    return formatUtcDate(row.pointAt ?? row.date, $systemTimezone, $locale);
   }
 
 </script>

@@ -1,8 +1,11 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
-  import { t } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildSparklineYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
+  import { formatSnapshotAxisLabel } from "$lib/overview/components/snapshot-chart-data.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { formatUtcDate } from "$lib/time/timezone.ts";
   import {
     selectStackedBalanceChartSeries,
     type StackedBalanceChartData,
@@ -42,19 +45,12 @@
   }
 
   function shortDate(value: unknown) {
-    if (value instanceof Date && !Number.isNaN(value.getTime())) return monthDay(value);
-    if (typeof value === "number") {
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) return monthDay(date);
-    }
-    const text = String(value);
-    return text.length >= 10 ? text.slice(5, 10) : text;
+    return formatSnapshotAxisLabel(value, $systemTimezone, $locale);
   }
 
-  function monthDay(value: Date) {
-    const month = String(value.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(value.getUTCDate()).padStart(2, "0");
-    return `${month}-${day}`;
+  function tooltipDate(value: unknown) {
+    if (typeof value !== "number") return String(value ?? "");
+    return formatUtcDate(new Date(value).toISOString(), $systemTimezone, $locale);
   }
 
   function shortAmount(value: unknown) {
@@ -105,7 +101,7 @@
           <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
             {#snippet children({ data })}
               <div class="sparkline-tooltip-body stacked-balance-tooltip">
-                <span>{data?.dateLabel ?? data?.date ?? ""}</span>
+                <span>{tooltipDate(data?.time)}</span>
                 {#each visibleChart.series as item}
                   <div class="stacked-balance-tooltip-row">
                     <span>{item.label}</span>
