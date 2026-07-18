@@ -17,6 +17,7 @@
 
   let selectedSeriesKeys: string[] = [];
   let lastSignature = "";
+  type PlotPoint = StackedBalanceChartData["totals"][number] & { position: number };
 
   $: if (chart.signature !== lastSignature) {
     selectedSeriesKeys = [];
@@ -24,7 +25,14 @@
   }
   $: visibleChart = selectStackedBalanceChartSeries(chart, selectedSeriesKeys);
   $: selectedKeySet = new Set(selectedSeriesKeys);
-  $: xValues = visibleChart.totals.map((point) => point.time);
+  $: axisTimes = visibleChart.totals.map((point) => point.time);
+  $: xValues = axisTimes.map((_, index) => index);
+  $: positionByTime = new Map(axisTimes.map((time, index) => [time, index]));
+  $: plottedTotals = visibleChart.totals.map((point) => ({ ...point, position: positionByTime.get(point.time)! }));
+  $: plottedSeries = visibleChart.series.map((series) => ({
+    ...series,
+    data: series.data.map((point) => ({ ...point, position: positionByTime.get(point.time)! })),
+  }));
   $: xDomain = xValues.length > 1 ? [xValues[0], xValues[xValues.length - 1]] : xValues;
   $: yAxis = buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
   $: yDomain = [0, yAxis.max];
@@ -45,7 +53,10 @@
   }
 
   function shortDate(value: unknown) {
-    return formatSnapshotAxisLabel(value, $systemTimezone, $locale);
+    if (typeof value !== "number") return String(value ?? "");
+    const index = Math.max(0, Math.min(axisTimes.length - 1, Math.round(value)));
+    const time = axisTimes[index];
+    return formatSnapshotAxisLabel(typeof time === "number" ? time : value, $systemTimezone, $locale);
   }
 
   function tooltipDate(value: unknown) {
@@ -67,11 +78,11 @@
   <div class="stacked-balance-chart" role="img" aria-label={ariaLabel}>
     <div class="stacked-balance-stage">
       <AreaChart
-        data={visibleChart.totals}
-        flatData={visibleChart.totals}
-        x="time"
+        data={plottedTotals}
+        flatData={plottedTotals}
+        x="position"
         y="value"
-        series={visibleChart.series}
+        series={plottedSeries}
         seriesLayout="stack"
         {xDomain}
         {yDomain}
@@ -87,7 +98,7 @@
         props={{
           area: { class: "stacked-balance-area" },
           line: { class: "stacked-balance-line" },
-          xAxis: { class: "sparkline-axis", format: shortDate, ticks: xValues },
+          xAxis: { class: "sparkline-axis", format: shortDate, tickSpacing: 80 },
           yAxis: {
             class: "sparkline-axis",
             format: shortAmount,
