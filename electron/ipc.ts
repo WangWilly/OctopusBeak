@@ -4,6 +4,7 @@ import {
   automationCancel,
   automationResume,
   automationRun,
+  automationRunMany,
   automationRunHistory,
   automationSaveCredentials,
   loadAutomationDesktopModel,
@@ -81,6 +82,7 @@ export function registerOctopusBeakIpc({
     (_event, updates: Record<string, string>) => automationSaveCredentials(updates),
   );
   ipcMain.handle("automation:run", (_event, taskId: string) => automationRun(taskId));
+  ipcMain.handle("automation:runMany", (_event, taskIds: string[]) => automationRunMany(taskIds));
   ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));
   ipcMain.handle("automation:cancel", (_event, taskId: string) => automationCancel(taskId));
   ipcMain.handle("automation:runHistory", () => automationRunHistory());
