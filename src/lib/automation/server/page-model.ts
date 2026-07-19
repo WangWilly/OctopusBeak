@@ -92,7 +92,7 @@ export function buildAutomationPageModel(input: {
     active: input.active || activeTaskIds.size > 0,
     activeTaskCount: activeTaskIds.size,
     parallelRunnableTaskIds: tasks
-      .filter((task) => task.canRun && !task.isActive)
+      .filter((task) => task.canRun && task.primaryAction !== "Cancel" && !task.isActive)
       .map((task) => task.id),
     credentials: input.credentials,
     importGate: input.importGate,

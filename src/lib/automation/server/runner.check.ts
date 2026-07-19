@@ -143,7 +143,7 @@ test("automation output is flushed in batches", (context) => {
 
 test("batch task startup uses two concurrent slots", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
-  assert.match(source, /runWithConcurrency\(taskIds, 2,/);
+  assert.match(source, /runWithConcurrency\(uniqueTaskIds, 2,/);
 });
 
 test("batch execution limits concurrency and starts the next task after a slot opens", async () => {
@@ -172,6 +172,27 @@ test("batch execution limits concurrency and starts the next task after a slot o
   for (const release of releases.values()) release();
   await batch;
   assert.equal(active, 0);
+});
+
+test("batch execution rejects invalid concurrency limits", async () => {
+  await assert.rejects(runWithConcurrency([1], 0, async () => {}), RangeError);
+});
+
+test("batch execution captures synchronous callback failures", async () => {
+  await assert.rejects(
+    runWithConcurrency([1], 1, () => { throw new Error("sync failure"); }),
+    /sync failure/,
+  );
+});
+
+test("batch startup validates every task before claiming any", async () => {
+  assert.throws(
+    () => startAutomationTasks(["exchange-rates", "unknown-task"]),
+    /Unknown automation task/,
+  );
+  const leaked = activeAutomationTaskIds();
+  if (leaked.includes("exchange-rates")) await cancelAutomationTask("exchange-rates");
+  assert.deepEqual(leaked, []);
 });
 
 test("a queued batch task can be cancelled before its process starts", async () => {

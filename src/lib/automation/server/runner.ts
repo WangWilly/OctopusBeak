@@ -234,14 +234,20 @@ export async function runWithConcurrency<T>(
   limit: number,
   run: (item: T) => Promise<void>,
 ) {
+  if (!Number.isInteger(limit) || limit < 1) throw new RangeError("Concurrency limit must be a positive integer.");
   const active = new Set<Promise<void>>();
+  const errors: unknown[] = [];
   for (const item of items) {
     if (active.size >= limit) await Promise.race(active);
-    const task = run(item).finally(() => active.delete(task));
+    const task = Promise.resolve()
+      .then(() => run(item))
+      .catch((error) => { errors.push(error); })
+      .finally(() => active.delete(task));
     active.add(task);
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   await Promise.all(active);
+  if (errors.length) throw errors[0];
 }
 
 export function claimRunAutomationSession(
@@ -342,13 +348,17 @@ export function startAutomationTasks(
   taskIds: readonly string[],
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
-  for (const taskId of taskIds) {
+  const uniqueTaskIds = [...new Set(taskIds)];
+  for (const taskId of uniqueTaskIds) {
     if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+    if (activeTaskRunIds.has(taskId)) throw new Error(`Automation task is already running: ${taskId}`);
+  }
+  for (const taskId of uniqueTaskIds) {
     claimTask(taskId);
     activeTaskRunIds.set(taskId, "queued");
   }
   setImmediate(() => {
-    void runWithConcurrency(taskIds, 2, async (taskId) => {
+    void runWithConcurrency(uniqueTaskIds, 2, async (taskId) => {
       if (activeTaskRunIds.get(taskId) !== "queued") return;
       activeTaskRunIds.set(taskId, "pending");
       await runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
