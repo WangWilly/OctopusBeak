@@ -37,6 +37,7 @@ assert.match(source, /\{#if iconTasks\.length\}/);
 assert.match(source, /\{#each iconTasks as task \(task\.id\)\}/);
 assert.match(source, /class="active-task-jump"/);
 assert.match(source, /class:failed=\{task\.status === "failed"\}/);
+assert.match(source, /aria-label=\{`\$\{\$t\.automation\.logs\} · \$\{taskLabel\(task, \$t\)\}`\}/);
 assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
 assert.match(source, /onclick=\{\(\) => handleActiveTaskClick\(task\)\}/);
 assert.match(source, /function handleActiveTaskClick\(task: AutomationTaskRow\)/);
