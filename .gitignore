@@ -17,3 +17,8 @@ data/
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/
 .libretto/profiles/
+
+# Local design prototypes and visual QA artifacts.
+/design-qa.md
+/prototypes/
+/qa/
