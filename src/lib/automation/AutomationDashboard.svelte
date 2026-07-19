@@ -90,7 +90,7 @@
   $: visibleCredentialGroups = credentialGroups.filter((group) =>
     group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
   );
-  $: selectedCredentialGroup = credentialGroups.find((group) => group.id === selectedCredentialGroupId) ?? credentialGroups[0];
+  $: selectedCredentialGroup = visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId) ?? visibleCredentialGroups[0];
   $: visibleHistoryRows = historyRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
@@ -247,6 +247,14 @@
       ...credentialDrafts,
       [key]: (event.currentTarget as HTMLInputElement).value,
     };
+  }
+
+  async function updateCredentialSearch(event: Event) {
+    credentialSearch = (event.currentTarget as HTMLInputElement).value;
+    await tick();
+    if (!visibleCredentialGroups.some((group) => group.id === selectedCredentialGroupId)) {
+      selectedCredentialGroupId = visibleCredentialGroups[0]?.id ?? "";
+    }
   }
 
   async function runTask(task: AutomationTaskRow) {
@@ -886,7 +894,7 @@
         <aside class="credential-provider-list">
           <label class="modal-search">
             <Search size={18} />
-            <input bind:value={credentialSearch} placeholder={$t.automation.credentialSearch} />
+            <input value={credentialSearch} oninput={updateCredentialSearch} placeholder={$t.automation.credentialSearch} />
           </label>
           <nav aria-label={$t.automation.credentialsTitle}>
             {#each visibleCredentialGroups as group}
