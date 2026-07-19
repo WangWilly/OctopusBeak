@@ -84,17 +84,15 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
   }
 }
 
-function missingCredentialKeys(taskId: string) {
+function missingCredentialKeys(taskId: string, status = currentCredentialStatus()) {
   const task = taskById(taskId);
   if (!task) return [];
-  const status = currentCredentialStatus();
   return task.credentialKeys.filter((key) => !optionalCredentialKeys.has(key) && !status[key]);
 }
 
-export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDesktopModel) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const model = loadAutomationDesktopModel(ledgerDir);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status === "waiting_for_human") {
@@ -103,9 +101,17 @@ export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process
   if (row.status === "locked") {
     throw new Error("Import is locked until all crawler dependencies complete for the business day.");
   }
-  const missing = missingCredentialKeys(taskId);
+  const missing = missingCredentialKeys(taskId, model.automation.credentials);
   if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
   return task;
+}
+
+export function assertAutomationTasksCanStart(taskIds: readonly string[], model: AutomationDesktopModel) {
+  return [...new Set(taskIds)].map((taskId) => assertAutomationTaskCanStartInModel(taskId, model));
+}
+
+export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+  return assertAutomationTaskCanStartInModel(taskId, loadAutomationDesktopModel(ledgerDir));
 }
 
 export function automationSaveCredentials(updates: Record<string, string>) {
@@ -127,6 +133,16 @@ export function automationRun(taskId: string, ledgerDir = process.env.LEDGER_DIR
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
   startAutomationTask(task.id, ledgerDir);
   return { started: task.id };
+}
+
+export function automationRunMany(taskIds: string[], ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+  if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
+    throw new TypeError("Task IDs must be an array of strings.");
+  }
+  if (taskIds.length === 0) return { started: [] as string[] };
+  const tasks = assertAutomationTasksCanStart(taskIds, loadAutomationDesktopModel(ledgerDir));
+  for (const task of tasks) startAutomationTask(task.id, ledgerDir);
+  return { started: tasks.map((task) => task.id) };
 }
 
 export function automationCancel(taskId: string) {

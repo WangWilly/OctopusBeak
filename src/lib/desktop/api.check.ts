@@ -13,6 +13,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:load",
   "automation:saveCredentials",
   "automation:run",
+  "automation:runMany",
   "automation:resume",
   "automation:cancel",
   "automation:runHistory",

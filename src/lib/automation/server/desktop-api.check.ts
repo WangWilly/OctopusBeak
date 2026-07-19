@@ -54,6 +54,13 @@ try {
   assert.equal(Object.hasOwn(model.automation, "runHistory"), false);
   assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.ranToday, true);
   assert.equal(api.automationRunHistory(dir)[0]?.taskId, "fubon-all-statements");
+  assert.deepEqual(
+    api.assertAutomationTasksCanStart(
+      ["fubon-all-statements", "fubon-all-statements"],
+      model,
+    ).map((task) => task.id),
+    ["fubon-all-statements"],
+  );
 
   assert.throws(
     () => api.assertAutomationTaskCanStart("import-downloads-csv", dir),
