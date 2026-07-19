@@ -66,19 +66,16 @@
     {
       id: "collect",
       title: $t.automation.collectStage,
-      description: $t.automation.collectStageDescription,
       tasks: automation.tasks.filter((task) => task.kind === "crawler"),
     },
     {
       id: "import",
       title: $t.automation.importStage,
-      description: $t.automation.importStageDescription,
       tasks: automation.tasks.filter((task) => task.kind === "import"),
     },
     {
       id: "sync",
       title: $t.automation.syncStage,
-      description: $t.automation.syncStageDescription,
       tasks: automation.tasks.filter((task) => task.kind === "sync"),
     },
   ];
@@ -584,7 +581,7 @@
         <h2>
           {automation.active
             ? $t.automation.runningTaskHeading(automation.activeTaskCount)
-            : $t.automation.runnableTaskHeading(parallelTasks.length)}
+            : $t.automation.startImportHeading}
         </h2>
         {#if iconTasks.length}
           <div class="active-task-filter">
@@ -641,7 +638,7 @@
         <section class="stage-section">
           <div class="stage-head">
             <div class="stage-head-content">
-              <span class:muted={stage.id !== "collect"} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              <span class:muted={!stageRunnableTasks(stage.tasks).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
               <span class="stage-copy">
                 <span class="stage-title-row">
                   <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
@@ -649,7 +646,6 @@
                     <span class="chip bad">{$t.common.importLocked}</span>
                   {/if}
                 </span>
-                <span class="stage-description">{stage.description}</span>
               </span>
               <div class="stage-head-actions">
                 <button
@@ -1304,11 +1300,6 @@
 
   .stage-title-row h2 {
     font-size: 20px;
-  }
-
-  .stage-description {
-    color: var(--muted);
-    font-size: 13px;
   }
 
   .stage-body {

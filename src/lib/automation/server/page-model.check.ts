@@ -54,6 +54,21 @@ assert.equal(Object.hasOwn(model, "runHistory"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
 assert.equal(model.parallelRunnableTaskIds.includes("import-downloads-csv"), false);
 
+const unlockedImportModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns,
+  activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
+  credentials: {},
+  importGate: {
+    locked: false,
+    missingTaskIds: [],
+  },
+  active: false,
+  businessDate: "2026-06-30",
+});
+assert.equal(unlockedImportModel.parallelRunnableTaskIds.includes("import-downloads-csv"), true);
+
 const failedModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {
