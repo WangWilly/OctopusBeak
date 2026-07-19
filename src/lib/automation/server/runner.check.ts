@@ -13,6 +13,7 @@ import {
 } from "./session-lifecycle.ts";
 import {
   accumulateAutomationOutput,
+  activeAutomationTaskIds,
   appendCleanupError,
   automationCleanupFailureDetails,
   automationSessionFromLog,
@@ -29,15 +30,18 @@ import {
   parseAutomationProgress,
   prepareLibrettoRunCdpPatch,
   claimRunAutomationSession,
+  cancelAutomationTask,
   resumeFailureMessage,
   resumeSessionFromLog,
   recoverAbandonedAutomationSessions,
+  runWithConcurrency,
   shutdownAutomationSessions,
   shouldAutoRunImport,
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
   shouldRetainAutomationSession,
   startAutomationTask,
+  startAutomationTasks,
 } from "./runner.ts";
 
 assert.equal(createAutomationSessionId(() => "fixed-uuid"), "ses-octopus-fixed-uuid");
@@ -122,19 +126,60 @@ test("Libretto CDP patch is prepared once per app process", () => {
 test("automation output is flushed in batches", (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const flushed: string[] = [];
-  const buffer = createAutomationOutputBuffer((chunk) => flushed.push(chunk), 100);
+  const buffer = createAutomationOutputBuffer((chunk) => flushed.push(chunk));
 
   buffer.push("first\n");
   buffer.push("second\n");
-  context.mock.timers.tick(99);
+  context.mock.timers.tick(499);
   assert.deepEqual(flushed, []);
   context.mock.timers.tick(1);
   assert.deepEqual(flushed, ["first\nsecond\n"]);
 
   buffer.push("final\n");
   buffer.flush();
-  context.mock.timers.tick(100);
+  context.mock.timers.tick(500);
   assert.deepEqual(flushed, ["first\nsecond\n", "final\n"]);
+});
+
+test("batch task startup uses two concurrent slots", () => {
+  const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
+  assert.match(source, /runWithConcurrency\(taskIds, 2,/);
+});
+
+test("batch execution limits concurrency and starts the next task after a slot opens", async () => {
+  const started: number[] = [];
+  const releases = new Map<number, () => void>();
+  let active = 0;
+  let peak = 0;
+  const batch = runWithConcurrency([1, 2, 3, 4, 5], 4, async (item) => {
+    started.push(item);
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => releases.set(item, resolve));
+    active -= 1;
+  });
+
+  for (let turn = 0; turn < 5; turn += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(started, [1, 2, 3, 4]);
+  assert.equal(peak, 4);
+
+  releases.get(1)?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, [1, 2, 3, 4, 5]);
+
+  for (const release of releases.values()) release();
+  await batch;
+  assert.equal(active, 0);
+});
+
+test("a queued batch task can be cancelled before its process starts", async () => {
+  startAutomationTasks(["exchange-rates"]);
+  assert.deepEqual(activeAutomationTaskIds(), ["exchange-rates"]);
+  assert.deepEqual(await cancelAutomationTask("exchange-rates"), { cancelled: "exchange-rates" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(activeAutomationTaskIds(), []);
 });
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
