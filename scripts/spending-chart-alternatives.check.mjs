@@ -88,8 +88,8 @@ try {
   assert.equal(await chart.locator("[data-selection-outline]").count(), 0);
   assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 1);
   assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
-  assert.equal(await chart.getAttribute("data-rendered-months"), "20");
-  assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  assert.equal(await chart.getAttribute("data-rendered-months"), "30");
+  assert.equal(await chart.getAttribute("data-rendered-buckets"), "60");
   const confirmedToggle = page.locator('[data-chart-state="confirmed"]');
   const pendingToggle = page.locator('[data-chart-state="pending"]');
   assert.equal(await confirmedToggle.getAttribute("aria-pressed"), "true");
@@ -98,10 +98,10 @@ try {
   await pendingToggle.click();
   assert.equal(await pendingToggle.getAttribute("aria-pressed"), "true");
   assert.equal(await chart.getAttribute("data-show-pending"), "true");
-  assert.equal(await chart.getAttribute("data-rendered-buckets"), "40");
+  assert.equal(await chart.getAttribute("data-rendered-buckets"), "60");
   assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), /Pending.*TWD 8,400/u);
   assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), new RegExp(`Confirmed total.*TWD ${monthlyRows[24].total.toLocaleString("en-US")}`, "u"));
-  assert.equal(await chart.getAttribute("data-rounded-bars"), "38");
+  assert.equal(await chart.getAttribute("data-rounded-bars"), "58");
   assert.equal(await chart.locator("[data-spending-bar]").count(), 0);
   const initialScale = Number(await chart.getAttribute("data-initial-scale"));
   const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
@@ -158,8 +158,7 @@ try {
   const selectedBandAfterDrag = await chart.locator("[data-selected-period]").boundingBox();
   assert.ok(selectedBandAfterDrag);
   assert.notEqual(selectedBandAfterDrag.x, selectedBandBeforeDrag.x);
-  const renderedMonthsAfterDrag = Number(await chart.getAttribute("data-rendered-months"));
-  assert.ok(renderedMonthsAfterDrag <= 23, `rendered ${renderedMonthsAfterDrag} months after drag`);
+  assert.equal(await chart.getAttribute("data-rendered-months"), "30");
   assert.equal(await page.evaluate(() => window.__spendingLoadCount), loadCountBeforeDrag);
   assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
   const paintedBounds = await chart.locator('canvas[data-spending-bars-canvas]').evaluate((canvas) => {
