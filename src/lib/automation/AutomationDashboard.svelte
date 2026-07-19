@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark } from "@lucide/svelte";
+  import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -30,6 +30,9 @@
   let historyOpen = false;
   let historyLoading = false;
   let historyRows: AutomationTaskHistoryRow[] = [];
+  let historySearch = "";
+  let historyFilter: "all" | "running" | "completed" | "failed" = "all";
+  let expandedHistoryRunId: string | null = null;
   let humanTask: AutomationTaskRow | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
@@ -45,6 +48,8 @@
   let taskTooltipPosition = { left: 0, top: 0 };
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
+  let selectedCredentialGroupId = "";
+  let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
 
   $: sideValue = automation.active
@@ -82,6 +87,22 @@
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: credentialsDirty = credentialInputDirty || credentialToggleDirty;
+  $: visibleCredentialGroups = credentialGroups.filter((group) =>
+    group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
+  );
+  $: selectedCredentialGroup = credentialGroups.find((group) => group.id === selectedCredentialGroupId) ?? credentialGroups[0];
+  $: visibleHistoryRows = historyRows.filter((run) => {
+    const term = historySearch.trim().toLowerCase();
+    return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
+      && (!term || `${taskIdLabel(run.taskId, $t)} ${run.script}`.toLowerCase().includes(term));
+  });
+  $: historyCounts = historyRows.reduce(
+    (counts, run) => {
+      counts[historyStatusGroup(run.status)] += 1;
+      return counts;
+    },
+    { running: 0, completed: 0, failed: 0 },
+  );
 
   $: if (automation.active && !pollTimer) {
     pollTimer = setInterval(() => {
@@ -187,6 +208,8 @@
 
   function openCredentials() {
     resetCredentialChanges();
+    selectedCredentialGroupId = selectedCredentialGroupId || credentialGroups[0]?.id || "";
+    credentialSearch = "";
     credentialsOpen = true;
   }
 
@@ -334,6 +357,9 @@
   async function openRunHistory() {
     historyOpen = true;
     historyLoading = true;
+    historySearch = "";
+    historyFilter = "all";
+    expandedHistoryRunId = null;
     try {
       actionError = "";
       historyRows = await window.octopusBeak.automation.runHistory();
@@ -342,6 +368,20 @@
     } finally {
       historyLoading = false;
     }
+  }
+
+  function historyStatusGroup(status: AutomationTaskHistoryRow["status"]): "running" | "completed" | "failed" {
+    if (status === "completed") return "completed";
+    if (status === "failed" || status === "locked") return "failed";
+    return "running";
+  }
+
+  function formatDuration(run: AutomationTaskHistoryRow) {
+    const start = Date.parse(run.startedAt);
+    const end = Date.parse(run.finishedAt ?? new Date().toISOString());
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return "--";
+    const seconds = Math.max(0, Math.floor((end - start) / 1_000));
+    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
   async function saveCredentials(event: SubmitEvent) {
@@ -838,44 +878,62 @@
         <div class="credential-head-actions">
           <button class="button fixed-action" type="button" onclick={closeCredentials}>{$t.common.cancel}</button>
           <button class="button primary fixed-action" type="submit">{$t.common.save}</button>
+          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
         </div>
       </div>
-      <div class="modal-body credential-body">
-        <div class="credential-sections">
-          {#each credentialGroups as group}
-            <section class="credential-section" aria-labelledby={`${group.id}-credentials-title`}>
-              <div class="credential-section-head">
-                <h3 id={`${group.id}-credentials-title`}>{group.label}</h3>
-                <button
-                  class="switch credential-switch"
-                  class:dirty={(groupEnabled[group.id] !== false) !== group.enabled}
-                  type="button"
-                  aria-pressed={groupEnabled[group.id] !== false}
-                  onclick={() => toggleGroup(group.id)}
-                >
-                  <span>{$t.common.enabled}</span>
-                  <span class="switch-track" aria-hidden="true"></span>
-                </button>
-              </div>
-              <div class="credential-grid">
-                {#each group.credentialKeys as key}
-                  <label class="credential-field">
-                    <span>{credentialLabel(key, $t)}</span>
-                    <input
-                      name={key}
-                      type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
-                      value={credentialDrafts[key] ?? ""}
-                      class:dirty={Boolean(credentialDrafts[key]?.trim())}
-                      oninput={(event) => updateCredentialDraft(key, event)}
-                      placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
-                      autocomplete="off"
-                    />
-                  </label>
-                {/each}
-              </div>
-            </section>
-          {/each}
-        </div>
+      <div class="modal-body credential-layout">
+        <aside class="credential-provider-list">
+          <label class="modal-search">
+            <Search size={18} />
+            <input bind:value={credentialSearch} placeholder={$t.automation.credentialSearch} />
+          </label>
+          <nav aria-label={$t.automation.credentialsTitle}>
+            {#each visibleCredentialGroups as group}
+              <button
+                type="button"
+                class:selected={group.id === selectedCredentialGroupId}
+                aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
+                onclick={() => (selectedCredentialGroupId = group.id)}
+              >
+                <strong>{group.label}</strong>
+                <span>{groupEnabled[group.id] !== false ? $t.common.enabled : $t.common.disabled}</span>
+              </button>
+            {/each}
+          </nav>
+        </aside>
+        {#if selectedCredentialGroup}
+          <section class="credential-body" aria-labelledby={`${selectedCredentialGroup.id}-credentials-title`}>
+            <div class="credential-section-head">
+              <h3 id={`${selectedCredentialGroup.id}-credentials-title`}>{selectedCredentialGroup.label}</h3>
+              <button
+                class="switch credential-switch"
+                class:dirty={(groupEnabled[selectedCredentialGroup.id] !== false) !== selectedCredentialGroup.enabled}
+                type="button"
+                aria-pressed={groupEnabled[selectedCredentialGroup.id] !== false}
+                onclick={() => toggleGroup(selectedCredentialGroup.id)}
+              >
+                <span>{$t.common.enabled}</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="credential-grid">
+              {#each selectedCredentialGroup.credentialKeys as key}
+                <label class="credential-field">
+                  <span>{credentialLabel(key, $t)}</span>
+                  <input
+                    name={key}
+                    type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
+                    value={credentialDrafts[key] ?? ""}
+                    class:dirty={Boolean(credentialDrafts[key]?.trim())}
+                    oninput={(event) => updateCredentialDraft(key, event)}
+                    placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
+                    autocomplete="off"
+                  />
+                </label>
+              {/each}
+            </div>
+          </section>
+        {/if}
       </div>
     </form>
   </div>
@@ -888,43 +946,57 @@
       <div class="modal-head">
         <div>
           <h2 id="history-title">{$t.automation.runHistory}</h2>
-          <p>{historyRows.length} / 100</p>
+          <p>{historyRows.length} {$t.automation.task}</p>
         </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (historyOpen = false)}>x</button>
+        <div class="history-head-actions">
+          <label class="modal-search history-search">
+            <Search size={18} />
+            <input bind:value={historySearch} placeholder={$t.automation.historySearch} />
+          </label>
+          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (historyOpen = false)}><X size={20} /></button>
+        </div>
       </div>
-      <div class="modal-body history-body">
-        <table class="table history-table">
-          <thead>
-            <tr>
-              <th>{$t.automation.task}</th>
-              <th>{$t.automation.status}</th>
-              <th>{$t.automation.historyStartedTime($systemTimezone)}</th>
-              <th>{$t.automation.historyFinishedTime($systemTimezone)}</th>
-              <th>{$t.automation.historyError}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#if historyLoading}
+      <div class="modal-body history-layout">
+        <aside class="history-filters">
+          <button class:selected={historyFilter === "all"} type="button" onclick={() => (historyFilter = "all")}><span>{$t.automation.historyAll}</span><strong>{historyRows.length}</strong></button>
+          <button class:selected={historyFilter === "running"} type="button" onclick={() => (historyFilter = "running")}><span>{$t.automation.historyRunning}</span><strong>{historyCounts.running}</strong></button>
+          <button class:selected={historyFilter === "completed"} type="button" onclick={() => (historyFilter = "completed")}><span>{$t.automation.historyCompleted}</span><strong>{historyCounts.completed}</strong></button>
+          <button class:selected={historyFilter === "failed"} type="button" onclick={() => (historyFilter = "failed")}><span>{$t.automation.historyFailed}</span><strong>{historyCounts.failed}</strong></button>
+        </aside>
+        <div class="history-body">
+          <table class="table history-table">
+            <thead>
               <tr>
-                <td colspan="5">{$t.common.loading}</td>
+                <th>{$t.automation.task}</th>
+                <th>{$t.automation.status}</th>
+                <th>{$t.automation.historyStartedTime($systemTimezone)}</th>
+                <th>{$t.automation.historyDuration}</th>
+                <th>{$t.automation.historyError}</th>
               </tr>
-            {/if}
-            {#each historyRows as run}
-              <tr>
-                <td>
-                  <div class="task-name">
-                    <strong>{taskIdLabel(run.taskId, $t)}</strong>
-                    <span>{run.script}</span>
-                  </div>
-                </td>
-                <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
-                <td class="mono">{formatTime(run.startedAt)}</td>
-                <td class="mono">{formatTime(run.finishedAt)}</td>
-                <td class="history-error">{run.errorMessage ?? "--"}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#if historyLoading}
+                <tr><td colspan="5">{$t.common.loading}</td></tr>
+              {/if}
+              {#each visibleHistoryRows as run}
+                <tr>
+                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong><span>{run.script}</span></div></td>
+                  <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
+                  <td class="mono">{formatTime(run.startedAt)}</td>
+                  <td class="mono">{formatDuration(run)}</td>
+                  <td class="history-error">
+                    {#if run.errorMessage}
+                      <button type="button" onclick={() => (expandedHistoryRunId = expandedHistoryRunId === run.taskRunId ? null : run.taskRunId)}>{run.errorMessage}</button>
+                    {:else}--{/if}
+                  </td>
+                </tr>
+                {#if run.errorMessage && expandedHistoryRunId === run.taskRunId}
+                  <tr class="history-error-detail"><td colspan="5"><strong>{$t.automation.historyError}</strong><code>{run.errorMessage}</code></td></tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -1073,7 +1145,7 @@
   .active-task-filter {
     width: fit-content;
     max-width: min(100%, 540px);
-    padding: 6px;
+    padding: 4px;
     border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--surface);
@@ -1085,6 +1157,7 @@
     display: flex;
     flex-wrap: nowrap;
     gap: 6px;
+    padding: 2px;
     overflow-x: auto;
     overscroll-behavior-inline: contain;
     scroll-behavior: smooth;
@@ -1109,7 +1182,7 @@
     color: var(--accent);
     cursor: pointer;
     scroll-snap-align: start;
-    transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    transition: border-color 150ms ease, background 150ms ease;
   }
 
   .active-task-tooltip {
@@ -1139,9 +1212,25 @@
   }
 
   .active-task-jump:hover {
-    transform: translateY(-2px);
     border-color: var(--accent);
-    background: var(--accent-soft);
+    background: var(--surface);
+    animation: active-task-settle 280ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
+  }
+
+  @keyframes active-task-settle {
+    42% {
+      transform: scale(0.94);
+    }
+
+    100% {
+      transform: scale(1.06);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .active-task-jump:hover {
+      animation: none;
+    }
   }
 
   .active-task-jump:focus-visible {
@@ -1586,23 +1675,167 @@
   }
 
   .history-modal {
-    width: min(1040px, 100%);
+    width: min(1180px, 100%);
+    height: min(760px, calc(100vh - 40px));
+  }
+
+  .history-head-actions,
+  .credential-head-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
+  .modal-search {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--muted);
+    background: var(--surface);
+  }
+
+  .modal-search:focus-within {
+    border-color: var(--fg);
+    box-shadow: 0 0 0 3px var(--surface-soft);
+  }
+
+  .modal-search input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--fg);
+  }
+
+  .history-search {
+    width: min(320px, 34vw);
+  }
+
+  .history-layout {
+    min-height: 0;
+    flex: 1;
+    display: grid;
+    grid-template-columns: 190px minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .history-filters {
+    padding: var(--space-3);
+    border-right: 1px solid var(--border);
+  }
+
+  .history-filters button {
+    width: 100%;
+    min-height: 46px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0 var(--space-3);
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .history-filters button:hover {
+    color: var(--fg);
+  }
+
+  .history-filters button.selected {
+    color: var(--fg);
+    font-weight: 760;
+  }
+
+  .history-filters button.selected span {
+    text-decoration: underline;
+    text-decoration-color: var(--muted);
+    text-underline-offset: 6px;
   }
 
   .history-body {
-    max-height: min(68vh, 720px);
+    min-width: 0;
     overflow: auto;
     padding: 0;
   }
+
+  .history-table {
+    table-layout: fixed;
+    min-width: 820px;
+  }
+
+  .history-table th:nth-child(1) { width: 31%; }
+  .history-table th:nth-child(2) { width: 13%; }
+  .history-table th:nth-child(3) { width: 21%; }
+  .history-table th:nth-child(4) { width: 10%; }
+  .history-table th:nth-child(5) { width: 25%; }
 
   .history-table td {
     vertical-align: middle;
   }
 
+  .history-table .task-name span {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
   .history-error {
-    max-width: 320px;
+    max-width: 0;
     color: var(--muted);
     font-size: 12px;
+  }
+
+  .history-error button {
+    width: 100%;
+    overflow: hidden;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .history-error-detail td {
+    padding: 0 var(--space-4) var(--space-4);
+    border-top: 0;
+  }
+
+  .history-error-detail td > strong,
+  .history-error-detail code {
+    display: block;
+    padding: var(--space-3) var(--space-4);
+    color: var(--danger);
+    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
+  }
+
+  .history-error-detail td > strong {
+    padding-bottom: 0;
+    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
+    border-bottom: 0;
+    border-radius: var(--radius) var(--radius) 0 0;
+    font-size: 12px;
+  }
+
+  .history-error-detail code {
+    padding-top: var(--space-2);
+    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
+    border-top: 0;
+    border-radius: 0 0 var(--radius) var(--radius);
+    white-space: pre-wrap;
   }
 
   .spinner {
@@ -1633,34 +1866,64 @@
   }
 
   .credential-modal {
-    width: min(820px, 100%);
+    width: min(1120px, 100%);
+    height: min(760px, calc(100vh - 40px));
+  }
+
+  .credential-layout {
+    min-height: 0;
+    flex: 1;
+    display: grid;
+    grid-template-columns: 250px minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .credential-provider-list {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-right: 1px solid var(--border);
+  }
+
+  .credential-provider-list nav {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .credential-provider-list nav button {
+    width: 100%;
+    min-height: 58px;
+    display: grid;
+    gap: 3px;
+    padding: var(--space-3);
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .credential-provider-list nav button:hover {
+    background: var(--surface-soft);
+  }
+
+  .credential-provider-list nav button.selected strong {
+    text-decoration: underline;
+    text-decoration-color: var(--muted);
+    text-underline-offset: 6px;
+  }
+
+  .credential-provider-list nav button span {
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .credential-body {
-    padding: var(--space-5);
-  }
-
-  .credential-head-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-3);
-  }
-
-  .credential-sections {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .credential-section {
-    display: grid;
-    gap: var(--space-4);
-    padding-bottom: var(--space-4);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .credential-section:last-child {
-    padding-bottom: 0;
-    border-bottom: 0;
+    min-height: 0;
+    padding: var(--space-6);
+    overflow-y: auto;
   }
 
   .credential-section-head {
@@ -1670,10 +1933,9 @@
     gap: var(--space-4);
   }
 
-  .credential-section h3 {
+  .credential-body h3 {
     margin: 0;
-    font-size: 14px;
-    font-weight: 760;
+    font-size: 24px;
   }
 
   .credential-switch {
