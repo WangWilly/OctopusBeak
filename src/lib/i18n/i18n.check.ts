@@ -48,6 +48,12 @@ assert.equal(translations.en.automation.historyFinishedTime("Asia/Taipei"), "Fin
 assert.equal(translations["zh-TW"].automation.latestTime("Asia/Taipei"), "最新（Asia/Taipei）");
 assert.equal(translations["zh-TW"].automation.historyStartedTime("Asia/Taipei"), "開始（Asia/Taipei）");
 assert.equal(translations["zh-TW"].automation.historyFinishedTime("Asia/Taipei"), "完成（Asia/Taipei）");
+assert.equal(translations.en.automation.runningTaskHeading(1), "1 task is running");
+assert.equal(translations.en.automation.runningTaskHeading(2), "2 tasks are running");
+assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent task will start at the same time.");
+assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will start at the same time.");
+assert.equal(translations.en.automation.showAllTasks(1), "Show all 1 task");
+assert.equal(translations.en.automation.showAllTasks(2), "Show all 2 tasks");
 assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
 assert.equal(
   translations.en.historyTable.rateDates(["2026-07-10", "2026-07-11"]),
