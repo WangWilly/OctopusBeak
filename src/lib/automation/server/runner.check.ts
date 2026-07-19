@@ -18,6 +18,7 @@ import {
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
+  createAutomationOutputBuffer,
   finalFailureMessage,
   finalizeTerminalAutomationSession,
   hasActiveAutomationTask,
@@ -116,6 +117,24 @@ test("Libretto CDP patch is prepared once per app process", () => {
   prepareLibrettoRunCdpPatch(runPatch);
 
   assert.equal(calls, 1);
+});
+
+test("automation output is flushed in batches", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const flushed: string[] = [];
+  const buffer = createAutomationOutputBuffer((chunk) => flushed.push(chunk), 100);
+
+  buffer.push("first\n");
+  buffer.push("second\n");
+  context.mock.timers.tick(99);
+  assert.deepEqual(flushed, []);
+  context.mock.timers.tick(1);
+  assert.deepEqual(flushed, ["first\nsecond\n"]);
+
+  buffer.push("final\n");
+  buffer.flush();
+  context.mock.timers.tick(100);
+  assert.deepEqual(flushed, ["first\nsecond\n", "final\n"]);
 });
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
