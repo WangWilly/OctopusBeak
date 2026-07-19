@@ -155,7 +155,11 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
-  prepareLibrettoRunCdpPatch();
+  try {
+    prepareLibrettoRunCdpPatch();
+  } catch (error) {
+    console.warn("libretto-run-cdp-patch-failed", error);
+  }
   migrateLedgerBeforeWindow();
   await recoverAbandonedAutomationSessions().catch((error) => {
     console.warn("automation-session-startup-recovery-failed", error);

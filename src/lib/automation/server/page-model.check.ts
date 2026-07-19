@@ -159,6 +159,7 @@ const waitingRow = waitingModel.tasks.find((task) => task.id === "fubon-all-stat
 assert.equal(waitingRow?.status, "waiting_for_human");
 assert.equal(waitingRow?.primaryAction, "Cancel");
 assert.equal(waitingRow?.canRun, true);
+assert.equal(waitingModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
 const staleRunningModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,

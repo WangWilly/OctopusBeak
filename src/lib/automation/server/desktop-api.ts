@@ -46,6 +46,7 @@ function currentCredentialStatus() {
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
     status[key] = status[key] || Boolean(settings[key]) || Boolean(process.env[key]?.trim());
   }
+  for (const key of optionalCredentialKeys) status[key] = true;
   return status;
 }
 

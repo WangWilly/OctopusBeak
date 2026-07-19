@@ -60,7 +60,7 @@
   $: sideSub = $t.common.businessDay(automation.businessDate);
   $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
   $: parallelTasks = automation.tasks.filter((task) => parallelTaskIds.has(task.id));
-  $: activeTasks = automation.tasks.filter((task) => task.isActive || task.status === "waiting_for_human");
+  $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
     task.isActive || task.status === "waiting_for_human" || task.status === "failed"
   );
@@ -347,7 +347,8 @@
     if (!confirm($t.automation.confirmCancel(taskLabel(task, $t)))) return;
     try {
       actionError = "";
-      await window.octopusBeak.automation.cancel(task.id);
+      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceQuit(task.id);
+      else await window.octopusBeak.automation.cancel(task.id);
       await reload();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
@@ -946,7 +947,7 @@
       <div class="modal-head">
         <div>
           <h2 id="history-title">{$t.automation.runHistory}</h2>
-          <p>{historyRows.length} {$t.automation.task}</p>
+          <p>{$t.automation.historyTaskCount(historyRows.length)}</p>
         </div>
         <div class="history-head-actions">
           <label class="modal-search history-search">
