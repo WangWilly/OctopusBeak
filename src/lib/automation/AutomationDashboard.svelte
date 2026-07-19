@@ -639,7 +639,7 @@
                   class:import-task={task.kind === "import"}
                   class:sync-task={task.kind === "sync"}
                   type="button"
-                  aria-label={taskLabel(task, $t)}
+                  aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
                   title={taskLabel(task, $t)}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
