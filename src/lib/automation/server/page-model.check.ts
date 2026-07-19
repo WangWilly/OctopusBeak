@@ -51,6 +51,8 @@ assert.equal(fubonRow?.primaryAction, "Run");
 assert.equal(fubonRow?.ranToday, true);
 assert.equal(fubonRow?.logTail, "ok");
 assert.equal(Object.hasOwn(model, "runHistory"), false);
+assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
+assert.equal(model.parallelRunnableTaskIds.includes("import-downloads-csv"), false);
 
 const failedModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -113,6 +115,35 @@ assert.equal(activeFubonRow?.progressPercent, 42);
 assert.equal(activeFubonRow?.progressText, "42%");
 assert.equal(activeEsunRow?.canRun, true);
 assert.equal(activeEsunRow?.ranToday, true);
+assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
+assert.equal(activeModel.parallelRunnableTaskIds.includes("esun-credit-card-statements"), true);
+
+const waitingModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      taskRunId: "run-waiting",
+      status: "waiting_for_human",
+      finishedAt: null,
+      logTail: 'Workflow paused. Resume with session "ses-help".',
+    },
+  },
+  activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
+  credentials: {},
+  importGate: {
+    locked: true,
+    missingTaskIds: [],
+  },
+  active: true,
+  businessDate: "2026-06-30",
+});
+
+const waitingRow = waitingModel.tasks.find((task) => task.id === "fubon-all-statements");
+assert.equal(waitingRow?.status, "waiting_for_human");
+assert.equal(waitingRow?.primaryAction, "Cancel");
+assert.equal(waitingRow?.canRun, true);
 
 const staleRunningModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,

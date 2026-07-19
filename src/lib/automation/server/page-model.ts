@@ -27,7 +27,7 @@ function primaryAction(status: AutomationTaskStatus, isActive: boolean) {
   if (isActive) return "Cancel";
   if (status === "locked") return "Locked";
   if (status === "failed") return "Run again";
-  if (status === "waiting_for_human") return "Resume";
+  if (status === "waiting_for_human") return "Cancel";
   return "Run";
 }
 
@@ -54,44 +54,48 @@ export function buildAutomationPageModel(input: {
 }): AutomationPageModel {
   const activeTaskIds = new Set(input.activeTaskIds ?? []);
   const todayRunTaskIds = new Set(input.todayRunTaskIds ?? []);
+  const tasks = input.tasks.map((task) => {
+    const run = input.latestRuns[task.id];
+    const isActive = activeTaskIds.has(task.id);
+    const status = rowStatus(task, run, input.importGate, isActive);
+    const action = primaryAction(status, isActive);
+    const progressPercent = parseAutomationProgress(run?.logTail ?? "");
+    const attempt = run?.attempt ?? 0;
+    const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
+    return {
+      id: task.id,
+      label: task.label,
+      script: task.script,
+      kind: task.kind,
+      credentialGroupId: task.credentialGroupId,
+      credentialKeys: task.credentialKeys,
+      dependencies: task.dependencies,
+      status,
+      attempt,
+      maxAttempts,
+      latestStartedAt: run?.startedAt ?? null,
+      latestFinishedAt: run?.finishedAt ?? null,
+      logTail: run?.logTail ?? "",
+      errorMessage: run?.errorMessage ?? null,
+      logPath: run?.logPath ?? null,
+      progressPercent,
+      progressText: progressText(status, attempt, maxAttempts, progressPercent),
+      humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
+      isActive,
+      ranToday: todayRunTaskIds.has(task.id),
+      primaryAction: action,
+      canRun: action === "Cancel" || (!isActive && action !== "Locked"),
+    } satisfies AutomationTaskRow;
+  });
   return {
     businessDate: input.businessDate,
     active: input.active || activeTaskIds.size > 0,
     activeTaskCount: activeTaskIds.size,
+    parallelRunnableTaskIds: tasks
+      .filter((task) => task.dependencies.length === 0 && task.canRun && !task.isActive)
+      .map((task) => task.id),
     credentials: input.credentials,
     importGate: input.importGate,
-    tasks: input.tasks.map((task) => {
-      const run = input.latestRuns[task.id];
-      const isActive = activeTaskIds.has(task.id);
-      const status = rowStatus(task, run, input.importGate, isActive);
-      const action = primaryAction(status, isActive);
-      const progressPercent = parseAutomationProgress(run?.logTail ?? "");
-      const attempt = run?.attempt ?? 0;
-      const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
-      return {
-        id: task.id,
-        label: task.label,
-        script: task.script,
-        kind: task.kind,
-        credentialGroupId: task.credentialGroupId,
-        credentialKeys: task.credentialKeys,
-        dependencies: task.dependencies,
-        status,
-        attempt,
-        maxAttempts,
-        latestStartedAt: run?.startedAt ?? null,
-        latestFinishedAt: run?.finishedAt ?? null,
-        logTail: run?.logTail ?? "",
-        errorMessage: run?.errorMessage ?? null,
-        logPath: run?.logPath ?? null,
-        progressPercent,
-        progressText: progressText(status, attempt, maxAttempts, progressPercent),
-        humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
-        isActive,
-        ranToday: todayRunTaskIds.has(task.id),
-        primaryAction: action,
-        canRun: action === "Cancel" || (!isActive && action !== "Locked"),
-      } satisfies AutomationTaskRow;
-    }),
+    tasks,
   };
 }

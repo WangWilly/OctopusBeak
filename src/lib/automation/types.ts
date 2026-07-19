@@ -67,6 +67,7 @@ export type AutomationPageModel = {
   businessDate: string;
   active: boolean;
   activeTaskCount: number;
+  parallelRunnableTaskIds: string[];
   credentials: Record<string, boolean>;
   importGate: ImportGate;
   tasks: AutomationTaskRow[];

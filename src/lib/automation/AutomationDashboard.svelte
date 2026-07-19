@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
+  import { slide } from "svelte/transition";
+  import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark } from "@lucide/svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -19,7 +21,12 @@
   export let reload: () => Promise<void>;
 
   let credentialsOpen = false;
-  let logTask: AutomationTaskRow | null = null;
+  let syncOpen = false;
+  let syncTasks: AutomationTaskRow[] = [];
+  let showAllCollectTasks = false;
+  let expandedLogTaskId: string | null = null;
+  let jumpHighlightTaskId: string | null = null;
+  let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
   let historyLoading = false;
   let historyRows: AutomationTaskHistoryRow[] = [];
@@ -34,8 +41,11 @@
   let floatingInput: { left: number; top: number; value: string } | null = null;
   let floatingInputEl: HTMLInputElement | null = null;
   let viewerExpanded = false;
+  let hoveredTask: AutomationTaskRow | null = null;
+  let taskTooltipPosition = { left: 0, top: 0 };
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
+  let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
@@ -43,24 +53,34 @@
       ? $t.common.importLocked
       : $t.common.ready;
   $: sideSub = $t.common.businessDay(automation.businessDate);
-  $: topStatus = automation.active
-    ? $t.common.runningCount(automation.activeTaskCount)
-    : automation.importGate.locked
-      ? $t.common.importLocked
-      : $t.common.ready;
-  $: topStatusClass = automation.active
-    ? "warn"
-    : automation.importGate.locked
-      ? "bad"
-      : "good";
-  $: readyTaskCount = automation.tasks.filter((task) => task.canRun && !task.isActive).length;
-  $: attentionTaskCount = automation.tasks.filter((task) =>
-    task.status === "failed" || task.status === "waiting_for_human" || task.status === "locked",
+  $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
+  $: parallelTasks = automation.tasks.filter((task) => parallelTaskIds.has(task.id));
+  $: activeTasks = automation.tasks.filter((task) => task.isActive || task.status === "waiting_for_human");
+  $: iconTasks = automation.tasks.filter((task) =>
+    task.isActive || task.status === "waiting_for_human" || task.status === "failed"
+  );
+  $: credentialReadyCount = syncTasks.filter((task) =>
+    task.credentialKeys.every((key) => automation.credentials[key]),
   ).length;
-  $: automationStats = [
-    { label: $t.automation.activeNow, value: automation.activeTaskCount, detail: topStatus, tone: topStatusClass },
-    { label: $t.automation.readyToRun, value: readyTaskCount, detail: $t.automation.readyTasks, tone: readyTaskCount ? "good" : "" },
-    { label: $t.automation.needsAttention, value: attentionTaskCount, detail: $t.automation.attentionTasks, tone: attentionTaskCount ? "bad" : "good" },
+  $: taskStages = [
+    {
+      id: "collect",
+      title: $t.automation.collectStage,
+      description: $t.automation.collectStageDescription,
+      tasks: automation.tasks.filter((task) => task.kind === "crawler"),
+    },
+    {
+      id: "import",
+      title: $t.automation.importStage,
+      description: $t.automation.importStageDescription,
+      tasks: automation.tasks.filter((task) => task.kind === "import"),
+    },
+    {
+      id: "sync",
+      title: $t.automation.syncStage,
+      description: $t.automation.syncStageDescription,
+      tasks: automation.tasks.filter((task) => task.kind === "sync"),
+    },
   ];
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
@@ -76,6 +96,7 @@
 
   onDestroy(() => {
     stopPolling();
+    if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
     if (viewerTimer) clearInterval(viewerTimer);
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
   });
@@ -93,12 +114,62 @@
     return "";
   }
 
+  function disclosureSlide(node: Element) {
+    return slide(node, {
+      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 220,
+    });
+  }
+
+  function toggleStage(stageId: string) {
+    stageOpen = { ...stageOpen, [stageId]: !stageOpen[stageId] };
+  }
+
+  async function toggleCollectTasks(event: MouseEvent) {
+    const container = (event.currentTarget as HTMLElement)
+      .closest(".stage-body")
+      ?.querySelector<HTMLElement>(".table-reveal");
+    if (!container) {
+      showAllCollectTasks = !showAllCollectTasks;
+      return;
+    }
+
+    const startHeight = container.offsetHeight;
+    showAllCollectTasks = !showAllCollectTasks;
+    await tick();
+    const endHeight = container.offsetHeight;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    container.style.height = `${startHeight}px`;
+    const animation = container.animate(
+      [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+      { duration: 220, easing: "ease", fill: "both" },
+    );
+    await animation.finished;
+    container.style.height = "";
+    animation.cancel();
+  }
+
+  function stageRunnableTasks(tasks: AutomationTaskRow[]) {
+    return tasks.filter((task) => parallelTaskIds.has(task.id));
+  }
+
+  function openSyncSheet(tasks: AutomationTaskRow[]) {
+    syncTasks = stageRunnableTasks(tasks);
+    if (syncTasks.length) syncOpen = true;
+  }
+
   function formatTime(value: string | null) {
     return formatUtcDateTime(value, $systemTimezone, $locale) || "--";
   }
 
   function latestTaskTime(task: AutomationTaskRow) {
     return formatTime(task.latestFinishedAt ?? task.latestStartedAt);
+  }
+
+  function taskCredentialsReady(task: AutomationTaskRow) {
+    return task.credentialKeys.every((key) => automation.credentials[key]);
   }
 
   function credentialLabel(key: string, dictionary: Translation) {
@@ -167,6 +238,85 @@
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  async function runParallelTasks() {
+    const tasks = syncTasks;
+    if (!tasks.length) return;
+    syncOpen = false;
+    const results = await Promise.allSettled(tasks.map((task) => window.octopusBeak.automation.run(task.id)));
+    actionError = results
+      .flatMap((result) => result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [])
+      .join("\n");
+    await reload();
+  }
+
+  async function stopAllTasks() {
+    if (!activeTasks.length || !confirm($t.automation.confirmStopAll)) return;
+    const results = await Promise.allSettled(activeTasks.map((task) => window.octopusBeak.automation.cancel(task.id)));
+    actionError = results
+      .flatMap((result) => result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [])
+      .join("\n");
+    await reload();
+  }
+
+  async function revealTaskLog(task: AutomationTaskRow) {
+    const stageId = task.kind === "crawler" ? "collect" : task.kind;
+    stageOpen = { ...stageOpen, [stageId]: true };
+    if (stageId === "collect") showAllCollectTasks = true;
+    expandedLogTaskId = task.id;
+    jumpHighlightTaskId = task.id;
+    if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
+
+    await tick();
+    const target = document.getElementById(`${task.id}-task-row`);
+    const inlineLog = document.getElementById(`${task.id}-inline-log`);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+    inlineLog?.querySelector<HTMLElement>(".inline-log-panel")?.focus({ preventScroll: true });
+    jumpHighlightTimer = setTimeout(() => {
+      jumpHighlightTaskId = null;
+      jumpHighlightTimer = null;
+    }, 1_400);
+  }
+
+  function handleActiveTaskClick(task: AutomationTaskRow) {
+    if (task.status === "waiting_for_human" && task.humanSession) {
+      openHumanViewer(task);
+      return;
+    }
+    void revealTaskLog(task);
+  }
+
+  function scrollActiveTasks(event: WheelEvent) {
+    const list = event.currentTarget as HTMLElement;
+    if (list.scrollWidth <= list.clientWidth) return;
+    event.preventDefault();
+    list.scrollLeft += Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    hideTaskTooltip();
+  }
+
+  function showTaskTooltip(task: AutomationTaskRow, event: Event) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    hoveredTask = task;
+    taskTooltipPosition = {
+      left: Math.min(Math.max(rect.left + rect.width / 2, 150), window.innerWidth - 150),
+      top: rect.bottom + 10,
+    };
+  }
+
+  function hideTaskTooltip() {
+    hoveredTask = null;
+  }
+
+  function taskStageTitle(task: AutomationTaskRow, dictionary: Translation) {
+    if (task.kind === "crawler") return dictionary.automation.collectStage;
+    if (task.kind === "import") return dictionary.automation.importStage;
+    return dictionary.automation.syncStage;
   }
 
   async function primaryTaskAction(task: AutomationTaskRow) {
@@ -292,11 +442,17 @@
     }
   }
 
-  function resumeHumanViewer() {
+  async function resumeHumanViewer() {
     if (!humanTask) return;
     const task = humanTask;
     closeHumanViewer();
-    void runTask(task);
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.resume(task.id);
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function pointerPoint(event: PointerEvent) {
@@ -413,88 +569,159 @@
   {sideSub}
 >
   <svelte:fragment slot="topbar-actions">
-    <span class={`chip ${topStatusClass}`}>{topStatus}</span>
+    <button class="button secondary topbar-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
+    <button class="button secondary topbar-action" type="button" onclick={() => void openRunHistory()}>
+      {$t.automation.runHistory}
+    </button>
   </svelte:fragment>
 
-  <div class="content automation-content">
-    <section class="automation-command-grid" aria-label={$t.automation.commandCenter}>
-      <article class="card command-card command-primary">
-        <div class="command-topline">
-          <span class="label">{$t.automation.commandCenter}</span>
-          <span class={`chip ${topStatusClass}`}>{topStatus}</span>
-        </div>
-        <h2>{sideValue}</h2>
-      </article>
-
-      <article class="card command-card">
-        <div>
-          <span class="label">{$t.automation.controls}</span>
-          <h2>{$t.automation.taskQueue}</h2>
-        </div>
-        <div class="command-actions">
-          <button class="button secondary fixed-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
-          <button class="button secondary fixed-action" type="button" onclick={() => void openRunHistory()}>
-            {$t.automation.runHistory}
+  <div class:sync-sheet-open={syncOpen} class="content automation-content">
+    <section class:active={automation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
+      <div class="sync-hero-copy">
+        {#if automation.active}
+          <span class="running-kicker"><CloudDownload size={16} strokeWidth={2.2} aria-hidden="true" />{$t.automation.syncInProgress}</span>
+        {/if}
+        <h2>
+          {automation.active
+            ? $t.automation.runningTaskHeading(automation.activeTaskCount)
+            : $t.automation.runnableTaskHeading(parallelTasks.length)}
+        </h2>
+        {#if iconTasks.length}
+          <div class="active-task-filter">
+            <div
+              class="active-task-jump-list"
+              aria-label={$t.automation.taskQueue}
+              onwheel={scrollActiveTasks}
+            >
+              {#each iconTasks as task (task.id)}
+                <button
+                  class="active-task-jump"
+                  class:waiting={task.status === "waiting_for_human"}
+                  class:failed={task.status === "failed"}
+                  class:import-task={task.kind === "import"}
+                  class:sync-task={task.kind === "sync"}
+                  type="button"
+                  aria-label={taskLabel(task, $t)}
+                  aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
+                  title={taskLabel(task, $t)}
+                  onpointerenter={(event) => showTaskTooltip(task, event)}
+                  onpointerleave={hideTaskTooltip}
+                  onfocus={(event) => showTaskTooltip(task, event)}
+                  onblur={hideTaskTooltip}
+                  onclick={() => handleActiveTaskClick(task)}
+                >
+                  {#if task.status === "waiting_for_human"}
+                    <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {:else if task.kind === "crawler"}
+                    <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {:else if task.kind === "import"}
+                    <ImportIcon size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {:else if task.kind === "sync"}
+                    <ArrowLeftRight size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {:else}
+                    <CloudDownload size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+      {#if automation.active}
+        <div class="sync-hero-actions">
+          <button class="button danger hero-action" type="button" onclick={() => void stopAllTasks()}>
+            {$t.automation.stopAll}
           </button>
         </div>
-      </article>
+      {/if}
     </section>
 
-    <section class="automation-stats" aria-label={$t.automation.statusSummary}>
-      {#each automationStats as stat}
-        <article class="card automation-stat">
-          <span class="label">{stat.label}</span>
-          <strong>{stat.value}</strong>
-          <span class={`chip ${stat.tone}`}>{stat.detail}</span>
-        </article>
-      {/each}
-    </section>
+    <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
+      {#each taskStages as stage, stageIndex}
+        <section class="stage-section">
+          <div class="stage-head">
+            <div class="stage-head-content">
+              <span class:muted={stage.id !== "collect"} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              <span class="stage-copy">
+                <span class="stage-title-row">
+                  <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
+                  {#if stage.id !== "collect" && stage.tasks.some((task) => task.status === "locked")}
+                    <span class="chip bad">{$t.common.importLocked}</span>
+                  {/if}
+                </span>
+                <span class="stage-description">{stage.description}</span>
+              </span>
+              <div class="stage-head-actions">
+                <button
+                  class="button primary stage-sync-action"
+                  type="button"
+                  disabled={!stageRunnableTasks(stage.tasks).length}
+                  onclick={() => openSyncSheet(stage.tasks)}
+                >
+                  {$t.automation.syncAll}
+                </button>
+                <button
+                  class="stage-toggle-action"
+                  type="button"
+                  aria-label={stageOpen[stage.id] ? $t.automation.collapseStage(stage.title) : $t.automation.expandStage(stage.title)}
+                  aria-expanded={stageOpen[stage.id]}
+                  aria-controls={`${stage.id}-stage-body`}
+                  onclick={() => toggleStage(stage.id)}
+                >
+                  <span class="stage-caret" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </div>
 
-    <section class="card task-board">
-      <div class="panel-title automation-title">
-        <div>
-          <h2>{$t.automation.taskQueue}</h2>
-        </div>
-      </div>
-
-      <div class="table-wrap">
-        <table class="table automation-table">
+          {#if stageOpen[stage.id]}
+          <div class="stage-body" id={`${stage.id}-stage-body`} transition:disclosureSlide>
+            <div class="table-reveal">
+              <div class="table-wrap">
+              <table class="table automation-table">
+          <colgroup>
+            <col style="width: 32%" />
+            <col style="width: 14%" />
+            <col style="width: 22%" />
+            <col style="width: 12%" />
+            <col style="width: 20%" />
+          </colgroup>
           <thead>
             <tr>
               <th>{$t.automation.task}</th>
+              <th>{$t.automation.credentialStatus}</th>
+              <th>{$t.automation.latestTime($systemTimezone)}</th>
               <th>{$t.automation.status}</th>
-              <th>{$t.automation.progress}</th>
-              <th>{$t.automation.ranToday}</th>
               <th class="right">{$t.automation.controls}</th>
             </tr>
           </thead>
           <tbody>
-            {#each automation.tasks as task}
-              <tr class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || task.status === "waiting_for_human"}>
+            {#each (stage.id === "collect" && !showAllCollectTasks ? stage.tasks.slice(0, 5) : stage.tasks) as task (task.id)}
+              <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || task.status === "waiting_for_human"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
                     <strong>{taskLabel(task, $t)}</strong>
-                    <span>{task.script}</span>
-                    <span>{$t.automation.latestTime($systemTimezone)}: {latestTaskTime(task)}</span>
                   </div>
                 </td>
                 <td>
-                  <span class={`chip ${statusClass(task.status)}`} title={importLockTitle(task, $t)}>
-                    {$t.automation.statusLabels[task.status]}
+                  <span class={`credential-state ${taskCredentialsReady(task) ? "good" : "bad"}`}>
+                    {taskCredentialsReady(task) ? $t.common.ready : $t.common.missing}
                   </span>
                 </td>
+                <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
+                  {#if task.isActive}
                   <div class="progress-cell">
                     <div class="progress-bar" aria-hidden="true">
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
                     <span class="mono">{progressLabel(task, $t)}</span>
                   </div>
-                </td>
-                <td>
-                  <span class={`chip ${task.ranToday ? "good" : ""}`}>
-                    {task.ranToday ? $t.automation.ran : $t.automation.notRun}
+                  {:else}
+                  <span class={`chip ${statusClass(task.status)}`} title={importLockTitle(task, $t)}>
+                    {$t.automation.statusLabels[task.status]}
                   </span>
+                  {/if}
                 </td>
                 <td class="right">
                   <div class="task-actions">
@@ -514,20 +741,94 @@
                         {$t.automation.assist}
                       </button>
                     {/if}
-                    <button class="button secondary task-control" type="button" onclick={() => (logTask = task)}>
+                    <button
+                      class="button secondary task-control"
+                      class:active-log={expandedLogTaskId === task.id}
+                      type="button"
+                      aria-expanded={expandedLogTaskId === task.id}
+                      aria-controls={`${task.id}-inline-log`}
+                      onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
+                    >
                       {$t.automation.logs}
                     </button>
                   </div>
                 </td>
               </tr>
+              {#if expandedLogTaskId === task.id}
+                <tr class="inline-task-log" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-inline-log`}>
+                  <td colspan="5">
+                    <div class="inline-log-panel" tabindex="-1" transition:disclosureSlide>
+                      <div class="inline-log-head">
+                        <strong>{$t.automation.inlineLogTitle(taskLabel(task, $t))}</strong>
+                        <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
+                      </div>
+                      <p class="mono inline-log-path">{task.logPath ?? $t.automation.noLogFile}</p>
+                      <pre class="log-output">{task.errorMessage ?? (task.logTail || $t.automation.noLogs)}</pre>
+                    </div>
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
-        </table>
-      </div>
-      {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
+              </table>
+              </div>
+            </div>
+            {#if stage.id === "collect" && stage.tasks.length > 5}
+              <button class="show-all-tasks" type="button" onclick={(event) => void toggleCollectTasks(event)}>
+                {showAllCollectTasks ? $t.automation.collapseTasks : $t.automation.showAllTasks(stage.tasks.length)}
+              </button>
+            {/if}
+          </div>
+          {/if}
+        </section>
+      {/each}
     </section>
+
+    {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
   </div>
 </DashboardShell>
+
+{#if hoveredTask}
+  <div
+    id="active-task-tooltip"
+    class="active-task-tooltip"
+    role="tooltip"
+    style={`left: ${taskTooltipPosition.left}px; top: ${taskTooltipPosition.top}px;`}
+  >
+    <strong>{taskLabel(hoveredTask, $t)}</strong>
+    <span>{taskStageTitle(hoveredTask, $t)} · {$t.automation.statusLabels[hoveredTask.status]}</span>
+    <span>{latestTaskTime(hoveredTask)}</span>
+  </div>
+{/if}
+
+{#if syncOpen}
+  <aside class="sync-sheet" aria-labelledby="sync-title">
+      <div class="modal-head sync-sheet-head">
+        <div>
+          <h2 id="sync-title">{$t.automation.syncDialogTitle}</h2>
+          <p>{$t.automation.syncDialogDescription(syncTasks.length)}</p>
+        </div>
+        <button class="button sync-sheet-close" type="button" onclick={() => (syncOpen = false)}>{$t.common.close}</button>
+      </div>
+      <div class="sync-modal-body">
+        <div class="sync-readiness">
+          <strong>{$t.automation.credentialsReady(credentialReadyCount, syncTasks.length)}</strong>
+        </div>
+        <ul class="sync-task-list">
+          {#each syncTasks as task}
+            <li>
+              <span>{taskLabel(task, $t)}</span>
+              <code>{task.script}</code>
+            </li>
+          {/each}
+        </ul>
+      </div>
+      <div class="sync-modal-actions">
+        <button class="button" type="button" onclick={() => (syncOpen = false)}>{$t.common.cancel}</button>
+        <button class="button primary" type="button" onclick={() => void runParallelTasks()}>{$t.automation.startSync}</button>
+      </div>
+  </aside>
+{/if}
 
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
@@ -633,24 +934,6 @@
   </div>
 {/if}
 
-{#if logTask}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="logs-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeLogs} onclick={() => (logTask = null)}></button>
-    <div class="modal-panel">
-      <div class="modal-head">
-        <div>
-          <h2 id="logs-title">{$t.automation.logsTitle(taskLabel(logTask, $t))}</h2>
-          <p>{logTask.logPath ?? $t.automation.noLogFile}</p>
-        </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (logTask = null)}>x</button>
-      </div>
-      <div class="modal-body">
-        <pre class="log-output">{logTask.errorMessage ?? (logTask.logTail || $t.automation.noLogs)}</pre>
-      </div>
-    </div>
-  </div>
-{/if}
-
 {#if humanTask}
   <div class="modal" class:viewer-modal-expanded={viewerExpanded} role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
@@ -721,75 +1004,333 @@
 {/if}
 
 <style>
+  :global(html) {
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+  }
+
   .automation-content {
     display: grid;
-    gap: var(--space-6);
+    gap: 22px;
+    transition: margin-right 0.2s ease;
   }
 
-  .automation-command-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-    gap: var(--space-4);
+  .automation-content.sync-sheet-open {
+    margin-right: 455px;
   }
 
-  .command-card {
-    min-height: 132px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-5);
+  :global(.topbar-title) {
+    display: none;
   }
 
-  .command-card h2 {
-    margin: var(--space-2) 0 0;
-    font-size: clamp(24px, 3vw, 34px);
-    line-height: 1.05;
+  :global(.topbar-actions) {
+    grid-column: 3;
   }
 
-  .command-primary {
-    border-color: color-mix(in oklch, var(--accent) 12%, var(--border));
+  .topbar-action {
+    width: auto;
+    min-width: 112px;
+    border-color: var(--border);
     background: var(--surface);
   }
 
-  .command-topline,
-  .command-actions {
+  .sync-hero {
+    min-height: 116px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 28px;
+    padding: 24px 30px;
+    border-radius: 8px;
+  }
+
+  .sync-hero.active {
+    min-height: 132px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
+    background: color-mix(in oklch, var(--accent-soft) 24%, var(--surface));
+  }
+
+  .sync-hero-copy {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .sync-hero h2 {
+    margin: 0;
+    font-size: clamp(25px, 2vw, 31px);
+    line-height: 1.25;
+    letter-spacing: -0.035em;
+  }
+
+  .running-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 780;
+  }
+
+  .active-task-filter {
+    width: fit-content;
+    max-width: min(100%, 540px);
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgb(30 48 66 / 0.06);
+    overflow: hidden;
+  }
+
+  .active-task-jump-list {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scroll-behavior: smooth;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .active-task-jump-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .active-task-jump {
+    flex: 0 0 46px;
+    width: 46px;
+    height: 46px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid color-mix(in oklch, var(--accent) 34%, var(--border));
+    border-radius: 50%;
+    background: color-mix(in oklch, var(--accent-soft) 74%, var(--surface));
+    color: var(--accent);
+    cursor: pointer;
+    scroll-snap-align: start;
+    transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+
+  .active-task-tooltip {
+    position: fixed;
+    z-index: 40;
+    width: max-content;
+    max-width: 280px;
+    display: grid;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+    border-radius: var(--radius);
+    background: var(--fg);
+    color: var(--surface);
+    box-shadow: 0 14px 32px rgb(15 23 42 / 0.18);
+    pointer-events: none;
+    transform: translateX(-50%);
+  }
+
+  .active-task-tooltip strong {
+    font-size: 13px;
+  }
+
+  .active-task-tooltip span {
+    color: color-mix(in oklch, var(--surface) 74%, transparent);
+    font-size: 11px;
+  }
+
+  .active-task-jump:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .active-task-jump:focus-visible {
+    outline: 3px solid color-mix(in oklch, var(--accent) 24%, transparent);
+    outline-offset: 2px;
+  }
+
+  .active-task-jump.waiting {
+    border-color: color-mix(in oklch, var(--warn) 34%, var(--border));
+    background: color-mix(in oklch, var(--warn) 8%, var(--surface));
+    color: var(--warn);
+  }
+
+  .active-task-jump.import-task {
+    border-color: color-mix(in oklch, #7367c8 34%, var(--border));
+    background: color-mix(in oklch, #7367c8 8%, var(--surface));
+    color: #6559b5;
+  }
+
+  .active-task-jump.sync-task {
+    border-color: color-mix(in oklch, #158276 34%, var(--border));
+    background: color-mix(in oklch, #158276 8%, var(--surface));
+    color: #11756a;
+  }
+
+  .active-task-jump.failed {
+    border-color: color-mix(in oklch, var(--danger) 34%, var(--border));
+    background: color-mix(in oklch, var(--danger) 8%, var(--surface));
+    color: var(--danger);
+  }
+
+  .sync-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .stage-sync-action,
+  .sync-modal-actions .button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: white;
+  }
+
+  .hero-action {
+    min-width: 132px;
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  .workflow-card {
+    overflow: hidden;
+    border-radius: 8px;
+  }
+
+  .stage-section {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stage-section:last-child {
+    border-bottom: 0;
+  }
+
+  .stage-head {
+    min-height: 82px;
+    padding: 10px 20px;
+  }
+
+  .stage-head:hover {
+    background: var(--surface-soft);
+  }
+
+  .stage-head-content {
+    min-height: 62px;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .stage-head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .stage-sync-action {
+    min-width: 112px;
+    min-height: 42px;
+  }
+
+  .stage-toggle-action {
+    width: 48px;
+    height: 48px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--fg);
+  }
+
+  .stage-toggle-action:hover,
+  .stage-toggle-action:focus-visible {
+    background: var(--surface-soft);
+  }
+
+  .stage-caret {
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg) translate(-1px, -1px);
+    transition: transform 180ms ease;
+  }
+
+  .stage-toggle-action[aria-expanded="true"] .stage-caret {
+    transform: rotate(225deg) translate(-1px, -1px);
+  }
+
+  .stage-number {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--accent);
+    color: white;
+    font-family: var(--font-mono);
+    font-weight: 760;
+    box-shadow: 0 2px 5px color-mix(in oklch, var(--accent) 16%, transparent);
+  }
+
+  .stage-number.muted {
+    background: var(--muted);
+    box-shadow: none;
+  }
+
+  .stage-copy {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+
+  .stage-title-row {
     display: flex;
     align-items: center;
     gap: var(--space-3);
     flex-wrap: wrap;
   }
 
-  .command-topline {
-    justify-content: space-between;
+  .stage-title-row h2 {
+    margin: 0;
   }
 
-  .automation-stats {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--space-4);
+  .stage-title-row h2 {
+    font-size: 20px;
   }
 
-  .automation-stat {
-    min-height: 132px;
-    display: grid;
-    align-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-5);
+  .stage-description {
+    color: var(--muted);
+    font-size: 13px;
   }
 
-  .automation-stat strong {
-    font-family: var(--font-mono);
-    font-size: 30px;
-    line-height: 1;
+  .stage-body {
+    padding: 0 20px 18px 74px;
   }
 
-  .task-board {
-    overflow: hidden;
+  .table-reveal {
+    overflow: clip;
   }
 
-  .automation-title {
-    align-items: flex-start;
+  .show-all-tasks {
+    width: 100%;
+    min-height: 44px;
+    border: 0;
+    background: var(--surface);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 760;
+  }
+
+  .show-all-tasks:hover {
+    background: var(--surface-soft);
   }
 
   .modal-head p {
@@ -802,8 +1343,26 @@
     vertical-align: middle;
   }
 
+  .automation-table {
+    table-layout: fixed;
+    min-width: 760px;
+  }
+
+  .automation-table th,
+  .automation-table td {
+    padding-inline: 8px;
+  }
+
+  .automation-table th {
+    font-size: 11px;
+  }
+
   .automation-table tr.task-active td {
     background: color-mix(in oklch, var(--warn) 2%, white);
+  }
+
+  .task-row {
+    scroll-margin-top: 88px;
   }
 
   .automation-table tr.task-attention td {
@@ -811,26 +1370,41 @@
   }
 
   .task-name {
-    min-width: 220px;
-    display: grid;
-    gap: 2px;
+    min-width: 150px;
   }
 
   .task-name strong {
     font-weight: 720;
   }
 
-  .task-name span,
   .mono {
     color: var(--muted);
     font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .latest-time {
+    white-space: nowrap;
+  }
+
+  .credential-state {
     font-size: 12px;
+    font-weight: 760;
+  }
+
+  .credential-state.good {
+    color: var(--success);
+  }
+
+  .credential-state.bad {
+    color: var(--danger);
   }
 
   .progress-cell {
-    min-width: 150px;
-    display: grid;
-    gap: var(--space-1);
+    min-width: 96px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .progress-bar {
@@ -851,21 +1425,173 @@
   .task-actions {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-2);
+    gap: 10px;
     flex-wrap: wrap;
   }
 
-  .task-control,
   .fixed-action {
     width: 112px;
     min-width: 112px;
   }
 
   .task-control {
+    width: auto;
+    min-width: 0;
+    min-height: 32px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-2);
+    gap: 6px;
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
+  }
+
+  .task-control.active-log {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .task-control.primary,
+  .task-control.danger {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .task-control.primary {
+    color: var(--accent);
+  }
+
+  .task-control.danger {
+    color: var(--danger);
+  }
+
+  .inline-task-log td {
+    padding: 0;
+    background: color-mix(in oklch, var(--accent-soft) 38%, var(--surface));
+    scroll-margin-top: 88px;
+  }
+
+  .inline-log-panel {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-5);
+    border-top: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
+    border-bottom: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
+    outline: none;
+    transition: background 240ms ease, box-shadow 240ms ease;
+  }
+
+  .inline-task-log.jump-highlight .inline-log-panel {
+    background: color-mix(in oklch, var(--accent-soft) 76%, var(--surface));
+    box-shadow: inset 4px 0 0 var(--accent);
+  }
+
+  .inline-log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .inline-log-path {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .inline-log-panel .log-output {
+    min-height: 120px;
+    max-height: 280px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .sync-sheet {
+    position: fixed;
+    z-index: 25;
+    inset: var(--topbar-height, 60px) 0 0 auto;
+    width: 455px;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: -7px 0 22px rgb(30 48 66 / 0.05);
+  }
+
+  .sync-sheet-head {
+    align-items: flex-start;
+    padding: 28px 28px 18px;
+    border-bottom: 0;
+  }
+
+  .sync-sheet-head h2 {
+    font-size: 24px;
+  }
+
+  .sync-sheet-close {
+    width: auto;
+    min-height: 34px;
+    padding-inline: 12px;
+  }
+
+  .sync-modal-body {
+    display: grid;
+    gap: 12px;
+    padding: 0 28px 18px;
+  }
+
+  .sync-readiness {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-soft);
+    color: var(--success);
+    font-size: 13px;
+  }
+
+  .sync-task-list {
+    max-height: 360px;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .sync-task-list li {
+    display: grid;
+    gap: 2px;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sync-task-list li:last-child {
+    border-bottom: 0;
+  }
+
+  .sync-task-list code {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .sync-modal-actions {
+    position: sticky;
+    bottom: 0;
+    margin-top: auto;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 18px 28px 28px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
   }
 
   .history-modal {
@@ -1331,16 +2057,62 @@
     white-space: pre-wrap;
   }
 
-  @media (max-width: 820px) {
-    .automation-command-grid,
-    .automation-stats {
-      grid-template-columns: 1fr;
+  @media (max-width: 1100px) {
+    .automation-content.sync-sheet-open {
+      margin-right: 0;
     }
 
-    .command-actions,
-    .command-actions .button,
-    .automation-stat .chip {
+    .sync-sheet {
+      box-shadow: -18px 0 46px rgb(30 48 66 / 0.14);
+    }
+
+  }
+
+  @media (max-width: 820px) {
+    .sync-hero {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .sync-hero.active {
+      display: flex;
+    }
+
+    .sync-hero-actions,
+    .sync-hero-actions .button {
       width: 100%;
+    }
+
+    .active-task-jump-list {
+      max-width: 100%;
+    }
+
+    .stage-head {
+      padding: var(--space-4);
+    }
+
+    .stage-head-content {
+      grid-template-columns: 42px minmax(0, 1fr);
+    }
+
+    .stage-head-actions {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
+    }
+
+    .stage-body {
+      padding: 0 var(--space-4) var(--space-4);
+    }
+
+    .stage-number {
+      width: 36px;
+      height: 36px;
+      flex-basis: 36px;
+    }
+
+    .inline-log-head {
+      align-items: flex-start;
+      flex-direction: column;
     }
 
     .credential-section-head {
@@ -1354,6 +2126,10 @@
 
     .task-actions {
       justify-content: flex-start;
+    }
+
+    .sync-sheet {
+      width: min(455px, 100vw);
     }
 
     .human-viewer-modal .modal-head {
