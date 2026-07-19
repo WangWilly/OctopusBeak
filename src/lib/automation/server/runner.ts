@@ -208,7 +208,7 @@ function appendLog(logPath: string, chunk: string) {
 
 export function createAutomationOutputBuffer(
   write: (chunk: string) => void,
-  delayMs = 100,
+  delayMs = 500,
 ) {
   let pending = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -227,6 +227,21 @@ export function createAutomationOutputBuffer(
     },
     flush,
   };
+}
+
+export async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T) => Promise<void>,
+) {
+  const active = new Set<Promise<void>>();
+  for (const item of items) {
+    if (active.size >= limit) await Promise.race(active);
+    const task = run(item).finally(() => active.delete(task));
+    active.add(task);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await Promise.all(active);
 }
 
 export function claimRunAutomationSession(
@@ -323,6 +338,26 @@ export function startAutomationTask(
   });
 }
 
+export function startAutomationTasks(
+  taskIds: readonly string[],
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  for (const taskId of taskIds) {
+    if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+    claimTask(taskId);
+    activeTaskRunIds.set(taskId, "queued");
+  }
+  setImmediate(() => {
+    void runWithConcurrency(taskIds, 2, async (taskId) => {
+      if (activeTaskRunIds.get(taskId) !== "queued") return;
+      activeTaskRunIds.set(taskId, "pending");
+      await runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
+        console.error("automation-task-run-failed", error);
+      });
+    });
+  });
+}
+
 export function startAutomationResume(
   taskId: string,
   session: string,
@@ -338,6 +373,10 @@ export function startAutomationResume(
 
 export async function cancelAutomationTask(taskId: string) {
   if (!activeTaskRunIds.has(taskId)) throw new Error(`Automation task is not running: ${taskId}`);
+  if (activeTaskRunIds.get(taskId) === "queued") {
+    activeTaskRunIds.delete(taskId);
+    return { cancelled: taskId };
+  }
   const child = activeTaskChildren.get(taskId);
   if (!child) throw new Error(`Automation task has not started a process yet: ${taskId}`);
   child.kill("SIGTERM");
