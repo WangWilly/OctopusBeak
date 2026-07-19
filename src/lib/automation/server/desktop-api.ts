@@ -26,6 +26,7 @@ import {
   resumeSessionFromLog,
   startAutomationResume,
   startAutomationTask,
+  startAutomationTasks,
 } from "./runner.ts";
 import {
   importGateStatus,
@@ -141,7 +142,7 @@ export function automationRunMany(taskIds: string[], ledgerDir = process.env.LED
   }
   if (taskIds.length === 0) return { started: [] as string[] };
   const tasks = assertAutomationTasksCanStart(taskIds, loadAutomationDesktopModel(ledgerDir));
-  for (const task of tasks) startAutomationTask(task.id, ledgerDir);
+  startAutomationTasks(tasks.map((task) => task.id), ledgerDir);
   return { started: tasks.map((task) => task.id) };
 }
 
