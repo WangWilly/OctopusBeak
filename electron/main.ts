@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
 import {
   activeAutomationTaskIds,
+  prepareLibrettoRunCdpPatch,
   recoverAbandonedAutomationSessions,
   shutdownAutomationSessions,
   startAutomationTask,
@@ -154,6 +155,7 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
+  prepareLibrettoRunCdpPatch();
   migrateLedgerBeforeWindow();
   await recoverAbandonedAutomationSessions().catch((error) => {
     console.warn("automation-session-startup-recovery-failed", error);
