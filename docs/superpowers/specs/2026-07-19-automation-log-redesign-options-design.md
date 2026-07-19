@@ -37,7 +37,7 @@ Create three interactive HTML prototypes for the shared modal that displays ever
 ## Production hero change
 
 - Remove the aggregate progress bar and percentage from the active Automation hero.
-- Keep the running-task count on the left and `查看日誌` plus `停止全部` actions on the right.
+- Keep the running-task count on the left, show the active-task icon strip beneath it for inline-log jumps, and keep `停止全部` on the right.
 - Preserve per-task status/progress in the task table; only the hero aggregate is removed.
 
 ## Prototype delivery
