@@ -206,6 +206,29 @@ function appendLog(logPath: string, chunk: string) {
   appendFileSync(logPath, chunk);
 }
 
+export function createAutomationOutputBuffer(
+  write: (chunk: string) => void,
+  delayMs = 100,
+) {
+  let pending = "";
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (!pending) return;
+    const chunk = pending;
+    pending = "";
+    write(chunk);
+  };
+  return {
+    push(chunk: string) {
+      pending += chunk;
+      if (!timer) timer = setTimeout(flush, delayMs);
+    },
+    flush,
+  };
+}
+
 export function claimRunAutomationSession(
   db: ReturnType<typeof openLedgerDatabase>,
   taskRunId: string,
@@ -556,12 +579,18 @@ export async function runAutomationTask(
         signal: NodeJS.Signals | null;
         error: Error | null;
       }>((resolve) => {
+        const outputBuffer = createAutomationOutputBuffer((logChunk) => {
+          appendLog(logPath, logChunk);
+          if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
+            updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
+          }
+        });
         const onOutput = (chunk: Buffer) => {
           const output = accumulateAutomationOutput(
             { logTail, resumeFailure: detectedResumeFailure },
             chunk.toString("utf8"),
           );
-          appendLog(logPath, output.logChunk);
+          outputBuffer.push(output.logChunk);
           if (session) {
             ownAutomationSession({
               taskId: task.id,
@@ -572,9 +601,6 @@ export async function runAutomationTask(
           }
           logTail = output.logTail;
           detectedResumeFailure = output.resumeFailure;
-          if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
-            updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
-          }
         };
         const child = spawn(command.command, command.args, {
           stdio: ["ignore", "pipe", "pipe"],
@@ -585,10 +611,12 @@ export async function runAutomationTask(
         child.stderr.on("data", onOutput);
         child.on("error", (error) => {
           activeTaskChildren.delete(task.id);
+          outputBuffer.flush();
           resolve({ exitCode: null, signal: null, error });
         });
         child.on("close", (exitCode, signal) => {
           activeTaskChildren.delete(task.id);
+          outputBuffer.flush();
           resolve({ exitCode, signal, error: null });
         });
       });
