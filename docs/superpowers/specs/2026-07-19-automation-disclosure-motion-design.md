@@ -15,7 +15,7 @@ Add a consistent expanding and collapsing motion to the automation workflow disc
 ## Constraints
 
 - Reuse Svelte's installed `slide` transition and the existing component state.
-- Do not add packages, routes, data state, or new visual styling.
+- Do not add packages for the disclosure motion, or add routes, data state, or new visual styling.
 - Preserve table semantics, fixed column widths, labels, and existing controls.
 
 ## Verification
