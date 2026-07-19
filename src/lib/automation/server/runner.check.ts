@@ -26,6 +26,7 @@ import {
   liveTaskRunUpdate,
   nextAttemptStatus,
   parseAutomationProgress,
+  prepareLibrettoRunCdpPatch,
   claimRunAutomationSession,
   resumeFailureMessage,
   resumeSessionFromLog,
@@ -106,6 +107,16 @@ test("terminal cleanup catch logs owner and appends the workflow error", async (
 
 assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
 assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
+
+test("Libretto CDP patch is prepared once per app process", () => {
+  let calls = 0;
+  const runPatch = () => { calls += 1; };
+
+  prepareLibrettoRunCdpPatch(runPatch);
+  prepareLibrettoRunCdpPatch(runPatch);
+
+  assert.equal(calls, 1);
+});
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
 assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);

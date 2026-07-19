@@ -48,6 +48,7 @@ export { closeLibrettoSession };
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskChildren = new Map<string, ChildProcess>();
 const SESSION_LOG_PREFIX_BYTES = 4_000;
+let librettoRunCdpPatched = false;
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
@@ -157,6 +158,24 @@ export function shouldCloseResumeSession(input: {
 export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
   const command = resolvePatchCommand(input);
   return command ? [command.command, ...command.args] as const : null;
+}
+
+export function prepareLibrettoRunCdpPatch(runPatch: () => void = () => {
+  const command = resolvePatchCommand({});
+  if (!command) return;
+  const patch = spawnSync(command.command, command.args, {
+    env: command.env,
+    encoding: "utf8",
+  });
+  if (patch.stdout) console.info(patch.stdout.trim());
+  if (patch.stderr) console.warn(patch.stderr.trim());
+  if (patch.error || patch.status !== 0) {
+    throw patch.error ?? new Error(`Libretto CDP patch exited with code ${patch.status}`);
+  }
+}) {
+  if (librettoRunCdpPatched) return;
+  runPatch();
+  librettoRunCdpPatched = true;
 }
 
 export function shouldAutoRunImport(input: {
@@ -557,23 +576,6 @@ export async function runAutomationTask(
             updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
           }
         };
-        const patchCommand = resolvePatchCommand(options, env);
-        if (patchCommand) {
-          const patch = spawnSync(patchCommand.command, patchCommand.args, {
-            env: patchCommand.env,
-            encoding: "utf8",
-          });
-          if (patch.stdout) onOutput(Buffer.from(patch.stdout));
-          if (patch.stderr) onOutput(Buffer.from(patch.stderr));
-          if (patch.error || patch.status !== 0) {
-            resolve({
-              exitCode: patch.status,
-              signal: patch.signal,
-              error: patch.error ?? new Error(`Libretto CDP patch exited with code ${patch.status}`),
-            });
-            return;
-          }
-        }
         const child = spawn(command.command, command.args, {
           stdio: ["ignore", "pipe", "pipe"],
           env: command.env,
