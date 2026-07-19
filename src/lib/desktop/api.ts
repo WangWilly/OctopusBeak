@@ -63,6 +63,7 @@ export type OctopusBeakApi = {
     load(): Promise<AutomationDesktopModel>;
     saveCredentials(updates: Record<string, string>): Promise<{ saved: true }>;
     run(taskId: string): Promise<{ started: string }>;
+    runMany(taskIds: string[]): Promise<{ started: string[] }>;
     resume(taskId: string): Promise<{ resumed: string }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
@@ -85,6 +86,7 @@ export const octopusBeakApiChannels = [
   "automation:load",
   "automation:saveCredentials",
   "automation:run",
+  "automation:runMany",
   "automation:resume",
   "automation:cancel",
   "automation:runHistory",

@@ -264,13 +264,13 @@
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
-    const results = await Promise.allSettled(tasks.map((task) => window.octopusBeak.automation.run(task.id)));
-    actionError = results
-      .flatMap((result) => result.status === "rejected"
-        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
-        : [])
-      .join("\n");
-    await reload();
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.runMany(tasks.map((task) => task.id));
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   async function stopAllTasks() {

@@ -7,6 +7,8 @@ const runParallelTasksSource = source.slice(source.indexOf("async function runPa
 
 assert.doesNotMatch(runTaskSource, /expandedLogTaskId\s*=/);
 assert.doesNotMatch(runParallelTasksSource, /expandedLogTaskId\s*=/);
+assert.match(runParallelTasksSource, /automation\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
+assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
 assert.match(source, /function disclosureSlide\(node: Element\)/);
 assert.match(source, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches \? 0 : 220/);
