@@ -51,6 +51,7 @@ try {
   const model = api.loadAutomationDesktopModel(dir);
   assert.equal(model.credentialGroups.find((group) => group.id === "fubon")?.enabled, true);
   assert.equal(model.automation.credentials[passwordKey], true);
+  assert.equal(model.automation.credentials.MAX_SUB_ACCOUNT, true);
   assert.equal(Object.hasOwn(model.automation, "runHistory"), false);
   assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.ranToday, true);
   assert.equal(api.automationRunHistory(dir)[0]?.taskId, "fubon-all-statements");
