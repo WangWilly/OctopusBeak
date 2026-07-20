@@ -9,6 +9,11 @@ assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
 
 const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
+assert.deepEqual(
+  [...source.matchAll(/^import (?!type\b)[\s\S]*? from "([^"]+)";/gm)].map((match) => match[1]),
+  ["electron"],
+  "sandboxed preload must stay self-contained after bundling",
+);
 for (const method of [
   ["list", "dataIssues:list"],
   ["create", "dataIssues:create"],

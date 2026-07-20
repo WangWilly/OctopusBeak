@@ -6,6 +6,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type {
     DataIssueDetailDto,
+    DataIssueEventDto,
     DataIssueListItemDto,
     ExclusionPreviewDto,
     RestorePreviewDto,
@@ -30,7 +31,7 @@
   let initialized = false;
   let loadedIssueId: string | null = null;
   let statusFilter: DataIssueListItemDto["status"] | "all" = "all";
-  let stageError: { stage: string; message: string; at: string } | null = null;
+  let stageError: { stage: string; message: string; details: string; at: string } | null = null;
 
   $: stageTransition = { duration: reduceMotion ? 0 : 220 };
   $: filteredIssues = state.status === "list"
@@ -74,6 +75,20 @@
     }[status];
   }
 
+  function eventSummary(event: DataIssueEventDto) {
+    const summary = {
+      created: $t.dataIssues.eventCreated,
+      diagnosis: $t.dataIssues.eventDiagnosis,
+      "exclusion-preview": $t.dataIssues.eventExclusionPreview,
+      exclusion: $t.dataIssues.eventExclusion,
+      "restore-preview": $t.dataIssues.eventRestorePreview,
+      restore: $t.dataIssues.eventRestore,
+    }[event.eventType] ?? event.summary;
+    if (event.outcome === "failed") return `${summary} · ${$t.dataIssues.eventFailed}`;
+    if (event.outcome === "blocked") return `${summary} · ${$t.dataIssues.eventBlocked}`;
+    return summary;
+  }
+
   async function load() {
     const requestedIssueId = issueId;
     state = { status: "loading" };
@@ -94,7 +109,12 @@
   }
 
   function showStageError(stage: string, error: unknown) {
-    stageError = { stage, message: errorMessage(error), at: new Date().toLocaleString() };
+    stageError = {
+      stage,
+      message: $t.dataIssues.operationFailed,
+      details: errorMessage(error),
+      at: new Date().toLocaleString(),
+    };
   }
 
   async function refreshDetail(dataIssueId: string, preview: ExclusionPreviewDto | null) {
@@ -260,7 +280,7 @@
             <div><dt>{$t.dataIssues.note}</dt><dd>{issue.note || "--"}</dd></div>
           </dl>
           <div class="card-actions"><button class="button primary" disabled={busy} onclick={startDiagnosis}>{$t.dataIssues.excludeInvalidImport}</button></div>
-          {#if stageError?.stage === "diagnosis"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.message}</details></div>{/if}
+          {#if stageError?.stage === "diagnosis"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
         {:else}
           <div class="workflow-step completed">
             <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
@@ -273,7 +293,7 @@
           <div class="stage-reveal" transition:slide={stageTransition}>
             <div class="workflow-step active source-step">
               <span class="step-mark">2</span><strong>{$t.dataIssues.confirmSource}</strong>
-              {#if stageError?.stage === "diagnosis" || stageError?.stage === "preview"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.message}</details></div>{/if}
+              {#if stageError?.stage === "diagnosis" || stageError?.stage === "preview"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
               <div class="source-list">
                 {#each issue.candidates as source}
                   <label class="source-option">
@@ -293,7 +313,7 @@
           <div class="stage-reveal" transition:slide={stageTransition}>
             <div class="workflow-step active preview-step">
               <span class="step-mark">3</span><strong>{$t.dataIssues.impactPreview}</strong>
-              {#if stageError?.stage === "preview" || stageError?.stage === "confirmation"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.message}</details></div>{/if}
+              {#if stageError?.stage === "preview" || stageError?.stage === "confirmation"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
               <dl class="impact-counts"><div><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}</dd></div><div><dt>{$t.dataIssues.retainedRows}</dt><dd>{state.preview.duplicateRows}</dd></div><div><dt>{$t.dataIssues.affectedAccounts}</dt><dd>{state.preview.affectedAccounts.length}</dd></div></dl>
               <div class="affected-list">{#each state.preview.affectedAccounts as account}<p><strong>{account.accountId}</strong><span>{formatAmounts(account.before.amounts)} → {account.after.availability === "unavailable" ? $t.accounts.noAvailableData : formatAmounts(account.after.amounts)}</span></p>{/each}</div>
               {#if issue.status !== "resolved"}
@@ -309,7 +329,7 @@
           {#if restorePreview || stageError?.stage === "restore"}
             <div class="stage-reveal" transition:slide={stageTransition}>
               <div class="workflow-step active restore-step"><span class="step-mark">4</span><strong>{$t.dataIssues.restoreImport}</strong>
-                {#if stageError?.stage === "restore"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.message}</details></div>{:else if restorePreview && !restorePreview.allowed}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{$t.dataIssues.restoreBlocked}<small>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</details></div>{:else if restorePreview}<div class="step-actions"><button class="button primary" disabled={busy} onclick={confirmRestore}>{$t.dataIssues.confirmRestore}</button></div>{/if}
+                {#if stageError?.stage === "restore"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{:else if restorePreview && !restorePreview.allowed}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{$t.dataIssues.restoreBlocked}<small>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</details></div>{:else if restorePreview}<div class="step-actions"><button class="button primary" disabled={busy} onclick={confirmRestore}>{$t.dataIssues.confirmRestore}</button></div>{/if}
               </div>
             </div>
           {/if}
@@ -317,7 +337,7 @@
 
         <details class="operation-history">
           <summary>{$t.dataIssues.operationHistory}</summary>
-          <div class="event-list">{#each issue.events as event}<article><strong>{event.summary}</strong><span>{event.createdAt}</span>{#if Object.keys(event.details).length}<details><summary>{$t.dataIssues.technicalDetails}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>{/if}</article>{:else}<p class="empty-state">{$t.dataIssues.noOperations}</p>{/each}</div>
+          <div class="event-list">{#each issue.events as event}<article><strong>{eventSummary(event)}</strong><span>{event.createdAt}</span>{#if Object.keys(event.details).length}<details><summary>{$t.dataIssues.technicalDetails}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>{/if}</article>{:else}<p class="empty-state">{$t.dataIssues.noOperations}</p>{/each}</div>
         </details>
       </section>
     {/if}
@@ -350,8 +370,8 @@
   .source-step, .preview-step, .restore-step { grid-template-rows: auto auto auto auto; padding-block: var(--space-4); }
   .source-list, .impact-counts, .affected-list, .confirmation-form, .step-actions, .stage-error { grid-column: 2 / -1; width: 100%; }
   .source-list { display: grid; gap: var(--space-3); padding-top: var(--space-3); }
-  .source-option { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-4); padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
-  .source-option:has(input:checked) { border-color: var(--accent); background: var(--surface-soft); }
+  .source-option { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-4); padding: var(--space-3) 0; border: 0; border-radius: 0; cursor: pointer; }
+  .source-option + .source-option { border-top: 1px solid var(--border); }
   .source-option span { display: grid; gap: var(--space-1); }
   .impact-counts { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
   .impact-counts div { display: flex; justify-content: center; gap: var(--space-2); }

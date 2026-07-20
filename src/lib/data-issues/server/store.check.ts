@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
 import { buildAccountOverview, emptyLedgerQueryData } from "../../shared-ledger/server/accounts.ts";
 import type { DataIssueCreateInput, SourceVersionId } from "../types.ts";
+import { applyLedgerVisibility, loadActiveImportScopes } from "./ledger-visibility.ts";
 import {
   confirmDataIssueExclusion,
   confirmDataIssueRestore,
@@ -204,6 +205,84 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   assert.equal(visibleLoanBalance(ledgerDir), undefined);
 });
 
+test("persists the complete exclusion journey across a database reopen", () => {
+  const ledgerDir = fixtureDir();
+  const correctedSource = { sourceFileId: "source-corrected", importRunId: "run-corrected" };
+  const reportedSource = { sourceFileId: "source-reported", importRunId: "run-reported" };
+  const db = openLedgerDatabase(ledgerDir);
+  seedSource(db, correctedSource, {
+    importedAt: "2025-01-18T08:00:00.000Z",
+    balances: [63_900],
+    csvRows: 1,
+    tradeDates: ["2025-01-18"],
+  });
+  seedSource(db, reportedSource, {
+    importedAt: "2025-01-20T08:00:00.000Z",
+    balances: [81_250],
+    csvRows: 1,
+    tradeDates: ["2025-01-20"],
+  });
+  db.close();
+
+  const correctedRows = syntheticLoanRows(correctedSource, [63_900]).map((row) => ({
+    ...row,
+    importedAt: "2025-01-18T08:00:00.000Z",
+    createdAt: "2025-01-18T08:00:00.000Z",
+    tradeDate: "2025-01-18",
+  }));
+  const reportedRows = syntheticLoanRows(reportedSource, [81_250]).map((row) => ({
+    ...row,
+    importedAt: "2025-01-20T08:00:00.000Z",
+    createdAt: "2025-01-20T08:00:00.000Z",
+    tradeDate: "2025-01-20",
+  }));
+  const ledgerData = { ...emptyLedgerQueryData(), loanTransactions: [...correctedRows, ...reportedRows] };
+  const before = buildAccountOverview(ledgerData)[0];
+  assert.ok(before);
+  assert.equal(before.amountLines[0]?.value, 81_250);
+
+  const now = clock("2025-01-21T00:00:00.000Z");
+  const created = createDataIssue({
+    account: {
+      id: before.id,
+      label: "Example Bank loan ****0420",
+      institution: "Example Bank",
+      product: before.product,
+      group: before.group,
+      kind: before.kind,
+      typeLabel: before.typeLabel,
+      amountLines: before.amountLines,
+      lastUpdated: before.lastUpdated,
+    },
+    fieldKey: "balance",
+    note: "Synthetic reported balance",
+  }, ledgerDir, now);
+  assert.equal(created.status, "pending");
+  startDataIssueDiagnosis(created.dataIssueId, ledgerDir, now);
+  const preview = previewDataIssueExclusion({
+    dataIssueId: created.dataIssueId,
+    sourceVersion: reportedSource,
+  }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: created.dataIssueId,
+    sourceVersion: reportedSource,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+
+  openLedgerDatabase(ledgerDir).close();
+  const reopenedDb = openLedgerDatabase(ledgerDir);
+  const activeExclusions = loadActiveImportScopes(reopenedDb);
+  reopenedDb.close();
+  const after = buildAccountOverview(applyLedgerVisibility(ledgerData, activeExclusions))[0];
+  const reopened = loadDataIssue(created.dataIssueId, ledgerDir);
+
+  assert.equal(after?.amountLines[0]?.value, 63_900);
+  assert.equal(reopened.status, "resolved");
+  assert.equal(reopened.events.at(-1)?.outcome, "succeeded");
+});
+
 test("persists only the validated account context fields", async () => {
   const { ledgerDir, input } = await setup();
   createDataIssue(input, ledgerDir, clock());
@@ -283,8 +362,10 @@ test("rolls back a failed confirmation and persists a safe failed event", async 
   assert.equal((after.prepare("SELECT COUNT(*) AS count FROM disabled_import_sources").get() as { count: number }).count, 0);
   assert.equal((after.prepare("SELECT status FROM data_issues").get() as { status: string }).status, "pending");
   const failed = after.prepare("SELECT outcome, details_json FROM data_issue_events ORDER BY rowid DESC LIMIT 1").get() as { outcome: string; details_json: string };
+  const failedEvents = after.prepare("SELECT COUNT(*) AS count FROM data_issue_events WHERE outcome = 'failed'").get() as { count: number };
   after.close();
   assert.equal(failed.outcome, "failed");
+  assert.equal(failedEvents.count, 1);
   assert.equal(JSON.parse(failed.details_json).code, "LEDGER_WRITE_FAILED");
   assert.equal(visibleLoanBalance(ledgerDir), 81_250);
 });
