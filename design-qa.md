@@ -1,50 +1,60 @@
 **Comparison Target**
 
-- Source visual truth: `/Users/willywangkaa/.codex/generated_images/019f7d7b-c529-7612-b059-7eb1b053e89d/exec-537bc548-cb4f-4958-94db-aad51d068a92.png`
-- Desktop implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-redesign-preview-1440.png`
-- Narrow implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-redesign-narrow.png`
-- Viewport: Electron desktop at the app's native display scale; narrow check requested at 720 × 800 CSS pixels and rendered at 881 × 1000 device-scaled pixels.
-- State: Traditional Chinese, data issue investigation, step 3 preview expanded, error history collapsed.
+- Source references:
+  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-f14b33de-2bac-4039-a30a-9722e834bf04.png`
+  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-8fc0d7d6-6204-448c-9fe1-ab713cafc2d5.png`
+  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-259370b9-6c4b-4ddb-af6d-900e990ea38b.png`
+  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-4d355a4a-2b1e-4d04-b603-ed527b9cf62d.png`
+- Initial implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-initial.png`
+- Diagnosis implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-diagnosis.png`
+- Preview implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-preview.png`
+- Narrow implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-narrow.png`
+- State: Traditional Chinese data-issue workflow, from report summary through source confirmation and impact preview.
 
 **Full-view Comparison Evidence**
 
-The source and desktop implementation were opened together for a full-view comparison. Both use one continuous workflow card with compact completed summaries for steps 1 and 2, an expanded impact preview for step 3, the before/after balance pair, inline impact counts, reason field, acknowledgement, and footer actions. The implementation intentionally omits the source's duplicate top-right report icon per the user's annotated approval. It also retains the app's existing shell proportions and design tokens instead of copying the generated frame chrome.
+The four source references and all implementation captures were opened together for direct visual comparison. The implementation keeps the report context and all stages inside one continuous card. Clicking `排除錯誤匯入` expands diagnosis in place; continuing expands the impact preview in the same surface. The requested initial `調查中` chip, diagnosis breadcrumb/header region, and visible error-history banner are absent.
 
 **Focused Region Comparison Evidence**
 
-The values, counts, form controls, and action labels are readable in the full desktop and narrow captures, so no additional crop was required. The error-history disclosure was also expanded during Electron verification and showed both retained records with timestamp, stage, status, summary, and technical detail. The liabilities-page report action was inspected separately: it has the accessible name and title `回報資料問題`, contains no visible text, and uses the shared warning icon.
+The full captures clearly show the account identity, report facts, source import, impact values, and actions, so no additional crop was needed. Electron frame sampling measured progressive height changes during both stage transitions. The narrow viewport retained every primary action without horizontal overflow.
 
 **Findings**
 
 - No actionable P0, P1, or P2 differences remain.
-- Fonts and typography: the implementation preserves the app's current font stack, weights, and hierarchy; compact metadata truncates only where necessary at the narrow breakpoint.
-- Spacing and layout rhythm: related steps share one card and dividers, removing the disconnected vertical gaps in the prior design. Desktop and narrow layouts have no horizontal overflow.
-- Colors and visual tokens: existing neutral, primary, success, and danger tokens are used consistently. Error history remains visually distinct without dominating the workflow.
-- Image quality and asset fidelity: this screen has no raster imagery or brand assets. Icons come from the project's existing Lucide library; no handcrafted SVG or CSS illustration is used.
-- Copy and content: reported value, data date, expected balance, source counts, impact counts, reason, acknowledgement, and actions match the approved workflow.
+- Typography: the existing application font stack, weights, and hierarchy are preserved.
+- Spacing and layout: the report, diagnosis, and preview share one stable card and fixed account header; desktop and narrow states have no horizontal overflow.
+- Colors and tokens: the existing surface, border, text, primary, and success tokens are reused.
+- Assets: this flow has no raster or brand assets. Existing Lucide check and chevron icons are used; no handcrafted icon assets were introduced.
+- Copy: the entry CTA is exactly `排除錯誤匯入`; reported value, data date, expected balance, import counts, and preview values remain intact.
+- Error retention: error records remain in the prototype data model. Only the circled error-history presentation was removed from this page.
 
 **Interaction Verification**
 
-- Started diagnosis, selected the suspected import, and previewed its impact.
-- Confirm action stayed disabled until a reason was entered and the acknowledgement was checked.
-- Expanded error history and verified all retained error details.
-- Completed the prototype quarantine path and saw the corrected `354,107` balance.
-- Verified the account-page warning-icon report entry by accessible name and title.
-- Checked the Electron console; no errors were emitted.
+- Initial state: one workflow card, one `排除錯誤匯入` CTA, one account header, zero status chips, zero breadcrumbs, and zero visible error-history components.
+- Diagnosis transition: sampled reveal heights progressed from `0` through intermediate values to `396px`, confirming visible motion.
+- Preview transition: sampled reveal heights progressed from `0` through intermediate values to `505.5px`, confirming visible motion.
+- Account context remained visible in initial, diagnosis, and preview states.
+- Preview showed the corrected `354,107 TWD` value.
+- Narrow viewport measured `clientWidth=881` and `scrollWidth=881`; the confirmation action remained available.
+- Electron console emitted no errors.
 
 **Comparison History**
 
-- Initial approved direction: simplify visual option 3.
-- User-requested fix: remove the duplicate top-right report icon from the data-issue page.
-- Post-fix evidence: the desktop and narrow captures contain no top-right report action while the account list retains the warning-icon entry.
+- P2: the first-stage transition initially failed to animate because its transition node was nested in the parent conditional insertion. The stage blocks were separated; post-fix frame sampling confirms both transitions animate.
+- P2: the account label initially disappeared after expansion. The account header was moved outside the list-only state; post-fix Electron checks find it once in every stage.
+- Intentional deviation: the account name and report time remain fixed inside the shared card to preserve continuity between stages.
+- Requested removals: the diagnosis breadcrumb/header region and error-history banner/disclosure are no longer rendered.
 
 **Implementation Checklist**
 
-- [x] Replace the account-page text action with an accessible warning icon.
-- [x] Consolidate diagnosis and preview into one continuous workflow card.
-- [x] Retain and display every prototype calculation/source error.
-- [x] Remove the duplicate report icon from the data-issue page.
-- [x] Verify desktop, narrow, interaction, accessibility, and console states.
+- [x] Remove the initial `調查中` chip.
+- [x] Rename the entry action to `排除錯誤匯入`.
+- [x] Animate diagnosis and preview into one integrated card.
+- [x] Preserve account context throughout the flow.
+- [x] Remove the diagnosis breadcrumb/header and error-history UI.
+- [x] Retain errors in the data model.
+- [x] Verify desktop, narrow, transitions, and console behavior in Electron.
 
 **Follow-up Polish**
 
