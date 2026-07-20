@@ -282,6 +282,74 @@ assert.deepEqual({ ...unchangedItem }, {
   item_product_name: "咖啡",
 });
 
+const sourceHistoryRootDir = await mkdtemp(join(tmpdir(), "source-history-import-"));
+const sourceHistoryDownloadsDir = join(sourceHistoryRootDir, "downloads");
+const sourceHistoryOutputDir = join(sourceHistoryRootDir, "ledger");
+const sourceHistorySourceDir = join(
+  sourceHistoryDownloadsDir,
+  "fictional-bank",
+  "statements",
+);
+await mkdir(sourceHistorySourceDir, { recursive: true });
+
+const sourceHistoryCsv = (amount: string) => `amount\n${amount}\n`;
+const sourceHistoryInput = {
+  downloadsDir: sourceHistoryDownloadsDir,
+  outputDir: sourceHistoryOutputDir,
+  bankFilters: ["fictional"],
+  productFilters: ["bank"],
+};
+const sourceHistoryPath = "fictional-bank/statements/source.csv";
+await writeFile(
+  join(sourceHistorySourceDir, "source.csv"),
+  sourceHistoryCsv("100"),
+  "utf8",
+);
+await importDownloadsCsv(sourceHistoryInput);
+await importDownloadsCsv(sourceHistoryInput);
+
+let sourceHistoryDb = openLedgerDatabase(sourceHistoryOutputDir, { readOnly: true });
+const sourceFileId = (sourceHistoryDb.prepare(`
+  SELECT source_file_id FROM source_files WHERE source_relative_path = ?
+`).get(sourceHistoryPath) as { source_file_id: string }).source_file_id;
+const sourceImportRuns = sourceHistoryDb.prepare(`
+  SELECT import_run_id FROM source_file_imports
+  WHERE source_file_id = ? ORDER BY rowid
+`).all(sourceFileId) as Array<{ import_run_id: string }>;
+assert.equal(sourceHistoryDb.prepare(`
+  SELECT COUNT(*) AS count FROM source_file_imports
+  WHERE source_file_id = ?
+`).get(sourceFileId)?.count, 2);
+assert.equal(new Set(sourceImportRuns.map((row) => row.import_run_id)).size, 2);
+assert.equal((sourceHistoryDb.prepare(`
+  SELECT COUNT(*) AS count FROM unsupported_statement_rows
+  WHERE source_file_id = ?
+`).get(sourceFileId) as { count: number }).count, 1);
+sourceHistoryDb.close();
+
+await writeFile(
+  join(sourceHistorySourceDir, "source.csv"),
+  sourceHistoryCsv("101"),
+  "utf8",
+);
+await importDownloadsCsv(sourceHistoryInput);
+
+sourceHistoryDb = openLedgerDatabase(sourceHistoryOutputDir, { readOnly: true });
+const thirdSourceImport = sourceHistoryDb.prepare(`
+  SELECT import_run_id FROM source_file_imports
+  WHERE source_file_id = ? ORDER BY rowid DESC LIMIT 1
+`).get(sourceFileId) as { import_run_id: string };
+const correctedRow = sourceHistoryDb.prepare(`
+  SELECT import_run_id FROM unsupported_statement_rows
+  WHERE source_file_id = ? AND raw_payload_json = '{"amount":"101"}'
+`).get(sourceFileId) as { import_run_id: string };
+assert.equal((sourceHistoryDb.prepare(`
+  SELECT COUNT(*) AS count FROM source_file_imports
+  WHERE source_file_id = ?
+`).get(sourceFileId) as { count: number }).count, 3);
+assert.equal(correctedRow.import_run_id, thirdSourceImport.import_run_id);
+sourceHistoryDb.close();
+
 const sparseRootDir = await mkdtemp(join(tmpdir(), "einvoice-import-sparse-"));
 const sparseDownloadsDir = join(sparseRootDir, "downloads");
 const sparseOutputDir = join(sparseRootDir, "ledger");
@@ -366,10 +434,10 @@ ordinaryDb.close();
 assert.equal(firstResult.importedRows, 1);
 assert.equal(firstResult.skippedDuplicateRows, 0);
 assert.equal(secondResult.importedRows, 0);
-assert.equal(secondResult.skippedDuplicateRows, 2);
+assert.equal(secondResult.skippedDuplicateRows, 3);
 assert.equal(accountRowCount.count, 1);
-assert.equal(secondRun.skippedDuplicateRows, 2);
-assert.equal(secondCompletedEvent.skippedDuplicateRows, 2);
+assert.equal(secondRun.skippedDuplicateRows, 3);
+assert.equal(secondCompletedEvent.skippedDuplicateRows, 3);
 
 const failureRootDir = await mkdtemp(join(tmpdir(), "failed-insert-"));
 const failureDb = openLedgerDatabase(failureRootDir);
@@ -466,6 +534,38 @@ async function cardImportFixture() {
   };
   return { fixtureDownloadsDir, fixtureOutputDir, fixtureSourceDir, writeCapture };
 }
+
+const repeatedFullCardFixture = await cardImportFixture();
+const repeatedFullCaptureId = "9d000000-0000-4000-8000-000000000006";
+await repeatedFullCardFixture.writeCapture(
+  "repeat",
+  repeatedFullCaptureId,
+  "2026-07-17T08:09:10.000Z",
+  [cardRows[0]],
+  [],
+);
+await importDownloadsCsv({
+  downloadsDir: repeatedFullCardFixture.fixtureDownloadsDir,
+  outputDir: repeatedFullCardFixture.fixtureOutputDir,
+});
+await importDownloadsCsv({
+  downloadsDir: repeatedFullCardFixture.fixtureDownloadsDir,
+  outputDir: repeatedFullCardFixture.fixtureOutputDir,
+});
+const repeatedFullCardDb = openLedgerDatabase(
+  repeatedFullCardFixture.fixtureOutputDir,
+  { readOnly: true },
+);
+assert.equal((repeatedFullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_captures WHERE capture_id = ?",
+).get(repeatedFullCaptureId) as { count: number }).count, 1);
+assert.equal((repeatedFullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_capture_entries WHERE capture_id = ?",
+).get(repeatedFullCaptureId) as { count: number }).count, 1);
+assert.equal((repeatedFullCardDb.prepare(
+  "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
+).get(repeatedFullCaptureId) as { count: number }).count, 2);
+repeatedFullCardDb.close();
 
 const fullCardFixture = await cardImportFixture();
 const firstCaptureId = "9d000000-0000-4000-8000-000000000001";

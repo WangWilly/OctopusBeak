@@ -278,14 +278,15 @@ export function insertRecord(
   db: LedgerDatabase,
   table: string,
   record: Record<string, unknown>,
+  ignoreConflicts = false,
 ): "inserted" | "duplicate" {
   const columns = Object.keys(record);
   const placeholders = columns.map(() => "?").join(", ");
   try {
-    db.prepare(
-      `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
+    const result = db.prepare(
+      `INSERT ${ignoreConflicts ? "OR IGNORE " : ""}INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
     ).run(...columns.map((column) => sqliteValue(record[column])));
-    return "inserted";
+    return result.changes > 0 ? "inserted" : "duplicate";
   } catch (error) {
     if (
       error instanceof Error
@@ -424,6 +425,20 @@ function insertSourceFile(db: LedgerDatabase, record: Record<string, unknown>) {
     "source_relative_path",
     SOURCE_FILE_UPDATE_COLUMNS,
   );
+}
+
+function insertSourceFileImport(db: LedgerDatabase, record: Record<string, unknown>) {
+  const {
+    source_file,
+    source_sheet_name,
+    csv_layout_json,
+    headers_json,
+    record_keys_json,
+    related_raw_files_json,
+    related_raw_file_metadata_json,
+    ...sourceFileImport
+  } = sourceFileRecordFromBatch(record);
+  insertRecord(db, "source_file_imports", sourceFileImport);
 }
 
 function commonTypedRowFields(
@@ -661,6 +676,9 @@ function persistedCreditCardEvidence(
   if (captureIds.size === 0) {
     return { sourceFileRecords: [], cardRows: [] as CreditCardRow[] };
   }
+  const currentSourceFileIds = new Set(sourceFileRecords.map((sourceFileRecord) =>
+    sourceFileIdForPath(String(sourceFileRecord.sourceRelativePath ?? ""))
+  ));
 
   const persistedSourceFileRecords: Record<string, unknown>[] = [];
   const statementRows: ImportStatementRow[] = [];
@@ -682,10 +700,11 @@ function persistedCreditCardEvidence(
     );
     if (!metadata || !captureIds.has(metadata.captureId)) continue;
 
-    persistedSourceFileRecords.push(sourceFileRecord);
     const sourceFileId = sourceFileIdForPath(
       String(sourceFileRecord.sourceRelativePath ?? ""),
     );
+    if (currentSourceFileIds.has(sourceFileId)) continue;
+    persistedSourceFileRecords.push(sourceFileRecord);
     const persistedRows = db.prepare(`
       SELECT statement_row_id, source_row_index, source_hash, content_hash, raw_payload_json
       FROM credit_card_statement_lines
@@ -865,12 +884,12 @@ function insertVerifiedCreditCardState(
       product: capture.product,
       captured_at: capture.capturedAt,
       completeness_json: JSON.stringify(capture.metadata.completenessEvidence),
-    });
+    }, true);
     for (const row of cardRows) {
       if (captureIdBySourceFileId.get(row.sourceFileId) !== capture.captureId) continue;
       if (!row.statementRowId) throw new Error("Canonical credit-card row is missing");
       db.prepare(`
-        INSERT INTO credit_card_capture_entries (
+        INSERT OR IGNORE INTO credit_card_capture_entries (
           capture_id, statement_row_id, source_file_id, source_row_index,
           bank, product, card_key, statement_type
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -914,17 +933,10 @@ function insertVerifiedCreditCardState(
           currency: "TWD",
           transaction_count: aggregate.transaction_count,
           total_amount: aggregate.total_amount,
-        });
+        }, true);
       }
     }
   }
-}
-
-function importedSourceRelativePaths(db: LedgerDatabase): Set<string> {
-  const rows = db
-    .prepare("SELECT source_relative_path FROM source_files")
-    .all() as Array<{ source_relative_path: string }>;
-  return new Set(rows.map((row) => row.source_relative_path));
 }
 
 function hasAnyCell(row: unknown[]): boolean {
@@ -1054,7 +1066,6 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
   console.log("automation-progress: 20");
 
   try {
-    const importedSourceFiles = importedSourceRelativePaths(db);
     const sourceFileRecords: Record<string, unknown>[] = [];
     const statementRows: ImportStatementRow[] = [];
     const fileSummaries: FileImportSummary[] = [];
@@ -1073,13 +1084,6 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       scannedCsvFiles += 1;
 
       const sourceRelativePath = relative(downloadsDir, sourceFile);
-      const allowPathReimport =
-        context.bank === "einvoice" && context.product === "personal-invoices";
-      if (!allowPathReimport && importedSourceFiles.has(sourceRelativePath)) {
-        skippedCsvFiles += 1;
-        continue;
-      }
-
       const fileBuffer = await readFile(sourceFile);
       const sourceFileHash = hashBytes(fileBuffer);
       const parsedCsv = parseCsvRows(fileBuffer.toString("utf8"));
@@ -1171,6 +1175,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     db.exec("BEGIN");
     try {
       for (const sourceFileRecord of sourceFileRecords) {
+        insertSourceFileImport(db, sourceFileRecord);
         insertSourceFile(db, sourceFileRecord);
       }
       for (const item of statementRows) {
