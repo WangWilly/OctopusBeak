@@ -17,3 +17,10 @@ assert.match(
   /\$: timezoneOptions = timezones\.includes\(selectedTimezone\)\s*\? timezones\s*:\s*\[selectedTimezone, \.\.\.timezones\]/,
 );
 assert.match(settingsPageSource, /\{#each timezoneOptions as timezone\}/);
+assert.match(settingsPageSource, /id="settings-save-status"/);
+assert.match(settingsPageSource, /id="update-hour"/);
+assert.match(settingsPageSource, /id="update-minute"/);
+assert.match(settingsPageSource, /id="update-meridiem"/);
+assert.match(settingsPageSource, /scheduleSettings/);
+assert.match(settingsPageSource, /languageDisplaySettings/);
+assert.doesNotMatch(settingsPageSource, /type="submit"/);
