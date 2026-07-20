@@ -7,7 +7,7 @@ Build one standalone HTML prototype of the approved OctopusBeak settings redesig
 ## Scope
 
 - Add `docs/prototypes/settings-v2.html` with inline CSS and JavaScript.
-- Do not change the production Svelte or Electron settings implementation.
+- This document defines the standalone HTML prototype only; production Svelte/Electron work is tracked separately.
 - Reuse the existing visual language: dark sidebar, white top bar, restrained surfaces, native controls, and Traditional Chinese copy.
 - Use no new dependencies, assets, routes, or reusable abstractions.
 
@@ -17,14 +17,14 @@ The desktop composition keeps the current top bar and left navigation. The conte
 
 ### 時區與排程設定
 
-- Use a subtle blue-to-teal treatment limited to the group heading and a faint header wash.
+- Use the shared black-to-white treatment limited to the group heading and a faint header wash.
 - Keep the description `設定時間戳記使用的時區，以及每日匯率更新時間。`
 - Include a timezone select with `Asia/Taipei` selected.
-- Include a native time input with `06:00` selected.
+- Include three native selects for hour, minute, and AM/PM with `06:00 AM` selected.
 
 ### 語言與顯示設定
 
-- Use a subtle violet-to-rose treatment limited to the group heading and a faint header wash.
+- Use the same shared black-to-white treatment limited to the group heading and a faint header wash.
 - Keep the description `調整介面語言與 OctopusBeak 的整體顯示大小。`
 - Put the English and 繁體中文 language controls in one row.
 - Put display size in the next row with this horizontal order: label, minus button, current percentage, plus button, compact shortcut hint, flexible space, reset button.
@@ -54,7 +54,7 @@ If `localStorage` read fails, use defaults. If a write fails, keep the user's vi
 
 - Keep the approved desktop layout at wide widths.
 - Below 760px, stack field labels above controls and allow the compact shortcut hint to wrap within the display-size row.
-- Use native `select` and `input type="time"` controls.
+- Use native `select` controls for timezone, hour, minute, and AM/PM.
 - Give icon-only and stepper buttons accessible labels.
 - Expose save status with `role="status"` and `aria-live="polite"`.
 - Preserve visible focus styles and respect reduced-motion preferences.
@@ -68,6 +68,6 @@ If `localStorage` read fails, use defaults. If a write fails, keep the user's vi
 
 ## Non-Goals
 
-- No production Svelte/Electron integration.
+- No production Svelte/Electron implementation requirements in this prototype specification.
 - No additional settings or secondary navigation.
 - No server, build step, framework, dependency, image asset, or deployment.

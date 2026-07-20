@@ -46,7 +46,6 @@
 
   function chooseLocale(value: Locale) {
     setLocale(value);
-    saveStatus = "success";
   }
 
   function setSelectedUpdateTime(value: string) {
@@ -93,7 +92,6 @@
 
   function changeDisplayScale(value: number) {
     applyDisplayScale(value);
-    saveStatus = "success";
   }
 
   function saveTimezone() {
@@ -187,9 +185,9 @@
           <div class="setting-row scale-row">
             <span class="setting-label">{$t.settings.displaySize}</span>
             <div class="scale-controls">
-              <button class="scale-step" type="button" aria-label={$t.settings.decreaseScale} onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}>−</button>
+              <button class="scale-step" type="button" aria-label={$t.settings.decreaseScale} disabled={$displayScale <= DISPLAY_SCALE_MIN} onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}>−</button>
               <output class="display-scale-value">{$displayScale}%</output>
-              <button class="scale-step" type="button" aria-label={$t.settings.increaseScale} onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}>＋</button>
+              <button class="scale-step" type="button" aria-label={$t.settings.increaseScale} disabled={$displayScale >= DISPLAY_SCALE_MAX} onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}>＋</button>
               <small class="display-scale-shortcuts">{shortcutModifier}− {$t.settings.decreaseScale} · {shortcutModifier}+ {$t.settings.increaseScale} · {shortcutModifier}0 {$t.settings.resetScale}</small>
               <button class="button secondary scale-reset" type="button" disabled={$displayScale === DISPLAY_SCALE_DEFAULT} onclick={() => changeDisplayScale(DISPLAY_SCALE_DEFAULT)}>{$t.settings.resetScale}</button>
               <p class="display-scale-range">{$t.settings.scaleRange(DISPLAY_SCALE_MIN, DISPLAY_SCALE_MAX)}</p>
@@ -285,6 +283,7 @@
     .scale-row { grid-template-columns: 1fr; }
     .time-selects { max-width: 100%; }
     .scale-controls { grid-template-columns: 44px auto 44px 1fr; }
+    .display-scale-shortcuts { white-space: normal; }
     .scale-reset { grid-column: 1 / -1; justify-self: start; }
   }
 </style>
