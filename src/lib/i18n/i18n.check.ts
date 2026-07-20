@@ -16,6 +16,10 @@ assert.equal(translations.en.settings.languageDescription, "Choose the language 
 assert.equal(translations["zh-TW"].settings.languageDescription, "選擇 OctopusBeak 使用的語言。");
 assert.equal(translations.en.settings.displaySizeDescription, "Adjust the overall size of OctopusBeak.");
 assert.equal(translations["zh-TW"].settings.displaySizeDescription, "調整 OctopusBeak 的整體顯示大小。");
+assert.equal(translations.en.settings.scheduleSettings, "Timezone & schedule");
+assert.equal(translations["zh-TW"].settings.scheduleSettings, "時區與排程設定");
+assert.equal(translations.en.settings.languageDisplaySettings, "Language & display");
+assert.equal(translations["zh-TW"].settings.languageDisplaySettings, "語言與顯示設定");
 assert.doesNotMatch(JSON.stringify(translations), /Electron app/i);
 assert.equal(translations.en.settings.scaleRange(75, 150), "Minimum 75% · Maximum 150%");
 assert.equal(translations["zh-TW"].settings.scaleRange(75, 150), "最小 75% · 最大 150%");
