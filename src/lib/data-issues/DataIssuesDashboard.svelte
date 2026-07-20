@@ -32,6 +32,7 @@
   let loadedIssueId: string | null = null;
   let statusFilter: DataIssueListItemDto["status"] | "all" = "all";
   let stageError: { stage: string; message: string; details: string; at: string } | null = null;
+  let liveStatus = "";
 
   $: stageTransition = { duration: reduceMotion ? 0 : 220 };
   $: filteredIssues = state.status === "list"
@@ -56,6 +57,7 @@
     reason = "";
     acknowledged = false;
     stageError = null;
+    liveStatus = "";
     busy = false;
   }
 
@@ -65,6 +67,12 @@
 
   function formatAmounts(amounts: Array<{ currency: string; value: number }>) {
     return amounts.map((amount) => `${amount.value.toLocaleString()} ${amount.currency}`).join(" · ") || "--";
+  }
+
+  function formatAccountState(accountState: ExclusionPreviewDto["affectedAccounts"][number]["before"]) {
+    return accountState.availability === "unavailable"
+      ? $t.accounts.noAvailableData
+      : formatAmounts(accountState.amounts);
   }
 
   function statusLabel(status: DataIssueListItemDto["status"]) {
@@ -138,14 +146,17 @@
     const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
+    liveStatus = $t.common.loading;
     try {
       const issue = await window.octopusBeak.dataIssues.startDiagnosis(state.issue.dataIssueId);
       if (operationCaseId !== issueId) return;
       state = { status: "detail", issue, preview: null };
+      liveStatus = $t.dataIssues.eventDiagnosis;
       await refreshDetail(issue.dataIssueId, null);
     } catch (error) {
       if (operationCaseId !== issueId) return;
       showStageError("diagnosis", error);
+      liveStatus = "";
       if (issueId) await refreshDetail(issueId, null);
     } finally {
       if (operationCaseId === issueId) busy = false;
@@ -157,6 +168,7 @@
     const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
+    liveStatus = $t.common.loading;
     try {
       const preview = await window.octopusBeak.dataIssues.previewExclusion({
         dataIssueId: state.issue.dataIssueId,
@@ -164,10 +176,12 @@
       });
       if (operationCaseId !== issueId) return;
       state = { ...state, preview };
+      liveStatus = $t.dataIssues.eventExclusionPreview;
       await refreshDetail(state.issue.dataIssueId, preview);
     } catch (error) {
       if (operationCaseId !== issueId) return;
       showStageError("preview", error);
+      liveStatus = "";
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
       if (operationCaseId === issueId) busy = false;
@@ -179,6 +193,7 @@
     const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
+    liveStatus = $t.common.loading;
     try {
       const issue = await window.octopusBeak.dataIssues.confirmExclusion({
         dataIssueId: state.issue.dataIssueId,
@@ -193,10 +208,12 @@
         issue,
         preview: state.preview,
       };
+      liveStatus = $t.dataIssues.eventExclusion;
       await refreshDetail(issue.dataIssueId, state.preview);
     } catch (error) {
       if (operationCaseId !== issueId) return;
       showStageError("confirmation", error);
+      liveStatus = "";
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
       if (operationCaseId === issueId) busy = false;
@@ -214,14 +231,17 @@
     const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
+    liveStatus = $t.common.loading;
     try {
       const preview = await window.octopusBeak.dataIssues.previewRestore(state.issue.dataIssueId);
       if (operationCaseId !== issueId) return;
       restorePreview = preview;
+      liveStatus = $t.dataIssues.eventRestorePreview;
       await refreshDetail(state.issue.dataIssueId, state.preview);
     } catch (error) {
       if (operationCaseId !== issueId) return;
       showStageError("restore", error);
+      liveStatus = "";
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
       if (operationCaseId === issueId) busy = false;
@@ -233,6 +253,7 @@
     const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
+    liveStatus = $t.common.loading;
     try {
       const issue = await window.octopusBeak.dataIssues.confirmRestore({
         dataIssueId: state.issue.dataIssueId,
@@ -245,10 +266,12 @@
         preview: state.preview,
       };
       restorePreview = null;
+      liveStatus = $t.dataIssues.eventRestore;
       await refreshDetail(issue.dataIssueId, state.preview);
     } catch (error) {
       if (operationCaseId !== issueId) return;
       showStageError("restore", error);
+      liveStatus = "";
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
       if (operationCaseId === issueId) busy = false;
@@ -264,6 +287,7 @@
   sideValue={state.status === "detail" ? statusLabel(state.issue.status) : ""}
 >
   <div class="content data-issues-content">
+    <span class="visually-hidden" aria-live="polite" aria-atomic="true">{liveStatus}</span>
     {#if state.status === "loading"}
       <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
     {:else if state.status === "error"}
@@ -311,7 +335,7 @@
             <div><dt>{$t.dataIssues.note}</dt><dd>{issue.note || "--"}</dd></div>
           </dl>
           <div class="card-actions"><button class="button primary" disabled={busy} onclick={startDiagnosis}>{$t.dataIssues.excludeInvalidImport}</button></div>
-          {#if stageError?.stage === "diagnosis"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
+          {#if stageError?.stage === "diagnosis"}<div class="stage-error" role="alert"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
         {:else}
           <div class="workflow-step completed">
             <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
@@ -324,7 +348,7 @@
           <div class="stage-reveal" transition:slide={stageTransition}>
             <div class="workflow-step active source-step">
               <span class="step-mark">2</span><strong>{$t.dataIssues.confirmSource}</strong>
-              {#if stageError?.stage === "diagnosis" || stageError?.stage === "preview"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
+              {#if stageError?.stage === "diagnosis" || stageError?.stage === "preview"}<div class="stage-error" role="alert"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
               <div class="source-list">
                 {#each issue.candidates as source}
                   <label class="source-option">
@@ -344,7 +368,7 @@
           <div class="stage-reveal" transition:slide={stageTransition}>
             <div class="workflow-step active preview-step">
               <span class="step-mark">3</span><strong>{$t.dataIssues.impactPreview}</strong>
-              {#if stageError?.stage === "preview" || stageError?.stage === "confirmation"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
+              {#if stageError?.stage === "preview" || stageError?.stage === "confirmation"}<div class="stage-error" role="alert"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
               <dl class="impact-counts">
                 <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard-focusable tooltip trigger) -->
                 <div class="impact-metric" tabindex="0" role="group" aria-describedby="impact-excluded-tooltip"><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}<span id="impact-excluded-tooltip" class="impact-tooltip" role="tooltip">{$t.dataIssues.excludedRowsExplanation(state.preview.excludedRows)}</span></dd></div>
@@ -353,7 +377,7 @@
                 <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard-focusable tooltip trigger) -->
                 <div class="impact-metric" tabindex="0" role="group" aria-describedby="impact-accounts-tooltip"><dt>{$t.dataIssues.affectedAccounts}</dt><dd>{state.preview.affectedAccounts.length}<span id="impact-accounts-tooltip" class="impact-tooltip" role="tooltip">{$t.dataIssues.affectedAccountsExplanation(state.preview.affectedAccounts.length)}</span></dd></div>
               </dl>
-              <div class="affected-list">{#each state.preview.affectedAccounts as account}<p><span class="affected-account"><strong>{account.accountLabel}</strong><small>{account.accountId}</small></span><span>{formatAmounts(account.before.amounts)} → {account.after.availability === "unavailable" ? $t.accounts.noAvailableData : formatAmounts(account.after.amounts)}</span></p>{/each}</div>
+              <div class="affected-list">{#each state.preview.affectedAccounts as account}<p><span class="affected-account"><strong>{account.accountLabel}</strong><small>{account.accountId}</small></span><span>{formatAccountState(account.before)} → {formatAccountState(account.after)}</span></p>{/each}</div>
               {#if issue.status !== "resolved"}
                 <div class="confirmation-form"><label><span>{$t.dataIssues.reason}</span><textarea rows="3" bind:value={reason}></textarea></label><label class="acknowledgement"><input type="checkbox" bind:checked={acknowledged} /><span>{$t.dataIssues.acknowledgement}</span></label></div>
                 <div class="step-actions"><button class="button secondary" disabled={busy} onclick={backToSourceSelection}>{$t.dataIssues.back}</button><button class="button primary" disabled={!reason.trim() || !acknowledged || busy} onclick={confirmExclusion}>{$t.dataIssues.confirmExclusion}</button></div>
@@ -367,7 +391,12 @@
           {#if restorePreview || stageError?.stage === "restore"}
             <div class="stage-reveal" transition:slide={stageTransition}>
               <div class="workflow-step active restore-step"><span class="step-mark">4</span><strong>{$t.dataIssues.restoreImport}</strong>
-                {#if stageError?.stage === "restore"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{:else if restorePreview && !restorePreview.allowed}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{$t.dataIssues.restoreBlocked}<small>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</details></div>{:else if restorePreview}<div class="step-actions"><button class="button primary" disabled={busy} onclick={confirmRestore}>{$t.dataIssues.confirmRestore}</button></div>{/if}
+                {#if stageError?.stage === "restore"}
+                  <div class="stage-error" role="alert"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>
+                {:else if restorePreview}
+                  <div class="affected-list restore-impact">{#each restorePreview.affectedAccounts as account}<p><span class="affected-account"><strong>{account.accountLabel}</strong><small>{account.accountId}</small></span><span>{$t.dataIssues.before}: {formatAccountState(account.before)} → {$t.dataIssues.afterRestore}: {formatAccountState(account.after)}</span></p>{/each}</div>
+                  {#if !restorePreview.allowed}<div class="stage-error" role="alert"><AlertTriangle size={18} aria-hidden="true" /><span>{$t.dataIssues.restoreBlocked}<small>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{restorePreview.blockedBy.map((item) => item.updatedAt).join(" · ")}</details></div>{:else}<div class="step-actions"><button class="button primary" disabled={busy} onclick={confirmRestore}>{$t.dataIssues.confirmRestore}</button></div>{/if}
+                {/if}
               </div>
             </div>
           {/if}
@@ -443,6 +472,7 @@
   .event-list span { color: var(--muted); font-size: 12px; }
   pre { overflow: auto; margin: var(--space-2) 0 0; white-space: pre-wrap; }
   .status { color: var(--muted); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   .loading-status { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: var(--space-3); }
   .loading-spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 700ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

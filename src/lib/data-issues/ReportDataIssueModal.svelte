@@ -13,7 +13,7 @@
   let errorMessage = "";
   let dialog: HTMLDialogElement | null = null;
 
-  $: primaryAmount = account?.amountLines[0] ?? { currency: "TWD", value: 0 };
+  $: primaryAmount = account?.amountLines[0] ?? null;
   $: if (open) {
     void tick().then(() => {
       if (dialog && !dialog.open) dialog.showModal();
@@ -39,6 +39,7 @@
     try {
       await onSubmit({ account, fieldKey: "balance", note });
       note = "";
+      submitting = false;
       close();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
@@ -53,6 +54,7 @@
     bind:this={dialog}
     class="modal-panel report-modal"
     aria-labelledby="report-title"
+    aria-describedby="report-hint"
     onclose={() => (open = false)}
     oncancel={(event) => { if (submitting) event.preventDefault(); else open = false; }}
     onclick={closeFromBackdrop}
@@ -60,7 +62,7 @@
     <div class="modal-head">
       <div>
         <h2 id="report-title">{$t.dataIssues.reportProblem}</h2>
-        <p class="lead">{$t.dataIssues.reportProblemHint}</p>
+        <p id="report-hint" class="lead">{$t.dataIssues.reportProblemHint}</p>
       </div>
       <button class="modal-close" type="button" aria-label={$t.common.close} disabled={submitting} onclick={close}>×</button>
     </div>
@@ -70,7 +72,11 @@
         <div><dt>{$t.dataIssues.field}</dt><dd>{$t.accounts.balance}</dd></div>
         <div>
           <dt>{$t.dataIssues.currentValue}</dt>
-          <dd>{primaryAmount.value.toLocaleString()} {primaryAmount.currency}</dd>
+          {#if account.valueAvailability === "unavailable" || !primaryAmount}
+            <dd>{$t.accounts.noAvailableData}</dd>
+          {:else}
+            <dd>{primaryAmount.value.toLocaleString()} {primaryAmount.currency}</dd>
+          {/if}
         </div>
         <div><dt>{$t.dataIssues.dataDate}</dt><dd>{account.lastUpdated ?? "--"}</dd></div>
       </dl>
