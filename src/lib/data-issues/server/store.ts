@@ -140,6 +140,11 @@ function requiredText(value: unknown, label: string, limit: number) {
   return value.trim();
 }
 
+function optionalText(value: unknown, limit: number) {
+  if (typeof value !== "string" || value.length > limit) throw dataIssueError("INVALID_INPUT");
+  return value.trim();
+}
+
 function nowIso(clock: Clock) {
   const value = clock();
   if (!(value instanceof Date) || Number.isNaN(value.valueOf())) throw dataIssueError("INVALID_INPUT");
@@ -184,7 +189,7 @@ function validatedCreateInput(input: DataIssueCreateInput) {
       value: reportedValue.value,
     },
     dataDate,
-    note: requiredText(input.note, "note", NOTE_LIMIT),
+    note: optionalText(input.note, NOTE_LIMIT),
   };
 }
 
@@ -409,8 +414,10 @@ function candidatesForIssue(
   const activeScopes = loadActiveImportScopes(db);
   return sources.flatMap((source) => {
     const id = { sourceFileId: source.source_file_id, importRunId: source.import_run_id };
+    const scope = importScope(id);
+    if (activeScopes.has(scope)) return [];
     const physicalRows = physicalRowsForSource(db, id);
-    const accounts = accountIdsForImportScope(rawData, importScope(id));
+    const accounts = accountIdsForImportScope(rawData, scope);
     if (!accounts.has(row.account_id)) return [];
     return [{
       ...id,
@@ -566,24 +573,27 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
   const rawData = loadLedgerData(db);
   const activeScopes = loadActiveImportScopes(db);
   const afterScopes = new Set([...activeScopes].filter((scope) => scope !== selectedScope));
-  const affected = affectedAccounts(rawData, activeScopes, afterScopes);
   const exclusionEvent = db.prepare(`SELECT details_json FROM data_issue_events
     WHERE data_issue_id = ? AND event_type = 'exclusion' AND outcome = 'succeeded'
     ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(dataIssueId) as {
       details_json: string;
     } | undefined;
-  let accountIds = new Set(affected.map((account) => account.accountId));
+  let persistedAccountIds = new Set<string>();
   if (exclusionEvent) {
     try {
       const details = JSON.parse(exclusionEvent.details_json) as Record<string, unknown>;
       if (Array.isArray(details.affectedAccountIds)) {
-        accountIds = new Set(details.affectedAccountIds
+        persistedAccountIds = new Set(details.affectedAccountIds
           .filter((value): value is string => typeof value === "string"));
       }
     } catch {
       // Legacy event details fall back to the fresh visible diff above.
     }
   }
+  const affected = affectedAccounts(rawData, activeScopes, afterScopes, persistedAccountIds);
+  const accountIds = persistedAccountIds.size > 0
+    ? persistedAccountIds
+    : new Set(affected.map((account) => account.accountId));
   const blocked = new Map<string, string>();
   const sources = db.prepare(`SELECT source_file_id, import_run_id, imported_at
     FROM source_file_imports ORDER BY imported_at`).all() as Array<{
