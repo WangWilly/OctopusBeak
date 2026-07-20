@@ -67,6 +67,7 @@
       <button class="modal-close" type="button" aria-label={$t.common.close} disabled={submitting} onclick={close}>×</button>
     </div>
     <form class="modal-body report-form" onsubmit={(event) => { event.preventDefault(); submit(); }}>
+      <span class="visually-hidden" role="status" aria-live="polite">{submitting ? $t.dataIssues.creatingIssue : ""}</span>
       <dl class="report-context">
         <div><dt>{$t.dataIssues.account}</dt><dd>{account.label}</dd></div>
         <div><dt>{$t.dataIssues.field}</dt><dd>{$t.accounts.balance}</dd></div>
@@ -154,6 +155,7 @@
   }
 
   .submit-error { margin: 0; color: var(--danger, #b42318); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
   @media (max-width: 620px) {
     .report-context { grid-template-columns: 1fr; }
