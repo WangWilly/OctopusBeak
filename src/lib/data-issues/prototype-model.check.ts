@@ -2,9 +2,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canConfirmQuarantine,
+  reportContextForAccount,
   seedDataIssuePrototype,
   transitionDataIssuePrototype,
 } from "./prototype-model.ts";
+import type { AccountRowDto } from "../shared-ledger/types.ts";
+
+test("account report preserves the value visible when the issue is created", () => {
+  const account: AccountRowDto = {
+    id: "loan-1100",
+    label: "萬華 - 信貸中放 - **********1100",
+    institution: "元大銀行",
+    product: "信貸中放",
+    group: "liability",
+    kind: "loan",
+    typeLabel: "Loan",
+    amountLines: [{ currency: "TWD", value: 520_524 }],
+    transactionCount: 78,
+    assetPositionCount: 0,
+    lastUpdated: "2026-07-13",
+  };
+
+  assert.deepEqual(reportContextForAccount(account, "實際應為 354,107"), {
+    accountId: "loan-1100",
+    accountLabel: "萬華 - 信貸中放 - **********1100",
+    institution: "元大銀行",
+    fieldKey: "balance",
+    displayedValue: 520_524,
+    currency: "TWD",
+    dataDate: "2026-07-13",
+    note: "實際應為 354,107",
+  });
+});
 
 test("data issue prototype completes quarantine, audit, and restore safely", () => {
   let state = seedDataIssuePrototype();
