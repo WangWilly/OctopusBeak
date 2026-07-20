@@ -22,4 +22,5 @@ assert.match(source, /const MIN_SCALE = 75/);
 assert.match(source, /const MAX_SCALE = 150/);
 assert.match(source, /const SCALE_STEP = 5/);
 assert.match(source, /localStorage\.setItem\(STORAGE_KEY/);
+assert.match(source, /if \(event\.key === "-"\) \{ event\.preventDefault\(\);/);
 assert.match(source, /@media \(max-width: 760px\)/);
