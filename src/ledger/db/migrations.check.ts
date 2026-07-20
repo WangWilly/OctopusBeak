@@ -271,7 +271,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -1050,6 +1050,7 @@ try {
   const persistentDataIssuesDb = openLedgerDatabase(persistentDataIssuesLedgerDir);
   persistentDataIssuesDb.exec(`
     DELETE FROM schema_migrations WHERE version >= 24;
+    DROP TABLE IF EXISTS source_row_lineage;
     DROP TABLE IF EXISTS data_issue_events;
     DROP TABLE IF EXISTS disabled_import_sources;
     DROP TABLE IF EXISTS data_issues;
@@ -1067,12 +1068,25 @@ try {
       '{}', '[]', '[]', '[]', '[]', 1, 'imported', '{}'
     )
   `).run();
+  persistentDataIssuesDb.prepare(`
+    INSERT INTO loan_transactions (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product, raw_payload_json,
+      imported_at, account_number, trade_date, item, amount, balance_after
+    ) VALUES (
+      'legacy-lineage-row', 'source-a', 'run-a', 'source-a.csv', 1,
+      'legacy-source-hash', 'legacy-content-hash', 'example-bank',
+      'loan-statements', '{}', '2026-01-18T00:00:00.000Z', '0420',
+      '2026-01-18', 'Synthetic principal', 1, 63_900
+    )
+  `).run();
   migrateLedgerDb(persistentDataIssuesDb);
   const expectedPersistentDataIssueTables = new Set([
     "source_file_imports",
     "data_issues",
     "disabled_import_sources",
     "data_issue_events",
+    "source_row_lineage",
   ]);
   const persistentDataIssueTables = persistentDataIssuesDb.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table'",
@@ -1088,6 +1102,25 @@ try {
     import_run_id: "run-a",
     source_file_hash: "hash-a",
   }]);
+  assert.deepEqual(persistentDataIssuesDb.prepare(`
+    SELECT source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome
+    FROM source_row_lineage
+  `).all().map((row) => ({ ...row })), [{
+    source_file_id: "source-a",
+    import_run_id: "run-a",
+    source_row_index: 1,
+    projection_table: "loan_transactions",
+    statement_row_id: "legacy-lineage-row",
+    outcome: "inserted",
+  }]);
+  assert.throws(() => persistentDataIssuesDb.prepare(`
+    INSERT INTO source_row_lineage (
+      source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome, created_at
+    ) VALUES ('source-a', 'run-a', 2, 'loan_transactions', 'bad', 'unknown',
+      '2026-01-18T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
   assert.throws(() => persistentDataIssuesDb.prepare(`
     INSERT INTO data_issues (
       data_issue_id, account_id, account_label, account_context_json, field_key,

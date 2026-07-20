@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
@@ -118,6 +118,160 @@ function syntheticLoanRows(source: SourceVersionId, balances = [80_000, 81_250])
   }));
 }
 
+type CardFixtureRow = {
+  statementRowId: string;
+  source: SourceVersionId;
+  cardKey: string;
+  statementType: "billed" | "unbilled";
+  amount: number;
+};
+
+function cardFixtureData(captureId: string, capturedAt: string, rows: CardFixtureRow[]) {
+  const statementRows = rows.map((row, index) => ({
+    statementRowId: row.statementRowId,
+    sourceFileId: row.source.sourceFileId,
+    importRunId: row.source.importRunId,
+    sourceRelativePath: `fictional-bank/cards/${row.source.sourceFileId}.csv`,
+    sourceRowIndex: index + 1,
+    sourceHash: `${row.statementRowId}-source`,
+    contentHash: `${row.statementRowId}-content`,
+    bank: "example-bank",
+    product: "credit-card-statements",
+    rawPayloadJson: "{}",
+    importedAt: capturedAt,
+    createdAt: capturedAt,
+    semanticKey: row.statementRowId,
+    contentKey: row.statementRowId,
+    occurrenceIndex: 0,
+    firstSeenAt: capturedAt,
+    lastSeenAt: capturedAt,
+    statementType: row.statementType,
+    statementPeriod: capturedAt.slice(0, 7),
+    cardNumber: `synthetic-card-${row.cardKey}`,
+    cardLabel: `Example card ****${row.cardKey}`,
+    consumeDate: capturedAt.slice(0, 10),
+    postingDate: null,
+    description: `Synthetic ${row.statementRowId}`,
+    countryCurrency: "TWD",
+    foreignExchangeDate: null,
+    foreignCurrency: "TWD",
+    foreignAmount: row.amount,
+    twdAmount: row.amount,
+    installmentAction: null,
+    paymentStatus: "unpaid",
+  }));
+  const cards = [...new Set(rows.map((row) => row.cardKey))];
+  return {
+    data: {
+      ...emptyLedgerQueryData(),
+      creditCardStatementLines: statementRows,
+      creditCardCaptures: [{
+        captureId,
+        bank: "example-bank",
+        product: "credit-card-statements",
+        capturedAt,
+        completenessJson: "{}",
+      }],
+      creditCardCaptureEntries: rows.map((row, index) => ({
+        captureId,
+        statementRowId: row.statementRowId,
+        sourceFileId: row.source.sourceFileId,
+        sourceRowIndex: index + 1,
+        bank: "example-bank",
+        product: "credit-card-statements",
+        cardKey: row.cardKey,
+        statementType: row.statementType,
+      })),
+      creditCardSnapshots: cards.flatMap((cardKey) => (["billed", "unbilled"] as const).map((statementType) => ({
+        snapshotId: `${captureId}-${cardKey}-${statementType}`,
+        captureId,
+        sourceFileId: rows.find((row) => row.cardKey === cardKey && row.statementType === statementType)?.source.sourceFileId ?? "source-synthetic",
+        bank: "example-bank",
+        product: "credit-card-statements",
+        cardKey,
+        statementType,
+        capturedAt,
+        asOfDate: capturedAt.slice(0, 10),
+        currency: "TWD",
+        transactionCount: 1,
+        totalAmount: rows.find((row) => row.cardKey === cardKey && row.statementType === statementType)?.amount ?? 0,
+      }))),
+    },
+    rows: statementRows,
+  };
+}
+
+function persistCardFixture(
+  db: LedgerDatabase,
+  captureId: string,
+  capturedAt: string,
+  rows: CardFixtureRow[],
+) {
+  const fixture = cardFixtureData(captureId, capturedAt, rows);
+  const sources = new Map<string, { source: SourceVersionId; rowCount: number }>();
+  for (const row of rows) {
+    const key = `${row.source.sourceFileId}|${row.source.importRunId}`;
+    const source = sources.get(key) ?? { source: row.source, rowCount: 0 };
+    source.rowCount += 1;
+    sources.set(key, source);
+  }
+  for (const { source, rowCount } of sources.values()) {
+    db.prepare(`INSERT INTO source_file_imports (
+      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, source_file_modified_at, imported_at, bank, product,
+      row_count, status, record_json
+    ) VALUES (?, ?, ?, ?, 100, NULL, ?, 'example-bank',
+      'credit-card-statements', ?, 'imported', '{}')`)
+      .run(source.sourceFileId, source.importRunId,
+        `fictional-bank/cards/${source.sourceFileId}.csv`, `${source.sourceFileId}-hash`,
+        capturedAt, rowCount);
+  }
+  const insertLine = db.prepare(`INSERT INTO credit_card_statement_lines (
+    statement_row_id, source_file_id, import_run_id, source_relative_path,
+    source_row_index, source_hash, content_hash, bank, product, raw_payload_json,
+    imported_at, created_at, semantic_key, content_key, occurrence_index,
+    first_seen_at, last_seen_at, statement_type, statement_period, card_number,
+    card_label, consume_date, description, country_currency, foreign_currency,
+    foreign_amount, twd_amount, payment_status
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const row of fixture.rows) {
+    insertLine.run(
+      row.statementRowId, row.sourceFileId, row.importRunId, row.sourceRelativePath,
+      row.sourceRowIndex, row.sourceHash, row.contentHash, row.bank, row.product,
+      row.rawPayloadJson, row.importedAt, row.createdAt, row.semanticKey,
+      row.contentKey, row.occurrenceIndex, row.firstSeenAt, row.lastSeenAt,
+      row.statementType, row.statementPeriod, row.cardNumber, row.cardLabel,
+      row.consumeDate, row.description, row.countryCurrency, row.foreignCurrency,
+      row.foreignAmount, row.twdAmount, row.paymentStatus,
+    );
+  }
+  const capture = fixture.data.creditCardCaptures[0];
+  db.prepare(`INSERT INTO credit_card_captures (
+    capture_id, bank, product, captured_at, completeness_json
+  ) VALUES (?, ?, ?, ?, ?)`)
+    .run(capture.captureId, capture.bank, capture.product, capture.capturedAt, capture.completenessJson);
+  const insertEntry = db.prepare(`INSERT INTO credit_card_capture_entries (
+    capture_id, statement_row_id, source_file_id, source_row_index,
+    bank, product, card_key, statement_type
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const entry of fixture.data.creditCardCaptureEntries) {
+    insertEntry.run(entry.captureId, entry.statementRowId, entry.sourceFileId,
+      entry.sourceRowIndex, entry.bank, entry.product, entry.cardKey, entry.statementType);
+  }
+  const insertSnapshot = db.prepare(`INSERT INTO credit_card_snapshots (
+    snapshot_id, capture_id, source_file_id, bank, product, card_key,
+    statement_type, captured_at, as_of_date, currency, transaction_count,
+    total_amount
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const snapshot of fixture.data.creditCardSnapshots) {
+    insertSnapshot.run(snapshot.snapshotId, snapshot.captureId, snapshot.sourceFileId,
+      snapshot.bank, snapshot.product, snapshot.cardKey, snapshot.statementType,
+      snapshot.capturedAt, snapshot.asOfDate, snapshot.currency,
+      snapshot.transactionCount, snapshot.totalAmount);
+  }
+  return fixture.data;
+}
+
 function visibleLoanBalance(ledgerDir: string) {
   const db = openLedgerDatabase(ledgerDir);
   const row = db.prepare(`SELECT loan.balance_after
@@ -191,7 +345,7 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   const preview = previewDataIssueExclusion({ dataIssueId: created.dataIssueId, sourceVersion }, ledgerDir, now);
   assert.equal(preview.excludedRows, 2);
   assert.equal(preview.csvRows, 3);
-  assert.equal(preview.duplicateRows, 1);
+  assert.equal(preview.duplicateRows, 0);
   assert.equal(preview.affectedAccounts[0]?.after.availability, "unavailable");
 
   const resolved = confirmDataIssueExclusion({
@@ -203,6 +357,181 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   }, ledgerDir, now);
   assert.equal(resolved.status, "resolved");
   assert.equal(visibleLoanBalance(ledgerDir), undefined);
+});
+
+test("preview duplicate count uses active row lineage and counts cross-projection rows once", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const support = { sourceFileId: "source-support", importRunId: "run-support" };
+  const excludedSupport = { sourceFileId: "source-excluded", importRunId: "run-excluded" };
+  const db = openLedgerDatabase(ledgerDir);
+  db.prepare("UPDATE source_file_imports SET row_count = 4 WHERE source_file_id = ? AND import_run_id = ?")
+    .run(sourceVersion.sourceFileId, sourceVersion.importRunId);
+  seedSource(db, support, {
+    importedAt: "2026-01-18T00:00:00.000Z",
+    balances: [63_900],
+    csvRows: 1,
+    tradeDates: ["2026-01-18"],
+  });
+  seedSource(db, excludedSupport, {
+    importedAt: "2026-01-17T00:00:00.000Z",
+    balances: [61_300],
+    csvRows: 1,
+    tradeDates: ["2026-01-17"],
+  });
+  db.prepare(`INSERT INTO unsupported_statement_rows (
+    statement_row_id, source_file_id, import_run_id, source_relative_path,
+    source_row_index, source_hash, content_hash, bank, product,
+    raw_payload_json, imported_at, reason, headers_json
+  ) VALUES (
+    'support-projection', ?, ?, 'fictional-bank/support.csv', 1,
+    'support-projection-source', 'support-projection-content', 'example-bank',
+    'unknown-statements', '{}', '2026-01-18T00:00:00.000Z', 'Synthetic', '[]'
+  )`).run(support.sourceFileId, support.importRunId);
+  const insertLineage = db.prepare(`INSERT INTO source_row_lineage (
+    source_file_id, import_run_id, source_row_index, projection_table,
+    statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 3,
+    "loan_transactions", `${support.sourceFileId}-${support.importRunId}-row-1`,
+    "duplicate", "2026-07-19T00:00:00.000Z");
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 3,
+    "unsupported_statement_rows", "support-projection", "duplicate",
+    "2026-07-19T00:00:00.000Z");
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 4,
+    "loan_transactions", `${excludedSupport.sourceFileId}-${excludedSupport.importRunId}-row-1`,
+    "duplicate", "2026-07-19T00:00:00.000Z");
+  db.prepare(`INSERT INTO disabled_import_sources (
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    reason, state, disabled_at, restored_at, preview_token
+  ) VALUES ('excluded-support', 'synthetic-support-case', ?, ?, 'Synthetic',
+    'active', '2026-07-19T12:00:00.000Z', NULL, 'synthetic-token')`)
+    .run(excludedSupport.sourceFileId, excludedSupport.importRunId);
+  db.close();
+
+  const issue = createDataIssue(input, ledgerDir, clock());
+  const preview = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, clock());
+  assert.equal(preview.duplicateRows, 1);
+});
+
+test("credit-card preview and restore gate include every account changed by capture invalidation", () => {
+  const ledgerDir = fixtureDir();
+  const selected = { sourceFileId: "source-selected", importRunId: "run-selected" };
+  const companion = { sourceFileId: "source-companion", importRunId: "run-companion" };
+  const db = openLedgerDatabase(ledgerDir);
+  const data = persistCardFixture(db, "capture-reported", "2026-01-20T08:00:00.000Z", [
+    { statementRowId: "card-a-billed", source: selected, cardKey: "1111", statementType: "billed", amount: 120 },
+    { statementRowId: "card-a-unbilled", source: companion, cardKey: "1111", statementType: "unbilled", amount: 310 },
+    { statementRowId: "card-b-billed", source: companion, cardKey: "2222", statementType: "billed", amount: 90 },
+    { statementRowId: "card-b-unbilled", source: companion, cardKey: "2222", statementType: "unbilled", amount: 470 },
+  ]);
+  db.close();
+  const accounts = buildAccountOverview(data);
+  const reported = accounts.find((account) => account.label.endsWith("1111"));
+  const companionAccount = accounts.find((account) => account.label.endsWith("2222"));
+  assert.ok(reported);
+  assert.ok(companionAccount);
+  const now = clock("2026-01-21T00:00:00.000Z");
+  const issue = createDataIssue({
+    account: {
+      id: reported.id,
+      label: reported.label,
+      institution: reported.institution,
+      product: reported.product,
+      group: reported.group,
+      kind: reported.kind,
+      typeLabel: reported.typeLabel,
+      amountLines: reported.amountLines,
+      lastUpdated: reported.lastUpdated,
+    },
+    fieldKey: "balance",
+    note: "Synthetic card capture mismatch",
+  }, ledgerDir, now);
+  const preview = previewDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: selected,
+  }, ledgerDir, now);
+  assert.deepEqual(
+    preview.affectedAccounts.map((account) => account.accountId).sort(),
+    [reported.id, companionAccount.id].sort(),
+  );
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: selected,
+    reason: "Synthetic incomplete capture",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+
+  const newer = { sourceFileId: "source-newer-card-b", importRunId: "run-newer-card-b" };
+  const newerDb = openLedgerDatabase(ledgerDir);
+  persistCardFixture(newerDb, "capture-newer-card-b", "2026-01-22T08:00:00.000Z", [
+    { statementRowId: "newer-b-billed", source: newer, cardKey: "2222", statementType: "billed", amount: 80 },
+    { statementRowId: "newer-b-unbilled", source: newer, cardKey: "2222", statementType: "unbilled", amount: 450 },
+  ]);
+  newerDb.close();
+  const restore = previewDataIssueRestore(issue.dataIssueId, ledgerDir, now);
+  assert.equal(restore.allowed, false);
+  assert.deepEqual(restore.blockedBy, [{
+    accountId: companionAccount.id,
+    updatedAt: "2026-01-22T08:00:00.000Z",
+  }]);
+});
+
+test("preview operations use one explicit snapshot transaction including their event", () => {
+  const source = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
+  for (const functionName of ["previewDataIssueExclusion", "previewDataIssueRestore"]) {
+    const start = source.indexOf(`export function ${functionName}`);
+    const end = source.indexOf("\nexport function ", start + 1);
+    const body = source.slice(start, end < 0 ? undefined : end);
+    assert.match(body, /db\.exec\("BEGIN"\)/);
+    assert.match(body, /appendEvent\([\s\S]*db\.exec\("COMMIT"\)/);
+    assert.doesNotMatch(body, /BEGIN IMMEDIATE/);
+  }
+});
+
+test("write transaction starts stay inside the stable service-error boundary", () => {
+  const source = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
+  for (const functionName of [
+    "createDataIssue",
+    "startDataIssueDiagnosis",
+    "confirmDataIssueExclusion",
+    "confirmDataIssueRestore",
+  ]) {
+    const start = source.indexOf(`export function ${functionName}`);
+    const end = source.indexOf("\nexport function ", start + 1);
+    const body = source.slice(start, end < 0 ? undefined : end);
+    assert.ok(body.indexOf("try {") < body.indexOf('db.exec("BEGIN IMMEDIATE")'));
+    assert.match(body, /catch \(error\)[\s\S]*rollbackBestEffort\(db, transaction\)[\s\S]*stableError/);
+  }
+});
+
+test("database-open failures expose only stable safe service errors", async () => {
+  const { input, sourceVersion } = await setup();
+  const parent = fixtureDir();
+  const unavailableLedger = join(parent, "not-a-directory");
+  writeFileSync(unavailableLedger, "synthetic blocker");
+  const commands = [
+    () => listDataIssues(unavailableLedger),
+    () => loadDataIssue("issue-example", unavailableLedger),
+    () => createDataIssue(input, unavailableLedger, clock()),
+    () => startDataIssueDiagnosis("issue-example", unavailableLedger, clock()),
+    () => previewDataIssueExclusion({ dataIssueId: "issue-example", sourceVersion }, unavailableLedger, clock()),
+    () => confirmDataIssueExclusion({
+      dataIssueId: "issue-example", sourceVersion, reason: "Synthetic", acknowledged: true,
+      previewToken: "preview-example",
+    }, unavailableLedger, clock()),
+    () => previewDataIssueRestore("issue-example", unavailableLedger, clock()),
+    () => confirmDataIssueRestore({ dataIssueId: "issue-example", previewToken: "preview-example" }, unavailableLedger, clock()),
+  ];
+  for (const command of commands) {
+    assert.throws(command, (error: unknown) => {
+      const serviceError = error as { code?: string; message?: string };
+      assert.match(serviceError.code ?? "", /^LEDGER_(READ|WRITE)_FAILED$/);
+      assert.equal(serviceError.message, serviceError.code);
+      assert.doesNotMatch(serviceError.message ?? "", /not-a-directory|libretto-data-issue/);
+      return true;
+    });
+  }
 });
 
 test("persists the complete exclusion journey across a database reopen", () => {

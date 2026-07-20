@@ -19,6 +19,7 @@ import {
   personalInvoiceFields,
   personalInvoiceItemFields,
   type SourceMetadata,
+  type TypedStatementTable,
 } from "./source-csv-parsers.ts";
 import { classifyPersonalInvoiceItem } from "../lib/spending/categories.ts";
 import { creditCardContentKey } from "./credit-card-identity.ts";
@@ -488,6 +489,29 @@ function commonTypedRowFields(
   };
 }
 
+function insertSourceRowLineage(
+  db: LedgerDatabase,
+  sourceFileRecord: Record<string, unknown>,
+  row: { sourceRowIndex: number },
+  projectionTable: TypedStatementTable,
+  statementRowId: string,
+  outcome: "inserted" | "duplicate" | "upserted",
+) {
+  db.prepare(`INSERT INTO source_row_lineage (
+    source_file_id, import_run_id, source_row_index, projection_table,
+    statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      sourceFileIdForPath(String(sourceFileRecord.sourceRelativePath ?? "")),
+      String(sourceFileRecord.importRunId ?? ""),
+      row.sourceRowIndex,
+      projectionTable,
+      statementRowId,
+      outcome,
+      String(sourceFileRecord.importedAt ?? ""),
+    );
+}
+
 function insertPersonalInvoiceStatementRow(
   db: LedgerDatabase,
   sourceFileRecord: Record<string, unknown>,
@@ -500,12 +524,14 @@ function insertPersonalInvoiceStatementRow(
   },
 ) {
   const commonFields = commonTypedRowFields(sourceFileRecord, row);
+  const invoiceFields = personalInvoiceFields(row.rawPayload);
+  const itemFields = personalInvoiceItemFields(row.rawPayload);
   upsertRecord(
     db,
     "personal_invoices",
     {
       ...commonFields,
-      ...personalInvoiceFields(row.rawPayload),
+      ...invoiceFields,
     },
     "invoice_key",
     PERSONAL_INVOICE_UPDATE_COLUMNS,
@@ -515,7 +541,7 @@ function insertPersonalInvoiceStatementRow(
     "personal_invoice_items",
     {
       ...commonFields,
-      ...personalInvoiceItemFields(row.rawPayload),
+      ...itemFields,
       category: classifyPersonalInvoiceItem({
         productName: row.rawPayload.item_product_name ?? "",
         sellerName: row.rawPayload.seller_name ?? "",
@@ -524,6 +550,14 @@ function insertPersonalInvoiceStatementRow(
     },
     "item_key",
     PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS,
+  );
+  insertSourceRowLineage(
+    db, sourceFileRecord, row, "personal_invoices",
+    String(commonFields.statement_row_id), "upserted",
+  );
+  insertSourceRowLineage(
+    db, sourceFileRecord, row, "personal_invoice_items",
+    String(commonFields.statement_row_id), "upserted",
   );
 }
 
@@ -556,13 +590,22 @@ function insertTypedStatementRow(
     headers,
   });
   const parsedFields = parser.parseRow(row.rawPayload);
-  return insertRecord(db, parser.table, {
-    ...commonTypedRowFields(sourceFileRecord, row),
+  const commonFields = commonTypedRowFields(sourceFileRecord, row);
+  const outcome = insertRecord(db, parser.table, {
+    ...commonFields,
     ...parsedFields,
     ...(parser.table === "credit_card_statement_lines"
       ? { semantic_key: contentKeyForCreditCardFields(bank, parsedFields) }
       : {}),
   });
+  const statementRowId = outcome === "inserted"
+    ? String(commonFields.statement_row_id)
+    : String((db.prepare(`SELECT statement_row_id FROM ${parser.table} WHERE content_hash = ?`)
+      .get(commonFields.content_hash) as { statement_row_id: string }).statement_row_id);
+  insertSourceRowLineage(
+    db, sourceFileRecord, row, parser.table, statementRowId, outcome,
+  );
+  return outcome;
 }
 
 function contentKeyForCreditCardFields(
@@ -818,10 +861,6 @@ function upsertCanonicalCreditCardLine(
     WHERE content_key = ? AND occurrence_index = ?
   `).get(row.contentKey, row.occurrenceIndex) as { statement_row_id: string } | undefined;
   if (existing) {
-    db.prepare(`
-      UPDATE credit_card_statement_lines SET last_seen_at = ?
-      WHERE statement_row_id = ?
-    `).run(row.seenAt, existing.statement_row_id);
     return { statementRowId: existing.statement_row_id, outcome: "duplicate" as const };
   }
   const record = {
@@ -880,6 +919,14 @@ function insertVerifiedCreditCardState(
       });
       row.statementRowId = outcome.statementRowId;
       if (currentCardRows.has(row)) {
+        insertSourceRowLineage(
+          db,
+          row.sourceFileRecord,
+          row.row,
+          "credit_card_statement_lines",
+          outcome.statementRowId,
+          outcome.outcome,
+        );
         if (outcome.outcome === "duplicate") skippedDuplicateRows += 1;
         else importedRows += 1;
       }
