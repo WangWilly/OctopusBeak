@@ -90,6 +90,8 @@ test("exclusion preview explains impact and returns to the selected source", asy
   assert.match(dashboard, /<small>\{account\.accountId\}<\/small>/);
   assert.equal((dashboard.match(/role="tooltip"/g) ?? []).length, 3);
   assert.equal((dashboard.match(/aria-describedby="impact-[^"]+-tooltip"/g) ?? []).length, 3);
+  const impactCounts = dashboard.slice(dashboard.indexOf('<dl class="impact-counts">'), dashboard.indexOf("</dl>", dashboard.indexOf('<dl class="impact-counts">')));
+  assert.equal((impactCounts.match(/<dd>\{state\.preview\.(?:excludedRows|duplicateRows|affectedAccounts\.length)\}<span id="impact-(?:excluded|retained|accounts)-tooltip" class="impact-tooltip" role="tooltip">/g) ?? []).length, 3);
   assert.equal((dashboard.match(/class="impact-metric" tabindex="0"/g) ?? []).length, 3);
   assert.match(dashboard, /\.impact-metric:hover \.impact-tooltip,/);
   assert.match(dashboard, /\.impact-metric:focus-within \.impact-tooltip/);
