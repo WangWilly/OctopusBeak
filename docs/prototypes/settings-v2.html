@@ -212,9 +212,9 @@
     document.querySelector("#scale-reset").addEventListener("click", () => setScale(100));
     addEventListener("keydown", event => {
       if (!event.metaKey && !event.ctrlKey) return;
-      if (event.key === "-") setScale(settings.scale - SCALE_STEP);
-      if (event.key === "+" || event.key === "=") setScale(settings.scale + SCALE_STEP);
-      if (event.key === "0") setScale(100);
+      if (event.key === "-") { event.preventDefault(); setScale(settings.scale - SCALE_STEP); }
+      if (event.key === "+" || event.key === "=") { event.preventDefault(); setScale(settings.scale + SCALE_STEP); }
+      if (event.key === "0") { event.preventDefault(); setScale(100); }
     });
 
     render();
