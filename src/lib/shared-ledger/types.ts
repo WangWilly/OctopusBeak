@@ -57,6 +57,8 @@ export type AccountRowDto = {
   transactionCount: number;
   assetPositionCount: number;
   lastUpdated: string | null;
+  valueAvailability: "available" | "unavailable";
+  dataIssueId?: string;
 };
 
 export type TransactionRowDto = {

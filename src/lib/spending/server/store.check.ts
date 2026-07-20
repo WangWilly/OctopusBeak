@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
 import {
+  activeImportSql,
   loadSpending,
   updateSpendingItemCategory,
   updateSpendingTransactionOverride,
 } from "./store.ts";
+
+assert.throws(() => activeImportSql("invoices; DROP TABLE personal_invoices"), /Unsafe SQL alias/);
 
 const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
 const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
@@ -455,6 +458,36 @@ try {
     januaryFood.recordsByDate.flatMap((group) => group.records).map((record) => record.key),
     ["invoice:january-invoice"],
   );
+
+  const disabledDb = openLedgerDatabase(ledgerDir);
+  for (const [index, sourceFileId] of [
+    "source-confirmed-invoice",
+    "source-mirrored-transfer",
+    "source-card-payment-line",
+  ].entries()) {
+    disabledDb.prepare(`
+      INSERT INTO disabled_import_sources (
+        disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+        reason, state, disabled_at, preview_token
+      ) VALUES (?, 'issue-a', ?, 'run', 'test', 'active',
+        '2026-07-20T00:00:00.000Z', ?)
+    `).run(`disabled-${index}`, sourceFileId, `preview-${index}`);
+  }
+  disabledDb.close();
+
+  const visible = loadSpending(ledgerDir);
+  assert.equal(
+    visible.invoices.some((invoice) => invoice.invoiceKey === "confirmed-invoice"),
+    false,
+  );
+  assert.equal(
+    visible.accountRecords.some((row) => row.statementRowId === "mirrored-transfer"),
+    false,
+  );
+  const visibleCardPayment = visible.accountRecords
+    .find((row) => row.statementRowId === "card-payment");
+  assert.ok(visibleCardPayment);
+  assert.equal(visibleCardPayment.automaticReason, "unclassified");
 } finally {
   rmSync(ledgerDir, { recursive: true, force: true });
 }

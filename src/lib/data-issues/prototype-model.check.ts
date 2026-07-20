@@ -22,6 +22,7 @@ test("account report preserves the value visible when the issue is created", () 
     transactionCount: 78,
     assetPositionCount: 0,
     lastUpdated: "2026-07-13",
+    valueAvailability: "available",
   };
 
   assert.deepEqual(reportContextForAccount(account, "實際應為 354,107"), {

@@ -10,6 +10,9 @@ import type {
   SpendingState,
 } from "../model.ts";
 import { buildSpendingModel, SPENDING_REASONS } from "../model.ts";
+import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
+
+export { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
 
 type SpendingRow = {
   invoice_key: string;
@@ -95,6 +98,7 @@ export function loadSpending(
       FROM personal_invoices AS invoices
       LEFT JOIN personal_invoice_items AS items USING (invoice_key)
       WHERE invoices.status = ?
+        AND ${activeImportSql("invoices")}
       ORDER BY invoices.issued_at, invoices.invoice_key,
         items.item_sequence_number, items.item_key
     `).all("confirmed") as SpendingRow[];
@@ -105,6 +109,7 @@ export function loadSpending(
       FROM account_transactions
       WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
         AND COALESCE(transaction_date, accounting_date) IS NOT NULL
+        AND ${activeImportSql("account_transactions")}
       ORDER BY date, statement_row_id
     `).all() as AccountRow[];
     const cardPaymentRows = db.prepare(`
@@ -112,6 +117,7 @@ export function loadSpending(
       FROM credit_card_statement_lines
       WHERE twd_amount < 0
         AND COALESCE(consume_date, posting_date) IS NOT NULL
+        AND ${activeImportSql("credit_card_statement_lines")}
     `).all() as CardPaymentRow[];
     const overrideRows = db.prepare(`
       SELECT statement_row_id, state, category, automatic_state,

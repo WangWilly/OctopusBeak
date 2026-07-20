@@ -129,6 +129,7 @@ function account(id: string, label: string, kind: AccountKind, value: number): A
     transactionCount: 0,
     assetPositionCount: 0,
     lastUpdated: null,
+    valueAvailability: "available",
   };
 }
 
