@@ -97,9 +97,27 @@ function selectLedgerScopes(data: LedgerQueryData, scopes: ReadonlySet<ImportSco
 
 export function accountIdsForImportScope(data: LedgerQueryData, scope: ImportScope) {
   const scoped = selectLedgerScopes(data, new Set([scope]));
+  const directCardRows = new Set(scoped.creditCardStatementLines.map((row) => row.statementRowId));
+  const invalidatedCaptures = new Set(data.creditCardCaptureEntries
+    .filter((entry) => directCardRows.has(entry.statementRowId))
+    .map((entry) => entry.captureId));
+  const capturedRows = new Set(data.creditCardCaptureEntries
+    .filter((entry) => invalidatedCaptures.has(entry.captureId))
+    .map((entry) => entry.statementRowId));
+  const impacted = {
+    ...scoped,
+    creditCardStatementLines: data.creditCardStatementLines
+      .filter((row) => directCardRows.has(row.statementRowId) || capturedRows.has(row.statementRowId)),
+    creditCardCaptureEntries: data.creditCardCaptureEntries
+      .filter((entry) => invalidatedCaptures.has(entry.captureId)),
+    creditCardCaptures: data.creditCardCaptures
+      .filter((capture) => invalidatedCaptures.has(capture.captureId)),
+    creditCardSnapshots: data.creditCardSnapshots
+      .filter((snapshot) => snapshot.captureId !== null && invalidatedCaptures.has(snapshot.captureId)),
+  };
   return new Set([
-    ...buildAccountOverview(scoped).map((account) => account.id),
-    ...Object.keys(buildTransactionsByAccount(scoped)),
+    ...buildAccountOverview(impacted).map((account) => account.id),
+    ...Object.keys(buildTransactionsByAccount(impacted)),
   ]);
 }
 
