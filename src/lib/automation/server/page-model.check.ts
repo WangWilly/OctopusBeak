@@ -30,6 +30,8 @@ const model = buildAutomationPageModel({
   todayRunTaskIds: ["fubon-all-statements"],
   credentials: {
     LIBRETTO_CLOUD_FUBON_USER_ID: true,
+    LIBRETTO_CLOUD_FUBON_ACCOUNT: true,
+    LIBRETTO_CLOUD_FUBON_PASSWORD: true,
     MAX_ACCESS_KEY: false,
   },
   importGate: {
@@ -52,6 +54,7 @@ assert.equal(fubonRow?.ranToday, true);
 assert.equal(fubonRow?.logTail, "ok");
 assert.equal(Object.hasOwn(model, "runHistory"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
+assert.equal(model.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("import-downloads-csv"), false);
 
 const unlockedImportModel = buildAutomationPageModel({
@@ -131,7 +134,7 @@ assert.equal(activeFubonRow?.progressText, "42%");
 assert.equal(activeEsunRow?.canRun, true);
 assert.equal(activeEsunRow?.ranToday, true);
 assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
-assert.equal(activeModel.parallelRunnableTaskIds.includes("esun-credit-card-statements"), true);
+assert.equal(activeModel.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
 
 const waitingModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,

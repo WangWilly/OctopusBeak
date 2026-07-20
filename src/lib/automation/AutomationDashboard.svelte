@@ -59,7 +59,6 @@
       : $t.common.ready;
   $: sideSub = $t.common.businessDay(automation.businessDate);
   $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
-  $: parallelTasks = automation.tasks.filter((task) => parallelTaskIds.has(task.id));
   $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
     task.isActive || task.status === "waiting_for_human" || task.status === "failed"
