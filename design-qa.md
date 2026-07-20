@@ -1,63 +1,53 @@
-**Comparison Target**
+# Task 7 Design QA
 
-- Source references:
-  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-f14b33de-2bac-4039-a30a-9722e834bf04.png`
-  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-8fc0d7d6-6204-448c-9fe1-ab713cafc2d5.png`
-  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-259370b9-6c4b-4ddb-af6d-900e990ea38b.png`
-  - `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-4d355a4a-2b1e-4d04-b603-ed527b9cf62d.png`
-- Initial implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-initial.png`
-- Diagnosis implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-diagnosis.png`
-- Preview implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-preview.png`
-- Narrow implementation: `/Users/willywangkaa/.codex/visualizations/2026/07/20/019f7d7b-c529-7612-b059-7eb1b053e89d/data-issues-progressive-narrow.png`
-- State: Traditional Chinese data-issue workflow, from report summary through source confirmation and impact preview.
+## Comparison target
 
-**Full-view Comparison Evidence**
+- Approved initial reference: `/private/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-259370b9-6c4b-4ddb-af6d-900e990ea38b.png`
+- Approved expanded reference: `/private/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-4d355a4a-2b1e-4d04-b603-ed527b9cf62d.png`
+- Final initial/report capture: `.superpowers/sdd/task7-evidence/initial-report-fixed.png`
+- Final diagnosis capture: `.superpowers/sdd/task7-evidence/diagnosis-fixed.png`
+- Final impact preview capture: `.superpowers/sdd/task7-evidence/preview-fixed.png`
+- Final readable failure capture: `.superpowers/sdd/task7-evidence/error-fixed.png`
+- Final blocked-restore capture: `.superpowers/sdd/task7-evidence/restore-blocked.png`
+- Final compact capture: `.superpowers/sdd/task7-evidence/narrow.png`
+- Final unavailable-liability capture: `.superpowers/sdd/task7-evidence/liabilities-unavailable.png`
+- Final persisted-history capture: `.superpowers/sdd/task7-evidence/restarted-history-fixed.png`
+- Full comparison input: `.superpowers/sdd/task7-evidence/comparison-all.png`
+- Focused card-region comparison input: `.superpowers/sdd/task7-evidence/comparison-focused.png`
 
-The four source references and all implementation captures were opened together for direct visual comparison. The implementation keeps the report context and all stages inside one continuous card. Clicking `排除錯誤匯入` expands diagnosis in place; continuing expands the impact preview in the same surface. The requested initial `調查中` chip, diagnosis breadcrumb/header region, and visible error-history banner are absent.
+The final application was captured from Electron at 1280×800 and 360×800, in Traditional Chinese, against a temporary synthetic ledger. The approved references and final captures were assembled into the two comparison inputs above and inspected together, not judged as independent screenshots.
 
-**Focused Region Comparison Evidence**
+## Findings
 
-The full captures clearly show the account identity, report facts, source import, impact values, and actions, so no additional crop was needed. Electron frame sampling measured progressive height changes during both stage transitions. The narrow viewport retained every primary action without horizontal overflow.
+- No actionable P0, P1, or P2 visual difference remains.
+- Layout: the account context and all workflow stages stay in one progressive card. Measured stage rectangles do not overlap after animation settles, and neither desktop nor 360 px compact capture has positive horizontal overflow.
+- Requested simplification: the final flow has no breadcrumb, status chip, page-level error banner, or boxed source-option cards. Source rows are separated only by a divider, matching the annotated removal intent in the approved expanded reference.
+- Typography and color: the existing application font stack, hierarchy, surface colors, text colors, and button tokens remain consistent with the surrounding product shell.
+- Copy: the primary action is exactly `排除錯誤匯入`; operation-history entries are localized. A failed operation leads with a readable localized summary while the raw IPC error remains available only in collapsed technical details.
+- Motion and focus: normal motion uses the existing 220 ms stage transition. With reduced motion emulated, no element animation was invoked. The operation-history disclosure opens with Enter and retains keyboard focus.
+- Assets: this workflow needs no imagery. Existing icon components are used; no text-symbol, placeholder, or hand-drawn asset was introduced.
 
-**Findings**
+The approved initial reference and the final report modal are adjacent workflow states rather than pixel-identical states; the approved expanded reference and final diagnosis capture provide the closest like-for-like structural comparison. Synthetic account labels, values, and dates intentionally differ from the source incident.
 
-- No actionable P0, P1, or P2 differences remain.
-- Typography: the existing application font stack, weights, and hierarchy are preserved.
-- Spacing and layout: the report, diagnosis, and preview share one stable card and fixed account header; desktop and narrow states have no horizontal overflow.
-- Colors and tokens: the existing surface, border, text, primary, and success tokens are reused.
-- Assets: this flow has no raster or brand assets. Existing Lucide check and chevron icons are used; no handcrafted icon assets were introduced.
-- Copy: the entry CTA is exactly `排除錯誤匯入`; reported value, data date, expected balance, import counts, and preview values remain intact.
-- Error retention: error records remain in the prototype data model. Only the circled error-history presentation was removed from this page.
+## Comparison history
 
-**Interaction Verification**
+### Pass 1
 
-- Initial state: one workflow card, one `排除錯誤匯入` CTA, one account header, zero status chips, zero breadcrumbs, and zero visible error-history components.
-- Diagnosis transition: sampled reveal heights progressed from `0` through intermediate values to `396px`, confirming visible motion.
-- Preview transition: sampled reveal heights progressed from `0` through intermediate values to `505.5px`, confirming visible motion.
-- Account context remained visible in initial, diagnosis, and preview states.
-- Preview showed the corrected `354,107 TWD` value.
-- Narrow viewport measured `clientWidth=881` and `scrollWidth=881`; the confirmation action remained available.
-- Electron console emitted no errors.
+- P0 functional: Electron initially remained on `載入中…` because the generated preload required a local Rollup chunk that Electron's sandbox would not load. The preload now has only the allowed Electron runtime dependency; a clean Electron build emits standalone `main.cjs` and `preload.cjs` files.
+- P2: source candidates retained boxed borders and radii. The options were changed to unboxed rows with a single separator.
+- P2: a mid-transition preview capture showed temporary overlap. The final-state layout was measured after transition completion and all adjacent stage rectangles are non-overlapping.
+- P2: operation-history summaries exposed English implementation identifiers. Localized event summaries were added for both English and Traditional Chinese.
+- P2: injected write failure displayed a raw IPC exception as primary copy. The final state shows a concise recovery message and keeps the raw exception in an optional details disclosure.
 
-**Comparison History**
+### Pass 2
 
-- P2: the first-stage transition initially failed to animate because its transition node was nested in the parent conditional insertion. The stage blocks were separated; post-fix frame sampling confirms both transitions animate.
-- P2: the account label initially disappeared after expansion. The account header was moved outside the list-only state; post-fix Electron checks find it once in every stage.
-- Intentional deviation: the account name and report time remain fixed inside the shared card to preserve continuity between stages.
-- Requested removals: the diagnosis breadcrumb/header region and error-history banner/disclosure are no longer rendered.
+- Repeated full-view and focused comparison found no remaining P0, P1, or P2 issue.
+- Verified initial report, diagnosis, impact preview, confirmed exclusion, persisted resolved history after an explicit Electron restart, unavailable account values, injected write failure, blocked restore after a newer import, compact viewport, reduced motion, keyboard disclosure, and clean renderer console.
 
-**Implementation Checklist**
+## Accepted constraints
 
-- [x] Remove the initial `調查中` chip.
-- [x] Rename the entry action to `排除錯誤匯入`.
-- [x] Animate diagnosis and preview into one integrated card.
-- [x] Preserve account context throughout the flow.
-- [x] Remove the diagnosis breadcrumb/header and error-history UI.
-- [x] Retain errors in the data model.
-- [x] Verify desktop, narrow, transitions, and console behavior in Electron.
-
-**Follow-up Polish**
-
-- None required for this prototype handoff.
+- The existing desktop shell is denser than the large annotated reference canvas; the feature follows the product's current spacing and responsive tokens rather than rescaling the whole application.
+- Red outlines in the approved reference are annotations identifying elements to remove, not visual styling to reproduce.
+- The temporary ledger and evidence captures are QA-only and are not committed.
 
 final result: passed
