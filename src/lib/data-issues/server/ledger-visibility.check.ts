@@ -98,7 +98,12 @@ function snapshot(captureId: string, statementType: "billed" | "unbilled") {
   };
 }
 
-function loan(statementRowId: string, sourceFileId: string, importRunId: string) {
+function loan(
+  statementRowId: string,
+  sourceFileId: string,
+  importRunId: string,
+  accountNumber = "0420",
+) {
   return {
     statementRowId,
     sourceFileId,
@@ -112,7 +117,7 @@ function loan(statementRowId: string, sourceFileId: string, importRunId: string)
     rawPayloadJson: "{}",
     importedAt: "2026-07-20T00:00:00.000Z",
     createdAt: "2026-07-20T00:00:00.000Z",
-    accountNumber: "0420",
+    accountNumber,
     tradeDate: "2026-07-20",
     postingDate: null,
     item: "Principal",
@@ -213,13 +218,25 @@ assert.equal(
   true,
 );
 
+const rawUnavailableData = {
+  ...emptyLedgerQueryData(),
+  loanTransactions: [
+    loan("reported-account", "source-a", "run-a"),
+    loan("other-account", "source-a", "run-a", "0777"),
+  ],
+};
+const rawUnavailableAccounts = buildAccountOverview(rawUnavailableData);
+const reportedUnavailableAccount = rawUnavailableAccounts.find((account) => account.label.endsWith("0420"));
+assert.ok(reportedUnavailableAccount);
 const db = new DatabaseSync(":memory:");
 db.exec(`
   CREATE TABLE disabled_import_sources (
+    disabled_import_source_id TEXT NOT NULL,
     data_issue_id TEXT NOT NULL,
     source_file_id TEXT NOT NULL,
     import_run_id TEXT NOT NULL,
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    disabled_at TEXT NOT NULL
   );
   CREATE TABLE data_issues (
     data_issue_id TEXT PRIMARY KEY,
@@ -227,23 +244,49 @@ db.exec(`
     account_label TEXT NOT NULL,
     account_context_json TEXT NOT NULL
   );
-  INSERT INTO data_issues VALUES (
-    'issue-a',
-    'loan-example-0420',
-    'Example Bank loan ****0420',
-    '{"institution":"Example Bank","product":"loan-statements","group":"liability","kind":"loan","typeLabel":"Loan"}'
+  CREATE TABLE data_issue_events (
+    data_issue_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
   );
-  INSERT INTO disabled_import_sources VALUES ('issue-a', 'source-a', 'run-a', 'active');
-  INSERT INTO disabled_import_sources VALUES ('issue-a', 'source-restored', 'run-restored', 'restored');
+`);
+db.prepare("INSERT INTO data_issues VALUES (?, ?, ?, ?)").run(
+  "issue-a",
+  reportedUnavailableAccount.id,
+  reportedUnavailableAccount.label,
+  JSON.stringify({
+    institution: reportedUnavailableAccount.institution,
+    product: reportedUnavailableAccount.product,
+    group: reportedUnavailableAccount.group,
+    kind: reportedUnavailableAccount.kind,
+    typeLabel: reportedUnavailableAccount.typeLabel,
+  }),
+);
+db.exec(`
+  INSERT INTO disabled_import_sources VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'active', '2026-01-21T00:00:00.000Z');
+  INSERT INTO disabled_import_sources VALUES ('disabled-restored', 'issue-a', 'source-restored', 'run-restored', 'restored', '2026-01-20T00:00:00.000Z');
 `);
 assert.deepEqual(loadActiveImportScopes(db), new Set(["source-a|run-a"]));
-const unavailableIssues = loadUnavailableAccountIssues(db);
-assert.equal(unavailableIssues.length, 1);
+const unavailableIssues = loadUnavailableAccountIssues(db, rawUnavailableData);
+assert.equal(unavailableIssues.length, 2);
 assert.deepEqual(
   appendUnavailableAccounts([], unavailableIssues).map((account) => ({
     id: account.id,
     availability: account.valueAvailability,
+    dataIssueId: account.dataIssueId,
   })),
-  [{ id: "loan-example-0420", availability: "unavailable" }],
+  [
+    { id: reportedUnavailableAccount.id, availability: "unavailable", dataIssueId: "issue-a" },
+    {
+      id: buildAccountOverview({
+        ...emptyLedgerQueryData(),
+        loanTransactions: [loan("other-account", "source-a", "run-a", "0777")],
+      })[0]?.id,
+      availability: "unavailable",
+      dataIssueId: "issue-a",
+    },
+  ],
 );
 db.close();

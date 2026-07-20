@@ -16,6 +16,8 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /<summary>\{\$t\.dataIssues\.operationHistory\}<\/summary>/);
   assert.match(dashboard, /const requestedIssueId = issueId;/);
   assert.match(dashboard, /if \(requestedIssueId !== issueId\) return;/);
+  assert.equal(dashboard.match(/const operationCaseId = state\.issue\.dataIssueId;/g)?.length, 5);
+  assert.ok((dashboard.match(/operationCaseId !== issueId/g) ?? []).length >= 10);
   assert.match(dashboard, /stageError\?\.stage === "diagnosis" \|\| stageError\?\.stage === "preview"/);
   assert.match(dashboard, /restorePreview \|\| stageError\?\.stage === "restore"/);
   assert.match(dashboard, /restorePreview\.blockedBy\.map\(\(item\) => item\.updatedAt\)\.join\(" · "\)\}<\/small><\/span><details><summary>\{\$t\.dataIssues\.technicalDetails\}<\/summary>/);
@@ -32,6 +34,22 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(i18n, /eventCreated: "問題案件已建立"/);
   assert.match(i18n, /operationFailed: "無法完成這項操作，帳本資料未變更。請重試。"/);
   assert.match(route, /DataIssuesDashboard/);
+});
+
+test("prototype documents contain only de-identified synthetic incident values", async () => {
+  const plan = await readFile(new URL("../../../docs/superpowers/plans/2026-07-20-data-issues-clickable-prototype.md", import.meta.url), "utf8");
+  const design = await readFile(new URL("../../../docs/superpowers/specs/2026-07-20-data-issue-quarantine-design.md", import.meta.url), "utf8");
+  const documents = `${plan}\n${design}`;
+  for (const privateValue of [
+    "Yuanta", "yuanta", "元大", "萬華", "**********1100",
+    "520_524", "520,524", "354_107", "354,107",
+    "2026-07-13", "2026/07/13", "11,874", "1,072",
+  ]) {
+    assert.doesNotMatch(documents, new RegExp(privateValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(documents, /Example Bank loan \*\*\*\*0420/);
+  assert.match(documents, /81[_ ,]250/);
+  assert.match(documents, /63[_ ,]900/);
 });
 
 test("report submission persists the case before navigating", async () => {

@@ -56,6 +56,7 @@
     reason = "";
     acknowledged = false;
     stageError = null;
+    busy = false;
   }
 
   function errorMessage(error: unknown) {
@@ -129,22 +130,26 @@
 
   async function startDiagnosis() {
     if (state.status !== "detail" || busy) return;
+    const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
     try {
       const issue = await window.octopusBeak.dataIssues.startDiagnosis(state.issue.dataIssueId);
+      if (operationCaseId !== issueId) return;
       state = { status: "detail", issue, preview: null };
       await refreshDetail(issue.dataIssueId, null);
     } catch (error) {
+      if (operationCaseId !== issueId) return;
       showStageError("diagnosis", error);
       if (issueId) await refreshDetail(issueId, null);
     } finally {
-      busy = false;
+      if (operationCaseId === issueId) busy = false;
     }
   }
 
   async function previewExclusion() {
     if (state.status !== "detail" || !selectedSource || busy) return;
+    const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
     try {
@@ -152,18 +157,21 @@
         dataIssueId: state.issue.dataIssueId,
         sourceVersion: selectedSource,
       });
+      if (operationCaseId !== issueId) return;
       state = { ...state, preview };
       await refreshDetail(state.issue.dataIssueId, preview);
     } catch (error) {
+      if (operationCaseId !== issueId) return;
       showStageError("preview", error);
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
-      busy = false;
+      if (operationCaseId === issueId) busy = false;
     }
   }
 
   async function confirmExclusion() {
     if (state.status !== "detail" || !selectedSource || !state.preview || !acknowledged || !reason.trim() || busy) return;
+    const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
     try {
@@ -174,6 +182,7 @@
         acknowledged: true,
         previewToken: state.preview.previewToken,
       });
+      if (operationCaseId !== issueId) return;
       state = {
         status: "detail",
         issue,
@@ -181,30 +190,36 @@
       };
       await refreshDetail(issue.dataIssueId, state.preview);
     } catch (error) {
+      if (operationCaseId !== issueId) return;
       showStageError("confirmation", error);
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
-      busy = false;
+      if (operationCaseId === issueId) busy = false;
     }
   }
 
   async function previewRestore() {
     if (state.status !== "detail" || busy) return;
+    const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
     try {
-      restorePreview = await window.octopusBeak.dataIssues.previewRestore(state.issue.dataIssueId);
+      const preview = await window.octopusBeak.dataIssues.previewRestore(state.issue.dataIssueId);
+      if (operationCaseId !== issueId) return;
+      restorePreview = preview;
       await refreshDetail(state.issue.dataIssueId, state.preview);
     } catch (error) {
+      if (operationCaseId !== issueId) return;
       showStageError("restore", error);
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
-      busy = false;
+      if (operationCaseId === issueId) busy = false;
     }
   }
 
   async function confirmRestore() {
     if (state.status !== "detail" || !restorePreview?.allowed || busy) return;
+    const operationCaseId = state.issue.dataIssueId;
     busy = true;
     stageError = null;
     try {
@@ -212,6 +227,7 @@
         dataIssueId: state.issue.dataIssueId,
         previewToken: restorePreview.previewToken,
       });
+      if (operationCaseId !== issueId) return;
       state = {
         status: "detail",
         issue,
@@ -220,10 +236,11 @@
       restorePreview = null;
       await refreshDetail(issue.dataIssueId, state.preview);
     } catch (error) {
+      if (operationCaseId !== issueId) return;
       showStageError("restore", error);
       if (issueId) await refreshDetail(issueId, state.status === "detail" ? state.preview : null);
     } finally {
-      busy = false;
+      if (operationCaseId === issueId) busy = false;
     }
   }
 </script>
