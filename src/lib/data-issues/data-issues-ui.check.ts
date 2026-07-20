@@ -16,6 +16,7 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /if \(requestedIssueId !== issueId\) return;/);
   assert.match(dashboard, /stageError\?\.stage === "diagnosis" \|\| stageError\?\.stage === "preview"/);
   assert.match(dashboard, /restorePreview \|\| stageError\?\.stage === "restore"/);
+  assert.match(dashboard, /restorePreview\.blockedBy\.map\(\(item\) => item\.updatedAt\)\.join\(" · "\)\}<\/small><\/span><details><summary>\{\$t\.dataIssues\.technicalDetails\}<\/summary>/);
   assert.match(dashboard, /state\.at/);
   assert.match(dashboard, /<details><summary>\{\$t\.dataIssues\.technicalDetails\}<\/summary>\{state\.message\}<\/details>/);
   assert.doesNotMatch(dashboard, /prototype|sessionStorage|scenario/);
