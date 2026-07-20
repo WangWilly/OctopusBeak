@@ -24,3 +24,6 @@ assert.match(settingsPageSource, /id="update-meridiem"/);
 assert.match(settingsPageSource, /scheduleSettings/);
 assert.match(settingsPageSource, /languageDisplaySettings/);
 assert.doesNotMatch(settingsPageSource, /type="submit"/);
+assert.match(settingsPageSource, /\.settings-group \.group-title \{[^}]*background: linear-gradient\(105deg, #e7e7e7, #fff\); \}/);
+assert.match(settingsPageSource, /\.group-title h2 \{ color: var\(--fg\); \}/);
+assert.doesNotMatch(settingsPageSource, /display-scale-shortcuts kbd/);

@@ -190,7 +190,7 @@
               <button class="scale-step" type="button" aria-label={$t.settings.decreaseScale} onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}>−</button>
               <output class="display-scale-value">{$displayScale}%</output>
               <button class="scale-step" type="button" aria-label={$t.settings.increaseScale} onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}>＋</button>
-              <span class="display-scale-shortcuts"><kbd>{shortcutModifier} −</kbd>{$t.settings.decreaseScale} · <kbd>{shortcutModifier} +</kbd>{$t.settings.increaseScale} · <kbd>{shortcutModifier} 0</kbd>{$t.settings.resetScale}</span>
+              <small class="display-scale-shortcuts">{shortcutModifier}− {$t.settings.decreaseScale} · {shortcutModifier}+ {$t.settings.increaseScale} · {shortcutModifier}0 {$t.settings.resetScale}</small>
               <button class="button secondary scale-reset" type="button" disabled={$displayScale === DISPLAY_SCALE_DEFAULT} onclick={() => changeDisplayScale(DISPLAY_SCALE_DEFAULT)}>{$t.settings.resetScale}</button>
               <p class="display-scale-range">{$t.settings.scaleRange(DISPLAY_SCALE_MIN, DISPLAY_SCALE_MAX)}</p>
             </div>
@@ -222,11 +222,8 @@
   .settings-save-status.error { color: var(--danger); }
 
   .settings-group { overflow: hidden; }
-  .group-title { padding: var(--space-5); }
-  .schedule-group .group-title { background: linear-gradient(105deg, color-mix(in oklch, #62b6e9 13%, var(--surface)), color-mix(in oklch, #77d3bd 8%, var(--surface)) 45%, var(--surface) 76%); }
-  .personal-group .group-title { background: linear-gradient(105deg, color-mix(in oklch, #b482eb 14%, var(--surface)), color-mix(in oklch, #ef99bf 9%, var(--surface)) 45%, var(--surface) 76%); }
-  .schedule-group .group-title h2 { color: #126a96; }
-  .personal-group .group-title h2 { color: #7a2ca5; }
+  .settings-group .group-title { padding: var(--space-5); background: linear-gradient(105deg, #e7e7e7, #fff); }
+  .group-title h2 { color: var(--fg); }
 
   .settings-rows { display: grid; }
   .setting-row {
@@ -259,6 +256,8 @@
     gap: var(--space-3);
   }
 
+  .scale-row { grid-template-columns: 160px minmax(0, 1fr); }
+
   .display-scale-value {
     min-width: 70px;
     text-align: center;
@@ -274,15 +273,16 @@
   .display-scale-shortcuts {
     min-width: 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.6;
+    white-space: nowrap;
   }
 
-  .display-scale-shortcuts kbd { padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--fg); font: inherit; }
   .display-scale-range { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 
   @media (max-width: 760px) {
     .setting-row { grid-template-columns: 1fr; gap: var(--space-3); padding: var(--space-4) 0; }
+    .scale-row { grid-template-columns: 1fr; }
     .time-selects { max-width: 100%; }
     .scale-controls { grid-template-columns: 44px auto 44px 1fr; }
     .scale-reset { grid-column: 1 / -1; justify-self: start; }
