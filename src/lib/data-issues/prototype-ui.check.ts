@@ -22,6 +22,10 @@ test("data issue workflow progressively reveals the next stage", async () => {
   const i18n = await readFile(new URL("../i18n/i18n.ts", import.meta.url), "utf8");
 
   assert.match(source, /class="workflow-card card"/);
+  assert.match(
+    source,
+    /class="workflow-card card"[\s\S]*class="panel-title"[\s\S]*\{#if state\.screen === "list"\}/,
+  );
   assert.match(source, /import \{ slide \} from "svelte\/transition"/);
   assert.match(source, /class="stage-reveal" transition:slide/);
   assert.match(i18n, /excludeInvalidImport: "排除錯誤匯入"/);
