@@ -1409,6 +1409,38 @@ function createPersistentDataIssues(db: LedgerDatabase) {
   `);
 }
 
+function createSourceRowLineage(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS source_row_lineage (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_row_index INTEGER NOT NULL,
+      projection_table TEXT NOT NULL,
+      statement_row_id TEXT NOT NULL,
+      outcome TEXT NOT NULL
+        CONSTRAINT ck_source_row_lineage_outcome
+        CHECK (outcome IN ('inserted','duplicate','upserted')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (
+        source_file_id, import_run_id, source_row_index, projection_table
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_source_row_lineage_statement
+      ON source_row_lineage(projection_table, statement_row_id);
+  `);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`
+      INSERT OR IGNORE INTO source_row_lineage (
+        source_file_id, import_run_id, source_row_index, projection_table,
+        statement_row_id, outcome, created_at
+      )
+      SELECT source_file_id, import_run_id, source_row_index, '${table}',
+        statement_row_id, 'inserted', imported_at
+      FROM ${table};
+    `);
+  }
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1529,6 +1561,11 @@ const migrations: LedgerMigration[] = [
     version: 24,
     name: "persistent_data_issues",
     up: createPersistentDataIssues,
+  },
+  {
+    version: 25,
+    name: "source_row_lineage",
+    up: createSourceRowLineage,
   },
 ];
 

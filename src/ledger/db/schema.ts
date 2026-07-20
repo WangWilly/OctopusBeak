@@ -61,6 +61,25 @@ export const sourceFileImports = sqliteTable("source_file_imports", {
   recordJson: text("record_json").notNull(),
 }, (table) => [primaryKey({ columns: [table.sourceFileId, table.importRunId] })]);
 
+export const sourceRowLineage = sqliteTable("source_row_lineage", {
+  sourceFileId: text("source_file_id").notNull(),
+  importRunId: text("import_run_id").notNull(),
+  sourceRowIndex: integer("source_row_index").notNull(),
+  projectionTable: text("projection_table").notNull(),
+  statementRowId: text("statement_row_id").notNull(),
+  outcome: text("outcome").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [
+    table.sourceFileId,
+    table.importRunId,
+    table.sourceRowIndex,
+    table.projectionTable,
+  ] }),
+  index("idx_source_row_lineage_statement").on(table.projectionTable, table.statementRowId),
+  check("ck_source_row_lineage_outcome", sql`${table.outcome} IN ('inserted','duplicate','upserted')`),
+]);
+
 export const dataIssues = sqliteTable("data_issues", {
   dataIssueId: text("data_issue_id").primaryKey(),
   accountId: text("account_id").notNull(),

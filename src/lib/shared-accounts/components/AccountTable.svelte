@@ -287,10 +287,12 @@
                   <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">
-                  <span class="account-meta">{percent}%</span>
-                  <div class="row-bar" aria-hidden="true">
-                    <span style={`width:${percent}%`}></span>
-                  </div>
+                  {#if account.valueAvailability === "available"}
+                    <span class="account-meta">{percent}%</span>
+                    <div class="row-bar" aria-hidden="true">
+                      <span style={`width:${percent}%`}></span>
+                    </div>
+                  {/if}
                 </td>
               </tr>
             {:else}

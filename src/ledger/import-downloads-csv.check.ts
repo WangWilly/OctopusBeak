@@ -321,6 +321,23 @@ assert.equal(sourceHistoryDb.prepare(`
   WHERE source_file_id = ?
 `).get(sourceFileId)?.count, 2);
 assert.equal(new Set(sourceImportRuns.map((row) => row.import_run_id)).size, 2);
+assert.deepEqual(sourceHistoryDb.prepare(`
+  SELECT import_run_id, projection_table, outcome
+  FROM source_row_lineage
+  WHERE source_file_id = ?
+  ORDER BY created_at, import_run_id
+`).all(sourceFileId).map((row) => ({ ...row })), [
+  {
+    import_run_id: sourceImportRuns[0]?.import_run_id,
+    projection_table: "unsupported_statement_rows",
+    outcome: "inserted",
+  },
+  {
+    import_run_id: sourceImportRuns[1]?.import_run_id,
+    projection_table: "unsupported_statement_rows",
+    outcome: "duplicate",
+  },
+]);
 assert.equal((sourceHistoryDb.prepare(`
   SELECT COUNT(*) AS count FROM unsupported_statement_rows
   WHERE source_file_id = ?
@@ -634,6 +651,19 @@ await importDownloadsCsv({
   downloadsDir: fullCardFixture.fixtureDownloadsDir,
   outputDir: fullCardFixture.fixtureOutputDir,
 });
+const firstFullCardDb = openLedgerDatabase(fullCardFixture.fixtureOutputDir, { readOnly: true });
+const firstFullCardMetadata = firstFullCardDb.prepare(`
+  SELECT source_file_id, import_run_id, imported_at, first_seen_at, last_seen_at
+  FROM credit_card_statement_lines
+  WHERE occurrence_index = 0
+`).get() as {
+  source_file_id: string;
+  import_run_id: string;
+  imported_at: string;
+  first_seen_at: string;
+  last_seen_at: string;
+};
+firstFullCardDb.close();
 await fullCardFixture.writeCapture(
   "second",
   secondCaptureId,
@@ -675,9 +705,16 @@ const latestTransactionTypes = (fullCardDb.prepare(`
   ORDER BY e.statement_type
 `).all(secondCaptureId) as Array<{ statement_type: string }>).map((row) => row.statement_type);
 const lastSeenAt = fullCardDb.prepare(`
-  SELECT last_seen_at FROM credit_card_statement_lines
+  SELECT source_file_id, import_run_id, imported_at, first_seen_at, last_seen_at
+  FROM credit_card_statement_lines
   WHERE occurrence_index = 0
-`).get() as { last_seen_at: string };
+`).get() as {
+  source_file_id: string;
+  import_run_id: string;
+  imported_at: string;
+  first_seen_at: string;
+  last_seen_at: string;
+};
 fullCardDb.close();
 
 assert.deepEqual(entryRows.map((row) => row.occurrence_index), [0, 1]);
@@ -687,7 +724,7 @@ assert.equal(statementLineCountAfterSecondIdenticalCapture, 2);
 assert.equal(captureCount, 2);
 assert.equal(entryCount, 4);
 assert.deepEqual(latestTransactionTypes, ["billed"]);
-assert.equal(lastSeenAt.last_seen_at, "2026-07-13T08:09:10.000Z");
+assert.deepEqual(lastSeenAt, firstFullCardMetadata);
 
 const splitCardFixture = await cardImportFixture();
 const splitCaptureId = "9d000000-0000-4000-8000-000000000005";

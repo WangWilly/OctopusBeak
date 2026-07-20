@@ -3,6 +3,9 @@ import { basename } from "node:path";
 import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
 import { TYPED_STATEMENT_TABLES } from "../../../ledger/financial-dashboard-types.ts";
+import {
+  TYPED_STATEMENT_TABLES as ALL_TYPED_STATEMENT_TABLES,
+} from "../../../ledger/source-csv-parsers.ts";
 import type { AccountGroup, AccountKind, AccountRowDto } from "../../shared-ledger/types.ts";
 import {
   buildAccountOverview,
@@ -11,6 +14,7 @@ import {
 } from "../../shared-ledger/server/accounts.ts";
 import {
   accountIdsForImportScope,
+  accountIdsChangedByVisibility,
   applyLedgerVisibility,
   importScope,
   loadActiveImportScopes,
@@ -111,6 +115,23 @@ function dataIssueError(code: string) {
 
 function stableError(error: unknown, fallback = "LEDGER_WRITE_FAILED") {
   return error instanceof DataIssueServiceError ? error : dataIssueError(fallback);
+}
+
+function openDataIssueDatabase(ledgerDir: string | undefined, fallback = "LEDGER_WRITE_FAILED") {
+  try {
+    return openLedgerDatabase(ledgerDir);
+  } catch (error) {
+    throw stableError(error, fallback);
+  }
+}
+
+function rollbackBestEffort(db: LedgerDatabase, transaction: boolean) {
+  if (!transaction) return;
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // The original stable service error remains authoritative.
+  }
 }
 
 function requiredText(value: unknown, label: string, limit: number) {
@@ -282,6 +303,48 @@ function physicalRowsForSource(db: LedgerDatabase, source: SourceVersionId) {
   );
 }
 
+function retainedDuplicateRows(
+  db: LedgerDatabase,
+  source: SourceVersionId,
+  disabledScopes: ReadonlySet<ImportScope>,
+) {
+  const rows = db.prepare(`SELECT source_row_index, projection_table,
+      statement_row_id, outcome
+    FROM source_row_lineage
+    WHERE source_file_id = ? AND import_run_id = ?
+    ORDER BY source_row_index, projection_table`)
+    .all(source.sourceFileId, source.importRunId) as Array<{
+      source_row_index: number;
+      projection_table: string;
+      statement_row_id: string;
+      outcome: "inserted" | "duplicate" | "upserted";
+    }>;
+  const typedTables = new Set<string>(ALL_TYPED_STATEMENT_TABLES);
+  const bySourceRow = new Map<number, typeof rows>();
+  for (const row of rows) {
+    bySourceRow.set(row.source_row_index, [...(bySourceRow.get(row.source_row_index) ?? []), row]);
+  }
+  let retained = 0;
+  for (const lineage of bySourceRow.values()) {
+    if (lineage.length === 0 || lineage.some((row) => row.outcome !== "duplicate")) continue;
+    const allActive = lineage.every((row) => {
+      if (!typedTables.has(row.projection_table)) return false;
+      const owner = db.prepare(`SELECT source_file_id, import_run_id
+        FROM ${row.projection_table} WHERE statement_row_id = ?`)
+        .get(row.statement_row_id) as {
+          source_file_id: string;
+          import_run_id: string;
+        } | undefined;
+      return Boolean(owner && !disabledScopes.has(importScope({
+        sourceFileId: owner.source_file_id,
+        importRunId: owner.import_run_id,
+      })));
+    });
+    if (allActive) retained += 1;
+  }
+  return retained;
+}
+
 function sourceImport(db: LedgerDatabase, source: SourceVersionId) {
   const row = db.prepare(`SELECT source_file_id, import_run_id, source_relative_path,
       imported_at, row_count
@@ -343,6 +406,7 @@ function candidatesForIssue(
       imported_at, row_count
     FROM source_file_imports
     ORDER BY imported_at DESC, source_file_id, import_run_id`).all() as SourceImportRow[];
+  const activeScopes = loadActiveImportScopes(db);
   return sources.flatMap((source) => {
     const id = { sourceFileId: source.source_file_id, importRunId: source.import_run_id };
     const physicalRows = physicalRowsForSource(db, id);
@@ -354,7 +418,7 @@ function candidatesForIssue(
       importedAt: source.imported_at,
       csvRows: source.row_count,
       insertedRows: physicalRows.length,
-      duplicateRows: Math.max(0, source.row_count - physicalRows.length),
+      duplicateRows: retainedDuplicateRows(db, id, activeScopes),
       affectedAccounts: accounts.size,
     }];
   });
@@ -392,13 +456,12 @@ function affectedAccounts(
   rawData: LedgerQueryData,
   beforeScopes: ReadonlySet<ImportScope>,
   afterScopes: ReadonlySet<ImportScope>,
-  accountIds: ReadonlySet<string>,
 ): ExclusionPreviewDto["affectedAccounts"] {
   const before = new Map(buildAccountOverview(applyLedgerVisibility(rawData, beforeScopes))
     .map((account) => [account.id, account]));
   const after = new Map(buildAccountOverview(applyLedgerVisibility(rawData, afterScopes))
     .map((account) => [account.id, account]));
-  return [...accountIds].sort().map((accountId) => ({
+  return [...accountIdsChangedByVisibility(rawData, beforeScopes, afterScopes)].sort().map((accountId) => ({
     accountId,
     before: accountState(before, accountId),
     after: accountState(after, accountId),
@@ -422,7 +485,6 @@ function previewExclusionWithDb(
     rawData,
     activeScopes,
     new Set([...activeScopes, selectedScope]),
-    accountIds,
   );
   const previewToken = hashBytes(stableStringify({
     dataIssueId,
@@ -436,7 +498,7 @@ function previewExclusionWithDb(
     previewToken,
     csvRows: source.row_count,
     excludedRows: physicalRows.length,
-    duplicateRows: Math.max(0, source.row_count - physicalRows.length),
+    duplicateRows: retainedDuplicateRows(db, selected, activeScopes),
     affectedAccounts: affected,
   };
 }
@@ -493,9 +555,25 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
   const selectedScope = importScope(selected);
   const rawData = loadLedgerData(db);
   const activeScopes = loadActiveImportScopes(db);
-  const accountIds = accountIdsForImportScope(rawData, selectedScope);
   const afterScopes = new Set([...activeScopes].filter((scope) => scope !== selectedScope));
-  const affected = affectedAccounts(rawData, activeScopes, afterScopes, accountIds);
+  const affected = affectedAccounts(rawData, activeScopes, afterScopes);
+  const exclusionEvent = db.prepare(`SELECT details_json FROM data_issue_events
+    WHERE data_issue_id = ? AND event_type = 'exclusion' AND outcome = 'succeeded'
+    ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(dataIssueId) as {
+      details_json: string;
+    } | undefined;
+  let accountIds = new Set(affected.map((account) => account.accountId));
+  if (exclusionEvent) {
+    try {
+      const details = JSON.parse(exclusionEvent.details_json) as Record<string, unknown>;
+      if (Array.isArray(details.affectedAccountIds)) {
+        accountIds = new Set(details.affectedAccountIds
+          .filter((value): value is string => typeof value === "string"));
+      }
+    } catch {
+      // Legacy event details fall back to the fresh visible diff above.
+    }
+  }
   const blocked = new Map<string, string>();
   const sources = db.prepare(`SELECT source_file_id, import_run_id, imported_at
     FROM source_file_imports ORDER BY imported_at`).all() as Array<{
@@ -544,7 +622,7 @@ function closeAfter<T>(db: LedgerDatabase, callback: () => T) {
 
 export function listDataIssues(ledgerDir?: string): DataIssueListItemDto[] {
   try {
-    const db = openLedgerDatabase(ledgerDir);
+    const db = openDataIssueDatabase(ledgerDir, "LEDGER_READ_FAILED");
     return closeAfter(db, () => (db.prepare(`SELECT data_issue_id, account_label, status,
         reported_value, currency, created_at, updated_at
       FROM data_issues ORDER BY updated_at DESC, data_issue_id`).all() as Array<{
@@ -576,10 +654,12 @@ export function createDataIssue(
   const validated = validatedCreateInput(input);
   const id = randomUUID();
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
-    db.exec("BEGIN IMMEDIATE");
+    let transaction = false;
     try {
+      db.exec("BEGIN IMMEDIATE");
+      transaction = true;
       db.prepare(`INSERT INTO data_issues (
         data_issue_id, account_id, account_label, account_context_json, field_key,
         reported_value, currency, data_date, note, status, created_at, updated_at
@@ -602,9 +682,10 @@ export function createDataIssue(
       });
       const detail = loadDataIssueWithDb(db, id);
       db.exec("COMMIT");
+      transaction = false;
       return detail;
     } catch (error) {
-      db.exec("ROLLBACK");
+      rollbackBestEffort(db, transaction);
       throw stableError(error);
     }
   });
@@ -613,7 +694,7 @@ export function createDataIssue(
 export function loadDataIssue(dataIssueId: string, ledgerDir?: string): DataIssueDetailDto {
   try {
     const id = requiredText(dataIssueId, "dataIssueId", 300);
-    const db = openLedgerDatabase(ledgerDir);
+    const db = openDataIssueDatabase(ledgerDir, "LEDGER_READ_FAILED");
     return closeAfter(db, () => loadDataIssueWithDb(db, id));
   } catch (error) {
     throw stableError(error, "LEDGER_READ_FAILED");
@@ -627,14 +708,17 @@ export function startDataIssueDiagnosis(
 ): DataIssueDetailDto {
   const id = requiredText(dataIssueId, "dataIssueId", 300);
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
-    db.exec("BEGIN IMMEDIATE");
+    let transaction = false;
     try {
+      db.exec("BEGIN IMMEDIATE");
+      transaction = true;
       const row = issueRow(db, id);
       if (row.status === "investigating") {
         const detail = loadDataIssueWithDb(db, id);
         db.exec("COMMIT");
+        transaction = false;
         return detail;
       }
       if (row.status !== "pending") throw dataIssueError("INVALID_CASE_STATUS");
@@ -645,9 +729,10 @@ export function startDataIssueDiagnosis(
       });
       const detail = loadDataIssueWithDb(db, id);
       db.exec("COMMIT");
+      transaction = false;
       return detail;
     } catch (error) {
-      db.exec("ROLLBACK");
+      rollbackBestEffort(db, transaction);
       const stable = stableError(error);
       recordFailureBestEffort(db, id, "diagnosis", stable, now);
       throw stable;
@@ -661,19 +746,25 @@ export function previewDataIssueExclusion(
   clock: Clock = () => new Date(),
 ): ExclusionPreviewDto {
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
+    let transaction = false;
     try {
       const dataIssueId = requiredText(input?.dataIssueId, "dataIssueId", 300);
       const selected = sourceVersion(input?.sourceVersion);
+      db.exec("BEGIN");
+      transaction = true;
       const preview = previewExclusionWithDb(db, dataIssueId, selected);
       appendEvent(db, {
         id: randomUUID(), dataIssueId, type: "exclusion-preview", stage: "preview",
         outcome: "succeeded", summary: "Exclusion preview created",
         details: { sourceVersion: selected, excludedRows: preview.excludedRows }, createdAt: now,
       });
+      db.exec("COMMIT");
+      transaction = false;
       return preview;
     } catch (error) {
+      rollbackBestEffort(db, transaction);
       const stable = stableError(error);
       recordFailureBestEffort(db, input?.dataIssueId, "exclusion-preview", stable, now);
       throw stable;
@@ -687,7 +778,7 @@ export function confirmDataIssueExclusion(
   clock: Clock = () => new Date(),
 ): DataIssueDetailDto {
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
     let transaction = false;
     try {
@@ -717,14 +808,20 @@ export function confirmDataIssueExclusion(
       appendEvent(db, {
         id: randomUUID(), dataIssueId, type: "exclusion", stage: "exclusion",
         outcome: "succeeded", summary: "Source version excluded",
-        details: { sourceVersion: selected, reason, excludedRows: fresh.excludedRows }, createdAt: now,
+        details: {
+          sourceVersion: selected,
+          reason,
+          excludedRows: fresh.excludedRows,
+          affectedAccountIds: fresh.affectedAccounts.map((account) => account.accountId),
+        },
+        createdAt: now,
       });
       const detail = loadDataIssueWithDb(db, dataIssueId);
       db.exec("COMMIT");
       transaction = false;
       return detail;
     } catch (error) {
-      if (transaction) db.exec("ROLLBACK");
+      rollbackBestEffort(db, transaction);
       const stable = stableError(error);
       recordFailureBestEffort(db, input?.dataIssueId, "exclusion", stable, now);
       throw stable;
@@ -738,10 +835,13 @@ export function previewDataIssueRestore(
   clock: Clock = () => new Date(),
 ): RestorePreviewDto {
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
+    let transaction = false;
     try {
       const id = requiredText(dataIssueId, "dataIssueId", 300);
+      db.exec("BEGIN");
+      transaction = true;
       const preview = previewRestoreWithDb(db, id);
       appendEvent(db, {
         id: randomUUID(), dataIssueId: id, type: "restore-preview", stage: "restore-preview",
@@ -749,6 +849,8 @@ export function previewDataIssueRestore(
         summary: preview.allowed ? "Restore preview created" : "RESTORE_NEWER_DATA",
         details: { blockedBy: preview.blockedBy }, createdAt: now,
       });
+      db.exec("COMMIT");
+      transaction = false;
       return {
         allowed: preview.allowed,
         previewToken: preview.previewToken,
@@ -756,6 +858,7 @@ export function previewDataIssueRestore(
         affectedAccounts: preview.affectedAccounts,
       };
     } catch (error) {
+      rollbackBestEffort(db, transaction);
       const stable = stableError(error);
       recordFailureBestEffort(db, dataIssueId, "restore-preview", stable, now);
       throw stable;
@@ -769,7 +872,7 @@ export function confirmDataIssueRestore(
   clock: Clock = () => new Date(),
 ): DataIssueDetailDto {
   const now = nowIso(clock);
-  const db = openLedgerDatabase(ledgerDir);
+  const db = openDataIssueDatabase(ledgerDir);
   return closeAfter(db, () => {
     let transaction = false;
     try {
@@ -813,7 +916,7 @@ export function confirmDataIssueRestore(
       transaction = false;
       return detail;
     } catch (error) {
-      if (transaction) db.exec("ROLLBACK");
+      rollbackBestEffort(db, transaction);
       const stable = stableError(error);
       recordFailureBestEffort(db, input?.dataIssueId, "restore", stable, now);
       throw stable;

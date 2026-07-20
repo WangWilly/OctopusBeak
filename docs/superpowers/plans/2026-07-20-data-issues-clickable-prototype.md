@@ -4,7 +4,7 @@
 
 **Goal:** Add a safe, fully clickable in-app prototype for reporting an incorrect account value, tracing it to an import, previewing reversible quarantine, reviewing the result and audit record, and restoring the import.
 
-**Architecture:** Keep the prototype entirely in renderer memory and clearly label it as non-destructive. A pure TypeScript state machine owns the seeded Yuanta-loan scenario and all transitions; Svelte components render the report dialog and the data-issue workflow. Existing `DashboardShell`, account actions, cards, tables, buttons, modal CSS, and hash routing are reused, with no desktop API or ledger writes.
+**Architecture:** Keep the prototype entirely in renderer memory and clearly label it as non-destructive. A pure TypeScript state machine owns a fictional Example Bank loan scenario and all transitions; Svelte components render the report dialog and the data-issue workflow. Existing `DashboardShell`, account actions, cards, tables, buttons, modal CSS, and hash routing are reused, with no desktop API or ledger writes.
 
 **Tech Stack:** Svelte 5 legacy component syntax, TypeScript 5.9, Svelte stores, Node built-in test runner, existing OctopusBeak CSS and i18n.
 
@@ -79,7 +79,7 @@ test("data issue prototype completes quarantine, audit, and restore safely", () 
   state = transitionDataIssuePrototype(state, { type: "complete-quarantine" });
   assert.equal(state.screen, "success");
   assert.equal(state.issue.status, "resolved");
-  assert.equal(state.currentValue, 354_107);
+  assert.equal(state.currentValue, 63_900);
 
   state = transitionDataIssuePrototype(state, { type: "show-audit" });
   assert.equal(state.screen, "audit");
@@ -87,7 +87,7 @@ test("data issue prototype completes quarantine, audit, and restore safely", () 
   state = transitionDataIssuePrototype(state, { type: "confirm-restore" });
   assert.equal(state.screen, "restored");
   assert.equal(state.issue.status, "restored");
-  assert.equal(state.currentValue, 520_524);
+  assert.equal(state.currentValue, 81_250);
 });
 
 test("blocked and failed scenarios never change the displayed value", () => {
@@ -96,11 +96,11 @@ test("blocked and failed scenarios never change the displayed value", () => {
   const blocked = transitionDataIssuePrototype(selected, { type: "preview", scenario: "blocked" });
   assert.equal(blocked.screen, "blocked");
   assert.equal(canConfirmQuarantine(blocked), false);
-  assert.equal(blocked.currentValue, 520_524);
+  assert.equal(blocked.currentValue, 81_250);
 
   const failed = transitionDataIssuePrototype(selected, { type: "preview", scenario: "failure" });
   assert.equal(failed.screen, "failure");
-  assert.equal(failed.currentValue, 520_524);
+  assert.equal(failed.currentValue, 81_250);
   assert.equal(failed.issue.status, "investigating");
 });
 ```
@@ -193,12 +193,12 @@ export type PrototypeEvent =
   | { type: "back-to-list" };
 
 const safePreview: PrototypePreview = {
-  beforeValue: 520_524,
-  afterValue: 354_107,
-  activeRowsBefore: 78,
-  activeRowsAfter: 72,
-  excludedRows: 6,
-  retainedRows: 66,
+  beforeValue: 81_250,
+  afterValue: 63_900,
+  activeRowsBefore: 14,
+  activeRowsAfter: 12,
+  excludedRows: 2,
+  retainedRows: 10,
   unresolvedRows: 0,
 };
 
@@ -208,23 +208,23 @@ export function seedDataIssuePrototype(): DataIssuePrototypeState {
     issue: {
       id: "issue-demo-1",
       status: "open",
-      accountId: "loan-demo-1100",
-      accountLabel: "萬華 - 信貸中放 - **********1100",
-      institution: "元大銀行",
+      accountId: "loan-example-0420",
+      accountLabel: "Example Bank loan ****0420",
+      institution: "Example Bank",
       fieldKey: "balance",
-      displayedValue: 520_524,
+      displayedValue: 81_250,
       currency: "TWD",
-      dataDate: "2026-07-13",
-      note: "實際剩餘本金應為 354,107",
-      createdAt: "2026-07-20 11:30",
+      dataDate: "2025-01-20",
+      note: "Synthetic expected principal is 63,900",
+      createdAt: "2025-01-21 11:30",
     },
     imports: [{
       id: "reported-import",
       fileName: "loan-statements-<reported-import>.csv",
-      importedAt: "2026-07-20 02:46",
-      csvRows: 72,
-      insertedRows: 6,
-      duplicateRows: 66,
+      importedAt: "2025-01-21 02:46",
+      csvRows: 12,
+      insertedRows: 2,
+      duplicateRows: 10,
       affectedAccounts: 2,
     }],
     selectedSourceId: null,
@@ -232,7 +232,7 @@ export function seedDataIssuePrototype(): DataIssuePrototypeState {
     preview: null,
     reason: "",
     acknowledged: false,
-    currentValue: 520_524,
+    currentValue: 81_250,
     audit: [],
   };
 }
@@ -289,7 +289,7 @@ export function transitionDataIssuePrototype(
       ...state,
       screen: "restored",
       issue: { ...state.issue, status: "restored" },
-      currentValue: 520_524,
+      currentValue: 81_250,
       audit: [...state.audit, { action: "restored", reason: "使用者還原 prototype 匯入", at: "剛剛" }],
     };
   }
@@ -648,8 +648,8 @@ Render `state.screen === "diagnosis"` with:
 <section class="card">
   <div class="panel-title"><h2>{$t.dataIssues.valueTimeline}</h2></div>
   <ol class="timeline">
-    <li><time>2026/07/07</time><strong>354,107</strong></li>
-    <li class="reported"><time>2026/07/13</time><strong>520,524</strong><span>{$t.dataIssues.reportedPoint}</span></li>
+    <li><time>2025/01/18</time><strong>63,900</strong></li>
+    <li class="reported"><time>2025/01/20</time><strong>81,250</strong><span>{$t.dataIssues.reportedPoint}</span></li>
   </ol>
 </section>
 
@@ -667,8 +667,8 @@ Render `state.screen === "diagnosis"` with:
       <table class="table">
         <thead><tr><th>交易日</th><th>繳款項目</th><th class="right">交易金額</th><th class="right">交易後餘額</th></tr></thead>
         <tbody>
-          <tr><td>2026/07/13</td><td>本金</td><td class="right">11,874</td><td class="right">520,524</td></tr>
-          <tr><td>2026/07/13</td><td>利息</td><td class="right">1,072</td><td class="right">520,524</td></tr>
+          <tr><td>2025/01/20</td><td>Principal</td><td class="right">4,275</td><td class="right">81,250</td></tr>
+          <tr><td>2025/01/20</td><td>Interest</td><td class="right">390</td><td class="right">81,250</td></tr>
         </tbody>
       </table>
     </div>
@@ -712,7 +712,7 @@ Audit renders every `state.audit` entry in a table with action, reason, and time
 
 Restore preview reverses the comparison and requires a separate `confirm-restore` click.
 
-Restored shows `520,524`, status `restored`, and an audit link. All states retain the prototype banner.
+Restored shows `81,250`, status `restored`, and an audit link. All states retain the prototype banner.
 
 Use these exact navigation handlers:
 
@@ -967,7 +967,7 @@ Expected:
 - No real account value changes after returning to Liabilities.
 - Focus moves into the report dialog and returns after Escape.
 - Confirm remains disabled until reason and acknowledgement are present.
-- Success shows 354,107 and restored shows 520,524.
+- Success shows 63,900 and restored shows 81,250.
 
 - [ ] **Step 4: Verify blocked and failure flows**
 
@@ -977,7 +977,7 @@ Expected:
 
 - Blocked flow exposes no override button.
 - Failure flow states that no ledger data changed.
-- Both flows preserve 520,524 and allow returning to diagnosis.
+- Both flows preserve 81,250 and allow returning to diagnosis.
 
 - [ ] **Step 5: Verify narrow layout and keyboard flow**
 
@@ -994,7 +994,7 @@ npm run build
 git diff --check
 ```
 
-Expected: all commands pass. Confirm `git status --short` lists only intentional prototype changes plus the pre-existing Yuanta workflow changes.
+Expected: all commands pass. Confirm `git status --short` lists only intentional prototype changes plus pre-existing workflow changes.
 
 - [ ] **Step 7: Commit verification fixes, if any**
 

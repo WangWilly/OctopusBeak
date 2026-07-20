@@ -65,7 +65,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
     const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
     const accounts = appendUnavailableAccounts(
       buildAccountOverview(visibleData),
-      loadUnavailableAccountIssues(sqlite),
+      loadUnavailableAccountIssues(sqlite, data),
     );
     const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;

@@ -49,7 +49,7 @@ export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<L
     const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
     const accounts = appendUnavailableAccounts(
       buildAccountOverview(visibleData),
-      loadUnavailableAccountIssues(sqlite),
+      loadUnavailableAccountIssues(sqlite, data),
     ).filter((account) => account.group === "liability");
 
     return {

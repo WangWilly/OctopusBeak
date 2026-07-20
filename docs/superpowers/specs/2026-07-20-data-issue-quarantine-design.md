@@ -7,7 +7,7 @@ Status: Approved for prototype planning
 
 Let a user report an incorrect value from an account screen, trace that value to its source CSV imports, preview the exact effect of disabling one import, disable it without losing provenance, and restore it later.
 
-The flow must work across all ledger CSV products that use the shared import provenance fields. It must not be specific to Yuanta loan statements.
+The flow must work across all ledger CSV products that use the shared import provenance fields. It must not be specific to one institution or loan product.
 
 ## Confirmed scope
 
@@ -217,17 +217,17 @@ Smallest required checks:
 
 ## Prototype acceptance scenario
 
-The seeded scenario reproduces the reported loan case:
+The seeded scenario uses a fictional loan case with synthetic values:
 
 ```text
-Account: 萬華 - 信貸中放 - **********1100
-Reported value: 520,524
+Account: Example Bank loan ****0420
+Reported value: 81,250
 Selected source: loan-statements-<reported-import>.csv
-CSV rows: 72
-Rows excluded: 6
-Rows retained by other sources: 66
+CSV rows: 12
+Rows excluded: 2
+Rows retained by other sources: 10
 Unresolved rows: 0
-Resulting value: 354,107
+Resulting value: 63,900
 ```
 
 The user can complete report, diagnosis, preview, quarantine, verification, audit inspection, and restoration from the prototype UI.
