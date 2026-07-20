@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TriangleAlert } from "@lucide/svelte";
   import { tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
@@ -204,8 +205,14 @@
         <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
         <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
         {#if onReportDataIssue}
-          <button class="button secondary" type="button" on:click={() => onReportDataIssue?.(selectedAccount)}>
-            {$t.dataIssues.reportProblem}
+          <button
+            class="button secondary report-issue-button"
+            type="button"
+            aria-label={$t.dataIssues.reportProblem}
+            title={$t.dataIssues.reportProblem}
+            on:click={() => onReportDataIssue?.(selectedAccount)}
+          >
+            <TriangleAlert size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         {/if}
         {#if mode === "asset" && selectedPositions.length > 0}
@@ -294,6 +301,12 @@
 <AccountHistoryModal bind:open={historyOpen} account={selectedAccount} rows={selectedDailyHistory} />
 
 <style>
+  .report-issue-button {
+    width: 38px;
+    min-width: 38px;
+    padding-inline: 0;
+  }
+
   .sort-button {
     width: 100%;
     min-height: 52px;
