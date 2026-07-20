@@ -147,6 +147,9 @@ const transactionUtcLedgerDir = mkdtempSync(
 const spendingOverrideLedgerDir = mkdtempSync(
   join(tmpdir(), "spending-overrides-"),
 );
+const persistentDataIssuesLedgerDir = mkdtempSync(
+  join(tmpdir(), "persistent-data-issues-"),
+);
 
 function insertLegacyCardCapture(
   db: LedgerDatabase,
@@ -268,7 +271,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -1043,6 +1046,74 @@ try {
     ) VALUES ('bad-reason', 'included', 'pending', 'unknown', '2026-07-16T00:00:00.000Z')
   `).run(), /CHECK constraint failed/);
   spendingOverrideDb.close();
+
+  const persistentDataIssuesDb = openLedgerDatabase(persistentDataIssuesLedgerDir);
+  persistentDataIssuesDb.exec(`
+    DELETE FROM schema_migrations WHERE version >= 24;
+    DROP TABLE IF EXISTS data_issue_events;
+    DROP TABLE IF EXISTS disabled_import_sources;
+    DROP TABLE IF EXISTS data_issues;
+    DROP TABLE IF EXISTS source_file_imports;
+  `);
+  persistentDataIssuesDb.prepare(`
+    INSERT INTO source_files (
+      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, imported_at, bank, product, source_sheet_name,
+      csv_layout_json, headers_json, record_keys_json, related_raw_files_json,
+      related_raw_file_metadata_json, row_count, status, record_json
+    ) VALUES (
+      'source-a', 'run-a', 'source-a.csv', 'hash-a', 1,
+      '2026-07-20T00:00:00.000Z', 'bank-a', 'product-a', NULL,
+      '{}', '[]', '[]', '[]', '[]', 1, 'imported', '{}'
+    )
+  `).run();
+  migrateLedgerDb(persistentDataIssuesDb);
+  const expectedPersistentDataIssueTables = new Set([
+    "source_file_imports",
+    "data_issues",
+    "disabled_import_sources",
+    "data_issue_events",
+  ]);
+  const persistentDataIssueTables = persistentDataIssuesDb.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  ).all().map((row) => String((row as { name: string }).name));
+  for (const table of expectedPersistentDataIssueTables) {
+    assert.ok(persistentDataIssueTables.includes(table), table);
+  }
+  assert.deepEqual(persistentDataIssuesDb.prepare(`
+    SELECT source_file_id, import_run_id, source_file_hash
+    FROM source_file_imports
+  `).all().map((row) => ({ ...row })), [{
+    source_file_id: "source-a",
+    import_run_id: "run-a",
+    source_file_hash: "hash-a",
+  }]);
+  assert.throws(() => persistentDataIssuesDb.prepare(`
+    INSERT INTO data_issues (
+      data_issue_id, account_id, account_label, account_context_json, field_key,
+      reported_value, currency, note, status, created_at, updated_at
+    ) VALUES ('issue-a', 'account-a', 'Account A', '{}', 'balance', 1, 'TWD',
+      'note', 'invalid', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
+  assert.throws(() => persistentDataIssuesDb.prepare(`
+    INSERT INTO disabled_import_sources (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      reason, state, disabled_at, preview_token
+    ) VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'reason', 'invalid',
+      '2026-07-20T00:00:00.000Z', 'preview-a')
+  `).run(), /CHECK constraint failed/);
+  assert.throws(() => persistentDataIssuesDb.prepare(`
+    INSERT INTO data_issue_events (
+      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
+      details_json, created_at
+    ) VALUES ('event-a', 'issue-a', 'event', 'stage', 'invalid', 'summary', '{}',
+      '2026-07-20T00:00:00.000Z')
+  `).run(), /CHECK constraint failed/);
+  migrateLedgerDb(persistentDataIssuesDb);
+  assert.equal((persistentDataIssuesDb.prepare(
+    "SELECT COUNT(*) AS count FROM source_file_imports",
+  ).get() as { count: number }).count, 1);
+  persistentDataIssuesDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
@@ -1054,6 +1125,7 @@ try {
     invalidCardBackfillLedgerDir,
     transactionUtcLedgerDir,
     spendingOverrideLedgerDir,
+    persistentDataIssuesLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
