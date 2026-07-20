@@ -276,7 +276,10 @@
                 <td class="right">
                   <strong class="money">
                     {#if account.valueAvailability === "unavailable"}
-                      {$t.accounts.unavailable}
+                      <span>{$t.accounts.noAvailableData}</span>
+                      {#if account.dataIssueId}
+                        <a href={`#/data-issues/${account.dataIssueId}`}>{$t.dataIssues.viewIssue}</a>
+                      {/if}
                     {:else}
                       {formatAmountLines(account.amountLines)}
                     {/if}
