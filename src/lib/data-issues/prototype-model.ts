@@ -184,12 +184,13 @@ export function transitionDataIssuePrototype(
   }
   if (event.type === "preview") {
     if (!state.selectedSourceId) return state;
+    const preview = { ...safePreview, beforeValue: state.currentValue };
     if (event.scenario === "blocked") {
       return {
         ...state,
         scenario: event.scenario,
         screen: "blocked",
-        preview: { ...safePreview, unresolvedRows: 1 },
+        preview: { ...preview, unresolvedRows: 1 },
       };
     }
     if (event.scenario === "failure") {
@@ -204,7 +205,7 @@ export function transitionDataIssuePrototype(
       ...state,
       scenario: event.scenario,
       screen: "preview",
-      preview: safePreview,
+      preview,
     };
   }
   if (event.type === "set-reason") return { ...state, reason: event.reason };

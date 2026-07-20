@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   canConfirmQuarantine,
   reportContextForAccount,
+  reportDataIssue,
   seedDataIssuePrototype,
   transitionDataIssuePrototype,
 } from "./prototype-model.ts";
@@ -33,6 +34,23 @@ test("account report preserves the value visible when the issue is created", () 
     dataDate: "2026-07-13",
     note: "實際應為 354,107",
   });
+
+  const reported = reportDataIssue(
+    seedDataIssuePrototype(),
+    {
+      ...reportContextForAccount(account, "實際應為 354,107"),
+      displayedValue: 400_000,
+    },
+  );
+  const selected = transitionDataIssuePrototype(reported, {
+    type: "select-source",
+    sourceId: "reported-import",
+  });
+  const preview = transitionDataIssuePrototype(selected, {
+    type: "preview",
+    scenario: "safe",
+  });
+  assert.equal(preview.preview?.beforeValue, 400_000);
 });
 
 test("data issue prototype completes quarantine, audit, and restore safely", () => {
