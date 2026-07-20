@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { AssetsPageDto } from "$lib/assets/types.ts";
+  import ReportDataIssueModal from "$lib/data-issues/ReportDataIssueModal.svelte";
+  import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import {
@@ -19,10 +21,13 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
   export let assets: AssetsPageDto;
+  export let focusAccountId: string | null = null;
 
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let reportOpen = false;
+  let reportAccount: AccountRowDto | null = null;
 
   $: assetBreakdown = [
     { kind: "bank" as const, label: $t.accounts.bank },
@@ -121,6 +126,16 @@
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
   }
+
+  function openReport(account: AccountRowDto) {
+    reportAccount = account;
+    reportOpen = true;
+  }
+
+  async function createReport(input: DataIssueCreateInput) {
+    const issue = await window.octopusBeak.dataIssues.create(input);
+    location.hash = `/data-issues/${issue.dataIssueId}`;
+  }
 </script>
 
 <DashboardShell
@@ -171,6 +186,10 @@
       positionsByAccount={assets.positionsByAccount}
       transactionsByAccount={assets.transactionsByAccount}
       dailyHistoryByAccount={assets.dailyHistoryByAccount}
+      focusAccountId={focusAccountId}
+      onReportDataIssue={openReport}
     />
   </div>
 </DashboardShell>
+
+<ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />

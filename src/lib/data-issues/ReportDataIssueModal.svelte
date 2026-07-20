@@ -48,7 +48,7 @@
   }
 </script>
 
-{#if account}
+{#if account && open}
   <dialog
     bind:this={dialog}
     class="modal-panel report-modal"
