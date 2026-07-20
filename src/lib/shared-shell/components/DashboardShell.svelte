@@ -17,7 +17,7 @@
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
-  export let active: "overview" | "assets" | "liabilities" | "spending" | "automation" | "settings" = "overview";
+  export let active: "overview" | "assets" | "liabilities" | "spending" | "automation" | "data-issues" | "settings" = "overview";
   export let eyebrow = "Overview";
   export let title = "Portfolio";
   export let sideLabel = "Net position";
