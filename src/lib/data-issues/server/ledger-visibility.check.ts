@@ -10,6 +10,7 @@ import {
   accountIdsForImportScope,
   appendUnavailableAccounts,
   applyLedgerVisibility,
+  importScope,
   loadActiveImportScopes,
   loadUnavailableAccountIssues,
 } from "./ledger-visibility.ts";
@@ -125,6 +126,24 @@ function loan(statementRowId: string, sourceFileId: string, importRunId: string)
   };
 }
 
+function sourceFile(sourceFileId: string, importRunId: string) {
+  return {
+    sourceFileId,
+    importRunId,
+    sourceFile: null,
+    sourceRelativePath: `${sourceFileId}-${importRunId}.csv`,
+    sourceFileHash: `${sourceFileId}-${importRunId}-hash`,
+    sourceFileBytes: 1,
+    sourceFileModifiedAt: null,
+    importedAt: "2026-07-20T00:00:00.000Z",
+    bank: "example-bank",
+    product: "loan-statements",
+    rowCount: 1,
+    status: "imported",
+    recordJson: "{}",
+  };
+}
+
 const oldBilled = cardRow("old-billed", "source-old-billed", "run-old", "billed");
 const oldUnbilled = cardRow("old-unbilled", "source-old-unbilled", "run-old", "unbilled");
 const excludedCardRow = cardRow("excluded-billed", "source-a", "run-a", "billed");
@@ -134,9 +153,16 @@ const excludedCapture = capture("capture-excluded");
 
 const data: LedgerQueryData = {
   ...emptyLedgerQueryData(),
+  sourceFiles: [
+    sourceFile("source-a", "run-a"),
+    sourceFile("source-a", "run-b"),
+    sourceFile("source-b", "run-a"),
+  ],
   loanTransactions: [
     loan("loan-excluded", "source-a", "run-a"),
     loan("loan-active", "source-active", "run-active"),
+    loan("loan-same-source", "source-a", "run-b"),
+    loan("loan-same-run", "source-b", "run-a"),
   ],
   creditCardStatementLines: [oldBilled, oldUnbilled, excludedCardRow, activeCardRow],
   creditCardCaptureEntries: [
@@ -154,7 +180,12 @@ const data: LedgerQueryData = {
 };
 const filtered = applyLedgerVisibility(data, new Set(["source-a|run-a"]));
 
-assert.deepEqual(filtered.loanTransactions.map((row) => row.statementRowId), ["loan-active"]);
+assert.deepEqual(filtered.sourceFiles.map(importScope), ["source-a|run-b", "source-b|run-a"]);
+assert.deepEqual(filtered.loanTransactions.map((row) => row.statementRowId), [
+  "loan-active",
+  "loan-same-source",
+  "loan-same-run",
+]);
 assert.deepEqual(
   latestVerifiedCreditCardSnapshots(filtered).map((row) => row.captureId),
   ["capture-old"],
@@ -165,9 +196,21 @@ const expectedExcludedAccountId = buildAccountOverview({
   loanTransactions: [data.loanTransactions[0]],
 })[0]?.id;
 assert.ok(expectedExcludedAccountId);
-assert.deepEqual(
-  accountIdsForImportScope(data, "source-a|run-a"),
-  new Set([expectedExcludedAccountId]),
+assert.equal(
+  accountIdsForImportScope(data, "source-a|run-a").has(expectedExcludedAccountId),
+  true,
+);
+
+const expectedCardAccountId = buildAccountOverview(data)
+  .find((account) => account.kind === "credit-card")?.id;
+assert.ok(expectedCardAccountId);
+assert.equal(
+  accountIdsForImportScope(data, "source-old-billed|run-old").has(expectedCardAccountId),
+  true,
+);
+assert.equal(
+  accountIdsForImportScope(data, "source-old-unbilled|run-old").has(expectedCardAccountId),
+  true,
 );
 
 const db = new DatabaseSync(":memory:");

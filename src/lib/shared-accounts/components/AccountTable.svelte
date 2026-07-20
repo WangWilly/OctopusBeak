@@ -274,7 +274,13 @@
                 <td>{account.institution}</td>
                 <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
                 <td class="right">
-                  <strong class="money">{formatAmountLines(account.amountLines)}</strong><br />
+                  <strong class="money">
+                    {#if account.valueAvailability === "unavailable"}
+                      {$t.accounts.unavailable}
+                    {:else}
+                      {formatAmountLines(account.amountLines)}
+                    {/if}
+                  </strong><br />
                   <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">

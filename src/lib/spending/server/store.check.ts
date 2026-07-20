@@ -24,6 +24,8 @@ function insertInvoice(
     status: string;
     amount: number;
     issuedAt?: number | null;
+    sourceFileId?: string;
+    importRunId?: string;
   },
 ) {
   db.prepare(`
@@ -32,12 +34,13 @@ function insertInvoice(
       source_row_index, source_hash, content_hash, bank, product,
       raw_payload_json, imported_at, created_at, invoice_key,
       issued_at, invoice_id, amount, status, rebated, seller_name
-    ) VALUES (?, ?, 'run', 'invoices.csv', 1, ?, ?, 'einvoice',
+    ) VALUES (?, ?, ?, 'invoices.csv', 1, ?, ?, 'einvoice',
       'personal-invoices', '{}', '2026-02-01T00:00:00.000Z',
       '2026-02-01T00:00:00.000Z', ?, ?, ?, ?, ?, 0, ?)
   `).run(
     `row-${input.invoiceKey}`,
-    `source-${input.invoiceKey}`,
+    input.sourceFileId ?? `source-${input.invoiceKey}`,
+    input.importRunId ?? "run",
     `source-hash-${input.invoiceKey}`,
     `content-hash-${input.invoiceKey}`,
     input.invoiceKey,
@@ -97,6 +100,8 @@ function insertAccountTransaction(
     note?: string;
     withdrawalAmount?: number;
     depositAmount?: number;
+    sourceFileId?: string;
+    importRunId?: string;
   },
 ) {
   db.prepare(`
@@ -106,12 +111,13 @@ function insertAccountTransaction(
       raw_payload_json, imported_at, created_at, account_number, currency,
       transaction_date, transaction_time, description, note,
       withdrawal_amount, deposit_amount
-    ) VALUES (?, ?, 'run', 'account.csv', 1, ?, ?, 'test-bank',
+    ) VALUES (?, ?, ?, 'account.csv', 1, ?, ?, 'test-bank',
       'account-transactions', '{}', '2026-02-01T00:00:00.000Z',
       '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?, ?, ?)
   `).run(
     input.statementRowId,
-    `source-${input.statementRowId}`,
+    input.sourceFileId ?? `source-${input.statementRowId}`,
+    input.importRunId ?? "run",
     `source-hash-${input.statementRowId}`,
     `content-hash-${input.statementRowId}`,
     input.accountNumber,
@@ -124,20 +130,27 @@ function insertAccountTransaction(
   );
 }
 
-function insertCardStatementLine(db: LedgerDatabase, statementRowId: string, amount: number) {
+function insertCardStatementLine(
+  db: LedgerDatabase,
+  statementRowId: string,
+  amount: number,
+  sourceFileId = `source-${statementRowId}`,
+  importRunId = "run",
+) {
   db.prepare(`
     INSERT INTO credit_card_statement_lines (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
       source_row_index, source_hash, content_hash, bank, product,
       raw_payload_json, imported_at, created_at, statement_type,
       consume_date, description, twd_amount
-    ) VALUES (?, ?, 'run', 'card.csv', 1, ?, ?, 'test-bank',
+    ) VALUES (?, ?, ?, 'card.csv', 1, ?, ?, 'test-bank',
       'credit-card-statements', '{}', '2026-02-01T00:00:00.000Z',
       '2026-02-01T00:00:00.000Z', 'billed', '2026-02-01',
       '信用卡繳款', ?)
   `).run(
     statementRowId,
-    `source-${statementRowId}`,
+    sourceFileId,
+    importRunId,
     `source-hash-${statementRowId}`,
     `content-hash-${statementRowId}`,
     amount,
@@ -460,6 +473,68 @@ try {
   );
 
   const disabledDb = openLedgerDatabase(ledgerDir);
+  insertInvoice(disabledDb, {
+    invoiceKey: "cross-invoice-same-source",
+    invoiceId: "KL12345678",
+    status: "confirmed",
+    amount: 11,
+    sourceFileId: "source-confirmed-invoice",
+    importRunId: "run-other",
+  });
+  insertInvoice(disabledDb, {
+    invoiceKey: "cross-invoice-same-run",
+    invoiceId: "MN12345678",
+    status: "confirmed",
+    amount: 12,
+    sourceFileId: "source-other-invoice",
+    importRunId: "run",
+  });
+  insertAccountTransaction(disabledDb, {
+    statementRowId: "cross-account-same-source",
+    accountNumber: "333",
+    date: "2026-02-01",
+    description: "Cross-pair purchase",
+    withdrawalAmount: 21,
+    sourceFileId: "source-mirrored-transfer",
+    importRunId: "run-other",
+  });
+  insertAccountTransaction(disabledDb, {
+    statementRowId: "cross-account-same-run",
+    accountNumber: "333",
+    date: "2026-02-01",
+    description: "Cross-pair purchase",
+    withdrawalAmount: 22,
+    sourceFileId: "source-other-account",
+    importRunId: "run",
+  });
+  insertCardStatementLine(
+    disabledDb,
+    "cross-card-same-source",
+    -301,
+    "source-card-payment-line",
+    "run-other",
+  );
+  insertCardStatementLine(
+    disabledDb,
+    "cross-card-same-run",
+    -302,
+    "source-other-card",
+    "run",
+  );
+  insertAccountTransaction(disabledDb, {
+    statementRowId: "cross-card-payment-same-source",
+    accountNumber: "333",
+    date: "2026-02-02",
+    description: "Card payment",
+    withdrawalAmount: 301,
+  });
+  insertAccountTransaction(disabledDb, {
+    statementRowId: "cross-card-payment-same-run",
+    accountNumber: "333",
+    date: "2026-02-02",
+    description: "Card payment",
+    withdrawalAmount: 302,
+  });
   for (const [index, sourceFileId] of [
     "source-confirmed-invoice",
     "source-mirrored-transfer",
@@ -488,6 +563,21 @@ try {
     .find((row) => row.statementRowId === "card-payment");
   assert.ok(visibleCardPayment);
   assert.equal(visibleCardPayment.automaticReason, "unclassified");
+  for (const invoiceKey of ["cross-invoice-same-source", "cross-invoice-same-run"]) {
+    assert.equal(visible.invoices.some((invoice) => invoice.invoiceKey === invoiceKey), true);
+  }
+  for (const statementRowId of ["cross-account-same-source", "cross-account-same-run"]) {
+    assert.equal(visible.accountRecords.some((row) => row.statementRowId === statementRowId), true);
+  }
+  for (const statementRowId of [
+    "cross-card-payment-same-source",
+    "cross-card-payment-same-run",
+  ]) {
+    assert.equal(
+      visible.accountRecords.find((row) => row.statementRowId === statementRowId)?.automaticReason,
+      "credit_card_payment",
+    );
+  }
 } finally {
   rmSync(ledgerDir, { recursive: true, force: true });
 }
