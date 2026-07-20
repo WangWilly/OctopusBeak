@@ -203,6 +203,12 @@
     }
   }
 
+  function backToSourceSelection() {
+    if (state.status !== "detail") return;
+    state = { ...state, preview: null };
+    stageError = null;
+  }
+
   async function previewRestore() {
     if (state.status !== "detail" || busy) return;
     const operationCaseId = state.issue.dataIssueId;
@@ -339,11 +345,18 @@
             <div class="workflow-step active preview-step">
               <span class="step-mark">3</span><strong>{$t.dataIssues.impactPreview}</strong>
               {#if stageError?.stage === "preview" || stageError?.stage === "confirmation"}<div class="stage-error"><AlertTriangle size={18} aria-hidden="true" /><span>{stageError.message}<small>{stageError.at}</small></span><details><summary>{$t.dataIssues.technicalDetails}</summary>{stageError.details}</details></div>{/if}
-              <dl class="impact-counts"><div><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}</dd></div><div><dt>{$t.dataIssues.retainedRows}</dt><dd>{state.preview.duplicateRows}</dd></div><div><dt>{$t.dataIssues.affectedAccounts}</dt><dd>{state.preview.affectedAccounts.length}</dd></div></dl>
-              <div class="affected-list">{#each state.preview.affectedAccounts as account}<p><strong>{account.accountId}</strong><span>{formatAmounts(account.before.amounts)} → {account.after.availability === "unavailable" ? $t.accounts.noAvailableData : formatAmounts(account.after.amounts)}</span></p>{/each}</div>
+              <dl class="impact-counts">
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard-focusable tooltip trigger) -->
+                <div class="impact-metric" tabindex="0" role="group" aria-describedby="impact-excluded-tooltip"><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}</dd><span id="impact-excluded-tooltip" class="impact-tooltip" role="tooltip">{$t.dataIssues.excludedRowsExplanation(state.preview.excludedRows)}</span></div>
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard-focusable tooltip trigger) -->
+                <div class="impact-metric" tabindex="0" role="group" aria-describedby="impact-retained-tooltip"><dt>{$t.dataIssues.retainedRows}</dt><dd>{state.preview.duplicateRows}</dd><span id="impact-retained-tooltip" class="impact-tooltip" role="tooltip">{$t.dataIssues.retainedRowsExplanation(state.preview.duplicateRows)}</span></div>
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard-focusable tooltip trigger) -->
+                <div class="impact-metric" tabindex="0" role="group" aria-describedby="impact-accounts-tooltip"><dt>{$t.dataIssues.affectedAccounts}</dt><dd>{state.preview.affectedAccounts.length}</dd><span id="impact-accounts-tooltip" class="impact-tooltip" role="tooltip">{$t.dataIssues.affectedAccountsExplanation(state.preview.affectedAccounts.length)}</span></div>
+              </dl>
+              <div class="affected-list">{#each state.preview.affectedAccounts as account}<p><span class="affected-account"><strong>{account.accountLabel}</strong><small>{account.accountId}</small></span><span>{formatAmounts(account.before.amounts)} → {account.after.availability === "unavailable" ? $t.accounts.noAvailableData : formatAmounts(account.after.amounts)}</span></p>{/each}</div>
               {#if issue.status !== "resolved"}
                 <div class="confirmation-form"><label><span>{$t.dataIssues.reason}</span><textarea rows="3" bind:value={reason}></textarea></label><label class="acknowledgement"><input type="checkbox" bind:checked={acknowledged} /><span>{$t.dataIssues.acknowledgement}</span></label></div>
-                <div class="step-actions"><button class="button primary" disabled={!reason.trim() || !acknowledged || busy} onclick={confirmExclusion}>{$t.dataIssues.confirmExclusion}</button></div>
+                <div class="step-actions"><button class="button secondary" disabled={busy} onclick={backToSourceSelection}>{$t.dataIssues.back}</button><button class="button primary" disabled={!reason.trim() || !acknowledged || busy} onclick={confirmExclusion}>{$t.dataIssues.confirmExclusion}</button></div>
               {/if}
             </div>
           </div>
@@ -404,9 +417,14 @@
   .impact-counts div + div { border-left: 1px solid var(--border); }
   .impact-counts dt { color: var(--muted); }
   .impact-counts dd { margin: 0; font-weight: 800; }
+  .impact-metric { position: relative; outline-offset: var(--space-1); }
+  .impact-tooltip { position: absolute; bottom: calc(100% + 7px); left: 50%; z-index: 4; width: max-content; max-width: min(280px, 80vw); padding: 7px 9px; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--fg) 94%, transparent); color: white; font-size: 11px; font-weight: 600; text-align: left; opacity: 0; pointer-events: none; transform: translate(-50%, 3px); transition: opacity 120ms ease, transform 120ms ease; }
+  .impact-metric:hover .impact-tooltip,
+  .impact-metric:focus-within .impact-tooltip { opacity: 1; transform: translate(-50%, 0); }
   .affected-list { display: grid; gap: var(--space-2); padding: var(--space-4) 0; }
   .affected-list p { display: flex; justify-content: space-between; gap: var(--space-3); margin: 0; }
-  .affected-list span { color: var(--muted); text-align: right; }
+  .affected-list > p > span:last-child { color: var(--muted); text-align: right; }
+  .affected-account { display: grid; gap: var(--space-1); }
   .confirmation-form { display: grid; gap: var(--space-4); padding-top: var(--space-4); }
   .confirmation-form > label:first-child { display: grid; gap: var(--space-2); color: var(--muted); font-size: 12px; font-weight: 700; }
   textarea { width: 100%; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; resize: vertical; }
@@ -437,5 +455,5 @@
     .affected-list span { text-align: left; }
     .card-actions, .step-actions, .restore-actions { flex-wrap: wrap; }
   }
-  @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } .impact-tooltip { transition: none; } }
 </style>

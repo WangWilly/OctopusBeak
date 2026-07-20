@@ -74,6 +74,7 @@ export type ExclusionPreviewDto = {
   duplicateRows: number;
   affectedAccounts: Array<{
     accountId: string;
+    accountLabel: string;
     before: { availability: "available" | "unavailable"; amounts: CurrencyAmountDto[] };
     after: { availability: "available" | "unavailable"; amounts: CurrencyAmountDto[] };
   }>;
