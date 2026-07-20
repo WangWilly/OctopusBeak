@@ -78,6 +78,7 @@ assert.match(source, /class="stage-toggle-action"/);
 assert.match(source, /aria-expanded=\{stageOpen\[stage\.id\]\}/);
 assert.doesNotMatch(source, /<details/);
 assert.doesNotMatch(source, /\$t\.automation\.independentTasks/);
+assert.doesNotMatch(source, /\$: parallelTasks =/);
 assert.match(source, /class="button primary stage-sync-action"/);
 assert.match(source, /onclick=\{\(\) => openSyncSheet\(stage\.tasks\)\}/);
 assert.match(source, /class:muted=\{!stageRunnableTasks\(stage\.tasks\)\.length\}/);
