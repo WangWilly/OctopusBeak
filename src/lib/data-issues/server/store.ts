@@ -466,11 +466,15 @@ function affectedAccounts(
     ...includedAccountIds,
     ...accountIdsChangedByVisibility(rawData, beforeScopes, afterScopes),
   ]);
-  return [...accountIds].sort().map((accountId) => ({
-    accountId,
-    before: accountState(before, accountId),
-    after: accountState(after, accountId),
-  }));
+  return [...accountIds].sort().map((accountId) => {
+    const account = after.get(accountId) ?? before.get(accountId);
+    return {
+      accountId,
+      accountLabel: account?.label ?? accountId,
+      before: accountState(before, accountId),
+      after: accountState(after, accountId),
+    };
+  });
 }
 
 function previewExclusionWithDb(
