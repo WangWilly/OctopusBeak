@@ -51,3 +51,32 @@ The approved initial reference and the final report modal are adjacent workflow 
 - The temporary ledger and evidence captures are QA-only and are not committed.
 
 final result: passed
+
+# Task 3 Navigation And Preview QA
+
+## Evidence
+
+- Verified commit: `4769aae9de1584357f442db952b2488eb8a5db18`.
+- Runtime scope: synthetic ledger `/private/tmp/octopus-nav-task3.5mrVWX/data/ledger/ledger.sqlite` and isolated Electron user data only.
+- Electron printed CDP port `9333`; the renderer was inspected and operated through that endpoint.
+- Approved references: `/private/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-259370b9-6c4b-4ddb-af6d-900e990ea38b.png` and `/private/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-4d355a4a-2b1e-4d04-b603-ed527b9cf62d.png`.
+- Same-viewport captures: `.superpowers/sdd/navigation-preview-task3-evidence/source-selection.png` and `.superpowers/sdd/navigation-preview-task3-evidence/impact-preview.png`, both 1280×800.
+
+## Interaction results
+
+- Asset and liability actions both opened the same visible `Report data problem` dialog. Closing with the title-bar control and cancelling with the secondary action left `0` dialog elements and `0` `.modal-panel` elements; the bottom hit-test contained only normal page/table elements.
+- Both account groups restored exact deep links. The synthetic asset row returned at `#/assets/adff7ee003c4d60f138d20cd`; the synthetic liability row returned at `#/liabilities/c515e78e8906eb91f72870e4`. Each row had the `selected` class, was fully inside the 800 px viewport, and was `document.activeElement`.
+- Every impact metric exposed its count-aware explanation on pointer hover and keyboard focus. All three focused triggers were the active element and their tooltips settled at opacity `1`.
+- The affected row rendered `Example Bank loan ****0420` as `<strong>` primary text and `c515e78e8906eb91f72870e4` as the following `<small>` secondary text.
+- Preview Back ran the existing 220 ms `stage-reveal` transition and returned to the checked `loan-0420.csv` source. Under reduced-motion emulation there were no stage animations, and the selected source was still retained.
+- A fresh renderer reload produced no console errors or uncaught page errors.
+
+## Visual comparison
+
+- No actionable P0, P1, or P2 mismatch was found. The source and preview stages preserve the approved progressive-card hierarchy while using the existing desktop shell density and tokens.
+- Alignment and spacing: step markers, headings, source metadata, impact metrics, account rows, and actions align to the same card grid. The 1280×800 captures have no horizontal clipping; the preview scroll remains vertical and does not obscure the secondary Back or primary exclusion action.
+- Typography and borders: account labels are visually primary, IDs and source metadata are muted secondary copy, and dividers provide stage/source separation without reintroducing boxed source-option cards.
+- Action hierarchy: preview and exclusion remain the dark primary actions; account navigation and both Back actions remain secondary. The preview Back sits beside the exclusion action as approved.
+- The approved screenshots use a larger annotated reference canvas and Traditional Chinese copy, while this isolated Electron session used the current English locale. The comparison therefore assessed hierarchy, spacing, borders, clipping, and action priority rather than literal text or synthetic values.
+
+final result: passed
