@@ -81,3 +81,30 @@ test("account issue navigation preserves account deep links and unmounts closed 
   assert.match(dashboard, /accountReturnHref\(issue\.account\)/);
   assert.match(modal, /\{#if account && open\}/);
 });
+
+test("exclusion preview explains impact and returns to the selected source", async () => {
+  const dashboard = await readFile(new URL("./DataIssuesDashboard.svelte", import.meta.url), "utf8");
+  const i18n = await readFile(new URL("../i18n/i18n.ts", import.meta.url), "utf8");
+
+  assert.match(dashboard, /<strong>\{account\.accountLabel\}<\/strong>/);
+  assert.match(dashboard, /<small>\{account\.accountId\}<\/small>/);
+  assert.equal((dashboard.match(/role="tooltip"/g) ?? []).length, 3);
+  assert.equal((dashboard.match(/aria-describedby="impact-[^"]+-tooltip"/g) ?? []).length, 3);
+  assert.equal((dashboard.match(/class="impact-metric" tabindex="0"/g) ?? []).length, 3);
+  assert.match(dashboard, /\.impact-metric:hover \.impact-tooltip,/);
+  assert.match(dashboard, /\.impact-metric:focus-within \.impact-tooltip/);
+  assert.match(dashboard, /onclick=\{backToSourceSelection\}/);
+  assert.match(dashboard, /onclick=\{backToSourceSelection\}[\s\S]*onclick=\{confirmExclusion\}/);
+  assert.match(dashboard, /function backToSourceSelection\(\)[\s\S]*preview: null[\s\S]*stageError = null;/);
+  const backAction = dashboard.slice(
+    dashboard.indexOf("function backToSourceSelection"),
+    dashboard.indexOf("async function previewRestore"),
+  );
+  assert.doesNotMatch(backAction, /selectedSource\s*=/);
+  assert.match(i18n, /excludedRowsExplanation: \(count: number\) => `\$\{count\} physical imported rows owned by this exact source version will become inactive\.`/);
+  assert.match(i18n, /retainedRowsExplanation: \(count: number\) => `\$\{count\} logical duplicate rows remain visible because another active source version supports their complete projections\.`/);
+  assert.match(i18n, /affectedAccountsExplanation: \(count: number\) => `\$\{count\} accounts depend on this source for a visible value or shared capture validity, including unchanged fallback values\.`/);
+  assert.match(i18n, /excludedRowsExplanation: \(count\) => `此來源版本擁有的 \$\{count\} 筆實際匯入資料列將停用。`/);
+  assert.match(i18n, /retainedRowsExplanation: \(count\) => `\$\{count\} 筆邏輯重複資料列仍由另一個有效來源版本提供完整投影，因此維持顯示。`/);
+  assert.match(i18n, /affectedAccountsExplanation: \(count\) => `\$\{count\} 個帳戶的顯示值或共用擷取有效性依賴此來源，包括數值未變的備援結果。`/);
+});

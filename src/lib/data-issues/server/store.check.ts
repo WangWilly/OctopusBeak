@@ -346,6 +346,7 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   assert.equal(preview.excludedRows, 2);
   assert.equal(preview.csvRows, 3);
   assert.equal(preview.duplicateRows, 0);
+  assert.equal(preview.affectedAccounts[0]?.accountLabel, "Example Bank loan ****0420");
   assert.equal(preview.affectedAccounts[0]?.after.availability, "unavailable");
 
   const resolved = confirmDataIssueExclusion({
@@ -460,6 +461,10 @@ test("credit-card impact includes same-value fallback accounts in restore gating
   assert.deepEqual(
     preview.affectedAccounts.map((account) => account.accountId).sort(),
     [reported.id, companionAccount.id].sort(),
+  );
+  assert.deepEqual(
+    preview.affectedAccounts.map((account) => account.accountLabel).sort(),
+    [reported.label, companionAccount.label].sort(),
   );
   const companionImpact = preview.affectedAccounts.find(
     (account) => account.accountId === companionAccount.id,
