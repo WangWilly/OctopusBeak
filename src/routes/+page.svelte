@@ -4,7 +4,7 @@
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
-  import DataIssuesPrototype from "$lib/data-issues/DataIssuesPrototype.svelte";
+  import DataIssuesDashboard from "$lib/data-issues/DataIssuesDashboard.svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -22,6 +22,7 @@
     | { status: "ready"; data: T };
 
   let route: RouteId = "overview";
+  let dataIssueId: string | null = null;
   let initialized = false;
   let overview: LoadState<OverviewPageDto> = { status: "loading" };
   let assets: LoadState<AssetsPageDto> = { status: "loading" };
@@ -30,9 +31,10 @@
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
 
   function normalizeRoute() {
-    const next = location.hash.replace(/^#\/?/, "") as RouteId;
-    route = ["overview", "assets", "liabilities", "spending", "automation", "data-issues", "settings"].includes(next) ? next : "overview";
-    if (!location.hash || next !== route) location.hash = `/${route}`;
+    const [next, id] = location.hash.replace(/^#\/?/, "").split("/");
+    route = ["overview", "assets", "liabilities", "spending", "automation", "data-issues", "settings"].includes(next) ? next as RouteId : "overview";
+    dataIssueId = route === "data-issues" && id ? id : null;
+    if (!location.hash || next !== route || (route !== "data-issues" && id)) location.hash = `/${route}`;
     void loadRoute(route);
   }
 
@@ -98,7 +100,7 @@
   {#if automation.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if automation.status === "error"}<p class="status">{automation.message}</p>{/if}
 {:else if route === "data-issues"}
-  <DataIssuesPrototype />
+  <DataIssuesDashboard issueId={dataIssueId} />
 {:else}
   <SettingsPage />
 {/if}

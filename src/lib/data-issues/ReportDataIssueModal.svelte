@@ -2,16 +2,15 @@
   import { tick } from "svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import type { AccountRowDto } from "$lib/shared-ledger/types.ts";
-  import {
-    reportContextForAccount,
-    type DataIssueReportContext,
-  } from "./prototype-model.ts";
+  import type { DataIssueCreateInput } from "./types.ts";
 
   export let open = false;
   export let account: AccountRowDto | null = null;
-  export let onSubmit: (report: DataIssueReportContext) => void;
+  export let onSubmit: (input: DataIssueCreateInput) => Promise<void>;
 
   let note = "";
+  let submitting = false;
+  let errorMessage = "";
   let dialog: HTMLDialogElement | null = null;
 
   $: primaryAmount = account?.amountLines[0] ?? { currency: "TWD", value: 0 };
@@ -24,6 +23,7 @@
   }
 
   function close() {
+    if (submitting) return;
     open = false;
     if (dialog?.open) dialog.close();
   }
@@ -32,11 +32,19 @@
     if (event.target === dialog) close();
   }
 
-  function submit() {
-    if (!account) return;
-    onSubmit(reportContextForAccount(account, note));
-    note = "";
-    close();
+  async function submit() {
+    if (!account || submitting) return;
+    submitting = true;
+    errorMessage = "";
+    try {
+      await onSubmit({ account, fieldKey: "balance", note });
+      note = "";
+      close();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      submitting = false;
+    }
   }
 </script>
 
@@ -46,15 +54,15 @@
     class="modal-panel report-modal"
     aria-labelledby="report-title"
     onclose={() => (open = false)}
-    oncancel={() => (open = false)}
+    oncancel={(event) => { if (submitting) event.preventDefault(); else open = false; }}
     onclick={closeFromBackdrop}
   >
     <div class="modal-head">
       <div>
         <h2 id="report-title">{$t.dataIssues.reportProblem}</h2>
-        <p class="lead">{$t.dataIssues.prototypeNotice}</p>
+        <p class="lead">{$t.dataIssues.reportProblemHint}</p>
       </div>
-      <button class="modal-close" type="button" aria-label={$t.common.close} onclick={close}>×</button>
+      <button class="modal-close" type="button" aria-label={$t.common.close} disabled={submitting} onclick={close}>×</button>
     </div>
     <form class="modal-body report-form" onsubmit={(event) => { event.preventDefault(); submit(); }}>
       <dl class="report-context">
@@ -70,9 +78,10 @@
         <span>{$t.dataIssues.note}</span>
         <textarea bind:value={note} rows="3"></textarea>
       </label>
+      {#if errorMessage}<p class="submit-error" role="alert">{errorMessage}</p>{/if}
       <div class="modal-footer">
-        <button class="button secondary" type="button" onclick={close}>{$t.common.cancel}</button>
-        <button class="button primary" type="submit">{$t.dataIssues.createIssue}</button>
+        <button class="button secondary" type="button" disabled={submitting} onclick={close}>{$t.common.cancel}</button>
+        <button class="button primary" type="submit" disabled={submitting}>{$t.dataIssues.createIssue}</button>
       </div>
     </form>
   </dialog>
@@ -137,6 +146,8 @@
     justify-content: flex-end;
     gap: var(--space-3);
   }
+
+  .submit-error { margin: 0; color: var(--danger, #b42318); }
 
   @media (max-width: 620px) {
     .report-context { grid-template-columns: 1fr; }

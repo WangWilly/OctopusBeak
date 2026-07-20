@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import ReportDataIssueModal from "$lib/data-issues/ReportDataIssueModal.svelte";
-  import type { DataIssueReportContext } from "$lib/data-issues/prototype-model.ts";
+  import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import {
@@ -128,9 +128,9 @@
     reportOpen = true;
   }
 
-  function createReport(report: DataIssueReportContext) {
-    sessionStorage.setItem("octopusbeak-data-issue-report", JSON.stringify(report));
-    location.hash = "/data-issues";
+  async function createReport(input: DataIssueCreateInput) {
+    const issue = await window.octopusBeak.dataIssues.create(input);
+    location.hash = `/data-issues/${issue.dataIssueId}`;
   }
 </script>
 
