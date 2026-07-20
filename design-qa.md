@@ -79,4 +79,11 @@ final result: passed
 - Action hierarchy: preview and exclusion remain the dark primary actions; account navigation and both Back actions remain secondary. The preview Back sits beside the exclusion action as approved.
 - The approved screenshots use a larger annotated reference canvas and Traditional Chinese copy, while this isolated Electron session used the current English locale. The comparison therefore assessed hierarchy, spacing, borders, clipping, and action priority rather than literal text or synthetic values.
 
+## Automated verification
+
+- `npm test`: 187 passed, 0 failed, 0 skipped.
+- `npm run typecheck`: passed with 0 errors and 0 warnings.
+- `npm run build`: renderer and Electron builds passed.
+- `npm run privacy-check`, `git diff --check`, and `git diff --cached --check`: passed.
+
 final result: passed
