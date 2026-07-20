@@ -46,6 +46,65 @@ export const sourceFiles = sqliteTable("source_files", {
   recordJson: text("record_json").notNull(),
 });
 
+export const sourceFileImports = sqliteTable("source_file_imports", {
+  sourceFileId: text("source_file_id").notNull(),
+  importRunId: text("import_run_id").notNull(),
+  sourceRelativePath: text("source_relative_path").notNull(),
+  sourceFileHash: text("source_file_hash").notNull(),
+  sourceFileBytes: integer("source_file_bytes").notNull(),
+  sourceFileModifiedAt: text("source_file_modified_at"),
+  importedAt: text("imported_at").notNull(),
+  bank: text("bank").notNull(),
+  product: text("product").notNull(),
+  rowCount: integer("row_count").notNull(),
+  status: text("status").notNull(),
+  recordJson: text("record_json").notNull(),
+}, (table) => [primaryKey({ columns: [table.sourceFileId, table.importRunId] })]);
+
+export const dataIssues = sqliteTable("data_issues", {
+  dataIssueId: text("data_issue_id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  accountLabel: text("account_label").notNull(),
+  accountContextJson: text("account_context_json").notNull(),
+  fieldKey: text("field_key").notNull(),
+  reportedValue: real("reported_value").notNull(),
+  currency: text("currency").notNull(),
+  dataDate: text("data_date"),
+  note: text("note").notNull(),
+  status: text("status").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [check("ck_data_issues_status", sql`${table.status} IN ('pending','investigating','resolved','restored')`)]);
+
+export const disabledImportSources = sqliteTable("disabled_import_sources", {
+  disabledImportSourceId: text("disabled_import_source_id").primaryKey(),
+  dataIssueId: text("data_issue_id").notNull(),
+  sourceFileId: text("source_file_id").notNull(),
+  importRunId: text("import_run_id").notNull(),
+  reason: text("reason").notNull(),
+  state: text("state").notNull(),
+  disabledAt: text("disabled_at").notNull(),
+  restoredAt: text("restored_at"),
+  previewToken: text("preview_token").notNull(),
+}, (table) => [
+  uniqueIndex("uq_disabled_import_source_scope").on(table.sourceFileId, table.importRunId),
+  check("ck_disabled_import_sources_state", sql`${table.state} IN ('active','restored')`),
+]);
+
+export const dataIssueEvents = sqliteTable("data_issue_events", {
+  dataIssueEventId: text("data_issue_event_id").primaryKey(),
+  dataIssueId: text("data_issue_id").notNull(),
+  eventType: text("event_type").notNull(),
+  stage: text("stage").notNull(),
+  outcome: text("outcome").notNull(),
+  summary: text("summary").notNull(),
+  detailsJson: text("details_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  index("idx_data_issue_events_case_time").on(table.dataIssueId, table.createdAt),
+  check("ck_data_issue_events_outcome", sql`${table.outcome} IN ('succeeded','blocked','failed')`),
+]);
+
 export const accountTransactions = sqliteTable("account_transactions", {
   ...commonColumns(),
   accountName: text("account_name"),

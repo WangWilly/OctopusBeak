@@ -1335,6 +1335,80 @@ function createSpendingTransactionOverrides(db: LedgerDatabase) {
   `);
 }
 
+function createPersistentDataIssues(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS source_file_imports (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_relative_path TEXT NOT NULL,
+      source_file_hash TEXT NOT NULL,
+      source_file_bytes INTEGER NOT NULL,
+      source_file_modified_at TEXT,
+      imported_at TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      row_count INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (source_file_id, import_run_id)
+    );
+    CREATE TABLE IF NOT EXISTS data_issues (
+      data_issue_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      account_label TEXT NOT NULL,
+      account_context_json TEXT NOT NULL,
+      field_key TEXT NOT NULL,
+      reported_value REAL NOT NULL,
+      currency TEXT NOT NULL,
+      data_date TEXT,
+      note TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CONSTRAINT ck_data_issues_status
+        CHECK (status IN ('pending','investigating','resolved','restored'))
+    );
+    CREATE TABLE IF NOT EXISTS disabled_import_sources (
+      disabled_import_source_id TEXT PRIMARY KEY,
+      data_issue_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      state TEXT NOT NULL,
+      disabled_at TEXT NOT NULL,
+      restored_at TEXT,
+      preview_token TEXT NOT NULL,
+      CONSTRAINT ck_disabled_import_sources_state
+        CHECK (state IN ('active','restored'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_disabled_import_source_scope
+      ON disabled_import_sources(source_file_id, import_run_id);
+    CREATE TABLE IF NOT EXISTS data_issue_events (
+      data_issue_event_id TEXT PRIMARY KEY,
+      data_issue_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      CONSTRAINT ck_data_issue_events_outcome
+        CHECK (outcome IN ('succeeded','blocked','failed'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_data_issue_events_case_time
+      ON data_issue_events(data_issue_id, created_at);
+    INSERT OR IGNORE INTO source_file_imports (
+      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, source_file_modified_at, imported_at, bank, product,
+      row_count, status, record_json
+    )
+    SELECT source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, source_file_modified_at, imported_at, bank, product,
+      row_count, status, record_json
+    FROM source_files;
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1450,6 +1524,11 @@ const migrations: LedgerMigration[] = [
     version: 23,
     name: "spending_transaction_overrides",
     up: createSpendingTransactionOverrides,
+  },
+  {
+    version: 24,
+    name: "persistent_data_issues",
+    up: createPersistentDataIssues,
   },
 ];
 
