@@ -71,8 +71,8 @@
     h1 { margin: 0; font-size: 34px; letter-spacing: -.035em; }
     .intro { margin: 8px 0 30px; color: var(--muted); }
 
-    .group { overflow: hidden; margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-    .group-head { padding: 24px 26px; border-bottom: 1px solid var(--border); }
+    .group { overflow: visible; margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .group-head { padding: 24px 26px; border-bottom: 1px solid var(--border); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
     .group-head.schedule { background: linear-gradient(105deg, #edf7ff 0%, #f4fbfa 43%, #fff 76%); }
     .group-head.personal { background: linear-gradient(105deg, #f7f0ff 0%, #fff2f8 43%, #fff 76%); }
     .group-head h2 { width: max-content; margin: 0; font-size: 21px; }
@@ -93,6 +93,14 @@
     .setting-row:last-child { border-bottom: 0; }
     .setting-row > label, .row-label { font-weight: 650; }
     .setting-row select, .setting-row input { width: 100%; padding: 0 16px; }
+    .time-picker { position: relative; }
+    .time-picker summary { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 16px; border: 1px solid var(--border); border-radius: 9px; background: #fff; cursor: pointer; list-style: none; }
+    .time-picker summary::-webkit-details-marker { display: none; }
+    .time-picker[open] summary { border-color: #6fa5c5; box-shadow: 0 0 0 3px rgb(42 117 173 / 12%); }
+    .time-picker summary small { color: var(--muted); font-size: 12px; }
+    .time-popover { position: absolute; z-index: 2; top: calc(100% + 8px); right: 0; display: grid; gap: 10px; width: min(280px, 100%); padding: 16px; border: 1px solid var(--border); border-radius: 11px; background: #fff; box-shadow: 0 14px 30px rgb(29 43 58 / 16%); }
+    .time-popover label { font-size: 13px; font-weight: 650; }
+    .time-popover small { color: var(--muted); font-size: 12px; }
     .language-control { display: flex; gap: 10px; }
     .language-control button[aria-pressed="true"] { border-color: #171b20; background: #171b20; color: #fff; }
 
@@ -116,6 +124,7 @@
       main { margin-left: 0; padding: 34px 18px; }
       .setting-row, .scale-row { grid-template-columns: 1fr; gap: 10px; padding: 18px 0; }
       .setting-row { margin: 0 20px; }
+      .time-popover { right: auto; left: 0; }
       .scale-row .row-label { padding: 0; }
       #scale-reset { justify-self: start; }
     }
@@ -147,7 +156,7 @@
     <section class="group" aria-labelledby="schedule-title">
       <header class="group-head schedule"><h2 id="schedule-title">時區與排程設定</h2><p>設定時間戳記使用的時區，以及每日匯率更新時間。</p></header>
       <div class="setting-row"><label for="timezone">系統時區</label><select id="timezone"><option>Asia/Taipei</option><option>Asia/Tokyo</option><option>America/New_York</option><option>Europe/London</option><option>UTC</option></select></div>
-      <div class="setting-row"><label for="update-time">匯率更新時間</label><input id="update-time" type="time" step="60"></div>
+      <div class="setting-row"><label for="update-time">匯率更新時間</label><details class="time-picker"><summary id="update-time" aria-label="匯率更新時間"><span id="update-time-value">06:00 AM</span><small>選擇</small></summary><div class="time-popover"><label for="update-time-input">選擇每日更新時間</label><input id="update-time-input" type="time" step="60"><small>變更後會自動儲存</small></div></details></div>
     </section>
 
     <section class="group" aria-labelledby="personal-title">
@@ -171,10 +180,16 @@
 
     const clampScale = value => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
     console.assert(clampScale(70) === 75 && clampScale(155) === 150);
+    const formatTime = value => {
+      const [hours, minutes] = value.split(":").map(Number);
+      return `${String(hours % 12 || 12).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
+    };
+    console.assert(formatTime("06:00") === "06:00 AM" && formatTime("18:05") === "06:05 PM");
 
     function render() {
       document.querySelector("#timezone").value = settings.timezone;
-      document.querySelector("#update-time").value = settings.updateTime;
+      document.querySelector("#update-time-input").value = settings.updateTime;
+      document.querySelector("#update-time-value").textContent = formatTime(settings.updateTime);
       document.querySelector("#scale-value").textContent = `${settings.scale}%`;
       document.querySelectorAll("[data-locale]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.locale === settings.locale)));
       document.documentElement.lang = settings.locale === "zh-TW" ? "zh-Hant" : "en";
@@ -195,7 +210,10 @@
     function setScale(value) { save({ scale: clampScale(value) }); }
 
     document.querySelector("#timezone").addEventListener("change", event => save({ timezone: event.target.value }));
-    document.querySelector("#update-time").addEventListener("change", event => save({ updateTime: event.target.value }));
+    document.querySelector("#update-time-input").addEventListener("change", event => {
+      save({ updateTime: event.target.value });
+      event.target.closest(".time-picker").open = false;
+    });
     document.querySelectorAll("[data-locale]").forEach(button => button.addEventListener("click", () => save({ locale: button.dataset.locale })));
     document.querySelector("#scale-minus").addEventListener("click", () => setScale(settings.scale - SCALE_STEP));
     document.querySelector("#scale-plus").addEventListener("click", () => setScale(settings.scale + SCALE_STEP));
