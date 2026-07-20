@@ -8,7 +8,10 @@ import {
 } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { hasAttachedLocator } from "./browser-interaction.js";
+import {
+  clickAndWaitForNavigation,
+  hasAttachedLocator,
+} from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -638,8 +641,7 @@ async function queryLoanAccount(
   const scope = await findLoanStatementForm(page);
   await scope.locator("#acctno").selectOption(account.value);
   await chooseDateRange(page, input);
-  await scope.locator("#submitbutton").click();
-  await settleAfterNavigation(page);
+  await clickAndWaitForNavigation(scope, "#submitbutton");
   await findScopeWithSelector(page, "#resultdiv");
 }
 

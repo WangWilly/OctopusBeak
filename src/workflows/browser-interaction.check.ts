@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { hasAttachedLocator } from "./browser-interaction.ts";
+import {
+  clickAndWaitForNavigation,
+  hasAttachedLocator,
+} from "./browser-interaction.ts";
 
 function locatorProbe(
   waitFor: (options: { state: "attached"; timeout: number }) => Promise<void>,
@@ -32,3 +35,32 @@ assert.equal(
   ),
   false,
 );
+
+let finishNavigation!: () => void;
+const navigation = new Promise<void>((resolve) => {
+  finishNavigation = resolve;
+});
+let clicked = false;
+let completed = false;
+const navigationScope = {
+  waitForNavigation: () => navigation,
+  locator: () => ({
+    click: async () => {
+      clicked = true;
+    },
+  }),
+};
+
+const pendingNavigation = clickAndWaitForNavigation(
+  navigationScope,
+  "#submitbutton",
+).then(() => {
+  completed = true;
+});
+await new Promise<void>((resolve) => setImmediate(resolve));
+assert.equal(clicked, true);
+assert.equal(completed, false);
+
+finishNavigation();
+await pendingNavigation;
+assert.equal(completed, true);
