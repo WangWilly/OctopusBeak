@@ -1,4 +1,7 @@
 import { BrowserWindow, ipcMain } from "electron";
+import {
+  createDataIssueIpcHandlers,
+} from "../src/lib/desktop/api.ts";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
@@ -33,6 +36,16 @@ import {
 } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
+  confirmDataIssueExclusion,
+  confirmDataIssueRestore,
+  createDataIssue,
+  listDataIssues,
+  loadDataIssue,
+  previewDataIssueExclusion,
+  previewDataIssueRestore,
+  startDataIssueDiagnosis,
+} from "../src/lib/data-issues/server/store.ts";
+import {
   systemSettings,
   validateSystemSettings,
   type SystemSettingsDto,
@@ -44,6 +57,16 @@ export function registerOctopusBeakIpc({
 }: {
   onSystemSettingsChanged?: (settings: SystemSettingsDto) => void | Promise<void>;
 } = {}) {
+  const dataIssueHandlers = createDataIssueIpcHandlers({
+    list: listDataIssues,
+    create: createDataIssue,
+    load: loadDataIssue,
+    startDiagnosis: startDataIssueDiagnosis,
+    previewExclusion: previewDataIssueExclusion,
+    confirmExclusion: confirmDataIssueExclusion,
+    previewRestore: previewDataIssueRestore,
+    confirmRestore: confirmDataIssueRestore,
+  });
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -108,4 +131,12 @@ export function registerOctopusBeakIpc({
     await forceQuitHumanSessionForTask(taskId);
     return { ok: true as const, closed: true };
   });
+  ipcMain.handle("dataIssues:list", dataIssueHandlers.list);
+  ipcMain.handle("dataIssues:create", dataIssueHandlers.create);
+  ipcMain.handle("dataIssues:load", dataIssueHandlers.load);
+  ipcMain.handle("dataIssues:startDiagnosis", dataIssueHandlers.startDiagnosis);
+  ipcMain.handle("dataIssues:previewExclusion", dataIssueHandlers.previewExclusion);
+  ipcMain.handle("dataIssues:confirmExclusion", dataIssueHandlers.confirmExclusion);
+  ipcMain.handle("dataIssues:previewRestore", dataIssueHandlers.previewRestore);
+  ipcMain.handle("dataIssues:confirmRestore", dataIssueHandlers.confirmRestore);
 }
