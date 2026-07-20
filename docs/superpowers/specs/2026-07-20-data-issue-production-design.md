@@ -62,6 +62,7 @@ Required fields:
 - `data_issue_id`
 - `account_id`
 - `account_label`
+- `account_context_json`: the reported account's institution, product, group, kind, and type label needed to render an unavailable account after all active rows are excluded
 - `field_key`
 - `reported_value`
 - `currency`
