@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Check, ChevronRight, TriangleAlert } from "@lucide/svelte";
+  import { Check, ChevronRight } from "@lucide/svelte";
   import { onMount } from "svelte";
+  import { slide } from "svelte/transition";
   import { t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
@@ -8,7 +9,6 @@
     reportDataIssue,
     seedDataIssuePrototype,
     transitionDataIssuePrototype,
-    type DataIssueErrorRecord,
     type DataIssueReportContext,
     type DataIssueStatus,
     type PrototypeEvent,
@@ -16,8 +16,10 @@
 
   let state = seedDataIssuePrototype();
   let liveMessage = "";
+  let reduceMotion = false;
 
   onMount(() => {
+    reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const raw = sessionStorage.getItem("octopusbeak-data-issue-report");
     if (!raw) return;
     try {
@@ -51,27 +53,9 @@
     }[status];
   }
 
-  function errorStageLabel(error: DataIssueErrorRecord) {
-    return error.stage === "impact-calculation"
-      ? $t.dataIssues.impactCalculation
-      : $t.dataIssues.sourceAnalysis;
-  }
-
-  function errorSummaryLabel(error: DataIssueErrorRecord) {
-    return error.status === "failed"
-      ? $t.dataIssues.ledgerReadFailure
-      : $t.dataIssues.lineageIncomplete;
-  }
-
-  function errorDetailsLabel(error: DataIssueErrorRecord) {
-    return error.status === "failed"
-      ? $t.dataIssues.noLedgerChange
-      : $t.dataIssues.unlinkedSourceRow;
-  }
-
   $: selectedImport = state.imports.find((item) => item.id === state.selectedSourceId) ?? null;
   $: statusLabel = labelForStatus(state.issue.status);
-  $: latestError = state.errors.at(-1);
+  $: stageTransition = { duration: reduceMotion ? 0 : 220 };
 </script>
 
 <DashboardShell
@@ -85,146 +69,114 @@
   <div class="content data-issues-content">
     <p class="sr-only" aria-live="polite">{liveMessage}</p>
 
-    {#if state.screen === "diagnosis" || state.screen === "preview"}
-      <header class="case-heading">
-        <p><strong>{$t.dataIssues.eyebrow}</strong><span aria-hidden="true">/</span>{statusLabel}</p>
-        <h2>{state.issue.accountLabel}</h2>
-      </header>
-      <details class="error-history">
-        <summary>
-          <TriangleAlert size={20} strokeWidth={2} aria-hidden="true" />
-          <strong>{$t.dataIssues.errorHistory(state.errors.length)}</strong>
-          {#if latestError}
-            <span>{errorStageLabel(latestError)}：{errorSummaryLabel(latestError)}</span>
-          {/if}
-        </summary>
-        <div class="error-list">
-          {#each [...state.errors].reverse() as error}
-            <details class="error-record">
-              <summary>
-                <time>{error.at}</time>
-                <strong>{errorStageLabel(error)}</strong>
-                <span>{errorSummaryLabel(error)}</span>
-                <span class:failed={error.status === "failed"} class="error-status">
-                  {error.status === "failed" ? $t.dataIssues.calculationFailed : $t.dataIssues.blocked}
-                </span>
-              </summary>
-              <p><strong>{$t.dataIssues.technicalDetails}：</strong>{errorDetailsLabel(error)}</p>
-            </details>
-          {/each}
-        </div>
-      </details>
-    {/if}
-
-    {#if state.screen === "list"}
-      <section class="card">
-        <div class="panel-title">
-          <div>
-            <span class="chip">{statusLabel}</span>
-            <h2>{state.issue.accountLabel}</h2>
-            <p class="lead">{state.issue.createdAt}</p>
-          </div>
-        </div>
-        <dl class="issue-facts">
-          <div><dt>{$t.dataIssues.reportedValue}</dt><dd>{formatAmount(state.issue.displayedValue)}</dd></div>
-          <div><dt>{$t.dataIssues.dataDate}</dt><dd>{state.issue.dataDate}</dd></div>
-          <div><dt>{$t.dataIssues.note}</dt><dd>{state.issue.note || "--"}</dd></div>
-        </dl>
-        <div class="card-actions">
-          <button class="button primary" onclick={() => send({ type: "open-diagnosis" })}>{$t.dataIssues.startDiagnosis}</button>
-        </div>
-      </section>
-    {:else if state.screen === "diagnosis"}
+    {#if state.screen === "list" || state.screen === "diagnosis" || state.screen === "preview"}
       <section class="workflow-card card">
-        <div class="workflow-step completed">
-          <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
-          <strong>1&nbsp; {$t.dataIssues.reportDetails}</strong>
-          <span class="step-summary">{formatAmount(state.issue.displayedValue)} · {state.issue.dataDate} · {state.issue.note || "--"}</span>
-        </div>
-        <div class="workflow-step active source-step">
-          <span class="step-mark">2</span>
-          <strong>{$t.dataIssues.confirmSource}</strong>
-          <div class="source-list">
-            {#each state.imports as source}
-              <label class="source-option">
-                <input
-                  type="radio"
-                  name="source"
-                  value={source.id}
-                  checked={state.selectedSourceId === source.id}
-                  onchange={() => send({ type: "select-source", sourceId: source.id })}
-                />
-                <span>
-                  <strong>{source.fileName}</strong>
-                  <small>{source.csvRows} {$t.dataIssues.fileRows} · {source.insertedRows} {$t.dataIssues.inserted} · {source.duplicateRows} {$t.dataIssues.duplicates}</small>
-                  <small>{$t.dataIssues.importedAt} {source.importedAt} · {source.affectedAccounts} {$t.dataIssues.affectedAccounts}</small>
-                </span>
-              </label>
-            {/each}
-          </div>
-          <details class="source-raw">
-            <summary>{$t.dataIssues.viewRawData}</summary>
-            <div class="table-wrap">
-              <table class="table">
-                <thead><tr><th>{$t.dataIssues.transactionDate}</th><th>{$t.dataIssues.paymentItem}</th><th class="right">{$t.dataIssues.transactionAmount}</th><th class="right">{$t.dataIssues.balanceAfter}</th></tr></thead>
-                <tbody>
-                  <tr><td>2026/07/13</td><td>{$t.dataIssues.principal}</td><td class="right">11,874</td><td class="right">520,524</td></tr>
-                  <tr><td>2026/07/13</td><td>{$t.dataIssues.interest}</td><td class="right">1,072</td><td class="right">520,524</td></tr>
-                </tbody>
-              </table>
+        {#if state.screen === "list"}
+          <div class="panel-title">
+            <div>
+              <h2>{state.issue.accountLabel}</h2>
+              <p class="lead">{state.issue.createdAt}</p>
             </div>
-          </details>
-          <div class="step-actions">
-            <button class="button secondary" onclick={() => send({ type: "back-to-list" })}>{$t.dataIssues.back}</button>
-            <button class="button primary" disabled={!selectedImport} onclick={() => send({ type: "preview", scenario: "safe" })}>{$t.dataIssues.previewImpact}</button>
           </div>
-        </div>
-        <div class="workflow-step upcoming">
-          <span class="step-mark">3</span>
-          <strong>{$t.dataIssues.impactPreview}</strong>
-          <ChevronRight size={18} aria-hidden="true" />
-        </div>
-      </section>
-    {:else if state.screen === "preview" && state.preview}
-      <section class="workflow-card card">
-        <div class="workflow-step completed">
-          <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
-          <strong>1&nbsp; {$t.dataIssues.reportDetails}</strong>
-          <span class="step-summary">{formatAmount(state.issue.displayedValue)} · {state.issue.dataDate} · {state.issue.note || "--"}</span>
-        </div>
-        <div class="workflow-step completed">
-          <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
-          <strong>2&nbsp; {$t.dataIssues.confirmSource}</strong>
-          <span class="step-summary">{selectedImport?.fileName} · {selectedImport?.csvRows} {$t.dataIssues.fileRows} · {selectedImport?.insertedRows} {$t.dataIssues.inserted} · {selectedImport?.duplicateRows} {$t.dataIssues.duplicates}</span>
-        </div>
-        <div class="workflow-step active preview-step">
-          <span class="step-mark">3</span>
-          <strong>{$t.dataIssues.impactPreview}</strong>
-          <div class="value-comparison">
-            <div><span>{$t.dataIssues.before}</span><strong>{formatAmount(state.preview.beforeValue)}</strong></div>
-            <span class="preview-arrow" aria-hidden="true">→</span>
-            <div><span>{$t.dataIssues.after}</span><strong>{formatAmount(state.preview.afterValue)}</strong></div>
-          </div>
-          <dl class="impact-counts">
-            <div><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}</dd></div>
-            <div><dt>{$t.dataIssues.retainedRows}</dt><dd>{state.preview.retainedRows}</dd></div>
-            <div><dt>{$t.dataIssues.unresolvedRows}</dt><dd>{state.preview.unresolvedRows}</dd></div>
+          <dl class="issue-facts">
+            <div><dt>{$t.dataIssues.reportedValue}</dt><dd>{formatAmount(state.issue.displayedValue)}</dd></div>
+            <div><dt>{$t.dataIssues.dataDate}</dt><dd>{state.issue.dataDate}</dd></div>
+            <div><dt>{$t.dataIssues.note}</dt><dd>{state.issue.note || "--"}</dd></div>
           </dl>
-          <div class="confirmation-form">
-            <label>
-              <span>{$t.dataIssues.reason}</span>
-              <textarea rows="3" value={state.reason} oninput={(event) => send({ type: "set-reason", reason: event.currentTarget.value })}></textarea>
-            </label>
-            <label class="acknowledgement">
-              <input type="checkbox" checked={state.acknowledged} onchange={(event) => send({ type: "acknowledge", acknowledged: event.currentTarget.checked })} />
-              <span>{$t.dataIssues.acknowledgement}</span>
-            </label>
+          <div class="card-actions">
+            <button class="button primary" onclick={() => send({ type: "open-diagnosis" })}>{$t.dataIssues.excludeInvalidImport}</button>
           </div>
-          <div class="step-actions">
-            <button class="button secondary" onclick={() => send({ type: "back-to-diagnosis" })}>{$t.dataIssues.back}</button>
-            <button class="button primary" disabled={!canConfirmQuarantine(state)} onclick={confirmQuarantine}>{$t.dataIssues.confirmQuarantine}</button>
+        {:else}
+          <div class="workflow-step completed">
+            <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
+            <strong>1&nbsp; {$t.dataIssues.reportDetails}</strong>
+            <span class="step-summary">{formatAmount(state.issue.displayedValue)} · {state.issue.dataDate} · {state.issue.note || "--"}</span>
           </div>
-        </div>
+
+          {#if state.screen === "diagnosis"}
+            <div class="stage-reveal" transition:slide={stageTransition}>
+              <div class="workflow-step active source-step">
+                <span class="step-mark">2</span>
+                <strong>{$t.dataIssues.confirmSource}</strong>
+                <div class="source-list">
+                  {#each state.imports as source}
+                    <label class="source-option">
+                      <input
+                        type="radio"
+                        name="source"
+                        value={source.id}
+                        checked={state.selectedSourceId === source.id}
+                        onchange={() => send({ type: "select-source", sourceId: source.id })}
+                      />
+                      <span>
+                        <strong>{source.fileName}</strong>
+                        <small>{source.csvRows} {$t.dataIssues.fileRows} · {source.insertedRows} {$t.dataIssues.inserted} · {source.duplicateRows} {$t.dataIssues.duplicates}</small>
+                        <small>{$t.dataIssues.importedAt} {source.importedAt} · {source.affectedAccounts} {$t.dataIssues.affectedAccounts}</small>
+                      </span>
+                    </label>
+                  {/each}
+                </div>
+                <details class="source-raw">
+                  <summary>{$t.dataIssues.viewRawData}</summary>
+                  <div class="table-wrap">
+                    <table class="table">
+                      <thead><tr><th>{$t.dataIssues.transactionDate}</th><th>{$t.dataIssues.paymentItem}</th><th class="right">{$t.dataIssues.transactionAmount}</th><th class="right">{$t.dataIssues.balanceAfter}</th></tr></thead>
+                      <tbody>
+                        <tr><td>2026/07/13</td><td>{$t.dataIssues.principal}</td><td class="right">11,874</td><td class="right">520,524</td></tr>
+                        <tr><td>2026/07/13</td><td>{$t.dataIssues.interest}</td><td class="right">1,072</td><td class="right">520,524</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+                <div class="step-actions">
+                  <button class="button secondary" onclick={() => send({ type: "back-to-list" })}>{$t.dataIssues.back}</button>
+                  <button class="button primary" disabled={!selectedImport} onclick={() => send({ type: "preview", scenario: "safe" })}>{$t.dataIssues.previewImpact}</button>
+                </div>
+              </div>
+              <div class="workflow-step upcoming">
+                <span class="step-mark">3</span>
+                <strong>{$t.dataIssues.impactPreview}</strong>
+                <ChevronRight size={18} aria-hidden="true" />
+              </div>
+            </div>
+          {:else if state.screen === "preview" && state.preview}
+            <div class="workflow-step completed">
+              <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
+              <strong>2&nbsp; {$t.dataIssues.confirmSource}</strong>
+              <span class="step-summary">{selectedImport?.fileName} · {selectedImport?.csvRows} {$t.dataIssues.fileRows} · {selectedImport?.insertedRows} {$t.dataIssues.inserted} · {selectedImport?.duplicateRows} {$t.dataIssues.duplicates}</span>
+            </div>
+            <div class="stage-reveal" transition:slide={stageTransition}>
+              <div class="workflow-step active preview-step">
+                <span class="step-mark">3</span>
+                <strong>{$t.dataIssues.impactPreview}</strong>
+                <div class="value-comparison">
+                  <div><span>{$t.dataIssues.before}</span><strong>{formatAmount(state.preview.beforeValue)}</strong></div>
+                  <span class="preview-arrow" aria-hidden="true">→</span>
+                  <div><span>{$t.dataIssues.after}</span><strong>{formatAmount(state.preview.afterValue)}</strong></div>
+                </div>
+                <dl class="impact-counts">
+                  <div><dt>{$t.dataIssues.excludedRows}</dt><dd>{state.preview.excludedRows}</dd></div>
+                  <div><dt>{$t.dataIssues.retainedRows}</dt><dd>{state.preview.retainedRows}</dd></div>
+                  <div><dt>{$t.dataIssues.unresolvedRows}</dt><dd>{state.preview.unresolvedRows}</dd></div>
+                </dl>
+                <div class="confirmation-form">
+                  <label>
+                    <span>{$t.dataIssues.reason}</span>
+                    <textarea rows="3" value={state.reason} oninput={(event) => send({ type: "set-reason", reason: event.currentTarget.value })}></textarea>
+                  </label>
+                  <label class="acknowledgement">
+                    <input type="checkbox" checked={state.acknowledged} onchange={(event) => send({ type: "acknowledge", acknowledged: event.currentTarget.checked })} />
+                    <span>{$t.dataIssues.acknowledgement}</span>
+                  </label>
+                </div>
+                <div class="step-actions">
+                  <button class="button secondary" onclick={() => send({ type: "back-to-diagnosis" })}>{$t.dataIssues.back}</button>
+                  <button class="button primary" disabled={!canConfirmQuarantine(state)} onclick={confirmQuarantine}>{$t.dataIssues.confirmQuarantine}</button>
+                </div>
+              </div>
+            </div>
+          {/if}
+        {/if}
       </section>
     {:else if state.screen === "blocked" && state.preview}
       <section class="card result-card blocked-card" role="alert">
@@ -308,23 +260,12 @@
 
 <style>
   .data-issues-content { display: grid; gap: var(--space-4); }
-  .case-heading { display: grid; gap: var(--space-2); padding: 0 var(--space-1); }
-  .case-heading p { display: flex; gap: var(--space-2); margin: 0; color: var(--muted); }
-  .case-heading p strong { color: var(--accent); }
-  .case-heading h2 { margin: 0; }
   .issue-facts, .preview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-5); }
   .issue-facts div, .preview-cell { display: grid; gap: var(--space-1); }
   .issue-facts dt, .preview-label, .source-option small { color: var(--muted); font-size: 12px; }
   .issue-facts dd { margin: 0; font-weight: 700; }
-  .error-history { overflow: hidden; border: 1px solid color-mix(in srgb, var(--danger, #b42318) 55%, var(--border)); border-radius: var(--radius-sm); background: var(--surface); }
-  .error-history > summary { min-height: 56px; display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); color: var(--danger, #b42318); cursor: pointer; }
-  .error-history > summary span { overflow: hidden; color: var(--fg); text-overflow: ellipsis; white-space: nowrap; }
-  .error-list { border-top: 1px solid var(--border); }
-  .error-record + .error-record { border-top: 1px solid var(--border); }
-  .error-record > summary { display: grid; grid-template-columns: 150px 140px 1fr auto; align-items: center; gap: var(--space-3); min-height: 48px; padding: 0 var(--space-4); cursor: pointer; }
-  .error-record p { margin: 0; padding: 0 var(--space-4) var(--space-4); color: var(--muted); }
-  .error-status { color: var(--danger, #b42318); font-size: 12px; font-weight: 700; }
   .workflow-card { overflow: hidden; }
+  .stage-reveal { overflow: hidden; border-top: 1px solid var(--border); }
   .workflow-step { display: grid; grid-template-columns: 32px auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); min-height: 72px; padding: 0 var(--space-5); }
   .workflow-step + .workflow-step { border-top: 1px solid var(--border); }
   .workflow-step.active { background: color-mix(in srgb, var(--accent) 3%, var(--surface)); }
@@ -370,7 +311,6 @@
     .workflow-step { grid-template-columns: 32px minmax(0, 1fr) auto; }
     .step-summary { grid-column: 2 / -1; width: 100%; text-align: left; }
     .source-list, .source-raw, .value-comparison, .impact-counts, .confirmation-form, .step-actions { grid-column: 1 / -1; }
-    .error-record > summary { grid-template-columns: 1fr 1fr; padding-block: var(--space-3); }
   }
   @media (max-width: 760px) {
     .issue-facts, .preview-grid { grid-template-columns: 1fr; }
@@ -380,8 +320,6 @@
     .impact-counts { grid-template-columns: 1fr; gap: var(--space-3); }
     .impact-counts div + div { border-left: 0; }
     .card-actions, .step-actions { flex-wrap: wrap; }
-    .error-history > summary { grid-template-columns: auto 1fr auto; }
-    .error-history > summary span { grid-column: 2 / -1; }
   }
   @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
 </style>
