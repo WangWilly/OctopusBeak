@@ -107,6 +107,7 @@
         : { status: "list" as const, issues: await window.octopusBeak.dataIssues.list() };
       if (requestedIssueId !== issueId) return;
       state = next;
+      announceCreatedIssue(requestedIssueId);
     } catch (error) {
       if (requestedIssueId !== issueId) return;
       state = { status: "error", message: errorMessage(error), at: new Date().toLocaleString() };
@@ -115,6 +116,14 @@
 
   function openIssue(id: string) {
     location.hash = `/data-issues/${id}`;
+  }
+
+  function announceCreatedIssue(dataIssueId: string | null) {
+    if (!dataIssueId || history.state?.createdDataIssueId !== dataIssueId) return;
+    const nextState = { ...history.state };
+    delete nextState.createdDataIssueId;
+    history.replaceState(nextState, "");
+    liveStatus = $t.dataIssues.issueCreatedReady;
   }
 
   function accountReturnHref(account: DataIssueDetailDto["account"]) {

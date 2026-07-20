@@ -220,7 +220,7 @@
       <div class="action-group">
         <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
         <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
-        {#if onReportDataIssue}
+        {#if onReportDataIssue && selectedAccount.valueAvailability === "available"}
           <button
             class="button secondary report-issue-button"
             type="button"

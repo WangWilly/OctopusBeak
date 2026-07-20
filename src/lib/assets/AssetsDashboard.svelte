@@ -135,6 +135,7 @@
   async function createReport(input: DataIssueCreateInput) {
     const issue = await window.octopusBeak.dataIssues.create(input);
     location.hash = `/data-issues/${issue.dataIssueId}`;
+    history.replaceState({ ...history.state, createdDataIssueId: issue.dataIssueId }, "");
   }
 </script>
 

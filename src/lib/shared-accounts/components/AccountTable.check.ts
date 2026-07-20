@@ -14,6 +14,11 @@ test("unavailable accounts omit allocation and exposure values", () => {
   assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
 });
 
+test("unavailable accounts keep their issue backlink but omit the rejected report action", () => {
+  assert.match(source, /\{#if onReportDataIssue && selectedAccount\.valueAvailability === "available"\}/);
+  assert.match(source, /account\.valueAvailability === "unavailable"[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
+});
+
 test("account deep links select, scroll, and focus the exact rendered row", () => {
   assert.match(source, /data-account-id=\{account\.id\}/);
   assert.match(source, /tabindex=\{account\.id === selectedAccountId \? 0 : -1\}/);
