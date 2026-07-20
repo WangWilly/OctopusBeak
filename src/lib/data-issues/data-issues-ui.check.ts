@@ -13,6 +13,13 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /transition:slide/);
   assert.match(dashboard, /stageTransition = \{ duration: reduceMotion \? 0 : 220 \}/);
   assert.match(dashboard, /class="stage-error"/);
+  const stageErrors = dashboard.match(/<div class="stage-error"[^>]*>/g) ?? [];
+  assert.ok(stageErrors.length >= 5);
+  for (const stageError of stageErrors) assert.match(stageError, /role="alert"/);
+  assert.match(dashboard, /aria-live="polite" aria-atomic="true">\{liveStatus\}<\/span>/);
+  assert.match(dashboard, /liveStatus = \$t\.common\.loading/);
+  assert.match(dashboard, /liveStatus = \$t\.dataIssues\.eventExclusion/);
+  assert.match(dashboard, /liveStatus = \$t\.dataIssues\.eventRestore/);
   assert.match(dashboard, /<summary>\{\$t\.dataIssues\.operationHistory\}<\/summary>/);
   assert.match(dashboard, /const requestedIssueId = issueId;/);
   assert.match(dashboard, /if \(requestedIssueId !== issueId\) return;/);
@@ -64,6 +71,12 @@ test("report submission persists the case before navigating", async () => {
   assert.match(liabilities, /location\.hash = `\/data-issues\/\$\{issue\.dataIssueId\}`/);
   assert.match(modal, /export let onSubmit: \(input: DataIssueCreateInput\) => Promise<void>/);
   assert.match(modal, /catch \(error\)/);
+  assert.match(modal, /aria-describedby="report-hint"/);
+  assert.match(modal, /<p id="report-hint" class="lead">\{\$t\.dataIssues\.reportProblemHint\}<\/p>/);
+  assert.match(modal, /await onSubmit\([\s\S]*submitting = false;[\s\S]*close\(\);[\s\S]*catch \(error\)/);
+  assert.match(modal, /if \(submitting\) return;/);
+  assert.match(modal, /account\.valueAvailability === "unavailable"[\s\S]*\$t\.accounts\.noAvailableData/);
+  assert.doesNotMatch(modal, /currency: "TWD", value: 0/);
   assert.match(accounts, /account\.valueAvailability === "unavailable"[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
 });
 
@@ -109,4 +122,21 @@ test("exclusion preview explains impact and returns to the selected source", asy
   assert.match(i18n, /excludedRowsExplanation: \(count\) => `此來源版本擁有的 \$\{count\} 筆實際匯入資料列將停用。`/);
   assert.match(i18n, /retainedRowsExplanation: \(count\) => `\$\{count\} 筆邏輯重複資料列仍由另一個有效來源版本提供完整投影，因此維持顯示。`/);
   assert.match(i18n, /affectedAccountsExplanation: \(count\) => `\$\{count\} 個帳戶的顯示值或共用擷取有效性依賴此來源，包括數值未變的備援結果。`/);
+});
+
+test("restore preview shows current and proposed state for every persisted affected account", async () => {
+  const dashboard = await readFile(new URL("./DataIssuesDashboard.svelte", import.meta.url), "utf8");
+  const i18n = await readFile(new URL("../i18n/i18n.ts", import.meta.url), "utf8");
+  const restore = dashboard.slice(
+    dashboard.indexOf('{#if issue.status === "resolved"}'),
+    dashboard.indexOf('<details class="operation-history">'),
+  );
+
+  assert.match(restore, /\{#each restorePreview\.affectedAccounts as account\}/);
+  assert.match(restore, /<strong>\{account\.accountLabel\}<\/strong><small>\{account\.accountId\}<\/small>/);
+  assert.match(restore, /\{\$t\.dataIssues\.before\}: \{formatAccountState\(account\.before\)\}/);
+  assert.match(restore, /\{\$t\.dataIssues\.afterRestore\}: \{formatAccountState\(account\.after\)\}/);
+  assert.ok(restore.indexOf("restorePreview.affectedAccounts") < restore.indexOf("onclick={confirmRestore}"));
+  assert.match(i18n, /afterRestore: "After restore"/);
+  assert.match(i18n, /afterRestore: "還原後"/);
 });

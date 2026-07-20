@@ -360,6 +360,57 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   assert.equal(visibleLoanBalance(ledgerDir), undefined);
 });
 
+test("creates a persistent issue with an empty optional note", async () => {
+  const { ledgerDir, input } = await setup();
+  const created = createDataIssue({ ...input, note: "" }, ledgerDir, clock());
+
+  assert.equal(created.note, "");
+  assert.equal(loadDataIssue(created.dataIssueId, ledgerDir).note, "");
+});
+
+test("diagnosis omits an already-disabled exact source version from a later case", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const remainingVersion = { sourceFileId: sourceVersion.sourceFileId, importRunId: "run-b" };
+  const db = openLedgerDatabase(ledgerDir);
+  seedSource(db, remainingVersion, {
+    importedAt: "2026-07-18T00:00:00.000Z",
+    balances: [63_900],
+    csvRows: 1,
+    tradeDates: ["2026-07-17"],
+  });
+  db.close();
+
+  const now = clock();
+  const firstIssue = createDataIssue(input, ledgerDir, now);
+  const preview = previewDataIssueExclusion({
+    dataIssueId: firstIssue.dataIssueId,
+    sourceVersion,
+  }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: firstIssue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+
+  const secondIssue = createDataIssue({
+    ...input,
+    account: {
+      ...input.account,
+      amountLines: [{ currency: "TWD", value: 63_900 }],
+      lastUpdated: "2026-07-17",
+    },
+    note: "Second synthetic report",
+  }, ledgerDir, now);
+  const diagnosis = startDataIssueDiagnosis(secondIssue.dataIssueId, ledgerDir, now);
+
+  assert.deepEqual(
+    diagnosis.candidates.map(({ sourceFileId, importRunId }) => ({ sourceFileId, importRunId })),
+    [remainingVersion],
+  );
+});
+
 test("preview duplicate count uses active row lineage and counts cross-projection rows once", async () => {
   const { ledgerDir, sourceVersion, input } = await setup();
   const support = { sourceFileId: "source-support", importRunId: "run-support" };
@@ -487,6 +538,20 @@ test("credit-card impact includes same-value fallback accounts in restore gating
     eventDetails.affectedAccountIds.sort(),
     [reported.id, companionAccount.id].sort(),
   );
+
+  const restoreImpact = previewDataIssueRestore(issue.dataIssueId, ledgerDir, now);
+  assert.deepEqual(
+    restoreImpact.affectedAccounts.map((account) => account.accountId).sort(),
+    [reported.id, companionAccount.id].sort(),
+  );
+  assert.deepEqual(
+    restoreImpact.affectedAccounts.map((account) => account.accountLabel).sort(),
+    [reported.label, companionAccount.label].sort(),
+  );
+  const restoredCompanionImpact = restoreImpact.affectedAccounts.find(
+    (account) => account.accountId === companionAccount.id,
+  );
+  assert.deepEqual(restoredCompanionImpact?.before, restoredCompanionImpact?.after);
 
   const newer = { sourceFileId: "source-newer-card-b", importRunId: "run-newer-card-b" };
   const newerDb = openLedgerDatabase(ledgerDir);
