@@ -71,13 +71,14 @@
 
     {#if state.screen === "list" || state.screen === "diagnosis" || state.screen === "preview"}
       <section class="workflow-card card">
-        {#if state.screen === "list"}
-          <div class="panel-title">
-            <div>
-              <h2>{state.issue.accountLabel}</h2>
-              <p class="lead">{state.issue.createdAt}</p>
-            </div>
+        <div class="panel-title">
+          <div>
+            <h2>{state.issue.accountLabel}</h2>
+            <p class="lead">{state.issue.createdAt}</p>
           </div>
+        </div>
+
+        {#if state.screen === "list"}
           <dl class="issue-facts">
             <div><dt>{$t.dataIssues.reportedValue}</dt><dd>{formatAmount(state.issue.displayedValue)}</dd></div>
             <div><dt>{$t.dataIssues.dataDate}</dt><dd>{state.issue.dataDate}</dd></div>
@@ -86,14 +87,18 @@
           <div class="card-actions">
             <button class="button primary" onclick={() => send({ type: "open-diagnosis" })}>{$t.dataIssues.excludeInvalidImport}</button>
           </div>
-        {:else}
+        {/if}
+
+        {#if state.screen === "diagnosis" || state.screen === "preview"}
           <div class="workflow-step completed">
             <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
             <strong>1&nbsp; {$t.dataIssues.reportDetails}</strong>
             <span class="step-summary">{formatAmount(state.issue.displayedValue)} · {state.issue.dataDate} · {state.issue.note || "--"}</span>
           </div>
 
-          {#if state.screen === "diagnosis"}
+        {/if}
+
+        {#if state.screen === "diagnosis"}
             <div class="stage-reveal" transition:slide={stageTransition}>
               <div class="workflow-step active source-step">
                 <span class="step-mark">2</span>
@@ -139,7 +144,9 @@
                 <ChevronRight size={18} aria-hidden="true" />
               </div>
             </div>
-          {:else if state.screen === "preview" && state.preview}
+        {/if}
+
+        {#if state.screen === "preview" && state.preview}
             <div class="workflow-step completed">
               <span class="step-mark"><Check size={18} strokeWidth={2.4} aria-hidden="true" /></span>
               <strong>2&nbsp; {$t.dataIssues.confirmSource}</strong>
@@ -175,7 +182,6 @@
                 </div>
               </div>
             </div>
-          {/if}
         {/if}
       </section>
     {:else if state.screen === "blocked" && state.preview}
