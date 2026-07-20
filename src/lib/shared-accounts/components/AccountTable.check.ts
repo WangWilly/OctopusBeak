@@ -13,3 +13,10 @@ test("unavailable account balances render explicit localized copy", () => {
 test("unavailable accounts omit allocation and exposure values", () => {
   assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
 });
+
+test("account deep links select, scroll, and focus the exact rendered row", () => {
+  assert.match(source, /data-account-id=\{account\.id\}/);
+  assert.match(source, /tabindex=\{account\.id === selectedAccountId \? 0 : -1\}/);
+  assert.match(source, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /scrollIntoView/);
+});

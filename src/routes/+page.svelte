@@ -23,6 +23,7 @@
 
   let route: RouteId = "overview";
   let dataIssueId: string | null = null;
+  let focusAccountId: string | null = null;
   let initialized = false;
   let overview: LoadState<OverviewPageDto> = { status: "loading" };
   let assets: LoadState<AssetsPageDto> = { status: "loading" };
@@ -31,10 +32,18 @@
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
 
   function normalizeRoute() {
-    const [next, id] = location.hash.replace(/^#\/?/, "").split("/");
+    const [next, encodedId] = location.hash.replace(/^#\/?/, "").split("/");
     route = ["overview", "assets", "liabilities", "spending", "automation", "data-issues", "settings"].includes(next) ? next as RouteId : "overview";
-    dataIssueId = route === "data-issues" && id ? id : null;
-    if (!location.hash || next !== route || (route !== "data-issues" && id)) location.hash = `/${route}`;
+    const acceptsId = route === "assets" || route === "liabilities" || route === "data-issues";
+    let id: string | null = null;
+    try {
+      id = acceptsId && encodedId ? decodeURIComponent(encodedId) : null;
+    } catch {
+      id = null;
+    }
+    dataIssueId = route === "data-issues" ? id : null;
+    focusAccountId = route === "assets" || route === "liabilities" ? id : null;
+    if (!location.hash || next !== route || (!acceptsId && encodedId) || (encodedId && !id)) location.hash = `/${route}`;
     void loadRoute(route);
   }
 
@@ -78,11 +87,11 @@
   {#if overview.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if overview.status === "error"}<p class="status">{overview.message}</p>{/if}
 {:else if route === "assets"}
-  {#if assets.status === "ready"}<AssetsDashboard assets={assets.data} />{/if}
+  {#if assets.status === "ready"}<AssetsDashboard assets={assets.data} {focusAccountId} />{/if}
   {#if assets.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if assets.status === "error"}<p class="status">{assets.message}</p>{/if}
 {:else if route === "liabilities"}
-  {#if liabilities.status === "ready"}<LiabilitiesDashboard liabilities={liabilities.data} />{/if}
+  {#if liabilities.status === "ready"}<LiabilitiesDashboard liabilities={liabilities.data} {focusAccountId} />{/if}
   {#if liabilities.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if liabilities.status === "error"}<p class="status">{liabilities.message}</p>{/if}
 {:else if route === "spending"}

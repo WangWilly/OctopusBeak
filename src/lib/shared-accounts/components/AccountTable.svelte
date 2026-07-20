@@ -28,10 +28,12 @@
   export let dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]> = {};
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
+  export let focusAccountId: string | null = null;
   export let onReportDataIssue: ((account: AccountRowDto) => void) | null = null;
 
   export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
+  let handledFocusAccountId: string | null = null;
   let transactionsOpen = false;
   let positionsOpen = false;
   let historyOpen = false;
@@ -101,9 +103,23 @@
     { key: "balance", label: $t.accounts.balance, right: true },
     { key: "allocation", label: mode === "asset" ? $t.accounts.allocation : $t.accounts.exposure, right: true },
   ];
+  $: if (focusAccountId && focusAccountId !== handledFocusAccountId) {
+    handledFocusAccountId = focusAccountId;
+    void focusAccount(focusAccountId);
+  }
 
   function selectAccount(accountId: string) {
     selectedAccountId = accountId;
+  }
+
+  async function focusAccount(accountId: string) {
+    if (!accounts.some((account) => account.id === accountId)) return;
+    selectedAccountId = accountId;
+    await tick();
+    const row = [...(tableWrap?.querySelectorAll<HTMLElement>("[data-account-id]") ?? [])]
+      .find((element) => element.dataset.accountId === accountId);
+    row?.scrollIntoView({ block: "nearest" });
+    row?.focus({ preventScroll: true });
   }
 
   function percentage(account: AccountRowDto) {
@@ -265,6 +281,8 @@
               <tr
                 class:selected={account.id === selectedAccountId}
                 class="account-card"
+                data-account-id={account.id}
+                tabindex={account.id === selectedAccountId ? 0 : -1}
                 on:click={() => selectAccount(account.id)}
               >
                 <td>

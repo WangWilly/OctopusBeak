@@ -109,6 +109,11 @@
     location.hash = `/data-issues/${id}`;
   }
 
+  function accountReturnHref(account: DataIssueDetailDto["account"]) {
+    const route = account.group === "liability" ? "liabilities" : "assets";
+    return `#/${route}/${encodeURIComponent(account.id)}`;
+  }
+
   function showStageError(stage: string, error: unknown) {
     stageError = {
       stage,
@@ -287,7 +292,10 @@
       <section class="workflow-card card">
         <div class="panel-title">
           <div><h2>{issue.account.label}</h2></div>
-          <button class="button secondary" type="button" onclick={() => (location.hash = "/data-issues")}>{$t.dataIssues.back}</button>
+          <div class="panel-actions">
+            <a class="button secondary" href={accountReturnHref(issue.account)}>{$t.dataIssues.backToAccount}</a>
+            <button class="button secondary" type="button" onclick={() => (location.hash = "/data-issues")}>{$t.dataIssues.back}</button>
+          </div>
         </div>
 
         {#if issue.status === "pending"}
@@ -364,6 +372,7 @@
 <style>
   .data-issues-content { display: grid; gap: var(--space-4); }
   .workflow-card { overflow: hidden; }
+  .panel-actions { display: flex; gap: var(--space-3); }
   .issue-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-5); margin: 0; }
   .issue-facts div { display: grid; gap: var(--space-1); }
   .issue-facts dt, small { color: var(--muted); font-size: 12px; }

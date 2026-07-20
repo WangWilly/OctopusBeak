@@ -20,6 +20,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
   export let liabilities: LiabilitiesPageDto;
+  export let focusAccountId: string | null = null;
 
   let search = "";
   let chartCurrency = "TWD";
@@ -181,6 +182,7 @@
       bind:filter={accountFilter}
       transactionsByAccount={liabilities.transactionsByAccount}
       dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+      focusAccountId={focusAccountId}
       onReportDataIssue={openReport}
     />
   </div>

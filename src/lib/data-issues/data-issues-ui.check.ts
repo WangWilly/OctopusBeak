@@ -53,13 +53,31 @@ test("prototype documents contain only de-identified synthetic incident values",
 });
 
 test("report submission persists the case before navigating", async () => {
+  const assets = await readFile(new URL("../assets/AssetsDashboard.svelte", import.meta.url), "utf8");
   const liabilities = await readFile(new URL("../liabilities/LiabilitiesDashboard.svelte", import.meta.url), "utf8");
   const modal = await readFile(new URL("./ReportDataIssueModal.svelte", import.meta.url), "utf8");
   const accounts = await readFile(new URL("../shared-accounts/components/AccountTable.svelte", import.meta.url), "utf8");
 
+  assert.match(assets, /onReportDataIssue=\{openReport\}/);
+  assert.match(assets, /<ReportDataIssueModal bind:open=\{reportOpen\}/);
   assert.match(liabilities, /await window\.octopusBeak\.dataIssues\.create\(input\)/);
   assert.match(liabilities, /location\.hash = `\/data-issues\/\$\{issue\.dataIssueId\}`/);
   assert.match(modal, /export let onSubmit: \(input: DataIssueCreateInput\) => Promise<void>/);
   assert.match(modal, /catch \(error\)/);
   assert.match(accounts, /account\.valueAvailability === "unavailable"[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
+});
+
+test("account issue navigation preserves account deep links and unmounts closed reports", async () => {
+  const route = await readFile(new URL("../../routes/+page.svelte", import.meta.url), "utf8");
+  const assets = await readFile(new URL("../assets/AssetsDashboard.svelte", import.meta.url), "utf8");
+  const liabilities = await readFile(new URL("../liabilities/LiabilitiesDashboard.svelte", import.meta.url), "utf8");
+  const dashboard = await readFile(new URL("./DataIssuesDashboard.svelte", import.meta.url), "utf8");
+  const modal = await readFile(new URL("./ReportDataIssueModal.svelte", import.meta.url), "utf8");
+
+  assert.match(route, /focusAccountId/);
+  assert.match(route, /decodeURIComponent/);
+  assert.match(assets, /focusAccountId=\{focusAccountId\}/);
+  assert.match(liabilities, /focusAccountId=\{focusAccountId\}/);
+  assert.match(dashboard, /accountReturnHref\(issue\.account\)/);
+  assert.match(modal, /\{#if account && open\}/);
 });
