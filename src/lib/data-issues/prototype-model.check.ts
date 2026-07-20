@@ -94,7 +94,8 @@ test("data issue prototype completes quarantine, audit, and restore safely", () 
 });
 
 test("blocked and failed scenarios never change the displayed value", () => {
-  const diagnosis = transitionDataIssuePrototype(seedDataIssuePrototype(), {
+  const seeded = seedDataIssuePrototype();
+  const diagnosis = transitionDataIssuePrototype(seeded, {
     type: "open-diagnosis",
   });
   const selected = transitionDataIssuePrototype(diagnosis, {
@@ -108,6 +109,14 @@ test("blocked and failed scenarios never change the displayed value", () => {
   assert.equal(blocked.screen, "blocked");
   assert.equal(canConfirmQuarantine(blocked), false);
   assert.equal(blocked.currentValue, 520_524);
+  assert.equal(blocked.errors.length, seeded.errors.length + 1);
+  assert.deepEqual(blocked.errors.at(-1), {
+    at: "剛剛",
+    stage: "source-analysis",
+    summary: "CSV row lineage is incomplete",
+    status: "blocked",
+    details: "One source occurrence could not be linked to a canonical ledger row.",
+  });
 
   const failed = transitionDataIssuePrototype(selected, {
     type: "preview",
@@ -116,4 +125,12 @@ test("blocked and failed scenarios never change the displayed value", () => {
   assert.equal(failed.screen, "failure");
   assert.equal(failed.currentValue, 520_524);
   assert.equal(failed.issue.status, "investigating");
+  assert.equal(failed.errors.length, seeded.errors.length + 1);
+  assert.deepEqual(failed.errors.at(-1), {
+    at: "剛剛",
+    stage: "impact-calculation",
+    summary: "Unable to read ledger",
+    status: "failed",
+    details: "Impact calculation stopped before any ledger value changed.",
+  });
 });

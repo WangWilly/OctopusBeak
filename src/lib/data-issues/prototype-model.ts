@@ -43,6 +43,14 @@ export type PrototypePreview = {
   unresolvedRows: number;
 };
 
+export type DataIssueErrorRecord = {
+  at: string;
+  stage: "source-analysis" | "impact-calculation";
+  summary: string;
+  status: "blocked" | "failed";
+  details: string;
+};
+
 export type DataIssuePrototypeState = {
   screen: PrototypeScreen;
   issue: DataIssueReportContext & {
@@ -57,6 +65,7 @@ export type DataIssuePrototypeState = {
   reason: string;
   acknowledged: boolean;
   currentValue: number;
+  errors: DataIssueErrorRecord[];
   audit: Array<{
     action: "invalidated" | "restored";
     reason: string;
@@ -138,6 +147,22 @@ export function seedDataIssuePrototype(): DataIssuePrototypeState {
     reason: "",
     acknowledged: false,
     currentValue: 520_524,
+    errors: [
+      {
+        at: "2026-07-20 11:38",
+        stage: "source-analysis",
+        summary: "CSV row lineage is incomplete",
+        status: "blocked",
+        details: "Some imported rows could not be matched to existing ledger rows.",
+      },
+      {
+        at: "2026-07-20 11:42",
+        stage: "impact-calculation",
+        summary: "Unable to read ledger",
+        status: "failed",
+        details: "Impact calculation stopped before any ledger value changed.",
+      },
+    ],
     audit: [],
   };
 }
@@ -191,6 +216,16 @@ export function transitionDataIssuePrototype(
         scenario: event.scenario,
         screen: "blocked",
         preview: { ...preview, unresolvedRows: 1 },
+        errors: [
+          ...state.errors,
+          {
+            at: "剛剛",
+            stage: "source-analysis",
+            summary: "CSV row lineage is incomplete",
+            status: "blocked",
+            details: "One source occurrence could not be linked to a canonical ledger row.",
+          },
+        ],
       };
     }
     if (event.scenario === "failure") {
@@ -199,6 +234,16 @@ export function transitionDataIssuePrototype(
         scenario: event.scenario,
         screen: "failure",
         preview: null,
+        errors: [
+          ...state.errors,
+          {
+            at: "剛剛",
+            stage: "impact-calculation",
+            summary: "Unable to read ledger",
+            status: "failed",
+            details: "Impact calculation stopped before any ledger value changed.",
+          },
+        ],
       };
     }
     return {
