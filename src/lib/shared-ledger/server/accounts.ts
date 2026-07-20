@@ -76,6 +76,19 @@ export type LedgerQueryData = {
   maicoinStatementRows: MaicoinStatementRow[];
 };
 
+export type UnavailableAccountIssue = {
+  dataIssueId: string;
+  accountId: string;
+  accountLabel: string;
+  accountContext: {
+    institution: string;
+    product: string;
+    group: AccountGroup;
+    kind: AccountKind;
+    typeLabel: string;
+  };
+};
+
 export function emptyLedgerQueryData(): LedgerQueryData {
   return {
     importRuns: [],
@@ -145,6 +158,7 @@ export function buildAccountOverview(data: LedgerQueryData): AccountRowDto[] {
         transactionCount: transactionsByAccount[accountId]?.length ?? 0,
         assetPositionCount: details.length,
         lastUpdated: rows.map((row) => row.asOfDate ?? row.importedAt.slice(0, 10)).sort().at(-1) ?? null,
+        valueAvailability: "available" as const,
       };
     })
     .sort((left, right) => {
@@ -152,6 +166,20 @@ export function buildAccountOverview(data: LedgerQueryData): AccountRowDto[] {
       if (group !== 0) return group;
       return left.institution.localeCompare(right.institution) || left.label.localeCompare(right.label);
     });
+}
+
+export function unavailableAccountFromIssue(issue: UnavailableAccountIssue): AccountRowDto {
+  return {
+    id: issue.accountId,
+    label: issue.accountLabel,
+    ...issue.accountContext,
+    amountLines: [],
+    transactionCount: 0,
+    assetPositionCount: 0,
+    lastUpdated: null,
+    valueAvailability: "unavailable",
+    dataIssueId: issue.dataIssueId,
+  };
 }
 
 export function buildRawPositions(data: LedgerQueryData): RawPosition[] {

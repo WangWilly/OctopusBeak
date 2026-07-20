@@ -8,6 +8,12 @@ import {
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "$lib/shared-ledger/server/accounts.ts";
+import {
+  appendUnavailableAccounts,
+  applyLedgerVisibility,
+  loadActiveImportScopes,
+  loadUnavailableAccountIssues,
+} from "$lib/data-issues/server/ledger-visibility.ts";
 
 export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<LiabilitiesPageDto> {
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);
@@ -40,13 +46,17 @@ export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<L
       loanTransactions,
       maicoinAccountSnapshots,
     };
-    const accounts = buildAccountOverview(data).filter((account) => account.group === "liability");
+    const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
+    const accounts = appendUnavailableAccounts(
+      buildAccountOverview(visibleData),
+      loadUnavailableAccountIssues(sqlite),
+    ).filter((account) => account.group === "liability");
 
     return {
       accounts,
-      transactionsByAccount: buildTransactionsByAccount(data),
-      dailyHistoryByAccount: buildDailyHistoryByAccount(data),
-      dailyHistory: buildDailyHistory(data),
+      transactionsByAccount: buildTransactionsByAccount(visibleData),
+      dailyHistoryByAccount: buildDailyHistoryByAccount(visibleData),
+      dailyHistory: buildDailyHistory(visibleData),
     };
   } finally {
     sqlite.close();
