@@ -491,11 +491,11 @@ const cardRows = [
   },
 ];
 
-async function cardImportFixture() {
+async function cardImportFixture(bank = "esun") {
   const root = await mkdtemp(join(tmpdir(), "card-snapshot-import-"));
   const fixtureDownloadsDir = join(root, "downloads");
   const fixtureOutputDir = join(root, "ledger");
-  const fixtureSourceDir = join(fixtureDownloadsDir, "esun-credit-card-statements");
+  const fixtureSourceDir = join(fixtureDownloadsDir, `${bank}-credit-card-statements`);
   await mkdir(fixtureSourceDir, { recursive: true });
   const writeCapture = async (
     name: string,
@@ -512,7 +512,7 @@ async function cardImportFixture() {
       capturedAt,
       captureKinds: ["billed", "unbilled"],
       cardRowCounts: { "1111": rows.length },
-      completenessEvidence: { bank: "esun" },
+      completenessEvidence: { bank },
     });
     await writeFile(join(fixtureSourceDir, `${name}-billed.csv`), cardCsv(billedRows), "utf8");
     await writeFile(
@@ -535,7 +535,7 @@ async function cardImportFixture() {
   return { fixtureDownloadsDir, fixtureOutputDir, fixtureSourceDir, writeCapture };
 }
 
-const repeatedFullCardFixture = await cardImportFixture();
+const repeatedFullCardFixture = await cardImportFixture("fictional");
 const repeatedFullCaptureId = "9d000000-0000-4000-8000-000000000006";
 await repeatedFullCardFixture.writeCapture(
   "repeat",
@@ -544,11 +544,11 @@ await repeatedFullCardFixture.writeCapture(
   [cardRows[0]],
   [],
 );
-await importDownloadsCsv({
+const firstRepeatedFullCardResult = await importDownloadsCsv({
   downloadsDir: repeatedFullCardFixture.fixtureDownloadsDir,
   outputDir: repeatedFullCardFixture.fixtureOutputDir,
 });
-await importDownloadsCsv({
+const unchangedRepeatedFullCardResult = await importDownloadsCsv({
   downloadsDir: repeatedFullCardFixture.fixtureDownloadsDir,
   outputDir: repeatedFullCardFixture.fixtureOutputDir,
 });
@@ -566,6 +566,56 @@ assert.equal((repeatedFullCardDb.prepare(
   "SELECT COUNT(*) AS count FROM credit_card_snapshots WHERE capture_id = ?",
 ).get(repeatedFullCaptureId) as { count: number }).count, 2);
 repeatedFullCardDb.close();
+assert.equal(firstRepeatedFullCardResult.importedRows, 1);
+assert.equal(firstRepeatedFullCardResult.skippedDuplicateRows, 0);
+assert.equal(unchangedRepeatedFullCardResult.importedRows, 0);
+assert.equal(unchangedRepeatedFullCardResult.skippedDuplicateRows, 1);
+
+await repeatedFullCardFixture.writeCapture(
+  "repeat",
+  repeatedFullCaptureId,
+  "2026-07-17T08:09:10.000Z",
+  [{ ...cardRows[0], foreign_amount: "110", twd_amount: "110" }],
+  [],
+);
+const correctedRepeatedFullCardResult = await importDownloadsCsv({
+  downloadsDir: repeatedFullCardFixture.fixtureDownloadsDir,
+  outputDir: repeatedFullCardFixture.fixtureOutputDir,
+});
+const correctedRepeatedFullCardDb = openLedgerDatabase(
+  repeatedFullCardFixture.fixtureOutputDir,
+  { readOnly: true },
+);
+const correctedCaptureAmount = correctedRepeatedFullCardDb.prepare(`
+  SELECT l.twd_amount FROM credit_card_capture_entries AS e
+  JOIN credit_card_statement_lines AS l ON l.statement_row_id = e.statement_row_id
+  WHERE e.capture_id = ? AND e.statement_type = 'billed'
+`).get(repeatedFullCaptureId) as { twd_amount: number };
+const correctedSnapshot = correctedRepeatedFullCardDb.prepare(`
+  SELECT total_amount FROM credit_card_snapshots
+  WHERE capture_id = ? AND statement_type = 'billed'
+`).get(repeatedFullCaptureId) as { total_amount: number };
+const unchangedCompletedEvent = JSON.parse((correctedRepeatedFullCardDb.prepare(`
+  SELECT record_json FROM import_run_events
+  WHERE import_run_id = ? AND event_type = 'completed'
+`).get(unchangedRepeatedFullCardResult.importRunId) as {
+  record_json: string;
+}).record_json) as Record<string, unknown>;
+const correctedCompletedEvent = JSON.parse((correctedRepeatedFullCardDb.prepare(`
+  SELECT record_json FROM import_run_events
+  WHERE import_run_id = ? AND event_type = 'completed'
+`).get(correctedRepeatedFullCardResult.importRunId) as {
+  record_json: string;
+}).record_json) as Record<string, unknown>;
+correctedRepeatedFullCardDb.close();
+assert.equal(correctedRepeatedFullCardResult.importedRows, 1);
+assert.equal(correctedRepeatedFullCardResult.skippedDuplicateRows, 0);
+assert.equal(correctedCaptureAmount.twd_amount, 110);
+assert.equal(correctedSnapshot.total_amount, 110);
+assert.equal(unchangedCompletedEvent.importedRows, 0);
+assert.equal(unchangedCompletedEvent.skippedDuplicateRows, 1);
+assert.equal(correctedCompletedEvent.importedRows, 1);
+assert.equal(correctedCompletedEvent.skippedDuplicateRows, 0);
 
 const fullCardFixture = await cardImportFixture();
 const firstCaptureId = "9d000000-0000-4000-8000-000000000001";

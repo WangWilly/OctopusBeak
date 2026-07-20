@@ -278,15 +278,14 @@ export function insertRecord(
   db: LedgerDatabase,
   table: string,
   record: Record<string, unknown>,
-  ignoreConflicts = false,
 ): "inserted" | "duplicate" {
   const columns = Object.keys(record);
   const placeholders = columns.map(() => "?").join(", ");
   try {
-    const result = db.prepare(
-      `INSERT ${ignoreConflicts ? "OR IGNORE " : ""}INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
+    db.prepare(
+      `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`,
     ).run(...columns.map((column) => sqliteValue(record[column])));
-    return result.changes > 0 ? "inserted" : "duplicate";
+    return "inserted";
   } catch (error) {
     if (
       error instanceof Error
@@ -823,7 +822,7 @@ function upsertCanonicalCreditCardLine(
       UPDATE credit_card_statement_lines SET last_seen_at = ?
       WHERE statement_row_id = ?
     `).run(row.seenAt, existing.statement_row_id);
-    return existing.statement_row_id;
+    return { statementRowId: existing.statement_row_id, outcome: "duplicate" as const };
   }
   const record = {
     ...commonTypedRowFields(row.sourceFileRecord, row.row),
@@ -834,8 +833,10 @@ function upsertCanonicalCreditCardLine(
     first_seen_at: row.seenAt,
     last_seen_at: row.seenAt,
   };
-  insertRecord(db, "credit_card_statement_lines", record);
-  return String(record.statement_row_id);
+  return {
+    statementRowId: String(record.statement_row_id),
+    outcome: insertRecord(db, "credit_card_statement_lines", record),
+  };
 }
 
 function insertVerifiedCreditCardState(
@@ -843,7 +844,10 @@ function insertVerifiedCreditCardState(
   cardRows: CreditCardRow[],
   captures: Map<string, VerifiedCreditCardCapture>,
   seenAt: string,
+  currentCardRows: Set<CreditCardRow>,
 ) {
+  let importedRows = 0;
+  let skippedDuplicateRows = 0;
   const captureIdBySourceFileId = new Map<string, string>();
   for (const capture of captures.values()) {
     for (const file of capture.files) {
@@ -869,30 +873,46 @@ function insertVerifiedCreditCardState(
       contentKey: row.contentKey,
       sourceRowIndex: row.row.sourceRowIndex,
     })))) {
-      row.statementRowId = upsertCanonicalCreditCardLine(db, {
+      const outcome = upsertCanonicalCreditCardLine(db, {
         ...row,
         occurrenceIndex,
         seenAt: capture?.capturedAt ?? seenAt,
       });
+      row.statementRowId = outcome.statementRowId;
+      if (currentCardRows.has(row)) {
+        if (outcome.outcome === "duplicate") skippedDuplicateRows += 1;
+        else importedRows += 1;
+      }
     }
   }
 
   for (const capture of captures.values()) {
-    insertRecord(db, "credit_card_captures", {
-      capture_id: capture.captureId,
-      bank: capture.bank,
-      product: capture.product,
-      captured_at: capture.capturedAt,
-      completeness_json: JSON.stringify(capture.metadata.completenessEvidence),
-    }, true);
+    db.prepare(`
+      INSERT INTO credit_card_captures (
+        capture_id, bank, product, captured_at, completeness_json
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(capture_id) DO NOTHING
+    `).run(
+      capture.captureId,
+      capture.bank,
+      capture.product,
+      capture.capturedAt,
+      JSON.stringify(capture.metadata.completenessEvidence),
+    );
     for (const row of cardRows) {
       if (captureIdBySourceFileId.get(row.sourceFileId) !== capture.captureId) continue;
       if (!row.statementRowId) throw new Error("Canonical credit-card row is missing");
       db.prepare(`
-        INSERT OR IGNORE INTO credit_card_capture_entries (
+        INSERT INTO credit_card_capture_entries (
           capture_id, statement_row_id, source_file_id, source_row_index,
           bank, product, card_key, statement_type
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(capture_id, source_file_id, source_row_index) DO UPDATE SET
+          statement_row_id = excluded.statement_row_id,
+          bank = excluded.bank,
+          product = excluded.product,
+          card_key = excluded.card_key,
+          statement_type = excluded.statement_type
       `).run(
         capture.captureId,
         row.statementRowId,
@@ -918,25 +938,44 @@ function insertVerifiedCreditCardState(
           transaction_count: number;
           total_amount: number;
         };
-        insertRecord(db, "credit_card_snapshots", {
-          snapshot_id: hashBytes(stableStringify([
+        db.prepare(`
+          INSERT INTO credit_card_snapshots (
+            snapshot_id, capture_id, source_file_id, bank, product, card_key,
+            statement_type, captured_at, as_of_date, currency,
+            transaction_count, total_amount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(snapshot_id) DO UPDATE SET
+            capture_id = excluded.capture_id,
+            source_file_id = excluded.source_file_id,
+            bank = excluded.bank,
+            product = excluded.product,
+            card_key = excluded.card_key,
+            statement_type = excluded.statement_type,
+            captured_at = excluded.captured_at,
+            as_of_date = excluded.as_of_date,
+            currency = excluded.currency,
+            transaction_count = excluded.transaction_count,
+            total_amount = excluded.total_amount
+        `).run(
+          hashBytes(stableStringify([
             "credit-card-snapshot", capture.captureId, cardKey, file.statementType,
           ])).slice(0, 32),
-          capture_id: capture.captureId,
-          source_file_id: sourceFileId,
-          bank: capture.bank,
-          product: capture.product,
-          card_key: cardKey,
-          statement_type: file.statementType,
-          captured_at: capture.capturedAt,
-          as_of_date: capture.capturedAt.slice(0, 10),
-          currency: "TWD",
-          transaction_count: aggregate.transaction_count,
-          total_amount: aggregate.total_amount,
-        }, true);
+          capture.captureId,
+          sourceFileId,
+          capture.bank,
+          capture.product,
+          cardKey,
+          file.statementType,
+          capture.capturedAt,
+          capture.capturedAt.slice(0, 10),
+          "TWD",
+          aggregate.transaction_count,
+          aggregate.total_amount,
+        );
       }
     }
   }
+  return { importedRows, skippedDuplicateRows };
 }
 
 function hasAnyCell(row: unknown[]): boolean {
@@ -1185,8 +1224,15 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         if (outcome === "duplicate") skippedDuplicateRows += 1;
         else importedRows += 1;
       }
-      insertVerifiedCreditCardState(db, allCardRows, verifiedCaptures, startedAt);
-      importedRows += cardRows.length;
+      const cardImportResult = insertVerifiedCreditCardState(
+        db,
+        allCardRows,
+        verifiedCaptures,
+        startedAt,
+        new Set(cardRows),
+      );
+      importedRows += cardImportResult.importedRows;
+      skippedDuplicateRows += cardImportResult.skippedDuplicateRows;
       finishedAt = new Date().toISOString();
       const runRecord = {
         ...baseRecord("import_run"),
