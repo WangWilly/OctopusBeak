@@ -9,6 +9,12 @@ import {
 import { buildSummaryMetrics } from "../../shared-ledger/server/summary.ts";
 import { requiredExchangeRateCurrencies } from "../../../ledger/exchange-rates.ts";
 import { buildDailyHistory } from "./daily-history.ts";
+import {
+  appendUnavailableAccounts,
+  applyLedgerVisibility,
+  loadActiveImportScopes,
+  loadUnavailableAccountIssues,
+} from "../../data-issues/server/ledger-visibility.ts";
 
 export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<OverviewPageDto> {
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);
@@ -56,8 +62,12 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       maicoinAccountSnapshots,
       maicoinStatementRows,
     };
-    const accounts = buildAccountOverview(data);
-    const dailyHistory = buildDailyHistory(data);
+    const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
+    const accounts = appendUnavailableAccounts(
+      buildAccountOverview(visibleData),
+      loadUnavailableAccountIssues(sqlite),
+    );
+    const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;
     const lastDate = dailyHistory.at(-1)?.date;
     const currencies = requiredExchangeRateCurrencies(dailyHistory);
@@ -87,7 +97,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
             .map((rate) => ({ ...rate }));
 
     return {
-      importedAt: latestImportedAt(data),
+      importedAt: latestImportedAt(visibleData),
       summary: buildSummaryMetrics(accounts),
       dailyHistory,
       accounts,

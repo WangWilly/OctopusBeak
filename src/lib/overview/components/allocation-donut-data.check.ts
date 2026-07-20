@@ -23,6 +23,7 @@ function account(
     transactionCount: 0,
     assetPositionCount: 0,
     lastUpdated: null,
+    valueAvailability: "available",
   };
 }
 
