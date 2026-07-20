@@ -46,6 +46,7 @@ function completeCaptureIds(
 function filterLedgerData(
   data: LedgerQueryData,
   keep: (row: { sourceFileId: string; importRunId: string }) => boolean,
+  enforceCaptureCompleteness = true,
 ): LedgerQueryData {
   const visible = <T extends { sourceFileId: string; importRunId: string }>(rows: T[]) =>
     rows.filter(keep);
@@ -53,14 +54,17 @@ function filterLedgerData(
   const visibleCardRows = new Set(creditCardStatementLines.map((row) => row.statementRowId));
   const creditCardCaptureEntries = data.creditCardCaptureEntries
     .filter((entry) => visibleCardRows.has(entry.statementRowId));
-  const visibleCaptureIds = completeCaptureIds(
-    data.creditCardCaptures,
-    data.creditCardCaptureEntries,
-    creditCardCaptureEntries,
-  );
+  const visibleCaptureIds = enforceCaptureCompleteness
+    ? completeCaptureIds(
+      data.creditCardCaptures,
+      data.creditCardCaptureEntries,
+      creditCardCaptureEntries,
+    )
+    : new Set(creditCardCaptureEntries.map((entry) => entry.captureId));
 
   return {
     ...data,
+    sourceFiles: visible(data.sourceFiles),
     accountTransactions: visible(data.accountTransactions),
     foreignCurrencyTransactions: visible(data.foreignCurrencyTransactions),
     creditCardStatementLines,
@@ -88,7 +92,7 @@ export function applyLedgerVisibility(
 }
 
 function selectLedgerScopes(data: LedgerQueryData, scopes: ReadonlySet<ImportScope>) {
-  return filterLedgerData(data, (row) => scopes.has(importScope(row)));
+  return filterLedgerData(data, (row) => scopes.has(importScope(row)), false);
 }
 
 export function accountIdsForImportScope(data: LedgerQueryData, scope: ImportScope) {
