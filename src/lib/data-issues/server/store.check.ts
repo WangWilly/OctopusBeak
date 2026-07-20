@@ -133,6 +133,12 @@ function visibleLoanBalance(ledgerDir: string) {
   return row?.balance_after;
 }
 
+function corruptFirstEvent(ledgerDir: string) {
+  const db = openLedgerDatabase(ledgerDir);
+  db.prepare("UPDATE data_issue_events SET details_json = '{' WHERE rowid = (SELECT MIN(rowid) FROM data_issue_events)").run();
+  db.close();
+}
+
 async function setup() {
   const ledgerDir = fixtureDir();
   const sourceVersion = { sourceFileId: "source-a", importRunId: "run-a" };
@@ -365,4 +371,173 @@ test("records a blocked event for a missing exact source version", async () => {
     sourceVersion: { sourceFileId: "missing-source", importRunId: "missing-run" },
   }, ledgerDir, now), errorCode("SOURCE_VERSION_NOT_FOUND"));
   assert.equal(loadDataIssue(issue.dataIssueId, ledgerDir).events.at(-1)?.outcome, "blocked");
+});
+
+test("rejects a second source exclusion after the case is resolved", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const secondSource = { sourceFileId: "source-b", importRunId: "run-b" };
+  const db = openLedgerDatabase(ledgerDir);
+  seedSource(db, secondSource, {
+    importedAt: "2026-07-19T12:00:00.000Z",
+    balances: [63_900],
+    csvRows: 1,
+    tradeDates: ["2026-07-20"],
+  });
+  db.close();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  const first = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: first.previewToken,
+  }, ledgerDir, now);
+  const second = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion: secondSource }, ledgerDir, now);
+  assert.throws(() => confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: secondSource,
+    reason: "Second synthetic mismatch",
+    acknowledged: true,
+    previewToken: second.previewToken,
+  }, ledgerDir, now), errorCode("INVALID_CASE_STATUS"));
+  const after = openLedgerDatabase(ledgerDir);
+  assert.equal((after.prepare("SELECT COUNT(*) AS count FROM disabled_import_sources WHERE state = 'active'").get() as { count: number }).count, 1);
+  assert.equal((after.prepare("SELECT outcome FROM data_issue_events ORDER BY rowid DESC LIMIT 1").get() as { outcome: string }).outcome, "blocked");
+  after.close();
+});
+
+test("restore changes only the exact exclusion selected by its preview", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  const exclusion = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: exclusion.previewToken,
+  }, ledgerDir, now);
+  const db = openLedgerDatabase(ledgerDir);
+  seedSource(db, { sourceFileId: "source-b", importRunId: "run-b" }, {
+    importedAt: "2026-07-19T12:00:00.000Z",
+    balances: [63_900],
+    csvRows: 1,
+    tradeDates: ["2026-07-20"],
+  });
+  db.prepare(`INSERT INTO disabled_import_sources (
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    reason, state, disabled_at, restored_at, preview_token
+  ) VALUES ('legacy-second', ?, 'source-b', 'run-b', 'Legacy synthetic row',
+    'active', '2026-07-20T01:00:00.000Z', NULL, 'legacy-token')`).run(issue.dataIssueId);
+  db.close();
+  const preview = previewDataIssueRestore(issue.dataIssueId, ledgerDir, now);
+  const restored = confirmDataIssueRestore({ dataIssueId: issue.dataIssueId, previewToken: preview.previewToken }, ledgerDir, now);
+  const after = openLedgerDatabase(ledgerDir);
+  const states = after.prepare(`SELECT state, COUNT(*) AS count
+    FROM disabled_import_sources WHERE data_issue_id = ? GROUP BY state ORDER BY state`)
+    .all(issue.dataIssueId) as Array<{ state: string; count: number }>;
+  after.close();
+  assert.deepEqual(states.map((row) => ({ ...row })), [{ state: "active", count: 1 }, { state: "restored", count: 1 }]);
+  assert.equal(restored.status, "resolved");
+});
+
+test("create rolls back when response hydration fails", async () => {
+  const { ledgerDir, input } = await setup();
+  const db = openLedgerDatabase(ledgerDir);
+  db.exec(`CREATE TRIGGER corrupt_created_response
+    AFTER INSERT ON data_issue_events
+    WHEN NEW.event_type = 'created'
+    BEGIN
+      INSERT INTO data_issue_events (
+        data_issue_event_id, data_issue_id, event_type, stage, outcome,
+        summary, details_json, created_at
+      ) VALUES ('corrupt-created-event', NEW.data_issue_id, 'synthetic', 'report',
+        'succeeded', 'Synthetic corrupt response', '{', NEW.created_at);
+    END`);
+  db.close();
+  assert.throws(() => createDataIssue(input, ledgerDir, clock()), errorCode("LEDGER_WRITE_FAILED"));
+  const after = openLedgerDatabase(ledgerDir);
+  assert.equal((after.prepare("SELECT COUNT(*) AS count FROM data_issues").get() as { count: number }).count, 0);
+  assert.equal((after.prepare("SELECT COUNT(*) AS count FROM data_issue_events").get() as { count: number }).count, 0);
+  after.close();
+});
+
+test("diagnosis rolls back when response hydration fails", async () => {
+  const { ledgerDir, input } = await setup();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  corruptFirstEvent(ledgerDir);
+  assert.throws(() => startDataIssueDiagnosis(issue.dataIssueId, ledgerDir, now), errorCode("LEDGER_WRITE_FAILED"));
+  const db = openLedgerDatabase(ledgerDir);
+  assert.equal((db.prepare("SELECT status FROM data_issues WHERE data_issue_id = ?").get(issue.dataIssueId) as { status: string }).status, "pending");
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM data_issue_events WHERE event_type = 'diagnosis' AND outcome = 'succeeded'").get() as { count: number }).count, 0);
+  db.close();
+});
+
+test("exclusion rolls back when response hydration fails", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  const preview = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
+  corruptFirstEvent(ledgerDir);
+  assert.throws(() => confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now), errorCode("LEDGER_WRITE_FAILED"));
+  const db = openLedgerDatabase(ledgerDir);
+  assert.equal((db.prepare("SELECT status FROM data_issues WHERE data_issue_id = ?").get(issue.dataIssueId) as { status: string }).status, "pending");
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM disabled_import_sources").get() as { count: number }).count, 0);
+  db.close();
+});
+
+test("restore rolls back when response hydration fails", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  const exclusion = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: exclusion.previewToken,
+  }, ledgerDir, now);
+  const preview = previewDataIssueRestore(issue.dataIssueId, ledgerDir, now);
+  corruptFirstEvent(ledgerDir);
+  assert.throws(
+    () => confirmDataIssueRestore({ dataIssueId: issue.dataIssueId, previewToken: preview.previewToken }, ledgerDir, now),
+    errorCode("LEDGER_WRITE_FAILED"),
+  );
+  const db = openLedgerDatabase(ledgerDir);
+  assert.equal((db.prepare("SELECT status FROM data_issues WHERE data_issue_id = ?").get(issue.dataIssueId) as { status: string }).status, "resolved");
+  assert.equal((db.prepare("SELECT state FROM disabled_import_sources WHERE data_issue_id = ?").get(issue.dataIssueId) as { state: string }).state, "active");
+  db.close();
+});
+
+test("diagnosis replay is idempotent but terminal cases are blocked and audited", async () => {
+  const { ledgerDir, sourceVersion, input } = await setup();
+  const now = clock();
+  const issue = createDataIssue(input, ledgerDir, now);
+  startDataIssueDiagnosis(issue.dataIssueId, ledgerDir, now);
+  startDataIssueDiagnosis(issue.dataIssueId, ledgerDir, now);
+  const preview = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+  assert.throws(() => startDataIssueDiagnosis(issue.dataIssueId, ledgerDir, now), errorCode("INVALID_CASE_STATUS"));
+  const db = openLedgerDatabase(ledgerDir);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM data_issue_events WHERE event_type = 'diagnosis' AND outcome = 'succeeded'").get() as { count: number }).count, 1);
+  const last = db.prepare("SELECT event_type, outcome FROM data_issue_events ORDER BY rowid DESC LIMIT 1").get() as { event_type: string; outcome: string };
+  db.close();
+  assert.deepEqual({ ...last }, { event_type: "diagnosis", outcome: "blocked" });
 });

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
-import { TYPED_STATEMENT_TABLES, type TypedStatementTable } from "../../../ledger/financial-dashboard-types.ts";
+import { TYPED_STATEMENT_TABLES } from "../../../ledger/financial-dashboard-types.ts";
 import type { AccountGroup, AccountKind, AccountRowDto } from "../../shared-ledger/types.ts";
 import {
   buildAccountOverview,
@@ -42,6 +42,7 @@ const BLOCKED_CODES = new Set([
   "SOURCE_VERSION_ALREADY_EXCLUDED",
   "STALE_PREVIEW",
   "RESTORE_NEWER_DATA",
+  "INVALID_CASE_STATUS",
   "INVALID_INPUT",
 ]);
 
@@ -87,11 +88,11 @@ type DisabledSourceRow = {
   state: "active" | "restored";
 };
 type PhysicalSourceRow = {
-  table: TypedStatementTable;
-  statementRowId: string;
-  sourceFileId: string;
-  importRunId: string;
   importedAt: string;
+};
+type RestorePreviewInternal = RestorePreviewDto & {
+  disabledImportSourceId: string;
+  sourceVersion: SourceVersionId;
 };
 
 class DataIssueServiceError extends Error {
@@ -276,10 +277,6 @@ function physicalRowsForSource(db: LedgerDatabase, source: SourceVersionId) {
         import_run_id: string;
         imported_at: string;
       }>).map((row): PhysicalSourceRow => ({
-        table,
-        statementRowId: row.statement_row_id,
-        sourceFileId: row.source_file_id,
-        importRunId: row.import_run_id,
         importedAt: row.imported_at,
       })),
   );
@@ -449,6 +446,7 @@ function activeDisabledSource(db: LedgerDatabase, dataIssueId: string) {
       import_run_id, disabled_at, state
     FROM disabled_import_sources
     WHERE data_issue_id = ? AND state = 'active'
+    ORDER BY disabled_at, disabled_import_source_id
     LIMIT 1`).get(dataIssueId) as DisabledSourceRow | undefined;
 }
 
@@ -487,7 +485,7 @@ function upsertActiveExclusion(
     );
 }
 
-function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestorePreviewDto {
+function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestorePreviewInternal {
   issueRow(db, dataIssueId);
   const disabled = activeDisabledSource(db, dataIssueId);
   if (!disabled) throw dataIssueError("SOURCE_VERSION_NOT_FOUND");
@@ -520,6 +518,8 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
     .map(([accountId, updatedAt]) => ({ accountId, updatedAt }))
     .sort((left, right) => left.accountId.localeCompare(right.accountId));
   return {
+    disabledImportSourceId: disabled.disabled_import_source_id,
+    sourceVersion: selected,
     allowed: blockedBy.length === 0,
     previewToken: hashBytes(stableStringify({
       dataIssueId,
@@ -600,8 +600,9 @@ export function createDataIssue(
         id: randomUUID(), dataIssueId: id, type: "created", stage: "report",
         outcome: "succeeded", summary: "Data issue created", details: { fieldKey: "balance" }, createdAt: now,
       });
+      const detail = loadDataIssueWithDb(db, id);
       db.exec("COMMIT");
-      return loadDataIssueWithDb(db, id);
+      return detail;
     } catch (error) {
       db.exec("ROLLBACK");
       throw stableError(error);
@@ -631,17 +632,20 @@ export function startDataIssueDiagnosis(
     db.exec("BEGIN IMMEDIATE");
     try {
       const row = issueRow(db, id);
-      if (row.status !== "pending") {
+      if (row.status === "investigating") {
+        const detail = loadDataIssueWithDb(db, id);
         db.exec("COMMIT");
-        return loadDataIssueWithDb(db, id);
+        return detail;
       }
+      if (row.status !== "pending") throw dataIssueError("INVALID_CASE_STATUS");
       updateCaseStatus(db, id, "investigating", now);
       appendEvent(db, {
         id: randomUUID(), dataIssueId: id, type: "diagnosis", stage: "diagnosis",
         outcome: "succeeded", summary: "Diagnosis started", details: {}, createdAt: now,
       });
+      const detail = loadDataIssueWithDb(db, id);
       db.exec("COMMIT");
-      return loadDataIssueWithDb(db, id);
+      return detail;
     } catch (error) {
       db.exec("ROLLBACK");
       const stable = stableError(error);
@@ -697,9 +701,14 @@ export function confirmDataIssueExclusion(
       const existing = disabledSourceForScope(db, selected);
       if (existing) {
         if (existing.data_issue_id !== dataIssueId) throw dataIssueError("SOURCE_VERSION_ALREADY_EXCLUDED");
+        const detail = loadDataIssueWithDb(db, dataIssueId);
         db.exec("COMMIT");
         transaction = false;
-        return loadDataIssueWithDb(db, dataIssueId);
+        return detail;
+      }
+      const issue = issueRow(db, dataIssueId);
+      if (issue.status === "resolved" || issue.status === "restored") {
+        throw dataIssueError("INVALID_CASE_STATUS");
       }
       const fresh = previewExclusionWithDb(db, dataIssueId, selected);
       if (fresh.previewToken !== previewToken) throw dataIssueError("STALE_PREVIEW");
@@ -710,9 +719,10 @@ export function confirmDataIssueExclusion(
         outcome: "succeeded", summary: "Source version excluded",
         details: { sourceVersion: selected, reason, excludedRows: fresh.excludedRows }, createdAt: now,
       });
+      const detail = loadDataIssueWithDb(db, dataIssueId);
       db.exec("COMMIT");
       transaction = false;
-      return loadDataIssueWithDb(db, dataIssueId);
+      return detail;
     } catch (error) {
       if (transaction) db.exec("ROLLBACK");
       const stable = stableError(error);
@@ -739,7 +749,12 @@ export function previewDataIssueRestore(
         summary: preview.allowed ? "Restore preview created" : "RESTORE_NEWER_DATA",
         details: { blockedBy: preview.blockedBy }, createdAt: now,
       });
-      return preview;
+      return {
+        allowed: preview.allowed,
+        previewToken: preview.previewToken,
+        blockedBy: preview.blockedBy,
+        affectedAccounts: preview.affectedAccounts,
+      };
     } catch (error) {
       const stable = stableError(error);
       recordFailureBestEffort(db, dataIssueId, "restore-preview", stable, now);
@@ -765,24 +780,38 @@ export function confirmDataIssueRestore(
       const issue = issueRow(db, dataIssueId);
       const disabled = activeDisabledSource(db, dataIssueId);
       if (!disabled && issue.status === "restored") {
+        const detail = loadDataIssueWithDb(db, dataIssueId);
         db.exec("COMMIT");
         transaction = false;
-        return loadDataIssueWithDb(db, dataIssueId);
+        return detail;
       }
       const fresh = previewRestoreWithDb(db, dataIssueId);
       if (!fresh.allowed) throw dataIssueError("RESTORE_NEWER_DATA");
       if (fresh.previewToken !== previewToken) throw dataIssueError("STALE_PREVIEW");
-      db.prepare(`UPDATE disabled_import_sources
+      const restored = db.prepare(`UPDATE disabled_import_sources
         SET state = 'restored', restored_at = ?
-        WHERE data_issue_id = ? AND state = 'active'`).run(now, dataIssueId);
-      updateCaseStatus(db, dataIssueId, "restored", now);
+        WHERE disabled_import_source_id = ?
+          AND data_issue_id = ?
+          AND source_file_id = ?
+          AND import_run_id = ?
+          AND state = 'active'`).run(
+        now,
+        fresh.disabledImportSourceId,
+        dataIssueId,
+        fresh.sourceVersion.sourceFileId,
+        fresh.sourceVersion.importRunId,
+      );
+      if (restored.changes !== 1) throw dataIssueError("LEDGER_WRITE_FAILED");
+      updateCaseStatus(db, dataIssueId, activeDisabledSource(db, dataIssueId) ? "resolved" : "restored", now);
       appendEvent(db, {
         id: randomUUID(), dataIssueId, type: "restore", stage: "restore",
-        outcome: "succeeded", summary: "Source version restored", details: {}, createdAt: now,
+        outcome: "succeeded", summary: "Source version restored",
+        details: { sourceVersion: fresh.sourceVersion }, createdAt: now,
       });
+      const detail = loadDataIssueWithDb(db, dataIssueId);
       db.exec("COMMIT");
       transaction = false;
-      return loadDataIssueWithDb(db, dataIssueId);
+      return detail;
     } catch (error) {
       if (transaction) db.exec("ROLLBACK");
       const stable = stableError(error);
