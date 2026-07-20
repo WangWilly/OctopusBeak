@@ -80,6 +80,28 @@ test("report submission persists the case before navigating", async () => {
   assert.match(accounts, /account\.valueAvailability === "unavailable"[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
 });
 
+test("report creation announces progress and completion from the loaded destination", async () => {
+  const assets = await readFile(new URL("../assets/AssetsDashboard.svelte", import.meta.url), "utf8");
+  const liabilities = await readFile(new URL("../liabilities/LiabilitiesDashboard.svelte", import.meta.url), "utf8");
+  const modal = await readFile(new URL("./ReportDataIssueModal.svelte", import.meta.url), "utf8");
+  const dashboard = await readFile(new URL("./DataIssuesDashboard.svelte", import.meta.url), "utf8");
+  const i18n = await readFile(new URL("../i18n/i18n.ts", import.meta.url), "utf8");
+
+  assert.match(modal, /role="status" aria-live="polite"[^>]*>\{submitting \? \$t\.dataIssues\.creatingIssue : ""\}<\/span>/);
+  for (const source of [assets, liabilities]) {
+    assert.match(source, /history\.replaceState\(\{ \.\.\.history\.state, createdDataIssueId: issue\.dataIssueId \}, ""\)/);
+  }
+  assert.match(dashboard, /history\.state\?\.createdDataIssueId !== dataIssueId/);
+  assert.match(dashboard, /delete nextState\.createdDataIssueId/);
+  assert.match(dashboard, /history\.replaceState\(nextState, ""\)/);
+  assert.match(dashboard, /state = next;[\s\S]*announceCreatedIssue\(requestedIssueId\)/);
+  assert.match(dashboard, /liveStatus = \$t\.dataIssues\.issueCreatedReady/);
+  assert.match(i18n, /creatingIssue: "Creating data issue…"/);
+  assert.match(i18n, /issueCreatedReady: "Data issue created and loaded\."/);
+  assert.match(i18n, /creatingIssue: "正在建立資料問題…"/);
+  assert.match(i18n, /issueCreatedReady: "資料問題已建立並載入。"/);
+});
+
 test("account issue navigation preserves account deep links and unmounts closed reports", async () => {
   const route = await readFile(new URL("../../routes/+page.svelte", import.meta.url), "utf8");
   const assets = await readFile(new URL("../assets/AssetsDashboard.svelte", import.meta.url), "utf8");
