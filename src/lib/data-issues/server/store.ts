@@ -456,12 +456,17 @@ function affectedAccounts(
   rawData: LedgerQueryData,
   beforeScopes: ReadonlySet<ImportScope>,
   afterScopes: ReadonlySet<ImportScope>,
+  includedAccountIds: ReadonlySet<string> = new Set(),
 ): ExclusionPreviewDto["affectedAccounts"] {
   const before = new Map(buildAccountOverview(applyLedgerVisibility(rawData, beforeScopes))
     .map((account) => [account.id, account]));
   const after = new Map(buildAccountOverview(applyLedgerVisibility(rawData, afterScopes))
     .map((account) => [account.id, account]));
-  return [...accountIdsChangedByVisibility(rawData, beforeScopes, afterScopes)].sort().map((accountId) => ({
+  const accountIds = new Set([
+    ...includedAccountIds,
+    ...accountIdsChangedByVisibility(rawData, beforeScopes, afterScopes),
+  ]);
+  return [...accountIds].sort().map((accountId) => ({
     accountId,
     before: accountState(before, accountId),
     after: accountState(after, accountId),
@@ -485,6 +490,7 @@ function previewExclusionWithDb(
     rawData,
     activeScopes,
     new Set([...activeScopes, selectedScope]),
+    accountIds,
   );
   const previewToken = hashBytes(stableStringify({
     dataIssueId,

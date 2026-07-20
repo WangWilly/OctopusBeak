@@ -413,11 +413,18 @@ test("preview duplicate count uses active row lineage and counts cross-projectio
   assert.equal(preview.duplicateRows, 1);
 });
 
-test("credit-card preview and restore gate include every account changed by capture invalidation", () => {
+test("credit-card impact includes same-value fallback accounts in restore gating", () => {
   const ledgerDir = fixtureDir();
   const selected = { sourceFileId: "source-selected", importRunId: "run-selected" };
   const companion = { sourceFileId: "source-companion", importRunId: "run-companion" };
+  const older = { sourceFileId: "source-older", importRunId: "run-older" };
   const db = openLedgerDatabase(ledgerDir);
+  persistCardFixture(db, "capture-older", "2026-01-19T08:00:00.000Z", [
+    { statementRowId: "older-a-billed", source: older, cardKey: "1111", statementType: "billed", amount: 100 },
+    { statementRowId: "older-a-unbilled", source: older, cardKey: "1111", statementType: "unbilled", amount: 300 },
+    { statementRowId: "older-b-billed", source: older, cardKey: "2222", statementType: "billed", amount: 90 },
+    { statementRowId: "older-b-unbilled", source: older, cardKey: "2222", statementType: "unbilled", amount: 470 },
+  ]);
   const data = persistCardFixture(db, "capture-reported", "2026-01-20T08:00:00.000Z", [
     { statementRowId: "card-a-billed", source: selected, cardKey: "1111", statementType: "billed", amount: 120 },
     { statementRowId: "card-a-unbilled", source: companion, cardKey: "1111", statementType: "unbilled", amount: 310 },
@@ -454,6 +461,10 @@ test("credit-card preview and restore gate include every account changed by capt
     preview.affectedAccounts.map((account) => account.accountId).sort(),
     [reported.id, companionAccount.id].sort(),
   );
+  const companionImpact = preview.affectedAccounts.find(
+    (account) => account.accountId === companionAccount.id,
+  );
+  assert.deepEqual(companionImpact?.before, companionImpact?.after);
   confirmDataIssueExclusion({
     dataIssueId: issue.dataIssueId,
     sourceVersion: selected,
@@ -461,6 +472,16 @@ test("credit-card preview and restore gate include every account changed by capt
     acknowledged: true,
     previewToken: preview.previewToken,
   }, ledgerDir, now);
+  const eventDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+  const event = eventDb.prepare(`SELECT details_json FROM data_issue_events
+    WHERE data_issue_id = ? AND event_type = 'exclusion' AND outcome = 'succeeded'`)
+    .get(issue.dataIssueId) as { details_json: string };
+  eventDb.close();
+  const eventDetails = JSON.parse(event.details_json) as { affectedAccountIds: string[] };
+  assert.deepEqual(
+    eventDetails.affectedAccountIds.sort(),
+    [reported.id, companionAccount.id].sort(),
+  );
 
   const newer = { sourceFileId: "source-newer-card-b", importRunId: "run-newer-card-b" };
   const newerDb = openLedgerDatabase(ledgerDir);
