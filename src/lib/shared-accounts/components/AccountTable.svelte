@@ -27,6 +27,7 @@
   export let dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]> = {};
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
+  export let onReportDataIssue: ((account: AccountRowDto) => void) | null = null;
 
   export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
@@ -202,6 +203,11 @@
       <div class="action-group">
         <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
         <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        {#if onReportDataIssue}
+          <button class="button secondary" type="button" on:click={() => onReportDataIssue?.(selectedAccount)}>
+            {$t.dataIssues.reportProblem}
+          </button>
+        {/if}
         {#if mode === "asset" && selectedPositions.length > 0}
           <button class="button secondary" type="button" on:click={() => (positionsOpen = true)}>{$t.accounts.positions}</button>
         {/if}

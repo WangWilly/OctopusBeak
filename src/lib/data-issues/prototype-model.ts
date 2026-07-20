@@ -78,6 +78,23 @@ export type PrototypeEvent =
   | { type: "back-to-diagnosis" }
   | { type: "back-to-list" };
 
+export function reportContextForAccount(
+  account: AccountRowDto,
+  note: string,
+): DataIssueReportContext {
+  const amount = account.amountLines[0] ?? { currency: "TWD", value: 0 };
+  return {
+    accountId: account.id,
+    accountLabel: account.label,
+    institution: account.institution,
+    fieldKey: "balance",
+    displayedValue: amount.value,
+    currency: amount.currency,
+    dataDate: account.lastUpdated ?? "--",
+    note: note.trim(),
+  };
+}
+
 const safePreview: PrototypePreview = {
   beforeValue: 520_524,
   afterValue: 354_107,
@@ -245,3 +262,4 @@ export function transitionDataIssuePrototype(
   if (event.type === "back-to-list") return { ...state, screen: "list" };
   return state;
 }
+import type { AccountRowDto } from "../shared-ledger/types.ts";

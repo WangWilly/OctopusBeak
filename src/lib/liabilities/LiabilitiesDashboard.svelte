@@ -1,5 +1,7 @@
 <script lang="ts">
   import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import ReportDataIssueModal from "$lib/data-issues/ReportDataIssueModal.svelte";
+  import type { DataIssueReportContext } from "$lib/data-issues/prototype-model.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import {
@@ -22,6 +24,8 @@
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let reportOpen = false;
+  let reportAccount: AccountRowDto | null = null;
 
   $: liabilityAccounts = liabilities.accounts;
   $: metrics = buildMetrics(liabilityAccounts, $t);
@@ -118,6 +122,16 @@
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
   }
+
+  function openReport(account: AccountRowDto) {
+    reportAccount = account;
+    reportOpen = true;
+  }
+
+  function createReport(report: DataIssueReportContext) {
+    sessionStorage.setItem("octopusbeak-data-issue-report", JSON.stringify(report));
+    location.hash = "/data-issues";
+  }
 </script>
 
 <DashboardShell
@@ -167,6 +181,9 @@
       bind:filter={accountFilter}
       transactionsByAccount={liabilities.transactionsByAccount}
       dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+      onReportDataIssue={openReport}
     />
   </div>
 </DashboardShell>
+
+<ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />
