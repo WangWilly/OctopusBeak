@@ -456,6 +456,41 @@ assert.equal(accountRowCount.count, 1);
 assert.equal(secondRun.skippedDuplicateRows, 3);
 assert.equal(secondCompletedEvent.skippedDuplicateRows, 3);
 
+const primaryKeyRootDir = await mkdtemp(join(tmpdir(), "statement-row-id-import-"));
+const primaryKeyDownloadsDir = join(primaryKeyRootDir, "downloads");
+const primaryKeyOutputDir = join(primaryKeyRootDir, "ledger");
+const primaryKeySourceDir = join(primaryKeyDownloadsDir, "ctbc-statements");
+await mkdir(primaryKeySourceDir, { recursive: true });
+await writeFile(
+  join(primaryKeySourceDir, "account.csv"),
+  accountCsv([accountRow]),
+  "utf8",
+);
+const primaryKeyInput = {
+  downloadsDir: primaryKeyDownloadsDir,
+  outputDir: primaryKeyOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+};
+await importDownloadsCsv(primaryKeyInput);
+let primaryKeyDb = openLedgerDatabase(primaryKeyOutputDir);
+primaryKeyDb.prepare(
+  "UPDATE account_transactions SET content_hash = 'legacy-content-hash'",
+).run();
+primaryKeyDb.close();
+
+const primaryKeyResult = await importDownloadsCsv(primaryKeyInput);
+primaryKeyDb = openLedgerDatabase(primaryKeyOutputDir, { readOnly: true });
+assert.equal(primaryKeyResult.importedRows, 0);
+assert.equal(primaryKeyResult.skippedDuplicateRows, 1);
+assert.equal((primaryKeyDb.prepare(
+  "SELECT COUNT(*) AS count FROM account_transactions",
+).get() as { count: number }).count, 1);
+assert.equal((primaryKeyDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_row_lineage",
+).get() as { count: number }).count, 2);
+primaryKeyDb.close();
+
 const failureRootDir = await mkdtemp(join(tmpdir(), "failed-insert-"));
 const failureDb = openLedgerDatabase(failureRootDir);
 assert.throws(() => insertRecord(failureDb, "account_transactions", {
