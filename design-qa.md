@@ -87,3 +87,40 @@ final result: passed
 - `npm run privacy-check`, `git diff --check`, and `git diff --cached --check`: passed.
 
 final result: passed
+
+# Data issue history presentation — Design QA
+
+final result: passed
+
+## Comparison inputs
+
+- Reference — account link and source list: `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-f28dea21-9e41-4324-9284-5cc325d1d162.png`
+- Reference — system-timezone event timestamps: `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-981f2ab1-84b6-40fa-94b2-1096c198cd1d.png`
+- Reference — requested history-control placement: `/var/folders/z9/lk2s3y4x75n5fs1qpph6_ppw0000gn/T/codex-clipboard-ef9fac28-a642-4ad3-8259-a88b19de0b75.png`
+- Implementation — detail: `/tmp/octopusbeak-design-qa/implementation-detail-clean.png`
+- Implementation — account-link tooltip: `/tmp/octopusbeak-design-qa/implementation-account-tooltip.png`
+- Implementation — operation-history modal: `/tmp/octopusbeak-design-qa/implementation-history-modal.png`
+- Full-page comparison: `/tmp/octopusbeak-design-qa/full-comparison.png`
+- Focused account-link comparison: `/tmp/octopusbeak-design-qa/focused-comparison.png`
+- Focused history-modal comparison: `/tmp/octopusbeak-design-qa/modal-comparison.png`
+
+The 2912×1676 reference captures were normalized to the implementation's equivalent 1456×838 logical viewport. The implementation was captured from the isolated Electron mock ledger at 1456×838, DPR 1, in light mode and Traditional Chinese.
+
+## Verified states
+
+- Detail page with two valid source candidates and no hover/focus state.
+- Account backlink on mouse hover and keyboard focus; tooltip becomes fully visible after its 120 ms transition.
+- Operation-history icon on mouse hover and keyboard focus.
+- Modal open with focus on its close button and system-timezone event timestamps.
+- Modal closed by the close button, Escape, and backdrop; each path restores focus to the history icon.
+- Account backlink navigates to the matching liability account route.
+
+## Findings and iteration history
+
+1. P2 accessibility: the first implementation nested tooltip content inside the account anchor, so assistive output could fold the explanatory copy into the link text. A focused test reproduced it. The tooltip is now a sibling inside a wrapper; the link has the exact accessible name `Yuanta loan ****0001` and receives the tooltip through `aria-describedby`.
+2. The source timestamps convert the fixture UTC values to the configured `Asia/Taipei` system timezone: `2026-07-21T01:15:00.000Z` displays as `2026/07/21 09:15:00`, and `2026-07-20T04:30:00.000Z` displays as `2026/07/20 12:30:00`.
+3. Operation events display in the same timezone and locale without a trailing `Z`.
+4. The inline operation-history disclosure is absent. The compact icon beside the account title opens a centered modal with a blurred backdrop, preserving the progressive workflow layout.
+5. No console errors were emitted during a clean Electron reload and interaction pass.
+
+No unresolved P0, P1, or P2 findings remain.
