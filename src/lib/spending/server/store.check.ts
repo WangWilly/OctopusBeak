@@ -12,6 +12,10 @@ import {
 
 assert.throws(() => activeImportSql("invoices; DROP TABLE personal_invoices"), /Unsafe SQL alias/);
 
+const aliasedActiveImportSql = activeImportSql("account_transactions", "transactions");
+assert.match(aliasedActiveImportSql, /lineage\.projection_table = 'account_transactions'/);
+assert.match(aliasedActiveImportSql, /lineage\.statement_row_id = transactions\.statement_row_id/);
+
 const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
 const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
 const transferNote = [`066${destinationAccountNumber}`, ["7097", "2302", "7990", "0200"].join("")].join(" ");

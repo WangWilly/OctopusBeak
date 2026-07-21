@@ -440,12 +440,14 @@ export function appendUnavailableAccounts(
   ];
 }
 
-export function activeImportSql(alias: string) {
-  if (!/^[a-z_]+$/.test(alias)) throw new Error("Unsafe SQL alias");
+export function activeImportSql(projectionTable: string, tableReference = projectionTable) {
+  if (!/^[a-z_]+$/.test(projectionTable) || !/^[a-z_]+$/.test(tableReference)) {
+    throw new Error("Unsafe SQL alias");
+  }
   return `EXISTS (
     SELECT 1 FROM source_row_lineage AS lineage
-    WHERE lineage.projection_table = '${alias}'
-      AND lineage.statement_row_id = ${alias}.statement_row_id
+    WHERE lineage.projection_table = '${projectionTable}'
+      AND lineage.statement_row_id = ${tableReference}.statement_row_id
       AND NOT EXISTS (
         SELECT 1 FROM disabled_import_sources AS disabled
         WHERE disabled.source_version_key = lineage.source_version_key
