@@ -96,7 +96,9 @@ export function loadSpending(
         items.item_product_name,
         items.category
       FROM personal_invoices
-      LEFT JOIN personal_invoice_items AS items USING (invoice_key)
+      LEFT JOIN personal_invoice_items AS items
+        ON items.invoice_key = personal_invoices.invoice_key
+        AND ${activeImportSql("personal_invoice_items", "items")}
       WHERE personal_invoices.status = ?
         AND ${activeImportSql("personal_invoices")}
       ORDER BY personal_invoices.issued_at, personal_invoices.invoice_key,
