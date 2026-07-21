@@ -466,6 +466,10 @@ try {
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT observation_count FROM source_file_imports").get() as { observation_count: number }).observation_count, 2);
+  assert.throws(
+    () => canonicalDb.exec("UPDATE source_file_imports SET observation_count = 0"),
+    /CHECK constraint failed/,
+  );
   canonicalDb.close();
 
   const mergedExclusionDb = openLedgerDatabase(mergedExclusionLedgerDir);
@@ -680,7 +684,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
