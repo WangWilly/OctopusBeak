@@ -302,7 +302,6 @@ export function insertRecord(
 }
 
 const PERSONAL_INVOICE_UPDATE_COLUMNS = [
-  "statement_row_id",
   "source_file_id",
   "import_run_id",
   "source_relative_path",
@@ -325,7 +324,6 @@ const PERSONAL_INVOICE_UPDATE_COLUMNS = [
 
 const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
   // Category is a user-editable classification and must survive reimports.
-  "statement_row_id",
   "source_file_id",
   "import_run_id",
   "source_relative_path",
@@ -550,6 +548,12 @@ function insertPersonalInvoiceStatementRow(
   const commonFields = commonTypedRowFields(sourceFileRecord, row);
   const invoiceFields = personalInvoiceFields(row.rawPayload);
   const itemFields = personalInvoiceItemFields(row.rawPayload);
+  const existingInvoice = db.prepare(`
+    SELECT statement_row_id FROM personal_invoices WHERE invoice_key = ?
+  `).get(invoiceFields.invoice_key) as { statement_row_id: string } | undefined;
+  const existingItem = db.prepare(`
+    SELECT statement_row_id FROM personal_invoice_items WHERE item_key = ?
+  `).get(itemFields.item_key) as { statement_row_id: string } | undefined;
   upsertRecord(
     db,
     "personal_invoices",
@@ -577,11 +581,11 @@ function insertPersonalInvoiceStatementRow(
   );
   insertSourceRowLineage(
     db, sourceFileRecord, row, "personal_invoices",
-    String(commonFields.statement_row_id), "upserted",
+    existingInvoice?.statement_row_id ?? String(commonFields.statement_row_id), "upserted",
   );
   insertSourceRowLineage(
     db, sourceFileRecord, row, "personal_invoice_items",
-    String(commonFields.statement_row_id), "upserted",
+    existingItem?.statement_row_id ?? String(commonFields.statement_row_id), "upserted",
   );
 }
 
