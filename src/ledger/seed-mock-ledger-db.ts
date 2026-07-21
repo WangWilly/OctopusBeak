@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SQLITE_LEDGER_FILE, openLedgerDatabase, type LedgerDatabase } from "./db/client.ts";
 import { mockLedgerQueryData } from "../lib/shared-ledger/server/mock-data.ts";
+import { sourceVersionKey } from "./source-version.ts";
+import { TYPED_STATEMENT_TABLES } from "./source-csv-parsers.ts";
 
 type DbValue = string | number | null;
 type DbRecord = Record<string, DbValue | undefined>;
@@ -44,6 +46,13 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
   const importRunId = data.importRuns[0]?.importRunId ?? "mock-run";
   const importedAt = data.importRuns[0]?.finishedAt ?? new Date().toISOString();
   const invoiceData = personalInvoiceFixtures(importRunId, importedAt, referenceDate);
+  const sourceFiles = [
+    ...data.sourceFiles.map((row) => sourceFileRecord({
+      ...row,
+      rowCount: row.sourceFileId === "account.2026-06-27" ? 8 : row.rowCount,
+    })),
+    sourceFileRecord(invoiceData.sourceFile),
+  ];
 
   db.exec("BEGIN");
   try {
@@ -62,13 +71,8 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
         recordJson: json({ recordType: "mock-import-event", eventType: "completed" }),
       },
     ]);
-    insertRows(db, "source_files", [
-      ...data.sourceFiles.map((row) => sourceFileRecord({
-        ...row,
-        rowCount: row.sourceFileId === "account.2026-06-27" ? 8 : row.rowCount,
-      })),
-      sourceFileRecord(invoiceData.sourceFile),
-    ]);
+    insertRows(db, "source_files", sourceFiles);
+    insertRows(db, "source_file_imports", sourceFiles.map(canonicalSourceFileRecord));
     insertRows(db, "account_transactions", [
       ...data.accountTransactions,
       {
@@ -142,7 +146,7 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
     insertRows(db, "brokerage_trade_transactions", data.brokerageTradeTransactions);
     insertRows(db, "unsupported_statement_rows", [
       {
-        ...commonRow(importRunId, importedAt, "unsupported.current", "demo-bank", "unknown-export", 1),
+        ...commonRow(importRunId, importedAt, "unsupported.2026-06-27", "demo-bank", "unknown-export", 1),
         reason: "mock unsupported layout",
         headersJson: json(["欄位A", "欄位B"]),
       },
@@ -163,6 +167,7 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
     insertRows(db, "maicoin_statement_rows", data.maicoinStatementRows);
     insertRows(db, "personal_invoices", invoiceData.invoices);
     insertRows(db, "personal_invoice_items", invoiceData.items);
+    seedSourceRowLineage(db);
     insertRows(db, "automation_task_runs", automationTaskRuns(referenceDate));
     db.exec("COMMIT");
   } catch (error) {
@@ -367,6 +372,36 @@ function sourceFileRecord(row: InputRecord): DbRecord {
     relatedRawFileMetadataJson: json([]),
     recordJson: json({ recordType: "mock-source-file", sourceFileId }),
   };
+}
+
+function canonicalSourceFileRecord(row: InputRecord): DbRecord {
+  const importedAt = String(row.importedAt);
+  return {
+    ...row,
+    sourceVersionKey: sourceVersionKey(
+      String(row.bank),
+      String(row.product),
+      String(row.sourceFileHash),
+    ),
+    firstSeenAt: String(row.firstSeenAt ?? importedAt),
+    lastSeenAt: String(row.lastSeenAt ?? importedAt),
+    observationCount: Number(row.observationCount ?? 1),
+  };
+}
+
+function seedSourceRowLineage(db: LedgerDatabase) {
+  for (const table of TYPED_STATEMENT_TABLES) {
+    db.exec(`
+      INSERT INTO source_row_lineage (
+        source_file_id, import_run_id, source_version_key, source_row_index,
+        projection_table, statement_row_id, outcome, created_at
+      )
+      SELECT typed.source_file_id, typed.import_run_id, source.source_version_key,
+        typed.source_row_index, '${table}', typed.statement_row_id, 'inserted', typed.imported_at
+      FROM ${table} AS typed
+      JOIN source_file_imports AS source USING (source_file_id, import_run_id)
+    `);
+  }
 }
 
 function commonRow(
