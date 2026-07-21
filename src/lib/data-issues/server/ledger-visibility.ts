@@ -286,7 +286,7 @@ export function loadUnavailableAccountIssues(
   const rows = db.prepare(`
     SELECT issue.data_issue_id, issue.account_id, issue.account_label,
       issue.account_context_json, disabled.source_file_id,
-      disabled.import_run_id
+      disabled.import_run_id, disabled.source_version_key
     FROM disabled_import_sources AS disabled
     JOIN data_issues AS issue ON issue.data_issue_id = disabled.data_issue_id
     WHERE disabled.state = 'active'
@@ -298,7 +298,23 @@ export function loadUnavailableAccountIssues(
     account_context_json: string;
     source_file_id: string;
     import_run_id: string;
+    source_version_key: string;
   }>;
+  const lineageByVersion = new Map<string, Set<string>>();
+  const lineageRows = db.prepare(`SELECT source_version_key, projection_table, statement_row_id
+    FROM source_row_lineage
+    WHERE source_version_key IN (
+      SELECT source_version_key FROM disabled_import_sources WHERE state = 'active'
+    )`).all() as Array<{
+      source_version_key: string;
+      projection_table: string;
+      statement_row_id: string;
+    }>;
+  for (const lineage of lineageRows) {
+    const keys = lineageByVersion.get(lineage.source_version_key) ?? new Set<string>();
+    keys.add(statementSupportKey(lineage.projection_table, lineage.statement_row_id));
+    lineageByVersion.set(lineage.source_version_key, keys);
+  }
   const visibleIds = new Set(buildAccountOverview(applyLedgerVisibility(rawData, support))
     .map((account) => account.id));
   const rawAccounts = new Map(buildAccountOverview(rawData).map((account) => [account.id, account]));
@@ -319,13 +335,25 @@ export function loadUnavailableAccountIssues(
       // Legacy audit details fall back to deriving the source's visible impact.
     }
     if (affectedIds.length === 0) {
-      const scope = importScope({
-        sourceFileId: row.source_file_id,
-        importRunId: row.import_run_id,
+      const versionKeys = lineageByVersion.get(row.source_version_key) ?? new Set<string>();
+      const restoredSupport = {
+        statementKeys: new Set([...support.statementKeys, ...versionKeys]),
+        sourceVersionKeys: new Set([...support.sourceVersionKeys, row.source_version_key]),
+      };
+      const visibleAccounts = new Map(buildAccountOverview(applyLedgerVisibility(rawData, support))
+        .map((account) => [account.id, account.amountLines]));
+      const restoredAccounts = new Map(buildAccountOverview(applyLedgerVisibility(rawData, restoredSupport))
+        .map((account) => [account.id, account.amountLines]));
+      const versionData = applyLedgerVisibility(rawData, {
+        statementKeys: versionKeys,
+        sourceVersionKeys: new Set([row.source_version_key]),
       });
       affectedIds = [...new Set([
-        ...accountIdsChangedByVisibility(rawData, new Set(), new Set([scope])),
-        ...accountIdsForImportScope(rawData, scope),
+        ...buildAccountOverview(versionData).map((account) => account.id),
+        ...Object.keys(buildTransactionsByAccount(versionData)),
+        ...[...new Set([...visibleAccounts.keys(), ...restoredAccounts.keys()])]
+          .filter((accountId) => JSON.stringify(visibleAccounts.get(accountId))
+            !== JSON.stringify(restoredAccounts.get(accountId))),
       ])];
     }
     for (const accountId of affectedIds) {

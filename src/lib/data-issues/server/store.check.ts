@@ -4,9 +4,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import { sourceVersionKey } from "../../../ledger/source-version.ts";
 import { buildAccountOverview, emptyLedgerQueryData } from "../../shared-ledger/server/accounts.ts";
 import type { DataIssueCreateInput, SourceVersionId } from "../types.ts";
-import { applyLedgerVisibility, loadActiveImportScopes } from "./ledger-visibility.ts";
+import {
+  applyLedgerVisibility,
+  loadActiveLedgerSupport,
+  statementSupportKey,
+} from "./ledger-visibility.ts";
 import {
   confirmDataIssueExclusion,
   confirmDataIssueRestore,
@@ -38,21 +43,31 @@ function clock(start = "2026-07-20T00:00:00.000Z") {
 function seedSource(
   db: LedgerDatabase,
   source: SourceVersionId,
-  options: { importedAt?: string; balances?: number[]; csvRows?: number; tradeDates?: string[] } = {},
+  options: {
+    importedAt?: string;
+    balances?: number[];
+    csvRows?: number;
+    tradeDates?: string[];
+    accountNumbers?: string[];
+    statementRowIds?: string[];
+  } = {},
 ) {
   const importedAt = options.importedAt ?? "2026-07-19T00:00:00.000Z";
   const balances = options.balances ?? [80_000, 81_250];
   const fileName = `${source.sourceFileId}-${source.importRunId}.csv`;
+  const sourceFileHash = `${source.sourceFileId}-${source.importRunId}-hash`;
+  const versionKey = sourceVersionKey("example-bank", "loan-statements", sourceFileHash);
   db.prepare(`INSERT INTO source_file_imports (
-    source_file_id, import_run_id, source_relative_path, source_file_hash,
+    source_file_id, import_run_id, source_version_key, source_relative_path, source_file_hash,
     source_file_bytes, source_file_modified_at, imported_at, bank, product,
-    row_count, status, record_json
-  ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`)
+    row_count, status, record_json, first_seen_at, last_seen_at, observation_count
+  ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
     .run(
       source.sourceFileId,
       source.importRunId,
+      versionKey,
       `fictional-bank/statements/${fileName}`,
-      `${source.sourceFileId}-${source.importRunId}-hash`,
+      sourceFileHash,
       100,
       importedAt,
       "example-bank",
@@ -60,6 +75,8 @@ function seedSource(
       options.csvRows ?? balances.length + 1,
       "imported",
       "{}",
+      importedAt,
+      importedAt,
     );
 
   const insert = db.prepare(`INSERT INTO loan_transactions (
@@ -69,25 +86,42 @@ function seedSource(
     interest_start_date, interest_end_date, amount, interest_rate, balance_after,
     overpayment, note
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, NULL, ?, NULL, NULL)`);
-  balances.forEach((balance, index) => insert.run(
-    `${source.sourceFileId}-${source.importRunId}-row-${index + 1}`,
-    source.sourceFileId,
-    source.importRunId,
-    `fictional-bank/statements/${fileName}`,
-    index + 1,
-    `${source.sourceFileId}-${source.importRunId}-source-hash`,
-    `${source.sourceFileId}-${source.importRunId}-content-${index + 1}`,
-    "example-bank",
-    "loan-statements",
-    "{}",
-    importedAt,
-    importedAt,
-    "0420",
-    options.tradeDates?.[index] ?? `2026-07-${String(18 + index).padStart(2, "0")}`,
-    "Synthetic principal",
-    balance,
-    balance,
-  ));
+  const insertLineage = db.prepare(`INSERT INTO source_row_lineage (
+    source_file_id, import_run_id, source_version_key, source_row_index,
+    projection_table, statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, 'loan_transactions', ?, 'inserted', ?)`);
+  balances.forEach((balance, index) => {
+    const statementRowId = options.statementRowIds?.[index]
+      ?? `${source.sourceFileId}-${source.importRunId}-row-${index + 1}`;
+    insert.run(
+      statementRowId,
+      source.sourceFileId,
+      source.importRunId,
+      `fictional-bank/statements/${fileName}`,
+      index + 1,
+      `${source.sourceFileId}-${source.importRunId}-source-hash`,
+      `${source.sourceFileId}-${source.importRunId}-content-${index + 1}`,
+      "example-bank",
+      "loan-statements",
+      "{}",
+      importedAt,
+      importedAt,
+      options.accountNumbers?.[index] ?? "0420",
+      options.tradeDates?.[index] ?? `2026-07-${String(18 + index).padStart(2, "0")}`,
+      "Synthetic principal",
+      balance,
+      balance,
+    );
+    insertLineage.run(
+      source.sourceFileId,
+      source.importRunId,
+      versionKey,
+      index + 1,
+      statementRowId,
+      importedAt,
+    );
+  });
+  return versionKey;
 }
 
 function syntheticLoanRows(source: SourceVersionId, balances = [80_000, 81_250]) {
@@ -116,6 +150,50 @@ function syntheticLoanRows(source: SourceVersionId, balances = [80_000, 81_250])
     overpayment: null,
     note: null,
   }));
+}
+
+function addLineageSupport(
+  db: LedgerDatabase,
+  source: SourceVersionId,
+  statementRowIds: string[],
+  importedAt = "2026-07-19T12:00:00.000Z",
+) {
+  const versionKey = seedSource(db, source, {
+    importedAt,
+    balances: [],
+    csvRows: statementRowIds.length,
+  });
+  const insert = db.prepare(`INSERT INTO source_row_lineage (
+    source_file_id, import_run_id, source_version_key, source_row_index,
+    projection_table, statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, 'loan_transactions', ?, 'duplicate', ?)`);
+  statementRowIds.forEach((statementRowId, index) => insert.run(
+    source.sourceFileId,
+    source.importRunId,
+    versionKey,
+    index + 1,
+    statementRowId,
+    importedAt,
+  ));
+  return versionKey;
+}
+
+function inputForAccount(account: NonNullable<ReturnType<typeof buildAccountOverview>[number]>) {
+  return {
+    account: {
+      id: account.id,
+      label: account.label,
+      institution: account.institution,
+      product: account.product,
+      group: account.group,
+      kind: account.kind,
+      typeLabel: account.typeLabel,
+      amountLines: account.amountLines,
+      lastUpdated: account.lastUpdated,
+    },
+    fieldKey: "balance" as const,
+    note: "Synthetic reported balance",
+  };
 }
 
 type CardFixtureRow = {
@@ -216,15 +294,17 @@ function persistCardFixture(
     sources.set(key, source);
   }
   for (const { source, rowCount } of sources.values()) {
+    const sourceFileHash = `${source.sourceFileId}-hash`;
+    const versionKey = sourceVersionKey("example-bank", "credit-card-statements", sourceFileHash);
     db.prepare(`INSERT INTO source_file_imports (
-      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_id, import_run_id, source_version_key, source_relative_path, source_file_hash,
       source_file_bytes, source_file_modified_at, imported_at, bank, product,
-      row_count, status, record_json
-    ) VALUES (?, ?, ?, ?, 100, NULL, ?, 'example-bank',
-      'credit-card-statements', ?, 'imported', '{}')`)
-      .run(source.sourceFileId, source.importRunId,
-        `fictional-bank/cards/${source.sourceFileId}.csv`, `${source.sourceFileId}-hash`,
-        capturedAt, rowCount);
+      row_count, status, record_json, first_seen_at, last_seen_at, observation_count
+    ) VALUES (?, ?, ?, ?, ?, 100, NULL, ?, 'example-bank',
+      'credit-card-statements', ?, 'imported', '{}', ?, ?, 1)`)
+      .run(source.sourceFileId, source.importRunId, versionKey,
+        `fictional-bank/cards/${source.sourceFileId}.csv`, sourceFileHash,
+        capturedAt, rowCount, capturedAt, capturedAt);
   }
   const insertLine = db.prepare(`INSERT INTO credit_card_statement_lines (
     statement_row_id, source_file_id, import_run_id, source_relative_path,
@@ -243,6 +323,20 @@ function persistCardFixture(
       row.statementType, row.statementPeriod, row.cardNumber, row.cardLabel,
       row.consumeDate, row.description, row.countryCurrency, row.foreignCurrency,
       row.foreignAmount, row.twdAmount, row.paymentStatus,
+    );
+  }
+  const insertLineage = db.prepare(`INSERT INTO source_row_lineage (
+    source_file_id, import_run_id, source_version_key, source_row_index,
+    projection_table, statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, 'credit_card_statement_lines', ?, 'inserted', ?)`);
+  for (const row of fixture.rows) {
+    insertLineage.run(
+      row.sourceFileId,
+      row.importRunId,
+      sourceVersionKey("example-bank", "credit-card-statements", `${row.sourceFileId}-hash`),
+      row.sourceRowIndex,
+      row.statementRowId,
+      capturedAt,
     );
   }
   const capture = fixture.data.creditCardCaptures[0];
@@ -274,18 +368,16 @@ function persistCardFixture(
 
 function visibleLoanBalance(ledgerDir: string) {
   const db = openLedgerDatabase(ledgerDir);
-  const row = db.prepare(`SELECT loan.balance_after
-    FROM loan_transactions AS loan
-    WHERE NOT EXISTS (
-      SELECT 1 FROM disabled_import_sources AS disabled
-      WHERE disabled.state = 'active'
-        AND disabled.source_file_id = loan.source_file_id
-        AND disabled.import_run_id = loan.import_run_id
-    )
-    ORDER BY loan.trade_date DESC, loan.imported_at DESC
-    LIMIT 1`).get() as { balance_after: number } | undefined;
+  const support = loadActiveLedgerSupport(db);
+  const rows = db.prepare(`SELECT statement_row_id, balance_after, trade_date, imported_at
+    FROM loan_transactions ORDER BY trade_date DESC, imported_at DESC`).all() as Array<{
+      statement_row_id: string;
+      balance_after: number;
+    }>;
   db.close();
-  return row?.balance_after;
+  return rows.find((row) => support.statementKeys.has(
+    statementSupportKey("loan_transactions", row.statement_row_id),
+  ))?.balance_after;
 }
 
 function corruptFirstEvent(ledgerDir: string) {
@@ -360,6 +452,211 @@ test("creates, diagnoses, previews, and resolves a persistent issue", async () =
   assert.equal(visibleLoanBalance(ledgerDir), undefined);
 });
 
+test("a corrected source version restores only the valid canonical transaction", () => {
+  const ledgerDir = fixtureDir();
+  const sourceA = { sourceFileId: "source-a", importRunId: "run-a" };
+  const sourceB = { sourceFileId: "source-b", importRunId: "run-b" };
+  const validStatementRowId = "synthetic-valid";
+  const wrongStatementRowId = "synthetic-wrong";
+  const rawRows = syntheticLoanRows(sourceA, [63_900, 81_250]).map((row, index) => ({
+    ...row,
+    statementRowId: [validStatementRowId, wrongStatementRowId][index]!,
+    accountNumber: ["0420", "1701"][index]!,
+  }));
+  const accounts = buildAccountOverview({ ...emptyLedgerQueryData(), loanTransactions: rawRows });
+  const wrongAccount = accounts.find((account) => account.label.endsWith("1701"));
+  assert.ok(wrongAccount);
+
+  const db = openLedgerDatabase(ledgerDir);
+  seedSource(db, sourceA, {
+    balances: [63_900, 81_250],
+    accountNumbers: ["0420", "1701"],
+    statementRowIds: [validStatementRowId, wrongStatementRowId],
+  });
+  db.close();
+
+  const now = clock();
+  const issue = createDataIssue(inputForAccount(wrongAccount), ledgerDir, now);
+  const preview = previewDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: sourceA,
+  }, ledgerDir, now);
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: sourceA,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+
+  const correctedDb = openLedgerDatabase(ledgerDir);
+  addLineageSupport(correctedDb, sourceB, [validStatementRowId]);
+  const support = loadActiveLedgerSupport(correctedDb);
+  correctedDb.close();
+  const visible = applyLedgerVisibility({
+    ...emptyLedgerQueryData(),
+    loanTransactions: rawRows,
+  }, support);
+
+  assert.equal(loadDataIssue(issue.dataIssueId, ledgerDir).status, "resolved");
+  assert.equal(visible.loanTransactions.some((row) => row.statementRowId === validStatementRowId), true);
+  assert.equal(visible.loanTransactions.some((row) => row.statementRowId === wrongStatementRowId), false);
+});
+
+test("restoring one case leaves a source version disabled by another case", () => {
+  const ledgerDir = fixtureDir();
+  const sourceA = { sourceFileId: "source-a", importRunId: "run-a" };
+  const sourceB = { sourceFileId: "source-b", importRunId: "run-b" };
+  const validStatementRowId = "synthetic-valid";
+  const wrongStatementRowId = "synthetic-wrong";
+  const rawRows = syntheticLoanRows(sourceA, [63_900, 81_250]).map((row, index) => ({
+    ...row,
+    statementRowId: [validStatementRowId, wrongStatementRowId][index]!,
+    accountNumber: ["0420", "1701"][index]!,
+  }));
+  const wrongAccount = buildAccountOverview({
+    ...emptyLedgerQueryData(),
+    loanTransactions: rawRows,
+  }).find((account) => account.label.endsWith("1701"));
+  assert.ok(wrongAccount);
+
+  const db = openLedgerDatabase(ledgerDir);
+  const versionKey = seedSource(db, sourceA, {
+    balances: [63_900, 81_250],
+    accountNumbers: ["0420", "1701"],
+    statementRowIds: [validStatementRowId, wrongStatementRowId],
+  });
+  db.close();
+
+  const now = clock();
+  const exclude = (dataIssueId: string) => {
+    const preview = previewDataIssueExclusion({ dataIssueId, sourceVersion: sourceA }, ledgerDir, now);
+    return confirmDataIssueExclusion({
+      dataIssueId,
+      sourceVersion: sourceA,
+      reason: "Synthetic source mismatch",
+      acknowledged: true,
+      previewToken: preview.previewToken,
+    }, ledgerDir, now);
+  };
+  const firstIssue = createDataIssue(inputForAccount(wrongAccount), ledgerDir, now);
+  exclude(firstIssue.dataIssueId);
+  const correctedDb = openLedgerDatabase(ledgerDir);
+  addLineageSupport(
+    correctedDb,
+    sourceB,
+    [validStatementRowId],
+    "2026-07-20T00:00:00.003Z",
+  );
+  correctedDb.close();
+  const secondIssue = createDataIssue(inputForAccount(wrongAccount), ledgerDir, now);
+  exclude(secondIssue.dataIssueId);
+
+  const excludedDb = openLedgerDatabase(ledgerDir);
+  const exclusions = excludedDb.prepare(`SELECT data_issue_id, state
+    FROM disabled_import_sources WHERE source_version_key = ? ORDER BY data_issue_id`)
+    .all(versionKey) as Array<{ data_issue_id: string; state: string }>;
+  excludedDb.close();
+  assert.equal(exclusions.length, 2);
+  assert.equal(exclusions.every((row) => row.state === "active"), true);
+
+  const restorePreview = previewDataIssueRestore(secondIssue.dataIssueId, ledgerDir, now);
+  assert.equal(restorePreview.allowed, true);
+  confirmDataIssueRestore({
+    dataIssueId: secondIssue.dataIssueId,
+    previewToken: restorePreview.previewToken,
+  }, ledgerDir, now);
+
+  const restoredDb = openLedgerDatabase(ledgerDir);
+  const states = restoredDb.prepare(`SELECT state, COUNT(*) AS count
+    FROM disabled_import_sources WHERE source_version_key = ? GROUP BY state ORDER BY state`)
+    .all(versionKey) as Array<{ state: string; count: number }>;
+  const support = loadActiveLedgerSupport(restoredDb);
+  restoredDb.close();
+  assert.deepEqual(states.map((row) => ({ ...row })), [
+    { state: "active", count: 1 },
+    { state: "restored", count: 1 },
+  ]);
+  assert.equal(support.sourceVersionKeys.has(versionKey), false);
+  assert.equal(support.statementKeys.has(statementSupportKey("loan_transactions", wrongStatementRowId)), false);
+});
+
+test("preview counts support loss and preserves safe append-only events", () => {
+  const ledgerDir = fixtureDir();
+  const selected = { sourceFileId: "source-selected", importRunId: "run-selected" };
+  const companion = { sourceFileId: "source-companion", importRunId: "run-companion" };
+  const sharedStatementRowId = "synthetic-shared";
+  const exclusiveStatementRowId = "synthetic-exclusive";
+  const rawRows = syntheticLoanRows(selected, [63_900, 81_250]).map((row, index) => ({
+    ...row,
+    statementRowId: [sharedStatementRowId, exclusiveStatementRowId][index]!,
+    accountNumber: ["0420", "1701"][index]!,
+  }));
+  const exclusiveAccount = buildAccountOverview({
+    ...emptyLedgerQueryData(),
+    loanTransactions: rawRows,
+  }).find((account) => account.label.endsWith("1701"));
+  assert.ok(exclusiveAccount);
+
+  const db = openLedgerDatabase(ledgerDir);
+  const selectedVersionKey = seedSource(db, selected, {
+    balances: [63_900, 81_250],
+    accountNumbers: ["0420", "1701"],
+    statementRowIds: [sharedStatementRowId, exclusiveStatementRowId],
+  });
+  addLineageSupport(db, companion, [sharedStatementRowId]);
+  db.close();
+
+  const now = clock();
+  const issue = createDataIssue(inputForAccount(exclusiveAccount), ledgerDir, now);
+  const preview = previewDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: selected,
+  }, ledgerDir, now);
+  assert.equal(preview.excludedRows, 1);
+  assert.equal(preview.duplicateRows, 1);
+  assert.deepEqual(preview.affectedAccounts.map((account) => account.accountLabel).sort(), [
+    "Example Bank loan ****0420",
+    "Example Bank loan ****1701",
+  ]);
+
+  let detail = loadDataIssue(issue.dataIssueId, ledgerDir);
+  const previewEvent = detail.events.find((event) => event.eventType === "exclusion-preview");
+  assert.deepEqual(previewEvent?.details, {
+    sourceVersion: selected,
+    excludedRows: 1,
+    duplicateRows: 1,
+    affectedAccountIds: preview.affectedAccounts.map((account) => account.accountId),
+  });
+  assert.doesNotMatch(JSON.stringify(previewEvent?.details), /\/Volumes\/|\/Users\//);
+
+  confirmDataIssueExclusion({
+    dataIssueId: issue.dataIssueId,
+    sourceVersion: selected,
+    reason: "Synthetic source mismatch",
+    acknowledged: true,
+    previewToken: preview.previewToken,
+  }, ledgerDir, now);
+  detail = loadDataIssue(issue.dataIssueId, ledgerDir);
+  const confirmEvent = detail.events.find((event) => event.eventType === "exclusion");
+  assert.deepEqual(confirmEvent?.details, {
+    sourceVersion: selected,
+    reason: "Synthetic source mismatch",
+    excludedRows: 1,
+    duplicateRows: 1,
+    affectedAccountIds: preview.affectedAccounts.map((account) => account.accountId),
+  });
+  assert.doesNotMatch(JSON.stringify(confirmEvent?.details), /\/Volumes\/|\/Users\//);
+
+  const eventsBeforeObservation = detail.events;
+  const observedDb = openLedgerDatabase(ledgerDir);
+  observedDb.prepare(`UPDATE source_file_imports
+    SET observation_count = observation_count + 1, last_seen_at = ?
+    WHERE source_version_key = ?`).run("2026-07-21T00:00:00.000Z", selectedVersionKey);
+  observedDb.close();
+  assert.deepEqual(loadDataIssue(issue.dataIssueId, ledgerDir).events, eventsBeforeObservation);
+});
+
 test("creates a persistent issue with an empty optional note", async () => {
   const { ledgerDir, input } = await setup();
   const created = createDataIssue({ ...input, note: "" }, ledgerDir, clock());
@@ -424,7 +721,7 @@ test("preview duplicate count uses active row lineage and counts cross-projectio
     csvRows: 1,
     tradeDates: ["2026-01-18"],
   });
-  seedSource(db, excludedSupport, {
+  const excludedSupportVersionKey = seedSource(db, excludedSupport, {
     importedAt: "2026-01-17T00:00:00.000Z",
     balances: [61_300],
     csvRows: 1,
@@ -440,24 +737,29 @@ test("preview duplicate count uses active row lineage and counts cross-projectio
     'unknown-statements', '{}', '2026-01-18T00:00:00.000Z', 'Synthetic', '[]'
   )`).run(support.sourceFileId, support.importRunId);
   const insertLineage = db.prepare(`INSERT INTO source_row_lineage (
-    source_file_id, import_run_id, source_row_index, projection_table,
+    source_file_id, import_run_id, source_version_key, source_row_index, projection_table,
     statement_row_id, outcome, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 3,
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const selectedVersionKey = sourceVersionKey(
+    "example-bank",
+    "loan-statements",
+    `${sourceVersion.sourceFileId}-${sourceVersion.importRunId}-hash`,
+  );
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, selectedVersionKey, 3,
     "loan_transactions", `${support.sourceFileId}-${support.importRunId}-row-1`,
     "duplicate", "2026-07-19T00:00:00.000Z");
-  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 3,
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, selectedVersionKey, 3,
     "unsupported_statement_rows", "support-projection", "duplicate",
     "2026-07-19T00:00:00.000Z");
-  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, 4,
+  insertLineage.run(sourceVersion.sourceFileId, sourceVersion.importRunId, selectedVersionKey, 4,
     "loan_transactions", `${excludedSupport.sourceFileId}-${excludedSupport.importRunId}-row-1`,
     "duplicate", "2026-07-19T00:00:00.000Z");
   db.prepare(`INSERT INTO disabled_import_sources (
-    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id, source_version_key,
     reason, state, disabled_at, restored_at, preview_token
-  ) VALUES ('excluded-support', 'synthetic-support-case', ?, ?, 'Synthetic',
+  ) VALUES ('excluded-support', 'synthetic-support-case', ?, ?, ?, 'Synthetic',
     'active', '2026-07-19T12:00:00.000Z', NULL, 'synthetic-token')`)
-    .run(excludedSupport.sourceFileId, excludedSupport.importRunId);
+    .run(excludedSupport.sourceFileId, excludedSupport.importRunId, excludedSupportVersionKey);
   db.close();
 
   const issue = createDataIssue(input, ledgerDir, clock());
@@ -693,9 +995,9 @@ test("persists the complete exclusion journey across a database reopen", () => {
 
   openLedgerDatabase(ledgerDir).close();
   const reopenedDb = openLedgerDatabase(ledgerDir);
-  const activeExclusions = loadActiveImportScopes(reopenedDb);
+  const support = loadActiveLedgerSupport(reopenedDb);
   reopenedDb.close();
-  const after = buildAccountOverview(applyLedgerVisibility(ledgerData, activeExclusions))[0];
+  const after = buildAccountOverview(applyLedgerVisibility(ledgerData, support))[0];
   const reopened = loadDataIssue(created.dataIssueId, ledgerDir);
 
   assert.equal(after?.amountLines[0]?.value, 63_900);
@@ -724,8 +1026,9 @@ test("rejects a stale preview without changing visibility", async () => {
   const issue = createDataIssue(input, ledgerDir, now);
   const preview = previewDataIssueExclusion({ dataIssueId: issue.dataIssueId, sourceVersion }, ledgerDir, now);
   const db = openLedgerDatabase(ledgerDir);
-  db.prepare("UPDATE loan_transactions SET imported_at = ? WHERE statement_row_id = ?")
-    .run("2026-07-19T01:00:00.000Z", "source-a-run-a-row-2");
+  db.prepare(`UPDATE source_file_imports SET last_seen_at = ?
+    WHERE source_file_id = ? AND import_run_id = ?`)
+    .run("2026-07-19T01:00:00.000Z", sourceVersion.sourceFileId, sourceVersion.importRunId);
   db.close();
   assert.throws(() => confirmDataIssueExclusion({
     dataIssueId: issue.dataIssueId,
@@ -822,7 +1125,8 @@ test("blocks restore after newer active data exists", async () => {
     previewToken: exclusion.previewToken,
   }, ledgerDir, now);
   const db = openLedgerDatabase(ledgerDir);
-  seedSource(db, { sourceFileId: "source-b", importRunId: "run-b" }, {
+  const secondSource = { sourceFileId: "source-b", importRunId: "run-b" };
+  seedSource(db, secondSource, {
     importedAt: "2026-07-21T00:00:00.000Z",
     balances: [63_900],
     csvRows: 1,
@@ -922,17 +1226,19 @@ test("restore changes only the exact exclusion selected by its preview", async (
     previewToken: exclusion.previewToken,
   }, ledgerDir, now);
   const db = openLedgerDatabase(ledgerDir);
-  seedSource(db, { sourceFileId: "source-b", importRunId: "run-b" }, {
+  const secondSource = { sourceFileId: "source-b", importRunId: "run-b" };
+  const secondVersionKey = seedSource(db, secondSource, {
     importedAt: "2026-07-19T12:00:00.000Z",
     balances: [63_900],
     csvRows: 1,
     tradeDates: ["2026-07-20"],
   });
   db.prepare(`INSERT INTO disabled_import_sources (
-    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id, source_version_key,
     reason, state, disabled_at, restored_at, preview_token
-  ) VALUES ('legacy-second', ?, 'source-b', 'run-b', 'Legacy synthetic row',
-    'active', '2026-07-20T01:00:00.000Z', NULL, 'legacy-token')`).run(issue.dataIssueId);
+  ) VALUES ('legacy-second', ?, 'source-b', 'run-b', ?, 'Legacy synthetic row',
+    'active', '2026-07-20T01:00:00.000Z', NULL, 'legacy-token')`)
+    .run(issue.dataIssueId, secondVersionKey);
   db.close();
   const preview = previewDataIssueRestore(issue.dataIssueId, ledgerDir, now);
   const restored = confirmDataIssueRestore({ dataIssueId: issue.dataIssueId, previewToken: preview.previewToken }, ledgerDir, now);
