@@ -159,6 +159,9 @@ const ambiguousSourceVersionLedgerDir = mkdtempSync(
 const orphanSourceVersionLedgerDir = mkdtempSync(
   join(tmpdir(), "orphan-source-version-"),
 );
+const mergedExclusionLedgerDir = mkdtempSync(
+  join(tmpdir(), "merged-source-exclusion-"),
+);
 
 function resetSourceVersionsToVersion25(db: LedgerDatabase) {
   db.exec(`
@@ -427,6 +430,21 @@ try {
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issues").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
+  assert.deepEqual(canonicalDb.prepare(`
+    SELECT disabled_import_source_id, data_issue_id, source_file_id,
+      import_run_id, reason, state, disabled_at, restored_at, preview_token
+    FROM disabled_import_sources
+  `).all().map((row) => ({ ...row })), [{
+    disabled_import_source_id: "disabled-a",
+    data_issue_id: "issue-a",
+    source_file_id: "source-b",
+    import_run_id: "run-b",
+    reason: "synthetic exclusion",
+    state: "active",
+    disabled_at: "2026-01-02T00:00:00.000Z",
+    restored_at: null,
+    preview_token: "preview-a",
+  }]);
   assert.equal((canonicalDb.prepare("SELECT balance_after FROM loan_transactions WHERE statement_row_id = 'synthetic-row'").get() as { balance_after: number }).balance_after, 63_900);
   assert.deepEqual(canonicalDb.prepare(`
     SELECT source_file_id, import_run_id FROM loan_transactions
@@ -446,6 +464,74 @@ try {
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT observation_count FROM source_file_imports").get() as { observation_count: number }).observation_count, 2);
   canonicalDb.close();
+
+  const mergedExclusionDb = openLedgerDatabase(mergedExclusionLedgerDir);
+  resetSourceVersionsToVersion25(mergedExclusionDb);
+  for (const [source, run, importedAt] of [
+    ["merge-a", "merge-run-a", "2026-01-01T00:00:00.000Z"],
+    ["merge-b", "merge-run-b", "2026-01-02T00:00:00.000Z"],
+    ["merge-c", "merge-run-c", "2026-01-03T00:00:00.000Z"],
+    ["merge-d", "merge-run-d", "2026-01-04T00:00:00.000Z"],
+  ]) {
+    insertVersion25Source(mergedExclusionDb, source, run, importedAt);
+  }
+  mergedExclusionDb.exec(`
+    INSERT INTO data_issues (
+      data_issue_id, account_id, account_label, account_context_json,
+      field_key, reported_value, currency, note, status, created_at, updated_at
+    ) VALUES (
+      'merge-issue', 'merge-account', 'Merge Account', '{}', 'balance', 1,
+      'TWD', 'merge issue', 'investigating',
+      '2026-01-01T00:00:00.000Z', '2026-01-04T00:00:00.000Z'
+    );
+    INSERT INTO data_issue_events (
+      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
+      details_json, created_at
+    ) VALUES
+      ('merge-event-a', 'merge-issue', 'disabled', 'commit', 'succeeded',
+        'first event', '{}', '2026-01-02T00:00:00.000Z'),
+      ('merge-event-b', 'merge-issue', 'restored', 'commit', 'succeeded',
+        'second event', '{}', '2026-01-04T00:00:00.000Z');
+    INSERT INTO disabled_import_sources (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      reason, state, disabled_at, restored_at, preview_token
+    ) VALUES
+      ('merge-restored-z', 'merge-issue', 'merge-a', 'merge-run-a',
+        'later restored', 'restored', '2026-01-04T00:00:00.000Z',
+        '2026-01-05T00:00:00.000Z', 'preview-restored'),
+      ('merge-active-a', 'merge-issue', 'merge-b', 'merge-run-b',
+        'older active', 'active', '2026-01-02T00:00:00.000Z', NULL,
+        'preview-active-a'),
+      ('merge-active-b', 'merge-issue', 'merge-c', 'merge-run-c',
+        'latest active lower id', 'active', '2026-01-03T00:00:00.000Z', NULL,
+        'preview-active-b'),
+      ('merge-active-z', 'merge-issue', 'merge-d', 'merge-run-d',
+        'latest active winner', 'active', '2026-01-03T00:00:00.000Z',
+        '2026-01-06T00:00:00.000Z', 'preview-active-z');
+  `);
+  migrateLedgerDb(mergedExclusionDb);
+  assert.deepEqual(mergedExclusionDb.prepare(`
+    SELECT disabled_import_source_id, data_issue_id, source_file_id,
+      import_run_id, reason, state, disabled_at, restored_at, preview_token
+    FROM disabled_import_sources
+  `).all().map((row) => ({ ...row })), [{
+    disabled_import_source_id: "merge-active-z",
+    data_issue_id: "merge-issue",
+    source_file_id: "merge-d",
+    import_run_id: "merge-run-d",
+    reason: "latest active winner",
+    state: "active",
+    disabled_at: "2026-01-03T00:00:00.000Z",
+    restored_at: null,
+    preview_token: "preview-active-z",
+  }]);
+  assert.equal((mergedExclusionDb.prepare(
+    "SELECT COUNT(*) count FROM data_issues",
+  ).get() as { count: number }).count, 1);
+  assert.equal((mergedExclusionDb.prepare(
+    "SELECT COUNT(*) count FROM data_issue_events",
+  ).get() as { count: number }).count, 2);
+  mergedExclusionDb.close();
 
   const ambiguousDb = openLedgerDatabase(ambiguousSourceVersionLedgerDir);
   resetSourceVersionsToVersion25(ambiguousDb);
@@ -1435,6 +1521,7 @@ try {
     canonicalSourceVersionLedgerDir,
     ambiguousSourceVersionLedgerDir,
     orphanSourceVersionLedgerDir,
+    mergedExclusionLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
