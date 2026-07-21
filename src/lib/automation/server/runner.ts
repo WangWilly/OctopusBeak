@@ -208,7 +208,12 @@ export function createAutomationOutputBuffer(
     try {
       write(chunk);
     } catch (error) {
-      onError(error);
+      pending = chunk + pending;
+      try {
+        onError(error);
+      } catch (handlerError) {
+        console.error("automation-output-error-handler-failed", handlerError);
+      }
     }
   };
   return {
@@ -645,25 +650,32 @@ export async function runAutomationTask(
         signal: NodeJS.Signals | null;
         error: Error | null;
       }>((resolve) => {
+        const recordOutputPersistenceError = (error: unknown) => {
+          const line = `automation-output-write-failed: ${errorMessage(error)}`;
+          console.error(line);
+          logTail = tail(`${logTail}\n${line}\n`);
+        };
         const outputBuffer = createAutomationOutputBuffer(
-          (logChunk) => {
-            appendLog(logPath, logChunk);
+          () => {
             if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
               updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
             }
           },
           500,
-          (error) => {
-            const line = `automation-output-write-failed: ${errorMessage(error)}`;
-            console.error(line);
-            logTail = tail(`${logTail}\n${line}\n`);
-          },
+          recordOutputPersistenceError,
         );
         const onOutput = (chunk: Buffer) => {
           const output = accumulateAutomationOutput(
             { logTail, resumeFailure: detectedResumeFailure },
             chunk.toString("utf8"),
           );
+          logTail = output.logTail;
+          detectedResumeFailure = output.resumeFailure;
+          try {
+            appendLog(logPath, output.logChunk);
+          } catch (error) {
+            recordOutputPersistenceError(error);
+          }
           outputBuffer.push(output.logChunk);
           if (session) {
             ownAutomationSession({
@@ -673,8 +685,6 @@ export async function runAutomationTask(
               pid: sessionPid(session),
             });
           }
-          logTail = output.logTail;
-          detectedResumeFailure = output.resumeFailure;
         };
         const child = spawn(command.command, command.args, {
           stdio: ["ignore", "pipe", "pipe"],
