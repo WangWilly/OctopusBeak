@@ -96,6 +96,20 @@ test("report submission persists the case before navigating", async () => {
   assert.match(accounts, /account\.valueAvailability === "unavailable"[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
 });
 
+test("report dialog stays viewport-centered", async () => {
+  const modal = await readFile(new URL("./ReportDataIssueModal.svelte", import.meta.url), "utf8");
+
+  assert.match(modal, /\.report-modal\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?inset:\s*0;[\s\S]*?margin:\s*auto;/);
+});
+
+test("report trigger is the final account action", async () => {
+  const accounts = await readFile(new URL("../shared-accounts/components/AccountTable.svelte", import.meta.url), "utf8");
+
+  const actions = accounts.match(/<div class="action-group">([\s\S]*?)<\/div>/)?.[1];
+  assert.ok(actions);
+  assert.ok(actions.lastIndexOf("report-issue-button") > actions.lastIndexOf("positionsOpen = true"));
+});
+
 test("report creation announces progress and completion from the loaded destination", async () => {
   const assets = await readFile(new URL("../assets/AssetsDashboard.svelte", import.meta.url), "utf8");
   const liabilities = await readFile(new URL("../liabilities/LiabilitiesDashboard.svelte", import.meta.url), "utf8");

@@ -96,7 +96,10 @@
 
 <style>
   .report-modal {
+    position: fixed;
+    inset: 0;
     width: min(680px, calc(100vw - 40px));
+    margin: auto;
     padding: 0;
   }
 
