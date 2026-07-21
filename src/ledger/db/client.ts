@@ -7,7 +7,7 @@ import { migrateLedgerDb } from "./migrations.ts";
 
 export const SQLITE_LEDGER_FILE = "ledger.sqlite";
 export const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
-const SQLITE_BUSY_TIMEOUT_MS = 5000;
+const SQLITE_BUSY_TIMEOUT_MS = 30_000;
 export type LedgerDatabase = InstanceType<typeof DatabaseSync>;
 
 export function ledgerSqlitePath(ledgerDir = DEFAULT_LEDGER_DIR) {

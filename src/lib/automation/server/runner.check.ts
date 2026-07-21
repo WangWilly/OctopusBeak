@@ -141,6 +141,20 @@ test("automation output is flushed in batches", (context) => {
   assert.deepEqual(flushed, ["first\nsecond\n", "final\n"]);
 });
 
+test("automation output persistence errors are contained", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const errors: unknown[] = [];
+  const buffer = createAutomationOutputBuffer(
+    () => { throw new Error("database is locked"); },
+    500,
+    (error) => errors.push(error),
+  );
+
+  buffer.push("progress\n");
+  assert.doesNotThrow(() => context.mock.timers.tick(500));
+  assert.equal((errors[0] as Error).message, "database is locked");
+});
+
 test("batch task startup uses two concurrent slots", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
   assert.match(source, /runWithConcurrency\(selectedTaskIds, 2,/);
