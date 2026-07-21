@@ -164,6 +164,25 @@ test("each sync-all batch attempts one import after its tasks settle", async () 
   assert.equal(executed.at(-1), "import-downloads-csv");
 });
 
+test("a selected task failure still permits one final import attempt", async () => {
+  const executed: string[] = [];
+  const failure = new Error("crawler failed");
+
+  await assert.rejects(
+    runAutomationBatch(
+      ["fubon-all-statements", "exchange-rates"],
+      async (taskId) => {
+        executed.push(taskId);
+        if (taskId === "fubon-all-statements") throw failure;
+      },
+    ),
+    (error) => error === failure,
+  );
+
+  assert.equal(executed.filter((taskId) => taskId === "import-downloads-csv").length, 1);
+  assert.equal(executed.at(-1), "import-downloads-csv");
+});
+
 test("a batch without crawlers does not auto-import", async () => {
   const executed: string[] = [];
   await runAutomationBatch(
@@ -228,6 +247,56 @@ test("a queued batch task can be cancelled before its process starts", async () 
   assert.deepEqual(await cancelAutomationTask("exchange-rates"), { cancelled: "exchange-rates" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(activeAutomationTaskIds(), []);
+});
+
+test("an import-only batch runs once and releases its claim", async () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-import-only-"));
+  const ledgerDir = join(root, "ledger");
+  const capturePath = join(root, "capture.txt");
+  const oldEnv = {
+    OCTOPUSBEAK_DESKTOP: process.env.OCTOPUSBEAK_DESKTOP,
+    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
+    OCTOPUSBEAK_NODE_PATH: process.env.OCTOPUSBEAK_NODE_PATH,
+    CAPTURE_PATH: process.env.CAPTURE_PATH,
+  };
+  mkdirSync(join(root, "src", "ledger"), { recursive: true });
+  writeFileSync(
+    join(root, "src", "ledger", "import-downloads-csv.ts"),
+    'import { appendFileSync } from "node:fs";\nappendFileSync(process.env.CAPTURE_PATH, "import\\n");\n',
+  );
+  process.env.OCTOPUSBEAK_DESKTOP = "1";
+  process.env.OCTOPUSBEAK_APP_ROOT = root;
+  process.env.OCTOPUSBEAK_NODE_PATH = process.execPath;
+  process.env.CAPTURE_PATH = capturePath;
+
+  try {
+    startAutomationTasks(["import-downloads-csv"], ledgerDir);
+    assert.deepEqual(activeAutomationTaskIds(), ["import-downloads-csv"]);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!activeAutomationTaskIds().includes("import-downloads-csv")) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.deepEqual(activeAutomationTaskIds(), []);
+    assert.equal(readFileSync(capturePath, "utf8"), "import\n");
+    const db = openLedgerDatabase(ledgerDir);
+    const count = db.prepare(`
+      SELECT count(*) AS count
+      FROM automation_task_runs
+      WHERE task_id = 'import-downloads-csv'
+    `).get() as { count: number };
+    assert.equal(count.count, 1);
+    db.close();
+  } finally {
+    if (activeAutomationTaskIds().includes("import-downloads-csv")) {
+      await cancelAutomationTask("import-downloads-csv");
+    }
+    for (const [key, value] of Object.entries(oldEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 assert.equal(shouldMarkWaitingForHuman("libretto paused. resume --session abc"), true);
