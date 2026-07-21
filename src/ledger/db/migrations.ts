@@ -1481,7 +1481,6 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
   `).all() as LegacySourceImport[];
   const issueCount = count("data_issues");
   const eventCount = count("data_issue_events");
-  const exclusionCount = count("disabled_import_sources");
   const typedCounts = new Map(TYPED_STATEMENT_TABLES.map((table) => [
     table,
     count(table),
@@ -1685,6 +1684,8 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     SELECT disabled_import_source_id, data_issue_id, source_file_id,
       import_run_id, reason, state, disabled_at, restored_at, preview_token
     FROM disabled_import_sources
+    ORDER BY state = 'active' DESC, disabled_at DESC,
+      disabled_import_source_id DESC
   `).all() as Array<{
     disabled_import_source_id: string;
     data_issue_id: string;
@@ -1696,6 +1697,10 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     restored_at: string | null;
     preview_token: string;
   }>;
+  const exclusionGroups = new Map<string, {
+    row: (typeof legacyExclusions)[number];
+    sourceVersionKey: string;
+  }>();
   for (const row of legacyExclusions) {
     const source = sourceVersionsByScope.get(scopeKey(
       row.source_file_id,
@@ -1704,16 +1709,26 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     if (!source) {
       throw new Error("SOURCE_VERSION_SCOPE_UNRESOLVED: disabled_import_sources");
     }
+    const groupKey = JSON.stringify([row.data_issue_id, source.sourceVersionKey]);
+    if (!exclusionGroups.has(groupKey)) {
+      exclusionGroups.set(groupKey, {
+        row,
+        sourceVersionKey: source.sourceVersionKey,
+      });
+    }
+  }
+  for (const exclusion of exclusionGroups.values()) {
+    const row = exclusion.row;
     insertExclusion.run(
       row.disabled_import_source_id,
       row.data_issue_id,
-      source.canonical.source_file_id,
-      source.canonical.import_run_id,
-      source.sourceVersionKey,
+      row.source_file_id,
+      row.import_run_id,
+      exclusion.sourceVersionKey,
       row.reason,
       row.state,
       row.disabled_at,
-      row.restored_at,
+      row.state === "active" ? null : row.restored_at,
       row.preview_token,
     );
   }
@@ -1781,7 +1796,7 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     || sourceBounds.first_seen_at !== expectedFirstSeen
     || sourceBounds.last_seen_at !== expectedLastSeen
     || count("source_row_lineage_v26") !== lineageGroups.size
-    || count("disabled_import_sources_v26") !== exclusionCount
+    || count("disabled_import_sources_v26") !== exclusionGroups.size
     || count("data_issues") !== issueCount
     || count("data_issue_events") !== eventCount
   ) {
