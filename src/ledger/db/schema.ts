@@ -49,6 +49,7 @@ export const sourceFiles = sqliteTable("source_files", {
 export const sourceFileImports = sqliteTable("source_file_imports", {
   sourceFileId: text("source_file_id").notNull(),
   importRunId: text("import_run_id").notNull(),
+  sourceVersionKey: text("source_version_key").notNull(),
   sourceRelativePath: text("source_relative_path").notNull(),
   sourceFileHash: text("source_file_hash").notNull(),
   sourceFileBytes: integer("source_file_bytes").notNull(),
@@ -56,27 +57,38 @@ export const sourceFileImports = sqliteTable("source_file_imports", {
   importedAt: text("imported_at").notNull(),
   bank: text("bank").notNull(),
   product: text("product").notNull(),
+  firstSeenAt: text("first_seen_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  observationCount: integer("observation_count").notNull().default(1),
   rowCount: integer("row_count").notNull(),
   status: text("status").notNull(),
   recordJson: text("record_json").notNull(),
-}, (table) => [primaryKey({ columns: [table.sourceFileId, table.importRunId] })]);
+}, (table) => [
+  primaryKey({ columns: [table.sourceFileId, table.importRunId] }),
+  uniqueIndex("uq_source_file_imports_version").on(table.sourceVersionKey),
+]);
 
 export const sourceRowLineage = sqliteTable("source_row_lineage", {
   sourceFileId: text("source_file_id").notNull(),
   importRunId: text("import_run_id").notNull(),
+  sourceVersionKey: text("source_version_key").notNull(),
   sourceRowIndex: integer("source_row_index").notNull(),
   projectionTable: text("projection_table").notNull(),
   statementRowId: text("statement_row_id").notNull(),
   outcome: text("outcome").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [
-  primaryKey({ columns: [
-    table.sourceFileId,
-    table.importRunId,
+  uniqueIndex("uq_source_row_lineage_version_row_projection").on(
+    table.sourceVersionKey,
     table.sourceRowIndex,
     table.projectionTable,
-  ] }),
+  ),
   index("idx_source_row_lineage_statement").on(table.projectionTable, table.statementRowId),
+  index("source_row_lineage_active_support_idx").on(
+    table.projectionTable,
+    table.statementRowId,
+    table.sourceVersionKey,
+  ),
   check("ck_source_row_lineage_outcome", sql`${table.outcome} IN ('inserted','duplicate','upserted')`),
 ]);
 
@@ -100,13 +112,21 @@ export const disabledImportSources = sqliteTable("disabled_import_sources", {
   dataIssueId: text("data_issue_id").notNull(),
   sourceFileId: text("source_file_id").notNull(),
   importRunId: text("import_run_id").notNull(),
+  sourceVersionKey: text("source_version_key").notNull(),
   reason: text("reason").notNull(),
   state: text("state").notNull(),
   disabledAt: text("disabled_at").notNull(),
   restoredAt: text("restored_at"),
   previewToken: text("preview_token").notNull(),
 }, (table) => [
-  uniqueIndex("uq_disabled_import_source_scope").on(table.sourceFileId, table.importRunId),
+  uniqueIndex("uq_disabled_import_source_case_version").on(
+    table.dataIssueId,
+    table.sourceVersionKey,
+  ),
+  index("disabled_import_sources_version_state_idx").on(
+    table.sourceVersionKey,
+    table.state,
+  ),
   check("ck_disabled_import_sources_state", sql`${table.state} IN ('active','restored')`),
 ]);
 
