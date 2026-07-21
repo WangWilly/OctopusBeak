@@ -155,6 +155,48 @@ test("automation output persistence errors are contained", (context) => {
   assert.equal((errors[0] as Error).message, "database is locked");
 });
 
+test("automation output retains a failed chunk for a later flush", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const flushed: string[] = [];
+  let attempts = 0;
+  const buffer = createAutomationOutputBuffer(
+    (chunk) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("database is locked");
+      flushed.push(chunk);
+    },
+    500,
+    () => {},
+  );
+
+  buffer.push("progress\n");
+  context.mock.timers.tick(500);
+  assert.deepEqual(flushed, []);
+  assert.doesNotThrow(() => buffer.flush());
+  assert.deepEqual(flushed, ["progress\n"]);
+});
+
+test("automation output contains error handler failures for timer and manual flushes", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const messages: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { messages.push(args); };
+  try {
+    const buffer = createAutomationOutputBuffer(
+      () => { throw new Error("database is locked"); },
+      500,
+      () => { throw new Error("handler failed"); },
+    );
+
+    buffer.push("progress\n");
+    assert.doesNotThrow(() => context.mock.timers.tick(500));
+    assert.doesNotThrow(() => buffer.flush());
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(messages.length, 2);
+});
+
 test("batch task startup uses two concurrent slots", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
   assert.match(source, /runWithConcurrency\(selectedTaskIds, 2,/);
