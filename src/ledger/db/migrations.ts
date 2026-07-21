@@ -7,6 +7,7 @@ import { contentHashForRow, hashBytes, stableStringify } from "../content-hash.t
 import { creditCardSemanticKey } from "../credit-card-identity.ts";
 import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
 import { sourceTransactionAtUtc } from "../source-timezones.ts";
+import { sourceVersionKey } from "../source-version.ts";
 import type { LedgerDatabase } from "./client.ts";
 
 type LedgerMigration = {
@@ -1441,6 +1442,374 @@ function createSourceRowLineage(db: LedgerDatabase) {
   }
 }
 
+type LegacySourceImport = {
+  source_file_id: string;
+  import_run_id: string;
+  source_relative_path: string;
+  source_file_hash: string;
+  source_file_bytes: number;
+  source_file_modified_at: string | null;
+  imported_at: string;
+  bank: string;
+  product: string;
+  row_count: number;
+  status: string;
+  record_json: string;
+};
+
+type CanonicalSource = {
+  sourceVersionKey: string;
+  canonical: LegacySourceImport;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  observationCount: number;
+};
+
+function canonicalizeSourceVersions(db: LedgerDatabase) {
+  const count = (table: string) => (db.prepare(
+    `SELECT COUNT(*) AS count FROM ${table}`,
+  ).get() as { count: number }).count;
+  const scopeKey = (sourceFileId: string, importRunId: string) => (
+    JSON.stringify([sourceFileId, importRunId])
+  );
+  const legacySources = db.prepare(`
+    SELECT source_file_id, import_run_id, source_relative_path,
+      source_file_hash, source_file_bytes, source_file_modified_at, imported_at,
+      bank, product, row_count, status, record_json
+    FROM source_file_imports
+    ORDER BY imported_at, source_file_id, import_run_id
+  `).all() as LegacySourceImport[];
+  const issueCount = count("data_issues");
+  const eventCount = count("data_issue_events");
+  const exclusionCount = count("disabled_import_sources");
+  const typedCounts = new Map(TYPED_STATEMENT_TABLES.map((table) => [
+    table,
+    count(table),
+  ]));
+  const canonicalSources = new Map<string, CanonicalSource>();
+  const sourceVersionsByScope = new Map<string, CanonicalSource>();
+
+  for (const source of legacySources) {
+    const versionKey = sourceVersionKey(
+      source.bank,
+      source.product,
+      source.source_file_hash,
+    );
+    const existing = canonicalSources.get(versionKey);
+    const canonical = existing ?? {
+      sourceVersionKey: versionKey,
+      canonical: source,
+      firstSeenAt: source.imported_at,
+      lastSeenAt: source.imported_at,
+      observationCount: 0,
+    };
+    canonical.firstSeenAt = canonical.firstSeenAt < source.imported_at
+      ? canonical.firstSeenAt
+      : source.imported_at;
+    canonical.lastSeenAt = canonical.lastSeenAt > source.imported_at
+      ? canonical.lastSeenAt
+      : source.imported_at;
+    canonical.observationCount += 1;
+    canonicalSources.set(versionKey, canonical);
+    sourceVersionsByScope.set(
+      scopeKey(source.source_file_id, source.import_run_id),
+      canonical,
+    );
+  }
+
+  db.exec(`
+    CREATE TABLE source_file_imports_v26 (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_version_key TEXT NOT NULL,
+      source_relative_path TEXT NOT NULL,
+      source_file_hash TEXT NOT NULL,
+      source_file_bytes INTEGER NOT NULL,
+      source_file_modified_at TEXT,
+      imported_at TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      observation_count INTEGER NOT NULL DEFAULT 1,
+      row_count INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (source_file_id, import_run_id)
+    );
+    CREATE TABLE source_row_lineage_v26 (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_version_key TEXT NOT NULL,
+      source_row_index INTEGER NOT NULL,
+      projection_table TEXT NOT NULL,
+      statement_row_id TEXT NOT NULL,
+      outcome TEXT NOT NULL
+        CONSTRAINT ck_source_row_lineage_outcome
+        CHECK (outcome IN ('inserted','duplicate','upserted')),
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE disabled_import_sources_v26 (
+      disabled_import_source_id TEXT PRIMARY KEY,
+      data_issue_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_version_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      state TEXT NOT NULL,
+      disabled_at TEXT NOT NULL,
+      restored_at TEXT,
+      preview_token TEXT NOT NULL,
+      CONSTRAINT ck_disabled_import_sources_state
+        CHECK (state IN ('active','restored'))
+    );
+  `);
+
+  const insertSource = db.prepare(`
+    INSERT INTO source_file_imports_v26 (
+      source_file_id, import_run_id, source_version_key, source_relative_path,
+      source_file_hash, source_file_bytes, source_file_modified_at, imported_at,
+      bank, product, first_seen_at, last_seen_at, observation_count, row_count,
+      status, record_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const source of canonicalSources.values()) {
+    const row = source.canonical;
+    insertSource.run(
+      row.source_file_id,
+      row.import_run_id,
+      source.sourceVersionKey,
+      row.source_relative_path,
+      row.source_file_hash,
+      row.source_file_bytes,
+      row.source_file_modified_at,
+      row.imported_at,
+      row.bank,
+      row.product,
+      source.firstSeenAt,
+      source.lastSeenAt,
+      source.observationCount,
+      row.row_count,
+      row.status,
+      row.record_json,
+    );
+  }
+
+  const lineageGroups = new Map<string, {
+    source: CanonicalSource;
+    sourceRowIndex: number;
+    projectionTable: string;
+    statementRowId: string;
+    outcome: string;
+    createdAt: string;
+  }>();
+  const outcomeRank: Record<string, number> = {
+    duplicate: 0,
+    upserted: 1,
+    inserted: 2,
+  };
+  const legacyLineage = db.prepare(`
+    SELECT source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome, created_at
+    FROM source_row_lineage
+    ORDER BY created_at, source_file_id, import_run_id
+  `).all() as Array<{
+    source_file_id: string;
+    import_run_id: string;
+    source_row_index: number;
+    projection_table: string;
+    statement_row_id: string;
+    outcome: string;
+    created_at: string;
+  }>;
+  for (const row of legacyLineage) {
+    const source = sourceVersionsByScope.get(scopeKey(
+      row.source_file_id,
+      row.import_run_id,
+    ));
+    if (!source) {
+      throw new Error("SOURCE_VERSION_SCOPE_UNRESOLVED: source_row_lineage");
+    }
+    const groupKey = JSON.stringify([
+      source.sourceVersionKey,
+      row.source_row_index,
+      row.projection_table,
+    ]);
+    const existing = lineageGroups.get(groupKey);
+    if (existing && existing.statementRowId !== row.statement_row_id) {
+      throw new Error("SOURCE_VERSION_LINEAGE_AMBIGUOUS");
+    }
+    if (!existing) {
+      lineageGroups.set(groupKey, {
+        source,
+        sourceRowIndex: row.source_row_index,
+        projectionTable: row.projection_table,
+        statementRowId: row.statement_row_id,
+        outcome: row.outcome,
+        createdAt: row.created_at,
+      });
+      continue;
+    }
+    if (outcomeRank[row.outcome] > outcomeRank[existing.outcome]) {
+      existing.outcome = row.outcome;
+    }
+    if (row.created_at < existing.createdAt) existing.createdAt = row.created_at;
+  }
+
+  const insertLineage = db.prepare(`
+    INSERT INTO source_row_lineage_v26 (
+      source_file_id, import_run_id, source_version_key, source_row_index,
+      projection_table, statement_row_id, outcome, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const lineage of lineageGroups.values()) {
+    insertLineage.run(
+      lineage.source.canonical.source_file_id,
+      lineage.source.canonical.import_run_id,
+      lineage.source.sourceVersionKey,
+      lineage.sourceRowIndex,
+      lineage.projectionTable,
+      lineage.statementRowId,
+      lineage.outcome,
+      lineage.createdAt,
+    );
+  }
+
+  const insertExclusion = db.prepare(`
+    INSERT INTO disabled_import_sources_v26 (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      source_version_key, reason, state, disabled_at, restored_at, preview_token
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const legacyExclusions = db.prepare(`
+    SELECT disabled_import_source_id, data_issue_id, source_file_id,
+      import_run_id, reason, state, disabled_at, restored_at, preview_token
+    FROM disabled_import_sources
+  `).all() as Array<{
+    disabled_import_source_id: string;
+    data_issue_id: string;
+    source_file_id: string;
+    import_run_id: string;
+    reason: string;
+    state: string;
+    disabled_at: string;
+    restored_at: string | null;
+    preview_token: string;
+  }>;
+  for (const row of legacyExclusions) {
+    const source = sourceVersionsByScope.get(scopeKey(
+      row.source_file_id,
+      row.import_run_id,
+    ));
+    if (!source) {
+      throw new Error("SOURCE_VERSION_SCOPE_UNRESOLVED: disabled_import_sources");
+    }
+    insertExclusion.run(
+      row.disabled_import_source_id,
+      row.data_issue_id,
+      source.canonical.source_file_id,
+      source.canonical.import_run_id,
+      source.sourceVersionKey,
+      row.reason,
+      row.state,
+      row.disabled_at,
+      row.restored_at,
+      row.preview_token,
+    );
+  }
+
+  for (const table of TYPED_STATEMENT_TABLES) {
+    const rows = db.prepare(`
+      SELECT statement_row_id, source_file_id, import_run_id FROM ${table}
+    `).all() as Array<{
+      statement_row_id: string;
+      source_file_id: string;
+      import_run_id: string;
+    }>;
+    const updateOwner = db.prepare(`
+      UPDATE ${table} SET source_file_id = ?, import_run_id = ?
+      WHERE statement_row_id = ?
+    `);
+    for (const row of rows) {
+      const source = sourceVersionsByScope.get(scopeKey(
+        row.source_file_id,
+        row.import_run_id,
+      ));
+      if (!source) {
+        throw new Error(`SOURCE_VERSION_SCOPE_UNRESOLVED: ${table}`);
+      }
+      updateOwner.run(
+        source.canonical.source_file_id,
+        source.canonical.import_run_id,
+        row.statement_row_id,
+      );
+    }
+    const orphanCount = (db.prepare(`
+      SELECT COUNT(*) AS count FROM ${table} AS typed
+      WHERE NOT EXISTS (
+        SELECT 1 FROM source_row_lineage_v26 AS lineage
+        WHERE lineage.projection_table = ?
+          AND lineage.statement_row_id = typed.statement_row_id
+      )
+    `).get(table) as { count: number }).count;
+    if (orphanCount > 0) {
+      throw new Error(`SOURCE_VERSION_LINEAGE_ORPHAN: ${table} ${orphanCount}`);
+    }
+    if (count(table) !== typedCounts.get(table)) {
+      throw new Error(`SOURCE_VERSION_COUNT_MISMATCH: ${table}`);
+    }
+  }
+
+  const sourceBounds = db.prepare(`
+    SELECT SUM(observation_count) AS observations,
+      MIN(first_seen_at) AS first_seen_at, MAX(last_seen_at) AS last_seen_at
+    FROM source_file_imports_v26
+  `).get() as {
+    observations: number | null;
+    first_seen_at: string | null;
+    last_seen_at: string | null;
+  };
+  const expectedFirstSeen = legacySources[0]?.imported_at ?? null;
+  const expectedLastSeen = legacySources.length === 0
+    ? null
+    : legacySources.reduce((latest, row) => (
+      row.imported_at > latest ? row.imported_at : latest
+    ), legacySources[0].imported_at);
+  if (
+    count("source_file_imports_v26") !== canonicalSources.size
+    || (sourceBounds.observations ?? 0) !== legacySources.length
+    || sourceBounds.first_seen_at !== expectedFirstSeen
+    || sourceBounds.last_seen_at !== expectedLastSeen
+    || count("source_row_lineage_v26") !== lineageGroups.size
+    || count("disabled_import_sources_v26") !== exclusionCount
+    || count("data_issues") !== issueCount
+    || count("data_issue_events") !== eventCount
+  ) {
+    throw new Error("SOURCE_VERSION_COUNT_MISMATCH");
+  }
+
+  db.exec(`
+    DROP TABLE source_row_lineage;
+    DROP TABLE disabled_import_sources;
+    DROP TABLE source_file_imports;
+    ALTER TABLE source_file_imports_v26 RENAME TO source_file_imports;
+    ALTER TABLE source_row_lineage_v26 RENAME TO source_row_lineage;
+    ALTER TABLE disabled_import_sources_v26 RENAME TO disabled_import_sources;
+    CREATE UNIQUE INDEX uq_source_file_imports_version
+      ON source_file_imports(source_version_key);
+    CREATE UNIQUE INDEX uq_source_row_lineage_version_row_projection
+      ON source_row_lineage(source_version_key, source_row_index, projection_table);
+    CREATE INDEX idx_source_row_lineage_statement
+      ON source_row_lineage(projection_table, statement_row_id);
+    CREATE INDEX source_row_lineage_active_support_idx
+      ON source_row_lineage(projection_table, statement_row_id, source_version_key);
+    CREATE UNIQUE INDEX uq_disabled_import_source_case_version
+      ON disabled_import_sources(data_issue_id, source_version_key);
+    CREATE INDEX disabled_import_sources_version_state_idx
+      ON disabled_import_sources(source_version_key, state);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -1566,6 +1935,11 @@ const migrations: LedgerMigration[] = [
     version: 25,
     name: "source_row_lineage",
     up: createSourceRowLineage,
+  },
+  {
+    version: 26,
+    name: "canonical_source_versions",
+    up: canonicalizeSourceVersions,
   },
 ];
 
