@@ -295,6 +295,7 @@
                   <strong class="money">
                     {#if account.valueAvailability === "unavailable"}
                       <span>{$t.accounts.noAvailableData}</span>
+                      {" · "}
                       {#if account.dataIssueId}
                         <a href={`#/data-issues/${account.dataIssueId}`}>{$t.dataIssues.viewIssue}</a>
                       {/if}
