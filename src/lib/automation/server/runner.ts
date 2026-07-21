@@ -115,6 +115,7 @@ export function finalFailureMessage(logTail: string, exitCode: number | null) {
     .toReversed()
     .find((line) =>
       !/^automation-progress:/i.test(line) &&
+      !/^automation-output-write-failed:/i.test(line) &&
       !/^libretto run CDP patch/i.test(line) &&
       !/^Running workflow /i.test(line) &&
       !/^Browser is still open\./i.test(line)
@@ -644,6 +645,7 @@ export async function runAutomationTask(
       }
       let logTail = "";
       let detectedResumeFailure: string | null = null;
+      const outputPersistenceWarnings: string[] = [];
 
       const result = await new Promise<{
         exitCode: number | null;
@@ -654,6 +656,7 @@ export async function runAutomationTask(
           const line = `automation-output-write-failed: ${errorMessage(error)}`;
           console.error(line);
           logTail = tail(`${logTail}\n${line}\n`);
+          outputPersistenceWarnings.push(line);
         };
         const outputBuffer = createAutomationOutputBuffer(
           () => {
@@ -718,6 +721,7 @@ export async function runAutomationTask(
       let taskError = result.error?.message
         ?? resumeFailure
         ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null);
+      taskError = [taskError, ...outputPersistenceWarnings].filter(Boolean).join("\n") || null;
       if (owner && !shouldRetainAutomationSession(status)) {
         const retainedOwner = ownedAutomationSession(task.id) ?? owner;
         const cleanup = await finalizeTerminalAutomationSession(
