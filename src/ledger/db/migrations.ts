@@ -1871,6 +1871,37 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
   `);
 }
 
+function constrainSourceImportObservationCount(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE source_file_imports_v27 (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_version_key TEXT NOT NULL,
+      source_relative_path TEXT NOT NULL,
+      source_file_hash TEXT NOT NULL,
+      source_file_bytes INTEGER NOT NULL,
+      source_file_modified_at TEXT,
+      imported_at TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      observation_count INTEGER NOT NULL DEFAULT 1
+        CONSTRAINT ck_source_file_imports_observation_count
+        CHECK (observation_count >= 1),
+      row_count INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (source_file_id, import_run_id)
+    );
+    INSERT INTO source_file_imports_v27 SELECT * FROM source_file_imports;
+    DROP TABLE source_file_imports;
+    ALTER TABLE source_file_imports_v27 RENAME TO source_file_imports;
+    CREATE UNIQUE INDEX uq_source_file_imports_version
+      ON source_file_imports(source_version_key);
+  `);
+}
+
 const migrations: LedgerMigration[] = [
   {
     version: 1,
@@ -2001,6 +2032,11 @@ const migrations: LedgerMigration[] = [
     version: 26,
     name: "canonical_source_versions",
     up: canonicalizeSourceVersions,
+  },
+  {
+    version: 27,
+    name: "positive_source_import_observation_count",
+    up: constrainSourceImportObservationCount,
   },
 ];
 

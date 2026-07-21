@@ -66,6 +66,7 @@ export const sourceFileImports = sqliteTable("source_file_imports", {
 }, (table) => [
   primaryKey({ columns: [table.sourceFileId, table.importRunId] }),
   uniqueIndex("uq_source_file_imports_version").on(table.sourceVersionKey),
+  check("ck_source_file_imports_observation_count", sql`${table.observationCount} >= 1`),
 ]);
 
 export const sourceRowLineage = sqliteTable("source_row_lineage", {

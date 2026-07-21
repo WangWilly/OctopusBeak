@@ -156,7 +156,7 @@ test("automation output persistence errors are contained", (context) => {
   assert.equal((errors[0] as Error).message, "database is locked");
 });
 
-test("automation output retains a failed chunk for a later flush", (context) => {
+test("automation output retries a failed timer flush", (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const flushed: string[] = [];
   let attempts = 0;
@@ -173,7 +173,9 @@ test("automation output retains a failed chunk for a later flush", (context) => 
   buffer.push("progress\n");
   context.mock.timers.tick(500);
   assert.deepEqual(flushed, []);
-  assert.doesNotThrow(() => buffer.flush());
+  context.mock.timers.tick(499);
+  assert.deepEqual(flushed, []);
+  context.mock.timers.tick(1);
   assert.deepEqual(flushed, ["progress\n"]);
 });
 

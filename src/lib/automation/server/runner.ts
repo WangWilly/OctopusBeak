@@ -210,6 +210,7 @@ export function createAutomationOutputBuffer(
       write(chunk);
     } catch (error) {
       pending = tail(chunk + pending);
+      timer = setTimeout(flush, delayMs);
       try {
         onError(error);
       } catch (handlerError) {
