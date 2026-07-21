@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import { importDownloadsCsv } from "../../../ledger/import-downloads-csv.ts";
 import { sourceVersionKey } from "../../../ledger/source-version.ts";
 import { buildAccountOverview, emptyLedgerQueryData } from "../../shared-ledger/server/accounts.ts";
 import type { DataIssueCreateInput, SourceVersionId } from "../types.ts";
@@ -599,7 +600,7 @@ test("preview counts support loss and preserves safe append-only events", () => 
   assert.ok(exclusiveAccount);
 
   const db = openLedgerDatabase(ledgerDir);
-  const selectedVersionKey = seedSource(db, selected, {
+  seedSource(db, selected, {
     balances: [63_900, 81_250],
     accountNumbers: ["0420", "1701"],
     statementRowIds: [sharedStatementRowId, exclusiveStatementRowId],
@@ -648,13 +649,61 @@ test("preview counts support loss and preserves safe append-only events", () => 
   });
   assert.doesNotMatch(JSON.stringify(confirmEvent?.details), /\/Volumes\/|\/Users\//);
 
-  const eventsBeforeObservation = detail.events;
-  const observedDb = openLedgerDatabase(ledgerDir);
-  observedDb.prepare(`UPDATE source_file_imports
-    SET observation_count = observation_count + 1, last_seen_at = ?
-    WHERE source_version_key = ?`).run("2026-07-21T00:00:00.000Z", selectedVersionKey);
-  observedDb.close();
-  assert.deepEqual(loadDataIssue(issue.dataIssueId, ledgerDir).events, eventsBeforeObservation);
+});
+
+test("observing an identical source through the importer preserves every data-issue event", async () => {
+  const rootDir = fixtureDir();
+  const downloadsDir = join(rootDir, "downloads");
+  const ledgerDir = join(rootDir, "ledger");
+  const sourceDir = join(downloadsDir, "ctbc-statements");
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, "synthetic.csv"), [
+    "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註",
+    "2026/07/03,2026/07/02,09:08:07,合成入帳,0,1234,5678,測試",
+    "",
+  ].join("\n"), "utf8");
+  const input = {
+    downloadsDir,
+    outputDir: ledgerDir,
+    bankFilters: ["ctbc"],
+    productFilters: ["statements"],
+  };
+  await importDownloadsCsv(input);
+
+  const db = openLedgerDatabase(ledgerDir);
+  db.prepare(`INSERT INTO data_issues (
+    data_issue_id, account_id, account_label, account_context_json, field_key,
+    reported_value, currency, data_date, note, status, created_at, updated_at
+  ) VALUES (
+    'synthetic-import-issue', 'synthetic-account', 'Synthetic account',
+    '{"institution":"Example Bank","product":"account","group":"asset","kind":"bank","typeLabel":"Bank account"}',
+    'balance', 5678, 'TWD', '2026-07-03', 'Synthetic observation check',
+    'pending', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z'
+  )`).run();
+  db.prepare(`INSERT INTO data_issue_events (
+    data_issue_event_id, data_issue_id, event_type, stage, outcome,
+    summary, details_json, created_at
+  ) VALUES (
+    'synthetic-event', 'synthetic-import-issue', 'created', 'report',
+    'succeeded', 'Synthetic event', '{"safe":true}', '2026-07-20T00:00:00.000Z'
+  )`).run();
+  const before = db.prepare(`SELECT * FROM data_issue_events ORDER BY rowid`).all()
+    .map((row) => ({ ...row }));
+  db.close();
+
+  const observed = await importDownloadsCsv(input);
+  const afterDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+  const after = afterDb.prepare(`SELECT * FROM data_issue_events ORDER BY rowid`).all()
+    .map((row) => ({ ...row }));
+  const source = afterDb.prepare(`SELECT observation_count FROM source_file_imports`).get() as {
+    observation_count: number;
+  };
+  afterDb.close();
+
+  assert.equal(observed.importedCsvFiles, 0);
+  assert.equal(observed.skippedCsvFiles, 1);
+  assert.equal(source.observation_count, 2);
+  assert.deepEqual(after, before);
 });
 
 test("creates a persistent issue with an empty optional note", async () => {
