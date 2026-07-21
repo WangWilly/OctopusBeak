@@ -12,7 +12,7 @@ import type {
 import { buildSpendingModel, SPENDING_REASONS } from "../model.ts";
 import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
 
-export { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
+export { activeImportSql };
 
 type SpendingRow = {
   invoice_key: string;
