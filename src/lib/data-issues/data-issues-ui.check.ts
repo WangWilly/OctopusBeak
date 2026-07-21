@@ -127,6 +127,9 @@ test("account issue navigation preserves account deep links and unmounts closed 
 
   assert.match(route, /focusAccountId/);
   assert.match(route, /decodeURIComponent/);
+  assert.match(route, /\[next, encodedId, \.\.\.extraSegments\]/);
+  assert.match(route, /extraSegments\.length > 0/);
+  assert.match(route, /encodeURIComponent\(id\)/);
   assert.match(assets, /focusAccountId=\{focusAccountId\}/);
   assert.match(liabilities, /focusAccountId=\{focusAccountId\}/);
   assert.match(dashboard, /accountReturnHref\(issue\.account\)/);
