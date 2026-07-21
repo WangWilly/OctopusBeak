@@ -239,10 +239,15 @@ export async function runAutomationBatch(
   execute: (taskId: string) => Promise<void>,
 ) {
   const selectedTaskIds = taskIds.filter((taskId) => taskId !== "import-downloads-csv");
-  await runWithConcurrency(selectedTaskIds, 2, execute);
-  if (selectedTaskIds.some((taskId) => taskById(taskId)?.kind === "crawler")) {
-    await execute("import-downloads-csv");
+  const errors: unknown[] = [];
+  await runWithConcurrency(selectedTaskIds, 2, execute).catch((error) => { errors.push(error); });
+  if (
+    taskIds.includes("import-downloads-csv")
+    || selectedTaskIds.some((taskId) => taskById(taskId)?.kind === "crawler")
+  ) {
+    await execute("import-downloads-csv").catch((error) => { errors.push(error); });
   }
+  if (errors.length) throw errors[0];
 }
 
 export function claimRunAutomationSession(
@@ -354,16 +359,18 @@ export function startAutomationTasks(
   }
   setImmediate(() => {
     void runAutomationBatch(uniqueTaskIds, async (taskId) => {
-      if (taskId === "import-downloads-csv") {
-        await runAutomationTask(taskId, ledgerDir).catch((error) => {
-          console.error("automation-import-run-failed", error);
-        });
-        return;
+      const claimed = uniqueTaskIds.includes(taskId);
+      if (claimed) {
+        if (activeTaskRunIds.get(taskId) !== "queued") return;
+        activeTaskRunIds.set(taskId, "pending");
       }
-      if (activeTaskRunIds.get(taskId) !== "queued") return;
-      activeTaskRunIds.set(taskId, "pending");
-      await runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
-        console.error("automation-task-run-failed", error);
+      await runAutomationTask(taskId, ledgerDir, { claimed }).catch((error) => {
+        console.error(
+          taskId === "import-downloads-csv"
+            ? "automation-import-run-failed"
+            : "automation-task-run-failed",
+          error,
+        );
       });
     }).catch((error) => {
       console.error("automation-batch-run-failed", error);
