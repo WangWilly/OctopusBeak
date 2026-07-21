@@ -7,6 +7,7 @@ const source = readFileSync(new URL("./AccountTable.svelte", import.meta.url), "
 
 test("unavailable account balances render explicit localized copy", () => {
   assert.equal(translations["zh-TW"].accounts.noAvailableData, "無可用資料");
+  assert.match(source, /noAvailableData\}<\/span>\s*\{" · "\}\s*\{#if account\.dataIssueId\}/);
   assert.match(source, /\{#if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
 });
 

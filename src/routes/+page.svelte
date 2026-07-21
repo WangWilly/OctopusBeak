@@ -44,7 +44,7 @@
     dataIssueId = route === "data-issues" ? id : null;
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
-    if (!location.hash || next !== route || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
+    if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
     void loadRoute(route);
   }
 
