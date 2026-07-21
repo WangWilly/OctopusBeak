@@ -4,7 +4,6 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync } from "node:f
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { businessDayUtcRange } from "./business-day.ts";
 import {
   resolvePatchCommand,
   resolveTaskCommand,
@@ -24,21 +23,14 @@ import {
   type OwnedAutomationSession,
 } from "./session-lifecycle.ts";
 import {
-  automationBusinessTimezone,
-  automationGroupEnabledStatus,
-  readAutomationSettings,
-} from "./settings.ts";
-import {
   activeTaskRuns,
   createTaskRun,
-  importGateStatus,
   taskRunById,
   updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
 import {
-  enabledCsvImportDependencyIds,
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
@@ -178,14 +170,6 @@ export function prepareLibrettoRunCdpPatch(runPatch: () => void = () => {
   librettoRunCdpPatched = true;
 }
 
-export function shouldAutoRunImport(input: {
-  kind: AutomationTaskKind;
-  status: AutomationTaskStatus;
-  importLocked: boolean;
-}) {
-  return input.kind === "crawler" && input.status === "completed" && !input.importLocked;
-}
-
 export function hasActiveAutomationTask() {
   return activeTaskRunIds.size > 0;
 }
@@ -248,6 +232,17 @@ export async function runWithConcurrency<T>(
   }
   await Promise.all(active);
   if (errors.length) throw errors[0];
+}
+
+export async function runAutomationBatch(
+  taskIds: readonly string[],
+  execute: (taskId: string) => Promise<void>,
+) {
+  const selectedTaskIds = taskIds.filter((taskId) => taskId !== "import-downloads-csv");
+  await runWithConcurrency(selectedTaskIds, 2, execute);
+  if (selectedTaskIds.some((taskId) => taskById(taskId)?.kind === "crawler")) {
+    await execute("import-downloads-csv");
+  }
 }
 
 export function claimRunAutomationSession(
@@ -358,12 +353,20 @@ export function startAutomationTasks(
     activeTaskRunIds.set(taskId, "queued");
   }
   setImmediate(() => {
-    void runWithConcurrency(uniqueTaskIds, 2, async (taskId) => {
+    void runAutomationBatch(uniqueTaskIds, async (taskId) => {
+      if (taskId === "import-downloads-csv") {
+        await runAutomationTask(taskId, ledgerDir).catch((error) => {
+          console.error("automation-import-run-failed", error);
+        });
+        return;
+      }
       if (activeTaskRunIds.get(taskId) !== "queued") return;
       activeTaskRunIds.set(taskId, "pending");
       await runAutomationTask(taskId, ledgerDir, { claimed: true }).catch((error) => {
         console.error("automation-task-run-failed", error);
       });
+    }).catch((error) => {
+      console.error("automation-batch-run-failed", error);
     });
   });
 }
@@ -736,21 +739,6 @@ export async function runAutomationTask(
         });
       }
       if (status !== "completed") return { status };
-      const settings = readAutomationSettings();
-      const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
-      const enabledGroups = automationGroupEnabledStatus(settings);
-      const gate = importGateStatus(taskDb, {
-        dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
-        startUtc: range.startUtc,
-        endUtc: range.endUtc,
-      });
-      if (shouldAutoRunImport({
-        kind: task.kind,
-        status,
-        importLocked: gate.locked,
-      }) && !activeTaskRunIds.has("import-downloads-csv")) {
-        await runAutomationTask("import-downloads-csv", ledgerDir);
-      }
       return { status };
     }
     return { status: "failed" as const };

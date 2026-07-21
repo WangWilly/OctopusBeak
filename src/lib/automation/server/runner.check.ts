@@ -34,9 +34,9 @@ import {
   resumeFailureMessage,
   resumeSessionFromLog,
   recoverAbandonedAutomationSessions,
+  runAutomationBatch,
   runWithConcurrency,
   shutdownAutomationSessions,
-  shouldAutoRunImport,
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
   shouldRetainAutomationSession,
@@ -143,7 +143,34 @@ test("automation output is flushed in batches", (context) => {
 
 test("batch task startup uses two concurrent slots", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
-  assert.match(source, /runWithConcurrency\(uniqueTaskIds, 2,/);
+  assert.match(source, /runWithConcurrency\(selectedTaskIds, 2,/);
+});
+
+test("each sync-all batch attempts one import after its tasks settle", async () => {
+  const executed: string[] = [];
+  const execute = async (taskId: string) => { executed.push(taskId); };
+
+  await runAutomationBatch(
+    ["fubon-all-statements", "exchange-rates"],
+    execute,
+  );
+  assert.equal(executed.at(-1), "import-downloads-csv");
+  await runAutomationBatch(
+    ["fubon-all-statements", "exchange-rates"],
+    execute,
+  );
+
+  assert.equal(executed.filter((taskId) => taskId === "import-downloads-csv").length, 2);
+  assert.equal(executed.at(-1), "import-downloads-csv");
+});
+
+test("a batch without crawlers does not auto-import", async () => {
+  const executed: string[] = [];
+  await runAutomationBatch(
+    ["exchange-rates", "sync-maicoin"],
+    async (taskId) => { executed.push(taskId); },
+  );
+  assert.equal(executed.includes("import-downloads-csv"), false);
 });
 
 test("batch execution limits concurrency and starts the next task after a slot opens", async () => {
@@ -357,22 +384,6 @@ assert.equal(
   "completed",
 );
 
-assert.equal(
-  shouldAutoRunImport({ kind: "crawler", status: "completed", importLocked: false }),
-  true,
-);
-assert.equal(
-  shouldAutoRunImport({ kind: "crawler", status: "failed", importLocked: false }),
-  false,
-);
-assert.equal(
-  shouldAutoRunImport({ kind: "sync", status: "completed", importLocked: false }),
-  false,
-);
-assert.equal(
-  shouldAutoRunImport({ kind: "crawler", status: "completed", importLocked: true }),
-  false,
-);
 assert.equal(shouldCloseResumeSession({ status: "failed", resumeSession: "ses-1p4q" }), true);
 assert.equal(
   shouldCloseResumeSession({ status: "waiting_for_human", resumeSession: "ses-1p4q" }),
