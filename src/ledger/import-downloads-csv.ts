@@ -290,7 +290,10 @@ export function insertRecord(
   } catch (error) {
     if (
       error instanceof Error
-      && error.message.includes(`UNIQUE constraint failed: ${table}.content_hash`)
+      && (
+        error.message.includes(`UNIQUE constraint failed: ${table}.content_hash`)
+        || error.message.includes(`UNIQUE constraint failed: ${table}.statement_row_id`)
+      )
     ) return "duplicate";
     throw error;
   }
@@ -600,8 +603,17 @@ function insertTypedStatementRow(
   });
   const statementRowId = outcome === "inserted"
     ? String(commonFields.statement_row_id)
-    : String((db.prepare(`SELECT statement_row_id FROM ${parser.table} WHERE content_hash = ?`)
-      .get(commonFields.content_hash) as { statement_row_id: string }).statement_row_id);
+    : String((db.prepare(`
+      SELECT statement_row_id
+      FROM ${parser.table}
+      WHERE content_hash = ? OR statement_row_id = ?
+      ORDER BY CASE WHEN content_hash = ? THEN 0 ELSE 1 END
+      LIMIT 1
+    `).get(
+      commonFields.content_hash,
+      commonFields.statement_row_id,
+      commonFields.content_hash,
+    ) as { statement_row_id: string }).statement_row_id);
   insertSourceRowLineage(
     db, sourceFileRecord, row, parser.table, statementRowId, outcome,
   );
