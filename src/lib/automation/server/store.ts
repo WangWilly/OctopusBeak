@@ -251,6 +251,7 @@ export function importGateStatus(
       SELECT 1 AS ran
       FROM automation_task_runs
       WHERE task_id = ?
+        AND status = 'completed'
         AND started_at >= ?
         AND started_at < ?
       LIMIT 1
