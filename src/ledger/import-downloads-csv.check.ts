@@ -474,6 +474,9 @@ const primaryKeyInput = {
 };
 await importDownloadsCsv(primaryKeyInput);
 let primaryKeyDb = openLedgerDatabase(primaryKeyOutputDir);
+const canonicalStatementRowId = (primaryKeyDb.prepare(
+  "SELECT statement_row_id FROM account_transactions",
+).get() as { statement_row_id: string }).statement_row_id;
 primaryKeyDb.prepare(
   "UPDATE account_transactions SET content_hash = 'legacy-content-hash'",
 ).run();
@@ -489,6 +492,14 @@ assert.equal((primaryKeyDb.prepare(
 assert.equal((primaryKeyDb.prepare(
   "SELECT COUNT(*) AS count FROM source_row_lineage",
 ).get() as { count: number }).count, 2);
+assert.deepEqual(primaryKeyDb.prepare(`
+  SELECT statement_row_id, outcome
+  FROM source_row_lineage
+  ORDER BY rowid
+`).all().map((row) => ({ ...row })), [
+  { statement_row_id: canonicalStatementRowId, outcome: "inserted" },
+  { statement_row_id: canonicalStatementRowId, outcome: "duplicate" },
+]);
 primaryKeyDb.close();
 
 const failureRootDir = await mkdtemp(join(tmpdir(), "failed-insert-"));

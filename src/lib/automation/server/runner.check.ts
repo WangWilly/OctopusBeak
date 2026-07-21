@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { activeTaskRuns, createTaskRun, latestTaskRuns, taskRunById } from "./store.ts";
+import { activeTaskRuns, createTaskRun, latestTaskRuns, recentTaskRuns, taskRunById } from "./store.ts";
 import {
   armAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
@@ -35,6 +35,7 @@ import {
   resumeSessionFromLog,
   recoverAbandonedAutomationSessions,
   runAutomationBatch,
+  runAutomationTask,
   runWithConcurrency,
   shutdownAutomationSessions,
   shouldCloseResumeSession,
@@ -195,6 +196,54 @@ test("automation output contains error handler failures for timer and manual flu
     console.error = originalError;
   }
   assert.equal(messages.length, 2);
+});
+
+test("output persistence warnings remain visible in terminal history without hiding failure", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "automation-output-history-"));
+  const ledgerDir = join(rootDir, "ledger");
+  const workDir = join(rootDir, "work");
+  const binDir = join(rootDir, "bin");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const originalError = console.error;
+  try {
+    mkdirSync(join(workDir, "data", "automation"), { recursive: true });
+    writeFileSync(join(workDir, "data", "automation", "logs"), "blocks log directory");
+    mkdirSync(binDir, { recursive: true });
+    const npmPath = join(binDir, "npm");
+    writeFileSync(npmPath, "#!/bin/sh\nprintf 'first\\n'\nsleep 0.05\nprintf 'second\\n'\n", "utf8");
+    chmodSync(npmPath, 0o755);
+    process.chdir(workDir);
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    console.error = () => {};
+
+    assert.deepEqual(await runAutomationTask("exchange-rates", ledgerDir), { status: "completed" });
+
+    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const terminal = latestTaskRuns(db)["exchange-rates"];
+    assert.equal(terminal?.status, "completed");
+    assert.match(terminal?.errorMessage ?? "", /automation-output-write-failed:/);
+    assert.equal(terminal?.errorMessage?.match(/automation-output-write-failed:/g)?.length, 2);
+    const history = recentTaskRuns(db, 1);
+    assert.equal(history[0]?.status, "completed");
+    assert.equal(history[0]?.errorMessage, terminal?.errorMessage);
+    db.close();
+
+    writeFileSync(npmPath, "#!/bin/sh\nprintf 'real terminal failure\\n'\nexit 1\n", "utf8");
+    assert.deepEqual(await runAutomationTask("exchange-rates", ledgerDir), { status: "failed" });
+    const failedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const failed = recentTaskRuns(failedDb, 1)[0];
+    assert.equal(failed?.status, "failed");
+    assert.match(failed?.errorMessage ?? "", /^real terminal failure/);
+    assert.match(failed?.errorMessage ?? "", /automation-output-write-failed:/);
+    failedDb.close();
+  } finally {
+    console.error = originalError;
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("batch task startup uses two concurrent slots", () => {
