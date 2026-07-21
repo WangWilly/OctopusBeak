@@ -325,7 +325,7 @@
   eyebrow={$t.dataIssues.eyebrow}
   title={$t.dataIssues.title}
   sideLabel={$t.dataIssues.sideLabel}
-  sideValue={state.status === "detail" ? statusLabel(state.issue.status) : ""}
+  sideValue={state.status === "detail" ? statusLabel(state.issue.status) : $t.dataIssues.handleIncorrectImports}
 >
   <div class="content data-issues-content">
     <span class="visually-hidden" aria-live="polite" aria-atomic="true">{liveStatus}</span>
@@ -338,10 +338,10 @@
       </section>
     {:else if state.status === "list"}
       <section class="workflow-card card">
-        <div class="panel-title"><h2>{$t.dataIssues.reportedIssues}</h2></div>
+        <div class="panel-title list-panel-title"><h2>{$t.dataIssues.statusTracking}</h2></div>
         <div class="status-filter" aria-label={$t.dataIssues.statusFilter}>
           {#each ["all", "pending", "investigating", "resolved", "restored"] as filter}
-            <button class:active={statusFilter === filter} type="button" onclick={() => (statusFilter = filter as typeof statusFilter)}>
+            <button class:active={statusFilter === filter} type="button" aria-pressed={statusFilter === filter} onclick={() => (statusFilter = filter as typeof statusFilter)}>
               {filter === "all" ? $t.common.all : statusLabel(filter as DataIssueListItemDto["status"])}
             </button>
           {/each}
@@ -349,8 +349,11 @@
         <div class="issue-list">
           {#each filteredIssues as issue}
             <button type="button" class="issue-row" onclick={() => openIssue(issue.dataIssueId)}>
-              <span><strong>{issue.accountLabel}</strong><small>{formatAmounts([issue.reportedValue])}</small></span>
-              <span><small>{issue.updatedAt}</small><ChevronRight size={18} aria-hidden="true" /></span>
+              <span>
+                <span class="issue-heading"><strong>{issue.accountLabel}</strong><span class="issue-status">{statusLabel(issue.status)}</span></span>
+                <small>{formatAmounts([issue.reportedValue])}</small>
+              </span>
+              <span><small>{formatUtcDateTime(issue.updatedAt, $systemTimezone, $locale)}</small><ChevronRight size={18} aria-hidden="true" /></span>
             </button>
           {:else}
             <p class="empty-state">{$t.dataIssues.noIssues}</p>
@@ -519,15 +522,18 @@
   .issue-facts div { display: grid; gap: var(--space-1); }
   .issue-facts dt, small { color: var(--muted); font-size: 12px; }
   .issue-facts dd { margin: 0; font-weight: 700; }
-  .status-filter { display: flex; gap: var(--space-2); padding: 0 var(--space-5) var(--space-4); overflow: auto; }
-  .status-filter button { padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--muted); font: inherit; white-space: nowrap; }
-  .status-filter button.active { border-color: var(--accent); color: var(--accent); }
-  .issue-list { border-top: 1px solid var(--border); }
+  .list-panel-title { min-height: 0; border-bottom: 0; }
+  .status-filter { display: flex; align-items: center; gap: 4px; margin: 0 var(--space-5) var(--space-4); padding: 4px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .status-filter button { padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font: inherit; white-space: nowrap; }
+  .status-filter button.active { border-color: var(--border); background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgb(15 23 42 / 0.06); }
+  .issue-list { border-top: 0; }
   .issue-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); border: 0; border-bottom: 1px solid var(--border); background: var(--surface); color: var(--fg); text-align: left; font: inherit; }
   .issue-row:hover { background: var(--surface-soft); }
-  .issue-row span { display: grid; gap: var(--space-1); }
+  .issue-row > span { display: grid; gap: var(--space-1); }
   .issue-row > span:last-child { display: flex; align-items: center; }
-  .empty-state { padding: var(--space-5); margin: 0; color: var(--muted); }
+  .issue-heading { display: flex; align-items: center; gap: var(--space-2); }
+  .issue-status { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 700; }
+  .empty-state { padding: 0 var(--space-5) var(--space-5); margin: 0; color: var(--muted); }
   .stage-reveal { overflow: hidden; border-top: 1px solid var(--border); }
   .workflow-step { display: grid; grid-template-columns: 32px auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); min-height: 72px; padding: 0 var(--space-5); }
   .workflow-step + .workflow-step { border-top: 1px solid var(--border); }

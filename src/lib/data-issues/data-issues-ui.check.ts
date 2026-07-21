@@ -22,6 +22,17 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /liveStatus = \$t\.dataIssues\.eventRestore/);
   assert.match(dashboard, /formatUtcDateTime\(source\.importedAt, \$systemTimezone, \$locale\)/);
   assert.match(dashboard, /formatUtcDateTime\(event\.createdAt, \$systemTimezone, \$locale\)/);
+  assert.match(dashboard, /formatUtcDateTime\(issue\.updatedAt, \$systemTimezone, \$locale\)/);
+  assert.match(dashboard, /<span class="issue-status">\{statusLabel\(issue\.status\)\}<\/span>/);
+  assert.match(dashboard, /sideValue=\{state\.status === "detail" \? statusLabel\(state\.issue\.status\) : \$t\.dataIssues\.handleIncorrectImports\}/);
+  assert.match(dashboard, /<h2>\{\$t\.dataIssues\.statusTracking\}<\/h2>/);
+  assert.match(dashboard, /<div class="panel-title list-panel-title">/);
+  assert.match(dashboard, /class="status-filter"[\s\S]*aria-pressed=\{statusFilter === filter\}/);
+  assert.match(dashboard, /\.status-filter \{[^}]*border: 1px solid var\(--border\);[^}]*border-radius: var\(--radius\);/);
+  assert.match(dashboard, /\.status-filter button\.active \{[^}]*background: var\(--surface\);[^}]*box-shadow:/);
+  assert.match(dashboard, /\.list-panel-title \{ min-height: 0; border-bottom: 0; \}/);
+  assert.match(dashboard, /\.issue-list \{ border-top: 0; \}/);
+  assert.match(dashboard, /\.empty-state \{ padding: 0 var\(--space-5\) var\(--space-5\);/);
   assert.match(dashboard, /class="account-return-link"[\s\S]*href=\{accountReturnHref\(issue\.account\)\}/);
   assert.match(
     dashboard,
@@ -37,6 +48,8 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.doesNotMatch(dashboard, /<details class="operation-history">/);
   assert.match(i18n, /backToAccountHint: "Open this account page"/);
   assert.match(i18n, /backToAccountHint: "回到此帳戶頁面"/);
+  assert.match(i18n, /statusTracking: "狀態追蹤"/);
+  assert.match(i18n, /handleIncorrectImports: "處理錯誤匯入"/);
   assert.match(dashboard, /const requestedIssueId = issueId;/);
   assert.match(dashboard, /if \(requestedIssueId !== issueId\) return;/);
   assert.equal(dashboard.match(/const operationCaseId = state\.issue\.dataIssueId;/g)?.length, 5);
