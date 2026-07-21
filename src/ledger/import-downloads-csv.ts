@@ -28,6 +28,7 @@ import {
   captureCardRowCounts,
   fullCreditCardCaptureMetadataSchema,
 } from "./credit-card-capture.ts";
+import { sourceVersionKey } from "./source-version.ts";
 
 const inputSchema = z.object({
   downloadsDir: z.string().default("downloads"),
@@ -79,15 +80,16 @@ type ParsedCsv = {
 type FileImportSummary = {
   sourceFile: string;
   sourceRelativePath: string;
-  sourceFileMetadata: FileMetadata;
-  sourceMetadata: SourceMetadata | null;
   bank: string;
   product: string;
-  sourceSheetName: string | null;
-  csvLayout: CsvLayout;
-  headers: string[];
-  recordKeys: string[];
   rows: number;
+  status?: "identical_source_version";
+  sourceFileMetadata?: FileMetadata;
+  sourceMetadata?: SourceMetadata | null;
+  sourceSheetName?: string | null;
+  csvLayout?: CsvLayout;
+  headers?: string[];
+  recordKeys?: string[];
 };
 
 type FullCreditCardCaptureMetadata = z.infer<
@@ -403,11 +405,15 @@ function sourceFileRecordFromBatch(
     source_file: String(record.sourceFile ?? ""),
     source_relative_path: sourceRelativePath,
     source_file_hash: String(record.sourceFileHash ?? ""),
+    source_version_key: String(record.sourceVersionKey ?? ""),
     source_file_bytes: Number(record.sourceFileBytes ?? 0),
     source_file_modified_at: String(record.sourceFileModifiedAt ?? ""),
     imported_at: String(record.importedAt ?? ""),
     bank: String(record.bank ?? ""),
     product: String(record.product ?? ""),
+    first_seen_at: String(record.importedAt ?? ""),
+    last_seen_at: String(record.importedAt ?? ""),
+    observation_count: 1,
     source_sheet_name: String(record.sourceSheetName ?? ""),
     csv_layout_json: JSON.stringify(record.csvLayout ?? {}),
     headers_json: JSON.stringify(record.headers ?? []),
@@ -421,10 +427,17 @@ function sourceFileRecordFromBatch(
 }
 
 function insertSourceFile(db: LedgerDatabase, record: Record<string, unknown>) {
+  const {
+    source_version_key,
+    first_seen_at,
+    last_seen_at,
+    observation_count,
+    ...sourceFile
+  } = sourceFileRecordFromBatch(record);
   upsertRecord(
     db,
     "source_files",
-    sourceFileRecordFromBatch(record),
+    sourceFile,
     "source_relative_path",
     SOURCE_FILE_UPDATE_COLUMNS,
   );
@@ -441,7 +454,13 @@ function insertSourceFileImport(db: LedgerDatabase, record: Record<string, unkno
     related_raw_file_metadata_json,
     ...sourceFileImport
   } = sourceFileRecordFromBatch(record);
-  insertRecord(db, "source_file_imports", sourceFileImport);
+  const columns = Object.keys(sourceFileImport);
+  const placeholders = columns.map(() => "?").join(", ");
+  return db.prepare(
+    `INSERT INTO source_file_imports (${columns.join(", ")}) `
+      + `VALUES (${placeholders}) `
+      + "ON CONFLICT(source_version_key) DO NOTHING",
+  ).run(...columns.map((column) => sqliteValue(sourceFileImport[column]))).changes === 1;
 }
 
 function commonTypedRowFields(
@@ -501,12 +520,14 @@ function insertSourceRowLineage(
   outcome: "inserted" | "duplicate" | "upserted",
 ) {
   db.prepare(`INSERT INTO source_row_lineage (
-    source_file_id, import_run_id, source_row_index, projection_table,
-    statement_row_id, outcome, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    source_file_id, import_run_id, source_version_key, source_row_index,
+    projection_table, statement_row_id, outcome, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(source_version_key, source_row_index, projection_table) DO NOTHING`)
     .run(
       sourceFileIdForPath(String(sourceFileRecord.sourceRelativePath ?? "")),
       String(sourceFileRecord.importRunId ?? ""),
+      String(sourceFileRecord.sourceVersionKey ?? ""),
       row.sourceRowIndex,
       projectionTable,
       statementRowId,
@@ -1167,6 +1188,11 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     const sourceFileRecords: Record<string, unknown>[] = [];
     const statementRows: ImportStatementRow[] = [];
     const fileSummaries: FileImportSummary[] = [];
+    const pendingFileSummaries = new Map<string, FileImportSummary>();
+    const exactObservations: Array<{
+      sourceVersionKey: string;
+      observedAt: string;
+    }> = [];
 
     let scannedCsvFiles = 0;
     let importedCsvFiles = 0;
@@ -1184,6 +1210,26 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       const sourceRelativePath = relative(downloadsDir, sourceFile);
       const fileBuffer = await readFile(sourceFile);
       const sourceFileHash = hashBytes(fileBuffer);
+      const versionKey = sourceVersionKey(
+        context.bank,
+        context.product,
+        sourceFileHash,
+      );
+      if (db.prepare(`
+        SELECT 1 FROM source_file_imports WHERE source_version_key = ?
+      `).get(versionKey)) {
+        exactObservations.push({ sourceVersionKey: versionKey, observedAt: startedAt });
+        skippedCsvFiles += 1;
+        fileSummaries.push({
+          sourceFile,
+          sourceRelativePath,
+          bank: context.bank,
+          product: context.product,
+          rows: 0,
+          status: "identical_source_version",
+        });
+        continue;
+      }
       const parsedCsv = parseCsvRows(fileBuffer.toString("utf8"));
       const { sourceSheetName, csvLayout, headers, recordKeys, rows } =
         parsedCsv;
@@ -1199,6 +1245,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         sourceFileMetadata,
         sourceMetadata,
         sourceFileHash,
+        sourceVersionKey: versionKey,
         sourceFileBytes: sourceFileMetadata.bytes,
         sourceFileModifiedAt: sourceFileMetadata.modifiedAt,
         importedAt: startedAt,
@@ -1236,7 +1283,7 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         });
       }
 
-      fileSummaries.push({
+      const fileSummary: FileImportSummary = {
         sourceFile,
         sourceRelativePath,
         sourceFileMetadata,
@@ -1248,7 +1295,9 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
         headers,
         recordKeys,
         rows: rows.length,
-      });
+      };
+      fileSummaries.push(fileSummary);
+      pendingFileSummaries.set(sourceRelativePath, fileSummary);
     }
     console.log("automation-progress: 70");
 
@@ -1258,25 +1307,62 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
       );
     }
 
-    const sourceFilesWritten = sourceFileRecords.length;
-    const cardRows = parsedCreditCardRows(statementRows);
-    const persistedEvidence = persistedCreditCardEvidence(db, sourceFileRecords);
-    const allCardRows = [...cardRows, ...persistedEvidence.cardRows];
-    const verifiedCaptures = verifiedCreditCardCaptures(
-      [...sourceFileRecords, ...persistedEvidence.sourceFileRecords],
-      allCardRows,
-    );
-    const creditCardSourceHashes = new Set(statementRows
-      .filter((item) => creditCardParser(item.sourceFileRecord).table === "credit_card_statement_lines")
-      .map((item) => item.row.sourceHash));
+    let sourceFilesWritten = sourceFileRecords.length;
     let finishedAt = "";
     db.exec("BEGIN");
     try {
+      const observeVersion = db.prepare(`UPDATE source_file_imports
+        SET last_seen_at = ?, observation_count = observation_count + 1
+        WHERE source_version_key = ?`);
+      for (const observation of exactObservations) {
+        if (observeVersion.run(
+          observation.observedAt,
+          observation.sourceVersionKey,
+        ).changes !== 1) {
+          throw new Error("SOURCE_VERSION_OBSERVATION_MISSING");
+        }
+      }
+      const acceptedSourceFileRecords = new Set<Record<string, unknown>>();
       for (const sourceFileRecord of sourceFileRecords) {
-        insertSourceFileImport(db, sourceFileRecord);
+        if (!insertSourceFileImport(db, sourceFileRecord)) {
+          if (observeVersion.run(
+            startedAt,
+            String(sourceFileRecord.sourceVersionKey ?? ""),
+          ).changes !== 1) {
+            throw new Error("SOURCE_VERSION_OBSERVATION_MISSING");
+          }
+          importedCsvFiles -= 1;
+          skippedCsvFiles += 1;
+          sourceFilesWritten -= 1;
+          const summary = pendingFileSummaries.get(
+            String(sourceFileRecord.sourceRelativePath ?? ""),
+          );
+          if (summary) {
+            summary.rows = 0;
+            summary.status = "identical_source_version";
+          }
+          continue;
+        }
+        acceptedSourceFileRecords.add(sourceFileRecord);
         insertSourceFile(db, sourceFileRecord);
       }
-      for (const item of statementRows) {
+      const acceptedStatementRows = statementRows.filter((item) =>
+        acceptedSourceFileRecords.has(item.sourceFileRecord)
+      );
+      const acceptedSourceFiles = [...acceptedSourceFileRecords];
+      const cardRows = parsedCreditCardRows(acceptedStatementRows);
+      const persistedEvidence = persistedCreditCardEvidence(db, acceptedSourceFiles);
+      const allCardRows = [...cardRows, ...persistedEvidence.cardRows];
+      const verifiedCaptures = verifiedCreditCardCaptures(
+        [...acceptedSourceFiles, ...persistedEvidence.sourceFileRecords],
+        allCardRows,
+      );
+      const creditCardSourceHashes = new Set(acceptedStatementRows
+        .filter((item) => (
+          creditCardParser(item.sourceFileRecord).table === "credit_card_statement_lines"
+        ))
+        .map((item) => item.row.sourceHash));
+      for (const item of acceptedStatementRows) {
         if (creditCardSourceHashes.has(item.row.sourceHash)) continue;
         activeSourceFile = String(item.sourceFileRecord.sourceFile ?? "");
         const outcome = insertTypedStatementRow(db, item.sourceFileRecord, item.row);

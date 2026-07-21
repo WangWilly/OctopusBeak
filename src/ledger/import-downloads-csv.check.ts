@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "./db/client.ts";
@@ -306,43 +306,48 @@ await writeFile(
   "utf8",
 );
 await importDownloadsCsv(sourceHistoryInput);
-await importDownloadsCsv(sourceHistoryInput);
+const secondSourceHistoryResult = await importDownloadsCsv(sourceHistoryInput);
 
 let sourceHistoryDb = openLedgerDatabase(sourceHistoryOutputDir, { readOnly: true });
 const sourceFileId = (sourceHistoryDb.prepare(`
   SELECT source_file_id FROM source_files WHERE source_relative_path = ?
 `).get(sourceHistoryPath) as { source_file_id: string }).source_file_id;
-const sourceImportRuns = sourceHistoryDb.prepare(`
-  SELECT import_run_id FROM source_file_imports
-  WHERE source_file_id = ? ORDER BY rowid
-`).all(sourceFileId) as Array<{ import_run_id: string }>;
-assert.equal(sourceHistoryDb.prepare(`
-  SELECT COUNT(*) AS count FROM source_file_imports
-  WHERE source_file_id = ?
-`).get(sourceFileId)?.count, 2);
-assert.equal(new Set(sourceImportRuns.map((row) => row.import_run_id)).size, 2);
 assert.deepEqual(sourceHistoryDb.prepare(`
-  SELECT import_run_id, projection_table, outcome
-  FROM source_row_lineage
-  WHERE source_file_id = ?
-  ORDER BY created_at, import_run_id
-`).all(sourceFileId).map((row) => ({ ...row })), [
-  {
-    import_run_id: sourceImportRuns[0]?.import_run_id,
-    projection_table: "unsupported_statement_rows",
-    outcome: "inserted",
-  },
-  {
-    import_run_id: sourceImportRuns[1]?.import_run_id,
-    projection_table: "unsupported_statement_rows",
-    outcome: "duplicate",
-  },
+  SELECT observation_count, first_seen_at <= last_seen_at AS ordered
+  FROM source_file_imports
+`).all().map((row) => ({ ...row })), [
+  { observation_count: 2, ordered: 1 },
 ]);
+assert.equal((sourceHistoryDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_row_lineage",
+).get() as { count: number }).count, 1);
+assert.equal(secondSourceHistoryResult.importedCsvFiles, 0);
+assert.equal(secondSourceHistoryResult.skippedCsvFiles, 1);
 assert.equal((sourceHistoryDb.prepare(`
   SELECT COUNT(*) AS count FROM unsupported_statement_rows
   WHERE source_file_id = ?
 `).get(sourceFileId) as { count: number }).count, 1);
 sourceHistoryDb.close();
+
+await rename(
+  join(sourceHistorySourceDir, "source.csv"),
+  join(sourceHistorySourceDir, "renamed.csv"),
+);
+const renamedSourceHistoryResult = await importDownloadsCsv(sourceHistoryInput);
+sourceHistoryDb = openLedgerDatabase(sourceHistoryOutputDir, { readOnly: true });
+assert.deepEqual(sourceHistoryDb.prepare(`
+  SELECT observation_count FROM source_file_imports
+`).all().map((row) => ({ ...row })), [{ observation_count: 3 }]);
+assert.equal((sourceHistoryDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_row_lineage",
+).get() as { count: number }).count, 1);
+assert.equal(renamedSourceHistoryResult.importedCsvFiles, 0);
+assert.equal(renamedSourceHistoryResult.skippedCsvFiles, 1);
+sourceHistoryDb.close();
+await rename(
+  join(sourceHistorySourceDir, "renamed.csv"),
+  join(sourceHistorySourceDir, "source.csv"),
+);
 
 await writeFile(
   join(sourceHistorySourceDir, "source.csv"),
@@ -363,7 +368,7 @@ const correctedRow = sourceHistoryDb.prepare(`
 assert.equal((sourceHistoryDb.prepare(`
   SELECT COUNT(*) AS count FROM source_file_imports
   WHERE source_file_id = ?
-`).get(sourceFileId) as { count: number }).count, 3);
+`).get(sourceFileId) as { count: number }).count, 2);
 assert.equal(correctedRow.import_run_id, thirdSourceImport.import_run_id);
 sourceHistoryDb.close();
 
@@ -420,6 +425,145 @@ const accountCsv = (rows: Array<Record<string, string>>) =>
   `${accountHeaders.join(",")}\n${rows
     .map((row) => accountHeaders.map((header) => csvCell(row[header] ?? "")).join(","))
     .join("\n")}\n`;
+
+const sameScanRootDir = await mkdtemp(join(tmpdir(), "same-scan-version-import-"));
+const sameScanDownloadsDir = join(sameScanRootDir, "downloads");
+const sameScanOutputDir = join(sameScanRootDir, "ledger");
+const sameScanSourceDir = join(sameScanDownloadsDir, "ctbc-statements");
+await mkdir(sameScanSourceDir, { recursive: true });
+const sameScanCsv = accountCsv([accountRow]);
+await writeFile(join(sameScanSourceDir, "first.csv"), sameScanCsv, "utf8");
+await writeFile(join(sameScanSourceDir, "renamed.csv"), sameScanCsv, "utf8");
+const sameScanResult = await importDownloadsCsv({
+  downloadsDir: sameScanDownloadsDir,
+  outputDir: sameScanOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+});
+const sameScanDb = openLedgerDatabase(sameScanOutputDir, { readOnly: true });
+assert.deepEqual(sameScanDb.prepare(`
+  SELECT observation_count FROM source_file_imports
+`).all().map((row) => ({ ...row })), [{ observation_count: 2 }]);
+assert.equal((sameScanDb.prepare(
+  "SELECT COUNT(*) AS count FROM source_row_lineage",
+).get() as { count: number }).count, 1);
+sameScanDb.close();
+assert.equal(sameScanResult.importedCsvFiles, 1);
+assert.equal(sameScanResult.skippedCsvFiles, 1);
+assert.equal(sameScanResult.importedRows, 1);
+assert.equal(sameScanResult.skippedDuplicateRows, 0);
+assert.equal(sameScanResult.sourceFilesWritten, 1);
+
+const correctionRootDir = await mkdtemp(join(tmpdir(), "corrected-version-import-"));
+const correctionDownloadsDir = join(correctionRootDir, "downloads");
+const correctionOutputDir = join(correctionRootDir, "ledger");
+const correctionSourceDir = join(correctionDownloadsDir, "ctbc-statements");
+await mkdir(correctionSourceDir, { recursive: true });
+const correctionPath = join(correctionSourceDir, "account.csv");
+const wrongAccountRow = {
+  ...accountRow,
+  摘要: "Wrong transfer",
+  存入金額: "999",
+  即時餘額: "6677",
+};
+const versionABytes = accountCsv([accountRow, wrongAccountRow]);
+await writeFile(correctionPath, versionABytes, "utf8");
+await importDownloadsCsv({
+  downloadsDir: correctionDownloadsDir,
+  outputDir: correctionOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+});
+let correctionDb = openLedgerDatabase(correctionOutputDir);
+const versionA = correctionDb.prepare(`
+  SELECT source_file_id, import_run_id, source_version_key
+  FROM source_file_imports
+`).get() as {
+  source_file_id: string;
+  import_run_id: string;
+  source_version_key: string;
+};
+const validStatementRowId = (correctionDb.prepare(`
+  SELECT statement_row_id FROM account_transactions WHERE description = '薪資'
+`).get() as { statement_row_id: string }).statement_row_id;
+const wrongStatementRowId = (correctionDb.prepare(`
+  SELECT statement_row_id FROM account_transactions WHERE description = 'Wrong transfer'
+`).get() as { statement_row_id: string }).statement_row_id;
+correctionDb.prepare(`
+  INSERT INTO disabled_import_sources (
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    source_version_key, reason, state, disabled_at, restored_at, preview_token
+  ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)
+`).run(
+  "disabled-version-a",
+  "corrected-version-case",
+  versionA.source_file_id,
+  versionA.import_run_id,
+  versionA.source_version_key,
+  "Synthetic wrong transaction",
+  "2026-07-21T00:00:00.000Z",
+  "synthetic-preview-token",
+);
+correctionDb.close();
+
+await writeFile(correctionPath, accountCsv([accountRow]), "utf8");
+await importDownloadsCsv({
+  downloadsDir: correctionDownloadsDir,
+  outputDir: correctionOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+});
+correctionDb = openLedgerDatabase(correctionOutputDir, { readOnly: true });
+const correctionCount = (table: string) => (correctionDb.prepare(
+  `SELECT COUNT(*) AS count FROM ${table}`,
+).get() as { count: number }).count;
+const lineageCountFor = (statementRowId: string) => (correctionDb.prepare(`
+  SELECT COUNT(*) AS count FROM source_row_lineage WHERE statement_row_id = ?
+`).get(statementRowId) as { count: number }).count;
+const activeVersionCountFor = (statementRowId: string) => (correctionDb.prepare(`
+  SELECT COUNT(DISTINCT lineage.source_version_key) AS count
+  FROM source_row_lineage AS lineage
+  WHERE lineage.statement_row_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM disabled_import_sources AS disabled
+      WHERE disabled.source_version_key = lineage.source_version_key
+        AND disabled.state = 'active'
+    )
+`).get(statementRowId) as { count: number }).count;
+assert.equal(correctionCount("source_file_imports"), 2);
+assert.equal(correctionCount("account_transactions"), 2);
+assert.equal(lineageCountFor(validStatementRowId), 2);
+assert.equal(lineageCountFor(wrongStatementRowId), 1);
+assert.equal(activeVersionCountFor(validStatementRowId), 1);
+assert.equal(activeVersionCountFor(wrongStatementRowId), 0);
+correctionDb.close();
+
+await writeFile(correctionPath, versionABytes, "utf8");
+const repeatedDisabledResult = await importDownloadsCsv({
+  downloadsDir: correctionDownloadsDir,
+  outputDir: correctionOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+});
+correctionDb = openLedgerDatabase(correctionOutputDir, { readOnly: true });
+assert.equal(correctionCount("source_file_imports"), 2);
+assert.equal(correctionCount("account_transactions"), 2);
+assert.equal(correctionCount("source_row_lineage"), 3);
+assert.equal(activeVersionCountFor(validStatementRowId), 1);
+assert.equal(activeVersionCountFor(wrongStatementRowId), 0);
+assert.equal((correctionDb.prepare(`
+  SELECT observation_count FROM source_file_imports WHERE source_version_key = ?
+`).get(versionA.source_version_key) as { observation_count: number }).observation_count, 2);
+assert.equal((correctionDb.prepare(`
+  SELECT COUNT(*) AS count FROM disabled_import_sources
+  WHERE source_version_key = ? AND state = 'active'
+`).get(versionA.source_version_key) as { count: number }).count, 1);
+correctionDb.close();
+assert.equal(repeatedDisabledResult.importedCsvFiles, 0);
+assert.equal(repeatedDisabledResult.skippedCsvFiles, 1);
+assert.equal(repeatedDisabledResult.importedRows, 0);
+assert.equal(repeatedDisabledResult.skippedDuplicateRows, 0);
+
 const ordinaryInput = {
   downloadsDir: ordinaryDownloadsDir,
   outputDir: ordinaryOutputDir,
@@ -451,10 +595,10 @@ ordinaryDb.close();
 assert.equal(firstResult.importedRows, 1);
 assert.equal(firstResult.skippedDuplicateRows, 0);
 assert.equal(secondResult.importedRows, 0);
-assert.equal(secondResult.skippedDuplicateRows, 3);
+assert.equal(secondResult.skippedDuplicateRows, 2);
 assert.equal(accountRowCount.count, 1);
-assert.equal(secondRun.skippedDuplicateRows, 3);
-assert.equal(secondCompletedEvent.skippedDuplicateRows, 3);
+assert.equal(secondRun.skippedDuplicateRows, 2);
+assert.equal(secondCompletedEvent.skippedDuplicateRows, 2);
 
 const primaryKeyRootDir = await mkdtemp(join(tmpdir(), "statement-row-id-import-"));
 const primaryKeyDownloadsDir = join(primaryKeyRootDir, "downloads");
@@ -481,6 +625,11 @@ primaryKeyDb.prepare(
   "UPDATE account_transactions SET content_hash = 'legacy-content-hash'",
 ).run();
 primaryKeyDb.close();
+await writeFile(
+  join(primaryKeySourceDir, "account.csv"),
+  `${accountCsv([accountRow])}\n`,
+  "utf8",
+);
 
 const primaryKeyResult = await importDownloadsCsv(primaryKeyInput);
 primaryKeyDb = openLedgerDatabase(primaryKeyOutputDir, { readOnly: true });
@@ -577,7 +726,11 @@ async function cardImportFixture(bank = "esun") {
       cardRowCounts: { "1111": rows.length },
       completenessEvidence: { bank },
     });
-    await writeFile(join(fixtureSourceDir, `${name}-billed.csv`), cardCsv(billedRows), "utf8");
+    await writeFile(
+      join(fixtureSourceDir, `${name}-billed.csv`),
+      `${cardCsv(billedRows)}${",".repeat(name.length + "billed".length)}\n`,
+      "utf8",
+    );
     await writeFile(
       join(fixtureSourceDir, `${name}-billed.json`),
       JSON.stringify(metadata(billedRows)),
@@ -586,7 +739,7 @@ async function cardImportFixture(bank = "esun") {
     if (!writeUnbilled) return;
     await writeFile(
       join(fixtureSourceDir, `${name}-unbilled.csv`),
-      cardCsv(unbilledRows),
+      `${cardCsv(unbilledRows)}${",".repeat(name.length + "unbilled".length)}\n`,
       "utf8",
     );
     await writeFile(
@@ -632,7 +785,7 @@ repeatedFullCardDb.close();
 assert.equal(firstRepeatedFullCardResult.importedRows, 1);
 assert.equal(firstRepeatedFullCardResult.skippedDuplicateRows, 0);
 assert.equal(unchangedRepeatedFullCardResult.importedRows, 0);
-assert.equal(unchangedRepeatedFullCardResult.skippedDuplicateRows, 1);
+assert.equal(unchangedRepeatedFullCardResult.skippedDuplicateRows, 0);
 
 await repeatedFullCardFixture.writeCapture(
   "repeat",
@@ -676,7 +829,7 @@ assert.equal(correctedRepeatedFullCardResult.skippedDuplicateRows, 0);
 assert.equal(correctedCaptureAmount.twd_amount, 110);
 assert.equal(correctedSnapshot.total_amount, 110);
 assert.equal(unchangedCompletedEvent.importedRows, 0);
-assert.equal(unchangedCompletedEvent.skippedDuplicateRows, 1);
+assert.equal(unchangedCompletedEvent.skippedDuplicateRows, 0);
 assert.equal(correctedCompletedEvent.importedRows, 1);
 assert.equal(correctedCompletedEvent.skippedDuplicateRows, 0);
 
