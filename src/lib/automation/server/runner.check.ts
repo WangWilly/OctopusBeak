@@ -179,6 +179,25 @@ test("automation output retries a failed timer flush", (context) => {
   assert.deepEqual(flushed, ["progress\n"]);
 });
 
+test("automation output does not retry a failed manual flush", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let attempts = 0;
+  const buffer = createAutomationOutputBuffer(
+    () => {
+      attempts += 1;
+      throw new Error("database is closed");
+    },
+    500,
+    () => {},
+  );
+
+  buffer.push("final\n");
+  buffer.flush();
+  context.mock.timers.tick(500);
+
+  assert.equal(attempts, 1);
+});
+
 test("automation output caps retained failed chunks", () => {
   let attempts = 0;
   let flushed = "";
