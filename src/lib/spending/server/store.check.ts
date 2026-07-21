@@ -531,6 +531,20 @@ try {
     sourceFileId: "source-other-invoice",
     importRunId: "run",
   });
+  insertInvoice(disabledDb, {
+    invoiceKey: "invoice-with-disabled-item",
+    invoiceId: "OP12345678",
+    status: "confirmed",
+    amount: 13,
+  });
+  insertItem(disabledDb, {
+    itemKey: "disabled-item",
+    invoiceKey: "invoice-with-disabled-item",
+    sequence: 1,
+    paidAmount: 13,
+    productName: "Disabled item",
+    category: "shopping",
+  });
   insertAccountTransaction(disabledDb, {
     statementRowId: "cross-account-same-source",
     accountNumber: "333",
@@ -581,6 +595,7 @@ try {
     "source-confirmed-invoice",
     "source-mirrored-transfer",
     "source-card-payment-line",
+    "source-disabled-item",
   ].entries()) {
     disabledDb.prepare(`
       INSERT INTO disabled_import_sources (
@@ -631,6 +646,10 @@ try {
   for (const invoiceKey of ["cross-invoice-same-source", "cross-invoice-same-run"]) {
     assert.equal(visible.invoices.some((invoice) => invoice.invoiceKey === invoiceKey), true);
   }
+  assert.deepEqual(
+    visible.invoices.find((invoice) => invoice.invoiceKey === "invoice-with-disabled-item")?.items,
+    [],
+  );
   for (const statementRowId of ["cross-account-same-source", "cross-account-same-run"]) {
     assert.equal(visible.accountRecords.some((row) => row.statementRowId === statementRowId), true);
   }

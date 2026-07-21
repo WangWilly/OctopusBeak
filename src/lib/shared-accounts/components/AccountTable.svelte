@@ -103,9 +103,9 @@
     { key: "balance", label: $t.accounts.balance, right: true },
     { key: "allocation", label: mode === "asset" ? $t.accounts.allocation : $t.accounts.exposure, right: true },
   ];
-  $: if (focusAccountId && focusAccountId !== handledFocusAccountId) {
+  $: if (focusAccountId !== handledFocusAccountId) {
     handledFocusAccountId = focusAccountId;
-    void focusAccount(focusAccountId);
+    if (focusAccountId) void focusAccount(focusAccountId);
   }
 
   function selectAccount(accountId: string) {
