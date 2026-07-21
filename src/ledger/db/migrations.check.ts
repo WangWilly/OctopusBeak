@@ -150,6 +150,164 @@ const spendingOverrideLedgerDir = mkdtempSync(
 const persistentDataIssuesLedgerDir = mkdtempSync(
   join(tmpdir(), "persistent-data-issues-"),
 );
+const canonicalSourceVersionLedgerDir = mkdtempSync(
+  join(tmpdir(), "canonical-source-version-"),
+);
+const ambiguousSourceVersionLedgerDir = mkdtempSync(
+  join(tmpdir(), "ambiguous-source-version-"),
+);
+const orphanSourceVersionLedgerDir = mkdtempSync(
+  join(tmpdir(), "orphan-source-version-"),
+);
+
+function resetSourceVersionsToVersion25(db: LedgerDatabase) {
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version >= 26;
+    DROP TABLE IF EXISTS source_row_lineage;
+    DROP TABLE IF EXISTS disabled_import_sources;
+    DROP TABLE IF EXISTS source_file_imports;
+    CREATE TABLE source_file_imports (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_relative_path TEXT NOT NULL,
+      source_file_hash TEXT NOT NULL,
+      source_file_bytes INTEGER NOT NULL,
+      source_file_modified_at TEXT,
+      imported_at TEXT NOT NULL,
+      bank TEXT NOT NULL,
+      product TEXT NOT NULL,
+      row_count INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (source_file_id, import_run_id)
+    );
+    CREATE TABLE source_row_lineage (
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      source_row_index INTEGER NOT NULL,
+      projection_table TEXT NOT NULL,
+      statement_row_id TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('inserted','duplicate','upserted')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (
+        source_file_id, import_run_id, source_row_index, projection_table
+      )
+    );
+    CREATE INDEX idx_source_row_lineage_statement
+      ON source_row_lineage(projection_table, statement_row_id);
+    CREATE TABLE disabled_import_sources (
+      disabled_import_source_id TEXT PRIMARY KEY,
+      data_issue_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      import_run_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('active','restored')),
+      disabled_at TEXT NOT NULL,
+      restored_at TEXT,
+      preview_token TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX uq_disabled_import_source_scope
+      ON disabled_import_sources(source_file_id, import_run_id);
+  `);
+}
+
+function insertVersion25Source(
+  db: LedgerDatabase,
+  sourceFileId: string,
+  importRunId: string,
+  importedAt: string,
+) {
+  db.prepare(`
+    INSERT INTO source_file_imports (
+      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, imported_at, bank, product, row_count, status,
+      record_json
+    ) VALUES (?, ?, ?, 'same-hash', 100, ?, 'synthetic-bank',
+      'synthetic-loan', 1, 'imported', '{}')
+  `).run(sourceFileId, importRunId, `${sourceFileId}.csv`, importedAt);
+}
+
+function seedVersion25SourcesFromTypedRows(db: LedgerDatabase) {
+  resetSourceVersionsToVersion25(db);
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO source_file_imports (
+      source_file_id, import_run_id, source_relative_path, source_file_hash,
+      source_file_bytes, imported_at, bank, product, row_count, status,
+      record_json
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, 'imported', '{}')
+  `);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    const rows = db.prepare(`
+      SELECT DISTINCT source_file_id, import_run_id, source_hash, imported_at,
+        bank, product
+      FROM ${table}
+    `).all() as Array<{
+      source_file_id: string;
+      import_run_id: string;
+      source_hash: string;
+      imported_at: string;
+      bank: string;
+      product: string;
+    }>;
+    for (const row of rows) {
+      insert.run(
+        row.source_file_id,
+        row.import_run_id,
+        `${row.source_file_id}.csv`,
+        row.source_hash,
+        row.imported_at,
+        row.bank,
+        row.product,
+      );
+    }
+  }
+}
+
+function insertSyntheticLoan(
+  db: LedgerDatabase,
+  statementRowId: string,
+  sourceFileId: string,
+  importRunId: string,
+  sourceRowIndex: number,
+) {
+  db.prepare(`
+    INSERT INTO loan_transactions (
+      statement_row_id, source_file_id, import_run_id, source_relative_path,
+      source_row_index, source_hash, content_hash, bank, product,
+      raw_payload_json, imported_at, created_at, balance_after
+    ) VALUES (?, ?, ?, ?, ?, 'same-hash', ?, 'synthetic-bank',
+      'synthetic-loan', '{}', '2026-01-02T00:00:00.000Z',
+      '2026-01-02T00:00:00.000Z', 63900)
+  `).run(
+    statementRowId,
+    sourceFileId,
+    importRunId,
+    `${sourceFileId}.csv`,
+    sourceRowIndex,
+    `content-${statementRowId}`,
+  );
+}
+
+function appliedVersion(db: LedgerDatabase, version: number) {
+  return db.prepare(
+    "SELECT 1 FROM schema_migrations WHERE version = ?",
+  ).get(version) !== undefined;
+}
+
+function tableCounts(db: LedgerDatabase) {
+  return Object.fromEntries([
+    "schema_migrations",
+    "source_file_imports",
+    "source_row_lineage",
+    "data_issues",
+    "data_issue_events",
+    "disabled_import_sources",
+    ...TYPED_STATEMENT_TABLES,
+  ].map((table) => [
+    table,
+    (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count,
+  ]));
+}
 
 function insertLegacyCardCapture(
   db: LedgerDatabase,
@@ -169,15 +327,16 @@ function insertLegacyCardCapture(
       source_row_index, source_hash, content_hash, bank, product,
       raw_payload_json, imported_at, created_at, statement_type, card_number,
       consume_date, description, twd_amount
-    ) VALUES (?, ?, 'legacy-run', ?, ?, ?, ?, ?,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
       ?, '{}', ?, ?, ?, ?, '2026-06-01', ?, ?)
   `);
   input.transactions.forEach((transaction, index) => insert.run(
     `${input.source}-${transaction.id}`,
     input.source,
+    `legacy-run-${input.capturedAt}`,
     `${input.source}.csv`,
     index + 1,
-    `source-hash-${input.source}`,
+    `source-hash-${input.source}-${input.capturedAt}`,
     `content-${input.source}-${transaction.id}`,
     input.bank ?? "esun",
     input.product ?? "credit-card-statements",
@@ -216,6 +375,116 @@ function resetCardsToVersion14(db: LedgerDatabase) {
 }
 
 try {
+  const canonicalDb = openLedgerDatabase(canonicalSourceVersionLedgerDir);
+  resetSourceVersionsToVersion25(canonicalDb);
+  insertVersion25Source(
+    canonicalDb, "source-a", "run-a", "2026-01-01T00:00:00.000Z",
+  );
+  insertVersion25Source(
+    canonicalDb, "source-b", "run-b", "2026-01-02T00:00:00.000Z",
+  );
+  insertSyntheticLoan(canonicalDb, "synthetic-row", "source-b", "run-b", 1);
+  canonicalDb.exec(`
+    INSERT INTO source_row_lineage (
+      source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome, created_at
+    ) VALUES
+      ('source-a', 'run-a', 1, 'loan_transactions', 'synthetic-row',
+        'duplicate', '2026-01-01T00:00:00.000Z'),
+      ('source-b', 'run-b', 1, 'loan_transactions', 'synthetic-row',
+        'inserted', '2026-01-02T00:00:00.000Z');
+    INSERT INTO data_issues (
+      data_issue_id, account_id, account_label, account_context_json,
+      field_key, reported_value, currency, note, status, created_at, updated_at
+    ) VALUES (
+      'issue-a', 'account-a', 'Synthetic Account', '{}', 'balance', 63900,
+      'TWD', 'synthetic issue', 'investigating',
+      '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z'
+    );
+    INSERT INTO disabled_import_sources (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      reason, state, disabled_at, preview_token
+    ) VALUES (
+      'disabled-a', 'issue-a', 'source-b', 'run-b', 'synthetic exclusion',
+      'active', '2026-01-02T00:00:00.000Z', 'preview-a'
+    );
+    INSERT INTO data_issue_events (
+      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
+      details_json, created_at
+    ) VALUES (
+      'event-a', 'issue-a', 'source_disabled', 'commit', 'succeeded',
+      'synthetic event', '{}', '2026-01-02T00:00:00.000Z'
+    );
+  `);
+  migrateLedgerDb(canonicalDb);
+  const imports = canonicalDb.prepare(`SELECT source_version_key, first_seen_at, last_seen_at,
+    observation_count FROM source_file_imports`).all().map((row) => ({ ...row }));
+  assert.equal(imports.length, 1);
+  assert.equal(imports[0]?.first_seen_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(imports[0]?.last_seen_at, "2026-01-02T00:00:00.000Z");
+  assert.equal(imports[0]?.observation_count, 2);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_row_lineage").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issues").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT balance_after FROM loan_transactions WHERE statement_row_id = 'synthetic-row'").get() as { balance_after: number }).balance_after, 63_900);
+  assert.deepEqual(canonicalDb.prepare(`
+    SELECT source_file_id, import_run_id FROM loan_transactions
+    WHERE statement_row_id = 'synthetic-row'
+  `).all().map((row) => ({ ...row })), [{
+    source_file_id: "source-a",
+    import_run_id: "run-a",
+  }]);
+  assert.equal((canonicalDb.prepare(`
+    SELECT outcome FROM source_row_lineage
+  `).get() as { outcome: string }).outcome, "inserted");
+  migrateLedgerDb(canonicalDb);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_file_imports").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_row_lineage").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issues").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
+  assert.equal((canonicalDb.prepare("SELECT observation_count FROM source_file_imports").get() as { observation_count: number }).observation_count, 2);
+  canonicalDb.close();
+
+  const ambiguousDb = openLedgerDatabase(ambiguousSourceVersionLedgerDir);
+  resetSourceVersionsToVersion25(ambiguousDb);
+  insertVersion25Source(
+    ambiguousDb, "ambiguous-a", "run-a", "2026-01-01T00:00:00.000Z",
+  );
+  insertVersion25Source(
+    ambiguousDb, "ambiguous-b", "run-b", "2026-01-02T00:00:00.000Z",
+  );
+  insertSyntheticLoan(ambiguousDb, "ambiguous-row-a", "ambiguous-a", "run-a", 1);
+  insertSyntheticLoan(ambiguousDb, "ambiguous-row-b", "ambiguous-b", "run-b", 1);
+  ambiguousDb.exec(`
+    INSERT INTO source_row_lineage (
+      source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome, created_at
+    ) VALUES
+      ('ambiguous-a', 'run-a', 1, 'loan_transactions', 'ambiguous-row-a',
+        'inserted', '2026-01-01T00:00:00.000Z'),
+      ('ambiguous-b', 'run-b', 1, 'loan_transactions', 'ambiguous-row-b',
+        'inserted', '2026-01-02T00:00:00.000Z');
+  `);
+  const countsBeforeAmbiguousMigration = tableCounts(ambiguousDb);
+  assert.throws(() => migrateLedgerDb(ambiguousDb), /SOURCE_VERSION_LINEAGE_AMBIGUOUS/);
+  assert.equal(appliedVersion(ambiguousDb, 26), false);
+  assert.deepEqual(tableCounts(ambiguousDb), countsBeforeAmbiguousMigration);
+  ambiguousDb.close();
+
+  const orphanDb = openLedgerDatabase(orphanSourceVersionLedgerDir);
+  resetSourceVersionsToVersion25(orphanDb);
+  insertVersion25Source(
+    orphanDb, "orphan-source", "orphan-run", "2026-01-01T00:00:00.000Z",
+  );
+  insertSyntheticLoan(orphanDb, "orphan-row", "orphan-source", "orphan-run", 1);
+  const countsBeforeOrphanMigration = tableCounts(orphanDb);
+  assert.throws(() => migrateLedgerDb(orphanDb), /SOURCE_VERSION_LINEAGE_ORPHAN/);
+  assert.equal(appliedVersion(orphanDb, 26), false);
+  assert.deepEqual(tableCounts(orphanDb), countsBeforeOrphanMigration);
+  orphanDb.close();
+
   const seeded = openLedgerDatabase(ledgerDir);
   seeded.exec(`
     DROP TABLE personal_invoice_items;
@@ -271,7 +540,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -381,6 +650,7 @@ try {
     importedAt: "2026-02-01T00:00:00.000Z",
     productName: "Newest item",
   });
+  seedVersion25SourcesFromTypedRows(legacyDb);
   migrateLedgerDb(legacyDb);
 
   const migratedItems = legacyDb.prepare(`
@@ -507,6 +777,7 @@ try {
     importedAt: "2026-01-01T00:00:00.000Z",
     productName: "unmatched item",
   });
+  seedVersion25SourcesFromTypedRows(categoryDb);
   migrateLedgerDb(categoryDb);
 
   const migratedCategoryColumn = categoryDb.prepare(
@@ -585,6 +856,7 @@ try {
     "canonical", "canonical-file", "a.csv", 1, "source-canonical", "raw-canonical",
     "unique", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z",
   );
+  seedVersion25SourcesFromTypedRows(dedupeDb);
   migrateLedgerDb(dedupeDb);
 
   const retained = dedupeDb.prepare(`
@@ -677,6 +949,7 @@ try {
     source: "legacy-blank-card", capturedAt: "2026-07-09T09:00:00.000Z", card: "",
     transactions: [{ id: "blank", amount: 60 }],
   });
+  seedVersion25SourcesFromTypedRows(cardDb);
   migrateLedgerDb(cardDb);
   const validLegacySnapshot = cardDb.prepare(`
     SELECT capture_id FROM credit_card_snapshots
@@ -1116,9 +1389,9 @@ try {
   }]);
   assert.throws(() => persistentDataIssuesDb.prepare(`
     INSERT INTO source_row_lineage (
-      source_file_id, import_run_id, source_row_index, projection_table,
-      statement_row_id, outcome, created_at
-    ) VALUES ('source-a', 'run-a', 2, 'loan_transactions', 'bad', 'unknown',
+      source_file_id, import_run_id, source_version_key, source_row_index,
+      projection_table, statement_row_id, outcome, created_at
+    ) VALUES ('source-a', 'run-a', 'test-version', 2, 'loan_transactions', 'bad', 'unknown',
       '2026-01-18T00:00:00.000Z')
   `).run(), /CHECK constraint failed/);
   assert.throws(() => persistentDataIssuesDb.prepare(`
@@ -1131,8 +1404,8 @@ try {
   assert.throws(() => persistentDataIssuesDb.prepare(`
     INSERT INTO disabled_import_sources (
       disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      reason, state, disabled_at, preview_token
-    ) VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'reason', 'invalid',
+      source_version_key, reason, state, disabled_at, preview_token
+    ) VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'test-version', 'reason', 'invalid',
       '2026-07-20T00:00:00.000Z', 'preview-a')
   `).run(), /CHECK constraint failed/);
   assert.throws(() => persistentDataIssuesDb.prepare(`
@@ -1159,6 +1432,9 @@ try {
     transactionUtcLedgerDir,
     spendingOverrideLedgerDir,
     persistentDataIssuesLedgerDir,
+    canonicalSourceVersionLedgerDir,
+    ambiguousSourceVersionLedgerDir,
+    orphanSourceVersionLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
