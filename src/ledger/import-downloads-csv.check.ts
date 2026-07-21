@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "./db/client.ts";
@@ -171,13 +171,117 @@ const sourceFile = db.prepare(
   source_relative_path: string;
   record_json: string;
 };
+const correctedInvoiceLineage = db.prepare(`
+  SELECT statement_row_id FROM source_row_lineage
+  WHERE projection_table = 'personal_invoices' AND source_row_index = 2
+  ORDER BY created_at, source_version_key
+`).all().map((row) => ({ ...row }));
+const correctedItemLineage = db.prepare(`
+  SELECT statement_row_id FROM source_row_lineage
+  WHERE projection_table = 'personal_invoice_items' AND source_row_index = 2
+  ORDER BY created_at, source_version_key
+`).all().map((row) => ({ ...row }));
+const correctedSourceVersionCount = (db.prepare(
+  "SELECT COUNT(*) AS count FROM source_file_imports",
+).get() as { count: number }).count;
 db.close();
+
+const rollbackRootDir = await mkdtemp(join(tmpdir(), "import-rollback-"));
+const rollbackDownloadsDir = join(rollbackRootDir, "downloads");
+const rollbackOutputDir = join(rollbackRootDir, "ledger");
+const rollbackSourceDir = join(rollbackDownloadsDir, "ctbc-statements");
+await mkdir(rollbackSourceDir, { recursive: true });
+const rollbackCsv = (description: string, deposit: string) => [
+  "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註",
+  `2026/07/21,2026/07/21,12:34:56,${description},0,${deposit},9000,Synthetic`,
+  "",
+].join("\n");
+const rollbackInput = {
+  downloadsDir: rollbackDownloadsDir,
+  outputDir: rollbackOutputDir,
+  bankFilters: ["ctbc"],
+  productFilters: ["statements"],
+};
+await writeFile(
+  join(rollbackSourceDir, "known.csv"),
+  rollbackCsv("Known row", "100"),
+  "utf8",
+);
+await importDownloadsCsv(rollbackInput);
+const rollbackSetupDb = openLedgerDatabase(rollbackOutputDir);
+const observedVersionKey = (rollbackSetupDb.prepare(`
+  SELECT source_version_key FROM source_file_imports
+`).get() as { source_version_key: string }).source_version_key;
+rollbackSetupDb.exec(`
+  CREATE TRIGGER synthetic_abort_account_insert
+  BEFORE INSERT ON account_transactions
+  WHEN NEW.description = 'Rollback probe'
+  BEGIN
+    SELECT RAISE(ABORT, 'synthetic typed insert failure');
+  END
+`);
+rollbackSetupDb.close();
+await writeFile(
+  join(rollbackSourceDir, "second.csv"),
+  rollbackCsv("Rollback probe", "200"),
+  "utf8",
+);
+await assert.rejects(
+  importDownloadsCsv(rollbackInput),
+  /synthetic typed insert failure/,
+);
+const rollbackDb = openLedgerDatabase(rollbackOutputDir, { readOnly: true });
+const failedRun = rollbackDb.prepare(`
+  SELECT import_run_id, record_json FROM import_run_events
+  WHERE event_type = 'failed'
+`).get() as { import_run_id: string; record_json: string };
+assert.equal((rollbackDb.prepare(`
+  SELECT observation_count FROM source_file_imports WHERE source_version_key = ?
+`).get(observedVersionKey) as { observation_count: number }).observation_count, 1);
+for (const [table, count] of [
+  ["source_file_imports", 1],
+  ["source_files", 1],
+  ["source_row_lineage", 1],
+  ["account_transactions", 1],
+  ["import_runs", 1],
+] as const) {
+  assert.equal((rollbackDb.prepare(
+    `SELECT COUNT(*) AS count FROM ${table}`,
+  ).get() as { count: number }).count, count, table);
+}
+assert.equal((rollbackDb.prepare(`
+  SELECT COUNT(*) AS count FROM import_runs WHERE import_run_id = ?
+`).get(failedRun.import_run_id) as { count: number }).count, 0);
+assert.equal((rollbackDb.prepare(`
+  SELECT COUNT(*) AS count FROM import_run_events
+  WHERE import_run_id = ? AND event_type = 'completed'
+`).get(failedRun.import_run_id) as { count: number }).count, 0);
+assert.deepEqual(rollbackDb.prepare(`
+  SELECT event_type, COUNT(*) AS count FROM import_run_events
+  GROUP BY event_type ORDER BY event_type
+`).all().map((row) => ({ ...row })), [
+  { event_type: "completed", count: 1 },
+  { event_type: "failed", count: 1 },
+  { event_type: "started", count: 2 },
+]);
+assert.match(failedRun.record_json, /synthetic typed insert failure/);
+rollbackDb.close();
+await rm(rollbackRootDir, { recursive: true, force: true });
 
 assert.equal(invoiceCount.count, 2);
 assert.equal(itemCount.count, 2);
 assert.equal(sourceFileCount.count, 1);
-assert.notEqual(invoice.statement_row_id, initialInvoice.statement_row_id);
-assert.notEqual(item.statement_row_id, initialItem.statement_row_id);
+assert.equal(correctedSourceVersionCount, 2);
+assert.equal(invoice.statement_row_id, initialInvoice.statement_row_id);
+assert.equal(item.statement_row_id, initialItem.statement_row_id);
+assert.deepEqual(correctedInvoiceLineage, [
+  { statement_row_id: initialInvoice.statement_row_id },
+  { statement_row_id: initialInvoice.statement_row_id },
+]);
+assert.deepEqual(correctedItemLineage, [
+  { statement_row_id: initialItem.statement_row_id },
+  { statement_row_id: initialItem.statement_row_id },
+]);
 assert.equal(sourceFile.import_run_id, invoice.import_run_id);
 assert.notEqual(sourceFile.import_run_id, initialSourceFile.import_run_id);
 assert.notEqual(sourceFile.source_file_hash, initialSourceFile.source_file_hash);
