@@ -200,7 +200,7 @@ export function createAutomationOutputBuffer(
 ) {
   let pending = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const flush = () => {
+  const flush = (retry: boolean) => {
     if (timer) clearTimeout(timer);
     timer = null;
     if (!pending) return;
@@ -210,7 +210,7 @@ export function createAutomationOutputBuffer(
       write(chunk);
     } catch (error) {
       pending = tail(chunk + pending);
-      timer = setTimeout(flush, delayMs);
+      if (retry) timer = setTimeout(() => flush(true), delayMs);
       try {
         onError(error);
       } catch (handlerError) {
@@ -221,9 +221,9 @@ export function createAutomationOutputBuffer(
   return {
     push(chunk: string) {
       pending = tail(pending + chunk);
-      if (!timer) timer = setTimeout(flush, delayMs);
+      if (!timer) timer = setTimeout(() => flush(true), delayMs);
     },
-    flush,
+    flush: () => flush(false),
   };
 }
 
