@@ -117,6 +117,24 @@ try {
     logTail: "failed",
   });
 
+  const failedGate = importGateStatus(db, {
+    dependencyIds: [
+      "fubon-all-statements",
+      "esun-credit-card-statements",
+    ],
+    startUtc: new Date("2026-06-30T00:00:00.000Z"),
+    endUtc: new Date("2026-07-01T00:00:00.000Z"),
+  });
+  assert.equal(failedGate.locked, true);
+  assert.deepEqual(failedGate.missingTaskIds, ["esun-credit-card-statements"]);
+
+  updateTaskRun(db, esunRun.taskRunId, {
+    status: "completed",
+    finishedAt: "2026-06-30T03:21:00.000Z",
+    exitCode: 0,
+    errorMessage: null,
+  });
+
   const unlockedGate = importGateStatus(db, {
     dependencyIds: [
       "fubon-all-statements",
@@ -127,7 +145,7 @@ try {
   });
   assert.equal(unlockedGate.locked, false);
   assert.deepEqual(unlockedGate.missingTaskIds, []);
-  assert.equal(taskRunById(db, esunRun.taskRunId)?.status, "failed");
+  assert.equal(taskRunById(db, esunRun.taskRunId)?.status, "completed");
 
   for (let index = 0; index < 101; index += 1) {
     const startedAt = new Date(Date.UTC(2026, 5, 30, 4, 0, index)).toISOString();
