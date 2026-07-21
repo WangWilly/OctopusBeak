@@ -12,7 +12,7 @@ import { buildDailyHistory } from "./daily-history.ts";
 import {
   appendUnavailableAccounts,
   applyLedgerVisibility,
-  loadActiveImportScopes,
+  loadActiveLedgerSupport,
   loadUnavailableAccountIssues,
 } from "../../data-issues/server/ledger-visibility.ts";
 
@@ -33,7 +33,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       maicoinAccountSnapshots,
       maicoinStatementRows,
     ] = await Promise.all([
-      db.select().from(schema.sourceFiles).all(),
+      db.select().from(schema.sourceFileImports).all(),
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
       db.select().from(schema.creditCardStatementLines).all(),
@@ -62,10 +62,11 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       maicoinAccountSnapshots,
       maicoinStatementRows,
     };
-    const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
+    const support = loadActiveLedgerSupport(sqlite);
+    const visibleData = applyLedgerVisibility(data, support);
     const accounts = appendUnavailableAccounts(
       buildAccountOverview(visibleData),
-      loadUnavailableAccountIssues(sqlite, data),
+      loadUnavailableAccountIssues(sqlite, data, support),
     );
     const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;

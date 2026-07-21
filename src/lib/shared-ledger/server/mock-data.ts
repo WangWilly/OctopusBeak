@@ -7,7 +7,7 @@ const IMPORTED_AT = "2026-06-27T18:00:00.000Z";
 
 export const MOCK_LEDGER_TABLES = [
   { key: "importRuns", table: "import_runs", label: "Import runs" },
-  { key: "sourceFiles", table: "source_files", label: "Source files" },
+  { key: "sourceFiles", table: "source_file_imports", label: "Source files" },
   { key: "accountTransactions", table: "account_transactions", label: "TWD bank rows" },
   { key: "foreignCurrencyTransactions", table: "foreign_currency_transactions", label: "Foreign cash rows" },
   { key: "creditCardStatementLines", table: "credit_card_statement_lines", label: "Credit card rows" },
@@ -112,7 +112,7 @@ function sourceFile(
   return {
     sourceFileId,
     importRunId: RUN_ID,
-    sourceFile: `downloads/mock/${sourceFileId}.csv`,
+    sourceVersionKey: `mock-version-${sourceFileId}`,
     sourceRelativePath: `mock/${sourceFileId}.csv`,
     sourceFileHash: `mock-file-hash-${sourceFileId}`,
     sourceFileBytes: rowCount * 256,
@@ -120,6 +120,9 @@ function sourceFile(
     importedAt: IMPORTED_AT,
     bank,
     product,
+    firstSeenAt: IMPORTED_AT,
+    lastSeenAt: IMPORTED_AT,
+    observationCount: 1,
     rowCount,
     status: "imported",
     recordJson: json({ mock: true, sourceFileId }),
