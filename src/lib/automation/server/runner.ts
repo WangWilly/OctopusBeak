@@ -193,6 +193,9 @@ function appendLog(logPath: string, chunk: string) {
 export function createAutomationOutputBuffer(
   write: (chunk: string) => void,
   delayMs = 500,
+  onError: (error: unknown) => void = (error) => {
+    console.error("automation-output-write-failed", error);
+  },
 ) {
   let pending = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -202,7 +205,11 @@ export function createAutomationOutputBuffer(
     if (!pending) return;
     const chunk = pending;
     pending = "";
-    write(chunk);
+    try {
+      write(chunk);
+    } catch (error) {
+      onError(error);
+    }
   };
   return {
     push(chunk: string) {
@@ -638,12 +645,20 @@ export async function runAutomationTask(
         signal: NodeJS.Signals | null;
         error: Error | null;
       }>((resolve) => {
-        const outputBuffer = createAutomationOutputBuffer((logChunk) => {
-          appendLog(logPath, logChunk);
-          if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
-            updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
-          }
-        });
+        const outputBuffer = createAutomationOutputBuffer(
+          (logChunk) => {
+            appendLog(logPath, logChunk);
+            if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
+              updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
+            }
+          },
+          500,
+          (error) => {
+            const line = `automation-output-write-failed: ${errorMessage(error)}`;
+            console.error(line);
+            logTail = tail(`${logTail}\n${line}\n`);
+          },
+        );
         const onOutput = (chunk: Buffer) => {
           const output = accumulateAutomationOutput(
             { logTail, resumeFailure: detectedResumeFailure },
