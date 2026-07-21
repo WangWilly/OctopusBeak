@@ -1,19 +1,19 @@
 import { DEFAULT_LEDGER_DIR, openLedgerDrizzle } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
 import type { LiabilitiesPageDto } from "../types.ts";
-import { buildDailyHistory, buildDailyHistoryByAccount } from "$lib/overview/server/daily-history.ts";
+import { buildDailyHistory, buildDailyHistoryByAccount } from "../../overview/server/daily-history.ts";
 import {
   buildAccountOverview,
   buildTransactionsByAccount,
   emptyLedgerQueryData,
   type LedgerQueryData,
-} from "$lib/shared-ledger/server/accounts.ts";
+} from "../../shared-ledger/server/accounts.ts";
 import {
   appendUnavailableAccounts,
   applyLedgerVisibility,
   loadActiveLedgerSupport,
   loadUnavailableAccountIssues,
-} from "$lib/data-issues/server/ledger-visibility.ts";
+} from "../../data-issues/server/ledger-visibility.ts";
 
 export async function loadLiabilities(ledgerDir = DEFAULT_LEDGER_DIR): Promise<LiabilitiesPageDto> {
   const { db, sqlite } = openLedgerDrizzle(ledgerDir);

@@ -156,6 +156,9 @@ const canonicalSourceVersionLedgerDir = mkdtempSync(
 const ambiguousSourceVersionLedgerDir = mkdtempSync(
   join(tmpdir(), "ambiguous-source-version-"),
 );
+const tiedSourceVersionLedgerDir = mkdtempSync(
+  join(tmpdir(), "tied-source-version-"),
+);
 const orphanSourceVersionLedgerDir = mkdtempSync(
   join(tmpdir(), "orphan-source-version-"),
 );
@@ -541,6 +544,9 @@ try {
   insertVersion25Source(
     ambiguousDb, "ambiguous-b", "run-b", "2026-01-02T00:00:00.000Z",
   );
+  insertVersion25Source(
+    ambiguousDb, "ambiguous-missing", "run-missing", "2026-01-03T00:00:00.000Z",
+  );
   insertSyntheticLoan(ambiguousDb, "ambiguous-row-a", "ambiguous-a", "run-a", 1);
   insertSyntheticLoan(ambiguousDb, "ambiguous-row-b", "ambiguous-b", "run-b", 1);
   ambiguousDb.exec(`
@@ -551,13 +557,61 @@ try {
       ('ambiguous-a', 'run-a', 1, 'loan_transactions', 'ambiguous-row-a',
         'inserted', '2026-01-01T00:00:00.000Z'),
       ('ambiguous-b', 'run-b', 1, 'loan_transactions', 'ambiguous-row-b',
-        'inserted', '2026-01-02T00:00:00.000Z');
+        'inserted', '2026-01-02T00:00:00.000Z'),
+      ('ambiguous-missing', 'run-missing', 1, 'loan_transactions',
+        'missing-row', 'inserted', '2026-01-03T00:00:00.000Z');
   `);
   const countsBeforeAmbiguousMigration = tableCounts(ambiguousDb);
-  assert.throws(() => migrateLedgerDb(ambiguousDb), /SOURCE_VERSION_LINEAGE_AMBIGUOUS/);
-  assert.equal(appliedVersion(ambiguousDb, 26), false);
-  assert.deepEqual(tableCounts(ambiguousDb), countsBeforeAmbiguousMigration);
+  migrateLedgerDb(ambiguousDb);
+  assert.equal(appliedVersion(ambiguousDb, 26), true);
+  const countsAfterAmbiguousMigration = tableCounts(ambiguousDb);
+  for (const table of TYPED_STATEMENT_TABLES) {
+    assert.equal(
+      countsAfterAmbiguousMigration[table],
+      countsBeforeAmbiguousMigration[table],
+    );
+  }
+  assert.equal(countsAfterAmbiguousMigration.source_file_imports, 1);
+  assert.equal(countsAfterAmbiguousMigration.source_row_lineage, 1);
+  assert.deepEqual(ambiguousDb.prepare(`
+    SELECT statement_row_id, created_at FROM source_row_lineage
+  `).all().map((row) => ({ ...row })), [{
+    statement_row_id: "ambiguous-row-b",
+    created_at: "2026-01-01T00:00:00.000Z",
+  }]);
+  assert.equal((ambiguousDb.prepare(`
+    SELECT COUNT(*) AS count FROM loan_transactions AS typed
+    WHERE NOT EXISTS (
+      SELECT 1 FROM source_row_lineage AS lineage
+      WHERE lineage.projection_table = 'loan_transactions'
+        AND lineage.statement_row_id = typed.statement_row_id
+    )
+  `).get() as { count: number }).count, 1);
   ambiguousDb.close();
+
+  const tiedDb = openLedgerDatabase(tiedSourceVersionLedgerDir);
+  resetSourceVersionsToVersion25(tiedDb);
+  insertVersion25Source(
+    tiedDb, "tied-a", "run-a", "2026-01-01T00:00:00.000Z",
+  );
+  insertVersion25Source(
+    tiedDb, "tied-b", "run-b", "2026-01-01T00:00:00.000Z",
+  );
+  insertSyntheticLoan(tiedDb, "tied-row-a", "tied-a", "run-a", 1);
+  insertSyntheticLoan(tiedDb, "tied-row-b", "tied-b", "run-b", 1);
+  tiedDb.exec(`
+    INSERT INTO source_row_lineage (
+      source_file_id, import_run_id, source_row_index, projection_table,
+      statement_row_id, outcome, created_at
+    ) VALUES
+      ('tied-a', 'run-a', 1, 'loan_transactions', 'tied-row-a',
+        'inserted', '2026-01-01T00:00:00.000Z'),
+      ('tied-b', 'run-b', 1, 'loan_transactions', 'tied-row-b',
+        'inserted', '2026-01-01T00:00:00.000Z');
+  `);
+  assert.throws(() => migrateLedgerDb(tiedDb), /SOURCE_VERSION_LINEAGE_AMBIGUOUS/);
+  assert.equal(appliedVersion(tiedDb, 26), false);
+  tiedDb.close();
 
   const orphanDb = openLedgerDatabase(orphanSourceVersionLedgerDir);
   resetSourceVersionsToVersion25(orphanDb);
@@ -1520,6 +1574,7 @@ try {
     persistentDataIssuesLedgerDir,
     canonicalSourceVersionLedgerDir,
     ambiguousSourceVersionLedgerDir,
+    tiedSourceVersionLedgerDir,
     orphanSourceVersionLedgerDir,
     mergedExclusionLedgerDir,
   ]) {
