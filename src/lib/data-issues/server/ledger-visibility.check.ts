@@ -163,7 +163,12 @@ lineageDb.exec(`
   );
   CREATE INDEX source_row_lineage_active_support_idx
     ON source_row_lineage(projection_table, statement_row_id, source_version_key);
-  CREATE TABLE source_file_imports (source_version_key TEXT NOT NULL);
+  CREATE TABLE source_file_imports (
+    source_version_key TEXT NOT NULL,
+    source_file_id TEXT NOT NULL,
+    source_file_modified_at TEXT,
+    imported_at TEXT NOT NULL
+  );
   CREATE TABLE disabled_import_sources (
     source_file_id TEXT NOT NULL,
     import_run_id TEXT NOT NULL,
@@ -177,8 +182,10 @@ lineageDb.prepare("INSERT INTO source_row_lineage VALUES (?, ?, ?)")
   .run("loan_transactions", "synthetic-valid", "source-version-a");
 lineageDb.prepare("INSERT INTO source_row_lineage VALUES (?, ?, ?)")
   .run("loan_transactions", "synthetic-valid", "source-version-b");
-lineageDb.prepare("INSERT INTO source_file_imports VALUES (?)").run("source-version-a");
-lineageDb.prepare("INSERT INTO source_file_imports VALUES (?)").run("source-version-b");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?, ?, NULL, ?)")
+  .run("source-version-a", "synthetic-source", "2026-07-19T00:00:00.000Z");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?, ?, NULL, ?)")
+  .run("source-version-b", "active-source", "2026-07-20T00:00:00.000Z");
 lineageDb.prepare("INSERT INTO disabled_import_sources VALUES (?, ?, ?, ?)")
   .run("synthetic-source", "run-a", "source-version-a", "active");
 
