@@ -81,13 +81,13 @@ export function loadSpending(
   try {
     const rows = db.prepare(`
       SELECT
-        invoices.invoice_key,
-        invoices.invoice_id,
-        invoices.issued_at,
-        invoices.amount AS invoice_amount,
-        invoices.seller_business_account_number,
-        invoices.seller_name,
-        invoices.seller_addr,
+        personal_invoices.invoice_key,
+        personal_invoices.invoice_id,
+        personal_invoices.issued_at,
+        personal_invoices.amount AS invoice_amount,
+        personal_invoices.seller_business_account_number,
+        personal_invoices.seller_name,
+        personal_invoices.seller_addr,
         items.item_key,
         items.item_sequence_number,
         items.item_quantity,
@@ -95,11 +95,11 @@ export function loadSpending(
         items.item_paid_amount,
         items.item_product_name,
         items.category
-      FROM personal_invoices AS invoices
+      FROM personal_invoices
       LEFT JOIN personal_invoice_items AS items USING (invoice_key)
-      WHERE invoices.status = ?
-        AND ${activeImportSql("invoices")}
-      ORDER BY invoices.issued_at, invoices.invoice_key,
+      WHERE personal_invoices.status = ?
+        AND ${activeImportSql("personal_invoices")}
+      ORDER BY personal_invoices.issued_at, personal_invoices.invoice_key,
         items.item_sequence_number, items.item_key
     `).all("confirmed") as SpendingRow[];
     const accountRows = db.prepare(`

@@ -15,7 +15,7 @@ function sourceFile(sourceFileId: string, date: string): SourceFile {
   return {
     sourceFileId,
     importRunId: "run",
-    sourceFile: `downloads/${sourceFileId}.csv`,
+    sourceVersionKey: `version-${sourceFileId}`,
     sourceRelativePath: `${sourceFileId}.csv`,
     sourceFileHash: `hash-${sourceFileId}`,
     sourceFileBytes: 256,
@@ -23,6 +23,9 @@ function sourceFile(sourceFileId: string, date: string): SourceFile {
     importedAt: `${date}T10:00:00.000Z`,
     bank: "demo",
     product: "statements",
+    firstSeenAt: `${date}T10:00:00.000Z`,
+    lastSeenAt: `${date}T10:00:00.000Z`,
+    observationCount: 1,
     rowCount: 1,
     status: "imported",
     recordJson: "{}",

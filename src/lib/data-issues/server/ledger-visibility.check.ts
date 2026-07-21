@@ -11,9 +11,11 @@ import {
   appendUnavailableAccounts,
   applyLedgerVisibility,
   importScope,
+  loadActiveLedgerSupport,
   loadActiveImportScopes,
   loadUnavailableAccountIssues,
 } from "./ledger-visibility.ts";
+import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 
 type CardRow = LedgerQueryData["creditCardStatementLines"][number];
 
@@ -135,7 +137,7 @@ function sourceFile(sourceFileId: string, importRunId: string) {
   return {
     sourceFileId,
     importRunId,
-    sourceFile: null,
+    sourceVersionKey: `${sourceFileId}|${importRunId}`,
     sourceRelativePath: `${sourceFileId}-${importRunId}.csv`,
     sourceFileHash: `${sourceFileId}-${importRunId}-hash`,
     sourceFileBytes: 1,
@@ -143,11 +145,89 @@ function sourceFile(sourceFileId: string, importRunId: string) {
     importedAt: "2026-07-20T00:00:00.000Z",
     bank: "example-bank",
     product: "loan-statements",
+    firstSeenAt: "2026-07-20T00:00:00.000Z",
+    lastSeenAt: "2026-07-20T00:00:00.000Z",
+    observationCount: 1,
     rowCount: 1,
     status: "imported",
     recordJson: "{}",
   };
 }
+
+const lineageDb = new DatabaseSync(":memory:");
+lineageDb.exec(`
+  CREATE TABLE source_row_lineage (
+    projection_table TEXT NOT NULL,
+    statement_row_id TEXT NOT NULL,
+    source_version_key TEXT NOT NULL
+  );
+  CREATE INDEX source_row_lineage_active_support_idx
+    ON source_row_lineage(projection_table, statement_row_id, source_version_key);
+  CREATE TABLE source_file_imports (source_version_key TEXT NOT NULL);
+  CREATE TABLE disabled_import_sources (
+    source_file_id TEXT NOT NULL,
+    import_run_id TEXT NOT NULL,
+    source_version_key TEXT NOT NULL,
+    state TEXT NOT NULL
+  );
+  CREATE INDEX disabled_import_sources_version_state_idx
+    ON disabled_import_sources(source_version_key, state);
+`);
+lineageDb.prepare("INSERT INTO source_row_lineage VALUES (?, ?, ?)")
+  .run("loan_transactions", "synthetic-valid", "source-version-a");
+lineageDb.prepare("INSERT INTO source_row_lineage VALUES (?, ?, ?)")
+  .run("loan_transactions", "synthetic-valid", "source-version-b");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?)").run("source-version-a");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?)").run("source-version-b");
+lineageDb.prepare("INSERT INTO disabled_import_sources VALUES (?, ?, ?, ?)")
+  .run("synthetic-source", "run-a", "source-version-a", "active");
+
+let prepareCount = 0;
+let supportSql = "";
+const countedDb = {
+  prepare(sql: string) {
+    prepareCount += 1;
+    supportSql = sql;
+    return lineageDb.prepare(sql);
+  },
+} as LedgerDatabase;
+const lineageData: LedgerQueryData = {
+  ...emptyLedgerQueryData(),
+  loanTransactions: [loan("synthetic-valid", "synthetic-source", "run-a")],
+};
+const support = loadActiveLedgerSupport(countedDb);
+assert.equal(prepareCount, 1);
+assert.deepEqual(
+  applyLedgerVisibility(lineageData, support as never).loanTransactions.map((row) => row.statementRowId),
+  ["synthetic-valid"],
+);
+assert.equal(support.statementKeys.has("loan_transactions|synthetic-valid"), true);
+assert.equal(support.sourceVersionKeys.has("source-version-b"), true);
+const supportPlan = lineageDb.prepare(`EXPLAIN QUERY PLAN ${supportSql}`).all() as Array<{
+  detail: string;
+}>;
+assert.equal(
+  supportPlan.some((row) => row.detail.includes("source_row_lineage_active_support_idx")),
+  true,
+);
+assert.equal(
+  supportPlan.some((row) => row.detail.includes("disabled_import_sources_version_state_idx")),
+  true,
+);
+assert.deepEqual(
+  applyLedgerVisibility(
+    lineageData,
+    loadActiveLedgerSupport(lineageDb, new Set(["source-version-b"])),
+  ).loanTransactions,
+  [],
+);
+lineageDb.prepare("INSERT INTO disabled_import_sources VALUES (?, ?, ?, ?)")
+  .run("synthetic-source", "run-b", "source-version-b", "active");
+assert.deepEqual(
+  applyLedgerVisibility(lineageData, loadActiveLedgerSupport(lineageDb)).loanTransactions,
+  [],
+);
+lineageDb.close();
 
 const oldBilled = cardRow("old-billed", "source-old-billed", "run-old", "billed");
 const oldUnbilled = cardRow("old-unbilled", "source-old-unbilled", "run-old", "unbilled");
@@ -183,7 +263,18 @@ const data: LedgerQueryData = {
     snapshot(excludedCapture.captureId, "unbilled"),
   ],
 };
-const filtered = applyLedgerVisibility(data, new Set(["source-a|run-a"]));
+const filtered = applyLedgerVisibility(data, {
+  statementKeys: new Set([
+    ...data.loanTransactions.filter((row) => importScope(row) !== "source-a|run-a")
+      .map((row) => `loan_transactions|${row.statementRowId}`),
+    ...data.creditCardStatementLines.filter((row) => importScope(row) !== "source-a|run-a")
+      .map((row) => `credit_card_statement_lines|${row.statementRowId}`),
+  ]),
+  sourceVersionKeys: new Set(
+    data.sourceFiles.filter((row) => importScope(row) !== "source-a|run-a")
+      .map((row) => row.sourceVersionKey),
+  ),
+});
 
 assert.deepEqual(filtered.sourceFiles.map(importScope), ["source-a|run-b", "source-b|run-a"]);
 assert.deepEqual(filtered.loanTransactions.map((row) => row.statementRowId), [
@@ -269,7 +360,10 @@ db.exec(`
   INSERT INTO disabled_import_sources VALUES ('disabled-restored', 'issue-a', 'source-restored', 'run-restored', 'restored', '2026-01-20T00:00:00.000Z');
 `);
 assert.deepEqual(loadActiveImportScopes(db), new Set(["source-a|run-a"]));
-const unavailableIssues = loadUnavailableAccountIssues(db, rawUnavailableData);
+const unavailableIssues = loadUnavailableAccountIssues(db, rawUnavailableData, {
+  statementKeys: new Set(),
+  sourceVersionKeys: new Set(),
+});
 assert.equal(unavailableIssues.length, 2);
 assert.deepEqual(
   appendUnavailableAccounts([], unavailableIssues).map((account) => ({

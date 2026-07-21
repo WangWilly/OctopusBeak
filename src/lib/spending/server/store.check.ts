@@ -16,6 +16,36 @@ const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
 const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
 const transferNote = [`066${destinationAccountNumber}`, ["7097", "2302", "7990", "0200"].join("")].join(" ");
 
+function sourceVersionKey(sourceFileId: string, importRunId: string) {
+  return `version-${sourceFileId}-${importRunId}`;
+}
+
+function insertSourceLineage(
+  db: LedgerDatabase,
+  projectionTable: string,
+  statementRowId: string,
+  sourceFileId: string,
+  importRunId: string,
+  versionKey = sourceVersionKey(sourceFileId, importRunId),
+) {
+  db.prepare(`
+    INSERT OR IGNORE INTO source_file_imports (
+      source_file_id, import_run_id, source_version_key, source_relative_path,
+      source_file_hash, source_file_bytes, source_file_modified_at, imported_at,
+      bank, product, first_seen_at, last_seen_at, observation_count, row_count,
+      status, record_json
+    ) VALUES (?, ?, ?, 'fixture.csv', 'fixture-hash', 1, NULL,
+      '2026-02-01T00:00:00.000Z', 'test-bank', 'fixture',
+      '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z', 1, 1, 'imported', '{}')
+  `).run(sourceFileId, importRunId, versionKey);
+  db.prepare(`
+    INSERT OR IGNORE INTO source_row_lineage (
+      source_file_id, import_run_id, source_version_key, source_row_index,
+      projection_table, statement_row_id, outcome, created_at
+    ) VALUES (?, ?, ?, 1, ?, ?, 'inserted', '2026-02-01T00:00:00.000Z')
+  `).run(sourceFileId, importRunId, versionKey, projectionTable, statementRowId);
+}
+
 function insertInvoice(
   db: LedgerDatabase,
   input: {
@@ -28,6 +58,8 @@ function insertInvoice(
     importRunId?: string;
   },
 ) {
+  const sourceFileId = input.sourceFileId ?? `source-${input.invoiceKey}`;
+  const importRunId = input.importRunId ?? "run";
   db.prepare(`
     INSERT INTO personal_invoices (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
@@ -39,8 +71,8 @@ function insertInvoice(
       '2026-02-01T00:00:00.000Z', ?, ?, ?, ?, ?, 0, ?)
   `).run(
     `row-${input.invoiceKey}`,
-    input.sourceFileId ?? `source-${input.invoiceKey}`,
-    input.importRunId ?? "run",
+    sourceFileId,
+    importRunId,
     `source-hash-${input.invoiceKey}`,
     `content-hash-${input.invoiceKey}`,
     input.invoiceKey,
@@ -50,6 +82,7 @@ function insertInvoice(
     input.status,
     `${input.status} seller`,
   );
+  insertSourceLineage(db, "personal_invoices", `row-${input.invoiceKey}`, sourceFileId, importRunId);
 }
 
 function insertItem(
@@ -87,6 +120,7 @@ function insertItem(
     input.productName,
     input.category,
   );
+  insertSourceLineage(db, "personal_invoice_items", `row-${input.itemKey}`, `source-${input.itemKey}`, "run");
 }
 
 function insertAccountTransaction(
@@ -104,6 +138,8 @@ function insertAccountTransaction(
     importRunId?: string;
   },
 ) {
+  const sourceFileId = input.sourceFileId ?? `source-${input.statementRowId}`;
+  const importRunId = input.importRunId ?? "run";
   db.prepare(`
     INSERT INTO account_transactions (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
@@ -116,8 +152,8 @@ function insertAccountTransaction(
       '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?, ?, ?)
   `).run(
     input.statementRowId,
-    input.sourceFileId ?? `source-${input.statementRowId}`,
-    input.importRunId ?? "run",
+    sourceFileId,
+    importRunId,
     `source-hash-${input.statementRowId}`,
     `content-hash-${input.statementRowId}`,
     input.accountNumber,
@@ -128,6 +164,7 @@ function insertAccountTransaction(
     input.withdrawalAmount ?? null,
     input.depositAmount ?? null,
   );
+  insertSourceLineage(db, "account_transactions", input.statementRowId, sourceFileId, importRunId);
 }
 
 function insertCardStatementLine(
@@ -155,6 +192,7 @@ function insertCardStatementLine(
     `content-hash-${statementRowId}`,
     amount,
   );
+  insertSourceLineage(db, "credit_card_statement_lines", statementRowId, sourceFileId, importRunId);
 }
 
 try {
@@ -543,11 +581,34 @@ try {
     disabledDb.prepare(`
       INSERT INTO disabled_import_sources (
         disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-        reason, state, disabled_at, preview_token
-      ) VALUES (?, 'issue-a', ?, 'run', 'test', 'active',
+        source_version_key, reason, state, disabled_at, preview_token
+      ) VALUES (?, 'issue-a', ?, 'run', ?, 'test', 'active',
         '2026-07-20T00:00:00.000Z', ?)
-    `).run(`disabled-${index}`, sourceFileId, `preview-${index}`);
+    `).run(`disabled-${index}`, sourceFileId, sourceVersionKey(sourceFileId, "run"), `preview-${index}`);
   }
+  insertAccountTransaction(disabledDb, {
+    statementRowId: "lineage-account",
+    accountNumber: "444",
+    date: "2026-02-03",
+    description: "Versioned purchase",
+    withdrawalAmount: 23,
+    sourceFileId: "lineage-source",
+    importRunId: "run-a",
+  });
+  disabledDb.prepare(`
+    INSERT INTO source_row_lineage (
+      source_file_id, import_run_id, source_version_key, source_row_index,
+      projection_table, statement_row_id, outcome, created_at
+    ) VALUES ('lineage-source-b', 'run-b', 'lineage-version-b', 1,
+      'account_transactions', 'lineage-account', 'inserted', '2026-02-03T00:00:00.000Z')
+  `).run();
+  disabledDb.prepare(`
+    INSERT INTO disabled_import_sources (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      source_version_key, reason, state, disabled_at, preview_token
+    ) VALUES ('disabled-lineage-a', 'issue-lineage', 'lineage-source', 'run-a',
+      ?, 'test', 'active', '2026-07-20T00:00:00.000Z', 'preview-lineage-a')
+  `).run(sourceVersionKey("lineage-source", "run-a"));
   disabledDb.close();
 
   const visible = loadSpending(ledgerDir);
@@ -578,6 +639,32 @@ try {
       "credit_card_payment",
     );
   }
+  assert.equal(
+    visible.accountRecords.some((row) => row.statementRowId === "lineage-account"),
+    true,
+  );
+
+  const hiddenLineageDb = openLedgerDatabase(ledgerDir);
+  hiddenLineageDb.prepare(`
+    INSERT INTO disabled_import_sources (
+      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+      source_version_key, reason, state, disabled_at, preview_token
+    ) VALUES ('disabled-lineage-b', 'issue-lineage', 'lineage-source-b', 'run-b',
+      'lineage-version-b', 'test', 'active', '2026-07-20T00:00:00.000Z', 'preview-lineage-b')
+  `).run();
+  const lineagePlan = hiddenLineageDb.prepare(`EXPLAIN QUERY PLAN
+    SELECT statement_row_id FROM account_transactions
+    WHERE ${activeImportSql("account_transactions")}
+  `).all() as Array<{ detail: string }>;
+  assert.equal(
+    lineagePlan.some((row) => row.detail.includes("source_row_lineage_active_support_idx")),
+    true,
+  );
+  hiddenLineageDb.close();
+  assert.equal(
+    loadSpending(ledgerDir).accountRecords.some((row) => row.statementRowId === "lineage-account"),
+    false,
+  );
 } finally {
   rmSync(ledgerDir, { recursive: true, force: true });
 }
