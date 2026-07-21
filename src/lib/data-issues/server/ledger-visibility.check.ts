@@ -312,8 +312,8 @@ assert.equal(
 const rawUnavailableData = {
   ...emptyLedgerQueryData(),
   loanTransactions: [
-    loan("reported-account", "source-a", "run-a"),
-    loan("other-account", "source-a", "run-a", "0777"),
+    loan("reported-account", "source-owner", "run-owner"),
+    loan("other-account", "source-owner", "run-owner", "0777"),
   ],
 };
 const rawUnavailableAccounts = buildAccountOverview(rawUnavailableData);
@@ -326,8 +326,14 @@ db.exec(`
     data_issue_id TEXT NOT NULL,
     source_file_id TEXT NOT NULL,
     import_run_id TEXT NOT NULL,
+    source_version_key TEXT NOT NULL,
     state TEXT NOT NULL,
     disabled_at TEXT NOT NULL
+  );
+  CREATE TABLE source_row_lineage (
+    source_version_key TEXT NOT NULL,
+    projection_table TEXT NOT NULL,
+    statement_row_id TEXT NOT NULL
   );
   CREATE TABLE data_issues (
     data_issue_id TEXT PRIMARY KEY,
@@ -356,8 +362,10 @@ db.prepare("INSERT INTO data_issues VALUES (?, ?, ?, ?)").run(
   }),
 );
 db.exec(`
-  INSERT INTO disabled_import_sources VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'active', '2026-01-21T00:00:00.000Z');
-  INSERT INTO disabled_import_sources VALUES ('disabled-restored', 'issue-a', 'source-restored', 'run-restored', 'restored', '2026-01-20T00:00:00.000Z');
+  INSERT INTO disabled_import_sources VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'version-a', 'active', '2026-01-21T00:00:00.000Z');
+  INSERT INTO disabled_import_sources VALUES ('disabled-restored', 'issue-a', 'source-restored', 'run-restored', 'version-restored', 'restored', '2026-01-20T00:00:00.000Z');
+  INSERT INTO source_row_lineage VALUES ('version-a', 'loan_transactions', 'reported-account');
+  INSERT INTO source_row_lineage VALUES ('version-a', 'loan_transactions', 'other-account');
 `);
 assert.deepEqual(loadActiveImportScopes(db), new Set(["source-a|run-a"]));
 const unavailableIssues = loadUnavailableAccountIssues(db, rawUnavailableData, {
@@ -376,7 +384,7 @@ assert.deepEqual(
     {
       id: buildAccountOverview({
         ...emptyLedgerQueryData(),
-        loanTransactions: [loan("other-account", "source-a", "run-a", "0777")],
+        loanTransactions: [loan("other-account", "source-owner", "run-owner", "0777")],
       })[0]?.id,
       availability: "unavailable",
       dataIssueId: "issue-a",
