@@ -13,7 +13,7 @@ export type ImportScope = `${string}|${string}`;
 export type ActiveLedgerSupport = {
   statementKeys: ReadonlySet<string>;
   sourceVersionKeys: ReadonlySet<string>;
-  sourceFileIdByStatementKey?: ReadonlyMap<string, string>;
+  sourceVersionKeyByStatementKey?: ReadonlyMap<string, string>;
 };
 
 export const statementSupportKey = (table: string, statementRowId: string) =>
@@ -98,7 +98,7 @@ export function applyLedgerVisibility(
   support: ActiveLedgerSupport | ReadonlySet<ImportScope>,
 ): LedgerQueryData {
   if (!("statementKeys" in support)) return filterLedgerData(data, (row) => !support.has(importScope(row)));
-  const sourceFilesById = new Map(data.sourceFiles.map((row) => [row.sourceFileId, row]));
+  const sourceFilesByVersionKey = new Map(data.sourceFiles.map((row) => [row.sourceVersionKey, row]));
   const visible = <T extends {
     statementRowId: string;
     sourceFileId: string;
@@ -108,12 +108,17 @@ export function applyLedgerVisibility(
     rows
       .filter((row) => support.statementKeys.has(statementSupportKey(table, row.statementRowId)))
       .map((row) => {
-        const sourceFileId = support.sourceFileIdByStatementKey?.get(
+        const sourceVersionKey = support.sourceVersionKeyByStatementKey?.get(
           statementSupportKey(table, row.statementRowId),
         );
-        const source = sourceFileId ? sourceFilesById.get(sourceFileId) : undefined;
+        const source = sourceVersionKey ? sourceFilesByVersionKey.get(sourceVersionKey) : undefined;
         return source
-          ? { ...row, sourceFileId, importRunId: source.importRunId, sourceRelativePath: source.sourceRelativePath }
+          ? {
+            ...row,
+            sourceFileId: source.sourceFileId,
+            importRunId: source.importRunId,
+            sourceRelativePath: source.sourceRelativePath,
+          }
           : row;
       });
   const creditCardStatementLines = visible(
@@ -241,7 +246,7 @@ export function loadActiveLedgerSupport(
     WITH additionally_disabled(source_version_key) AS (${additionalDisabledCte})
     SELECT 'statement' AS kind,
       lineage.projection_table || '|' || lineage.statement_row_id AS support_key,
-      source.source_file_id,
+      source.source_version_key,
       COALESCE(source.source_file_modified_at, source.imported_at) AS source_date
     FROM source_row_lineage AS lineage INDEXED BY source_row_lineage_active_support_idx
     JOIN source_file_imports AS source
@@ -258,7 +263,7 @@ export function loadActiveLedgerSupport(
       )
     UNION ALL
     SELECT 'source_version' AS kind, source.source_version_key AS support_key,
-      source.source_file_id,
+      source.source_version_key,
       COALESCE(source.source_file_modified_at, source.imported_at) AS source_date
     FROM source_file_imports AS source
     WHERE NOT EXISTS (
@@ -274,16 +279,20 @@ export function loadActiveLedgerSupport(
   `).all(...additionalKeys) as Array<{
     kind: "statement" | "source_version";
     support_key: string;
-    source_file_id: string;
+    source_version_key: string;
     source_date: string;
   }>;
-  const sourceByStatement = new Map<string, { sourceFileId: string; sourceDate: string }>();
+  const sourceByStatement = new Map<string, { sourceVersionKey: string; sourceDate: string }>();
   for (const row of rows) {
     if (row.kind !== "statement") continue;
     const previous = sourceByStatement.get(row.support_key);
-    if (!previous || `${row.source_date}|${row.source_file_id}` < `${previous.sourceDate}|${previous.sourceFileId}`) {
+    if (
+      !previous
+      || `${row.source_date}|${row.source_version_key}`
+        < `${previous.sourceDate}|${previous.sourceVersionKey}`
+    ) {
       sourceByStatement.set(row.support_key, {
-        sourceFileId: row.source_file_id,
+        sourceVersionKey: row.source_version_key,
         sourceDate: row.source_date,
       });
     }
@@ -293,8 +302,8 @@ export function loadActiveLedgerSupport(
     sourceVersionKeys: new Set(
       rows.filter((row) => row.kind === "source_version").map((row) => row.support_key),
     ),
-    sourceFileIdByStatementKey: new Map(
-      [...sourceByStatement].map(([key, value]) => [key, value.sourceFileId]),
+    sourceVersionKeyByStatementKey: new Map(
+      [...sourceByStatement].map(([key, value]) => [key, value.sourceVersionKey]),
     ),
   };
 }

@@ -234,6 +234,35 @@ assert.deepEqual(
   applyLedgerVisibility(lineageData, loadActiveLedgerSupport(lineageDb)).loanTransactions,
   [],
 );
+
+lineageDb.prepare("INSERT INTO source_row_lineage VALUES (?, ?, ?)")
+  .run("loan_transactions", "shared-source-valid", "source-version-c");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?, ?, NULL, ?)")
+  .run("source-version-c", "shared-source", "2026-07-18T00:00:00.000Z");
+lineageDb.prepare("INSERT INTO source_file_imports VALUES (?, ?, NULL, ?)")
+  .run("source-version-d", "shared-source", "2026-07-20T00:00:00.000Z");
+const sharedSourceData: LedgerQueryData = {
+  ...emptyLedgerQueryData(),
+  sourceFiles: [
+    {
+      ...sourceFile("shared-source", "run-c"),
+      sourceVersionKey: "source-version-c",
+      sourceRelativePath: "correct.csv",
+    },
+    {
+      ...sourceFile("shared-source", "run-d"),
+      sourceVersionKey: "source-version-d",
+      sourceRelativePath: "wrong.csv",
+    },
+  ],
+  loanTransactions: [loan("shared-source-valid", "shared-source", "original-run")],
+};
+const sharedSourceVisible = applyLedgerVisibility(
+  sharedSourceData,
+  loadActiveLedgerSupport(lineageDb),
+).loanTransactions[0];
+assert.equal(sharedSourceVisible?.importRunId, "run-c");
+assert.equal(sharedSourceVisible?.sourceRelativePath, "correct.csv");
 lineageDb.close();
 
 const oldBilled = cardRow("old-billed", "source-old-billed", "run-old", "billed");
