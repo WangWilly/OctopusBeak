@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { AlertTriangle, Check, ChevronRight } from "@lucide/svelte";
-  import { onMount } from "svelte";
+  import { AlertTriangle, Check, ChevronRight, History, X } from "@lucide/svelte";
+  import { onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { t } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     DataIssueDetailDto,
     DataIssueEventDto,
@@ -33,6 +35,9 @@
   let statusFilter: DataIssueListItemDto["status"] | "all" = "all";
   let stageError: { stage: string; message: string; details: string; at: string } | null = null;
   let liveStatus = "";
+  let historyOpen = false;
+  let historyDialog: HTMLDialogElement | null = null;
+  let historyTrigger: HTMLButtonElement | null = null;
 
   $: stageTransition = { duration: reduceMotion ? 0 : 220 };
   $: filteredIssues = state.status === "list"
@@ -59,6 +64,33 @@
     stageError = null;
     liveStatus = "";
     busy = false;
+    historyOpen = false;
+  }
+
+  function openHistory() {
+    historyOpen = true;
+    void tick().then(() => {
+      if (historyDialog && !historyDialog.open) historyDialog.showModal();
+    });
+  }
+
+  function closeHistory() {
+    if (historyDialog?.open) historyDialog.close();
+    else historyOpen = false;
+  }
+
+  function cancelHistory(event: Event) {
+    event.preventDefault();
+    closeHistory();
+  }
+
+  function closeHistoryFromBackdrop(event: MouseEvent) {
+    if (event.target === historyDialog) closeHistory();
+  }
+
+  function historyClosed() {
+    historyOpen = false;
+    void tick().then(() => historyTrigger?.focus());
   }
 
   function errorMessage(error: unknown) {
@@ -330,9 +362,30 @@
       {@const diagnosing = issue.status === "investigating" && !state.preview}
       <section class="workflow-card card">
         <div class="panel-title">
-          <div><h2>{issue.account.label}</h2></div>
+          <div class="account-title-row">
+            <h2>
+              <a
+                class="account-return-link"
+                href={accountReturnHref(issue.account)}
+                aria-describedby="account-return-tooltip"
+              >
+                {issue.account.label}
+                <span id="account-return-tooltip" class="header-tooltip" role="tooltip">{$t.dataIssues.backToAccountHint}</span>
+              </a>
+            </h2>
+            <span class="header-action">
+              <button
+                bind:this={historyTrigger}
+                class="history-trigger"
+                type="button"
+                aria-label={$t.dataIssues.operationHistory}
+                aria-describedby="operation-history-tooltip"
+                onclick={openHistory}
+              ><History size={18} aria-hidden="true" /></button>
+              <span id="operation-history-tooltip" class="header-tooltip" role="tooltip">{$t.dataIssues.operationHistory}</span>
+            </span>
+          </div>
           <div class="panel-actions">
-            <a class="button secondary" href={accountReturnHref(issue.account)}>{$t.dataIssues.backToAccount}</a>
             <button class="button secondary" type="button" onclick={() => (location.hash = "/data-issues")}>{$t.dataIssues.back}</button>
           </div>
         </div>
@@ -362,7 +415,7 @@
                 {#each issue.candidates as source}
                   <label class="source-option">
                     <input type="radio" name="source" checked={selectedSource?.sourceFileId === source.sourceFileId && selectedSource?.importRunId === source.importRunId} onchange={() => (selectedSource = { sourceFileId: source.sourceFileId, importRunId: source.importRunId })} />
-                    <span><strong>{source.fileName}</strong><small>{source.csvRows} {$t.dataIssues.fileRows} · {source.insertedRows} {$t.dataIssues.inserted} · {source.duplicateRows} {$t.dataIssues.duplicates}</small><small>{$t.dataIssues.importedAt} {source.importedAt} · {source.affectedAccounts} {$t.dataIssues.affectedAccounts}</small></span>
+                    <span><strong>{source.fileName}</strong><small>{source.csvRows} {$t.dataIssues.fileRows} · {source.insertedRows} {$t.dataIssues.inserted} · {source.duplicateRows} {$t.dataIssues.duplicates}</small><small>{$t.dataIssues.importedAt} {formatUtcDateTime(source.importedAt, $systemTimezone, $locale)} · {source.affectedAccounts} {$t.dataIssues.affectedAccounts}</small></span>
                   </label>
                 {:else}<p class="empty-state">{$t.dataIssues.noSources}</p>{/each}
               </div>
@@ -411,10 +464,36 @@
           {/if}
         {/if}
 
-        <details class="operation-history">
-          <summary>{$t.dataIssues.operationHistory}</summary>
-          <div class="event-list">{#each issue.events as event}<article><strong>{eventSummary(event)}</strong><span>{event.createdAt}</span>{#if Object.keys(event.details).length}<details><summary>{$t.dataIssues.technicalDetails}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>{/if}</article>{:else}<p class="empty-state">{$t.dataIssues.noOperations}</p>{/each}</div>
-        </details>
+        {#if historyOpen}
+          <dialog
+            bind:this={historyDialog}
+            class="modal-panel operation-history-modal"
+            aria-labelledby="operation-history-title"
+            onclose={historyClosed}
+            oncancel={cancelHistory}
+            onclick={closeHistoryFromBackdrop}
+          >
+            <div class="modal-head">
+              <h2 id="operation-history-title">{$t.dataIssues.operationHistory}</h2>
+              <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHistory}>
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+            <div class="modal-body event-list">
+              {#each issue.events as event}
+                <article>
+                  <strong>{eventSummary(event)}</strong>
+                  <span>{formatUtcDateTime(event.createdAt, $systemTimezone, $locale)}</span>
+                  {#if Object.keys(event.details).length}
+                    <details><summary>{$t.dataIssues.technicalDetails}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>
+                  {/if}
+                </article>
+              {:else}
+                <p class="empty-state">{$t.dataIssues.noOperations}</p>
+              {/each}
+            </div>
+          </dialog>
+        {/if}
       </section>
     {/if}
   </div>
@@ -424,6 +503,18 @@
   .data-issues-content { display: grid; gap: var(--space-4); }
   .workflow-card { overflow: hidden; }
   .panel-actions { display: flex; gap: var(--space-3); }
+  .account-title-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+  .account-title-row h2 { margin: 0; min-width: 0; }
+  .account-return-link, .header-action { position: relative; }
+  .account-return-link { color: inherit; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
+  .account-return-link:hover, .account-return-link:focus-visible { text-decoration-color: currentColor; }
+  .history-trigger { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--muted); cursor: pointer; }
+  .history-trigger:hover, .history-trigger:focus-visible { background: var(--surface-soft); color: var(--fg); }
+  .header-tooltip { position: absolute; top: calc(100% + 7px); left: 50%; z-index: 8; width: max-content; max-width: min(220px, 80vw); padding: 7px 9px; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--fg) 94%, transparent); color: white; font-size: 11px; font-weight: 600; opacity: 0; pointer-events: none; transform: translate(-50%, -3px); transition: opacity 120ms ease, transform 120ms ease; }
+  .account-return-link:hover .header-tooltip,
+  .account-return-link:focus-visible .header-tooltip,
+  .header-action:hover .header-tooltip,
+  .header-action:focus-within .header-tooltip { opacity: 1; transform: translate(-50%, 0); }
   .issue-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-5); margin: 0; }
   .issue-facts div { display: grid; gap: var(--space-1); }
   .issue-facts dt, small { color: var(--muted); font-size: 12px; }
@@ -474,10 +565,11 @@
   .stage-error { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--danger, #b42318); border-radius: var(--radius-sm); color: var(--danger, #b42318); }
   .stage-error span { display: grid; gap: var(--space-1); }
   .stage-error details { margin-left: auto; color: var(--fg); }
-  .operation-history { border-top: 1px solid var(--border); }
-  .operation-history > summary { padding: var(--space-4) var(--space-5); cursor: pointer; font-weight: 700; }
-  .event-list { display: grid; border-top: 1px solid var(--border); }
-  .event-list article { display: grid; gap: var(--space-1); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
+  .operation-history-modal { width: min(720px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 40px)); padding: 0; }
+  .operation-history-modal::backdrop { background: rgba(14, 18, 28, 0.44); backdrop-filter: blur(10px) saturate(0.84); }
+  .operation-history-modal .event-list { max-height: min(640px, calc(100vh - 140px)); overflow: auto; }
+  .event-list { display: grid; }
+  .event-list article { display: grid; gap: var(--space-1); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); }
   .event-list span { color: var(--muted); font-size: 12px; }
   pre { overflow: auto; margin: var(--space-2) 0 0; white-space: pre-wrap; }
   .status { color: var(--muted); }
@@ -494,5 +586,5 @@
     .affected-list span { text-align: left; }
     .card-actions, .step-actions, .restore-actions { flex-wrap: wrap; }
   }
-  @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } .impact-tooltip { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } .impact-tooltip, .header-tooltip { transition: none; } }
 </style>

@@ -20,7 +20,19 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /liveStatus = \$t\.common\.loading/);
   assert.match(dashboard, /liveStatus = \$t\.dataIssues\.eventExclusion/);
   assert.match(dashboard, /liveStatus = \$t\.dataIssues\.eventRestore/);
-  assert.match(dashboard, /<summary>\{\$t\.dataIssues\.operationHistory\}<\/summary>/);
+  assert.match(dashboard, /formatUtcDateTime\(source\.importedAt, \$systemTimezone, \$locale\)/);
+  assert.match(dashboard, /formatUtcDateTime\(event\.createdAt, \$systemTimezone, \$locale\)/);
+  assert.match(dashboard, /class="account-return-link"[\s\S]*href=\{accountReturnHref\(issue\.account\)\}/);
+  assert.match(dashboard, /aria-describedby="account-return-tooltip"/);
+  assert.match(dashboard, /id="account-return-tooltip"[\s\S]*\{\$t\.dataIssues\.backToAccountHint\}/);
+  assert.doesNotMatch(dashboard, /class="button secondary" href=\{accountReturnHref\(issue\.account\)\}/);
+  assert.match(dashboard, /bind:this=\{historyTrigger\}[\s\S]*aria-label=\{\$t\.dataIssues\.operationHistory\}/);
+  assert.match(dashboard, /<dialog[\s\S]*bind:this=\{historyDialog\}[\s\S]*aria-labelledby="operation-history-title"/);
+  assert.match(dashboard, /oncancel=\{cancelHistory\}/);
+  assert.match(dashboard, /historyTrigger\?\.focus\(\)/);
+  assert.doesNotMatch(dashboard, /<details class="operation-history">/);
+  assert.match(i18n, /backToAccountHint: "Open this account page"/);
+  assert.match(i18n, /backToAccountHint: "回到此帳戶頁面"/);
   assert.match(dashboard, /const requestedIssueId = issueId;/);
   assert.match(dashboard, /if \(requestedIssueId !== issueId\) return;/);
   assert.equal(dashboard.match(/const operationCaseId = state\.issue\.dataIssueId;/g)?.length, 5);
@@ -123,7 +135,7 @@ test("exclusion preview explains impact and returns to the selected source", asy
 
   assert.match(dashboard, /<strong>\{account\.accountLabel\}<\/strong>/);
   assert.match(dashboard, /<small>\{account\.accountId\}<\/small>/);
-  assert.equal((dashboard.match(/role="tooltip"/g) ?? []).length, 3);
+  assert.equal((dashboard.match(/role="tooltip"/g) ?? []).length, 5);
   assert.equal((dashboard.match(/aria-describedby="impact-[^"]+-tooltip"/g) ?? []).length, 3);
   const impactCounts = dashboard.slice(dashboard.indexOf('<dl class="impact-counts">'), dashboard.indexOf("</dl>", dashboard.indexOf('<dl class="impact-counts">')));
   assert.equal((impactCounts.match(/<dd>\{state\.preview\.(?:excludedRows|duplicateRows|affectedAccounts\.length)\}<span id="impact-(?:excluded|retained|accounts)-tooltip" class="impact-tooltip" role="tooltip">/g) ?? []).length, 3);
