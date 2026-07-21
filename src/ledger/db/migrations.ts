@@ -1602,6 +1602,19 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     outcome: string;
     createdAt: string;
   }>();
+  const lineageCandidates = new Map<string, Map<string, {
+    supportCount: number;
+    latestCreatedAt: string;
+  }>>();
+  const typedStatementKeys = new Set<string>();
+  for (const table of TYPED_STATEMENT_TABLES) {
+    const rows = db.prepare(`SELECT statement_row_id FROM ${table}`).all() as Array<{
+      statement_row_id: string;
+    }>;
+    for (const row of rows) {
+      typedStatementKeys.add(`${table}|${row.statement_row_id}`);
+    }
+  }
   const outcomeRank: Record<string, number> = {
     duplicate: 0,
     upserted: 1,
@@ -1629,15 +1642,28 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     if (!source) {
       throw new Error("SOURCE_VERSION_SCOPE_UNRESOLVED: source_row_lineage");
     }
+    if (
+      !typedStatementKeys.has(`${row.projection_table}|${row.statement_row_id}`)
+    ) {
+      continue;
+    }
     const groupKey = JSON.stringify([
       source.sourceVersionKey,
       row.source_row_index,
       row.projection_table,
     ]);
     const existing = lineageGroups.get(groupKey);
-    if (existing && existing.statementRowId !== row.statement_row_id) {
-      throw new Error("SOURCE_VERSION_LINEAGE_AMBIGUOUS");
+    const candidates = lineageCandidates.get(groupKey) ?? new Map();
+    const candidate = candidates.get(row.statement_row_id) ?? {
+      supportCount: 0,
+      latestCreatedAt: row.created_at,
+    };
+    candidate.supportCount += 1;
+    if (row.created_at > candidate.latestCreatedAt) {
+      candidate.latestCreatedAt = row.created_at;
     }
+    candidates.set(row.statement_row_id, candidate);
+    lineageCandidates.set(groupKey, candidates);
     if (!existing) {
       lineageGroups.set(groupKey, {
         source,
@@ -1653,6 +1679,21 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
       existing.outcome = row.outcome;
     }
     if (row.created_at < existing.createdAt) existing.createdAt = row.created_at;
+  }
+  for (const [groupKey, candidates] of lineageCandidates) {
+    const ranked = [...candidates.entries()].sort((a, b) => (
+      b[1].latestCreatedAt.localeCompare(a[1].latestCreatedAt)
+      || b[1].supportCount - a[1].supportCount
+    ));
+    if (
+      ranked[1]
+      && ranked[0][1].latestCreatedAt === ranked[1][1].latestCreatedAt
+      && ranked[0][1].supportCount === ranked[1][1].supportCount
+    ) {
+      throw new Error("SOURCE_VERSION_LINEAGE_AMBIGUOUS");
+    }
+    const group = lineageGroups.get(groupKey);
+    if (group) group.statementRowId = ranked[0][0];
   }
 
   const insertLineage = db.prepare(`
@@ -1766,7 +1807,12 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
         WHERE lineage.projection_table = ?
           AND lineage.statement_row_id = typed.statement_row_id
       )
-    `).get(table) as { count: number }).count;
+        AND NOT EXISTS (
+          SELECT 1 FROM source_row_lineage AS legacy
+          WHERE legacy.projection_table = ?
+            AND legacy.statement_row_id = typed.statement_row_id
+        )
+    `).get(table, table) as { count: number }).count;
     if (orphanCount > 0) {
       throw new Error(`SOURCE_VERSION_LINEAGE_ORPHAN: ${table} ${orphanCount}`);
     }
