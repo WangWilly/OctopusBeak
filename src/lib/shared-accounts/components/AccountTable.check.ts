@@ -25,3 +25,8 @@ test("account deep links select, scroll, and focus the exact rendered row", () =
   assert.match(source, /focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /scrollIntoView/);
 });
+
+test("account deep links reset after focus is cleared", () => {
+  assert.match(source, /focusAccountId !== handledFocusAccountId/);
+  assert.match(source, /handledFocusAccountId = focusAccountId;\s*if \(focusAccountId\)/);
+});
