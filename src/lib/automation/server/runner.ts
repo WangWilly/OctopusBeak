@@ -209,7 +209,7 @@ export function createAutomationOutputBuffer(
     try {
       write(chunk);
     } catch (error) {
-      pending = chunk + pending;
+      pending = tail(chunk + pending);
       try {
         onError(error);
       } catch (handlerError) {
@@ -219,7 +219,7 @@ export function createAutomationOutputBuffer(
   };
   return {
     push(chunk: string) {
-      pending += chunk;
+      pending = tail(pending + chunk);
       if (!timer) timer = setTimeout(flush, delayMs);
     },
     flush,
