@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OctopusBeak Settings Prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --fg: #16191e;
+      --muted: #68717d;
+      --border: #dfe4e9;
+      --surface: #fff;
+      --sidebar: #11161c;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    body { min-width: 320px; margin: 0; color: var(--fg); background: #f7f9fb; }
+    button, input, select { font: inherit; }
+    button, input, select { min-height: 44px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: var(--fg); }
+    button { cursor: pointer; padding: 0 16px; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgb(42 117 173 / 22%); outline-offset: 2px; }
+
+    .topbar {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      height: 70px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+      background: rgb(255 255 255 / 95%);
+      backdrop-filter: blur(14px);
+    }
+
+    .traffic { display: flex; gap: 10px; margin-right: 18px; }
+    .traffic span { width: 17px; height: 17px; border-radius: 50%; background: #ff5f57; }
+    .traffic span:nth-child(2) { background: #febc2e; }
+    .traffic span:nth-child(3) { background: #28c840; }
+    .topbar-spacer { flex: 1; }
+    .save-status { display: inline-flex; align-items: center; gap: 7px; color: #17a556; font-size: 14px; font-weight: 700; }
+    .save-status::before { content: "✓"; display: grid; place-items: center; width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; font-size: 11px; }
+    .save-status[data-state="pending"] { color: #707a86; }
+    .save-status[data-state="error"] { color: #b42318; }
+    .visibility { min-width: 76px; }
+
+    .sidebar {
+      position: fixed;
+      inset: 70px auto 0 0;
+      display: flex;
+      flex-direction: column;
+      width: 280px;
+      padding: 28px 24px;
+      color: #d8dde3;
+      background: linear-gradient(145deg, #121820, #0c1117);
+    }
+
+    .nav { display: grid; gap: 8px; }
+    .nav a { padding: 15px 18px; border-radius: 10px; color: inherit; font-weight: 650; text-decoration: none; }
+    .nav a[aria-current="page"] { color: #fff; background: rgb(255 255 255 / 11%); }
+    .side-language { margin-top: auto; padding-top: 26px; border-top: 1px solid rgb(255 255 255 / 12%); }
+    .side-language small { color: #8b94a0; }
+    .side-language strong { display: block; margin: 8px 0 4px; color: #fff; font-size: 22px; }
+
+    main { min-height: 100vh; margin-left: 280px; padding: 112px clamp(30px, 5vw, 64px) 64px; }
+    .content { max-width: 1060px; }
+    h1 { margin: 0; font-size: 34px; letter-spacing: -.035em; }
+    .intro { margin: 8px 0 30px; color: var(--muted); }
+
+    .group { overflow: hidden; margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .group-head { padding: 24px 26px; border-bottom: 1px solid var(--border); }
+    .group-head.schedule { background: linear-gradient(105deg, #edf7ff 0%, #f4fbfa 43%, #fff 76%); }
+    .group-head.personal { background: linear-gradient(105deg, #f7f0ff 0%, #fff2f8 43%, #fff 76%); }
+    .group-head h2 { width: max-content; margin: 0; font-size: 21px; }
+    .schedule h2 { color: #126a96; }
+    .personal h2 { color: #7a2ca5; }
+    .group-head p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+
+    .setting-row {
+      display: grid;
+      grid-template-columns: minmax(170px, 1fr) minmax(340px, 430px);
+      align-items: center;
+      gap: 28px;
+      min-height: 92px;
+      margin: 0 26px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .setting-row:last-child { border-bottom: 0; }
+    .setting-row > label, .row-label { font-weight: 650; }
+    .setting-row select, .setting-row input { width: 100%; padding: 0 16px; }
+    .time-fields { display: grid; grid-template-columns: 1fr 1fr 90px; gap: 8px; }
+    .language-control { display: flex; gap: 10px; }
+    .language-control button[aria-pressed="true"] { border-color: #171b20; background: #171b20; color: #fff; }
+
+    .scale-row { grid-template-columns: 110px minmax(0, 1fr) auto; align-items: start; padding: 18px 0; }
+    .scale-row .row-label { padding-top: 13px; }
+    .scale-main { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+    .step { width: 44px; padding: 0; font-size: 24px; }
+    #scale-value { min-width: 76px; text-align: center; font-size: 28px; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .shortcut { margin-left: 12px; color: #7a8490; font-size: 11px; white-space: nowrap; }
+    .range { display: block; margin-top: 4px; color: #7a8490; font-size: 12px; }
+
+    @media (max-width: 900px) {
+      .sidebar { width: 220px; }
+      main { margin-left: 220px; }
+      .shortcut { white-space: normal; }
+    }
+
+    @media (max-width: 760px) {
+      .topbar { position: sticky; padding: 0 16px; }
+      .traffic, .sidebar { display: none; }
+      main { margin-left: 0; padding: 34px 18px; }
+      .setting-row, .scale-row { grid-template-columns: 1fr; gap: 10px; padding: 18px 0; }
+      .setting-row { margin: 0 20px; }
+      .time-fields { grid-template-columns: 1fr 1fr 84px; }
+      .scale-row .row-label { padding: 0; }
+      #scale-reset { justify-self: start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+    <button type="button" aria-label="收合側邊欄">收合</button>
+    <span class="topbar-spacer"></span>
+    <span id="save-status" class="save-status" role="status" aria-live="polite">所有變更已儲存</span>
+    <button class="visibility" type="button">顯示</button>
+  </header>
+
+  <aside class="sidebar">
+    <nav class="nav" aria-label="主要導覽">
+      <a href="#">總覽</a><a href="#">資產</a><a href="#">負債</a><a href="#">消費</a><a href="#">自動化</a><a href="#" aria-current="page">設定</a>
+    </nav>
+    <div class="side-language"><small>語言</small><strong>繁體中文</strong><small>儲存在此裝置</small></div>
+  </aside>
+
+  <main><div class="content">
+    <h1>設定</h1><p class="intro">管理 OctopusBeak 的偏好設定。</p>
+
+    <section class="group" aria-labelledby="schedule-title">
+      <header class="group-head schedule"><h2 id="schedule-title">時區與排程設定</h2><p>設定時間戳記使用的時區，以及每日匯率更新時間。</p></header>
+      <div class="setting-row"><label for="timezone">系統時區</label><select id="timezone"><option>Asia/Taipei</option><option>Asia/Tokyo</option><option>America/New_York</option><option>Europe/London</option><option>UTC</option></select></div>
+      <div class="setting-row"><label for="update-hour">匯率更新時間</label><div class="time-fields" aria-label="匯率更新時間"><select id="update-hour" aria-label="小時"></select><select id="update-minute" aria-label="分鐘"></select><select id="update-meridiem" aria-label="上午或下午"><option>AM</option><option>PM</option></select></div></div>
+    </section>
+
+    <section class="group" aria-labelledby="personal-title">
+      <header class="group-head personal"><h2 id="personal-title">語言與顯示設定</h2><p>調整介面語言與 OctopusBeak 的整體顯示大小。</p></header>
+      <div class="setting-row"><span class="row-label">介面語言</span><div class="language-control" aria-label="介面語言"><button type="button" data-locale="en" aria-pressed="false">English</button><button type="button" data-locale="zh-TW" aria-pressed="true">繁體中文</button></div></div>
+      <div class="setting-row scale-row"><span class="row-label">顯示大小</span><div><div class="scale-main"><button id="scale-minus" class="step" type="button" aria-label="縮小顯示">−</button><output id="scale-value">85%</output><button id="scale-plus" class="step" type="button" aria-label="放大顯示">＋</button><small class="shortcut">⌘− 縮小 · ⌘＋ 放大 · ⌘0 重設</small></div><small class="range">最小 75%，最大 150%</small></div><button id="scale-reset" type="button">重設</button></div>
+    </section>
+  </div></main>
+
+  <script>
+    const STORAGE_KEY = "octopusbeak-settings-prototype-v2";
+    const MIN_SCALE = 75;
+    const MAX_SCALE = 150;
+    const SCALE_STEP = 5;
+    const defaults = { timezone: "Asia/Taipei", updateTime: "06:00", locale: "zh-TW", scale: 85 };
+    const status = document.querySelector("#save-status");
+    let timer;
+    let settings = defaults;
+
+    try { settings = { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") }; } catch {}
+
+    const clampScale = value => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
+    console.assert(clampScale(70) === 75 && clampScale(155) === 150);
+    const asTwoDigits = value => String(value).padStart(2, "0");
+    const to24Hour = (hour, minute, meridiem) => `${asTwoDigits(Number(hour) % 12 + (meridiem === "PM" ? 12 : 0))}:${minute}`;
+    console.assert(to24Hour("06", "00", "AM") === "06:00" && to24Hour("06", "05", "PM") === "18:05");
+    document.querySelector("#update-hour").innerHTML = Array.from({ length: 12 }, (_, index) => `<option>${asTwoDigits(index + 1)}</option>`).join("");
+    document.querySelector("#update-minute").innerHTML = Array.from({ length: 60 }, (_, index) => `<option>${asTwoDigits(index)}</option>`).join("");
+
+    function render() {
+      document.querySelector("#timezone").value = settings.timezone;
+      const [hour, minute] = settings.updateTime.split(":").map(Number);
+      document.querySelector("#update-hour").value = asTwoDigits(hour % 12 || 12);
+      document.querySelector("#update-minute").value = asTwoDigits(minute);
+      document.querySelector("#update-meridiem").value = hour < 12 ? "AM" : "PM";
+      document.querySelector("#scale-value").textContent = `${settings.scale}%`;
+      document.querySelectorAll("[data-locale]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.locale === settings.locale)));
+      document.documentElement.lang = settings.locale === "zh-TW" ? "zh-Hant" : "en";
+    }
+
+    function save(next) {
+      settings = { ...settings, ...next };
+      render();
+      clearTimeout(timer);
+      status.dataset.state = "pending";
+      status.textContent = "正在儲存…";
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        timer = setTimeout(() => { status.dataset.state = "saved"; status.textContent = "所有變更已儲存"; }, 450);
+      } catch { status.dataset.state = "error"; status.textContent = "無法儲存"; }
+    }
+
+    function setScale(value) { save({ scale: clampScale(value) }); }
+
+    document.querySelector("#timezone").addEventListener("change", event => save({ timezone: event.target.value }));
+    document.querySelectorAll("#update-hour, #update-minute, #update-meridiem").forEach(select => select.addEventListener("change", () => save({ updateTime: to24Hour(document.querySelector("#update-hour").value, document.querySelector("#update-minute").value, document.querySelector("#update-meridiem").value) })));
+    document.querySelectorAll("[data-locale]").forEach(button => button.addEventListener("click", () => save({ locale: button.dataset.locale })));
+    document.querySelector("#scale-minus").addEventListener("click", () => setScale(settings.scale - SCALE_STEP));
+    document.querySelector("#scale-plus").addEventListener("click", () => setScale(settings.scale + SCALE_STEP));
+    document.querySelector("#scale-reset").addEventListener("click", () => setScale(100));
+    addEventListener("keydown", event => {
+      if (!event.metaKey && !event.ctrlKey) return;
+      if (event.key === "-") { event.preventDefault(); setScale(settings.scale - SCALE_STEP); }
+      if (event.key === "+" || event.key === "=") { event.preventDefault(); setScale(settings.scale + SCALE_STEP); }
+      if (event.key === "0") { event.preventDefault(); setScale(100); }
+    });
+
+    render();
+  </script>
+</body>
+</html>
