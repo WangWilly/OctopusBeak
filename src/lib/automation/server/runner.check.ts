@@ -177,6 +177,28 @@ test("automation output retains a failed chunk for a later flush", (context) => 
   assert.deepEqual(flushed, ["progress\n"]);
 });
 
+test("automation output caps retained failed chunks", () => {
+  let attempts = 0;
+  let flushed = "";
+  const buffer = createAutomationOutputBuffer(
+    (chunk) => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("database is locked");
+      flushed = chunk;
+    },
+    60_000,
+    () => {},
+  );
+
+  buffer.push("a".repeat(3_000));
+  buffer.flush();
+  buffer.push("b".repeat(3_000));
+  buffer.flush();
+  buffer.flush();
+
+  assert.equal(flushed, `${"a".repeat(1_000)}${"b".repeat(3_000)}`);
+});
+
 test("automation output contains error handler failures for timer and manual flushes", (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const messages: unknown[][] = [];
