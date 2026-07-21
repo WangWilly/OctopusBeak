@@ -32,7 +32,7 @@
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
 
   function normalizeRoute() {
-    const [next, encodedId] = location.hash.replace(/^#\/?/, "").split("/");
+    const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
     route = ["overview", "assets", "liabilities", "spending", "automation", "data-issues", "settings"].includes(next) ? next as RouteId : "overview";
     const acceptsId = route === "assets" || route === "liabilities" || route === "data-issues";
     let id: string | null = null;
@@ -43,7 +43,8 @@
     }
     dataIssueId = route === "data-issues" ? id : null;
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
-    if (!location.hash || next !== route || (!acceptsId && encodedId) || (encodedId && !id)) location.hash = `/${route}`;
+    const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
+    if (!location.hash || next !== route || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
     void loadRoute(route);
   }
 
