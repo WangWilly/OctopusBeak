@@ -2,23 +2,18 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
-import { TYPED_STATEMENT_TABLES } from "../../../ledger/financial-dashboard-types.ts";
-import {
-  TYPED_STATEMENT_TABLES as ALL_TYPED_STATEMENT_TABLES,
-} from "../../../ledger/source-csv-parsers.ts";
 import type { AccountGroup, AccountKind, AccountRowDto } from "../../shared-ledger/types.ts";
 import {
   buildAccountOverview,
+  buildTransactionsByAccount,
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
 import {
-  accountIdsForImportScope,
-  accountIdsChangedByVisibility,
   applyLedgerVisibility,
-  importScope,
-  loadActiveImportScopes,
-  type ImportScope,
+  loadActiveLedgerSupport,
+  statementSupportKey,
+  type ActiveLedgerSupport,
 } from "./ledger-visibility.ts";
 import type {
   ConfirmExclusionInput,
@@ -79,8 +74,10 @@ type DataIssueRow = {
 type SourceImportRow = {
   source_file_id: string;
   import_run_id: string;
+  source_version_key: string;
   source_relative_path: string;
   imported_at: string;
+  last_seen_at: string;
   row_count: number;
 };
 type DisabledSourceRow = {
@@ -88,15 +85,20 @@ type DisabledSourceRow = {
   data_issue_id: string;
   source_file_id: string;
   import_run_id: string;
+  source_version_key: string;
   disabled_at: string;
   state: "active" | "restored";
 };
-type PhysicalSourceRow = {
-  importedAt: string;
+type LineageRow = {
+  source_row_index: number;
+  projection_table: string;
+  statement_row_id: string;
 };
+type VersionedLineageRow = LineageRow & { source_version_key: string };
 type RestorePreviewInternal = RestorePreviewDto & {
   disabledImportSourceId: string;
   sourceVersion: SourceVersionId;
+  sourceVersionKey: string;
 };
 
 class DataIssueServiceError extends Error {
@@ -280,6 +282,7 @@ const LEDGER_TABLES = [
   ["brokerageHoldings", "brokerage_holdings"],
   ["brokerageTradeTransactions", "brokerage_trade_transactions"],
 ] as const;
+const LEDGER_PROJECTION_TABLES = new Set<string>(LEDGER_TABLES.map(([, table]) => table));
 
 function loadLedgerData(db: LedgerDatabase): LedgerQueryData {
   const data = emptyLedgerQueryData();
@@ -293,66 +296,88 @@ function loadLedgerData(db: LedgerDatabase): LedgerQueryData {
   return data;
 }
 
-function physicalRowsForSource(db: LedgerDatabase, source: SourceVersionId) {
-  return TYPED_STATEMENT_TABLES.flatMap((table) =>
-    (db.prepare(`SELECT statement_row_id, source_file_id, import_run_id, imported_at
-      FROM ${table} WHERE source_file_id = ? AND import_run_id = ?`)
-      .all(source.sourceFileId, source.importRunId) as Array<{
-        statement_row_id: string;
-        source_file_id: string;
-        import_run_id: string;
-        imported_at: string;
-      }>).map((row): PhysicalSourceRow => ({
-        importedAt: row.imported_at,
-      })),
-  );
+function lineageRowsForVersion(db: LedgerDatabase, sourceVersionKey: string): LineageRow[] {
+  return db.prepare(`SELECT source_row_index, projection_table, statement_row_id
+    FROM source_row_lineage
+    WHERE source_version_key = ?
+    ORDER BY source_row_index, projection_table`)
+    .all(sourceVersionKey) as LineageRow[];
+}
+
+function statementSupportForVersion(
+  db: LedgerDatabase,
+  sourceVersionKey: string,
+): ReadonlySet<string> {
+  const rows = db.prepare(`SELECT projection_table, statement_row_id
+    FROM source_row_lineage INDEXED BY uq_source_row_lineage_version_row_projection
+    WHERE source_version_key = ?`)
+    .all(sourceVersionKey) as Array<{ projection_table: string; statement_row_id: string }>;
+  return new Set(rows
+    .filter((row) => LEDGER_PROJECTION_TABLES.has(row.projection_table))
+    .map((row) => statementSupportKey(row.projection_table, row.statement_row_id)));
+}
+
+function accountIdsForStatementSupport(
+  data: LedgerQueryData,
+  statementKeys: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const selected = applyLedgerVisibility(data, {
+    statementKeys,
+    sourceVersionKeys: new Set(),
+  });
+  const directCardRows = new Set(data.creditCardStatementLines
+    .filter((row) => statementKeys.has(statementSupportKey(
+      "credit_card_statement_lines",
+      row.statementRowId,
+    )))
+    .map((row) => row.statementRowId));
+  const captureIds = new Set(data.creditCardCaptureEntries
+    .filter((entry) => directCardRows.has(entry.statementRowId))
+    .map((entry) => entry.captureId));
+  const capturedRows = new Set(data.creditCardCaptureEntries
+    .filter((entry) => captureIds.has(entry.captureId))
+    .map((entry) => entry.statementRowId));
+  const impacted = {
+    ...selected,
+    creditCardStatementLines: data.creditCardStatementLines
+      .filter((row) => directCardRows.has(row.statementRowId) || capturedRows.has(row.statementRowId)),
+    creditCardCaptureEntries: data.creditCardCaptureEntries
+      .filter((entry) => captureIds.has(entry.captureId)),
+    creditCardCaptures: data.creditCardCaptures
+      .filter((capture) => captureIds.has(capture.captureId)),
+    creditCardSnapshots: data.creditCardSnapshots
+      .filter((snapshot) => snapshot.captureId !== null && captureIds.has(snapshot.captureId)),
+  };
+  return new Set([
+    ...buildAccountOverview(impacted).map((account) => account.id),
+    ...Object.keys(buildTransactionsByAccount(impacted)),
+  ]);
+}
+
+function accountIdsForSourceVersion(
+  db: LedgerDatabase,
+  data: LedgerQueryData,
+  sourceVersionKey: string,
+): ReadonlySet<string> {
+  return accountIdsForStatementSupport(data, statementSupportForVersion(db, sourceVersionKey));
 }
 
 function retainedDuplicateRows(
-  db: LedgerDatabase,
-  source: SourceVersionId,
-  disabledScopes: ReadonlySet<ImportScope>,
+  rows: LineageRow[],
+  afterSupport: ActiveLedgerSupport,
 ) {
-  const rows = db.prepare(`SELECT source_row_index, projection_table,
-      statement_row_id, outcome
-    FROM source_row_lineage
-    WHERE source_file_id = ? AND import_run_id = ?
-    ORDER BY source_row_index, projection_table`)
-    .all(source.sourceFileId, source.importRunId) as Array<{
-      source_row_index: number;
-      projection_table: string;
-      statement_row_id: string;
-      outcome: "inserted" | "duplicate" | "upserted";
-    }>;
-  const typedTables = new Set<string>(ALL_TYPED_STATEMENT_TABLES);
-  const bySourceRow = new Map<number, typeof rows>();
-  for (const row of rows) {
+  const bySourceRow = new Map<number, LineageRow[]>();
+  for (const row of rows.filter((item) => LEDGER_PROJECTION_TABLES.has(item.projection_table))) {
     bySourceRow.set(row.source_row_index, [...(bySourceRow.get(row.source_row_index) ?? []), row]);
   }
-  let retained = 0;
-  for (const lineage of bySourceRow.values()) {
-    if (lineage.length === 0 || lineage.some((row) => row.outcome !== "duplicate")) continue;
-    const allActive = lineage.every((row) => {
-      if (!typedTables.has(row.projection_table)) return false;
-      const owner = db.prepare(`SELECT source_file_id, import_run_id
-        FROM ${row.projection_table} WHERE statement_row_id = ?`)
-        .get(row.statement_row_id) as {
-          source_file_id: string;
-          import_run_id: string;
-        } | undefined;
-      return Boolean(owner && !disabledScopes.has(importScope({
-        sourceFileId: owner.source_file_id,
-        importRunId: owner.import_run_id,
-      })));
-    });
-    if (allActive) retained += 1;
-  }
-  return retained;
+  return [...bySourceRow.values()].filter((lineage) => lineage.length > 0 && lineage.every((row) => (
+    afterSupport.statementKeys.has(statementSupportKey(row.projection_table, row.statement_row_id))
+  ))).length;
 }
 
 function sourceImport(db: LedgerDatabase, source: SourceVersionId) {
-  const row = db.prepare(`SELECT source_file_id, import_run_id, source_relative_path,
-      imported_at, row_count
+  const row = db.prepare(`SELECT source_file_id, import_run_id, source_version_key,
+      source_relative_path, imported_at, last_seen_at, row_count
     FROM source_file_imports
     WHERE source_file_id = ? AND import_run_id = ?`)
     .get(source.sourceFileId, source.importRunId) as SourceImportRow | undefined;
@@ -407,25 +432,55 @@ function candidatesForIssue(
   row: DataIssueRow,
   rawData = loadLedgerData(db),
 ): SourceImportCandidateDto[] {
-  const sources = db.prepare(`SELECT source_file_id, import_run_id, source_relative_path,
-      imported_at, row_count
+  const sources = db.prepare(`SELECT source_file_id, import_run_id, source_version_key,
+      source_relative_path, imported_at, last_seen_at, row_count
     FROM source_file_imports
     ORDER BY imported_at DESC, source_file_id, import_run_id`).all() as SourceImportRow[];
-  const activeScopes = loadActiveImportScopes(db);
+  const activeSupport = loadActiveLedgerSupport(db);
+  const lineage = db.prepare(`SELECT source_version_key, source_row_index,
+      projection_table, statement_row_id
+    FROM source_row_lineage
+    ORDER BY source_version_key, source_row_index, projection_table`).all() as VersionedLineageRow[];
+  const lineageByVersion = new Map<string, LineageRow[]>();
+  const supportersByStatement = new Map<string, Set<string>>();
+  for (const row of lineage) {
+    lineageByVersion.set(row.source_version_key, [
+      ...(lineageByVersion.get(row.source_version_key) ?? []),
+      row,
+    ]);
+    if (!LEDGER_PROJECTION_TABLES.has(row.projection_table)
+      || !activeSupport.sourceVersionKeys.has(row.source_version_key)) continue;
+    const statementKey = statementSupportKey(row.projection_table, row.statement_row_id);
+    const supporters = supportersByStatement.get(statementKey) ?? new Set<string>();
+    supporters.add(row.source_version_key);
+    supportersByStatement.set(statementKey, supporters);
+  }
   return sources.flatMap((source) => {
     const id = { sourceFileId: source.source_file_id, importRunId: source.import_run_id };
-    const scope = importScope(id);
-    if (activeScopes.has(scope)) return [];
-    const physicalRows = physicalRowsForSource(db, id);
-    const accounts = accountIdsForImportScope(rawData, scope);
+    if (!activeSupport.sourceVersionKeys.has(source.source_version_key)) return [];
+    const rows = lineageByVersion.get(source.source_version_key) ?? [];
+    const statementKeys = new Set(rows
+      .filter((row) => LEDGER_PROJECTION_TABLES.has(row.projection_table))
+      .map((row) => statementSupportKey(row.projection_table, row.statement_row_id)));
+    const accounts = accountIdsForStatementSupport(rawData, statementKeys);
     if (!accounts.has(row.account_id)) return [];
+    const afterSupport = {
+      statementKeys: new Set([...activeSupport.statementKeys].filter((key) => {
+        const supporters = supportersByStatement.get(key);
+        return !supporters?.has(source.source_version_key) || supporters.size > 1;
+      })),
+      sourceVersionKeys: new Set([...activeSupport.sourceVersionKeys]
+        .filter((key) => key !== source.source_version_key)),
+    };
     return [{
       ...id,
       fileName: basename(source.source_relative_path),
       importedAt: source.imported_at,
       csvRows: source.row_count,
-      insertedRows: physicalRows.length,
-      duplicateRows: retainedDuplicateRows(db, id, activeScopes),
+      insertedRows: new Set(rows
+        .filter((lineage) => LEDGER_PROJECTION_TABLES.has(lineage.projection_table))
+        .map((lineage) => lineage.source_row_index)).size,
+      duplicateRows: retainedDuplicateRows(rows, afterSupport),
       affectedAccounts: accounts.size,
     }];
   });
@@ -461,17 +516,20 @@ function accountState(accounts: Map<string, AccountRowDto>, accountId: string) {
 
 function affectedAccounts(
   rawData: LedgerQueryData,
-  beforeScopes: ReadonlySet<ImportScope>,
-  afterScopes: ReadonlySet<ImportScope>,
+  beforeSupport: ActiveLedgerSupport,
+  afterSupport: ActiveLedgerSupport,
   includedAccountIds: ReadonlySet<string> = new Set(),
 ): ExclusionPreviewDto["affectedAccounts"] {
-  const before = new Map(buildAccountOverview(applyLedgerVisibility(rawData, beforeScopes))
+  const before = new Map(buildAccountOverview(applyLedgerVisibility(rawData, beforeSupport))
     .map((account) => [account.id, account]));
-  const after = new Map(buildAccountOverview(applyLedgerVisibility(rawData, afterScopes))
+  const after = new Map(buildAccountOverview(applyLedgerVisibility(rawData, afterSupport))
     .map((account) => [account.id, account]));
+  const changedAccountIds = [...new Set([...before.keys(), ...after.keys()])]
+    .filter((accountId) => JSON.stringify(before.get(accountId)?.amountLines)
+      !== JSON.stringify(after.get(accountId)?.amountLines));
   const accountIds = new Set([
     ...includedAccountIds,
-    ...accountIdsChangedByVisibility(rawData, beforeScopes, afterScopes),
+    ...changedAccountIds,
   ]);
   return [...accountIds].sort().map((accountId) => {
     const account = after.get(accountId) ?? before.get(accountId);
@@ -492,62 +550,73 @@ function previewExclusionWithDb(
   const issue = issueRow(db, dataIssueId);
   const source = sourceImport(db, selected);
   const rawData = loadLedgerData(db);
-  const selectedScope = importScope(selected);
-  const activeScopes = loadActiveImportScopes(db);
-  const accountIds = accountIdsForImportScope(rawData, selectedScope);
+  const sourceVersionKey = source.source_version_key;
+  const beforeSupport = loadActiveLedgerSupport(db);
+  const afterSupport = loadActiveLedgerSupport(db, new Set([sourceVersionKey]));
+  const accountIds = accountIdsForSourceVersion(db, rawData, sourceVersionKey);
   if (!accountIds.has(issue.account_id)) throw dataIssueError("SOURCE_VERSION_NOT_FOUND");
-  const physicalRows = physicalRowsForSource(db, selected);
+  const lineageRows = lineageRowsForVersion(db, sourceVersionKey);
   const affected = affectedAccounts(
     rawData,
-    activeScopes,
-    new Set([...activeScopes, selectedScope]),
+    beforeSupport,
+    afterSupport,
     accountIds,
   );
+  const activeExclusionIds = (db.prepare(`SELECT disabled_import_source_id
+    FROM disabled_import_sources WHERE state = 'active'
+    ORDER BY disabled_import_source_id`).all() as Array<{ disabled_import_source_id: string }>)
+    .map((row) => row.disabled_import_source_id);
   const previewToken = hashBytes(stableStringify({
     dataIssueId,
-    sourceVersion: selected,
-    activeScopes: [...activeScopes].sort(),
+    sourceVersionKey,
+    activeExclusionIds,
     affected,
-    latestImport: physicalRows.map((row) => row.importedAt).sort().at(-1) ?? "",
+    lastSeenAt: source.last_seen_at,
   }));
   return {
     sourceVersion: selected,
     previewToken,
     csvRows: source.row_count,
-    excludedRows: physicalRows.length,
-    duplicateRows: retainedDuplicateRows(db, selected, activeScopes),
+    excludedRows: [...beforeSupport.statementKeys]
+      .filter((key) => !afterSupport.statementKeys.has(key)).length,
+    duplicateRows: retainedDuplicateRows(lineageRows, afterSupport),
     affectedAccounts: affected,
   };
 }
 
 function activeDisabledSource(db: LedgerDatabase, dataIssueId: string) {
   return db.prepare(`SELECT disabled_import_source_id, data_issue_id, source_file_id,
-      import_run_id, disabled_at, state
+      import_run_id, source_version_key, disabled_at, state
     FROM disabled_import_sources
     WHERE data_issue_id = ? AND state = 'active'
     ORDER BY disabled_at, disabled_import_source_id
     LIMIT 1`).get(dataIssueId) as DisabledSourceRow | undefined;
 }
 
-function disabledSourceForScope(db: LedgerDatabase, source: SourceVersionId) {
+function activeDisabledSourceForCaseVersion(
+  db: LedgerDatabase,
+  dataIssueId: string,
+  sourceVersionKey: string,
+) {
   return db.prepare(`SELECT disabled_import_source_id, data_issue_id, source_file_id,
-      import_run_id, disabled_at, state
+      import_run_id, source_version_key, disabled_at, state
     FROM disabled_import_sources
-    WHERE source_file_id = ? AND import_run_id = ? AND state = 'active'
-    LIMIT 1`).get(source.sourceFileId, source.importRunId) as DisabledSourceRow | undefined;
+    WHERE data_issue_id = ? AND source_version_key = ? AND state = 'active'
+    LIMIT 1`).get(dataIssueId, sourceVersionKey) as DisabledSourceRow | undefined;
 }
 
 function upsertActiveExclusion(
   db: LedgerDatabase,
-  input: ConfirmExclusionInput & { reason: string },
+  input: ConfirmExclusionInput & { reason: string; sourceVersionKey: string },
   now: string,
 ) {
   db.prepare(`INSERT INTO disabled_import_sources (
-    disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
+    disabled_import_source_id, data_issue_id, source_file_id, import_run_id, source_version_key,
     reason, state, disabled_at, restored_at, preview_token
-  ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?)
-  ON CONFLICT(source_file_id, import_run_id) DO UPDATE SET
-    data_issue_id = excluded.data_issue_id,
+  ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)
+  ON CONFLICT(data_issue_id, source_version_key) DO UPDATE SET
+    source_file_id = excluded.source_file_id,
+    import_run_id = excluded.import_run_id,
     reason = excluded.reason,
     state = 'active',
     disabled_at = excluded.disabled_at,
@@ -558,10 +627,51 @@ function upsertActiveExclusion(
       input.dataIssueId,
       input.sourceVersion.sourceFileId,
       input.sourceVersion.importRunId,
+      input.sourceVersionKey,
       input.reason,
       now,
       input.previewToken,
     );
+}
+
+function supportAfterRestoring(
+  db: LedgerDatabase,
+  support: ActiveLedgerSupport,
+  disabled: DisabledSourceRow,
+) {
+  const otherActive = db.prepare(`SELECT 1 FROM disabled_import_sources
+    WHERE source_version_key = ? AND state = 'active'
+      AND disabled_import_source_id <> ?
+    LIMIT 1`).get(disabled.source_version_key, disabled.disabled_import_source_id);
+  if (otherActive) return support;
+  return {
+    statementKeys: new Set([
+      ...support.statementKeys,
+      ...statementSupportForVersion(db, disabled.source_version_key),
+    ]),
+    sourceVersionKeys: new Set([...support.sourceVersionKeys, disabled.source_version_key]),
+  };
+}
+
+function activeSourceLineageAfter(db: LedgerDatabase, after: string) {
+  return db.prepare(`SELECT source.source_version_key, source.last_seen_at,
+      lineage.projection_table, lineage.statement_row_id
+    FROM source_file_imports AS source
+    JOIN source_row_lineage AS lineage
+      ON lineage.source_version_key = source.source_version_key
+    WHERE source.last_seen_at > ?
+      AND NOT EXISTS (
+        SELECT 1 FROM disabled_import_sources AS disabled
+        WHERE disabled.source_version_key = source.source_version_key
+          AND disabled.state = 'active'
+      )
+    ORDER BY source.source_version_key, lineage.source_row_index, lineage.projection_table`)
+    .all(after) as Array<{
+      source_version_key: string;
+      last_seen_at: string;
+      projection_table: string;
+      statement_row_id: string;
+    }>;
 }
 
 function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestorePreviewInternal {
@@ -569,10 +679,9 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
   const disabled = activeDisabledSource(db, dataIssueId);
   if (!disabled) throw dataIssueError("SOURCE_VERSION_NOT_FOUND");
   const selected = { sourceFileId: disabled.source_file_id, importRunId: disabled.import_run_id };
-  const selectedScope = importScope(selected);
   const rawData = loadLedgerData(db);
-  const activeScopes = loadActiveImportScopes(db);
-  const afterScopes = new Set([...activeScopes].filter((scope) => scope !== selectedScope));
+  const beforeSupport = loadActiveLedgerSupport(db);
+  const afterSupport = supportAfterRestoring(db, beforeSupport, disabled);
   const exclusionEvent = db.prepare(`SELECT details_json FROM data_issue_events
     WHERE data_issue_id = ? AND event_type = 'exclusion' AND outcome = 'succeeded'
     ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(dataIssueId) as {
@@ -590,26 +699,29 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
       // Legacy event details fall back to the fresh visible diff above.
     }
   }
-  const affected = affectedAccounts(rawData, activeScopes, afterScopes, persistedAccountIds);
+  const affected = affectedAccounts(rawData, beforeSupport, afterSupport, persistedAccountIds);
   const accountIds = persistedAccountIds.size > 0
     ? persistedAccountIds
     : new Set(affected.map((account) => account.accountId));
   const blocked = new Map<string, string>();
-  const sources = db.prepare(`SELECT source_file_id, import_run_id, imported_at
-    FROM source_file_imports ORDER BY imported_at`).all() as Array<{
-      source_file_id: string;
-      import_run_id: string;
-      imported_at: string;
-    }>;
-  for (const source of sources) {
-    const id = { sourceFileId: source.source_file_id, importRunId: source.import_run_id };
-    const scope = importScope(id);
-    if (activeScopes.has(scope) || source.imported_at <= disabled.disabled_at) continue;
-    const latestImport = physicalRowsForSource(db, id).map((row) => row.importedAt).sort().at(-1);
-    if (!latestImport || latestImport <= disabled.disabled_at) continue;
-    for (const accountId of accountIdsForImportScope(rawData, scope)) {
+  const lineageByVersion = new Map<string, {
+    lastSeenAt: string;
+    statementKeys: Set<string>;
+  }>();
+  for (const row of activeSourceLineageAfter(db, disabled.disabled_at)) {
+    const version = lineageByVersion.get(row.source_version_key) ?? {
+      lastSeenAt: row.last_seen_at,
+      statementKeys: new Set<string>(),
+    };
+    version.statementKeys.add(statementSupportKey(row.projection_table, row.statement_row_id));
+    lineageByVersion.set(row.source_version_key, version);
+  }
+  for (const source of lineageByVersion.values()) {
+    for (const accountId of accountIdsForStatementSupport(rawData, source.statementKeys)) {
       if (!accountIds.has(accountId)) continue;
-      if ((blocked.get(accountId) ?? "") < latestImport) blocked.set(accountId, latestImport);
+      if ((blocked.get(accountId) ?? "") < source.lastSeenAt) {
+        blocked.set(accountId, source.lastSeenAt);
+      }
     }
   }
   const blockedBy = [...blocked]
@@ -618,11 +730,15 @@ function previewRestoreWithDb(db: LedgerDatabase, dataIssueId: string): RestoreP
   return {
     disabledImportSourceId: disabled.disabled_import_source_id,
     sourceVersion: selected,
+    sourceVersionKey: disabled.source_version_key,
     allowed: blockedBy.length === 0,
     previewToken: hashBytes(stableStringify({
       dataIssueId,
-      sourceVersion: selected,
-      activeScopes: [...activeScopes].sort(),
+      sourceVersionKey: disabled.source_version_key,
+      activeExclusionIds: (db.prepare(`SELECT disabled_import_source_id
+        FROM disabled_import_sources WHERE state = 'active'
+        ORDER BY disabled_import_source_id`).all() as Array<{ disabled_import_source_id: string }>)
+        .map((row) => row.disabled_import_source_id),
       disabledAt: disabled.disabled_at,
       blockedBy,
       affected,
@@ -778,7 +894,13 @@ export function previewDataIssueExclusion(
       appendEvent(db, {
         id: randomUUID(), dataIssueId, type: "exclusion-preview", stage: "preview",
         outcome: "succeeded", summary: "Exclusion preview created",
-        details: { sourceVersion: selected, excludedRows: preview.excludedRows }, createdAt: now,
+        details: {
+          sourceVersion: selected,
+          excludedRows: preview.excludedRows,
+          duplicateRows: preview.duplicateRows,
+          affectedAccountIds: preview.affectedAccounts.map((account) => account.accountId),
+        },
+        createdAt: now,
       });
       db.exec("COMMIT");
       transaction = false;
@@ -809,9 +931,13 @@ export function confirmDataIssueExclusion(
       if (input?.acknowledged !== true) throw dataIssueError("INVALID_INPUT");
       db.exec("BEGIN IMMEDIATE");
       transaction = true;
-      const existing = disabledSourceForScope(db, selected);
+      const source = sourceImport(db, selected);
+      const existing = activeDisabledSourceForCaseVersion(
+        db,
+        dataIssueId,
+        source.source_version_key,
+      );
       if (existing) {
-        if (existing.data_issue_id !== dataIssueId) throw dataIssueError("SOURCE_VERSION_ALREADY_EXCLUDED");
         const detail = loadDataIssueWithDb(db, dataIssueId);
         db.exec("COMMIT");
         transaction = false;
@@ -823,7 +949,13 @@ export function confirmDataIssueExclusion(
       }
       const fresh = previewExclusionWithDb(db, dataIssueId, selected);
       if (fresh.previewToken !== previewToken) throw dataIssueError("STALE_PREVIEW");
-      upsertActiveExclusion(db, { ...input, sourceVersion: selected, reason, previewToken }, now);
+      upsertActiveExclusion(db, {
+        ...input,
+        sourceVersion: selected,
+        sourceVersionKey: source.source_version_key,
+        reason,
+        previewToken,
+      }, now);
       updateCaseStatus(db, dataIssueId, "resolved", now);
       appendEvent(db, {
         id: randomUUID(), dataIssueId, type: "exclusion", stage: "exclusion",
@@ -832,6 +964,7 @@ export function confirmDataIssueExclusion(
           sourceVersion: selected,
           reason,
           excludedRows: fresh.excludedRows,
+          duplicateRows: fresh.duplicateRows,
           affectedAccountIds: fresh.affectedAccounts.map((account) => account.accountId),
         },
         createdAt: now,
@@ -917,12 +1050,14 @@ export function confirmDataIssueRestore(
           AND data_issue_id = ?
           AND source_file_id = ?
           AND import_run_id = ?
+          AND source_version_key = ?
           AND state = 'active'`).run(
         now,
         fresh.disabledImportSourceId,
         dataIssueId,
         fresh.sourceVersion.sourceFileId,
         fresh.sourceVersion.importRunId,
+        fresh.sourceVersionKey,
       );
       if (restored.changes !== 1) throw dataIssueError("LEDGER_WRITE_FAILED");
       updateCaseStatus(db, dataIssueId, activeDisabledSource(db, dataIssueId) ? "resolved" : "restored", now);
