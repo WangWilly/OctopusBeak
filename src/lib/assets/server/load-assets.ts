@@ -12,7 +12,7 @@ import {
 import {
   appendUnavailableAccounts,
   applyLedgerVisibility,
-  loadActiveImportScopes,
+  loadActiveLedgerSupport,
   loadUnavailableAccountIssues,
 } from "$lib/data-issues/server/ledger-visibility.ts";
 
@@ -35,7 +35,7 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
       maicoinAccountSnapshots,
       maicoinStatementRows,
     ] = await Promise.all([
-      db.select().from(schema.sourceFiles).all(),
+      db.select().from(schema.sourceFileImports).all(),
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
       db.select().from(schema.creditCardCaptures).all(),
@@ -68,10 +68,11 @@ export async function loadAssets(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Assets
       maicoinAccountSnapshots,
       maicoinStatementRows,
     };
-    const visibleData = applyLedgerVisibility(data, loadActiveImportScopes(sqlite));
+    const support = loadActiveLedgerSupport(sqlite);
+    const visibleData = applyLedgerVisibility(data, support);
     const accounts = appendUnavailableAccounts(
       buildAccountOverview(visibleData),
-      loadUnavailableAccountIssues(sqlite, data),
+      loadUnavailableAccountIssues(sqlite, data, support),
     ).filter((account) => account.group !== "liability");
 
     return {

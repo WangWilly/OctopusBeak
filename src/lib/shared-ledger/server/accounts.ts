@@ -17,7 +17,7 @@ import type {
   loanTransactions,
   maicoinAccountSnapshots,
   maicoinStatementRows,
-  sourceFiles,
+  sourceFileImports,
 } from "../../../ledger/db/schema.ts";
 import type {
   AccountGroup,
@@ -46,7 +46,7 @@ type BrokerageTradeTransaction = typeof brokerageTradeTransactions.$inferSelect;
 type MaicoinAccountSnapshot = typeof maicoinAccountSnapshots.$inferSelect;
 type MaicoinStatementRow = typeof maicoinStatementRows.$inferSelect;
 type ImportRun = typeof importRuns.$inferSelect;
-type SourceFile = typeof sourceFiles.$inferSelect;
+type SourceFile = typeof sourceFileImports.$inferSelect;
 
 type CommonRow = {
   bank: string;

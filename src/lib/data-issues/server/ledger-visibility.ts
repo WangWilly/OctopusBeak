@@ -10,6 +10,14 @@ import {
 
 export type ImportScope = `${string}|${string}`;
 
+export type ActiveLedgerSupport = {
+  statementKeys: ReadonlySet<string>;
+  sourceVersionKeys: ReadonlySet<string>;
+};
+
+export const statementSupportKey = (table: string, statementRowId: string) =>
+  `${table}|${statementRowId}`;
+
 export function importScope(row: { sourceFileId: string; importRunId: string }): ImportScope {
   return `${row.sourceFileId}|${row.importRunId}`;
 }
@@ -86,10 +94,71 @@ function filterLedgerData(
 
 export function applyLedgerVisibility(
   data: LedgerQueryData,
-  disabled: ReadonlySet<ImportScope>,
+  support: ActiveLedgerSupport | ReadonlySet<ImportScope>,
 ): LedgerQueryData {
-  return filterLedgerData(data, (row) => !disabled.has(importScope(row)));
+  if (!("statementKeys" in support)) return filterLedgerData(data, (row) => !support.has(importScope(row)));
+  const visible = <T extends { statementRowId: string }>(rows: T[], table: string) =>
+    rows.filter((row) => support.statementKeys.has(statementSupportKey(table, row.statementRowId)));
+  const creditCardStatementLines = visible(
+    data.creditCardStatementLines,
+    PROJECTIONS.creditCardStatementLines,
+  );
+  const visibleCardRows = new Set(creditCardStatementLines.map((row) => row.statementRowId));
+  const creditCardCaptureEntries = data.creditCardCaptureEntries
+    .filter((entry) => visibleCardRows.has(entry.statementRowId));
+  const visibleCaptureIds = completeCaptureIds(
+    data.creditCardCaptures,
+    data.creditCardCaptureEntries,
+    creditCardCaptureEntries,
+  );
+
+  return {
+    ...data,
+    sourceFiles: data.sourceFiles.filter((row) => support.sourceVersionKeys.has(row.sourceVersionKey)),
+    accountTransactions: visible(data.accountTransactions, PROJECTIONS.accountTransactions),
+    foreignCurrencyTransactions: visible(
+      data.foreignCurrencyTransactions,
+      PROJECTIONS.foreignCurrencyTransactions,
+    ),
+    creditCardStatementLines,
+    creditCardCaptureEntries,
+    creditCardCaptures: data.creditCardCaptures
+      .filter((row) => visibleCaptureIds.has(row.captureId)),
+    creditCardSnapshots: data.creditCardSnapshots
+      .filter((row) => row.captureId === null || visibleCaptureIds.has(row.captureId)),
+    loanTransactions: visible(data.loanTransactions, PROJECTIONS.loanTransactions),
+    fundHoldings: visible(data.fundHoldings, PROJECTIONS.fundHoldings),
+    fundBuyTransactions: visible(data.fundBuyTransactions, PROJECTIONS.fundBuyTransactions),
+    fundRedemptionTransactions: visible(
+      data.fundRedemptionTransactions,
+      PROJECTIONS.fundRedemptionTransactions,
+    ),
+    fundCashDividends: visible(data.fundCashDividends, PROJECTIONS.fundCashDividends),
+    fundConversionTransactions: visible(
+      data.fundConversionTransactions,
+      PROJECTIONS.fundConversionTransactions,
+    ),
+    brokerageHoldings: visible(data.brokerageHoldings, PROJECTIONS.brokerageHoldings),
+    brokerageTradeTransactions: visible(
+      data.brokerageTradeTransactions,
+      PROJECTIONS.brokerageTradeTransactions,
+    ),
+  };
 }
+
+const PROJECTIONS = {
+  accountTransactions: "account_transactions",
+  foreignCurrencyTransactions: "foreign_currency_transactions",
+  creditCardStatementLines: "credit_card_statement_lines",
+  loanTransactions: "loan_transactions",
+  fundHoldings: "fund_holdings",
+  fundBuyTransactions: "fund_buy_transactions",
+  fundRedemptionTransactions: "fund_redemption_transactions",
+  fundCashDividends: "fund_cash_dividends",
+  fundConversionTransactions: "fund_conversion_transactions",
+  brokerageHoldings: "brokerage_holdings",
+  brokerageTradeTransactions: "brokerage_trade_transactions",
+} as const;
 
 function selectLedgerScopes(data: LedgerQueryData, scopes: ReadonlySet<ImportScope>) {
   return filterLedgerData(data, (row) => scopes.has(importScope(row)), false);
@@ -126,9 +195,9 @@ export function accountIdsChangedByVisibility(
   beforeScopes: ReadonlySet<ImportScope>,
   afterScopes: ReadonlySet<ImportScope>,
 ) {
-  const before = new Map(buildAccountOverview(applyLedgerVisibility(data, beforeScopes))
+  const before = new Map(buildAccountOverview(filterLedgerData(data, (row) => !beforeScopes.has(importScope(row))))
     .map((account) => [account.id, account.amountLines]));
-  const after = new Map(buildAccountOverview(applyLedgerVisibility(data, afterScopes))
+  const after = new Map(buildAccountOverview(filterLedgerData(data, (row) => !afterScopes.has(importScope(row))))
     .map((account) => [account.id, account.amountLines]));
   return new Set([...new Set([...before.keys(), ...after.keys()])]
     .filter((accountId) => JSON.stringify(before.get(accountId)) !== JSON.stringify(after.get(accountId))));
@@ -141,6 +210,51 @@ export function loadActiveImportScopes(db: LedgerDatabase): Set<ImportScope> {
     WHERE state = 'active'
   `).all() as Array<{ source_file_id: string; import_run_id: string }>;
   return new Set(rows.map((row) => `${row.source_file_id}|${row.import_run_id}` as ImportScope));
+}
+
+export function loadActiveLedgerSupport(
+  db: LedgerDatabase,
+  additionallyDisabled: ReadonlySet<string> = new Set(),
+): ActiveLedgerSupport {
+  const additionalKeys = [...additionallyDisabled];
+  const additionalDisabledCte = additionalKeys.length === 0
+    ? "SELECT NULL WHERE 0"
+    : `VALUES ${additionalKeys.map(() => "(?)").join(", ")}`;
+  const rows = db.prepare(`
+    WITH additionally_disabled(source_version_key) AS (${additionalDisabledCte})
+    SELECT 'statement' AS kind,
+      lineage.projection_table || '|' || lineage.statement_row_id AS support_key
+    FROM source_row_lineage AS lineage INDEXED BY source_row_lineage_active_support_idx
+    WHERE NOT EXISTS (
+      SELECT 1 FROM disabled_import_sources AS disabled
+        INDEXED BY disabled_import_sources_version_state_idx
+      WHERE disabled.source_version_key = lineage.source_version_key
+        AND disabled.state = 'active'
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM additionally_disabled AS additional
+        WHERE additional.source_version_key = lineage.source_version_key
+      )
+    UNION ALL
+    SELECT 'source_version' AS kind, source.source_version_key AS support_key
+    FROM source_file_imports AS source
+    WHERE NOT EXISTS (
+      SELECT 1 FROM disabled_import_sources AS disabled
+        INDEXED BY disabled_import_sources_version_state_idx
+      WHERE disabled.source_version_key = source.source_version_key
+        AND disabled.state = 'active'
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM additionally_disabled AS additional
+        WHERE additional.source_version_key = source.source_version_key
+      )
+  `).all(...additionalKeys) as Array<{ kind: "statement" | "source_version"; support_key: string }>;
+  return {
+    statementKeys: new Set(rows.filter((row) => row.kind === "statement").map((row) => row.support_key)),
+    sourceVersionKeys: new Set(
+      rows.filter((row) => row.kind === "source_version").map((row) => row.support_key),
+    ),
+  };
 }
 
 const ACCOUNT_GROUPS = new Set<AccountGroup>(["asset", "liability", "investment"]);
@@ -167,6 +281,7 @@ function accountContext(
 export function loadUnavailableAccountIssues(
   db: LedgerDatabase,
   rawData: LedgerQueryData,
+  support: ActiveLedgerSupport,
 ): UnavailableAccountIssue[] {
   const rows = db.prepare(`
     SELECT issue.data_issue_id, issue.account_id, issue.account_label,
@@ -184,8 +299,7 @@ export function loadUnavailableAccountIssues(
     source_file_id: string;
     import_run_id: string;
   }>;
-  const activeScopes = loadActiveImportScopes(db);
-  const visibleIds = new Set(buildAccountOverview(applyLedgerVisibility(rawData, activeScopes))
+  const visibleIds = new Set(buildAccountOverview(applyLedgerVisibility(rawData, support))
     .map((account) => account.id));
   const rawAccounts = new Map(buildAccountOverview(rawData).map((account) => [account.id, account]));
   const unavailable = new Map<string, UnavailableAccountIssue>();
@@ -258,10 +372,14 @@ export function appendUnavailableAccounts(
 
 export function activeImportSql(alias: string) {
   if (!/^[a-z_]+$/.test(alias)) throw new Error("Unsafe SQL alias");
-  return `NOT EXISTS (
-    SELECT 1 FROM disabled_import_sources AS disabled
-    WHERE disabled.state = 'active'
-      AND disabled.source_file_id = ${alias}.source_file_id
-      AND disabled.import_run_id = ${alias}.import_run_id
+  return `EXISTS (
+    SELECT 1 FROM source_row_lineage AS lineage
+    WHERE lineage.projection_table = '${alias}'
+      AND lineage.statement_row_id = ${alias}.statement_row_id
+      AND NOT EXISTS (
+        SELECT 1 FROM disabled_import_sources AS disabled
+        WHERE disabled.source_version_key = lineage.source_version_key
+          AND disabled.state = 'active'
+      )
   )`;
 }
