@@ -23,6 +23,10 @@ test("persistent data issue dashboard uses the desktop API and one progressive c
   assert.match(dashboard, /formatUtcDateTime\(source\.importedAt, \$systemTimezone, \$locale\)/);
   assert.match(dashboard, /formatUtcDateTime\(event\.createdAt, \$systemTimezone, \$locale\)/);
   assert.match(dashboard, /class="account-return-link"[\s\S]*href=\{accountReturnHref\(issue\.account\)\}/);
+  assert.match(
+    dashboard,
+    /class="account-link-wrap"[\s\S]*<a[\s\S]*class="account-return-link"[\s\S]*>\{issue\.account\.label\}<\/a>[\s\S]*<span id="account-return-tooltip"/,
+  );
   assert.match(dashboard, /aria-describedby="account-return-tooltip"/);
   assert.match(dashboard, /id="account-return-tooltip"[\s\S]*\{\$t\.dataIssues\.backToAccountHint\}/);
   assert.doesNotMatch(dashboard, /class="button secondary" href=\{accountReturnHref\(issue\.account\)\}/);

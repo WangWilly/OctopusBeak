@@ -364,14 +364,14 @@
         <div class="panel-title">
           <div class="account-title-row">
             <h2>
-              <a
-                class="account-return-link"
-                href={accountReturnHref(issue.account)}
-                aria-describedby="account-return-tooltip"
-              >
-                {issue.account.label}
+              <span class="account-link-wrap">
+                <a
+                  class="account-return-link"
+                  href={accountReturnHref(issue.account)}
+                  aria-describedby="account-return-tooltip"
+                >{issue.account.label}</a>
                 <span id="account-return-tooltip" class="header-tooltip" role="tooltip">{$t.dataIssues.backToAccountHint}</span>
-              </a>
+              </span>
             </h2>
             <span class="header-action">
               <button
@@ -505,14 +505,14 @@
   .panel-actions { display: flex; gap: var(--space-3); }
   .account-title-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .account-title-row h2 { margin: 0; min-width: 0; }
-  .account-return-link, .header-action { position: relative; }
+  .account-link-wrap, .header-action { position: relative; }
   .account-return-link { color: inherit; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
   .account-return-link:hover, .account-return-link:focus-visible { text-decoration-color: currentColor; }
   .history-trigger { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--muted); cursor: pointer; }
   .history-trigger:hover, .history-trigger:focus-visible { background: var(--surface-soft); color: var(--fg); }
   .header-tooltip { position: absolute; top: calc(100% + 7px); left: 50%; z-index: 8; width: max-content; max-width: min(220px, 80vw); padding: 7px 9px; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--fg) 94%, transparent); color: white; font-size: 11px; font-weight: 600; opacity: 0; pointer-events: none; transform: translate(-50%, -3px); transition: opacity 120ms ease, transform 120ms ease; }
-  .account-return-link:hover .header-tooltip,
-  .account-return-link:focus-visible .header-tooltip,
+  .account-link-wrap:hover .header-tooltip,
+  .account-link-wrap:focus-within .header-tooltip,
   .header-action:hover .header-tooltip,
   .header-action:focus-within .header-tooltip { opacity: 1; transform: translate(-50%, 0); }
   .issue-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-5); margin: 0; }
