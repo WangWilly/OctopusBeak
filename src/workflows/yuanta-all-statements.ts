@@ -6,7 +6,13 @@ import {
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 
+import type { StatementComponentResult } from "../lib/automation/statement-run-summary.js";
+import {
+  BANK_STATEMENT_CAPABILITIES,
+  resolveStatementSelection,
+} from "../lib/automation/statement-selection.js";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { runSelectedStatements } from "./run-selected-statements.js";
 import yuantaCreditCardStatements from "./yuanta-credit-card-statements.js";
 import yuantaForeignCurrencyStatements from "./yuanta-foreign-currency-statements.js";
 import yuantaFundStatements from "./yuanta-fund-statements.js";
@@ -85,6 +91,19 @@ function withCredentials(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toComponentRun(
+  workflowName: string,
+  result: StatementComponentResult,
+  output: unknown,
+): ComponentRun {
+  return {
+    workflow: workflowName,
+    status: result.status,
+    ...(result.status === "success" ? { output } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
 }
 
 async function findScopeWithLocator(
@@ -424,43 +443,6 @@ async function prepareForComponent(
   });
 }
 
-async function runComponent(
-  ctx: LibrettoWorkflowContext,
-  component: ExportedLibrettoWorkflow,
-  enabled: boolean,
-  input: unknown,
-  credentials: YuantaCredentials | undefined,
-  continueOnError: boolean,
-): Promise<ComponentRun> {
-  if (!enabled) {
-    return { workflow: component.name, status: "skipped" };
-  }
-
-  const startedAt = Date.now();
-  console.log("yuanta-all-component-start", {
-    workflow: component.name,
-    startedAt: new Date(startedAt).toISOString(),
-  });
-
-  try {
-    const output = await component.run(ctx, withCredentials(input, credentials));
-    console.log("yuanta-all-component-complete", {
-      workflow: component.name,
-      durationMs: Date.now() - startedAt,
-    });
-    return { workflow: component.name, status: "success", output };
-  } catch (error: unknown) {
-    const message = errorMessage(error);
-    console.error("yuanta-all-component-failed", {
-      workflow: component.name,
-      durationMs: Date.now() - startedAt,
-      message,
-    });
-    if (!continueOnError) throw error;
-    return { workflow: component.name, status: "failed", error: message };
-  }
-}
-
 export default workflow("yuantaAllStatements", {
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
@@ -472,70 +454,114 @@ export default workflow("yuantaAllStatements", {
     const prepare = input.prepareBetweenComponents;
     console.log("automation-progress: 0");
 
-    const statements = await runComponent(
-      ctx,
-      yuantaStatements,
-      include.statements ?? true,
-      input.statements,
-      credentials,
-      input.continueOnError,
-    );
-    console.log("automation-progress: 20");
-    if (prepare && (include.foreignCurrency ?? true)) {
-      await prepareForComponent(ctx, "foreignCurrency");
-    }
-    const foreignCurrency = await runComponent(
-      ctx,
-      yuantaForeignCurrencyStatements,
-      include.foreignCurrency ?? true,
-      input.foreignCurrency,
-      credentials,
-      input.continueOnError,
-    );
-    console.log("automation-progress: 40");
-    if (prepare && (include.loan ?? true)) {
-      await prepareForComponent(ctx, "loan");
-    }
-    const loan = await runComponent(
-      ctx,
-      yuantaLoanStatements,
-      include.loan ?? true,
-      input.loan,
-      credentials,
-      input.continueOnError,
-    );
-    console.log("automation-progress: 60");
-    if (prepare && (include.creditCard ?? true)) {
-      await prepareForComponent(ctx, "creditCard");
-    }
-    const creditCard = await runComponent(
-      ctx,
-      yuantaCreditCardStatements,
-      include.creditCard ?? true,
-      input.creditCard,
-      credentials,
-      input.continueOnError,
-    );
-    console.log("automation-progress: 75");
-
-    // The existing fund workflow logs out in its finally block, so keep it last.
-    if (prepare && (include.fund ?? true)) {
-      await prepareForComponent(ctx, "fund");
-    }
-    const fund = await runComponent(
-      ctx,
-      yuantaFundStatements,
-      include.fund ?? true,
-      input.fund,
-      credentials,
-      input.continueOnError,
-    );
+    const includeByType: Record<string, boolean | undefined> = {
+      deposit: include.statements,
+      foreign_currency: include.foreignCurrency,
+      loan: include.loan,
+      credit_card: include.creditCard,
+      fund: include.fund,
+    };
+    const selectedIds = resolveStatementSelection(
+      BANK_STATEMENT_CAPABILITIES.yuanta,
+      process.env,
+      true,
+    ).selectedIds.filter((typeId) => includeByType[typeId] !== false);
+    const run = await runSelectedStatements(selectedIds, [
+      {
+        typeId: "deposit",
+        run: () =>
+          yuantaStatements.run(
+            ctx,
+            withCredentials(input.statements, credentials),
+          ),
+      },
+      {
+        typeId: "foreign_currency",
+        prepare: () =>
+          prepare
+            ? prepareForComponent(ctx, "foreignCurrency")
+            : Promise.resolve(),
+        run: () =>
+          yuantaForeignCurrencyStatements.run(
+            ctx,
+            withCredentials(input.foreignCurrency, credentials),
+          ),
+      },
+      {
+        typeId: "loan",
+        prepare: () =>
+          prepare ? prepareForComponent(ctx, "loan") : Promise.resolve(),
+        run: () =>
+          yuantaLoanStatements.run(
+            ctx,
+            withCredentials(input.loan, credentials),
+          ),
+      },
+      {
+        typeId: "credit_card",
+        prepare: () =>
+          prepare ? prepareForComponent(ctx, "creditCard") : Promise.resolve(),
+        run: () =>
+          yuantaCreditCardStatements.run(
+            ctx,
+            withCredentials(input.creditCard, credentials),
+          ),
+      },
+      // The existing fund workflow logs out in its finally block, so keep it last.
+      {
+        typeId: "fund",
+        prepare: () =>
+          prepare ? prepareForComponent(ctx, "fund") : Promise.resolve(),
+        run: () =>
+          yuantaFundStatements.run(
+            ctx,
+            withCredentials(input.fund, credentials),
+          ),
+      },
+    ]);
     console.log("automation-progress: 100");
 
-    const runs = [statements, foreignCurrency, loan, creditCard, fund];
-    const succeeded = runs.filter((run) => run.status === "success").length;
-    const failed = runs.filter((run) => run.status === "failed").length;
-    const skipped = runs.filter((run) => run.status === "skipped").length;
+    const [
+      statementsResult,
+      foreignCurrencyResult,
+      loanResult,
+      creditCardResult,
+      fundResult,
+    ] = run.results;
+    const statements = toComponentRun(
+      yuantaStatements.name,
+      statementsResult,
+      run.outputs.deposit,
+    );
+    const foreignCurrency = toComponentRun(
+      yuantaForeignCurrencyStatements.name,
+      foreignCurrencyResult,
+      run.outputs.foreign_currency,
+    );
+    const loan = toComponentRun(
+      yuantaLoanStatements.name,
+      loanResult,
+      run.outputs.loan,
+    );
+    const creditCard = toComponentRun(
+      yuantaCreditCardStatements.name,
+      creditCardResult,
+      run.outputs.credit_card,
+    );
+    const fund = toComponentRun(
+      yuantaFundStatements.name,
+      fundResult,
+      run.outputs.fund,
+    );
+    const succeeded = run.results.filter(
+      (result) => result.status === "success",
+    ).length;
+    const failed = run.results.filter(
+      (result) => result.status === "failed",
+    ).length;
+    const skipped = run.results.filter(
+      (result) => result.status === "skipped",
+    ).length;
 
     return {
       count: succeeded,
