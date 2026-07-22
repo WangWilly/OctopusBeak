@@ -4,7 +4,6 @@
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import OverviewSankeyCard from "$lib/overview/components/OverviewSankeyCard.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
-  import { overviewSankeyPrototype } from "$lib/overview/components/overview-sankey-data.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     allExchangeRatesMissing,
@@ -20,7 +19,6 @@
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
-  const sankeyPrototype = overviewSankeyPrototype();
 
   export let overview: OverviewPageDto;
 
@@ -175,15 +173,14 @@
       {/key}
     </section>
 
-    <section class="card">
-      <div class="panel-title">
-        <h2>{$t.overview.portfolioFlow}</h2>
-        <span class="chip">{$t.overview.prototypeData}</span>
-      </div>
-      <div class="card pad overview-sankey-panel">
-        <OverviewSankeyCard graph={sankeyPrototype} currency="TWD" />
-      </div>
-    </section>
+    {#if overview.sankey}
+      <section class="card">
+        <div class="panel-title"><h2>{$t.overview.portfolioFlow}</h2></div>
+        <div class="card pad overview-sankey-panel">
+          <OverviewSankeyCard graph={overview.sankey} currency="TWD" />
+        </div>
+      </section>
+    {/if}
   </div>
 </DashboardShell>
 

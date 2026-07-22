@@ -23,13 +23,25 @@
     return tone === "liability" ? colors.liability : colors.asset;
   }
 
+  function labelFor(value: string) {
+    return ($t.knownLabels as Record<string, string>)[value] ?? value;
+  }
+
   function linkedIndexes(node: any) {
     return [...(node.sourceLinks ?? []), ...(node.targetLinks ?? [])].map((link) => link.index);
   }
+
+  function chartHeightFor(nodes: OverviewSankeyGraphDto["nodes"]) {
+    const counts = new Map<number, number>();
+    for (const node of nodes) counts.set(node.level, (counts.get(node.level) ?? 0) + 1);
+    return Math.max(440, Math.max(0, ...counts.values()) * 28 + 48);
+  }
+
+  $: chartHeight = chartHeightFor(graph.nodes);
 </script>
 
 <div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow}>
-  <Chart data={graph} flatData={[]} height={440} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
+  <Chart data={graph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
     {#snippet children({ context })}
       <Layer>
         <Sankey nodeId={(node) => node.id} nodeAlign="justify" nodePadding={8} nodeWidth={10}>
@@ -68,14 +80,16 @@
                   onpointermove={(event) => context.tooltip.show(event, { node })}
                   onpointerleave={() => context.tooltip.hide()}
                 />
-                <Text
-                  value={node.label}
-                  x={isLastColumn ? -5 : nodeWidth + 5}
-                  y={nodeHeight / 2}
-                  textAnchor={isLastColumn ? "end" : "start"}
-                  verticalAnchor="middle"
-                  class="overview-sankey-label"
-                />
+                {#if nodeHeight >= 14}
+                  <Text
+                    value={labelFor(node.label)}
+                    x={isLastColumn ? -5 : nodeWidth + 5}
+                    y={nodeHeight / 2}
+                    textAnchor={isLastColumn ? "end" : "start"}
+                    verticalAnchor="middle"
+                    class="overview-sankey-label"
+                  />
+                {/if}
               </Group>
             {/each}
           {/snippet}
@@ -86,7 +100,7 @@
         {#snippet children({ data })}
           <div class="overview-sankey-tooltip-body">
             {#if data.node}
-              <strong>{data.node.label}</strong>
+              <strong>{labelFor(data.node.label)}</strong>
               <div class="overview-sankey-tooltip-row">
                 <span>{$t.common.total}</span>
                 <b data-sensitive>{amount(data.node.value)}</b>
@@ -95,7 +109,7 @@
                 <div class="overview-sankey-tooltip-section">{$t.common.sources}</div>
                 {#each data.node.targetLinks as link}
                   <div class="overview-sankey-tooltip-row">
-                    <span>{link.source.label}</span>
+                    <span>{labelFor(link.source.label)}</span>
                     <b data-sensitive>{amount(link.value)}</b>
                   </div>
                 {/each}
@@ -104,13 +118,13 @@
                 <div class="overview-sankey-tooltip-section">{$t.common.targets}</div>
                 {#each data.node.sourceLinks as link}
                   <div class="overview-sankey-tooltip-row">
-                    <span>{link.target.label}</span>
+                    <span>{labelFor(link.target.label)}</span>
                     <b data-sensitive>{amount(link.value)}</b>
                   </div>
                 {/each}
               {/if}
             {:else if data.link}
-              <strong>{data.link.source.label} → {data.link.target.label}</strong>
+              <strong>{labelFor(data.link.source.label)} → {labelFor(data.link.target.label)}</strong>
               <div class="overview-sankey-tooltip-row">
                 <span>{$t.common.balance}</span>
                 <b data-sensitive>{amount(data.link.value)}</b>

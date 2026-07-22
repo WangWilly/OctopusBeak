@@ -12,4 +12,8 @@ test("overview Sankey card uses LayerChart Sankey with node and link tooltips", 
   assert.match(source, /onpointermove=\{\(event\) => context\.tooltip\.show\(event, \{ node \}\)\}/);
   assert.match(source, /aria-label=\{\$t\.overview\.portfolioFlow\}/);
   assert.doesNotMatch(source, /\.data\.(id|label|tone)/);
+  assert.match(source, /function labelFor\(value: string\)/);
+  assert.match(source, /function chartHeightFor\(nodes: OverviewSankeyGraphDto\["nodes"\]\)/);
+  assert.match(source, /height=\{chartHeight\}/);
+  assert.match(source, /\{#if nodeHeight >= 14\}/);
 });
