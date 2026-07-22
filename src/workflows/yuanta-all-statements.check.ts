@@ -377,6 +377,29 @@ for (const componentCase of firstSelectedComponentCases) {
   }
 }
 
+process.env[selectionKey] = "deposit";
+try {
+  await assert.rejects(
+    runYuantaAllStatements(
+      ctx,
+      {
+        credentials,
+        include: { statements: false },
+        prepareBetweenComponents: false,
+        statements: {},
+        foreignCurrency: {},
+        loan: {},
+        creditCard: {},
+        fund: {},
+      },
+    ),
+    /Select at least one Yuanta statement type/,
+  );
+} finally {
+  if (previousSelection === undefined) delete process.env[selectionKey];
+  else process.env[selectionKey] = previousSelection;
+}
+
 process.env[selectionKey] = "deposit,loan";
 const authFailureCalls: string[] = [];
 try {
