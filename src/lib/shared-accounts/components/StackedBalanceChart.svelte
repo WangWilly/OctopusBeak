@@ -16,6 +16,7 @@
   export let label = "";
 
   let selectedSeriesKeys: string[] = [];
+  let brushedYDomain: [number, number] | null = null;
   let lastSignature = "";
   let hasYRange = false;
   let yRangeReset = 0;
@@ -60,11 +61,19 @@
     resetYRange();
   }
 
-  function trackYRange({ brush }: { brush: { active?: boolean } }) {
-    hasYRange = Boolean(brush.active);
+  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
+    const [start, end] = brush.y;
+    if (brush.active && typeof start === "number" && typeof end === "number") {
+      brushedYDomain = [Math.min(start, end), Math.max(start, end)];
+      hasYRange = true;
+      return;
+    }
+    brushedYDomain = null;
+    hasYRange = false;
   }
 
   function resetYRange() {
+    brushedYDomain = null;
     hasYRange = false;
     yRangeReset += 1;
   }
@@ -107,11 +116,12 @@
         flatData={plottedTotals}
         x="position"
         y="value"
-        brush={{ axis: "y", zoomOnBrush: true, clickToReset: true, onBrushEnd: trackYRange }}
+        transform={{ mode: "domain", axis: "x" }}
+        brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
         series={plottedSeries}
         seriesLayout="stack"
         {xDomain}
-        {yDomain}
+        yDomain={brushedYDomain ?? yDomain}
         yBaseline={isSingleSeriesSelected ? null : 0}
         yNice={false}
         axis={true}
