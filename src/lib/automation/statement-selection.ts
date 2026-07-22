@@ -47,7 +47,7 @@ export function resolveStatementSelection(
   for (const id of requested) {
     if (!known.has(id)) unknownIds.push(id);
   }
-  if (unknownIds.length > 0 && !options.tolerateUnknown) {
+  if (enabled && unknownIds.length > 0 && !options.tolerateUnknown) {
     throw new Error(`Unknown ${group.label} statement type: ${unknownIds[0]}`);
   }
   const selectedIds = group.statementTypes.map((type) => type.id).filter((id) => requested.has(id));
