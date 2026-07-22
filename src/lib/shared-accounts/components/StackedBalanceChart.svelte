@@ -150,7 +150,10 @@
                 <span>{tooltipDate(data?.time)}</span>
                 {#each visibleChart.series as item}
                   <div class="stacked-balance-tooltip-row">
-                    <span>{item.label}</span>
+                    <span class="stacked-balance-tooltip-label">
+                      <span class="stacked-balance-tooltip-swatch" style:background-color={item.color}></span>
+                      {item.label}
+                    </span>
                     <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(item, data) })}</strong>
                   </div>
                 {/each}
@@ -228,6 +231,19 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .stacked-balance-tooltip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .stacked-balance-tooltip-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    flex: 0 0 auto;
   }
 
   :global(.stacked-balance-area) {

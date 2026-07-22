@@ -197,7 +197,10 @@
                     <span>{data?.dateLabel ?? data?.date ?? ""}</span>
                     {#each visibleDivergingSeries as series}
                       <div class="snapshot-diverging-tooltip-row">
-                        <span>{series.label}</span>
+                        <span class="snapshot-diverging-tooltip-label">
+                          <span class="snapshot-diverging-tooltip-swatch" style:background-color={series.color}></span>
+                          {series.label}
+                        </span>
                         <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(series, data) })}</strong>
                       </div>
                     {/each}
@@ -335,6 +338,19 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .snapshot-diverging-tooltip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .snapshot-diverging-tooltip-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    flex: 0 0 auto;
   }
 
   .snapshot-diverging-legend {
