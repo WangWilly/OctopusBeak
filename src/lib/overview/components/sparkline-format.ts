@@ -24,6 +24,25 @@ export function buildSparklineYAxis(values: number[]) {
   };
 }
 
+export function buildTrendYAxis(values: number[]) {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) return { min: 0, max: 0, step: 0, ticks: [] };
+
+  const min = Math.min(...finiteValues);
+  const max = Math.max(...finiteValues);
+  const padding = min === max ? fallbackAxisStep(min) * 2 : (max - min) * 0.12;
+  const domainMin = min - padding;
+  const domainMax = max + padding;
+  const step = (domainMax - domainMin) / 4;
+
+  return {
+    min: domainMin,
+    max: domainMax,
+    step,
+    ticks: [domainMin, domainMin + step, domainMin + step * 2, domainMin + step * 3, domainMax],
+  };
+}
+
 export function buildCenteredSparklineYAxis(values: number[]) {
   const finiteValues = values.filter(Number.isFinite);
   if (finiteValues.length === 0) return { min: 0, max: 0, step: 0, ticks: [] };
