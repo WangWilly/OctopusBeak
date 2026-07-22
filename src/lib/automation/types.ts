@@ -24,7 +24,11 @@ export type AutomationCredentialGroup = {
   label: string;
   enabledKey: string;
   credentialKeys: readonly string[];
+  statementSelectionKey?: string;
+  statementTypes?: readonly StatementTypeCapability[];
 };
+
+export type StatementTypeCapability = { id: string };
 
 export type AutomationTaskHistoryRow = {
   taskRunId: string;

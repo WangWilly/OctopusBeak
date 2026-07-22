@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { enabledAutomationTasks, taskById } from "./tasks.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  AUTOMATION_NON_SECRET_KEYS,
+  enabledAutomationTasks,
+  taskById,
+} from "./tasks.ts";
 
 const task = taskById("exchange-rates");
 
@@ -13,6 +18,14 @@ assert.deepEqual(task.command, [
   "--experimental-strip-types",
   "src/ledger/sync-exchange-rates.ts",
 ]);
+assert.deepEqual(
+  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")?.statementTypes,
+  [{ id: "deposit" }, { id: "credit_card" }, { id: "loan" }],
+);
+assert.equal(
+  AUTOMATION_NON_SECRET_KEYS.includes("LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES"),
+  true,
+);
 assert.equal(
   enabledAutomationTasks(Object.fromEntries([
     "fubon",
