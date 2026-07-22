@@ -373,6 +373,10 @@
     return row ? row.invoice[category] + row.account[category] : 0;
   }
 
+  function orderedTooltipSeries() {
+    return [...series].reverse();
+  }
+
   function rowSummary(row: SpendingChartRow, includePending: boolean) {
     return [
       tooltipLabel(row),
@@ -627,9 +631,12 @@
                       { locale: $locale },
                     )}</strong>
                   </div>
-                  {#each series as item}
+                  {#each orderedTooltipSeries() as item}
                     <div class="spending-tooltip-row">
-                      <span>{item.label}</span>
+                      <span class="spending-tooltip-label">
+                        <span class="spending-tooltip-swatch" style:background-color={item.color}></span>
+                        {item.label}
+                      </span>
                       <strong data-sensitive>{formatMoney(
                         { currency: "TWD", value: tooltipValue(row, item.key) },
                         { locale: $locale },
@@ -861,6 +868,19 @@
   .spending-tooltip-total {
     padding-bottom: 4px;
     border-bottom: 1px solid var(--border);
+  }
+
+  .spending-tooltip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .spending-tooltip-swatch {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 999px;
   }
 
   .spending-tooltip-pending {

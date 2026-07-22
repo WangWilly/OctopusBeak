@@ -67,3 +67,8 @@ assert.match(chartSource, /bind:context=\{chartContext\}/);
 assert.match(chartSource, /onwheel=\{panWithWheel\}/);
 assert.match(chartSource, /event\.deltaX === 0/);
 assert.match(chartSource, /\$: renderedRows = rows;/);
+assert.match(chartSource, /function orderedTooltipSeries\(\) \{/);
+assert.match(chartSource, /return \[\.\.\.series\]\.reverse\(\);/);
+assert.match(chartSource, /\{#each orderedTooltipSeries\(\) as item\}/);
+assert.match(chartSource, /class="spending-tooltip-swatch" style:background-color=\{item\.color\}/);
+assert.match(chartSource, /\.spending-tooltip-swatch\s*\{[^}]*border-radius:\s*999px;/);
