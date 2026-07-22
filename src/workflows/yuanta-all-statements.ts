@@ -41,7 +41,6 @@ const includeSchema = z.object({
 
 const inputSchema = z.object({
   include: includeSchema.default({}),
-  continueOnError: z.boolean().default(false),
   prepareBetweenComponents: z.boolean().default(true),
   statements: componentInputSchema(yuantaStatements),
   foreignCurrency: componentInputSchema(yuantaForeignCurrencyStatements),

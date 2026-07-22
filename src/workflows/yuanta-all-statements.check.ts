@@ -23,6 +23,7 @@ assert.match(
   /resolveStatementSelection\([\s\S]*BANK_STATEMENT_CAPABILITIES\.yuanta/,
 );
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
+assert.doesNotMatch(source, /continueOnError/);
 assert.match(
   source,
   /typeId: "deposit"[\s\S]*typeId: "foreign_currency"[\s\S]*typeId: "loan"[\s\S]*typeId: "credit_card"[\s\S]*typeId: "fund"/,
@@ -85,7 +86,6 @@ try {
     {
       credentials,
       include: {},
-      continueOnError: false,
       prepareBetweenComponents: true,
       statements: {},
       foreignCurrency: {
@@ -294,7 +294,6 @@ for (const componentCase of firstSelectedComponentCases) {
         {
           credentials,
           include: {},
-          continueOnError: false,
           prepareBetweenComponents: false,
           statements: {
             replaceActiveSession: authenticationCase.replacedActiveSession,
@@ -387,7 +386,6 @@ try {
       {
         credentials,
         include: {},
-        continueOnError: false,
         prepareBetweenComponents: true,
         statements: {},
         foreignCurrency: {},
