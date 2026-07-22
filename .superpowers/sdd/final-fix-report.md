@@ -112,3 +112,54 @@ The first sandboxed Vite check could not write under linked `node_modules/.vite-
 - The implementation keeps strictness at write/start boundaries while limiting tolerant behavior to desktop repair DTO loading.
 - The paired JSON-file update is rollback-based rather than a filesystem transaction; synchronous read, encryption, and write failures are covered and leave both files unchanged. Process or machine loss between the two atomic renames remains an inherent two-file filesystem limitation and is not introduced by this feature.
 - No unresolved product, privacy, accessibility, or test concerns remain.
+
+## Post-review Yuanta authentication-result fix
+
+### Finding and resolution
+
+- Implementation commit: `d8e83470a066d634c27cc26ccfaffde976b57497` (`fix: preserve Yuanta authentication result`).
+- `yuanta-all-statements` previously discarded its top-level authentication result. The first selected component's subsequent session check could therefore make fresh or replaced authentication look like an existing session in the aggregate output.
+- The orchestrator now retains the top-level result and overlays it only onto authentication fields already owned by the first selected component's successful output. Deposit keeps its narrower contract without a new `usedExistingSession` field, and later components keep their genuine shared-session results.
+- Component-local authentication remains responsible for its existing page readiness and session checks; the top-level call remains the single effective login for the shared run.
+
+### Red-green evidence
+
+- RED: `node --no-warnings --experimental-strip-types src/workflows/yuanta-all-statements.check.ts` failed because a fresh top-level login returned `usedExistingSession: false` while the first foreign-currency output still reported `true`.
+- GREEN: the same command passed after retaining and merging the top-level result.
+- The regression matrix covers all five possible first selections (`deposit`, `foreign_currency`, `loan`, `credit_card`, and `fund`) across fresh, existing, and replaced authentication. Every scenario asserts exactly one orchestrator authentication call and preserves the selected component's output shape.
+- A multi-component case proves only the first output receives the top-level result while the later fund output continues to report shared-session reuse. The existing authentication-failure case still proves fail-fast behavior.
+
+### Verification commands and results
+
+Focused Yuanta checks all exited 0:
+
+```text
+node --no-warnings --experimental-strip-types src/workflows/yuanta-all-statements.check.ts
+node --no-warnings --experimental-strip-types src/workflows/yuanta-statements.check.ts
+node --no-warnings --experimental-strip-types src/workflows/yuanta-credit-card-statements.check.ts
+node --no-warnings --experimental-strip-types src/workflows/yuanta-fund-statements.check.ts
+node --no-warnings --experimental-strip-types src/workflows/yuanta-trade-statements.check.ts
+```
+
+Repository gates:
+
+```text
+npm test
+npm run typecheck
+npm run build
+npm run privacy-check
+git diff --cached --check
+```
+
+- `npm test`: 222 passed, 0 failed.
+- Typecheck: `svelte-check found 0 errors and 0 warnings`; `tsc --noEmit` exited 0.
+- Build: renderer/static adapter and Electron builds exited 0.
+- Staged production/test privacy scan: approximately 6.87 KB scanned, no leaks found.
+- Cached production/test whitespace check: silent/exit 0.
+
+### Review and concerns
+
+- Independent read-only review found no Critical, Important, or Minor issue and approved the implementation for commit.
+- No live browser session or real YuanTa account data was used or modified.
+- The externally managed detached worktree was not moved, branched, pushed, or removed. Root-owned `design-qa.md` and `.superpowers/design-qa/` artifacts were not modified.
+- No unresolved concern remains for this finding.
