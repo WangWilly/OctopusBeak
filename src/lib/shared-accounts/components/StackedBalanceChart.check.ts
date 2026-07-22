@@ -35,6 +35,12 @@ assert.match(source, /\.stacked-balance-tooltip-swatch\s*\{[^}]*border-radius:\s
 assert.match(source, /function orderedTooltipSeries\(\) \{/);
 assert.match(source, /return \[\.\.\.visibleChart\.series\]\.reverse\(\);/);
 assert.match(source, /\{#each orderedTooltipSeries\(\) as item\}/);
+assert.match(source, /function tooltipTotal\(data: \{ time\?: unknown \} \| null \| undefined\) \{/);
+assert.match(source, /visibleChart\.totals\.find\(\(point\) => point\.time === data\.time\)\?\.value \?\? 0/);
+assert.match(source, /class="stacked-balance-tooltip-row stacked-balance-tooltip-total"/);
+assert.match(source, /\{\$t\.chart\.total\}/);
+assert.match(source, /formatMoney\(\{ currency, value: tooltipTotal\(data\) \}\)/);
+assert.match(source, /\.stacked-balance-tooltip-total\s*\{[^}]*border-bottom:/);
 assert.doesNotMatch(source, /adjustYAxis/);
 assert.match(source, /return typeof value === "number" \? formatSparklineTick\(value\) : String\(value\);/);
 assert.doesNotMatch(source, /\byTicks\b/);

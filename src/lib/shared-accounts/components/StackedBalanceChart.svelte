@@ -99,6 +99,11 @@
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
   }
 
+  function tooltipTotal(data: { time?: unknown } | null | undefined) {
+    if (typeof data?.time !== "number") return 0;
+    return visibleChart.totals.find((point) => point.time === data.time)?.value ?? 0;
+  }
+
   function orderedTooltipSeries() {
     return [...visibleChart.series].reverse();
   }
@@ -152,6 +157,10 @@
             {#snippet children({ data })}
               <div class="sparkline-tooltip-body stacked-balance-tooltip">
                 <span>{tooltipDate(data?.time)}</span>
+                <div class="stacked-balance-tooltip-row stacked-balance-tooltip-total">
+                  <span>{$t.chart.total}</span>
+                  <strong data-sensitive>{formatMoney({ currency, value: tooltipTotal(data) })}</strong>
+                </div>
                 {#each orderedTooltipSeries() as item}
                   <div class="stacked-balance-tooltip-row">
                     <span class="stacked-balance-tooltip-label">
@@ -235,6 +244,12 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .stacked-balance-tooltip-total {
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
   }
 
   .stacked-balance-tooltip-label {
