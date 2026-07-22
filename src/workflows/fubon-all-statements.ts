@@ -150,6 +150,12 @@ export async function runFubonAllStatements(
   const input = rawInput as Input;
   const { page, session } = ctx;
   console.log("automation-progress: 0");
+  const selectedIds = resolveStatementSelection(
+    BANK_STATEMENT_CAPABILITIES.fubon,
+    process.env,
+    true,
+  ).selectedIds;
+  if (!selectedIds.length) throw new Error("Select at least one Fubon statement type.");
 
   page.on("dialog", async (dialog) => {
     console.warn("bank-dialog", { type: dialog.type() });
@@ -162,11 +168,6 @@ export async function runFubonAllStatements(
 
   const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
   try {
-    const selectedIds = resolveStatementSelection(
-      BANK_STATEMENT_CAPABILITIES.fubon,
-      process.env,
-      true,
-    ).selectedIds;
     const run = await runSelectedStatements(selectedIds, [
       {
         typeId: "deposit",

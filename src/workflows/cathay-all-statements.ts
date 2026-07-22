@@ -116,6 +116,7 @@ export async function runCathayAllStatements(
   const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
     .map((type) => type.id)
     .filter((typeId) => requestedIds.has(typeId));
+  if (!selectedIds.length) throw new Error("Select at least one Cathay statement type.");
   console.log("automation-progress: 0");
 
   page.on("dialog", async (dialog) => {

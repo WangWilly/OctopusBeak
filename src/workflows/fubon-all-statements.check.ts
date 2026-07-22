@@ -120,3 +120,30 @@ assert.deepEqual(calls, [
   "keepalive-stop",
   "logout",
 ]);
+
+process.env[selectionKey] = "";
+const noSelectionCalls: string[] = [];
+try {
+  await assert.rejects(
+    runFubonAllStatements(
+      {
+        page: { on: () => noSelectionCalls.push("dialog-listener") },
+        session: "fubon-session",
+      },
+      { credentials: {}, statements: {}, creditCards: {}, loans: {} },
+      {
+        signInFubon: async () => {
+          noSelectionCalls.push("login");
+        },
+        keepBrowserWindowOutOfForeground: async () => {},
+        startFubonSessionKeepAlive: () => () => {},
+        signOutFubon: async () => {},
+      },
+    ),
+    /Select at least one Fubon statement type\./,
+  );
+} finally {
+  if (previousSelection === undefined) delete process.env[selectionKey];
+  else process.env[selectionKey] = previousSelection;
+}
+assert.deepEqual(noSelectionCalls, []);
