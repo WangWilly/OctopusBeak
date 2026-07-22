@@ -3,12 +3,14 @@ import * as schema from "../../../ledger/db/schema.ts";
 import type { OverviewPageDto } from "../types.ts";
 import {
   buildAccountOverview,
+  buildRawPositions,
   emptyLedgerQueryData,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
 import { buildSummaryMetrics } from "../../shared-ledger/server/summary.ts";
 import { requiredExchangeRateCurrencies } from "../../../ledger/exchange-rates.ts";
 import { buildDailyHistory } from "./daily-history.ts";
+import { buildOverviewSankeyGraph } from "./overview-sankey.ts";
 import {
   appendUnavailableAccounts,
   applyLedgerVisibility,
@@ -68,6 +70,25 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       buildAccountOverview(visibleData),
       loadUnavailableAccountIssues(sqlite, data, support),
     );
+    const sankeyPositions = buildRawPositions(visibleData);
+    const sankeyCurrencies = [...new Set(sankeyPositions.map((position) => position.currency).filter((currency) => currency !== "TWD"))];
+    const sankeyPlaceholders = sankeyCurrencies.map(() => "?").join(", ");
+    const sankeyRates = new Map(
+      (sankeyCurrencies.length === 0
+        ? []
+        : sqlite.prepare(`
+            SELECT rate.currency, rate.twd_per_unit AS twdPerUnit
+            FROM exchange_rates AS rate
+            WHERE rate.currency IN (${sankeyPlaceholders})
+              AND rate.rate_date = (
+                SELECT MAX(rate_date)
+                FROM exchange_rates AS current_rate
+                WHERE current_rate.currency = rate.currency
+              )
+          `).all(...sankeyCurrencies) as Array<{ currency: string; twdPerUnit: number }>)
+        .map((rate) => [rate.currency, rate.twdPerUnit]),
+    );
+    const sankey = buildOverviewSankeyGraph(sankeyPositions, sankeyRates);
     const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;
     const lastDate = dailyHistory.at(-1)?.date;
@@ -102,6 +123,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       summary: buildSummaryMetrics(accounts),
       dailyHistory,
       accounts,
+      sankey,
       exchangeRates,
       latestExchangeRateDate: exchangeRates.reduce<string | null>(
         (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,
