@@ -403,6 +403,10 @@ test("clean exits persist statement summary status and preserve missing or malfo
       { typeId: "deposit", status: "failed", error: "broken" },
       { typeId: "loan", status: "failed", error: "denied" },
     ])), { status: "failed" });
+    assert.deepEqual(await runWithOutput(statementRunSummaryLine([
+      { typeId: "deposit", status: "skipped" },
+      { typeId: "loan", status: "skipped" },
+    ])), { status: "failed" });
     assert.deepEqual(
       await runWithOutput("automation-statement-summary: not-json"),
       { status: "completed" },
@@ -483,10 +487,12 @@ test("clean exits persist statement summary status and preserve missing or malfo
       "completed",
       "completed",
       "failed",
+      "failed",
       "partial",
     ]);
     assert.equal(rows[0]?.error_message, "process failed");
-    assert.equal(rows[7]?.error_message, "deposit: broken\nloan: denied");
+    assert.equal(rows[7]?.error_message, "No statement components completed.");
+    assert.equal(rows[8]?.error_message, "deposit: broken\nloan: denied");
     db.close();
   } finally {
     process.chdir(previousCwd);
