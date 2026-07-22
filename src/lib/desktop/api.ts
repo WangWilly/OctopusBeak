@@ -22,6 +22,8 @@ import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
+  selectedStatementTypeIds: readonly string[];
+  statementSetupRequired: boolean;
 };
 
 export type AutomationDesktopModel = {

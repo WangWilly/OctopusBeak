@@ -7,7 +7,8 @@ export type AutomationTaskStatus =
   | "retrying"
   | "completed"
   | "failed"
-  | "locked";
+  | "locked"
+  | "needs_setup";
 
 export type AutomationTaskSummary = {
   id: string;
@@ -63,7 +64,7 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   humanSession: string | null;
   isActive: boolean;
   ranToday: boolean;
-  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel";
+  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };
 
