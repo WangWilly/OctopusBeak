@@ -137,7 +137,10 @@ assert.match(
 );
 
 const credentialGroupStatusSource = source.slice(source.indexOf("function credentialGroupStatus"), source.indexOf("function updateCredentialDraft"));
-assert.doesNotMatch(credentialGroupStatusSource, /statementSetupRequired/);
+assert.match(
+  credentialGroupStatusSource,
+  /if \(group\.statementSetupRequired && group\.selectedStatementTypeIds\.length\) return dictionary\.automation\.needsSetup/,
+);
 assert.match(
   credentialGroupStatusSource,
   /function credentialGroupStatus\(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation\)/,
