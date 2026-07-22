@@ -69,6 +69,7 @@ const en = {
     exchangeRatesMissingNative: "Missing exchange rates · showing native currencies",
     exchangeRatesThrough: (date: string) => `Rates through ${date}`,
     portfolioFlow: "Portfolio flow",
+    portfolioFlowBaseCurrency: "Portfolio flow base currency",
   },
   assets: {
     eyebrow: "Assets",
@@ -645,6 +646,7 @@ const zh: typeof en = {
     exchangeRatesMissingNative: "缺少匯率・顯示原幣",
     exchangeRatesThrough: (date) => `匯率資料截至 ${date}`,
     portfolioFlow: "資產與負債流向",
+    portfolioFlowBaseCurrency: "資產與負債流向基準幣別",
   },
   assets: {
     eyebrow: "資產",

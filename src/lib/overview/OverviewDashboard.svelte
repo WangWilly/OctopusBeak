@@ -38,8 +38,8 @@
   $: history = overview.dailyHistory;
   $: dailyCurrencies = dailyHistoryCurrencies(history);
   $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
-  $: sankeyRatesByCurrency = new Map(overview.exchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
-  $: sankeyCurrencies = dailyCurrencies.filter((currency) => currency === "TWD" || sankeyRatesByCurrency.has(currency));
+  $: sankeyRatesByCurrency = new Map(overview.sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
+  $: sankeyCurrencies = ["TWD", ...overview.sankeyExchangeRates.map((rate) => rate.currency)];
   $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
   $: sankeyTwdPerUnit = sankeyRatesByCurrency.get(sankeyCurrency) ?? 1;
   $: convertedDailyHistory = convertDailyHistoryRows(
@@ -195,7 +195,7 @@
               {$t.common.base}
               <select
                 id="sankey-base-currency"
-                aria-label={$t.overview.dailyAssetChangesBaseCurrency}
+                aria-label={$t.overview.portfolioFlowBaseCurrency}
                 value={sankeyCurrency}
                 onchange={selectSankeyCurrency}
               >
@@ -205,9 +205,9 @@
               </select>
             </label>
           {/if}
-          {#if overview.latestExchangeRateDate}
+          {#if overview.sankeyLatestExchangeRateDate}
             <span class="chip">
-              {$t.overview.exchangeRatesThrough(overview.latestExchangeRateDate)}
+              {$t.overview.exchangeRatesThrough(overview.sankeyLatestExchangeRateDate)}
             </span>
           {/if}
         </div>
