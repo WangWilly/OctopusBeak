@@ -140,9 +140,17 @@ const credentialGroupStatusSource = source.slice(source.indexOf("function creden
 assert.doesNotMatch(credentialGroupStatusSource, /statementSetupRequired/);
 assert.match(
   credentialGroupStatusSource,
-  /if \(group\.statementTypes\?\.length && !statementSelectionDrafts\[group\.id\]\?\.length\) return dictionary\.automation\.needsSetup;/,
+  /function credentialGroupStatus\(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation\)/,
 );
+assert.doesNotMatch(credentialGroupStatusSource, /groupEnabled|statementSelectionDrafts/);
 assert.match(
   credentialGroupStatusSource,
-  /selectedStatementCount\([\s\S]*?statementSelectionDrafts\[group\.id\]\?\.length \?\? 0,[\s\S]*?group\.statementTypes\.length/,
+  /if \(group\.statementTypes\?\.length && !selectedCount\) return dictionary\.automation\.needsSetup;[\s\S]*?selectedStatementCount\(selectedCount, group\.statementTypes\.length\)/,
 );
+
+assert.match(
+  source,
+  /\$: credentialGroupStatuses = Object\.fromEntries\([\s\S]*?groupEnabled\[group\.id\] !== false,[\s\S]*?statementSelectionDrafts\[group\.id\]\?\.length \?\? 0,[\s\S]*?\$t/,
+);
+assert.match(source, /<span>\{credentialGroupStatuses\[group\.id\]\}<\/span>/);
+assert.doesNotMatch(source, /<span>\{credentialGroupStatus\(group, \$t\)\}<\/span>/);
