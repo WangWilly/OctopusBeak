@@ -147,3 +147,38 @@ assert.match(
   source,
   /typeId === "foreign_currency"\s*\? "foreign" : "domestic"/,
 );
+
+process.env[selectionKey] = "";
+const noSelectionCalls: string[] = [];
+try {
+  await assert.rejects(
+    runCathayAllStatements(
+      {
+        page: { on: () => noSelectionCalls.push("dialog-listener") },
+        session: "cathay-session",
+      },
+      {
+        credentials: {},
+        statementTypes: undefined,
+        dateRange: "one_year",
+        accountFilters: [],
+        domesticAccountFilters: undefined,
+        foreignAccountFilters: undefined,
+        currencyFilters: [],
+        trustDevice: false,
+      },
+      {
+        signInCathay: async () => {
+          noSelectionCalls.push("login");
+          return { usedExistingSession: false };
+        },
+        createCathaySession: async () => ({}),
+      },
+    ),
+    /Select at least one Cathay statement type\./,
+  );
+} finally {
+  if (previousSelection === undefined) delete process.env[selectionKey];
+  else process.env[selectionKey] = previousSelection;
+}
+assert.deepEqual(noSelectionCalls, []);
