@@ -14,7 +14,9 @@ import { downloadCathayForeignStatements } from "./cathay-foreign-statements.js"
 import { retryableStage } from "./retryable-stage.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
 
-const statementTypeSchema = z.enum(["domestic", "foreign_currency"]);
+const statementTypeSchema = z
+  .enum(["domestic", "foreign_currency", "foreign"])
+  .transform((type) => type === "foreign" ? "foreign_currency" as const : type);
 const outputStatementTypeSchema = z.enum(["domestic", "foreign"]);
 
 const dateRangeSchema = z.enum([

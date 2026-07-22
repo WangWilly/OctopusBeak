@@ -75,3 +75,26 @@ assert.equal(
   })),
   null,
 );
+
+const oversizedError = "diagnostic ".repeat(1_000);
+const boundedLine = statementRunSummaryLine([
+  { typeId: "deposit", status: "success" },
+  { typeId: "loan", status: "failed", error: oversizedError },
+]);
+const boundedSummary = parseStatementRunSummary(boundedLine);
+assert.ok(boundedLine.length < 4_000);
+assert.equal(boundedSummary?.status, "partial");
+assert.ok((boundedSummary?.results[1]?.error?.length ?? 0) < oversizedError.length);
+assert.match(boundedSummary?.results[1]?.error ?? "", /\.\.\.$/);
+
+const escapedLine = statementRunSummaryLine(
+  ["deposit", "foreign_currency", "loan", "credit_card", "fund"].map(
+    (typeId) => ({
+      typeId,
+      status: "failed" as const,
+      error: "\0".repeat(6_000),
+    }),
+  ),
+);
+assert.ok(escapedLine.length < 4_000);
+assert.equal(parseStatementRunSummary(escapedLine)?.status, "failed");

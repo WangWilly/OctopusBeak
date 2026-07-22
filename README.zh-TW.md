@@ -81,7 +81,7 @@ OCTOPUSBEAK_SIGN=1 OCTOPUSBEAK_NOTARY_PROFILE=OctopusBeakNotary npm run desktop:
 2. 儲存所需資料來源的登入憑證。
 3. 從工作表格執行 crawler 或同步工作。
 4. 工作等待人工輸入時，從 Assist 視窗完成瀏覽器驗證。
-5. 當天所有 crawler 相依工作成功後，執行 CSV 匯入。
+5. 當天所有已啟用且會產生可匯入資料的 crawler 都有一次完成或部分完成的執行後，再執行 CSV 匯入。
 6. 前往 `#/overview`、`#/assets`、`#/liabilities` 或 `#/spending` 檢視結果。
 
 也可以使用 CLI 執行相同流程：
@@ -103,7 +103,7 @@ npm run libretto:close-all
 
 `#/automation` 頁面封裝現有 npm scripts。非機密開關存放於 `settings.json`，機密憑證存放於本機 `credentials.json`，工作歷史寫入 `data/ledger/ledger.sqlite`，完整日誌寫入 `data/automation/logs/`，SQLite 只保留最新的日誌尾端。
 
-在當天所有已啟用、會產生資料的 crawler 成功前，`import downloads csv` 會保持鎖定。
+在當天所有已啟用、會產生資料的 crawler 都有一次完成或部分完成的執行前，`import downloads csv` 會保持鎖定。
 
 在 **憑證 → 要收集的對帳單** 中選擇的對帳單類型屬於非機密設定，會儲存在 `settings.json`。升級後，多類型銀行需要先明確選擇一次；單一類型銀行會初始化為目前類型，新支援的類型則會維持關閉，直到選取為止。同一家銀行的已選類型會共用一次登入工作階段。部分完成的執行會保留已成功下載的檔案，並允許帶警告執行匯入。
 

@@ -81,7 +81,7 @@ Artifacts are written to `out/make/`. See [Desktop Release](docs/desktop-release
 2. Save the credentials needed for the sources you use.
 3. Run the crawler/sync tasks from the task table.
 4. Complete manual browser checks from the Assist modal when a task is waiting for human input.
-5. Run CSV import after the crawler dependencies succeed for the business day.
+5. Run CSV import after every enabled producing crawler has a completed or partial run for the business day.
 6. Review `#/overview`, `#/assets`, `#/liabilities`, or `#/spending`.
 
 The same flow is still available from the CLI:
@@ -103,7 +103,7 @@ npm run libretto:close-all
 
 The `#/automation` page wraps the existing npm scripts. It stores non-secret switches in `settings.json`, stores secret credential values in local `credentials.json`, records task history in `data/ledger/ledger.sqlite`, writes full task logs under `data/automation/logs/`, and keeps only the latest log tail in SQLite.
 
-`import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
+`import downloads csv` stays locked until every enabled producing crawler has a completed or partial run for the current business day.
 
 Under **Credentials → Statements to collect**, non-secret statement-type selections are saved in `settings.json`. After upgrading, multi-type banks need an explicit first selection; single-type banks initialize their current type, and newly supported types stay off until selected. Selected types for one bank reuse one login session. Partial runs keep their successful downloads and allow Import with a warning.
 

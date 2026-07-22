@@ -33,6 +33,7 @@
   let viewerImageUrl = "";
   let viewerError = "";
   let actionError = "";
+  let statementSelectionError = "";
   let dragStart: { x: number; y: number; pointerId: number } | null = null;
   let floatingInput: { left: number; top: number; value: string } | null = null;
   let floatingInputEl: HTMLInputElement | null = null;
@@ -210,6 +211,7 @@
 
   function resetCredentialChanges() {
     credentialDrafts = {};
+    statementSelectionError = "";
     groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
     statementSelectionDrafts = Object.fromEntries(
       credentialGroups.map((group) => [group.id, [...group.selectedStatementTypeIds]]),
@@ -246,6 +248,7 @@
   }
 
   function toggleGroup(groupId: string) {
+    statementSelectionError = "";
     groupEnabled = {
       ...groupEnabled,
       [groupId]: !(groupEnabled[groupId] !== false),
@@ -253,6 +256,7 @@
   }
 
   function toggleStatementType(groupId: string, typeId: string) {
+    statementSelectionError = "";
     const group = credentialGroups.find((candidate) => candidate.id === groupId);
     const selected = new Set(statementSelectionDrafts[groupId] ?? []);
     if (selected.has(typeId)) selected.delete(typeId);
@@ -264,6 +268,7 @@
   }
 
   function selectAllStatementTypes(group: CredentialGroupDto) {
+    statementSelectionError = "";
     statementSelectionDrafts = {
       ...statementSelectionDrafts,
       [group.id]: (group.statementTypes ?? []).map((type) => type.id),
@@ -287,11 +292,17 @@
   }
 
   async function updateCredentialSearch(event: Event) {
+    statementSelectionError = "";
     credentialSearch = (event.currentTarget as HTMLInputElement).value;
     await tick();
     if (!visibleCredentialGroups.some((group) => group.id === selectedCredentialGroupId)) {
       selectedCredentialGroupId = visibleCredentialGroups[0]?.id ?? "";
     }
+  }
+
+  function selectCredentialGroup(groupId: string) {
+    statementSelectionError = "";
+    selectedCredentialGroupId = groupId;
   }
 
   async function runTask(task: AutomationTaskRow) {
@@ -387,7 +398,7 @@
   async function primaryTaskAction(task: AutomationTaskRow) {
     if (task.primaryAction === "Configure") {
       openCredentials();
-      selectedCredentialGroupId = task.credentialGroupId ?? "";
+      selectCredentialGroup(task.credentialGroupId ?? "");
       await tick();
       document.getElementById(`${selectedCredentialGroupId}-statement-selection`)?.focus();
       return;
@@ -447,11 +458,13 @@
     if (invalid) {
       credentialSearch = "";
       selectedCredentialGroupId = invalid.id;
-      actionError = $t.automation.selectOneStatementType(invalid.label);
+      actionError = "";
+      statementSelectionError = $t.automation.selectOneStatementType(invalid.label);
       await tick();
       document.getElementById(`${invalid.id}-statement-selection`)?.focus();
       return;
     }
+    statementSelectionError = "";
     const updates: Record<string, string> = {};
     for (const group of credentialGroups) {
       updates[group.enabledKey] = groupEnabled[group.id] !== false ? "true" : "false";
@@ -833,7 +846,15 @@
                 <td class="right">
                   <div class="task-actions">
                     {#if task.id === "import-downloads-csv" && task.canRun && automation.importGate.warnings.length}
-                      <span class="import-warning">{$t.automation.partialImportWarning}</span>
+                      <div class="import-warning">
+                        <span>{$t.automation.partialImportWarning}</span>
+                        {#each automation.importGate.warnings as warning}
+                          <span>
+                            {taskIdLabel(warning.taskId, $t)}:
+                            {warning.failedTypeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join(", ")}
+                          </span>
+                        {/each}
+                      </div>
                     {/if}
                     <button
                       class={`button task-control ${task.primaryAction === "Cancel" ? "danger" : "primary"}`}
@@ -984,7 +1005,7 @@
                 type="button"
                 class:selected={group.id === selectedCredentialGroupId}
                 aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
-                onclick={() => (selectedCredentialGroupId = group.id)}
+                onclick={() => selectCredentialGroup(group.id)}
               >
                 <strong>{group.label}</strong>
                 <span>{credentialGroupStatuses[group.id]}</span>
@@ -1028,7 +1049,9 @@
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
                 tabindex="-1"
-                aria-describedby={`${selectedCredentialGroup.id}-statement-help`}
+                aria-describedby={statementSelectionError
+                  ? `${selectedCredentialGroup.id}-statement-help ${selectedCredentialGroup.id}-statement-error`
+                  : `${selectedCredentialGroup.id}-statement-help`}
               >
                 <legend>{$t.automation.statementsToCollect}</legend>
                 <div class="statement-selection-head">
@@ -1045,12 +1068,19 @@
                       <input
                         type="checkbox"
                         checked={statementSelectionDrafts[selectedCredentialGroup.id]?.includes(type.id)}
+                        aria-describedby={statementSelectionError ? `${selectedCredentialGroup.id}-statement-error` : undefined}
+                        aria-invalid={statementSelectionError ? "true" : undefined}
                         onchange={() => toggleStatementType(selectedCredentialGroup.id, type.id)}
                       />
                       <span>{$t.automation.statementTypeLabels[type.id] ?? type.id}</span>
                     </label>
                   {/each}
                 </div>
+                <p
+                  id={`${selectedCredentialGroup.id}-statement-error`}
+                  class="credential-error statement-selection-error"
+                  aria-live="polite"
+                >{statementSelectionError}</p>
               </fieldset>
             {/if}
             {#if actionError}<p class="credential-error" aria-live="polite">{actionError}</p>{/if}
@@ -1633,6 +1663,8 @@
 
   .import-warning {
     flex-basis: 100%;
+    display: grid;
+    gap: 2px;
     color: var(--warn);
     font-size: 11px;
     line-height: 1.35;
@@ -2266,6 +2298,10 @@
     margin: var(--space-4) 0 0;
     color: var(--danger);
     font-size: 13px;
+  }
+
+  .statement-selection-error:empty {
+    margin: 0;
   }
 
   .human-viewer-modal {

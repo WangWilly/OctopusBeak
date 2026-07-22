@@ -17,13 +17,11 @@ import yuantaCreditCardStatements from "./yuanta-credit-card-statements.js";
 import yuantaForeignCurrencyStatements from "./yuanta-foreign-currency-statements.js";
 import yuantaFundStatements from "./yuanta-fund-statements.js";
 import yuantaLoanStatements from "./yuanta-loan-statements.js";
-import yuantaStatements from "./yuanta-statements.js";
+import yuantaStatements, {
+  authenticateYuantaBank,
+  type YuantaCredentials,
+} from "./yuanta-statements.js";
 
-type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
 type BrowserScope = Page | Frame;
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -449,6 +447,7 @@ const yuantaAllStatementsDependencies = {
   yuantaLoanStatements,
   yuantaCreditCardStatements,
   yuantaFundStatements,
+  authenticateYuantaBank,
   prepareForComponent,
 };
 
@@ -463,6 +462,7 @@ export async function runYuantaAllStatements(
       yuantaLoanStatements,
       yuantaCreditCardStatements,
       yuantaFundStatements,
+      authenticateYuantaBank,
       prepareForComponent,
     } = { ...yuantaAllStatementsDependencies, ...overrides };
     const input = rawInput as WorkflowInput;
@@ -483,6 +483,23 @@ export async function runYuantaAllStatements(
       process.env,
       true,
     ).selectedIds.filter((typeId) => includeByType[typeId] !== false);
+    const componentInputByType: Record<string, unknown> = {
+      deposit: input.statements,
+      foreign_currency: input.foreignCurrency,
+      loan: input.loan,
+      credit_card: input.creditCard,
+      fund: input.fund,
+    };
+    const replaceActiveSession = asRecord(
+      componentInputByType[selectedIds[0]],
+    ).replaceActiveSession;
+    if (selectedIds.length > 0) {
+      await authenticateYuantaBank(
+        ctx,
+        credentials ?? {},
+        typeof replaceActiveSession === "boolean" ? replaceActiveSession : true,
+      );
+    }
     const run = await runSelectedStatements(selectedIds, [
       {
         typeId: "deposit",
