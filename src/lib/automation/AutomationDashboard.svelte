@@ -277,6 +277,7 @@
 
   function credentialGroupStatus(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation) {
     if (!enabled) return dictionary.common.disabled;
+    if (group.statementSetupRequired && group.selectedStatementTypeIds.length) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length && !selectedCount) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
       return dictionary.automation.selectedStatementCount(selectedCount, group.statementTypes.length);
