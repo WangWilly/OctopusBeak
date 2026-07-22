@@ -105,6 +105,8 @@ The `#/automation` page wraps the existing npm scripts. It stores non-secret swi
 
 `import downloads csv` stays locked until every enabled producing crawler has a successful run for the current business day.
 
+Under **Credentials → Statements to collect**, non-secret statement-type selections are saved in `settings.json`. After upgrading, multi-type banks need an explicit first selection; single-type banks initialize their current type, and newly supported types stay off until selected. Selected types for one bank reuse one login session. Partial runs keep their successful downloads and allow Import with a warning.
+
 `credentials.json` is local, ignored, and encrypted by Electron `safeStorage` in desktop runtime. If `safeStorage` encryption is unavailable, the desktop app fails startup instead of writing plaintext credentials.
 
 Useful `settings.json` keys:
@@ -115,6 +117,7 @@ Useful `settings.json` keys:
   "LIBRETTO_CLOUD_FUBON_ENABLED": true,
   "LIBRETTO_CLOUD_ESUN_ENABLED": true,
   "LIBRETTO_CLOUD_YUANTA_ENABLED": true,
+  "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES": "deposit,foreign_currency,credit_card",
   "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED": true,
   "LIBRETTO_CLOUD_CATHAY_ENABLED": true,
   "LIBRETTO_CLOUD_HNCB_ENABLED": true,
