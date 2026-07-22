@@ -30,6 +30,8 @@ assert.match(source, /function resetYRange\(\) \{/);
 assert.match(source, /\{#if hasYRange\}/);
 assert.match(source, /\{\$t\.spending\.chartReset\}/);
 assert.match(source, /\{#key `\$\{chart\.signature\}:\$\{selectedSeriesKeys\.join\(","\)\}:\$\{yRangeReset\}`\}/);
+assert.match(source, /class="stacked-balance-tooltip-swatch" style:background-color=\{item\.color\}/);
+assert.match(source, /\.stacked-balance-tooltip-swatch\s*\{[^}]*border-radius:\s*999px;/);
 assert.doesNotMatch(source, /adjustYAxis/);
 assert.match(source, /return typeof value === "number" \? formatSparklineTick\(value\) : String\(value\);/);
 assert.doesNotMatch(source, /\byTicks\b/);
