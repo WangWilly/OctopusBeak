@@ -1,4 +1,5 @@
 import type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
+import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 
 export type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
 
@@ -24,37 +25,36 @@ export const CSV_IMPORT_DEPENDENCY_IDS = [
 export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
   {
     id: "fubon",
-    label: "Fubon",
     enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_FUBON_USER_ID",
       "LIBRETTO_CLOUD_FUBON_ACCOUNT",
       "LIBRETTO_CLOUD_FUBON_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.fubon,
   },
   {
     id: "esun",
-    label: "ESun",
     enabledKey: "LIBRETTO_CLOUD_ESUN_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_ESUN_USER_ID",
       "LIBRETTO_CLOUD_ESUN_ACCOUNT",
       "LIBRETTO_CLOUD_ESUN_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.esun,
   },
   {
     id: "yuanta",
-    label: "Yuanta",
     enabledKey: "LIBRETTO_CLOUD_YUANTA_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_YUANTA_USER_ID",
       "LIBRETTO_CLOUD_YUANTA_ACCOUNT",
       "LIBRETTO_CLOUD_YUANTA_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.yuanta,
   },
   {
     id: "yuanta-trade",
-    label: "Yuanta Trade",
     enabledKey: "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID",
@@ -62,66 +62,67 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
       "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES["yuanta-trade"],
   },
   {
     id: "cathay",
-    label: "Cathay",
     enabledKey: "LIBRETTO_CLOUD_CATHAY_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_CATHAY_USER_ID",
       "LIBRETTO_CLOUD_CATHAY_ACCOUNT",
       "LIBRETTO_CLOUD_CATHAY_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.cathay,
   },
   {
     id: "hncb",
-    label: "HNCB",
     enabledKey: "LIBRETTO_CLOUD_HNCB_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_HNCB_USER_ID",
       "LIBRETTO_CLOUD_HNCB_ACCOUNT",
       "LIBRETTO_CLOUD_HNCB_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.hncb,
   },
   {
     id: "ctbc",
-    label: "CTBC",
     enabledKey: "LIBRETTO_CLOUD_CTBC_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_CTBC_USER_ID",
       "LIBRETTO_CLOUD_CTBC_ACCOUNT",
       "LIBRETTO_CLOUD_CTBC_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.ctbc,
   },
   {
     id: "post",
-    label: "Post Office",
     enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_POST_USER_ID",
       "LIBRETTO_CLOUD_POST_ACCOUNT",
       "LIBRETTO_CLOUD_POST_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.post,
   },
   {
     id: "sinopac",
-    label: "SinoPac",
     enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_SINOPAC_USER_ID",
       "LIBRETTO_CLOUD_SINOPAC_ACCOUNT",
       "LIBRETTO_CLOUD_SINOPAC_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.sinopac,
   },
   {
     id: "linebank",
-    label: "LINE Bank",
     enabledKey: "LIBRETTO_CLOUD_LINEBANK_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_LINEBANK_USER_ID",
       "LIBRETTO_CLOUD_LINEBANK_ACCOUNT",
       "LIBRETTO_CLOUD_LINEBANK_PASSWORD",
     ],
+    ...BANK_STATEMENT_CAPABILITIES.linebank,
   },
   {
     id: "einvoice",
@@ -317,12 +318,17 @@ export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
 
 export const AUTOMATION_ENABLED_KEYS = AUTOMATION_CREDENTIAL_GROUPS.map((group) => group.enabledKey);
 
+const AUTOMATION_STATEMENT_SELECTION_KEYS = AUTOMATION_CREDENTIAL_GROUPS.flatMap((group) =>
+  group.statementSelectionKey ? [group.statementSelectionKey] : [],
+);
+
 export const AUTOMATION_NON_SECRET_KEYS = [
   "SYSTEM_TIMEZONE",
   "EXCHANGE_RATE_UPDATE_TIME",
   "AUTOMATION_BUSINESS_TIMEZONE",
   "MAX_SUB_ACCOUNT",
   ...AUTOMATION_ENABLED_KEYS,
+  ...AUTOMATION_STATEMENT_SELECTION_KEYS,
 ] as const;
 
 const nonSecretCredentialKeys = new Set<string>(["MAX_SUB_ACCOUNT"]);
