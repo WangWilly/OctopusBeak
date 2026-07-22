@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import { activeTaskRuns, createTaskRun, latestTaskRuns, recentTaskRuns, taskRunById } from "./store.ts";
 import {
   armAutomationSessionTimeout,
@@ -362,6 +363,58 @@ test("output persistence warnings remain visible in terminal history without hid
     failedDb.close();
   } finally {
     console.error = originalError;
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("clean exits persist statement summary status and preserve missing or malformed fallback", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "automation-statement-summary-"));
+  const ledgerDir = join(rootDir, "ledger");
+  const workDir = join(rootDir, "work");
+  const binDir = join(rootDir, "bin");
+  const npmPath = join(binDir, "npm");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const runWithOutput = async (line: string) => {
+    writeFileSync(npmPath, `#!/bin/sh\nprintf '%s\\n' '${line}'\n`, "utf8");
+    chmodSync(npmPath, 0o755);
+    return runAutomationTask("exchange-rates", ledgerDir);
+  };
+
+  try {
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    process.chdir(workDir);
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+
+    assert.deepEqual(await runWithOutput(statementRunSummaryLine([
+      { typeId: "deposit", status: "success" },
+      { typeId: "loan", status: "failed", error: "no account" },
+    ])), { status: "partial" });
+    assert.deepEqual(await runWithOutput(statementRunSummaryLine([
+      { typeId: "deposit", status: "failed", error: "broken" },
+      { typeId: "loan", status: "failed", error: "denied" },
+    ])), { status: "failed" });
+    assert.deepEqual(
+      await runWithOutput("automation-statement-summary: not-json"),
+      { status: "completed" },
+    );
+    assert.deepEqual(await runWithOutput("ordinary workflow output"), { status: "completed" });
+
+    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const rows = db.prepare(`
+      SELECT status, error_message
+      FROM automation_task_runs
+      WHERE task_id = 'exchange-rates'
+      ORDER BY rowid DESC
+    `).all() as { status: string; error_message: string | null }[];
+    assert.deepEqual(rows.map((row) => row.status), ["completed", "completed", "failed", "partial"]);
+    assert.equal(rows[2]?.error_message, "deposit: broken\nloan: denied");
+    db.close();
+  } finally {
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;

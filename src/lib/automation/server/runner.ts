@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
+  parseStatementRunSummary,
+  type StatementRunSummary,
+} from "../statement-run-summary.ts";
+import {
   resolvePatchCommand,
   resolveTaskCommand,
 } from "./desktop-command.ts";
@@ -652,6 +656,7 @@ export async function runAutomationTask(
       }
       let logTail = "";
       let detectedResumeFailure: string | null = null;
+      const detectedStatementSummary: { value: StatementRunSummary | null } = { value: null };
       const outputPersistenceWarnings: string[] = [];
 
       const result = await new Promise<{
@@ -679,6 +684,8 @@ export async function runAutomationTask(
             { logTail, resumeFailure: detectedResumeFailure },
             chunk.toString("utf8"),
           );
+          detectedStatementSummary.value = parseStatementRunSummary(`${logTail}${output.logChunk}`)
+            ?? detectedStatementSummary.value;
           logTail = output.logTail;
           detectedResumeFailure = output.resumeFailure;
           try {
@@ -725,9 +732,18 @@ export async function runAutomationTask(
           exitCode: result.exitCode,
           waitingForHuman: shouldMarkWaitingForHuman(logTail),
         });
+      if (status === "completed" && detectedStatementSummary.value) {
+        status = detectedStatementSummary.value.status;
+      }
+      const statementFailure = detectedStatementSummary.value?.status === "failed"
+        ? detectedStatementSummary.value.results
+          .filter((component) => component.status === "failed")
+          .map((component) => `${component.typeId}: ${component.error ?? "Failed"}`)
+          .join("\n")
+        : null;
       let taskError = result.error?.message
         ?? resumeFailure
-        ?? (status === "failed" ? finalFailureMessage(logTail, result.exitCode) : null);
+        ?? (status === "failed" ? statementFailure || finalFailureMessage(logTail, result.exitCode) : null);
       taskError = [taskError, ...outputPersistenceWarnings].filter(Boolean).join("\n") || null;
       if (owner && !shouldRetainAutomationSession(status)) {
         const retainedOwner = ownedAutomationSession(task.id) ?? owner;

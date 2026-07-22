@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import {
   activeTaskRuns,
   createTaskRun,
@@ -101,6 +102,7 @@ try {
   });
   assert.equal(lockedGate.locked, true);
   assert.deepEqual(lockedGate.missingTaskIds, ["esun-credit-card-statements"]);
+  assert.deepEqual(lockedGate.warnings, []);
 
   const esunRun = createTaskRun(db, {
     taskId: "esun-credit-card-statements",
@@ -127,6 +129,41 @@ try {
   });
   assert.equal(failedGate.locked, true);
   assert.deepEqual(failedGate.missingTaskIds, ["esun-credit-card-statements"]);
+  assert.deepEqual(failedGate.warnings, []);
+
+  updateTaskRun(db, esunRun.taskRunId, {
+    status: "partial",
+    finishedAt: "2026-06-30T03:21:00.000Z",
+    exitCode: 0,
+    errorMessage: "credit-card: download failed",
+    logTail: statementRunSummaryLine([
+      { typeId: "account", status: "success" },
+      { typeId: "credit-card", status: "failed", error: "download failed" },
+    ]),
+  });
+
+  const partialGate = importGateStatus(db, {
+    dependencyIds: [
+      "fubon-all-statements",
+      "esun-credit-card-statements",
+    ],
+    startUtc: new Date("2026-06-30T00:00:00.000Z"),
+    endUtc: new Date("2026-07-01T00:00:00.000Z"),
+  });
+  assert.equal(partialGate.locked, false);
+  assert.deepEqual(partialGate.missingTaskIds, []);
+  assert.deepEqual(partialGate.warnings, [{
+    taskId: "esun-credit-card-statements",
+    failedTypeIds: ["credit-card"],
+  }]);
+
+  const missingGate = importGateStatus(db, {
+    dependencyIds: ["esun-credit-card-statements", "never-run-statements"],
+    startUtc: new Date("2026-06-30T00:00:00.000Z"),
+    endUtc: new Date("2026-07-01T00:00:00.000Z"),
+  });
+  assert.equal(missingGate.locked, true);
+  assert.deepEqual(missingGate.missingTaskIds, ["never-run-statements"]);
 
   updateTaskRun(db, esunRun.taskRunId, {
     status: "completed",
@@ -145,6 +182,7 @@ try {
   });
   assert.equal(unlockedGate.locked, false);
   assert.deepEqual(unlockedGate.missingTaskIds, []);
+  assert.deepEqual(unlockedGate.warnings, []);
   assert.equal(taskRunById(db, esunRun.taskRunId)?.status, "completed");
 
   for (let index = 0; index < 101; index += 1) {
