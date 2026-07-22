@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createServer } from "vite";
 
 const source = await readFile(
   new URL("./yuanta-all-statements.ts", import.meta.url),
@@ -34,3 +35,117 @@ assert.doesNotMatch(
   source,
   /\.or\(candidate\.locator\('a\[onclick\*="queryMonth\("\]'\)\)/,
 );
+
+const server = await createServer({
+  configFile: false,
+  cacheDir: "/tmp/octopus-beak-yuanta-all-statements-check",
+  server: { middlewareMode: true },
+  appType: "custom",
+  logLevel: "silent",
+});
+const module = await server.ssrLoadModule(
+  "/src/workflows/yuanta-all-statements.ts",
+).finally(() => server.close());
+const workflow = module.default;
+const runYuantaAllStatements = module.runYuantaAllStatements;
+assert.equal(workflow.handler, runYuantaAllStatements);
+
+const selectionKey = "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES";
+const previousSelection = process.env[selectionKey];
+process.env[selectionKey] = "foreign_currency,fund";
+const calls: string[] = [];
+const ctx = { page: {}, session: "yuanta-session" };
+const credentials = { yuanta_user_id: "id" };
+const foreignCurrencyOutput = { files: ["foreign.csv"] };
+const fundOutput = { files: ["fund.csv"] };
+let output: unknown;
+try {
+  output = await runYuantaAllStatements(
+    ctx,
+    {
+      credentials,
+      include: {},
+      continueOnError: false,
+      prepareBetweenComponents: true,
+      statements: {},
+      foreignCurrency: { accountFilters: ["foreign"] },
+      loan: {},
+      creditCard: {},
+      fund: { accountFilters: ["fund"] },
+    },
+    {
+      yuantaStatements: {
+        name: "yuantaStatements",
+        run: async () => {
+          throw new Error("unselected deposit ran");
+        },
+      },
+      yuantaForeignCurrencyStatements: {
+        name: "yuantaForeignCurrencyStatements",
+        run: async (actualCtx: unknown, input: Record<string, unknown>) => {
+          assert.equal(actualCtx, ctx);
+          assert.equal(input.credentials, credentials);
+          calls.push("run:foreignCurrency");
+          return foreignCurrencyOutput;
+        },
+      },
+      yuantaLoanStatements: {
+        name: "yuantaLoanStatements",
+        run: async () => {
+          throw new Error("unselected loan ran");
+        },
+      },
+      yuantaCreditCardStatements: {
+        name: "yuantaCreditCardStatements",
+        run: async () => {
+          throw new Error("unselected credit card ran");
+        },
+      },
+      yuantaFundStatements: {
+        name: "yuantaFundStatements",
+        run: async (actualCtx: unknown, input: Record<string, unknown>) => {
+          assert.equal(actualCtx, ctx);
+          assert.equal(input.credentials, credentials);
+          calls.push("run:fund");
+          return fundOutput;
+        },
+      },
+      prepareForComponent: async (actualCtx: unknown, component: string) => {
+        assert.equal(actualCtx, ctx);
+        calls.push(`prepare:${component}`);
+      },
+    },
+  );
+} finally {
+  if (previousSelection === undefined) delete process.env[selectionKey];
+  else process.env[selectionKey] = previousSelection;
+}
+
+assert.deepEqual(calls, [
+  "prepare:foreignCurrency",
+  "run:foreignCurrency",
+  "prepare:fund",
+  "run:fund",
+]);
+assert.deepEqual(output, {
+  count: 2,
+  succeeded: 2,
+  failed: 0,
+  skipped: 3,
+  statements: { workflow: "yuantaStatements", status: "skipped" },
+  foreignCurrency: {
+    workflow: "yuantaForeignCurrencyStatements",
+    status: "success",
+    output: foreignCurrencyOutput,
+  },
+  loan: { workflow: "yuantaLoanStatements", status: "skipped" },
+  creditCard: {
+    workflow: "yuantaCreditCardStatements",
+    status: "skipped",
+  },
+  fund: {
+    workflow: "yuantaFundStatements",
+    status: "success",
+    output: fundOutput,
+  },
+});

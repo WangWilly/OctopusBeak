@@ -443,11 +443,28 @@ async function prepareForComponent(
   });
 }
 
-export default workflow("yuantaAllStatements", {
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
+const yuantaAllStatementsDependencies = {
+  yuantaStatements,
+  yuantaForeignCurrencyStatements,
+  yuantaLoanStatements,
+  yuantaCreditCardStatements,
+  yuantaFundStatements,
+  prepareForComponent,
+};
+
+export async function runYuantaAllStatements(
+  ctx: LibrettoWorkflowContext,
+  rawInput: unknown,
+  overrides: Partial<typeof yuantaAllStatementsDependencies> = {},
+) {
+    const {
+      yuantaStatements,
+      yuantaForeignCurrencyStatements,
+      yuantaLoanStatements,
+      yuantaCreditCardStatements,
+      yuantaFundStatements,
+      prepareForComponent,
+    } = { ...yuantaAllStatementsDependencies, ...overrides };
     const input = rawInput as WorkflowInput;
     const credentials = input.credentials;
     const include = input.include;
@@ -574,5 +591,11 @@ export default workflow("yuantaAllStatements", {
       creditCard,
       fund,
     };
-  },
+}
+
+export default workflow("yuantaAllStatements", {
+  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
+  input: inputSchema,
+  output: outputSchema,
+  handler: runYuantaAllStatements,
 });
