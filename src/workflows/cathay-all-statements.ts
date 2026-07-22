@@ -78,125 +78,145 @@ const outputSchema = z.object({
   downloads: z.array(z.union([domesticDownloadSchema, foreignDownloadSchema])),
 });
 
+const inputSchema = createInputSchema();
+const cathayAllStatementsDependencies = {
+  signInCathay,
+  createCathaySession,
+  retryableStage,
+  downloadCathayStatements,
+  downloadCathayForeignStatements,
+};
+
+export async function runCathayAllStatements(
+  ctx: LibrettoWorkflowContext,
+  rawInput: unknown,
+  overrides: Partial<typeof cathayAllStatementsDependencies> = {},
+) {
+  const {
+    signInCathay,
+    createCathaySession,
+    retryableStage,
+    downloadCathayStatements,
+    downloadCathayForeignStatements,
+  } = { ...cathayAllStatementsDependencies, ...overrides };
+  const input = rawInput as z.infer<typeof inputSchema> & {
+    credentials: CathayCredentials;
+  };
+  const { page } = ctx;
+  const requestedIds = new Set(
+    input.statementTypes ??
+      resolveStatementSelection(
+        BANK_STATEMENT_CAPABILITIES.cathay,
+        process.env,
+        true,
+      ).selectedIds,
+  );
+  const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
+    .map((type) => type.id)
+    .filter((typeId) => requestedIds.has(typeId));
+  console.log("automation-progress: 0");
+
+  page.on("dialog", async (dialog) => {
+    console.warn("bank-dialog", { type: dialog.type() });
+    await dialog.accept();
+  });
+
+  const authResult = await signInCathay(
+    ctx,
+    input.credentials,
+    input.trustDevice,
+  );
+  let cathaySession = await createCathaySession(page);
+  console.log("automation-progress: 25");
+
+  const run = await runSelectedStatements(selectedIds, [
+    {
+      typeId: "domestic",
+      run: async () => {
+        console.log("combined-workflow-section-start", {
+          section: "domestic",
+        });
+        const downloads = await retryableStage({
+          name: "cathay-domestic-statements",
+          session: ctx.session,
+          reset: async () => {
+            cathaySession = await createCathaySession(page);
+          },
+          run: async () =>
+            downloadCathayStatements(
+              page,
+              input.dateRange,
+              input.domesticAccountFilters ?? input.accountFilters,
+              cathaySession,
+            ),
+        });
+        return downloads.map((download) => ({
+          type: "domestic" as const,
+          ...download,
+        }));
+      },
+      fileCount: (output) => (output as unknown[]).length,
+    },
+    {
+      typeId: "foreign_currency",
+      run: async () => {
+        console.log("combined-workflow-section-start", {
+          section: "foreign",
+        });
+        const downloads = await retryableStage({
+          name: "cathay-foreign-statements",
+          session: ctx.session,
+          reset: async () => {
+            cathaySession = await createCathaySession(page);
+          },
+          run: async () =>
+            downloadCathayForeignStatements(
+              page,
+              input.dateRange,
+              input.foreignAccountFilters ?? input.accountFilters,
+              input.currencyFilters,
+              cathaySession,
+            ),
+        });
+        return downloads.map((download) => ({
+          type: "foreign" as const,
+          ...download,
+        }));
+      },
+      fileCount: (output) => (output as unknown[]).length,
+    },
+  ]);
+  const downloads = [
+    ...((run.outputs.domestic as
+      | z.infer<typeof domesticDownloadSchema>[]
+      | undefined) ?? []),
+    ...((run.outputs.foreign_currency as
+      | z.infer<typeof foreignDownloadSchema>[]
+      | undefined) ?? []),
+  ];
+  const statementTypes: Array<z.infer<typeof outputStatementTypeSchema>> =
+    selectedIds.map((typeId) =>
+      typeId === "foreign_currency" ? "foreign" : "domestic",
+    );
+  console.log("automation-progress: 100");
+
+  return {
+    dateRange: input.dateRange,
+    statementTypes,
+    usedExistingSession: authResult.usedExistingSession,
+    count: downloads.length,
+    downloads,
+  };
+}
+
 export function createCathayAllStatementsWorkflow(
   workflowName = "cathayAllStatements",
 ) {
-  const inputSchema = createInputSchema();
-
   return workflow(workflowName, {
     credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
     input: inputSchema,
     output: outputSchema,
-    handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-      const input = rawInput as z.infer<typeof inputSchema> & {
-        credentials: CathayCredentials;
-      };
-      const { page } = ctx;
-      const requestedIds = new Set(
-        input.statementTypes ??
-          resolveStatementSelection(
-            BANK_STATEMENT_CAPABILITIES.cathay,
-            process.env,
-            true,
-          ).selectedIds,
-      );
-      const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
-        .map((type) => type.id)
-        .filter((typeId) => requestedIds.has(typeId));
-      console.log("automation-progress: 0");
-
-      page.on("dialog", async (dialog) => {
-        console.warn("bank-dialog", { type: dialog.type() });
-        await dialog.accept();
-      });
-
-      const authResult = await signInCathay(
-        ctx,
-        input.credentials,
-        input.trustDevice,
-      );
-      let cathaySession = await createCathaySession(page);
-      console.log("automation-progress: 25");
-
-      const run = await runSelectedStatements(selectedIds, [
-        {
-          typeId: "domestic",
-          run: async () => {
-            console.log("combined-workflow-section-start", {
-              section: "domestic",
-            });
-            const downloads = await retryableStage({
-              name: "cathay-domestic-statements",
-              session: ctx.session,
-              reset: async () => {
-                cathaySession = await createCathaySession(page);
-              },
-              run: async () =>
-                downloadCathayStatements(
-                  page,
-                  input.dateRange,
-                  input.domesticAccountFilters ?? input.accountFilters,
-                  cathaySession,
-                ),
-            });
-            return downloads.map((download) => ({
-              type: "domestic" as const,
-              ...download,
-            }));
-          },
-          fileCount: (output) => (output as unknown[]).length,
-        },
-        {
-          typeId: "foreign_currency",
-          run: async () => {
-            console.log("combined-workflow-section-start", {
-              section: "foreign",
-            });
-            const downloads = await retryableStage({
-              name: "cathay-foreign-statements",
-              session: ctx.session,
-              reset: async () => {
-                cathaySession = await createCathaySession(page);
-              },
-              run: async () =>
-                downloadCathayForeignStatements(
-                  page,
-                  input.dateRange,
-                  input.foreignAccountFilters ?? input.accountFilters,
-                  input.currencyFilters,
-                  cathaySession,
-                ),
-            });
-            return downloads.map((download) => ({
-              type: "foreign" as const,
-              ...download,
-            }));
-          },
-          fileCount: (output) => (output as unknown[]).length,
-        },
-      ]);
-      const downloads = [
-        ...((run.outputs.domestic as
-          | z.infer<typeof domesticDownloadSchema>[]
-          | undefined) ?? []),
-        ...((run.outputs.foreign_currency as
-          | z.infer<typeof foreignDownloadSchema>[]
-          | undefined) ?? []),
-      ];
-      const statementTypes: Array<z.infer<typeof outputStatementTypeSchema>> =
-        selectedIds.map((typeId) =>
-          typeId === "foreign_currency" ? "foreign" : "domestic",
-        );
-      console.log("automation-progress: 100");
-
-      return {
-        dateRange: input.dateRange,
-        statementTypes,
-        usedExistingSession: authResult.usedExistingSession,
-        count: downloads.length,
-        downloads,
-      };
-    },
+    handler: runCathayAllStatements,
   });
 }
 
