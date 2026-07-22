@@ -26,7 +26,7 @@ test("overview Sankey card uses LayerChart Sankey with node and link tooltips", 
   assert.match(source, /\$: chartGraph = selectedNode \? sankeyGraphFromNode\(selectedNode\) : displayGraph;/);
   assert.match(source, /onclick=\{\(\) => selectNode\(node\)\}/);
   assert.match(source, /selectedNode\?\.id === node\.id \|\| !node\.sourceLinks\?\.length/);
-  assert.match(source, /flowSummary = displayGraph\.links\.map\(\(link\) =>[\s\S]*→ \$\{labelFor\(graphLabels\.get\(link\.target\) \?\? link\.target\)\}:/);
+  assert.match(source, /flowSummary = chartGraph\.links\.map\(\(link\) =>[\s\S]*→ \$\{labelFor\(graphLabels\.get\(link\.target\) \?\? link\.target\)\}:/);
   assert.match(source, /function percentage\(value: number, total: number\)/);
   assert.match(source, /percentage\(link\.value, data\.node\.value\)/);
 });
