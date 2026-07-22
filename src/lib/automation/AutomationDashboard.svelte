@@ -261,7 +261,7 @@
 
   function credentialGroupStatus(group: CredentialGroupDto, dictionary: Translation) {
     if (groupEnabled[group.id] === false) return dictionary.common.disabled;
-    if (group.statementSetupRequired) return dictionary.automation.needsSetup;
+    if (group.statementTypes?.length && !statementSelectionDrafts[group.id]?.length) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
       return dictionary.automation.selectedStatementCount(
         statementSelectionDrafts[group.id]?.length ?? 0,
@@ -437,6 +437,7 @@
       && !(statementSelectionDrafts[group.id]?.length)
     );
     if (invalid) {
+      credentialSearch = "";
       selectedCredentialGroupId = invalid.id;
       actionError = $t.automation.selectOneStatementType(invalid.label);
       await tick();
