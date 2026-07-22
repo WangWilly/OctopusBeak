@@ -166,6 +166,10 @@ assert.match(importWarningSource, /\{#each automation\.importGate\.warnings as w
 assert.match(importWarningSource, /taskIdLabel\(warning\.taskId, \$t\)/);
 assert.match(
   importWarningSource,
+  /\{#if warning\.failedTypeIds\.length\}:[\s\S]*?\{\/if\}/,
+);
+assert.match(
+  importWarningSource,
   /warning\.failedTypeIds\.map\(\(typeId\) => \$t\.automation\.statementTypeLabels\[typeId\] \?\? typeId\)\.join\(", "\)/,
 );
 
