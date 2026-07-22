@@ -30,6 +30,8 @@ export type OverviewPageDto = {
   dailyHistory: DailyHistoryRowDto[];
   accounts: AccountRowDto[];
   sankey: OverviewSankeyGraphDto | null;
+  sankeyExchangeRates: ExchangeRateDto[];
+  sankeyLatestExchangeRateDate: string | null;
   exchangeRates: ExchangeRateDto[];
   latestExchangeRateDate: string | null;
 };

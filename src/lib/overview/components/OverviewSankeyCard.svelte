@@ -2,15 +2,21 @@
   import { Chart, Group, Layer, Link, Rect, Text, Tooltip, sankeyGraphFromNode } from "layerchart";
   import { Sankey } from "layerchart/graph";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import type { OverviewSankeyGraphDto } from "$lib/overview/types.ts";
+  import type { OverviewSankeyGraphDto, OverviewSankeyNodeDto } from "$lib/overview/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
   export let graph: OverviewSankeyGraphDto;
   export let currency = "TWD";
   export let twdPerUnit = 1;
 
+  type SankeyNodeState = OverviewSankeyNodeDto & {
+    sourceLinks?: SankeyLinkState[];
+    targetLinks?: SankeyLinkState[];
+  };
+  type SankeyLinkState = { index: number };
+
   let highlightLinkIndexes: number[] = [];
-  let selectedNode: any = null;
+  let selectedNode: SankeyNodeState | null = null;
 
   const colors = {
     asset: "oklch(53% 0.1 207)",
@@ -21,7 +27,7 @@
     return formatMoney({ currency, value });
   }
 
-  function colorFor(tone: unknown) {
+  function colorFor(tone: OverviewSankeyNodeDto["tone"]) {
     return tone === "liability" ? colors.liability : colors.asset;
   }
 
@@ -29,7 +35,7 @@
     return ($t.knownLabels as Record<string, string>)[value] ?? value;
   }
 
-  function linkedIndexes(node: any) {
+  function linkedIndexes(node: SankeyNodeState) {
     return [...(node.sourceLinks ?? []), ...(node.targetLinks ?? [])].map((link) => link.index);
   }
 
@@ -37,7 +43,7 @@
     return new Intl.NumberFormat($locale, { style: "percent", maximumFractionDigits: 1 }).format(total ? value / total : 0);
   }
 
-  function selectNode(node: any) {
+  function selectNode(node: SankeyNodeState) {
     selectedNode = selectedNode?.id === node.id || node.sourceLinks?.length === 0 ? null : node;
   }
 
@@ -52,10 +58,15 @@
     nodes: graph.nodes,
     links: graph.links.map((link) => ({ ...link, value: link.value / twdPerUnit })),
   };
+  $: graphLabels = new Map(graph.nodes.map((node) => [node.id, node.label]));
+  $: flowSummary = displayGraph.links.map((link) =>
+    `${labelFor(graphLabels.get(link.source) ?? link.source)} to ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link.value)}.`,
+  ).join(" ");
   $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
 </script>
 
-<div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow}>
+<div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow} aria-describedby="overview-sankey-summary">
+  <span id="overview-sankey-summary" class="overview-sankey-summary">{flowSummary}</span>
   <Chart data={chartGraph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
     {#snippet children({ context })}
       <Layer>
@@ -163,6 +174,18 @@
 <style>
   .overview-sankey {
     min-width: 0;
+  }
+
+  .overview-sankey-summary {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   :global(.overview-sankey-link) {

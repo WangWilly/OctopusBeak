@@ -73,11 +73,11 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
     const sankeyPositions = buildRawPositions(visibleData);
     const sankeyCurrencies = [...new Set(sankeyPositions.map((position) => position.currency).filter((currency) => currency !== "TWD"))];
     const sankeyPlaceholders = sankeyCurrencies.map(() => "?").join(", ");
-    const sankeyRates = new Map(
+    const sankeyExchangeRates: OverviewPageDto["sankeyExchangeRates"] =
       (sankeyCurrencies.length === 0
         ? []
         : sqlite.prepare(`
-            SELECT rate.currency, rate.twd_per_unit AS twdPerUnit
+            SELECT rate.rate_date AS rateDate, rate.currency, rate.twd_per_unit AS twdPerUnit
             FROM exchange_rates AS rate
             WHERE rate.currency IN (${sankeyPlaceholders})
               AND rate.rate_date = (
@@ -85,9 +85,10 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
                 FROM exchange_rates AS current_rate
                 WHERE current_rate.currency = rate.currency
               )
-          `).all(...sankeyCurrencies) as Array<{ currency: string; twdPerUnit: number }>)
-        .map((rate) => [rate.currency, rate.twdPerUnit]),
-    );
+            ORDER BY rate.currency
+          `).all(...sankeyCurrencies) as OverviewPageDto["sankeyExchangeRates"])
+        .map((rate) => ({ ...rate }));
+    const sankeyRates = new Map(sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
     const sankey = buildOverviewSankeyGraph(sankeyPositions, sankeyRates);
     const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;
@@ -124,6 +125,11 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       dailyHistory,
       accounts,
       sankey,
+      sankeyExchangeRates,
+      sankeyLatestExchangeRateDate: sankeyExchangeRates.reduce<string | null>(
+        (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,
+        null,
+      ),
       exchangeRates,
       latestExchangeRateDate: exchangeRates.reduce<string | null>(
         (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,

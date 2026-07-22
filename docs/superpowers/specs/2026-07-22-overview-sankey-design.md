@@ -7,7 +7,7 @@ Add a full-width Sankey card at the bottom of Overview to explain how the curren
 ## Prototype
 
 - Use LayerChart `Chart`, `Layer`, `Sankey`, `Link`, `Group`, `Rect`, `Text`, and `Tooltip`.
-- Render one fixed overview, without node selection or drill-down.
+- Click a non-terminal node to zoom into its downstream flow; click it again or a terminal node to return to the full overview.
 - Render four left-to-right levels:
   1. Assets and liabilities
   2. Asset kinds (bank, fund, brokerage, crypto, foreign) and liability kinds (credit card, loan)
@@ -15,7 +15,7 @@ Add a full-width Sankey card at the bottom of Overview to explain how the curren
   4. Asset position names, where positions exist
 - Bank, foreign-currency, credit-card, and loan accounts terminate at their account node.
 - Use cool blue-green hues for asset nodes and links; use warm clay-red hues for liabilities.
-- On node hover, show its label, TWD amount, incoming nodes, and outgoing nodes. On link hover, show source, target, and TWD amount.
+- On node hover, show its label, amount, incoming nodes, and outgoing nodes with their percentage of the node total. On link hover, show source, target, and amount.
 - Give the card a fixed desktop-height chart with responsive width and an accessible text summary of every flow.
 
 ## Production Data
@@ -24,6 +24,7 @@ Add a full-width Sankey card at the bottom of Overview to explain how the curren
 - Account value links use the account's current book value. Position links use position values and sum to their account value.
 - Convert every non-TWD value using the current exchange-rate set. If any included value cannot be converted with a current rate, omit the entire Sankey card.
 - Keep the Sankey absent, rather than showing partial totals or stale-rate values.
+- Expose the same current rates used to build the graph for base-currency conversion and the displayed rate date.
 
 ## Validation
 

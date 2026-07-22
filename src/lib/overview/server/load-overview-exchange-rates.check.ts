@@ -31,6 +31,10 @@ try {
     { rateDate: "2026-07-11", currency: "USD", twdPerUnit: 32 },
   ]);
   assert.equal(overview.latestExchangeRateDate, "2026-07-11");
+  assert.deepEqual(overview.sankeyExchangeRates, [
+    { rateDate: "2026-07-12", currency: "USD", twdPerUnit: 32 },
+  ]);
+  assert.equal(overview.sankeyLatestExchangeRateDate, "2026-07-12");
   assert.equal(overview.sankey, null);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
