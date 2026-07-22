@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
+  parseStatementRunSummary,
   STATEMENT_RUN_SUMMARY_PREFIX,
   statementRunSummaryLine,
 } from "../statement-run-summary.ts";
@@ -419,6 +420,42 @@ test("clean exits persist statement summary status and preserve missing or malfo
       `printf '%s\\n' '${splitSummary.slice(splitAt)}'`,
     ].join("\n")), { status: "partial" });
 
+    const evictedSummary = statementRunSummaryLine([
+      { typeId: "deposit", status: "success" },
+      { typeId: "loan", status: "failed", error: "evicted failure" },
+    ]);
+    assert.deepEqual(await runWithScript([
+      `printf '%s\\n' '${evictedSummary}'`,
+      `printf '%s\\n' '${"later output ".repeat(500)}'`,
+    ].join("\n")), { status: "partial" });
+    let tailDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    let persistedTail = latestTaskRuns(tailDb)["exchange-rates"]?.logTail ?? "";
+    tailDb.close();
+    assert.deepEqual(parseStatementRunSummary(persistedTail), {
+      status: "partial",
+      results: [
+        { typeId: "deposit", status: "success" },
+        { typeId: "loan", status: "failed", error: "evicted failure" },
+      ],
+    });
+
+    const oversizedSplitSummary = statementRunSummaryLine([
+      { typeId: "deposit", status: "success" },
+      { typeId: "loan", status: "failed", error: "x".repeat(6_000) },
+    ]);
+    assert.deepEqual(await runWithScript([
+      `printf '%s' '${oversizedSplitSummary.slice(0, 100)}'`,
+      "sleep 0.05",
+      `printf '%s' '${oversizedSplitSummary.slice(100, -1)}'`,
+      "sleep 0.05",
+      `printf '%s\\n' '${oversizedSplitSummary.slice(-1)}'`,
+    ].join("\n")), { status: "partial" });
+    tailDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    persistedTail = latestTaskRuns(tailDb)["exchange-rates"]?.logTail ?? "";
+    tailDb.close();
+    assert.equal(parseStatementRunSummary(persistedTail)?.status, "partial");
+    assert.ok(persistedTail.length <= 4_000);
+
     const validSummary = statementRunSummaryLine([{ typeId: "deposit", status: "success" }]);
     assert.deepEqual(
       await runWithOutput(`${validSummary}\n${STATEMENT_RUN_SUMMARY_PREFIX}not-json`),
@@ -441,15 +478,66 @@ test("clean exits persist statement summary status and preserve missing or malfo
       "failed",
       "completed",
       "partial",
+      "partial",
+      "partial",
       "completed",
       "completed",
       "failed",
       "partial",
     ]);
     assert.equal(rows[0]?.error_message, "process failed");
-    assert.equal(rows[5]?.error_message, "deposit: broken\nloan: denied");
+    assert.equal(rows[7]?.error_message, "deposit: broken\nloan: denied");
     db.close();
   } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("cleanup failure makes a partial Libretto run failed", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "automation-partial-cleanup-"));
+  const ledgerDir = join(rootDir, "ledger");
+  const binDir = join(rootDir, "bin");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const originalError = console.error;
+  const summary = statementRunSummaryLine([
+    { typeId: "deposit", status: "success" },
+    { typeId: "loan", status: "failed", error: "no loan account" },
+  ]);
+  try {
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(rootDir, "settings.json"), JSON.stringify({
+      LIBRETTO_CLOUD_FUBON_ENABLED: true,
+      LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,loan",
+    }));
+    const npmPath = join(binDir, "npm");
+    writeFileSync(npmPath, [
+      "#!/bin/sh",
+      `printf '%s\\n' '${summary}'`,
+    ].join("\n"), "utf8");
+    chmodSync(npmPath, 0o755);
+    const npxPath = join(binDir, "npx");
+    writeFileSync(npxPath, "#!/bin/sh\nprintf 'close failed\\n' >&2\nexit 1\n", "utf8");
+    chmodSync(npxPath, 0o755);
+    process.chdir(rootDir);
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    console.error = () => {};
+
+    assert.deepEqual(await runAutomationTask("fubon-all-statements", ledgerDir), {
+      status: "failed",
+    });
+    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const terminal = latestTaskRuns(db)["fubon-all-statements"];
+    assert.equal(terminal?.status, "failed");
+    assert.equal(terminal?.exitCode, 0);
+    assert.equal(parseStatementRunSummary(terminal?.logTail ?? "")?.status, "partial");
+    assert.match(terminal?.errorMessage ?? "", /Session cleanup failed/);
+    db.close();
+  } finally {
+    console.error = originalError;
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;

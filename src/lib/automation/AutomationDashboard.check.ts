@@ -154,3 +154,30 @@ assert.match(
 );
 assert.match(source, /<span>\{credentialGroupStatuses\[group\.id\]\}<\/span>/);
 assert.doesNotMatch(source, /<span>\{credentialGroupStatus\(group, \$t\)\}<\/span>/);
+
+const importWarningSource = source.slice(
+  source.indexOf('{#if task.id === "import-downloads-csv" && task.canRun && automation.importGate.warnings.length}'),
+  source.indexOf('<button\n                      class={`button task-control', source.indexOf('{#if task.id === "import-downloads-csv"')),
+);
+assert.match(importWarningSource, /\{#each automation\.importGate\.warnings as warning\}/);
+assert.match(importWarningSource, /taskIdLabel\(warning\.taskId, \$t\)/);
+assert.match(
+  importWarningSource,
+  /warning\.failedTypeIds\.map\(\(typeId\) => \$t\.automation\.statementTypeLabels\[typeId\] \?\? typeId\)\.join\(", "\)/,
+);
+
+const statementFieldsetSource = source.slice(
+  source.indexOf('<fieldset\n                class="statement-selection"'),
+  source.indexOf("</fieldset>", source.indexOf('<fieldset\n                class="statement-selection"')),
+);
+assert.match(source, /let statementSelectionError = ""/);
+assert.match(statementFieldsetSource, /aria-describedby=\{statementSelectionError/);
+assert.match(statementFieldsetSource, /aria-invalid=\{statementSelectionError/);
+assert.match(statementFieldsetSource, /id=\{`\$\{selectedCredentialGroup\.id\}-statement-error`\}/);
+assert.match(statementFieldsetSource, /aria-live="polite"/);
+assert.doesNotMatch(statementFieldsetSource, /\{#if statementSelectionError\}/);
+assert.match(saveCredentialsSource, /statementSelectionError = \$t\.automation\.selectOneStatementType\(invalid\.label\)/);
+assert.doesNotMatch(
+  saveCredentialsSource.slice(saveCredentialsSource.indexOf("if (invalid)"), saveCredentialsSource.indexOf("const updates")),
+  /actionError = \$t\.automation\.selectOneStatementType/,
+);

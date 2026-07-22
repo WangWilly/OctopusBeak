@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -82,10 +82,32 @@ try {
   assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeInvalidSave);
   assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeInvalidSave);
 
-  api.automationSaveCredentials({ LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,credit_card" });
+  const staleSettings = JSON.parse(readFileSync("settings.json", "utf8"));
+  staleSettings.LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES = "deposit,retired_type";
+  writeFileSync("settings.json", `${JSON.stringify(staleSettings, null, 2)}\n`);
+  const repairModel = api.loadAutomationDesktopModel(dir);
+  const repairGroup = repairModel.credentialGroups.find((group) => group.id === "fubon");
+  assert.deepEqual(repairGroup?.selectedStatementTypeIds, ["deposit"]);
+  assert.equal(repairGroup?.statementSetupRequired, true);
+  assert.equal(
+    repairModel.automation.tasks.find((task) => task.id === "fubon-all-statements")?.primaryAction,
+    "Configure",
+  );
+  assert.throws(
+    () => api.assertAutomationTaskCanStart("fubon-all-statements", dir),
+    /Unknown Fubon statement type: retired_type/,
+  );
+  assert.throws(
+    () => api.automationSaveCredentials({ [enabledKey]: "true" }),
+    /Unknown Fubon statement type: retired_type/,
+  );
+
+  api.automationSaveCredentials({
+    LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "loan, deposit,loan",
+  });
   assert.equal(
     JSON.parse(readFileSync("settings.json", "utf8")).LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
-    "deposit,credit_card",
+    "deposit,loan",
   );
   assert.equal(Object.hasOwn(JSON.parse(readFileSync("credentials.json", "utf8")), "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES"), false);
 
@@ -137,6 +159,43 @@ try {
   };
   configFiles.setAutomationCredentialCodec(fakeCodec);
 
+  const settingsBeforeEncryptionFailure = readFileSync("settings.json", "utf8");
+  const credentialsBeforeEncryptionFailure = readFileSync("credentials.json", "utf8");
+  configFiles.setAutomationCredentialCodec({
+    encrypt() {
+      throw new Error("fake encryption failure");
+    },
+    decrypt: fakeCodec.decrypt,
+  });
+  assert.throws(
+    () => api.automationSaveCredentials({
+      [enabledKey]: "false",
+      [accountKey]: "must-not-encrypt",
+    }),
+    /fake encryption failure/,
+  );
+  assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeEncryptionFailure);
+  assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeEncryptionFailure);
+  configFiles.setAutomationCredentialCodec(fakeCodec);
+
+  const settingsBeforeCredentialWriteFailure = readFileSync("settings.json", "utf8");
+  const credentialsBeforeCredentialWriteFailure = readFileSync("credentials.json", "utf8");
+  const blockedCredentialTempPath = `credentials.json.tmp-${process.pid}`;
+  mkdirSync(blockedCredentialTempPath);
+  try {
+    assert.throws(
+      () => api.automationSaveCredentials({
+        [enabledKey]: "false",
+        [accountKey]: "must-not-persist",
+      }),
+      /EISDIR|directory/i,
+    );
+  } finally {
+    rmSync(blockedCredentialTempPath, { recursive: true, force: true });
+  }
+  assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeCredentialWriteFailure);
+  assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeCredentialWriteFailure);
+
   const saveResult = api.automationSaveCredentials({
     [enabledKey]: "false",
     [accountKey]: "next-acct",
@@ -153,6 +212,26 @@ try {
   assert.equal(rawCredentialsText.includes("next-acct"), false);
   assert.equal(credentials[accountKey], "next-acct");
   assert.equal(Object.hasOwn(credentials, enabledKey), false);
+
+  const settingsBeforeCredentialReadFailure = readFileSync("settings.json", "utf8");
+  const credentialsBeforeCredentialReadFailure = readFileSync("credentials.json", "utf8");
+  configFiles.setAutomationCredentialCodec({
+    encrypt: fakeCodec.encrypt,
+    decrypt() {
+      throw new Error("fake decryption failure");
+    },
+  });
+  assert.throws(
+    () => api.automationSaveCredentials({
+      [enabledKey]: "true",
+      [accountKey]: "must-not-read",
+    }),
+    /fake decryption failure/,
+  );
+  assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeCredentialReadFailure);
+  assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeCredentialReadFailure);
+  configFiles.setAutomationCredentialCodec(fakeCodec);
+
   resetCredentialCodec();
   assert.throws(
     () => configFiles.readAutomationCredentialsFile("credentials.json"),

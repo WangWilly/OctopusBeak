@@ -11,6 +11,7 @@ export type StatementRunSummary = {
 };
 
 export const STATEMENT_RUN_SUMMARY_PREFIX = "automation-statement-summary: ";
+const STATEMENT_RUN_ERROR_MAX_LENGTH = 100;
 
 export function aggregateStatementResults(results: readonly StatementComponentResult[]) {
   const succeeded = results.some((result) => result.status === "success");
@@ -20,10 +21,18 @@ export function aggregateStatementResults(results: readonly StatementComponentRe
   return "failed" as const;
 }
 
-export function statementRunSummaryLine(results: StatementComponentResult[]) {
+export function statementRunSummaryLine(results: readonly StatementComponentResult[]) {
+  const boundedResults = results.map((result) => (
+    result.error && result.error.length > STATEMENT_RUN_ERROR_MAX_LENGTH
+      ? {
+          ...result,
+          error: `${result.error.slice(0, STATEMENT_RUN_ERROR_MAX_LENGTH - 3)}...`,
+        }
+      : result
+  ));
   return STATEMENT_RUN_SUMMARY_PREFIX + JSON.stringify({
-    status: aggregateStatementResults(results),
-    results,
+    status: aggregateStatementResults(boundedResults),
+    results: boundedResults,
   } satisfies StatementRunSummary);
 }
 

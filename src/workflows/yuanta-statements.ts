@@ -1,7 +1,12 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
+import {
+  librettoAuthenticate,
+  pause,
+  workflow,
+  type LibrettoWorkflowContext,
+} from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { hasAttachedLocator } from "./browser-interaction.js";
@@ -12,7 +17,7 @@ const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
 
-type YuantaCredentials = {
+export type YuantaCredentials = {
   yuanta_user_id?: string;
   yuanta_account?: string;
   yuanta_password?: string;
@@ -373,6 +378,14 @@ function currentCidFromFrameUrls(page: Page): string | null {
   return cidFromUrl(page.url());
 }
 
+async function isSignedIn(page: Page): Promise<boolean> {
+  return Boolean(
+    page.frame({ name: "fmenu" }) &&
+      page.frame({ name: "fmain" }) &&
+      currentCidFromFrameUrls(page),
+  );
+}
+
 async function findScopeWithSelector(
   page: Page,
   selector: string,
@@ -571,6 +584,50 @@ async function waitForSignedInState(
   );
 }
 
+export async function authenticateYuantaBank(
+  ctx: LibrettoWorkflowContext,
+  credentials: YuantaCredentials,
+  replaceActiveSession = true,
+) {
+  const { page } = ctx;
+  let lastBankDialogMessage = "";
+  let replacedActiveSession = false;
+
+  page.on("dialog", async (dialog) => {
+    lastBankDialogMessage = dialog.message();
+    console.warn("bank-dialog", {
+      type: dialog.type(),
+      message: lastBankDialogMessage,
+    });
+    await dialog.accept();
+  });
+
+  const authResult = await librettoAuthenticate(ctx, {
+    credentials,
+    isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
+    signIn: async ({ page: authPage, session }, signInCredentials) => {
+      await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
+      console.log(
+        "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
+          session +
+          "`.",
+      );
+      await pause(session);
+      await submitLogin(authPage, signInCredentials as YuantaCredentials);
+      replacedActiveSession = await waitForSignedInState(
+        authPage,
+        () => lastBankDialogMessage,
+        replaceActiveSession,
+      );
+    },
+  });
+
+  return {
+    usedExistingSession: authResult.usedProfile,
+    replacedActiveSession,
+  };
+}
+
 async function openTransactionDetailsPage(page: Page): Promise<BrowserScope> {
   const existing = await findScopeWithSelector(page, "#acctno", 5_000).catch(
     () => null,
@@ -712,33 +769,12 @@ export default workflow("yuantaStatements", {
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
+    const { page } = ctx;
     const credentials = (input as typeof input & { credentials: YuantaCredentials })
       .credentials;
-    let lastBankDialogMessage = "";
-
-    page.on("dialog", async (dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    });
-
-    await fillLoginForm(page, credentials);
-
-    console.log(
-      "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-        session +
-        "`.",
-    );
-    await pause(session);
-
-    await submitLogin(page, credentials);
-    const replacedActiveSession = await waitForSignedInState(
-      page,
-      () => lastBankDialogMessage,
+    const { replacedActiveSession } = await authenticateYuantaBank(
+      ctx,
+      credentials,
       input.replaceActiveSession,
     );
 

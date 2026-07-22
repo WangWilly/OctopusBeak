@@ -25,6 +25,9 @@ const module = await server.ssrLoadModule(
 const workflow = module.default;
 const runCathayAllStatements = module.runCathayAllStatements;
 assert.equal(workflow.handler, runCathayAllStatements);
+assert.deepEqual(workflow.inputSchema.parse({ statementTypes: ["foreign"] }).statementTypes, [
+  "foreign_currency",
+]);
 
 const selectionKey = "LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES";
 const previousSelection = process.env[selectionKey];
