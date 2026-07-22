@@ -71,6 +71,7 @@ const setupRequiredModel = buildAutomationPageModel({
 const setupRequiredFubon = setupRequiredModel.tasks.find((task) => task.id === "fubon-all-statements");
 assert.equal(setupRequiredFubon?.status, "needs_setup");
 assert.equal(setupRequiredFubon?.primaryAction, "Configure");
+assert.equal(setupRequiredFubon?.canRun, true);
 assert.equal(setupRequiredModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
 const unlockedImportModel = buildAutomationPageModel({
