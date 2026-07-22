@@ -4,7 +4,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { statementRunSummaryLine } from "../statement-run-summary.ts";
+import {
+  STATEMENT_RUN_SUMMARY_PREFIX,
+  statementRunSummaryLine,
+} from "../statement-run-summary.ts";
 import { activeTaskRuns, createTaskRun, latestTaskRuns, recentTaskRuns, taskRunById } from "./store.ts";
 import {
   armAutomationSessionTimeout,
@@ -378,11 +381,12 @@ test("clean exits persist statement summary status and preserve missing or malfo
   const npmPath = join(binDir, "npm");
   const previousCwd = process.cwd();
   const previousPath = process.env.PATH;
-  const runWithOutput = async (line: string) => {
-    writeFileSync(npmPath, `#!/bin/sh\nprintf '%s\\n' '${line}'\n`, "utf8");
+  const runWithScript = async (script: string) => {
+    writeFileSync(npmPath, `#!/bin/sh\n${script}`, "utf8");
     chmodSync(npmPath, 0o755);
     return runAutomationTask("exchange-rates", ledgerDir);
   };
+  const runWithOutput = (line: string) => runWithScript(`printf '%s\\n' '${line}'\n`);
 
   try {
     mkdirSync(workDir, { recursive: true });
@@ -404,6 +408,28 @@ test("clean exits persist statement summary status and preserve missing or malfo
     );
     assert.deepEqual(await runWithOutput("ordinary workflow output"), { status: "completed" });
 
+    const splitSummary = statementRunSummaryLine([
+      { typeId: "deposit", status: "success" },
+      { typeId: "loan", status: "failed", error: "split failure" },
+    ]);
+    const splitAt = Math.floor(splitSummary.length / 2);
+    assert.deepEqual(await runWithScript([
+      `printf '%s' '${splitSummary.slice(0, splitAt)}'`,
+      "sleep 0.05",
+      `printf '%s\\n' '${splitSummary.slice(splitAt)}'`,
+    ].join("\n")), { status: "partial" });
+
+    const validSummary = statementRunSummaryLine([{ typeId: "deposit", status: "success" }]);
+    assert.deepEqual(
+      await runWithOutput(`${validSummary}\n${STATEMENT_RUN_SUMMARY_PREFIX}not-json`),
+      { status: "completed" },
+    );
+    assert.deepEqual(await runWithScript([
+      `printf '%s\\n' '${validSummary}'`,
+      "printf 'process failed\\n'",
+      "exit 7",
+    ].join("\n")), { status: "failed" });
+
     const db = openLedgerDatabase(ledgerDir, { readOnly: true });
     const rows = db.prepare(`
       SELECT status, error_message
@@ -411,8 +437,17 @@ test("clean exits persist statement summary status and preserve missing or malfo
       WHERE task_id = 'exchange-rates'
       ORDER BY rowid DESC
     `).all() as { status: string; error_message: string | null }[];
-    assert.deepEqual(rows.map((row) => row.status), ["completed", "completed", "failed", "partial"]);
-    assert.equal(rows[2]?.error_message, "deposit: broken\nloan: denied");
+    assert.deepEqual(rows.map((row) => row.status), [
+      "failed",
+      "completed",
+      "partial",
+      "completed",
+      "completed",
+      "failed",
+      "partial",
+    ]);
+    assert.equal(rows[0]?.error_message, "process failed");
+    assert.equal(rows[5]?.error_message, "deposit: broken\nloan: denied");
     db.close();
   } finally {
     process.chdir(previousCwd);
