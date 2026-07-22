@@ -6,7 +6,7 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Frame, Locator, Page } from "playwright";
+import type { Dialog, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   clickAndWaitForNavigation,
@@ -703,14 +703,15 @@ export default workflow("yuantaLoanStatements", {
     let lastBankDialogMessage = "";
     let replacedActiveSession = false;
 
-    page.on("dialog", async (dialog) => {
+    const acceptBankDialog = async (dialog: Dialog) => {
       lastBankDialogMessage = dialog.message();
       console.warn("bank-dialog", {
         type: dialog.type(),
         message: lastBankDialogMessage,
       });
       await dialog.accept();
-    });
+    };
+    page.on("dialog", acceptBankDialog);
 
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
@@ -739,7 +740,7 @@ export default workflow("yuantaLoanStatements", {
           input.replaceActiveSession,
         );
       },
-    });
+    }).finally(() => page.off("dialog", acceptBankDialog));
 
     await openLoanStatementPage(page);
     const accounts = await readLoanAccountOptions(page, input.loanAccountFilters);

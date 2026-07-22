@@ -7,7 +7,7 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Download, Frame, Locator, Page } from "playwright";
+import type { Dialog, Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { hasAttachedLocator } from "./browser-interaction.js";
 
@@ -922,14 +922,15 @@ export default workflow("yuantaForeignCurrencyStatements", {
     let lastBankDialogMessage = "";
     let replacedActiveSession = false;
 
-    page.on("dialog", async (dialog) => {
+    const acceptBankDialog = async (dialog: Dialog) => {
       lastBankDialogMessage = dialog.message();
       console.warn("bank-dialog", {
         type: dialog.type(),
         message: lastBankDialogMessage,
       });
       await dialog.accept();
-    });
+    };
+    page.on("dialog", acceptBankDialog);
 
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
@@ -961,7 +962,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
           input.replaceActiveSession,
         );
       },
-    });
+    }).finally(() => page.off("dialog", acceptBankDialog));
 
     await openForeignCurrencyDetailsPage(page);
 
