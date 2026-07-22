@@ -42,6 +42,7 @@ function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts
   if (status === "waiting_for_human") return "Waiting for human";
   if (status === "completed") return "Completed";
   if (status === "partial") return "Partial";
+  if (status === "needs_setup") return "Needs setup";
   if (status === "failed") return "Failed";
   if (status === "locked") return "Locked";
   return "Queued";
