@@ -10,6 +10,14 @@ const authSource = await readFile(
   new URL("./yuanta-statements.ts", import.meta.url),
   "utf8",
 );
+const componentSources = await Promise.all(
+  ["foreign-currency", "loan", "credit-card", "fund"].map((component) =>
+    readFile(
+      new URL(`./yuanta-${component}-statements.ts`, import.meta.url),
+      "utf8",
+    ),
+  ),
+);
 
 assert.match(source, /for \(const scope of \[\.\.\.page\.frames\(\), page\]\)/);
 assert.match(source, /const hasMonthLink = await hasAttachedLocator\(/);
@@ -42,6 +50,13 @@ assert.doesNotMatch(
 );
 assert.match(authSource, /page\.on\("dialog", acceptBankDialog\)/);
 assert.match(authSource, /finally \{\s*page\.off\("dialog", acceptBankDialog\);\s*\}/);
+for (const componentSource of componentSources) {
+  assert.match(componentSource, /page\.on\("dialog", acceptBankDialog\)/);
+  assert.match(
+    componentSource,
+    /librettoAuthenticate\([\s\S]*?\.finally\(\(\) => page\.off\("dialog", acceptBankDialog\)\)/,
+  );
+}
 
 const server = await createServer({
   configFile: false,
