@@ -105,6 +105,8 @@ npm run libretto:close-all
 
 在當天所有已啟用、會產生資料的 crawler 成功前，`import downloads csv` 會保持鎖定。
 
+在 **憑證 → 要收集的對帳單** 中選擇的對帳單類型屬於非機密設定，會儲存在 `settings.json`。升級後，多類型銀行需要先明確選擇一次；單一類型銀行會初始化為目前類型，新支援的類型則會維持關閉，直到選取為止。同一家銀行的已選類型會共用一次登入工作階段。部分完成的執行會保留已成功下載的檔案，並允許帶警告執行匯入。
+
 `credentials.json` 僅供本機使用、已加入忽略清單，並在桌面執行環境中由 Electron `safeStorage` 加密。若 `safeStorage` 無法提供加密，桌面程式會停止啟動，不會將憑證以明文寫入。
 
 常用的 `settings.json` 設定：
@@ -115,6 +117,7 @@ npm run libretto:close-all
   "LIBRETTO_CLOUD_FUBON_ENABLED": true,
   "LIBRETTO_CLOUD_ESUN_ENABLED": true,
   "LIBRETTO_CLOUD_YUANTA_ENABLED": true,
+  "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES": "deposit,foreign_currency,credit_card",
   "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED": true,
   "LIBRETTO_CLOUD_CATHAY_ENABLED": true,
   "LIBRETTO_CLOUD_HNCB_ENABLED": true,
