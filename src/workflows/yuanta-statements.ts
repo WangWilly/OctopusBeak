@@ -7,7 +7,7 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Download, Frame, Locator, Page } from "playwright";
+import type { Dialog, Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { hasAttachedLocator } from "./browser-interaction.js";
 
@@ -593,39 +593,44 @@ export async function authenticateYuantaBank(
   let lastBankDialogMessage = "";
   let replacedActiveSession = false;
 
-  page.on("dialog", async (dialog) => {
+  const acceptBankDialog = async (dialog: Dialog) => {
     lastBankDialogMessage = dialog.message();
     console.warn("bank-dialog", {
       type: dialog.type(),
       message: lastBankDialogMessage,
     });
     await dialog.accept();
-  });
-
-  const authResult = await librettoAuthenticate(ctx, {
-    credentials,
-    isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-    signIn: async ({ page: authPage, session }, signInCredentials) => {
-      await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-      console.log(
-        "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-      await submitLogin(authPage, signInCredentials as YuantaCredentials);
-      replacedActiveSession = await waitForSignedInState(
-        authPage,
-        () => lastBankDialogMessage,
-        replaceActiveSession,
-      );
-    },
-  });
-
-  return {
-    usedExistingSession: authResult.usedProfile,
-    replacedActiveSession,
   };
+  page.on("dialog", acceptBankDialog);
+
+  try {
+    const authResult = await librettoAuthenticate(ctx, {
+      credentials,
+      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
+      signIn: async ({ page: authPage, session }, signInCredentials) => {
+        await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
+        console.log(
+          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
+            session +
+            "`.",
+        );
+        await pause(session);
+        await submitLogin(authPage, signInCredentials as YuantaCredentials);
+        replacedActiveSession = await waitForSignedInState(
+          authPage,
+          () => lastBankDialogMessage,
+          replaceActiveSession,
+        );
+      },
+    });
+
+    return {
+      usedExistingSession: authResult.usedProfile,
+      replacedActiveSession,
+    };
+  } finally {
+    page.off("dialog", acceptBankDialog);
+  }
 }
 
 async function openTransactionDetailsPage(page: Page): Promise<BrowserScope> {
