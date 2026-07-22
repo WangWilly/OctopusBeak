@@ -39,6 +39,14 @@ assert.deepEqual(
   resolveStatementSelection(
     fubon,
     { [fubon.statementSelectionKey]: "deposit,unknown" },
+    false,
+  ),
+  { selectedIds: ["deposit"], needsSetup: false, persisted: true },
+);
+assert.deepEqual(
+  resolveStatementSelection(
+    fubon,
+    { [fubon.statementSelectionKey]: "deposit,unknown" },
     true,
     { tolerateUnknown: true },
   ),

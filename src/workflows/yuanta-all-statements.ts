@@ -482,6 +482,8 @@ export async function runYuantaAllStatements(
       process.env,
       true,
     ).selectedIds.filter((typeId) => includeByType[typeId] !== false);
+    const firstSelectedId = selectedIds[0];
+    if (!firstSelectedId) throw new Error("Select at least one Yuanta statement type.");
     const componentInputByType: Record<string, unknown> = {
       deposit: input.statements,
       foreign_currency: input.foreignCurrency,
@@ -490,18 +492,13 @@ export async function runYuantaAllStatements(
       fund: input.fund,
     };
     const replaceActiveSession = asRecord(
-      componentInputByType[selectedIds[0]],
+      componentInputByType[firstSelectedId],
     ).replaceActiveSession;
-    const authenticationResult =
-      selectedIds.length > 0
-        ? await authenticateYuantaBank(
-            ctx,
-            credentials ?? {},
-            typeof replaceActiveSession === "boolean"
-              ? replaceActiveSession
-              : true,
-          )
-        : undefined;
+    const authenticationResult = await authenticateYuantaBank(
+      ctx,
+      credentials ?? {},
+      typeof replaceActiveSession === "boolean" ? replaceActiveSession : true,
+    );
     const run = await runSelectedStatements(selectedIds, [
       {
         typeId: "deposit",
@@ -555,14 +552,14 @@ export async function runYuantaAllStatements(
           ),
       },
     ]);
-    const firstSelectedOutput = run.outputs[selectedIds[0]];
+    const firstSelectedOutput = run.outputs[firstSelectedId];
     if (
       authenticationResult &&
       firstSelectedOutput &&
       typeof firstSelectedOutput === "object" &&
       !Array.isArray(firstSelectedOutput)
     ) {
-      run.outputs[selectedIds[0]] = {
+      run.outputs[firstSelectedId] = {
         ...firstSelectedOutput,
         ...(Object.hasOwn(firstSelectedOutput, "usedExistingSession")
           ? {
