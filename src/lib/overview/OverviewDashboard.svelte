@@ -2,7 +2,9 @@
   import { onMount } from "svelte";
   import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
+  import OverviewSankeyCard from "$lib/overview/components/OverviewSankeyCard.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
+  import { overviewSankeyPrototype } from "$lib/overview/components/overview-sankey-data.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     allExchangeRatesMissing,
@@ -18,6 +20,7 @@
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
+  const sankeyPrototype = overviewSankeyPrototype();
 
   export let overview: OverviewPageDto;
 
@@ -171,6 +174,16 @@
         <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
       {/key}
     </section>
+
+    <section class="card">
+      <div class="panel-title">
+        <h2>{$t.overview.portfolioFlow}</h2>
+        <span class="chip">{$t.overview.prototypeData}</span>
+      </div>
+      <div class="card pad overview-sankey-panel">
+        <OverviewSankeyCard graph={sankeyPrototype} currency="TWD" />
+      </div>
+    </section>
   </div>
 </DashboardShell>
 
@@ -185,5 +198,9 @@
     color: var(--danger);
     border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
     background: color-mix(in oklch, var(--danger) 9%, white);
+  }
+
+  .overview-sankey-panel {
+    overflow: hidden;
   }
 </style>
