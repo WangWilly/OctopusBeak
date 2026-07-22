@@ -493,13 +493,16 @@ export async function runYuantaAllStatements(
     const replaceActiveSession = asRecord(
       componentInputByType[selectedIds[0]],
     ).replaceActiveSession;
-    if (selectedIds.length > 0) {
-      await authenticateYuantaBank(
-        ctx,
-        credentials ?? {},
-        typeof replaceActiveSession === "boolean" ? replaceActiveSession : true,
-      );
-    }
+    const authenticationResult =
+      selectedIds.length > 0
+        ? await authenticateYuantaBank(
+            ctx,
+            credentials ?? {},
+            typeof replaceActiveSession === "boolean"
+              ? replaceActiveSession
+              : true,
+          )
+        : undefined;
     const run = await runSelectedStatements(selectedIds, [
       {
         typeId: "deposit",
@@ -553,6 +556,28 @@ export async function runYuantaAllStatements(
           ),
       },
     ]);
+    const firstSelectedOutput = run.outputs[selectedIds[0]];
+    if (
+      authenticationResult &&
+      firstSelectedOutput &&
+      typeof firstSelectedOutput === "object" &&
+      !Array.isArray(firstSelectedOutput)
+    ) {
+      run.outputs[selectedIds[0]] = {
+        ...firstSelectedOutput,
+        ...(Object.hasOwn(firstSelectedOutput, "usedExistingSession")
+          ? {
+              usedExistingSession: authenticationResult.usedExistingSession,
+            }
+          : {}),
+        ...(Object.hasOwn(firstSelectedOutput, "replacedActiveSession")
+          ? {
+              replacedActiveSession:
+                authenticationResult.replacedActiveSession,
+            }
+          : {}),
+      };
+    }
     console.log("automation-progress: 100");
 
     const [
