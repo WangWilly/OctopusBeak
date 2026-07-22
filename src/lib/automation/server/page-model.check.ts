@@ -57,6 +57,22 @@ assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), tru
 assert.equal(model.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("import-downloads-csv"), false);
 
+const setupRequiredModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns,
+  activeTaskIds: [],
+  todayRunTaskIds: [],
+  credentials: {},
+  importGate: { locked: false, missingTaskIds: [] },
+  setupRequiredGroupIds: new Set(["fubon"]),
+  active: false,
+  businessDate: "2026-06-30",
+});
+const setupRequiredFubon = setupRequiredModel.tasks.find((task) => task.id === "fubon-all-statements");
+assert.equal(setupRequiredFubon?.status, "needs_setup");
+assert.equal(setupRequiredFubon?.primaryAction, "Configure");
+assert.equal(setupRequiredModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
+
 const unlockedImportModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns,
