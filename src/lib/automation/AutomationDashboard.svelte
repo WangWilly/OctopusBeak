@@ -2,22 +2,15 @@
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
+  import type { CredentialGroupDto } from "$lib/desktop/api.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type { AutomationPageModel, AutomationTaskHistoryRow, AutomationTaskRow } from "./types.ts";
 
-  type CredentialGroup = {
-    id: string;
-    label: string;
-    enabledKey: string;
-    enabled: boolean;
-    credentialKeys: readonly string[];
-  };
-
   export let automation: AutomationPageModel;
-  export let credentialGroups: CredentialGroup[];
+  export let credentialGroups: CredentialGroupDto[];
   export let reload: () => Promise<void>;
 
   let credentialsOpen = false;
@@ -48,6 +41,7 @@
   let taskTooltipPosition = { left: 0, top: 0 };
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
+  let statementSelectionDrafts: Record<string, string[]> = {};
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
@@ -85,7 +79,10 @@
   ];
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
-  $: credentialsDirty = credentialInputDirty || credentialToggleDirty;
+  $: statementSelectionDirty = credentialGroups.some((group) =>
+    (statementSelectionDrafts[group.id] ?? []).join(",") !== group.selectedStatementTypeIds.join(","),
+  );
+  $: credentialsDirty = credentialInputDirty || credentialToggleDirty || statementSelectionDirty;
   $: visibleCredentialGroups = credentialGroups.filter((group) =>
     group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
   );
@@ -127,7 +124,7 @@
   function statusClass(status: string) {
     if (status === "completed") return "good";
     if (status === "failed" || status === "locked") return "bad";
-    if (status === "running" || status === "waiting_for_human") return "warn";
+    if (status === "running" || status === "waiting_for_human" || status === "partial" || status === "needs_setup") return "warn";
     return "";
   }
 
@@ -186,7 +183,7 @@
   }
 
   function taskCredentialsReady(task: AutomationTaskRow) {
-    return task.credentialKeys.every((key) => automation.credentials[key]);
+    return task.status !== "needs_setup" && task.credentialKeys.every((key) => automation.credentials[key]);
   }
 
   function credentialLabel(key: string, dictionary: Translation) {
@@ -203,6 +200,9 @@
   function resetCredentialChanges() {
     credentialDrafts = {};
     groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
+    statementSelectionDrafts = Object.fromEntries(
+      credentialGroups.map((group) => [group.id, [...group.selectedStatementTypeIds]]),
+    );
   }
 
   function openCredentials() {
@@ -239,6 +239,36 @@
       ...groupEnabled,
       [groupId]: !(groupEnabled[groupId] !== false),
     };
+  }
+
+  function toggleStatementType(groupId: string, typeId: string) {
+    const group = credentialGroups.find((candidate) => candidate.id === groupId);
+    const selected = new Set(statementSelectionDrafts[groupId] ?? []);
+    if (selected.has(typeId)) selected.delete(typeId);
+    else selected.add(typeId);
+    statementSelectionDrafts = {
+      ...statementSelectionDrafts,
+      [groupId]: (group?.statementTypes ?? []).map((type) => type.id).filter((id) => selected.has(id)),
+    };
+  }
+
+  function selectAllStatementTypes(group: CredentialGroupDto) {
+    statementSelectionDrafts = {
+      ...statementSelectionDrafts,
+      [group.id]: (group.statementTypes ?? []).map((type) => type.id),
+    };
+  }
+
+  function credentialGroupStatus(group: CredentialGroupDto, dictionary: Translation) {
+    if (groupEnabled[group.id] === false) return dictionary.common.disabled;
+    if (group.statementSetupRequired) return dictionary.automation.needsSetup;
+    if (group.statementTypes?.length) {
+      return dictionary.automation.selectedStatementCount(
+        statementSelectionDrafts[group.id]?.length ?? 0,
+        group.statementTypes.length,
+      );
+    }
+    return dictionary.common.enabled;
   }
 
   function updateCredentialDraft(key: string, event: Event) {
@@ -347,6 +377,13 @@
   }
 
   async function primaryTaskAction(task: AutomationTaskRow) {
+    if (task.primaryAction === "Configure") {
+      openCredentials();
+      selectedCredentialGroupId = task.credentialGroupId ?? "";
+      await tick();
+      document.getElementById(`${selectedCredentialGroupId}-statement-selection`)?.focus();
+      return;
+    }
     if (task.primaryAction !== "Cancel") {
       await runTask(task);
       return;
@@ -379,7 +416,7 @@
   }
 
   function historyStatusGroup(status: AutomationTaskHistoryRow["status"]): "running" | "completed" | "failed" {
-    if (status === "completed") return "completed";
+    if (status === "completed" || status === "partial") return "completed";
     if (status === "failed" || status === "locked") return "failed";
     return "running";
   }
@@ -394,9 +431,24 @@
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
+    const invalid = credentialGroups.find((group) =>
+      group.statementTypes?.length
+      && groupEnabled[group.id] !== false
+      && !(statementSelectionDrafts[group.id]?.length)
+    );
+    if (invalid) {
+      selectedCredentialGroupId = invalid.id;
+      actionError = $t.automation.selectOneStatementType(invalid.label);
+      await tick();
+      document.getElementById(`${invalid.id}-statement-selection`)?.focus();
+      return;
+    }
     const updates: Record<string, string> = {};
     for (const group of credentialGroups) {
       updates[group.enabledKey] = groupEnabled[group.id] !== false ? "true" : "false";
+      if (group.statementSelectionKey && statementSelectionDrafts[group.id]?.length) {
+        updates[group.statementSelectionKey] = statementSelectionDrafts[group.id].join(",");
+      }
     }
     for (const [key, value] of Object.entries(credentialDrafts)) {
       if (value.trim()) updates[key] = value.trim();
@@ -597,8 +649,10 @@
     if (task.status === "retrying") return dictionary.automation.progressRetrying(task.attempt || 1, task.maxAttempts);
     if (task.status === "waiting_for_human") return dictionary.automation.progressWaiting;
     if (task.status === "completed") return dictionary.automation.progressCompleted;
+    if (task.status === "partial") return dictionary.automation.progressPartial;
     if (task.status === "failed") return dictionary.automation.progressFailed;
     if (task.status === "locked") return dictionary.automation.progressLocked;
+    if (task.status === "needs_setup") return dictionary.automation.progressNeedsSetup;
     return dictionary.automation.progressQueued;
   }
 </script>
@@ -769,6 +823,9 @@
                 </td>
                 <td class="right">
                   <div class="task-actions">
+                    {#if task.id === "import-downloads-csv" && task.canRun && automation.importGate.warnings.length}
+                      <span class="import-warning">{$t.automation.partialImportWarning}</span>
+                    {/if}
                     <button
                       class={`button task-control ${task.primaryAction === "Cancel" ? "danger" : "primary"}`}
                       type="button"
@@ -798,6 +855,23 @@
                   </div>
                 </td>
               </tr>
+              {#if task.status === "partial" && task.statementFailures.length}
+                <tr class="partial-task-detail">
+                  <td colspan="5">
+                    <details>
+                      <summary>{$t.automation.partialImportWarning}</summary>
+                      <ul>
+                        {#each task.statementFailures as failure}
+                          <li>
+                            <strong>{$t.automation.statementTypeLabels[failure.typeId] ?? failure.typeId}</strong>
+                            {#if failure.error}<span>{failure.error}</span>{/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    </details>
+                  </td>
+                </tr>
+              {/if}
               {#if expandedLogTaskId === task.id}
                 <tr class="inline-task-log" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-inline-log`}>
                   <td colspan="5">
@@ -904,7 +978,7 @@
                 onclick={() => (selectedCredentialGroupId = group.id)}
               >
                 <strong>{group.label}</strong>
-                <span>{groupEnabled[group.id] !== false ? $t.common.enabled : $t.common.disabled}</span>
+                <span>{credentialGroupStatus(group, $t)}</span>
               </button>
             {/each}
           </nav>
@@ -940,6 +1014,37 @@
                 </label>
               {/each}
             </div>
+            {#if selectedCredentialGroup.statementTypes?.length}
+              <fieldset
+                class="statement-selection"
+                id={`${selectedCredentialGroup.id}-statement-selection`}
+                tabindex="-1"
+                aria-describedby={`${selectedCredentialGroup.id}-statement-help`}
+              >
+                <legend>{$t.automation.statementsToCollect}</legend>
+                <div class="statement-selection-head">
+                  <p id={`${selectedCredentialGroup.id}-statement-help`}>
+                    {$t.automation.statementSelectionHelp(selectedCredentialGroup.label)}
+                  </p>
+                  <button type="button" class="text-action" onclick={() => selectAllStatementTypes(selectedCredentialGroup)}>
+                    {$t.automation.selectAllStatements}
+                  </button>
+                </div>
+                <div class="statement-type-grid">
+                  {#each selectedCredentialGroup.statementTypes as type}
+                    <label class="statement-type-option">
+                      <input
+                        type="checkbox"
+                        checked={statementSelectionDrafts[selectedCredentialGroup.id]?.includes(type.id)}
+                        onchange={() => toggleStatementType(selectedCredentialGroup.id, type.id)}
+                      />
+                      <span>{$t.automation.statementTypeLabels[type.id] ?? type.id}</span>
+                    </label>
+                  {/each}
+                </div>
+              </fieldset>
+            {/if}
+            {#if actionError}<p class="credential-error" aria-live="polite">{actionError}</p>{/if}
           </section>
         {/if}
       </div>
@@ -1517,6 +1622,14 @@
     flex-wrap: wrap;
   }
 
+  .import-warning {
+    flex-basis: 100%;
+    color: var(--warn);
+    font-size: 11px;
+    line-height: 1.35;
+    text-align: right;
+  }
+
   .fixed-action {
     width: 112px;
     min-width: 112px;
@@ -1562,6 +1675,38 @@
     padding: 0;
     background: color-mix(in oklch, var(--accent-soft) 38%, var(--surface));
     scroll-margin-top: 88px;
+  }
+
+  .partial-task-detail td {
+    padding: 0 var(--space-4) var(--space-4);
+    border-top: 0;
+    color: var(--fg);
+    background: color-mix(in oklch, var(--warn) 3%, var(--surface));
+  }
+
+  .partial-task-detail details {
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--border));
+    border-radius: var(--radius);
+  }
+
+  .partial-task-detail summary {
+    color: var(--warn);
+    font-size: 12px;
+    font-weight: 720;
+    cursor: pointer;
+  }
+
+  .partial-task-detail ul {
+    margin: var(--space-3) 0 0;
+    padding-left: var(--space-5);
+  }
+
+  .partial-task-detail li span {
+    display: block;
+    margin-top: var(--space-1);
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .inline-log-panel {
@@ -1923,6 +2068,11 @@
     text-underline-offset: 6px;
   }
 
+  .credential-provider-list nav button.selected {
+    background: var(--surface-soft);
+    box-shadow: inset 3px 0 0 var(--fg);
+  }
+
   .credential-provider-list nav button span {
     color: var(--muted);
     font-size: 12px;
@@ -2009,6 +2159,104 @@
   .credential-field input.dirty {
     border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
     background: var(--accent-soft);
+  }
+
+  .statement-selection {
+    min-width: 0;
+    margin: var(--space-6) 0 0;
+    padding: var(--space-5) 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    outline: none;
+  }
+
+  .statement-selection:focus {
+    border-radius: var(--radius);
+    box-shadow: 0 0 0 3px var(--surface-soft);
+  }
+
+  .statement-selection legend {
+    padding: 0;
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 760;
+  }
+
+  .statement-selection-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .statement-selection-head p {
+    margin: var(--space-1) 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .text-action {
+    min-height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 720;
+    cursor: pointer;
+  }
+
+  .text-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .statement-type-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+  }
+
+  .statement-type-option {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+  }
+
+  .statement-type-option:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .statement-type-option:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .statement-type-option input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--accent);
+  }
+
+  .statement-type-option span {
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .credential-error {
+    margin: var(--space-4) 0 0;
+    color: var(--danger);
+    font-size: 13px;
   }
 
   .human-viewer-modal {
@@ -2382,6 +2630,10 @@
     }
 
     .credential-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .statement-type-grid {
       grid-template-columns: 1fr;
     }
 
