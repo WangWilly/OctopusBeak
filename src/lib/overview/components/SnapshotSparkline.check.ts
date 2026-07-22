@@ -29,5 +29,8 @@ assert.match(source, /fill-opacity:\s*0\.14;/);
 assert.doesNotMatch(source, /\.snapshot-diverging-area\s*\{[^}]*opacity:\s*0;/);
 assert.match(source, /class="snapshot-diverging-tooltip-swatch" style:background-color=\{series\.color\}/);
 assert.match(source, /\.snapshot-diverging-tooltip-swatch\s*\{[^}]*border-radius:\s*999px;/);
+assert.match(source, /function orderedTooltipSeries\(data: \{ time\?: unknown \} \| null \| undefined\) \{/);
+assert.match(source, /return \[\.\.\.visibleDivergingSeries\]\.sort\(\(left, right\) => tooltipValue\(right, data\) - tooltipValue\(left, data\)\);/);
+assert.match(source, /\{#each orderedTooltipSeries\(data\) as series\}/);
 assert.doesNotMatch(source, /\byTicks\b/);
 assert.doesNotMatch(source, /snapshot-zero-break|snapshot-hidden-axis|zeroBreakAria/);

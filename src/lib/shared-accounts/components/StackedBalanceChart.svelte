@@ -98,6 +98,10 @@
     if (typeof data?.time !== "number") return 0;
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
   }
+
+  function orderedTooltipSeries() {
+    return [...visibleChart.series].reverse();
+  }
 </script>
 
 {#if chart.series.length > 0}
@@ -148,7 +152,7 @@
             {#snippet children({ data })}
               <div class="sparkline-tooltip-body stacked-balance-tooltip">
                 <span>{tooltipDate(data?.time)}</span>
-                {#each visibleChart.series as item}
+                {#each orderedTooltipSeries() as item}
                   <div class="stacked-balance-tooltip-row">
                     <span class="stacked-balance-tooltip-label">
                       <span class="stacked-balance-tooltip-swatch" style:background-color={item.color}></span>

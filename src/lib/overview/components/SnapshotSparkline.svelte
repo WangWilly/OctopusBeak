@@ -124,6 +124,10 @@
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
   }
 
+  function orderedTooltipSeries(data: { time?: unknown } | null | undefined) {
+    return [...visibleDivergingSeries].sort((left, right) => tooltipValue(right, data) - tooltipValue(left, data));
+  }
+
   function timelinePoint(position: string, data: PlotPoint[]): PlotPoint {
     const existing = data.find((point) => point.position === position);
     if (existing) return existing;
@@ -195,7 +199,7 @@
                 {#snippet children({ data })}
                   <div class="sparkline-tooltip-body snapshot-diverging-tooltip">
                     <span>{data?.dateLabel ?? data?.date ?? ""}</span>
-                    {#each visibleDivergingSeries as series}
+                    {#each orderedTooltipSeries(data) as series}
                       <div class="snapshot-diverging-tooltip-row">
                         <span class="snapshot-diverging-tooltip-label">
                           <span class="snapshot-diverging-tooltip-swatch" style:background-color={series.color}></span>
