@@ -83,6 +83,17 @@
     (statementSelectionDrafts[group.id] ?? []).join(",") !== group.selectedStatementTypeIds.join(","),
   );
   $: credentialsDirty = credentialInputDirty || credentialToggleDirty || statementSelectionDirty;
+  $: credentialGroupStatuses = Object.fromEntries(
+    credentialGroups.map((group) => [
+      group.id,
+      credentialGroupStatus(
+        group,
+        groupEnabled[group.id] !== false,
+        statementSelectionDrafts[group.id]?.length ?? 0,
+        $t,
+      ),
+    ]),
+  );
   $: visibleCredentialGroups = credentialGroups.filter((group) =>
     group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
   );
@@ -259,14 +270,11 @@
     };
   }
 
-  function credentialGroupStatus(group: CredentialGroupDto, dictionary: Translation) {
-    if (groupEnabled[group.id] === false) return dictionary.common.disabled;
-    if (group.statementTypes?.length && !statementSelectionDrafts[group.id]?.length) return dictionary.automation.needsSetup;
+  function credentialGroupStatus(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation) {
+    if (!enabled) return dictionary.common.disabled;
+    if (group.statementTypes?.length && !selectedCount) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
-      return dictionary.automation.selectedStatementCount(
-        statementSelectionDrafts[group.id]?.length ?? 0,
-        group.statementTypes.length,
-      );
+      return dictionary.automation.selectedStatementCount(selectedCount, group.statementTypes.length);
     }
     return dictionary.common.enabled;
   }
@@ -979,7 +987,7 @@
                 onclick={() => (selectedCredentialGroupId = group.id)}
               >
                 <strong>{group.label}</strong>
-                <span>{credentialGroupStatus(group, $t)}</span>
+                <span>{credentialGroupStatuses[group.id]}</span>
               </button>
             {/each}
           </nav>
