@@ -851,8 +851,9 @@
                         <span>{$t.automation.partialImportWarning}</span>
                         {#each automation.importGate.warnings as warning}
                           <span>
-                            {taskIdLabel(warning.taskId, $t)}:
-                            {warning.failedTypeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join(", ")}
+                            {taskIdLabel(warning.taskId, $t)}{#if warning.failedTypeIds.length}:
+                              {warning.failedTypeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join(", ")}
+                            {/if}
                           </span>
                         {/each}
                       </div>
