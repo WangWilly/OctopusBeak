@@ -19,4 +19,17 @@ test("daily FX selector is replaced only when every TWD conversion fails", () =>
   );
 });
 
+test("overview renders the Sankey prototype below the daily history", () => {
+  assert.match(
+    source,
+    /import OverviewSankeyCard from "\$lib\/overview\/components\/OverviewSankeyCard\.svelte";/,
+  );
+  assert.match(
+    source,
+    /import \{ overviewSankeyPrototype \} from "\$lib\/overview\/components\/overview-sankey-data\.ts";/,
+  );
+  assert.match(source, /const sankeyPrototype = overviewSankeyPrototype\(\);/);
+  assert.match(source, /<OverviewSankeyCard graph=\{sankeyPrototype\} currency="TWD" \/>/);
+});
+
 assert.match(source, /formatUtcDateTime\(value, \$systemTimezone, \$locale\)/);
