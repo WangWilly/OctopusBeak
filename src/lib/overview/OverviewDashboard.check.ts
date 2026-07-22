@@ -19,4 +19,14 @@ test("daily FX selector is replaced only when every TWD conversion fails", () =>
   );
 });
 
+test("overview renders the production Sankey graph with the existing base-currency controls", () => {
+  assert.match(source, /\{#if overview\.sankey\}/);
+  assert.match(source, /id="sankey-base-currency"/);
+  assert.match(source, /aria-label=\{\$t\.overview\.portfolioFlowBaseCurrency\}/);
+  assert.match(source, /\$t\.overview\.exchangeRatesThrough\(overview\.sankeyLatestExchangeRateDate\)/);
+  assert.match(source, /<OverviewSankeyCard graph=\{overview\.sankey\} currency=\{sankeyCurrency\} twdPerUnit=\{sankeyTwdPerUnit\} \/>/);
+  assert.match(source, /class="card sankey-card"/);
+  assert.doesNotMatch(source, /overviewSankeyPrototype/);
+});
+
 assert.match(source, /formatUtcDateTime\(value, \$systemTimezone, \$locale\)/);

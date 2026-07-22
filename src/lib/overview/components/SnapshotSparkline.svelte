@@ -13,7 +13,7 @@
     type SnapshotDivergingSeries,
     type SnapshotDivergingSeriesKey,
   } from "./snapshot-chart-data.ts";
-  import { buildCenteredSparklineYAxis, buildSparklineYAxis, formatSparklineTick } from "./sparkline-format.ts";
+  import { buildCenteredSparklineYAxis, buildSparklineYAxis, buildTrendYAxis, formatSparklineTick } from "./sparkline-format.ts";
 
   type HistoryAmountKey = "netAssets" | "assets" | "liabilities";
   type PlotPoint = SnapshotChartPoint & { position: string };
@@ -25,7 +25,21 @@
   export let diverging = false;
 
   let selectedSeriesKeys: SnapshotDivergingSeriesKey[] = [];
+  let brushedYDomain: [number, number] | null = null;
+  let hasYRange = false;
+  let yRangeReset = 0;
+  let lastRows = rows;
+  let lastCurrency = currency;
+  let lastAmountKey = amountKey;
+  let lastDiverging = diverging;
 
+  $: if (rows !== lastRows || currency !== lastCurrency || amountKey !== lastAmountKey || diverging !== lastDiverging) {
+    lastRows = rows;
+    lastCurrency = currency;
+    lastAmountKey = amountKey;
+    lastDiverging = diverging;
+    resetYRange();
+  }
   $: points = buildSnapshotChartPoints(rows, currency, amountKey, $systemTimezone, $locale);
   $: divergingSeries = diverging
     ? buildSnapshotDivergingSeries(rows, currency, $systemTimezone, $locale).map((series) => ({
@@ -48,9 +62,14 @@
   $: xDomain = xValues;
   $: timelinePoints = xValues.map((position) => timelinePoint(position, plottedChartPoints));
   $: yAxis = diverging
-    ? buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
+    ? selectedSeriesKeys.length === 1
+      ? buildTrendYAxis(chartPoints.map((point) => point.value))
+      : buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
     : buildSparklineYAxis(chartPoints.map((point) => point.value));
   $: yDomain = [yAxis.min, yAxis.max];
+  $: areaBaseline = selectedSeriesKeys.length === 1
+    ? selectedSeriesKeys[0] === "liabilities" ? yAxis.max : yAxis.min
+    : 0;
   $: displayLabel = label || $t.overview.sideLabel;
   $: ariaLabel = $t.chart.trendAria(displayLabel, currency);
   $: hasChartData = diverging ? divergingSeries.length > 0 : points.length > 0;
@@ -58,13 +77,33 @@
   function toggleSeries(key: SnapshotDivergingSeriesKey) {
     if (selectedSeriesKeys.length === 0) {
       selectedSeriesKeys = [key];
+      resetYRange();
       return;
     }
     if (selectedSeriesKeySet.has(key)) {
       selectedSeriesKeys = selectedSeriesKeys.filter((item) => item !== key);
+      resetYRange();
       return;
     }
     selectedSeriesKeys = [...selectedSeriesKeys, key];
+    resetYRange();
+  }
+
+  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
+    const [start, end] = brush.y;
+    if (brush.active && typeof start === "number" && typeof end === "number") {
+      brushedYDomain = [Math.min(start, end), Math.max(start, end)];
+      hasYRange = true;
+      return;
+    }
+    brushedYDomain = null;
+    hasYRange = false;
+  }
+
+  function resetYRange() {
+    brushedYDomain = null;
+    hasYRange = false;
+    yRangeReset += 1;
   }
 
   function shortDate(value: unknown) {
@@ -76,13 +115,17 @@
       : "";
   }
 
-  function shortAmount(value: unknown) {
-    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
+  function shortAmount(value: unknown, step = yAxis.step) {
+    return typeof value === "number" ? formatSparklineTick(value, step) : String(value);
   }
 
   function tooltipValue(series: SnapshotDivergingSeries, data: { time?: unknown } | null | undefined) {
     if (typeof data?.time !== "number") return 0;
     return series.data.find((point) => point.time === data.time)?.value ?? 0;
+  }
+
+  function orderedTooltipSeries(data: { time?: unknown } | null | undefined) {
+    return [...visibleDivergingSeries].sort((left, right) => tooltipValue(right, data) - tooltipValue(left, data));
   }
 
   function timelinePoint(position: string, data: PlotPoint[]): PlotPoint {
@@ -108,58 +151,68 @@
 </script>
 
 {#if hasChartData}
-  {#if diverging}
-    <div class="sparkline sparkline-diverging" role="img" aria-label={ariaLabel}>
+  <div class="sparkline-container">
+    {#if hasYRange}
+      <div class="sparkline-controls">
+        <button class="sparkline-range-button" type="button" onclick={resetYRange}>{$t.spending.chartReset}</button>
+      </div>
+    {/if}
+    {#key yRangeReset}
+    {#if diverging}
+      <div class="sparkline sparkline-diverging" role="img" aria-label={ariaLabel}>
       <div class="snapshot-diverging-stage">
-        <AreaChart
-          data={timelinePoints}
-          flatData={timelinePoints}
-          x="position"
-          y="value"
-          transform={{ mode: "domain", axis: "x" }}
-          series={plottedDivergingSeries}
-          seriesLayout="overlap"
-          {xDomain}
-          {yDomain}
-          yBaseline={null}
-          yNice={false}
-          axis={true}
-          grid={{ y: true }}
-          legend={false}
-          tooltipContext={{ mode: "band" }}
-          motion={{ type: "tween", duration: 180 }}
-          padding={{ top: 12, right: 12, bottom: 24, left: 56 }}
-          points={false}
-          height={220}
-          props={{
-            area: { class: "snapshot-diverging-area" },
-            line: { class: "snapshot-diverging-line" },
-            xAxis: { class: "sparkline-axis", format: shortDate, tickSpacing: 80 },
-            yAxis: {
-              class: "sparkline-axis",
-              format: shortAmount,
-              ticks: yAxis.ticks,
-              tickLabelProps: { "data-sensitive": "" },
-            },
-            grid: { class: "sparkline-grid" },
-          }}
-        >
-          {#snippet tooltip({ context })}
-            <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
-              {#snippet children({ data })}
-                <div class="sparkline-tooltip-body snapshot-diverging-tooltip">
-                  <span>{data?.dateLabel ?? data?.date ?? ""}</span>
-                  {#each visibleDivergingSeries as series}
-                    <div class="snapshot-diverging-tooltip-row">
-                      <span>{series.label}</span>
-                      <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(series, data) })}</strong>
-                    </div>
-                  {/each}
-                </div>
-              {/snippet}
-            </Tooltip.Root>
-          {/snippet}
-        </AreaChart>
+          <AreaChart
+            data={timelinePoints}
+            flatData={timelinePoints}
+            x="position"
+            y="value"
+            transform={{ mode: "domain", axis: "x" }}
+            brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
+            series={plottedDivergingSeries}
+            seriesLayout="overlap"
+            {xDomain}
+            yDomain={brushedYDomain ?? yDomain}
+            yBaseline={areaBaseline}
+            yNice={false}
+            axis={true}
+            grid={{ y: true }}
+            legend={false}
+            tooltipContext={{ mode: "band" }}
+            motion={{ type: "tween", duration: 180 }}
+            padding={{ top: 12, right: 12, bottom: 24, left: 56 }}
+            points={false}
+            height={220}
+            props={{
+              area: { class: "snapshot-diverging-area" },
+              line: { class: "snapshot-diverging-line" },
+              xAxis: { class: "sparkline-axis", format: shortDate, tickSpacing: 80 },
+              yAxis: {
+                class: "sparkline-axis",
+                format: shortAmount,
+                tickLabelProps: { "data-sensitive": "" },
+              },
+              grid: { class: "sparkline-grid" },
+            }}
+          >
+            {#snippet tooltip({ context })}
+              <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
+                {#snippet children({ data })}
+                  <div class="sparkline-tooltip-body snapshot-diverging-tooltip">
+                    <span>{data?.dateLabel ?? data?.date ?? ""}</span>
+                    {#each orderedTooltipSeries(data) as series}
+                      <div class="snapshot-diverging-tooltip-row">
+                        <span class="snapshot-diverging-tooltip-label">
+                          <span class="snapshot-diverging-tooltip-swatch" style:background-color={series.color}></span>
+                          {series.label}
+                        </span>
+                        <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(series, data) })}</strong>
+                      </div>
+                    {/each}
+                  </div>
+                {/snippet}
+              </Tooltip.Root>
+            {/snippet}
+          </AreaChart>
       </div>
       <div class="snapshot-diverging-legend" aria-label={$t.chart.legendAria(displayLabel)}>
         {#each divergingSeries as series}
@@ -169,7 +222,7 @@
             type="button"
             title={series.label}
             aria-pressed={selectedSeriesKeys.length === 0 || selectedSeriesKeySet.has(series.key)}
-            on:click={() => toggleSeries(series.key)}
+            onclick={() => toggleSeries(series.key)}
           >
             <span class="snapshot-diverging-legend-swatch" style:background-color={series.color}></span>
             <span class="snapshot-diverging-legend-label">{series.label}</span>
@@ -184,8 +237,9 @@
         x="position"
         y="value"
         transform={{ mode: "domain", axis: "x" }}
+        brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
         {xDomain}
-        {yDomain}
+        yDomain={brushedYDomain ?? yDomain}
         yBaseline={null}
         yNice
         axis={true}
@@ -201,7 +255,6 @@
           yAxis: {
             class: "sparkline-axis",
             format: shortAmount,
-            ticks: yAxis.ticks,
             tickLabelProps: { "data-sensitive": "" },
           },
           grid: { class: "sparkline-grid" },
@@ -221,6 +274,8 @@
       </AreaChart>
     </div>
   {/if}
+    {/key}
+  </div>
 {:else}
   <div class="sparkline sparkline-empty" role="img" aria-label={ariaLabel}>
     No {currency} history
@@ -228,6 +283,34 @@
 {/if}
 
 <style>
+  .sparkline-container {
+    position: relative;
+  }
+
+  .sparkline-controls {
+    position: absolute;
+    top: 0;
+    right: 12px;
+    z-index: 1;
+  }
+
+  .sparkline-range-button {
+    min-height: 24px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .sparkline-range-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   .sparkline-diverging {
     height: 260px;
   }
@@ -241,8 +324,7 @@
   }
 
   :global(.snapshot-diverging-area) {
-    fill-opacity: 0;
-    opacity: 0;
+    fill-opacity: 0.14;
   }
 
   :global(.snapshot-diverging-line) {
@@ -260,6 +342,19 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .snapshot-diverging-tooltip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .snapshot-diverging-tooltip-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    flex: 0 0 auto;
   }
 
   .snapshot-diverging-legend {

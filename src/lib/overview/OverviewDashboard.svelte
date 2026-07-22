@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
+  import OverviewSankeyCard from "$lib/overview/components/OverviewSankeyCard.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
@@ -18,11 +19,13 @@
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
+  const sankeyCurrencyStorageKey = "overview.portfolioFlow.currency";
 
   export let overview: OverviewPageDto;
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
+  let sankeyCurrency = "TWD";
 
   $: metrics = overview.summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
   $: netMetric = metrics[0] ?? null;
@@ -35,6 +38,10 @@
   $: history = overview.dailyHistory;
   $: dailyCurrencies = dailyHistoryCurrencies(history);
   $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
+  $: sankeyRatesByCurrency = new Map(overview.sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
+  $: sankeyCurrencies = ["TWD", ...overview.sankeyExchangeRates.map((rate) => rate.currency)];
+  $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
+  $: sankeyTwdPerUnit = sankeyRatesByCurrency.get(sankeyCurrency) ?? 1;
   $: convertedDailyHistory = convertDailyHistoryRows(
     history,
     overview.exchangeRates,
@@ -51,6 +58,8 @@
   onMount(() => {
     const stored = localStorage.getItem(dailyCurrencyStorageKey);
     dailyCurrency = stored && dailyCurrencies.includes(stored) ? stored : "TWD";
+    const storedSankey = localStorage.getItem(sankeyCurrencyStorageKey);
+    sankeyCurrency = storedSankey && sankeyCurrencies.includes(storedSankey) ? storedSankey : "TWD";
   });
 
   function formatImportedAt(value: string | null) {
@@ -66,6 +75,11 @@
   function selectDailyCurrency(event: Event) {
     dailyCurrency = selectValue(event);
     localStorage.setItem(dailyCurrencyStorageKey, dailyCurrency);
+  }
+
+  function selectSankeyCurrency(event: Event) {
+    sankeyCurrency = selectValue(event);
+    localStorage.setItem(sankeyCurrencyStorageKey, sankeyCurrency);
   }
 
   function translateSummaryMetric(metric: SummaryMetricDto, dictionary: Translation): SummaryMetricDto {
@@ -171,6 +185,37 @@
         <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
       {/key}
     </section>
+
+    {#if overview.sankey}
+      <section class="card sankey-card">
+        <div class="panel-title">
+          <h2>{$t.overview.portfolioFlow}</h2>
+          {#if sankeyCurrencies.length > 1}
+            <label class="chip select-chip" for="sankey-base-currency">
+              {$t.common.base}
+              <select
+                id="sankey-base-currency"
+                aria-label={$t.overview.portfolioFlowBaseCurrency}
+                value={sankeyCurrency}
+                onchange={selectSankeyCurrency}
+              >
+                {#each sankeyCurrencies as currency}
+                  <option value={currency}>{currency}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+          {#if overview.sankeyLatestExchangeRateDate}
+            <span class="chip">
+              {$t.overview.exchangeRatesThrough(overview.sankeyLatestExchangeRateDate)}
+            </span>
+          {/if}
+        </div>
+        <div class="card pad overview-sankey-panel">
+          <OverviewSankeyCard graph={overview.sankey} currency={sankeyCurrency} twdPerUnit={sankeyTwdPerUnit} />
+        </div>
+      </section>
+    {/if}
   </div>
 </DashboardShell>
 
@@ -185,5 +230,13 @@
     color: var(--danger);
     border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
     background: color-mix(in oklch, var(--danger) 9%, white);
+  }
+
+  .overview-sankey-panel {
+    overflow: hidden;
+  }
+
+  .sankey-card {
+    margin-top: var(--space-4);
   }
 </style>
