@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Chart, Group, Layer, Link, Rect, Text, Tooltip } from "layerchart";
+  import { Chart, Group, Layer, Link, Rect, Text, Tooltip, sankeyGraphFromNode } from "layerchart";
   import { Sankey } from "layerchart/graph";
-  import { t } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
   import type { OverviewSankeyGraphDto } from "$lib/overview/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
@@ -10,6 +10,7 @@
   export let twdPerUnit = 1;
 
   let highlightLinkIndexes: number[] = [];
+  let selectedNode: any = null;
 
   const colors = {
     asset: "oklch(53% 0.1 207)",
@@ -32,6 +33,14 @@
     return [...(node.sourceLinks ?? []), ...(node.targetLinks ?? [])].map((link) => link.index);
   }
 
+  function percentage(value: number, total: number) {
+    return new Intl.NumberFormat($locale, { style: "percent", maximumFractionDigits: 1 }).format(total ? value / total : 0);
+  }
+
+  function selectNode(node: any) {
+    selectedNode = selectedNode?.id === node.id || node.sourceLinks?.length === 0 ? null : node;
+  }
+
   function chartHeightFor(nodes: OverviewSankeyGraphDto["nodes"]) {
     const counts = new Map<number, number>();
     for (const node of nodes) counts.set(node.level, (counts.get(node.level) ?? 0) + 1);
@@ -43,10 +52,11 @@
     nodes: graph.nodes,
     links: graph.links.map((link) => ({ ...link, value: link.value / twdPerUnit })),
   };
+  $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
 </script>
 
 <div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow}>
-  <Chart data={displayGraph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
+  <Chart data={chartGraph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
     {#snippet children({ context })}
       <Layer>
         <Sankey nodeId={(node) => node.id} nodeAlign="justify" nodePadding={8} nodeWidth={10}>
@@ -76,12 +86,14 @@
                 y={node.y0}
                 onpointerenter={() => (highlightLinkIndexes = linkedIndexes(node))}
                 onpointerleave={() => (highlightLinkIndexes = [])}
+                onclick={() => selectNode(node)}
               >
                 <Rect
                   width={nodeWidth}
                   height={nodeHeight}
                   fill={colorFor(node.tone)}
                   fillOpacity={0.72}
+                  class="overview-sankey-node"
                   onpointermove={(event) => context.tooltip.show(event, { node })}
                   onpointerleave={() => context.tooltip.hide()}
                 />
@@ -115,7 +127,10 @@
                 {#each data.node.targetLinks as link}
                   <div class="overview-sankey-tooltip-row">
                     <span>{labelFor(link.source.label)}</span>
-                    <b data-sensitive>{amount(link.value)}</b>
+                    <span class="overview-sankey-tooltip-values">
+                      <b data-sensitive>{amount(link.value)}</b>
+                      <em>{percentage(link.value, data.node.value)}</em>
+                    </span>
                   </div>
                 {/each}
               {/if}
@@ -124,7 +139,10 @@
                 {#each data.node.sourceLinks as link}
                   <div class="overview-sankey-tooltip-row">
                     <span>{labelFor(link.target.label)}</span>
-                    <b data-sensitive>{amount(link.value)}</b>
+                    <span class="overview-sankey-tooltip-values">
+                      <b data-sensitive>{amount(link.value)}</b>
+                      <em>{percentage(link.value, data.node.value)}</em>
+                    </span>
                   </div>
                 {/each}
               {/if}
@@ -149,6 +167,10 @@
 
   :global(.overview-sankey-link) {
     transition: stroke-opacity 160ms ease;
+  }
+
+  :global(.overview-sankey-node) {
+    cursor: pointer;
   }
 
   :global(.overview-sankey-label) {
@@ -188,6 +210,17 @@
 
   .overview-sankey-tooltip-row b {
     white-space: nowrap;
+  }
+
+  .overview-sankey-tooltip-values {
+    display: flex;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .overview-sankey-tooltip-values em {
+    color: color-mix(in srgb, white 70%, transparent);
+    font-style: normal;
   }
 
   .overview-sankey-tooltip-section {
