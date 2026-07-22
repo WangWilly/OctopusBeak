@@ -6,6 +6,10 @@ const source = await readFile(
   new URL("./yuanta-all-statements.ts", import.meta.url),
   "utf8",
 );
+const authSource = await readFile(
+  new URL("./yuanta-statements.ts", import.meta.url),
+  "utf8",
+);
 
 assert.match(source, /for \(const scope of \[\.\.\.page\.frames\(\), page\]\)/);
 assert.match(source, /const hasMonthLink = await hasAttachedLocator\(/);
@@ -35,6 +39,8 @@ assert.doesNotMatch(
   source,
   /\.or\(candidate\.locator\('a\[onclick\*="queryMonth\("\]'\)\)/,
 );
+assert.match(authSource, /page\.on\("dialog", acceptBankDialog\)/);
+assert.match(authSource, /finally \{\s*page\.off\("dialog", acceptBankDialog\);\s*\}/);
 
 const server = await createServer({
   configFile: false,
