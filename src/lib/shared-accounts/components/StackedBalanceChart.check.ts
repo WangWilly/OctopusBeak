@@ -42,7 +42,7 @@ assert.match(source, /\{\$t\.chart\.total\}/);
 assert.match(source, /formatMoney\(\{ currency, value: tooltipTotal\(data\) \}\)/);
 assert.match(source, /\.stacked-balance-tooltip-total\s*\{[^}]*border-bottom:/);
 assert.doesNotMatch(source, /adjustYAxis/);
-assert.match(source, /return typeof value === "number" \? formatSparklineTick\(value\) : String\(value\);/);
+assert.match(source, /return typeof value === "number" \? formatSparklineTick\(value, yAxis\.step\) : String\(value\);/);
 assert.doesNotMatch(source, /\byTicks\b/);
 assert.doesNotMatch(source, /\bticks:/);
 assert.match(source, /<div class="stacked-balance-stage" role="img" aria-label=\{ariaLabel\}>/);

@@ -24,7 +24,7 @@
   } as const;
 
   function amount(value: number) {
-    return formatMoney({ currency, value });
+    return formatMoney({ currency, value }, { locale: $locale });
   }
 
   function colorFor(tone: OverviewSankeyNodeDto["tone"]) {
@@ -44,7 +44,7 @@
   }
 
   function selectNode(node: SankeyNodeState) {
-    selectedNode = selectedNode?.id === node.id || node.sourceLinks?.length === 0 ? null : node;
+    selectedNode = selectedNode?.id === node.id || !node.sourceLinks?.length ? null : node;
   }
 
   function chartHeightFor(nodes: OverviewSankeyGraphDto["nodes"]) {
@@ -60,7 +60,7 @@
   };
   $: graphLabels = new Map(graph.nodes.map((node) => [node.id, node.label]));
   $: flowSummary = displayGraph.links.map((link) =>
-    `${labelFor(graphLabels.get(link.source) ?? link.source)} to ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link.value)}.`,
+    `${labelFor(graphLabels.get(link.source) ?? link.source)} → ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link.value)}.`,
   ).join(" ");
   $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
 </script>
