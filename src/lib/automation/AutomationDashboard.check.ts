@@ -129,3 +129,20 @@ assert.match(source, /\.statement-selection:focus\s*\{/);
 assert.match(source, /\.statement-type-option:focus-within\s*\{/);
 assert.match(source, /\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 assert.match(source, /@media \(max-width: 820px\)[\s\S]*?\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: 1fr/);
+
+const saveCredentialsSource = source.slice(source.indexOf("async function saveCredentials"), source.indexOf("async function refreshViewerImage"));
+assert.match(
+  saveCredentialsSource,
+  /if \(invalid\) \{[\s\S]*?credentialSearch = "";[\s\S]*?selectedCredentialGroupId = invalid\.id;[\s\S]*?await tick\(\);[\s\S]*?getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/,
+);
+
+const credentialGroupStatusSource = source.slice(source.indexOf("function credentialGroupStatus"), source.indexOf("function updateCredentialDraft"));
+assert.doesNotMatch(credentialGroupStatusSource, /statementSetupRequired/);
+assert.match(
+  credentialGroupStatusSource,
+  /if \(group\.statementTypes\?\.length && !statementSelectionDrafts\[group\.id\]\?\.length\) return dictionary\.automation\.needsSetup;/,
+);
+assert.match(
+  credentialGroupStatusSource,
+  /selectedStatementCount\([\s\S]*?statementSelectionDrafts\[group\.id\]\?\.length \?\? 0,[\s\S]*?group\.statementTypes\.length/,
+);
