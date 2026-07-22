@@ -66,6 +66,9 @@
       : buildCenteredSparklineYAxis(chartPoints.map((point) => point.value))
     : buildSparklineYAxis(chartPoints.map((point) => point.value));
   $: yDomain = [yAxis.min, yAxis.max];
+  $: areaBaseline = selectedSeriesKeys.length === 1
+    ? selectedSeriesKeys[0] === "liabilities" ? yAxis.max : yAxis.min
+    : 0;
   $: displayLabel = label || $t.overview.sideLabel;
   $: ariaLabel = $t.chart.trendAria(displayLabel, currency);
   $: hasChartData = diverging ? divergingSeries.length > 0 : points.length > 0;
@@ -155,7 +158,7 @@
             seriesLayout="overlap"
             {xDomain}
             {yDomain}
-            yBaseline={null}
+            yBaseline={areaBaseline}
             yNice={false}
             axis={true}
             grid={{ y: true }}
@@ -303,8 +306,7 @@
   }
 
   :global(.snapshot-diverging-area) {
-    fill-opacity: 0;
-    opacity: 0;
+    fill-opacity: 0.14;
   }
 
   :global(.snapshot-diverging-line) {
