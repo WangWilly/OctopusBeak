@@ -59,10 +59,10 @@
     links: graph.links.map((link) => ({ ...link, value: link.value / twdPerUnit })),
   };
   $: graphLabels = new Map(graph.nodes.map((node) => [node.id, node.label]));
-  $: flowSummary = displayGraph.links.map((link) =>
+  $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
+  $: flowSummary = chartGraph.links.map((link) =>
     `${labelFor(graphLabels.get(link.source) ?? link.source)} → ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link.value)}.`,
   ).join(" ");
-  $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
 </script>
 
 <div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow} aria-describedby="overview-sankey-summary">
