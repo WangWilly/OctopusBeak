@@ -19,5 +19,9 @@ assert.match(source, /rows !== lastRows \|\| currency !== lastCurrency \|\| amou
 assert.doesNotMatch(source, /\bticks:/);
 assert.match(source, /\.sparkline :global\(\.lc-layout-svg\)\s*\{[^}]*overflow:\s*hidden;/);
 assert.match(source, /selectedSeriesKeys\.length === 1\s*\? buildTrendYAxis\(chartPoints\.map\(\(point\) => point\.value\)\)\s*:\s*buildCenteredSparklineYAxis\(chartPoints\.map\(\(point\) => point\.value\)\)/);
+assert.match(source, /areaBaseline = selectedSeriesKeys\.length === 1\s*\? selectedSeriesKeys\[0\] === "liabilities" \? yAxis\.max : yAxis\.min\s*:\s*0/);
+assert.match(source, /yBaseline=\{areaBaseline\}/);
+assert.match(source, /fill-opacity:\s*0\.14;/);
+assert.doesNotMatch(source, /\.snapshot-diverging-area\s*\{[^}]*opacity:\s*0;/);
 assert.doesNotMatch(source, /\byTicks\b/);
 assert.doesNotMatch(source, /snapshot-zero-break|snapshot-hidden-axis|zeroBreakAria/);
