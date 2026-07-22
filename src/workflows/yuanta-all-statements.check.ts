@@ -68,12 +68,25 @@ try {
       continueOnError: false,
       prepareBetweenComponents: true,
       statements: {},
-      foreignCurrency: { accountFilters: ["foreign"] },
+      foreignCurrency: {
+        accountFilters: ["foreign"],
+        replaceActiveSession: false,
+      },
       loan: {},
       creditCard: {},
       fund: { accountFilters: ["fund"] },
     },
     {
+      authenticateYuantaBank: async (
+        actualCtx: unknown,
+        actualCredentials: unknown,
+        replaceActiveSession = true,
+      ) => {
+        assert.equal(actualCtx, ctx);
+        assert.equal(actualCredentials, credentials);
+        assert.equal(replaceActiveSession, false);
+        calls.push("authenticate");
+      },
       yuantaStatements: {
         name: "yuantaStatements",
         run: async () => {
@@ -122,6 +135,7 @@ try {
 }
 
 assert.deepEqual(calls, [
+  "authenticate",
   "prepare:foreignCurrency",
   "run:foreignCurrency",
   "prepare:fund",
@@ -149,3 +163,50 @@ assert.deepEqual(output, {
     output: fundOutput,
   },
 });
+
+process.env[selectionKey] = "deposit,loan";
+const authFailureCalls: string[] = [];
+try {
+  await assert.rejects(
+    runYuantaAllStatements(
+      ctx,
+      {
+        credentials,
+        include: {},
+        continueOnError: false,
+        prepareBetweenComponents: true,
+        statements: {},
+        foreignCurrency: {},
+        loan: {},
+        creditCard: {},
+        fund: {},
+      },
+      {
+        authenticateYuantaBank: async () => {
+          authFailureCalls.push("authenticate");
+          throw new Error("YuanTa login bootstrap failed");
+        },
+        yuantaStatements: {
+          name: "yuantaStatements",
+          run: async () => {
+            authFailureCalls.push("deposit");
+          },
+        },
+        yuantaLoanStatements: {
+          name: "yuantaLoanStatements",
+          run: async () => {
+            authFailureCalls.push("loan");
+          },
+        },
+        prepareForComponent: async () => {
+          authFailureCalls.push("prepare");
+        },
+      },
+    ),
+    /YuanTa login bootstrap failed/,
+  );
+} finally {
+  if (previousSelection === undefined) delete process.env[selectionKey];
+  else process.env[selectionKey] = previousSelection;
+}
+assert.deepEqual(authFailureCalls, ["authenticate"]);

@@ -12,13 +12,13 @@ function rowStatus(
   isActive: boolean,
   setupRequiredGroupIds: ReadonlySet<string>,
 ) {
-  if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
   if (task.kind === "import" && gate.locked) return "locked";
   if (run && resumeFailureMessage(run.logTail)) return "failed";
-  if (isActive && !run) return "running";
+  if (run?.status === "waiting_for_human") return "waiting_for_human";
+  if (isActive) return run?.status === "retrying" ? "retrying" : "running";
+  if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
   if (
     run &&
-    !isActive &&
     (run.status === "running" || run.status === "retrying")
   ) {
     return "failed";

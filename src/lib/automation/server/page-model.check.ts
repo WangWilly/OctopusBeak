@@ -76,6 +76,53 @@ assert.equal(setupRequiredFubon?.primaryAction, "Configure");
 assert.equal(setupRequiredFubon?.canRun, true);
 assert.equal(setupRequiredModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
+const activeSetupRequiredModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      status: "running",
+      finishedAt: null,
+    },
+  },
+  activeTaskIds: ["fubon-all-statements"],
+  todayRunTaskIds: [],
+  credentials: {},
+  importGate: { locked: false, missingTaskIds: [], warnings: [] },
+  setupRequiredGroupIds: new Set(["fubon"]),
+  active: true,
+  businessDate: "2026-06-30",
+});
+const activeSetupRequiredRow = activeSetupRequiredModel.tasks.find(
+  (task) => task.id === "fubon-all-statements",
+);
+assert.equal(activeSetupRequiredRow?.status, "running");
+assert.equal(activeSetupRequiredRow?.primaryAction, "Cancel");
+
+const waitingSetupRequiredModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      status: "waiting_for_human",
+      finishedAt: null,
+      logTail: "Workflow paused. Run `npx libretto resume --session ses-repair`.",
+    },
+  },
+  activeTaskIds: [],
+  todayRunTaskIds: [],
+  credentials: {},
+  importGate: { locked: false, missingTaskIds: [], warnings: [] },
+  setupRequiredGroupIds: new Set(["fubon"]),
+  active: true,
+  businessDate: "2026-06-30",
+});
+const waitingSetupRequiredRow = waitingSetupRequiredModel.tasks.find(
+  (task) => task.id === "fubon-all-statements",
+);
+assert.equal(waitingSetupRequiredRow?.status, "waiting_for_human");
+assert.equal(waitingSetupRequiredRow?.humanSession, "ses-repair");
+
 const unlockedImportModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns,

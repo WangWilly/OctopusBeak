@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -119,6 +120,10 @@ function credentialsFileText(credentials: AutomationCredentialsFile) {
   }, null, 2)}\n`;
 }
 
+function settingsFileText(settings: AutomationSettingsFile) {
+  return `${JSON.stringify(cleanSettings(settings), null, 2)}\n`;
+}
+
 export function readAutomationSettingsFile(path = AUTOMATION_SETTINGS_PATH) {
   return cleanSettings(readJsonRecord(path));
 }
@@ -128,7 +133,7 @@ export function readAutomationCredentialsFile(path = AUTOMATION_CREDENTIALS_PATH
 }
 
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
-  atomicWrite(path, `${JSON.stringify(cleanSettings(settings), null, 2)}\n`);
+  atomicWrite(path, settingsFileText(settings));
 }
 
 export function writeAutomationCredentialsFile(path: string, credentials: AutomationCredentialsFile) {
@@ -141,6 +146,43 @@ export function writeAutomationSettings(settings: AutomationSettingsFile) {
 
 export function writeAutomationCredentials(credentials: AutomationCredentialsFile) {
   writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials);
+}
+
+export function writeAutomationConfigFiles(
+  settings: AutomationSettingsFile,
+  credentials?: AutomationCredentialsFile,
+) {
+  const nextSettingsText = settingsFileText(settings);
+  const nextCredentialsText = credentials === undefined
+    ? null
+    : credentialsFileText(credentials);
+
+  if (nextCredentialsText === null) {
+    atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
+    return;
+  }
+
+  const previousSettingsText = existsSync(AUTOMATION_SETTINGS_PATH)
+    ? readFileSync(AUTOMATION_SETTINGS_PATH, "utf8")
+    : null;
+  atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
+  try {
+    atomicWrite(AUTOMATION_CREDENTIALS_PATH, nextCredentialsText);
+  } catch (writeError) {
+    try {
+      if (previousSettingsText === null) {
+        rmSync(AUTOMATION_SETTINGS_PATH, { force: true });
+      } else {
+        atomicWrite(AUTOMATION_SETTINGS_PATH, previousSettingsText);
+      }
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [writeError, rollbackError],
+        "Credential write failed and automation settings rollback also failed.",
+      );
+    }
+    throw writeError;
+  }
 }
 
 export function migrateAutomationCredentialsFileEncryption(path = AUTOMATION_CREDENTIALS_PATH) {

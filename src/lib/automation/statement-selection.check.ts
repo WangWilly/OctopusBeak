@@ -35,6 +35,15 @@ assert.throws(
   () => resolveStatementSelection(fubon, { [fubon.statementSelectionKey]: "deposit,unknown" }, true),
   /Unknown Fubon statement type: unknown/,
 );
+assert.deepEqual(
+  resolveStatementSelection(
+    fubon,
+    { [fubon.statementSelectionKey]: "deposit,unknown" },
+    true,
+    { tolerateUnknown: true },
+  ),
+  { selectedIds: ["deposit"], needsSetup: true, persisted: true },
+);
 assert.throws(
   () => assertValidStatementSelections(
     [{ id: "fubon", enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED", credentialKeys: [], ...fubon }],

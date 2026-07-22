@@ -6,13 +6,16 @@ import {
   assertTaskStatementSelection,
   taskById,
 } from "./tasks.ts";
-import { assertValidStatementSelections, resolveStatementSelection } from "../statement-selection.ts";
+import {
+  assertValidStatementSelections,
+  resolveStatementSelection,
+  serializeStatementSelection,
+} from "../statement-selection.ts";
 import {
   credentialStatusFromValues,
   readAutomationCredentialsFile,
   splitAutomationUpdates,
-  writeAutomationCredentials,
-  writeAutomationSettings,
+  writeAutomationConfigFiles,
 } from "./config-files.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
@@ -71,6 +74,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
           { label: group.label, statementSelectionKey: group.statementSelectionKey, statementTypes: group.statementTypes },
           settings,
           enabled,
+          { tolerateUnknown: true },
         )
         : { selectedIds: [], needsSetup: false };
       return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
@@ -131,14 +135,33 @@ export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process
 export function automationSaveCredentials(updates: Record<string, string>) {
   const split = splitAutomationUpdates(updates);
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
+  for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
+    if (
+      !group.statementSelectionKey ||
+      !group.statementTypes ||
+      !Object.hasOwn(split.settings, group.statementSelectionKey)
+    ) continue;
+    const selection = resolveStatementSelection(
+      {
+        label: group.label,
+        statementSelectionKey: group.statementSelectionKey,
+        statementTypes: group.statementTypes,
+      },
+      nextSettings,
+      nextSettings[group.enabledKey] !== false,
+    );
+    nextSettings[group.statementSelectionKey] = serializeStatementSelection(
+      selection.selectedIds,
+    );
+  }
   assertValidStatementSelections(AUTOMATION_CREDENTIAL_GROUPS, nextSettings);
-  writeAutomationSettings(nextSettings);
-  if (Object.keys(split.credentials).length > 0) {
-    writeAutomationCredentials({
+  const nextCredentials = Object.keys(split.credentials).length > 0
+    ? {
       ...readAutomationCredentialsFile(),
       ...split.credentials,
-    });
-  }
+    }
+    : undefined;
+  writeAutomationConfigFiles(nextSettings, nextCredentials);
   return { saved: true as const };
 }
 

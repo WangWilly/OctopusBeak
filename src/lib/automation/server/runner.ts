@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   parseStatementRunSummary,
+  statementRunSummaryLine,
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
 import {
@@ -753,9 +754,23 @@ export async function runAutomationTask(
           () => finalizeExactOwnedAutomationSession(owner),
         );
         taskError = cleanup.errorMessage;
-        if (cleanup.cleanupFailed && status === "completed") status = "failed";
+        if (cleanup.cleanupFailed && (status === "completed" || status === "partial")) {
+          status = "failed";
+        }
       }
       if (isForceQuitRun(taskRunById(taskDb, run.taskRunId))) return { status: "failed" };
+      if (detectedStatementSummary.value) {
+        const summaryLine = statementRunSummaryLine(detectedStatementSummary.value.results);
+        try {
+          appendLog(logPath, `\n${summaryLine}\n`);
+        } catch (error) {
+          const warning = `automation-output-write-failed: ${errorMessage(error)}`;
+          console.error(warning);
+          taskError = [taskError, warning].filter(Boolean).join("\n") || null;
+          logTail = tail(`${logTail}\n${warning}\n`);
+        }
+        logTail = tail(`${logTail}\n${summaryLine}\n`);
+      }
       updateTaskRun(taskDb, run.taskRunId, {
         status,
         finishedAt: new Date().toISOString(),

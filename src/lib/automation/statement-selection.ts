@@ -33,6 +33,7 @@ export function resolveStatementSelection(
   group: StatementCapability,
   settings: Settings,
   enabled: boolean,
+  options: { tolerateUnknown?: boolean } = {},
 ): StatementSelectionState {
   const raw = settings[group.statementSelectionKey];
   if (raw === undefined) {
@@ -42,11 +43,19 @@ export function resolveStatementSelection(
   if (typeof raw !== "string") throw new Error(`${group.statementSelectionKey} must be a string.`);
   const requested = new Set(raw.split(",").map((id) => id.trim()).filter(Boolean));
   const known = new Set(group.statementTypes.map((type) => type.id));
+  const unknownIds: string[] = [];
   for (const id of requested) {
-    if (!known.has(id)) throw new Error(`Unknown ${group.label} statement type: ${id}`);
+    if (!known.has(id)) unknownIds.push(id);
+  }
+  if (unknownIds.length > 0 && !options.tolerateUnknown) {
+    throw new Error(`Unknown ${group.label} statement type: ${unknownIds[0]}`);
   }
   const selectedIds = group.statementTypes.map((type) => type.id).filter((id) => requested.has(id));
-  return { selectedIds, needsSetup: enabled && selectedIds.length === 0, persisted: true };
+  return {
+    selectedIds,
+    needsSetup: enabled && (selectedIds.length === 0 || unknownIds.length > 0),
+    persisted: true,
+  };
 }
 
 export const serializeStatementSelection = (ids: readonly string[]) => ids.join(",");

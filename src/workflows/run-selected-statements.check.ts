@@ -73,3 +73,33 @@ assert.deepEqual(parseStatementRunSummary(summaryLines[0]), {
   status: "partial",
   results: run.results,
 });
+
+const oversizedError = "full component diagnostic ".repeat(500);
+const oversizedSummaryLines: string[] = [];
+const componentErrors: Array<Record<string, unknown>> = [];
+console.log = (...args: unknown[]) => {
+  if (typeof args[0] === "string" && args[0].startsWith("automation-statement-summary: ")) {
+    oversizedSummaryLines.push(args[0]);
+  }
+};
+console.error = (...args: unknown[]) => {
+  componentErrors.push(args[1] as Record<string, unknown>);
+};
+try {
+  await runSelectedStatements(["loan"], [
+    {
+      typeId: "loan",
+      run: async () => {
+        throw new Error(oversizedError);
+      },
+    },
+  ]);
+} finally {
+  console.log = originalLog;
+  console.error = originalError;
+}
+
+assert.equal(componentErrors[0]?.message, oversizedError);
+const oversizedSummary = parseStatementRunSummary(oversizedSummaryLines[0] ?? "");
+assert.equal(oversizedSummary?.status, "failed");
+assert.ok((oversizedSummary?.results[0]?.error?.length ?? 0) < oversizedError.length);
