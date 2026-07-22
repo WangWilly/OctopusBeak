@@ -121,74 +121,101 @@ async function runSectionOutOfForeground<T>(
   }
 }
 
+const fubonAllStatementsDependencies = {
+  signInFubon,
+  keepBrowserWindowOutOfForeground,
+  startFubonSessionKeepAlive,
+  runSectionOutOfForeground,
+  runFubonStatements,
+  runFubonCreditCardStatements,
+  runFubonLoanStatements,
+  signOutFubon,
+};
+
+export async function runFubonAllStatements(
+  ctx: LibrettoWorkflowContext,
+  rawInput: unknown,
+  overrides: Partial<typeof fubonAllStatementsDependencies> = {},
+) {
+  const {
+    signInFubon,
+    keepBrowserWindowOutOfForeground,
+    startFubonSessionKeepAlive,
+    runSectionOutOfForeground,
+    runFubonStatements,
+    runFubonCreditCardStatements,
+    runFubonLoanStatements,
+    signOutFubon,
+  } = { ...fubonAllStatementsDependencies, ...overrides };
+  const input = rawInput as Input;
+  const { page, session } = ctx;
+  console.log("automation-progress: 0");
+
+  page.on("dialog", async (dialog) => {
+    console.warn("bank-dialog", { type: dialog.type() });
+    await dialog.accept();
+  });
+
+  await signInFubon(page, session, input.credentials);
+  await keepBrowserWindowOutOfForeground(page);
+  console.log("automation-progress: 20");
+
+  const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
+  try {
+    const selectedIds = resolveStatementSelection(
+      BANK_STATEMENT_CAPABILITIES.fubon,
+      process.env,
+      true,
+    ).selectedIds;
+    const run = await runSelectedStatements(selectedIds, [
+      {
+        typeId: "deposit",
+        run: () =>
+          runSectionOutOfForeground(page, "statements", () =>
+            runFubonStatements(page, input.statements),
+          ),
+      },
+      {
+        typeId: "credit_card",
+        run: () =>
+          runSectionOutOfForeground(page, "creditCards", () =>
+            runFubonCreditCardStatements(page, input.creditCards),
+          ),
+      },
+      {
+        typeId: "loan",
+        run: () =>
+          runSectionOutOfForeground(page, "loans", () =>
+            runFubonLoanStatements(page, input.loans),
+          ),
+      },
+    ]);
+    console.log("automation-progress: 100");
+
+    return {
+      statements: run.outputs.deposit as
+        | z.infer<typeof fubonStatementsOutputSchema>
+        | undefined,
+      creditCards: run.outputs.credit_card as
+        | z.infer<typeof fubonCreditCardStatementsOutputSchema>
+        | undefined,
+      loans: run.outputs.loan as
+        | z.infer<typeof fubonLoanStatementsOutputSchema>
+        | undefined,
+    };
+  } finally {
+    stopSessionKeepAlive();
+    await signOutFubon(page).catch((error: unknown) => {
+      console.warn("fubon-logout-failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+}
+
 export default workflow("fubonAllStatements", {
   credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
   input: inputSchema,
   output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page, session } = ctx;
-    console.log("automation-progress: 0");
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await signInFubon(page, session, input.credentials);
-    await keepBrowserWindowOutOfForeground(page);
-    console.log("automation-progress: 20");
-
-    const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
-    try {
-      const selectedIds = resolveStatementSelection(
-        BANK_STATEMENT_CAPABILITIES.fubon,
-        process.env,
-        true,
-      ).selectedIds;
-      const run = await runSelectedStatements(selectedIds, [
-        {
-          typeId: "deposit",
-          run: () =>
-            runSectionOutOfForeground(page, "statements", () =>
-              runFubonStatements(page, input.statements),
-            ),
-        },
-        {
-          typeId: "credit_card",
-          run: () =>
-            runSectionOutOfForeground(page, "creditCards", () =>
-              runFubonCreditCardStatements(page, input.creditCards),
-            ),
-        },
-        {
-          typeId: "loan",
-          run: () =>
-            runSectionOutOfForeground(page, "loans", () =>
-              runFubonLoanStatements(page, input.loans),
-            ),
-        },
-      ]);
-      console.log("automation-progress: 100");
-
-      return {
-        statements: run.outputs.deposit as
-          | z.infer<typeof fubonStatementsOutputSchema>
-          | undefined,
-        creditCards: run.outputs.credit_card as
-          | z.infer<typeof fubonCreditCardStatementsOutputSchema>
-          | undefined,
-        loans: run.outputs.loan as
-          | z.infer<typeof fubonLoanStatementsOutputSchema>
-          | undefined,
-      };
-    } finally {
-      stopSessionKeepAlive();
-      await signOutFubon(page).catch((error: unknown) => {
-        console.warn("fubon-logout-failed", {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-  },
+  handler: runFubonAllStatements,
 });

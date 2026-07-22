@@ -16,7 +16,7 @@ console.log = (...args: unknown[]) => {
 };
 console.error = () => undefined;
 
-const run = await runSelectedStatements(["deposit", "loan"], [
+const run = await runSelectedStatements(["deposit", "loan", "fund"], [
   {
     typeId: "deposit",
     run: async () => {
@@ -36,17 +36,18 @@ const run = await runSelectedStatements(["deposit", "loan"], [
     typeId: "loan",
     prepare: async () => {
       calls.push("prepare-loan");
+      throw new Error("loan navigation unavailable");
     },
     run: async () => {
       calls.push("loan");
-      throw new Error("no loan account");
+      return {};
     },
   },
   {
     typeId: "fund",
     run: async () => {
       calls.push("fund");
-      return {};
+      return { count: 1 };
     },
   },
 ]);
@@ -54,14 +55,19 @@ const run = await runSelectedStatements(["deposit", "loan"], [
 console.log = originalLog;
 console.error = originalError;
 
-assert.deepEqual(calls, ["deposit", "prepare-loan", "loan"]);
+assert.deepEqual(calls, ["deposit", "prepare-loan", "fund"]);
 assert.deepEqual(run.results, [
   { typeId: "deposit", status: "success", fileCount: 2 },
   { typeId: "credit_card", status: "skipped" },
-  { typeId: "loan", status: "failed", error: "no loan account" },
-  { typeId: "fund", status: "skipped" },
+  {
+    typeId: "loan",
+    status: "failed",
+    error: "loan navigation unavailable",
+  },
+  { typeId: "fund", status: "success" },
 ]);
 assert.deepEqual(run.outputs.deposit, { count: 2 });
+assert.deepEqual(run.outputs.fund, { count: 1 });
 assert.equal(summaryLines.length, 1);
 assert.deepEqual(parseStatementRunSummary(summaryLines[0]), {
   status: "partial",
