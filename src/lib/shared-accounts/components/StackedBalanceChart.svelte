@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { buildSparklineYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
+  import { buildSparklineYAxis, buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { formatSnapshotAxisLabel } from "$lib/overview/components/snapshot-chart-data.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -17,13 +17,17 @@
 
   let selectedSeriesKeys: string[] = [];
   let lastSignature = "";
+  let hasYRange = false;
+  let yRangeReset = 0;
   type PlotPoint = StackedBalanceChartData["totals"][number] & { position: string };
 
   $: if (chart.signature !== lastSignature) {
     selectedSeriesKeys = [];
     lastSignature = chart.signature;
+    resetYRange();
   }
   $: visibleChart = selectStackedBalanceChartSeries(chart, selectedSeriesKeys);
+  $: isSingleSeriesSelected = selectedSeriesKeys.length === 1;
   $: selectedKeySet = new Set(selectedSeriesKeys);
   $: axisTimes = visibleChart.totals.map((point) => point.time);
   $: xValues = axisTimes.map((_, index) => String(index));
@@ -34,22 +38,35 @@
     data: series.data.map((point) => ({ ...point, position: positionByTime.get(point.time)! })),
   }));
   $: xDomain = xValues;
-  $: yAxis = buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
-  $: yDomain = [0, yAxis.max];
-  $: yTicks = yAxis.ticks.filter((tick) => tick >= 0);
+  $: yAxis = isSingleSeriesSelected
+    ? buildTrendYAxis(visibleChart.totals.map((point) => point.value))
+    : buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
+  $: yDomain = isSingleSeriesSelected ? [yAxis.min, yAxis.max] : [0, yAxis.max];
   $: displayLabel = label || $t.common.balance;
   $: ariaLabel = $t.chart.labelAria(displayLabel, currency);
 
   function toggleSeries(key: string) {
     if (selectedSeriesKeys.length === 0) {
       selectedSeriesKeys = [key];
+      resetYRange();
       return;
     }
     if (selectedKeySet.has(key)) {
       selectedSeriesKeys = selectedSeriesKeys.filter((item) => item !== key);
+      resetYRange();
       return;
     }
     selectedSeriesKeys = [...selectedSeriesKeys, key];
+    resetYRange();
+  }
+
+  function trackYRange({ brush }: { brush: { active?: boolean } }) {
+    hasYRange = Boolean(brush.active);
+  }
+
+  function resetYRange() {
+    hasYRange = false;
+    yRangeReset += 1;
   }
 
   function shortDate(value: unknown) {
@@ -65,7 +82,7 @@
   }
 
   function shortAmount(value: unknown) {
-    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
+    return typeof value === "number" ? formatSparklineTick(value) : String(value);
   }
 
   function tooltipValue(series: StackedBalanceChartData["series"][number], data: { time?: unknown } | null | undefined) {
@@ -75,19 +92,27 @@
 </script>
 
 {#if chart.series.length > 0}
-  <div class="stacked-balance-chart" role="img" aria-label={ariaLabel}>
-    <div class="stacked-balance-stage">
+  <div class="stacked-balance-chart">
+    <div class="stacked-balance-controls">
+      {#if hasYRange}
+        <button class="stacked-balance-range-button" type="button" onclick={resetYRange}>
+          {$t.spending.chartReset}
+        </button>
+      {/if}
+    </div>
+    <div class="stacked-balance-stage" role="img" aria-label={ariaLabel}>
+      {#key `${chart.signature}:${selectedSeriesKeys.join(",")}:${yRangeReset}`}
       <AreaChart
         data={plottedTotals}
         flatData={plottedTotals}
         x="position"
         y="value"
-        transform={{ mode: "domain", axis: "x" }}
+        brush={{ axis: "y", zoomOnBrush: true, clickToReset: true, onBrushEnd: trackYRange }}
         series={plottedSeries}
         seriesLayout="stack"
         {xDomain}
         {yDomain}
-        yBaseline={0}
+        yBaseline={isSingleSeriesSelected ? null : 0}
         yNice={false}
         axis={true}
         grid={{ y: true }}
@@ -103,7 +128,6 @@
           yAxis: {
             class: "sparkline-axis",
             format: shortAmount,
-            ticks: yTicks,
             tickLabelProps: { "data-sensitive": "" },
           },
           grid: { class: "sparkline-grid" },
@@ -125,6 +149,7 @@
           </Tooltip.Root>
         {/snippet}
       </AreaChart>
+      {/key}
     </div>
     <div class="stacked-balance-legend" aria-label={$t.chart.legendAria(displayLabel)}>
       {#each chart.series as series}
@@ -134,7 +159,7 @@
           type="button"
           title={series.label}
           aria-pressed={selectedSeriesKeys.length === 0 || selectedKeySet.has(series.key)}
-          on:click={() => toggleSeries(series.key)}
+          onclick={() => toggleSeries(series.key)}
         >
           <span class="stacked-balance-legend-swatch" style:background-color={series.color}></span>
           <span class="stacked-balance-legend-label">{series.label}</span>
@@ -159,6 +184,30 @@
 
   .stacked-balance-stage {
     height: 260px;
+  }
+
+  .stacked-balance-controls {
+    display: flex;
+    justify-content: flex-end;
+    min-height: 24px;
+    padding: 0 14px;
+  }
+
+  .stacked-balance-range-button {
+    min-height: 24px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .stacked-balance-range-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .stacked-balance-tooltip {

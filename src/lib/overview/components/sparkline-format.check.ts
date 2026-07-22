@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { buildCenteredSparklineYAxis } from "./sparkline-format.ts";
+import { buildCenteredSparklineYAxis, buildTrendYAxis } from "./sparkline-format.ts";
+
+assert.deepEqual(buildTrendYAxis([0, 100]), {
+  min: -12,
+  max: 112,
+  step: 31,
+  ticks: [-12, 19, 50, 81, 112],
+});
 
 assert.deepEqual(buildCenteredSparklineYAxis([120, 160, -50]), {
   min: -240,
