@@ -41,6 +41,7 @@ import {
   shouldCloseResumeSession,
   shouldMarkWaitingForHuman,
   shouldRetainAutomationSession,
+  startAutomationResume,
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
@@ -73,6 +74,54 @@ test("manual and scheduled fresh starts require a saved selection", () => {
   } finally {
     process.chdir(originalCwd);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("batch starts reject missing selections before claiming any task", () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-batch-selection-"));
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    writeFileSync("settings.json", JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }));
+    assert.throws(
+      () => startAutomationTasks(["exchange-rates", "fubon-all-statements"], dir),
+      /Select at least one Fubon/,
+    );
+    assert.deepEqual(activeAutomationTaskIds(), []);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resume bypasses fresh statement-selection validation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-resume-selection-"));
+  const binDir = join(root, "bin");
+  const ledgerDir = join(root, "ledger");
+  const originalCwd = process.cwd();
+  const originalPath = process.env.PATH;
+  try {
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, "libretto"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(binDir, "libretto"), 0o755);
+    writeFileSync(join(root, "settings.json"), JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }));
+    process.chdir(root);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+    assert.doesNotThrow(() => startAutomationResume("fubon-all-statements", "ses-existing", ledgerDir));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!hasActiveAutomationTask()) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(hasActiveAutomationTask(), false);
+    const db = openLedgerDatabase(ledgerDir);
+    assert.equal(latestTaskRuns(db)["fubon-all-statements"]?.taskId, "fubon-all-statements");
+    db.close();
+  } finally {
+    process.chdir(originalCwd);
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
