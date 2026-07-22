@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
+import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
@@ -246,22 +247,35 @@ export function importGateStatus(
   db: LedgerDatabase,
   input: { dependencyIds: readonly string[]; startUtc: Date; endUtc: Date },
 ) {
+  const warnings: { taskId: string; failedTypeIds: readonly string[] }[] = [];
   const missingTaskIds = input.dependencyIds.filter((taskId) => {
     const row = db.prepare(`
-      SELECT 1 AS ran
+      SELECT status, log_tail
       FROM automation_task_runs
       WHERE task_id = ?
-        AND status = 'completed'
+        AND status IN ('completed', 'partial')
         AND started_at >= ?
         AND started_at < ?
+      ORDER BY started_at DESC
       LIMIT 1
     `).get(taskId, input.startUtc.toISOString(), input.endUtc.toISOString()) as
-      | { ran?: number }
+      | { status: "completed" | "partial"; log_tail: string }
       | undefined;
-    return !row;
+    if (!row) return true;
+    if (row.status === "partial") {
+      const summary = parseStatementRunSummary(row.log_tail);
+      warnings.push({
+        taskId,
+        failedTypeIds: summary?.results
+          .filter((result) => result.status === "failed")
+          .map((result) => result.typeId) ?? [],
+      });
+    }
+    return false;
   });
   return {
     locked: missingTaskIds.length > 0,
     missingTaskIds,
+    warnings,
   };
 }

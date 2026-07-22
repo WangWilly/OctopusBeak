@@ -2,6 +2,7 @@ import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import type { AutomationTaskStatus } from "../types.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "../types.ts";
+import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 
 function rowStatus(
@@ -40,6 +41,7 @@ function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts
   if (status === "retrying") return `Retrying attempt ${attempt}/${maxAttempts}`;
   if (status === "waiting_for_human") return "Waiting for human";
   if (status === "completed") return "Completed";
+  if (status === "partial") return "Partial";
   if (status === "failed") return "Failed";
   if (status === "locked") return "Locked";
   return "Queued";
@@ -67,6 +69,9 @@ export function buildAutomationPageModel(input: {
     const progressPercent = parseAutomationProgress(run?.logTail ?? "");
     const attempt = run?.attempt ?? 0;
     const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
+    const statementFailures = parseStatementRunSummary(run?.logTail ?? "")?.results
+      .filter((result) => result.status === "failed")
+      .map(({ typeId, error }) => ({ typeId, ...(error ? { error } : {}) })) ?? [];
     return {
       id: task.id,
       label: task.label,
@@ -85,6 +90,7 @@ export function buildAutomationPageModel(input: {
       logPath: run?.logPath ?? null,
       progressPercent,
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
+      statementFailures,
       humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
       isActive,
       ranToday: todayRunTaskIds.has(task.id),

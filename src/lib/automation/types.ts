@@ -6,6 +6,7 @@ export type AutomationTaskStatus =
   | "waiting_for_human"
   | "retrying"
   | "completed"
+  | "partial"
   | "failed"
   | "locked"
   | "needs_setup";
@@ -45,9 +46,12 @@ export type AutomationTaskHistoryRow = {
   logPath: string;
 };
 
+type ImportWarning = { taskId: string; failedTypeIds: readonly string[] };
+
 type ImportGate = {
   locked: boolean;
   missingTaskIds: readonly string[];
+  warnings: readonly ImportWarning[];
 };
 
 export type AutomationTaskRow = AutomationTaskSummary & {
@@ -61,6 +65,7 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   logPath: string | null;
   progressPercent: number | null;
   progressText: string;
+  statementFailures: readonly { typeId: string; error?: string }[];
   humanSession: string | null;
   isActive: boolean;
   ranToday: boolean;

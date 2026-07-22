@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
@@ -37,6 +38,7 @@ const model = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: ["esun-credit-card-statements"],
+    warnings: [],
   },
   active: false,
   businessDate: "2026-06-30",
@@ -63,7 +65,7 @@ const setupRequiredModel = buildAutomationPageModel({
   activeTaskIds: [],
   todayRunTaskIds: [],
   credentials: {},
-  importGate: { locked: false, missingTaskIds: [] },
+  importGate: { locked: false, missingTaskIds: [], warnings: [] },
   setupRequiredGroupIds: new Set(["fubon"]),
   active: false,
   businessDate: "2026-06-30",
@@ -83,6 +85,7 @@ const unlockedImportModel = buildAutomationPageModel({
   importGate: {
     locked: false,
     missingTaskIds: [],
+    warnings: [],
   },
   active: false,
   businessDate: "2026-06-30",
@@ -108,6 +111,7 @@ const failedModel = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: [],
+    warnings: [],
   },
   active: false,
   businessDate: "2026-06-30",
@@ -134,6 +138,7 @@ const activeModel = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: [],
+    warnings: [],
   },
   active: true,
   businessDate: "2026-06-30",
@@ -170,6 +175,7 @@ const waitingModel = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: [],
+    warnings: [],
   },
   active: true,
   businessDate: "2026-06-30",
@@ -201,6 +207,7 @@ const staleRunningModel = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: [],
+    warnings: [],
   },
   active: false,
   businessDate: "2026-06-30",
@@ -233,6 +240,7 @@ const failedResumeModel = buildAutomationPageModel({
   importGate: {
     locked: true,
     missingTaskIds: [],
+    warnings: [],
   },
   active: false,
   businessDate: "2026-06-30",
@@ -244,3 +252,30 @@ const failedResumeRow = failedResumeModel.tasks.find(
 assert.equal(failedResumeRow?.status, "failed");
 assert.equal(failedResumeRow?.primaryAction, "Run again");
 assert.equal(failedResumeRow?.progressText, "Failed");
+
+const partialModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...latestRuns["fubon-all-statements"],
+      status: "partial",
+      logTail: `download finished\n${statementRunSummaryLine([
+        { typeId: "deposit", status: "success" },
+        { typeId: "loan", status: "failed", error: "no account" },
+        { typeId: "fund", status: "skipped" },
+      ])}`,
+    },
+  },
+  activeTaskIds: [],
+  todayRunTaskIds: ["fubon-all-statements"],
+  credentials: {},
+  importGate: { locked: false, missingTaskIds: [], warnings: [] },
+  active: false,
+  businessDate: "2026-06-30",
+});
+
+const partialRow = partialModel.tasks.find((task) => task.id === "fubon-all-statements");
+assert.equal(partialRow?.status, "partial");
+assert.equal(partialRow?.primaryAction, "Run");
+assert.equal(partialRow?.progressText, "Partial");
+assert.deepEqual(partialRow?.statementFailures, [{ typeId: "loan", error: "no account" }]);
