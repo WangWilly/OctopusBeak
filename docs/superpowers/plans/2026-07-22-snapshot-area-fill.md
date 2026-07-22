@@ -12,7 +12,7 @@
 
 - Reuse LayerChart's existing `yBaseline`; add no dependency or component.
 - Preserve current Y-axis brushing, automatic ticks, and single-series trend domains.
-- Do not alter the stacked asset balance chart or bar charts.
+- Do not alter bar-chart rendering. Stacked balance charts may receive compatible tooltip and axis-format fixes.
 
 ---
 
@@ -70,4 +70,3 @@ Expected: source check passes; Svelte reports zero errors and warnings; renderer
 Run: reload the Electron overview through CDP, select `資產`, then `負債`.
 
 Expected: asset fill reaches the bottom visible edge, liability fill reaches the top visible edge, and the Y-axis range remains trend-scaled for each one.
-

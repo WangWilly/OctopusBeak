@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make balance and overview trend lines use their visible data range while retaining an explicit, visually broken zero reference on the overview's signed chart.
+**Goal:** Make balance and overview trend lines use their visible data range without forcing zero into the rendered domain.
 
-**Architecture:** Keep LayerChart as the scale and mark renderer. Add a small pure axis helper that gives ordinary trend charts tight padded domains and gives the signed overview a bounded symmetric domain around its actual extrema; render the zero reference as an explicit annotation beside the chart rather than pretending it is at a scale-correct position.
+**Architecture:** Keep LayerChart as the scale and mark renderer. Add a small pure axis helper that gives ordinary trend charts tight padded domains and gives the signed overview a bounded symmetric domain around its actual extrema.
 
 **Tech Stack:** Svelte 5, TypeScript, LayerChart 2, Node's built-in assertion test runner.
 
 ## Global Constraints
 
-- Do not add dependencies or modify `SpendingBarChart.svelte`.
+- Do not add dependencies. `SpendingBarChart.svelte` may receive tooltip-only changes without altering bar behavior.
 - Keep the existing X-axis domain transform, tooltips, legend selection, and exact money tooltips.
 - Do not add a user-facing auto-scale notice.
-- A zero annotation must visually state that the intervening range is omitted.
+- Do not render a static zero-break annotation; the data-scaled axis is the source of truth.
 
 ---
 
@@ -115,14 +115,13 @@ Expected: PASS.
 
 **Interfaces:**
 - Consumes: `buildTrendYAxis(values)` from Task 1.
-- Produces: a diverging overview chart using the actual visible-data domain, with a static `0` + ellipsis reference labelled as an omitted range.
+- Produces: a diverging overview chart using the actual visible-data domain.
 
 - [ ] **Step 1: Write the failing source-level test**
 
 ```ts
 assert.match(source, /buildTrendYAxis\(chartPoints\.map\(\(point\) => point\.value\)\)/);
-assert.match(source, /class="snapshot-zero-break"/);
-assert.match(source, /aria-label="Zero reference; range omitted"/);
+assert.doesNotMatch(source, /snapshot-zero-break|zeroBreakAria/);
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -136,9 +135,7 @@ Expected: FAIL because the overview uses `buildCenteredSparklineYAxis` and does 
 ```svelte
 $: yAxis = buildTrendYAxis(chartPoints.map((point) => point.value));
 
-<span class="snapshot-zero-break" aria-label="Zero reference; range omitted">
-  <span>0</span><span aria-hidden="true">⋮</span>
-</span>
+// No static zero annotation is rendered because its visual position would not match the data scale.
 ```
 
 - [ ] **Step 4: Run test to verify it passes**

@@ -91,7 +91,7 @@
   }
 
   function shortAmount(value: unknown) {
-    return typeof value === "number" ? formatSparklineTick(value) : String(value);
+    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
   }
 
   function tooltipValue(series: StackedBalanceChartData["series"][number], data: { time?: unknown } | null | undefined) {
