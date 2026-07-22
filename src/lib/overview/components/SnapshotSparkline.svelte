@@ -25,6 +25,7 @@
   export let diverging = false;
 
   let selectedSeriesKeys: SnapshotDivergingSeriesKey[] = [];
+  let brushedYDomain: [number, number] | null = null;
   let hasYRange = false;
   let yRangeReset = 0;
   let lastRows = rows;
@@ -88,11 +89,19 @@
     resetYRange();
   }
 
-  function trackYRange({ brush }: { brush: { active?: boolean } }) {
-    hasYRange = Boolean(brush.active);
+  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
+    const [start, end] = brush.y;
+    if (brush.active && typeof start === "number" && typeof end === "number") {
+      brushedYDomain = [Math.min(start, end), Math.max(start, end)];
+      hasYRange = true;
+      return;
+    }
+    brushedYDomain = null;
+    hasYRange = false;
   }
 
   function resetYRange() {
+    brushedYDomain = null;
     hasYRange = false;
     yRangeReset += 1;
   }
@@ -153,11 +162,12 @@
             flatData={timelinePoints}
             x="position"
             y="value"
-            brush={{ axis: "y", zoomOnBrush: true, clickToReset: true, onBrushEnd: trackYRange }}
+            transform={{ mode: "domain", axis: "x" }}
+            brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
             series={plottedDivergingSeries}
             seriesLayout="overlap"
             {xDomain}
-            {yDomain}
+            yDomain={brushedYDomain ?? yDomain}
             yBaseline={areaBaseline}
             yNice={false}
             axis={true}
@@ -219,9 +229,10 @@
         data={plottedPoints}
         x="position"
         y="value"
-        brush={{ axis: "y", zoomOnBrush: true, clickToReset: true, onBrushEnd: trackYRange }}
+        transform={{ mode: "domain", axis: "x" }}
+        brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
         {xDomain}
-        {yDomain}
+        yDomain={brushedYDomain ?? yDomain}
         yBaseline={null}
         yNice
         axis={true}
