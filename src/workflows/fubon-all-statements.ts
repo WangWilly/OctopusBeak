@@ -2,6 +2,10 @@ import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
 import {
+  BANK_STATEMENT_CAPABILITIES,
+  resolveStatementSelection,
+} from "../lib/automation/statement-selection.js";
+import {
   activateControlWithoutPointer,
   keepBrowserWindowOutOfForeground,
 } from "./browser-interaction.js";
@@ -22,6 +26,7 @@ import {
   runFubonStatements,
   signInFubon,
 } from "./fubon-statements.js";
+import { runSelectedStatements } from "./run-selected-statements.js";
 
 const inputSchema = z.object({
   statements: fubonStatementsInputSchema.default(() =>
@@ -36,9 +41,9 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
-  statements: fubonStatementsOutputSchema,
-  creditCards: fubonCreditCardStatementsOutputSchema,
-  loans: fubonLoanStatementsOutputSchema,
+  statements: fubonStatementsOutputSchema.optional(),
+  creditCards: fubonCreditCardStatementsOutputSchema.optional(),
+  loans: fubonLoanStatementsOutputSchema.optional(),
 });
 
 type Input = z.infer<typeof inputSchema> & {
@@ -136,29 +141,46 @@ export default workflow("fubonAllStatements", {
 
     const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
     try {
-      const statements = await runSectionOutOfForeground(
-        page,
-        "statements",
-        () => runFubonStatements(page, input.statements),
-      );
-      console.log("automation-progress: 45");
-
-      const creditCards = await runSectionOutOfForeground(
-        page,
-        "creditCards",
-        () => runFubonCreditCardStatements(page, input.creditCards),
-      );
-      console.log("automation-progress: 70");
-
-      const loans = await runSectionOutOfForeground(page, "loans", () =>
-        runFubonLoanStatements(page, input.loans),
-      );
+      const selectedIds = resolveStatementSelection(
+        BANK_STATEMENT_CAPABILITIES.fubon,
+        process.env,
+        true,
+      ).selectedIds;
+      const run = await runSelectedStatements(selectedIds, [
+        {
+          typeId: "deposit",
+          run: () =>
+            runSectionOutOfForeground(page, "statements", () =>
+              runFubonStatements(page, input.statements),
+            ),
+        },
+        {
+          typeId: "credit_card",
+          run: () =>
+            runSectionOutOfForeground(page, "creditCards", () =>
+              runFubonCreditCardStatements(page, input.creditCards),
+            ),
+        },
+        {
+          typeId: "loan",
+          run: () =>
+            runSectionOutOfForeground(page, "loans", () =>
+              runFubonLoanStatements(page, input.loans),
+            ),
+        },
+      ]);
       console.log("automation-progress: 100");
 
       return {
-        statements,
-        creditCards,
-        loans,
+        statements: run.outputs.deposit as
+          | z.infer<typeof fubonStatementsOutputSchema>
+          | undefined,
+        creditCards: run.outputs.credit_card as
+          | z.infer<typeof fubonCreditCardStatementsOutputSchema>
+          | undefined,
+        loans: run.outputs.loan as
+          | z.infer<typeof fubonLoanStatementsOutputSchema>
+          | undefined,
       };
     } finally {
       stopSessionKeepAlive();
