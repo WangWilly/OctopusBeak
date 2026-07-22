@@ -44,6 +44,37 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
+import { assertTaskStatementSelection, taskById } from "./tasks.ts";
+
+test("fresh statement tasks require a saved selection", () => {
+  const task = taskById("fubon-all-statements");
+  assert.ok(task);
+  assert.throws(
+    () => assertTaskStatementSelection(task, { LIBRETTO_CLOUD_FUBON_ENABLED: true }),
+    /Select at least one Fubon/,
+  );
+  assert.doesNotThrow(() => assertTaskStatementSelection(task, {
+    LIBRETTO_CLOUD_FUBON_ENABLED: true,
+    LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
+  }));
+});
+
+test("manual and scheduled fresh starts require a saved selection", () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    writeFileSync("settings.json", JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }));
+    assert.throws(() => startAutomationTask("fubon-all-statements", dir), /Select at least one Fubon/);
+    assert.throws(
+      () => startAutomationTask("fubon-all-statements", dir, { scheduledAtUtc: "2026-07-14T22:00:00.000Z" }),
+      /Select at least one Fubon/,
+    );
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 assert.equal(createAutomationSessionId(() => "fixed-uuid"), "ses-octopus-fixed-uuid");
 assert.equal(

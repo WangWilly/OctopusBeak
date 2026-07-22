@@ -17,6 +17,15 @@ try {
   writeFileSync("settings.json", JSON.stringify({
     AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
     [enabledKey]: true,
+    LIBRETTO_CLOUD_ESUN_ENABLED: false,
+    LIBRETTO_CLOUD_YUANTA_ENABLED: false,
+    LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: false,
+    LIBRETTO_CLOUD_CATHAY_ENABLED: false,
+    LIBRETTO_CLOUD_HNCB_ENABLED: false,
+    LIBRETTO_CLOUD_CTBC_ENABLED: false,
+    LIBRETTO_CLOUD_POST_ENABLED: false,
+    LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
+    LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
   }, null, 2));
   writeFileSync("credentials.json", JSON.stringify({
     [userIdKey]: "user",
@@ -49,12 +58,37 @@ try {
   }
 
   const model = api.loadAutomationDesktopModel(dir);
-  assert.equal(model.credentialGroups.find((group) => group.id === "fubon")?.enabled, true);
+  const fubonGroup = model.credentialGroups.find((group) => group.id === "fubon");
+  assert.equal(fubonGroup?.enabled, true);
+  assert.deepEqual(fubonGroup?.selectedStatementTypeIds, []);
+  assert.equal(fubonGroup?.statementSetupRequired, true);
   assert.equal(model.automation.credentials[passwordKey], true);
   assert.equal(model.automation.credentials.MAX_SUB_ACCOUNT, true);
   assert.equal(Object.hasOwn(model.automation, "runHistory"), false);
   assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.ranToday, true);
+  assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.primaryAction, "Configure");
   assert.equal(api.automationRunHistory(dir)[0]?.taskId, "fubon-all-statements");
+  assert.throws(
+    () => api.assertAutomationTaskCanStart("fubon-all-statements", dir),
+    /Select at least one Fubon/,
+  );
+
+  const settingsBeforeInvalidSave = readFileSync("settings.json", "utf8");
+  const credentialsBeforeInvalidSave = readFileSync("credentials.json", "utf8");
+  assert.throws(
+    () => api.automationSaveCredentials({ LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "" }),
+    /Select at least one Fubon/,
+  );
+  assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeInvalidSave);
+  assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeInvalidSave);
+
+  api.automationSaveCredentials({ LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,credit_card" });
+  assert.equal(
+    JSON.parse(readFileSync("settings.json", "utf8")).LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
+    "deposit,credit_card",
+  );
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync("credentials.json", "utf8")), "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES"), false);
+
   assert.deepEqual(
     api.assertAutomationTasksCanStart(
       ["fubon-all-statements", "fubon-all-statements"],

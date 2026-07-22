@@ -482,6 +482,7 @@ const en = {
       completed: "completed",
       failed: "failed",
       locked: "locked",
+      needs_setup: "needs setup",
     },
     actionLabels: {
       Run: "Run",
@@ -489,6 +490,7 @@ const en = {
       Resume: "Resume",
       Locked: "Locked",
       Cancel: "Cancel",
+      Configure: "Configure",
     },
     progressRunning: (attempt: number, maxAttempts: number) => `Running attempt ${attempt}/${maxAttempts}`,
     progressRetrying: (attempt: number, maxAttempts: number) => `Retrying attempt ${attempt}/${maxAttempts}`,
@@ -1056,6 +1058,7 @@ const zh: typeof en = {
       completed: "已完成",
       failed: "失敗",
       locked: "已鎖定",
+      needs_setup: "需要設定",
     },
     actionLabels: {
       Run: "執行",
@@ -1063,6 +1066,7 @@ const zh: typeof en = {
       Resume: "繼續",
       Locked: "已鎖定",
       Cancel: "取消",
+      Configure: "設定",
     },
     progressRunning: (attempt, maxAttempts) => `執行第 ${attempt}/${maxAttempts} 次`,
     progressRetrying: (attempt, maxAttempts) => `重試第 ${attempt}/${maxAttempts} 次`,

@@ -31,9 +31,11 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import {
+  assertTaskStatementSelection,
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
+import { readAutomationSettings } from "./settings.ts";
 
 export { closeLibrettoSession };
 
@@ -347,8 +349,10 @@ export function startAutomationTask(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
   options: StartAutomationTaskOptions = {},
 ) {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   validateScheduledAtUtc(options.scheduledAtUtc);
+  assertTaskStatementSelection(task, readAutomationSettings());
   claimTask(taskId);
   void runAutomationTask(taskId, ledgerDir, {
     claimed: true,
@@ -364,7 +368,9 @@ export function startAutomationTasks(
 ) {
   const uniqueTaskIds = [...new Set(taskIds)];
   for (const taskId of uniqueTaskIds) {
-    if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+    const task = taskById(taskId);
+    if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+    assertTaskStatementSelection(task, readAutomationSettings());
     if (activeTaskRunIds.has(taskId)) throw new Error(`Automation task is already running: ${taskId}`);
   }
   for (const taskId of uniqueTaskIds) {

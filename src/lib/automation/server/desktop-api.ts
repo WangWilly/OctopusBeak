@@ -3,8 +3,10 @@ import {
   AUTOMATION_CREDENTIAL_KEYS,
   enabledAutomationTasks,
   enabledCsvImportDependencyIds,
+  assertTaskStatementSelection,
   taskById,
 } from "./tasks.ts";
+import { assertValidStatementSelections, resolveStatementSelection } from "../statement-selection.ts";
 import {
   credentialStatusFromValues,
   readAutomationCredentialsFile,
@@ -62,6 +64,17 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
       startUtc: range.startUtc,
       endUtc: range.endUtc,
     });
+    const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
+      const enabled = enabledGroups[group.id] !== false;
+      const selection = group.statementSelectionKey && group.statementTypes
+        ? resolveStatementSelection(
+          { label: group.label, statementSelectionKey: group.statementSelectionKey, statementTypes: group.statementTypes },
+          settings,
+          enabled,
+        )
+        : { selectedIds: [], needsSetup: false };
+      return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
+    });
     return {
       automation: buildAutomationPageModel({
         tasks: enabledAutomationTasks(enabledGroups),
@@ -73,13 +86,11 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
         activeTaskIds,
         credentials: currentCredentialStatus(),
         importGate,
+        setupRequiredGroupIds: new Set(credentialGroups.filter((group) => group.statementSetupRequired).map((group) => group.id)),
         active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
         businessDate: range.businessDate,
       }),
-      credentialGroups: AUTOMATION_CREDENTIAL_GROUPS.map((group) => ({
-        ...group,
-        enabled: enabledGroups[group.id] !== false,
-      })),
+      credentialGroups,
     };
   } finally {
     db.close();
@@ -103,6 +114,7 @@ function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDe
   if (row.status === "locked") {
     throw new Error("Import is locked until all crawler dependencies complete for the business day.");
   }
+  assertTaskStatementSelection(task, readAutomationSettings());
   const missing = missingCredentialKeys(taskId, model.automation.credentials);
   if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
   return task;
@@ -118,10 +130,9 @@ export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process
 
 export function automationSaveCredentials(updates: Record<string, string>) {
   const split = splitAutomationUpdates(updates);
-  writeAutomationSettings({
-    ...readAutomationSettings(),
-    ...split.settings,
-  });
+  const nextSettings = { ...readAutomationSettings(), ...split.settings };
+  assertValidStatementSelections(AUTOMATION_CREDENTIAL_GROUPS, nextSettings);
+  writeAutomationSettings(nextSettings);
   if (Object.keys(split.credentials).length > 0) {
     writeAutomationCredentials({
       ...readAutomationCredentialsFile(),

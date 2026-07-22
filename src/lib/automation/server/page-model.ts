@@ -9,7 +9,9 @@ function rowStatus(
   run: AutomationTaskRun | undefined,
   gate: AutomationPageModel["importGate"],
   isActive: boolean,
+  setupRequiredGroupIds: ReadonlySet<string>,
 ) {
+  if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
   if (task.kind === "import" && gate.locked) return "locked";
   if (run && resumeFailureMessage(run.logTail)) return "failed";
   if (isActive && !run) return "running";
@@ -25,6 +27,7 @@ function rowStatus(
 
 function primaryAction(status: AutomationTaskStatus, isActive: boolean) {
   if (isActive) return "Cancel";
+  if (status === "needs_setup") return "Configure";
   if (status === "locked") return "Locked";
   if (status === "failed") return "Run again";
   if (status === "waiting_for_human") return "Cancel";
@@ -49,15 +52,17 @@ export function buildAutomationPageModel(input: {
   todayRunTaskIds?: readonly string[];
   credentials: Record<string, boolean>;
   importGate: AutomationPageModel["importGate"];
+  setupRequiredGroupIds?: ReadonlySet<string>;
   active: boolean;
   businessDate: string;
 }): AutomationPageModel {
   const activeTaskIds = new Set(input.activeTaskIds ?? []);
   const todayRunTaskIds = new Set(input.todayRunTaskIds ?? []);
+  const setupRequiredGroupIds = input.setupRequiredGroupIds ?? new Set<string>();
   const tasks = input.tasks.map((task) => {
     const run = input.latestRuns[task.id];
     const isActive = activeTaskIds.has(task.id);
-    const status = rowStatus(task, run, input.importGate, isActive);
+    const status = rowStatus(task, run, input.importGate, isActive, setupRequiredGroupIds);
     const action = primaryAction(status, isActive);
     const progressPercent = parseAutomationProgress(run?.logTail ?? "");
     const attempt = run?.attempt ?? 0;
@@ -84,7 +89,7 @@ export function buildAutomationPageModel(input: {
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       primaryAction: action,
-      canRun: action === "Cancel" || (!isActive && action !== "Locked"),
+      canRun: action === "Cancel" || (!isActive && action !== "Locked" && action !== "Configure"),
     } satisfies AutomationTaskRow;
   });
   return {
@@ -95,6 +100,7 @@ export function buildAutomationPageModel(input: {
       .filter((task) =>
         task.canRun
         && task.primaryAction !== "Cancel"
+        && task.primaryAction !== "Configure"
         && !task.isActive
         && task.credentialKeys.every((key) => input.credentials[key])
       )

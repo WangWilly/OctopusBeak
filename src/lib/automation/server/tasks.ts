@@ -1,5 +1,5 @@
 import type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
-import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
+import { BANK_STATEMENT_CAPABILITIES, resolveStatementSelection } from "../statement-selection.ts";
 
 export type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
 
@@ -343,6 +343,21 @@ export function automationCredentialKeyIsSecret(key: string) {
 
 export function taskById(taskId: string) {
   return AUTOMATION_TASKS.find((task) => task.id === taskId) ?? null;
+}
+
+export function assertTaskStatementSelection(
+  task: AutomationTask,
+  settings: Record<string, string | boolean | undefined>,
+) {
+  if (!task.credentialGroupId) return;
+  const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId);
+  if (!group?.statementSelectionKey || !group.statementTypes) return;
+  const selection = resolveStatementSelection(
+    { label: group.label, statementSelectionKey: group.statementSelectionKey, statementTypes: group.statementTypes },
+    settings,
+    settings[group.enabledKey] !== false,
+  );
+  if (selection.needsSetup) throw new Error(`Select at least one ${group.label} statement type.`);
 }
 
 function taskIsEnabled(task: AutomationTask, enabledGroups: Record<string, boolean>) {
