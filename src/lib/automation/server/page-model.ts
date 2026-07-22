@@ -89,7 +89,7 @@ export function buildAutomationPageModel(input: {
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       primaryAction: action,
-      canRun: action === "Cancel" || (!isActive && action !== "Locked" && action !== "Configure"),
+      canRun: action === "Cancel" || (!isActive && action !== "Locked"),
     } satisfies AutomationTaskRow;
   });
   return {
