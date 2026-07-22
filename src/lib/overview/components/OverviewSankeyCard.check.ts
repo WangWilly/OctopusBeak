@@ -16,4 +16,6 @@ test("overview Sankey card uses LayerChart Sankey with node and link tooltips", 
   assert.match(source, /function chartHeightFor\(nodes: OverviewSankeyGraphDto\["nodes"\]\)/);
   assert.match(source, /height=\{chartHeight\}/);
   assert.match(source, /\{#if nodeHeight >= 14\}/);
+  assert.match(source, /export let twdPerUnit = 1;/);
+  assert.match(source, /\$: displayGraph = twdPerUnit === 1 \? graph : \{[\s\S]*value: link\.value \/ twdPerUnit/);
 });

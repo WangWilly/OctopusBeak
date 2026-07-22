@@ -7,6 +7,7 @@
 
   export let graph: OverviewSankeyGraphDto;
   export let currency = "TWD";
+  export let twdPerUnit = 1;
 
   let highlightLinkIndexes: number[] = [];
 
@@ -38,10 +39,14 @@
   }
 
   $: chartHeight = chartHeightFor(graph.nodes);
+  $: displayGraph = twdPerUnit === 1 ? graph : {
+    nodes: graph.nodes,
+    links: graph.links.map((link) => ({ ...link, value: link.value / twdPerUnit })),
+  };
 </script>
 
 <div class="overview-sankey" role="img" aria-label={$t.overview.portfolioFlow}>
-  <Chart data={graph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
+  <Chart data={displayGraph} flatData={[]} height={chartHeight} padding={{ top: 18, right: 180, bottom: 18, left: 12 }}>
     {#snippet children({ context })}
       <Layer>
         <Sankey nodeId={(node) => node.id} nodeAlign="justify" nodePadding={8} nodeWidth={10}>

@@ -19,11 +19,13 @@
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
+  const sankeyCurrencyStorageKey = "overview.portfolioFlow.currency";
 
   export let overview: OverviewPageDto;
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
+  let sankeyCurrency = "TWD";
 
   $: metrics = overview.summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
   $: netMetric = metrics[0] ?? null;
@@ -36,6 +38,10 @@
   $: history = overview.dailyHistory;
   $: dailyCurrencies = dailyHistoryCurrencies(history);
   $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
+  $: sankeyRatesByCurrency = new Map(overview.exchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
+  $: sankeyCurrencies = dailyCurrencies.filter((currency) => currency === "TWD" || sankeyRatesByCurrency.has(currency));
+  $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
+  $: sankeyTwdPerUnit = sankeyRatesByCurrency.get(sankeyCurrency) ?? 1;
   $: convertedDailyHistory = convertDailyHistoryRows(
     history,
     overview.exchangeRates,
@@ -52,6 +58,8 @@
   onMount(() => {
     const stored = localStorage.getItem(dailyCurrencyStorageKey);
     dailyCurrency = stored && dailyCurrencies.includes(stored) ? stored : "TWD";
+    const storedSankey = localStorage.getItem(sankeyCurrencyStorageKey);
+    sankeyCurrency = storedSankey && sankeyCurrencies.includes(storedSankey) ? storedSankey : "TWD";
   });
 
   function formatImportedAt(value: string | null) {
@@ -67,6 +75,11 @@
   function selectDailyCurrency(event: Event) {
     dailyCurrency = selectValue(event);
     localStorage.setItem(dailyCurrencyStorageKey, dailyCurrency);
+  }
+
+  function selectSankeyCurrency(event: Event) {
+    sankeyCurrency = selectValue(event);
+    localStorage.setItem(sankeyCurrencyStorageKey, sankeyCurrency);
   }
 
   function translateSummaryMetric(metric: SummaryMetricDto, dictionary: Translation): SummaryMetricDto {
@@ -174,10 +187,32 @@
     </section>
 
     {#if overview.sankey}
-      <section class="card">
-        <div class="panel-title"><h2>{$t.overview.portfolioFlow}</h2></div>
+      <section class="card sankey-card">
+        <div class="panel-title">
+          <h2>{$t.overview.portfolioFlow}</h2>
+          {#if sankeyCurrencies.length > 1}
+            <label class="chip select-chip" for="sankey-base-currency">
+              {$t.common.base}
+              <select
+                id="sankey-base-currency"
+                aria-label={$t.overview.dailyAssetChangesBaseCurrency}
+                value={sankeyCurrency}
+                onchange={selectSankeyCurrency}
+              >
+                {#each sankeyCurrencies as currency}
+                  <option value={currency}>{currency}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+          {#if overview.latestExchangeRateDate}
+            <span class="chip">
+              {$t.overview.exchangeRatesThrough(overview.latestExchangeRateDate)}
+            </span>
+          {/if}
+        </div>
         <div class="card pad overview-sankey-panel">
-          <OverviewSankeyCard graph={overview.sankey} currency="TWD" />
+          <OverviewSankeyCard graph={overview.sankey} currency={sankeyCurrency} twdPerUnit={sankeyTwdPerUnit} />
         </div>
       </section>
     {/if}
@@ -199,5 +234,9 @@
 
   .overview-sankey-panel {
     overflow: hidden;
+  }
+
+  .sankey-card {
+    margin-top: var(--space-4);
   }
 </style>
