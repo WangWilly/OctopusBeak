@@ -740,7 +740,7 @@ export async function runAutomationTask(
         ? detectedStatementSummary.value.results
           .filter((component) => component.status === "failed")
           .map((component) => `${component.typeId}: ${component.error ?? "Failed"}`)
-          .join("\n")
+          .join("\n") || "No statement components completed."
         : null;
       let taskError = result.error?.message
         ?? resumeFailure
