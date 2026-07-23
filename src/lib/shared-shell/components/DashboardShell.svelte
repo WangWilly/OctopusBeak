@@ -27,6 +27,7 @@
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
+  export let syncDataOnboarding: string | null = null;
 
   const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
   let sidebarCollapsed = readStoredSidebarCollapsed();
@@ -228,7 +229,7 @@
             />
           </div>
         {:else if syncLabel}
-          <span class="chip good">{syncLabel}</span>
+          <span class="chip good" data-onboarding={syncDataOnboarding ?? undefined}>{syncLabel}</span>
         {/if}
         <ValueVisibilityToggle bind:visible={valuesVisible} />
       </slot>
@@ -239,7 +240,13 @@
     <div>
       <nav class="side-nav" aria-label={$t.nav.primary}>
         {#each nav as item}
-          <a class:active={active === item.id} class="nav-link" href={item.href} aria-label={item.label}>
+          <a
+            class:active={active === item.id}
+            class="nav-link"
+            href={item.href}
+            aria-label={item.label}
+            data-onboarding={`nav-${item.id}`}
+          >
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="currentColor" d={item.path} />
             </svg>

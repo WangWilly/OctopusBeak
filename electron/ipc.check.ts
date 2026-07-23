@@ -23,7 +23,7 @@ assert.match(mainSource, /exchange-rate-scheduler-error/);
 
 const pageSource = readFileSync(new URL("../src/routes/+page.svelte", import.meta.url), "utf8");
 assert.match(pageSource, /\.catch\(\(error\) => console\.warn\("system-settings-load-failed", error\)\)/);
-assert.match(pageSource, /\.finally\(\(\) => \{\s*initialized = true;\s*normalizeRoute\(\);\s*\}\)/);
+assert.match(pageSource, /\.finally\(\(\) => \{\s*onboardingState = readOnboardingState\(localStorage\);\s*initialized = true;\s*normalizeRoute\(\);\s*\}\)/);
 
 for (const [channel, handler, service] of [
   ["dataIssues:list", "list", "listDataIssues"],

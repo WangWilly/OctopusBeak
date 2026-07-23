@@ -114,9 +114,10 @@
   {sideSub}
   {sideSubSensitive}
   syncLabel={$t.common.importedAt(formatImportedAt(overview.importedAt))}
+  syncDataOnboarding="overview-imported"
 >
   <div class="content">
-    <section aria-label={$t.overview.summaryAria}>
+    <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
       <SummaryStrip {metrics} />
     </section>
 
