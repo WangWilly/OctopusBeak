@@ -19,6 +19,10 @@
   } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
+  export let onboardingStatus: "active" | "paused" | "completed" | null = null;
+  export let onResumeOnboarding: () => void = () => {};
+  export let onRestartOnboarding: () => void = () => {};
+
   const timezones = ["Asia/Taipei", "Asia/Tokyo", "America/New_York", "Europe/London", "UTC"];
   const hours = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
   const minutes = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
@@ -96,6 +100,10 @@
 
   function saveTimezone() {
     saveSystemSettings();
+  }
+
+  function restartOnboarding() {
+    if (confirm($t.onboarding.restartConfirm)) onRestartOnboarding();
   }
 </script>
 
@@ -196,6 +204,36 @@
         {/if}
       </div>
     </section>
+
+    <section class="card settings-group">
+      <div class="panel-title group-title">
+        <div>
+          <h2>{$t.onboarding.welcomeTitle}</h2>
+          <p class="lead">{$t.onboarding.welcomeBody}</p>
+        </div>
+      </div>
+      <div class="settings-rows">
+        <div class="setting-row">
+          <span class="setting-label">
+            {onboardingStatus === "completed"
+              ? $t.onboarding.completeTitle
+              : onboardingStatus
+                ? $t.onboarding.progress
+                : $t.onboarding.welcomeTitle}
+          </span>
+          <div class="onboarding-setting-actions">
+            {#if onboardingStatus === "paused"}
+              <button class="button primary" type="button" onclick={onResumeOnboarding}>
+                {$t.onboarding.continue}
+              </button>
+            {/if}
+            <button class="button secondary" type="button" onclick={restartOnboarding}>
+              {$t.onboarding.restart}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </DashboardShell>
 
@@ -245,6 +283,13 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2);
+  }
+
+  .onboarding-setting-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-3);
   }
 
   .scale-controls {

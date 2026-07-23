@@ -98,8 +98,14 @@ assert.match(source, /class="credential-provider-list"/);
 assert.match(source, /class:selected=\{group\.id === selectedCredentialGroupId\}/);
 assert.match(source, /async function updateCredentialSearch\(event: Event\)/);
 assert.match(source, /selectedCredentialGroupId = visibleCredentialGroups\[0\]\?\.id \?\? ""/);
+const openCredentialsSource = source.slice(source.indexOf("function openCredentials"), source.indexOf("function closeCredentials"));
+assert.match(
+  openCredentialsSource,
+  /\? remembered && collectionGroupIds\.has\(remembered\) \? remembered : ""/,
+);
+assert.doesNotMatch(openCredentialsSource, /selectedCredentialGroupId\s*=/);
 assert.match(source, /value=\{credentialSearch\} oninput=\{updateCredentialSearch\}/);
-assert.match(source, /\$: selectedCredentialGroup = visibleCredentialGroups\.find/);
+assert.match(source, /\$: selectedCredentialGroup =\s+visibleCredentialGroups\.find/);
 assert.match(source, /class="modal-body history-layout"/);
 assert.match(source, /class="history-filters"/);
 assert.match(source, /class="history-error-detail"/);
@@ -178,6 +184,10 @@ const statementFieldsetSource = source.slice(
   source.indexOf("</fieldset>", source.indexOf('<fieldset\n                class="statement-selection"')),
 );
 assert.match(source, /let statementSelectionError = ""/);
+assert.match(
+  statementFieldsetSource,
+  /data-onboarding=\{!onboardingMissingCredentialKey && onboardingNeedsStatements\s+\? "automation-credentials"\s+: undefined\}/,
+);
 assert.match(statementFieldsetSource, /aria-describedby=\{statementSelectionError/);
 assert.match(statementFieldsetSource, /aria-invalid=\{statementSelectionError/);
 assert.match(statementFieldsetSource, /id=\{`\$\{selectedCredentialGroup\.id\}-statement-error`\}/);
