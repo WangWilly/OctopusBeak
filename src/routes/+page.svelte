@@ -8,6 +8,17 @@
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
+  import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
+  import {
+    completedImportFinishedAt,
+    createOnboardingState,
+    hasExistingProductData,
+    readOnboardingState,
+    resolveOnboardingStep,
+    shouldNarrowOnboardingSources,
+    writeOnboardingState,
+    type OnboardingState,
+  } from "$lib/onboarding/state.ts";
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
@@ -30,6 +41,43 @@
   let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
   let spending: LoadState<SpendingPageDto> = { status: "loading" };
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
+  let onboardingState: OnboardingState | null = null;
+  let onboardingEligibilityChecked = false;
+  let overviewLoadedForImportFinishedAt: string | null = null;
+  let overviewReloading = false;
+
+  $: onboardingContext = {
+    route,
+    automation: automation.status === "ready" ? automation.data : null,
+    overview: overview.status === "ready" ? overview.data : null,
+    overviewLoadedForImportFinishedAt,
+  };
+  $: onboardingStep = resolveOnboardingStep(onboardingContext, onboardingState);
+  $: onboardingCompact = automation.status === "ready"
+    && (onboardingStep === "collection" || onboardingStep === "import")
+    && automation.data.automation.tasks.some((task) =>
+      task.isActive
+      && (onboardingStep === "import"
+        ? task.id === "import-downloads-csv"
+        : task.credentialGroupId === onboardingState?.selectedCredentialGroupId),
+    );
+  $: if (
+    initialized
+    && !onboardingEligibilityChecked
+    && overview.status === "ready"
+  ) {
+    onboardingEligibilityChecked = true;
+    void checkOnboardingEligibility();
+  }
+  $: if (
+    route === "overview"
+    && onboardingStep === "overview"
+    && !overviewReloading
+    && automation.status === "ready"
+    && completedImportFinishedAt(automation.data.automation.tasks)
+  ) {
+    void loadRoute("overview");
+  }
 
   function normalizeRoute() {
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
@@ -52,9 +100,77 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  async function loadRoute(next: RouteId) {
+  function saveOnboarding(next: OnboardingState) {
+    onboardingState = next;
+    writeOnboardingState(localStorage, next);
+  }
+
+  function pauseOnboarding() {
+    if (onboardingState) saveOnboarding({ ...onboardingState, status: "paused" });
+  }
+
+  function resumeOnboarding() {
+    saveOnboarding(onboardingState
+      ? { ...onboardingState, status: "active" }
+      : createOnboardingState());
+    location.hash = "/automation";
+  }
+
+  function restartOnboarding() {
+    saveOnboarding(createOnboardingState());
+    location.hash = "/automation";
+  }
+
+  function finishOnboarding() {
+    if (onboardingState) saveOnboarding({ ...onboardingState, status: "completed" });
+  }
+
+  function selectOnboardingSource(groupId: string, sourceConfiguredAt: string) {
+    const current = onboardingState ?? createOnboardingState();
+    saveOnboarding({
+      ...current,
+      selectedCredentialGroupId: groupId,
+      sourceConfiguredAt,
+      status: "active",
+    });
+  }
+
+  function addOnboardingSource() {
+    finishOnboarding();
+    location.hash = "/automation";
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>('[data-onboarding="automation-credentials"]')?.click();
+    });
+  }
+
+  async function checkOnboardingEligibility() {
     try {
-      if (next === "overview") overview = { status: "ready", data: await window.octopusBeak.overview.load() };
+      if (automation.status !== "ready") {
+        automation = { status: "ready", data: await window.octopusBeak.automation.load() };
+      }
+      if (!onboardingState && !hasExistingProductData({
+        route,
+        automation: automation.status === "ready" ? automation.data : null,
+        overview: overview.status === "ready" ? overview.data : null,
+        overviewLoadedForImportFinishedAt,
+      })) {
+        saveOnboarding(createOnboardingState());
+      }
+    } catch (error) {
+      console.warn("onboarding-eligibility-load-failed", message(error));
+    }
+  }
+
+  async function loadRoute(next: RouteId) {
+    const importFinishedAt = next === "overview" && automation.status === "ready"
+      ? completedImportFinishedAt(automation.data.automation.tasks)
+      : null;
+    if (next === "overview") overviewReloading = true;
+    try {
+      if (next === "overview") {
+        overview = { status: "ready", data: await window.octopusBeak.overview.load() };
+        overviewLoadedForImportFinishedAt = importFinishedAt;
+      }
       if (next === "assets") assets = { status: "ready", data: await window.octopusBeak.assets.load() };
       if (next === "liabilities") liabilities = { status: "ready", data: await window.octopusBeak.liabilities.load() };
       if (next === "spending") spending = { status: "ready", data: await window.octopusBeak.spending.load() };
@@ -66,6 +182,8 @@
       if (next === "liabilities") liabilities = failed;
       if (next === "spending") spending = failed;
       if (next === "automation") automation = failed;
+    } finally {
+      if (next === "overview") overviewReloading = false;
     }
   }
 
@@ -73,6 +191,7 @@
     void window.octopusBeak.settings.load().then((value) => {
       applySystemSettings(value);
     }).catch((error) => console.warn("system-settings-load-failed", error)).finally(() => {
+      onboardingState = readOnboardingState(localStorage);
       initialized = true;
       normalizeRoute();
     });
@@ -105,6 +224,15 @@
       automation={automation.data.automation}
       credentialGroups={automation.data.credentialGroups}
       reload={() => loadRoute("automation")}
+      onboardingSourceSelection={onboardingStep === "credentials"}
+      onboardingSingleSource={shouldNarrowOnboardingSources(
+        onboardingContext,
+        onboardingState,
+        onboardingStep,
+      )}
+      {onboardingStep}
+      onboardingSelectedCredentialGroupId={onboardingState?.selectedCredentialGroupId ?? null}
+      onOnboardingSourceSaved={selectOnboardingSource}
     />
   {/if}
   {#if automation.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
@@ -112,7 +240,24 @@
 {:else if route === "data-issues"}
   <DataIssuesDashboard issueId={dataIssueId} />
 {:else}
-  <SettingsPage />
+  <SettingsPage
+    onboardingStatus={onboardingState?.status ?? null}
+    onResumeOnboarding={resumeOnboarding}
+    onRestartOnboarding={restartOnboarding}
+  />
+{/if}
+
+{#if onboardingState}
+  <OnboardingCoach
+    step={onboardingStep}
+    state={onboardingState}
+    {route}
+    onPause={pauseOnboarding}
+    onFinish={finishOnboarding}
+    onAddSource={addOnboardingSource}
+    onRetryTarget={() => loadRoute(route)}
+    compact={onboardingCompact}
+  />
 {/if}
 
 <style>

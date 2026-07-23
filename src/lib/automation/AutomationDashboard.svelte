@@ -4,6 +4,15 @@
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
   import type { CredentialGroupDto } from "$lib/desktop/api.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import {
+    canResumeAssist,
+    canSubmitCredentials,
+    onboardingTaskDisclosure,
+    settleAssistDrag,
+    settleAssistTextSubmission,
+    singleSourceUpdates,
+    type OnboardingStep,
+  } from "$lib/onboarding/state.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
@@ -12,6 +21,11 @@
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
   export let reload: () => Promise<void>;
+  export let onboardingSourceSelection = false;
+  export let onboardingSingleSource = false;
+  export let onboardingStep: OnboardingStep = "hidden";
+  export let onboardingSelectedCredentialGroupId: string | null = null;
+  export let onOnboardingSourceSaved: (groupId: string, sourceConfiguredAt: string) => void = () => {};
 
   let credentialsOpen = false;
   let syncOpen = false;
@@ -27,6 +41,7 @@
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
   let expandedHistoryRunId: string | null = null;
   let humanTask: AutomationTaskRow | null = null;
+  let assistInteracted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let viewerRequestId = 0;
@@ -43,6 +58,7 @@
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
   let statementSelectionDrafts: Record<string, string[]> = {};
+  let statementSelectionConfirmed = false;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
@@ -95,10 +111,43 @@
       ),
     ]),
   );
-  $: visibleCredentialGroups = credentialGroups.filter((group) =>
-    group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
+  $: collectionGroupIds = new Set(
+    automation.tasks
+      .filter((task) => task.kind === "crawler" && task.credentialGroupId)
+      .map((task) => task.credentialGroupId as string),
   );
-  $: selectedCredentialGroup = visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId) ?? visibleCredentialGroups[0];
+  $: onboardingDisclosure = onboardingTaskDisclosure(
+    onboardingStep,
+    onboardingSelectedCredentialGroupId,
+    automation.tasks,
+  );
+  $: revealOnboardingTask(onboardingDisclosure);
+  $: visibleCredentialGroups = credentialGroups.filter((group) =>
+    (!onboardingSourceSelection || collectionGroupIds.has(group.id))
+      && group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
+  );
+  $: selectedCredentialGroup =
+    visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId)
+    ?? (!onboardingSourceSelection ? visibleCredentialGroups[0] : undefined);
+  $: onboardingMissingCredentialKey = onboardingSourceSelection && selectedCredentialGroup
+    ? selectedCredentialGroup.credentialKeys.find(
+        (key) => !credentialDrafts[key]?.trim(),
+      ) ?? null
+    : null;
+  $: onboardingNeedsStatements = Boolean(
+    onboardingSourceSelection
+    && selectedCredentialGroup?.statementTypes?.length
+    && (
+      !(statementSelectionDrafts[selectedCredentialGroup.id]?.length)
+      || !statementSelectionConfirmed
+    ),
+  );
+  $: onboardingCredentialsReady = Boolean(
+    onboardingSourceSelection
+    && selectedCredentialGroup
+    && !onboardingMissingCredentialKey
+    && !onboardingNeedsStatements,
+  );
   $: visibleHistoryRows = historyRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
@@ -148,6 +197,16 @@
 
   function toggleStage(stageId: string) {
     stageOpen = { ...stageOpen, [stageId]: !stageOpen[stageId] };
+  }
+
+  function revealOnboardingTask(
+    disclosure: ReturnType<typeof onboardingTaskDisclosure>,
+  ) {
+    if (!disclosure) return;
+    if (!stageOpen[disclosure.stageId]) {
+      stageOpen = { ...stageOpen, [disclosure.stageId]: true };
+    }
+    if (disclosure.showAllCollectTasks) showAllCollectTasks = true;
   }
 
   async function toggleCollectTasks(event: MouseEvent) {
@@ -211,6 +270,7 @@
 
   function resetCredentialChanges() {
     credentialDrafts = {};
+    statementSelectionConfirmed = false;
     statementSelectionError = "";
     groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
     statementSelectionDrafts = Object.fromEntries(
@@ -220,7 +280,12 @@
 
   function openCredentials() {
     resetCredentialChanges();
-    selectedCredentialGroupId = selectedCredentialGroupId || credentialGroups[0]?.id || "";
+    const remembered = onboardingSelectedCredentialGroupId;
+    selectCredentialGroup(
+      onboardingSourceSelection
+        ? remembered && collectionGroupIds.has(remembered) ? remembered : ""
+        : selectedCredentialGroupId || credentialGroups[0]?.id || "",
+    );
     credentialSearch = "";
     credentialsOpen = true;
   }
@@ -257,6 +322,7 @@
 
   function toggleStatementType(groupId: string, typeId: string) {
     statementSelectionError = "";
+    statementSelectionConfirmed = true;
     const group = credentialGroups.find((candidate) => candidate.id === groupId);
     const selected = new Set(statementSelectionDrafts[groupId] ?? []);
     if (selected.has(typeId)) selected.delete(typeId);
@@ -269,6 +335,7 @@
 
   function selectAllStatementTypes(group: CredentialGroupDto) {
     statementSelectionError = "";
+    statementSelectionConfirmed = true;
     statementSelectionDrafts = {
       ...statementSelectionDrafts,
       [group.id]: (group.statementTypes ?? []).map((type) => type.id),
@@ -303,7 +370,18 @@
 
   function selectCredentialGroup(groupId: string) {
     statementSelectionError = "";
+    statementSelectionConfirmed = false;
     selectedCredentialGroupId = groupId;
+    if (onboardingSourceSelection) {
+      groupEnabled = Object.fromEntries(
+        credentialGroups.map((group) => [
+          group.id,
+          group.id === groupId
+            || ((!onboardingSingleSource || !collectionGroupIds.has(group.id))
+              && groupEnabled[group.id] !== false),
+        ]),
+      );
+    }
   }
 
   async function runTask(task: AutomationTaskRow) {
@@ -451,6 +529,7 @@
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
+    if (!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)) return;
     const invalid = credentialGroups.find((group) =>
       group.statementTypes?.length
       && groupEnabled[group.id] !== false
@@ -476,12 +555,35 @@
     for (const [key, value] of Object.entries(credentialDrafts)) {
       if (value.trim()) updates[key] = value.trim();
     }
+    if (onboardingSingleSource && selectedCredentialGroupId) {
+      Object.assign(
+        updates,
+        singleSourceUpdates(
+          credentialGroups,
+          selectedCredentialGroupId,
+          collectionGroupIds,
+        ),
+      );
+    }
     try {
       actionError = "";
+      const savedGroupId = selectedCredentialGroupId;
       await window.octopusBeak.automation.saveCredentials(updates);
       resetCredentialChanges();
-      credentialsOpen = false;
       await reload();
+      if (onboardingSourceSelection && savedGroupId) {
+        onOnboardingSourceSaved(savedGroupId, new Date().toISOString());
+        credentialsOpen = false;
+        const selectedTask = automation.tasks.find(
+          (task) => task.kind === "crawler" && task.credentialGroupId === savedGroupId,
+        );
+        if (selectedTask?.canRun) {
+          await window.octopusBeak.automation.run(selectedTask.id);
+          await reload();
+        }
+      } else {
+        credentialsOpen = false;
+      }
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -505,6 +607,7 @@
 
   function openHumanViewer(task: AutomationTaskRow) {
     humanTask = task;
+    assistInteracted = false;
     viewerError = "";
     dragStart = null;
     void refreshViewerImage();
@@ -519,6 +622,7 @@
     if (viewerTimer) clearInterval(viewerTimer);
     viewerTimer = null;
     humanTask = null;
+    assistInteracted = false;
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
     viewerImageUrl = "";
     viewerError = "";
@@ -528,13 +632,15 @@
   }
 
   async function sendViewerInput(input: unknown) {
-    if (!humanTask) return;
+    if (!humanTask) return false;
     try {
       await window.octopusBeak.automation.viewerInput(humanTask.id, input);
       viewerError = "";
       await refreshViewerImage();
+      return true;
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
+      return false;
     }
   }
 
@@ -563,7 +669,7 @@
   }
 
   async function resumeHumanViewer() {
-    if (!humanTask) return;
+    if (!humanTask || !canResumeAssist(assistInteracted, Boolean(floatingInput))) return;
     const task = humanTask;
     closeHumanViewer();
     try {
@@ -618,8 +724,19 @@
       void handleViewerClick(point);
     } else {
       floatingInput = null;
-      void sendViewerInput({ type: "drag", x: start.x, y: start.y, toX: point.x, toY: point.y });
+      void submitViewerDrag(start, point);
     }
+  }
+
+  async function submitViewerDrag(start: { x: number; y: number }, point: { x: number; y: number }) {
+    const succeeded = await sendViewerInput({
+      type: "drag",
+      x: start.x,
+      y: start.y,
+      toX: point.x,
+      toY: point.y,
+    });
+    if (settleAssistDrag(succeeded)) assistInteracted = true;
   }
 
   function handleViewerPointerCancel(event: PointerEvent) {
@@ -631,9 +748,13 @@
 
   async function handleViewerClick(point: NonNullable<ReturnType<typeof pointerPoint>>) {
     floatingInput = null;
-    await sendViewerInput({ type: "click", x: point.x, y: point.y });
+    if (!await sendViewerInput({ type: "click", x: point.x, y: point.y })) return;
     const inspected = await inspectViewerPoint({ x: point.x, y: point.y });
-    if (!inspected?.editable) return;
+    if (!inspected) return;
+    if (!inspected.editable) {
+      assistInteracted = true;
+      return;
+    }
     floatingInput = { ...floatingInputAnchor(point), value: "" };
     await tick();
     floatingInputEl?.focus();
@@ -644,12 +765,15 @@
     floatingInput = { ...floatingInput, value: (event.currentTarget as HTMLInputElement).value };
   }
 
-  function submitFloatingInput(event: SubmitEvent) {
+  async function submitFloatingInput(event: SubmitEvent) {
     event.preventDefault();
     if (!floatingInput?.value) return;
-    const text = floatingInput.value;
-    floatingInput = null;
-    void sendViewerInput({ type: "type", text });
+    const input = floatingInput;
+    const succeeded = await sendViewerInput({ type: "type", text: input.value });
+    if (floatingInput !== input) return;
+    const result = settleAssistTextSubmission(input, succeeded);
+    floatingInput = result.floatingInput;
+    if (result.assistInteracted) assistInteracted = true;
   }
 
   function taskIdLabel(taskId: string, dictionary: Translation) {
@@ -691,7 +815,14 @@
   {sideSub}
 >
   <svelte:fragment slot="topbar-actions">
-    <button class="button secondary topbar-action" type="button" onclick={openCredentials}>{$t.automation.credentials}</button>
+    <button
+      class="button secondary topbar-action"
+      type="button"
+      data-onboarding={!credentialsOpen ? "automation-credentials" : undefined}
+      onclick={openCredentials}
+    >
+      {$t.automation.credentials}
+    </button>
     <button class="button secondary topbar-action" type="button" onclick={() => void openRunHistory()}>
       {$t.automation.runHistory}
     </button>
@@ -726,6 +857,14 @@
                   aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
                   title={taskLabel(task, $t)}
+                  data-onboarding-task={task.id}
+                  data-onboarding-group={task.credentialGroupId}
+                  data-onboarding={onboardingStep === "assist"
+                    && !humanTask
+                    && task.credentialGroupId === onboardingSelectedCredentialGroupId
+                    ? "automation-assist"
+                    : undefined}
+                  data-onboarding-action={task.status === "waiting_for_human" ? "open-assist" : "logs"}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
                   onpointerleave={hideTaskTooltip}
                   onfocus={(event) => showTaskTooltip(task, event)}
@@ -864,6 +1003,9 @@
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
                       title={importLockTitle(task, $t)}
+                      data-onboarding-task={task.id}
+                      data-onboarding-group={task.credentialGroupId}
+                      data-onboarding-action="primary"
                       onclick={() => void primaryTaskAction(task)}
                     >
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
@@ -880,6 +1022,9 @@
                       type="button"
                       aria-expanded={expandedLogTaskId === task.id}
                       aria-controls={`${task.id}-inline-log`}
+                      data-onboarding-task={task.id}
+                      data-onboarding-group={task.credentialGroupId}
+                      data-onboarding-action="logs"
                       onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
                     >
                       {$t.automation.logs}
@@ -991,7 +1136,15 @@
         </div>
         <div class="credential-head-actions">
           <button class="button fixed-action" type="button" onclick={closeCredentials}>{$t.common.cancel}</button>
-          <button class="button primary fixed-action" type="submit">{$t.common.save}</button>
+          <button
+            class="button primary fixed-action"
+            type="submit"
+            disabled={!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)}
+            data-onboarding={onboardingCredentialsReady
+              ? "automation-credentials"
+              : undefined}
+            data-onboarding-action="save-credentials"
+          >{$t.common.save}</button>
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
         </div>
       </div>
@@ -1007,6 +1160,14 @@
                 type="button"
                 class:selected={group.id === selectedCredentialGroupId}
                 aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
+                data-onboarding-group={group.id}
+                data-onboarding={onboardingSourceSelection
+                  && credentialsOpen
+                  && !selectedCredentialGroupId
+                  && group === visibleCredentialGroups[0]
+                    ? "automation-credentials"
+                    : undefined}
+                data-onboarding-action="select-source"
                 onclick={() => selectCredentialGroup(group.id)}
               >
                 <strong>{group.label}</strong>
@@ -1039,6 +1200,10 @@
                     type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
                     value={credentialDrafts[key] ?? ""}
                     class:dirty={Boolean(credentialDrafts[key]?.trim())}
+                    data-onboarding={key === onboardingMissingCredentialKey
+                      ? "automation-credentials"
+                      : undefined}
+                    data-onboarding-action="enter-credentials"
                     oninput={(event) => updateCredentialDraft(key, event)}
                     placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
                     autocomplete="off"
@@ -1051,6 +1216,10 @@
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
                 tabindex="-1"
+                data-onboarding={!onboardingMissingCredentialKey && onboardingNeedsStatements
+                  ? "automation-credentials"
+                  : undefined}
+                data-onboarding-action="select-statements"
                 aria-describedby={statementSelectionError
                   ? `${selectedCredentialGroup.id}-statement-help ${selectedCredentialGroup.id}-statement-error`
                   : `${selectedCredentialGroup.id}-statement-help`}
@@ -1169,8 +1338,17 @@
           <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
             {$t.automation.forceQuit}
           </button>
-          <button class="button primary fixed-action" type="button" onclick={resumeHumanViewer}>
-            {$t.automation.resume}
+          <button
+            class="button primary fixed-action"
+            type="button"
+            disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput))}
+            data-onboarding={onboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput))
+              ? "automation-assist"
+              : undefined}
+            data-onboarding-action="resume-collection"
+            onclick={resumeHumanViewer}
+          >
+            {onboardingStep === "assist" ? $t.onboarding.resumeCollection : $t.automation.resume}
           </button>
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHumanViewer}>x</button>
         </div>
@@ -1179,6 +1357,12 @@
         <div class="viewer-frame">
           <img
             class="viewer-image"
+            tabindex="-1"
+            aria-label={$t.onboarding.verificationViewerAria}
+            data-onboarding={onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted
+              ? "automation-assist"
+              : undefined}
+            data-onboarding-action="choose-verification-control"
             src={viewerImageUrl}
             alt={$t.automation.pausedBrowser}
             draggable="false"
@@ -1205,6 +1389,10 @@
             >
               <input
                 bind:this={floatingInputEl}
+                data-onboarding={onboardingStep === "assist" && floatingInput
+                  ? "automation-assist"
+                  : undefined}
+                data-onboarding-action="enter-verification"
                 type="text"
                 maxlength="128"
                 aria-label={$t.automation.textToTypeAria}
@@ -2428,6 +2616,11 @@
     background: transparent;
     touch-action: none;
     user-select: none;
+  }
+
+  .viewer-image:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
   }
 
   .human-viewer-modal.expanded .viewer-image {
