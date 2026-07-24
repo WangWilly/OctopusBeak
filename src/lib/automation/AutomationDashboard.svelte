@@ -425,7 +425,7 @@
     onboardingCredentialTargetKey = onboardingSourceSelection
       ? credentialGroups.find((group) => group.id === groupId)?.credentialKeys[0] ?? null
       : null;
-    if (onboardingSourceSelection) {
+    if (onboardingSourceSelection && onboardingSingleSource && groupId) {
       groupEnabled = Object.fromEntries(
         credentialGroups.map((group) => [
           group.id,
