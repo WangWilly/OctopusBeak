@@ -107,7 +107,14 @@ assert.match(source, /\.credential-provider-list nav::-webkit-scrollbar\s*\{\s*w
 assert.doesNotMatch(source, /\.credential-provider-list nav\[data-onboarding\]/);
 assert.match(source, /class:selected=\{group\.id === selectedCredentialGroupId\}/);
 assert.match(source, /async function updateCredentialSearch\(event: Event\)/);
-assert.match(source, /selectedCredentialGroupId = visibleCredentialGroups\[0\]\?\.id \?\? ""/);
+const updateCredentialSearchSource = source.slice(
+  source.indexOf("async function updateCredentialSearch"),
+  source.indexOf("function selectCredentialGroup"),
+);
+assert.match(
+  updateCredentialSearchSource,
+  /if \(onboardingSourceSelection\) selectCredentialGroup\(""\);[\s\S]*?else selectedCredentialGroupId = visibleCredentialGroups\[0\]\?\.id \?\? ""/,
+);
 const openCredentialsSource = source.slice(source.indexOf("function openCredentials"), source.indexOf("function closeCredentials"));
 assert.match(
   openCredentialsSource,
