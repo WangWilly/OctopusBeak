@@ -66,5 +66,17 @@ export function placeOnboardingCoach(
       if (position) return { ...position, ...size, compact };
     }
   }
+  if (
+    COMPACT_COACH.width <= viewport.width - MARGIN * 2
+    && COMPACT_COACH.height <= viewport.height - MARGIN * 2
+  ) {
+    return {
+      side: "bottom-right",
+      left: viewport.width - COMPACT_COACH.width - MARGIN,
+      top: viewport.height - COMPACT_COACH.height - MARGIN,
+      ...COMPACT_COACH,
+      compact: true,
+    };
+  }
   return null;
 }
