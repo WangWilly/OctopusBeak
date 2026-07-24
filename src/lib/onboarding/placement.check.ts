@@ -109,6 +109,20 @@ test("returns null when no inside nonintersecting position exists", () => {
   );
 });
 
+test("ignores secondary obstacles before hiding the coach", () => {
+  const target = { left: 450, top: 300, width: 200, height: 200 };
+  const size = { width: 360, height: 286 };
+  const result = placeOnboardingCoach(
+    target,
+    size,
+    { width: 1000, height: 700 },
+    [{ left: 0, top: 0, width: 1000, height: 700 }],
+  );
+
+  assert.ok(result);
+  assert.equal(intersects(target, result, result), false);
+});
+
 test("uses a contained compact coach above a wide statement target at 150% scale", () => {
   const viewport = { width: 654, height: 467 };
   const target = { left: 30, top: 100, width: 594, height: 280 };
