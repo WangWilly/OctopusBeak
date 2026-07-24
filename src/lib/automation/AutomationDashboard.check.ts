@@ -95,6 +95,16 @@ assert.match(source, /\.automation-table\s*\{\s*table-layout: fixed;/);
 assert.match(source, /colspan="5"/);
 assert.match(source, /class="modal-body credential-layout"/);
 assert.match(source, /class="credential-provider-list"/);
+assert.match(
+  source,
+  /\.credential-modal\s*\{[\s\S]*?height: min\(960px, calc\(100vh - 40px\)\);[\s\S]*?max-height: min\(960px, calc\(100vh - 40px\)\);/,
+);
+assert.match(
+  source,
+  /\.credential-provider-list nav\s*\{[\s\S]*?overflow-y: scroll;[\s\S]*?scrollbar-gutter: stable;/,
+);
+assert.match(source, /\.credential-provider-list nav::-webkit-scrollbar\s*\{\s*width: 12px;/);
+assert.doesNotMatch(source, /\.credential-provider-list nav\[data-onboarding\]/);
 assert.match(source, /class:selected=\{group\.id === selectedCredentialGroupId\}/);
 assert.match(source, /async function updateCredentialSearch\(event: Event\)/);
 assert.match(source, /selectedCredentialGroupId = visibleCredentialGroups\[0\]\?\.id \?\? ""/);
