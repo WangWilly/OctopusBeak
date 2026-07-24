@@ -101,12 +101,14 @@ test("fits beside a tall statements fieldset in the minimum Electron window", ()
   assert.equal(result && intersects(target, result, size), false);
 });
 
-test("returns null when no inside nonintersecting position exists", () => {
+test("keeps a compact coach visible when the target fills the viewport", () => {
   const target = { left: 24, top: 24, width: 932, height: 652 };
-  assert.equal(
-    placeOnboardingCoach(target, { width: 360, height: 652 }, { width: 980, height: 700 }),
-    null,
-  );
+  const viewport = { width: 980, height: 700 };
+  const result = placeOnboardingCoach(target, { width: 360, height: 652 }, viewport);
+
+  assert.ok(result);
+  assert.equal(result.compact, true);
+  assert.ok(inside(result, result, viewport));
 });
 
 test("ignores secondary obstacles before hiding the coach", () => {
