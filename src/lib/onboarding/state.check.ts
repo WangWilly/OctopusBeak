@@ -602,8 +602,24 @@ test("opening first-run credentials leaves the source unselected", () => {
     automationDashboard.indexOf("function openCredentials"),
     automationDashboard.indexOf("function closeCredentials"),
   );
+  const selectCredentialGroupSource = automationDashboard.slice(
+    automationDashboard.indexOf("function selectCredentialGroup"),
+    automationDashboard.indexOf("async function runTask"),
+  );
   assert.match(openCredentialsSource, /remembered = onboardingSelectedCredentialGroupId/);
   assert.match(openCredentialsSource, /onboardingSourceSelection\s*\? remembered && collectionGroupIds\.has\(remembered\) \? remembered : ""/);
+  assert.match(
+    selectCredentialGroupSource,
+    /if \(onboardingSourceSelection && onboardingSingleSource && groupId\)/,
+  );
+});
+
+test("coach keeps observing when its selector has not changed", () => {
+  assert.match(onboardingCoach, /let watchedSelector: string \| null \| undefined/);
+  assert.match(
+    onboardingCoach,
+    /function watchTarget\(selector: string \| null\) \{\s*if \(selector === watchedSelector\) return;\s*watchedSelector = selector;/,
+  );
 });
 
 test("credentials opener is the onboarding target only while the modal is closed", () => {

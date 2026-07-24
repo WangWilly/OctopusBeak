@@ -34,6 +34,7 @@
   let rootOverflow = "";
   let bodyOverflow = "";
   let stopObserving = () => {};
+  let watchedSelector: string | null | undefined;
   let announcement = "";
 
   $: visible = step !== "hidden";
@@ -93,6 +94,8 @@
   }
 
   function watchTarget(selector: string | null) {
+    if (selector === watchedSelector) return;
+    watchedSelector = selector;
     stopObserving();
     stopObserving = () => {};
     target = null;
