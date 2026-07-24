@@ -143,6 +143,11 @@
     });
   }
 
+  function backOnboarding() {
+    if (history.length > 1) history.back();
+    else location.hash = route === "automation" ? "/overview" : "/automation";
+  }
+
   async function checkOnboardingEligibility() {
     try {
       if (automation.status !== "ready") {
@@ -255,6 +260,7 @@
     onPause={pauseOnboarding}
     onFinish={finishOnboarding}
     onAddSource={addOnboardingSource}
+    onBack={backOnboarding}
     onRetryTarget={() => loadRoute(route)}
     compact={onboardingCompact}
   />

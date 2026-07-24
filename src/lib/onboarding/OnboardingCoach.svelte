@@ -19,6 +19,7 @@
   export let onPause: () => void;
   export let onFinish: () => void;
   export let onAddSource: () => void;
+  export let onBack: () => void;
   export let onRetryTarget: () => void;
   export let compact = false;
 
@@ -30,6 +31,8 @@
   let viewportWidth = 0;
   let viewportHeight = 0;
   let listening = false;
+  let rootOverflow = "";
+  let bodyOverflow = "";
   let stopObserving = () => {};
   let announcement = "";
 
@@ -39,7 +42,6 @@
   $: title = copy?.title ?? "";
   $: body = copy?.body ?? "";
   $: current = onboardingStepNumber(step);
-  $: assistTargetInModal = step === "assist" && Boolean(target?.closest(".human-viewer-modal"));
   $: coachPosition = targetRect && coachWidth && coachHeight
     ? placeOnboardingCoach(
       targetRect,
@@ -100,6 +102,13 @@
       return;
     }
     stopObserving = observeOnboardingTarget(selector, (nextTarget) => {
+      if (nextTarget && nextTarget !== target) {
+        nextTarget.scrollIntoView({
+          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+          block: "center",
+          inline: "center",
+        });
+      }
       target = nextTarget;
       updateRect();
     });
@@ -107,6 +116,10 @@
       addEventListener("resize", updateRect);
       addEventListener("scroll", updateRect, true);
       addEventListener("animationend", updateRect, true);
+      rootOverflow = document.documentElement.style.overflow;
+      bodyOverflow = document.body.style.overflow;
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overflow = "hidden";
       listening = true;
     }
   }
@@ -116,6 +129,8 @@
     removeEventListener("resize", updateRect);
     removeEventListener("scroll", updateRect, true);
     removeEventListener("animationend", updateRect, true);
+    document.documentElement.style.overflow = rootOverflow;
+    document.body.style.overflow = bodyOverflow;
     listening = false;
   }
 
@@ -144,8 +159,15 @@
     activateOnboardingTarget(target);
   }
 
+  function back() {
+    if (target && !target.dispatchEvent(
+      new CustomEvent("onboardingback", { bubbles: true, cancelable: true }),
+    )) return;
+    onBack();
+  }
+
   function handleKeydown(event: KeyboardEvent) {
-    if (visible && event.key === "Escape") {
+    if (visible && event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       onPause();
     }
@@ -190,7 +212,20 @@
 
 {#if visible}
   <div class="onboarding-layer" aria-hidden="true">
-    {#if targetRect && coachPosition && !assistTargetInModal}
+    {#if targetRect && coachPosition}
+      <div class="interaction-blocker top" style={`height:${Math.max(0, targetRect.top - 6)}px`}></div>
+      <div
+        class="interaction-blocker bottom"
+        style={`top:${Math.min(viewportHeight, targetRect.bottom + 6)}px`}
+      ></div>
+      <div
+        class="interaction-blocker left"
+        style={`top:${Math.max(0, targetRect.top - 6)}px;width:${Math.max(0, targetRect.left - 6)}px;height:${Math.min(viewportHeight, targetRect.bottom + 6) - Math.max(0, targetRect.top - 6)}px`}
+      ></div>
+      <div
+        class="interaction-blocker right"
+        style={`top:${Math.max(0, targetRect.top - 6)}px;left:${Math.min(viewportWidth, targetRect.right + 6)}px;height:${Math.min(viewportHeight, targetRect.bottom + 6) - Math.max(0, targetRect.top - 6)}px`}
+      ></div>
       <div
         class="spotlight"
         style={`--target-top:${targetRect.top}px;--target-left:${targetRect.left}px;--target-width:${targetRect.width}px;--target-height:${targetRect.height}px`}
@@ -223,6 +258,7 @@
       <h2 id="onboarding-title">{title}</h2>
       <p>{body}</p>
       <div class="coach-actions">
+        <button class="button secondary" type="button" onclick={back}>{$t.onboarding.back}</button>
         {#if step === "complete"}
           <button class="button secondary" type="button" onclick={onAddSource}>{$t.onboarding.addSource}</button>
           <button class="button primary" type="button" onclick={onFinish}>{$t.onboarding.finish}</button>
@@ -257,6 +293,23 @@
     box-shadow:
       0 0 0 4px var(--accent),
       0 0 0 9999px rgb(10 14 18 / 0.56);
+  }
+  .interaction-blocker {
+    position: fixed;
+    pointer-events: auto;
+  }
+  .interaction-blocker.top {
+    inset: 0 0 auto;
+  }
+  .interaction-blocker.bottom {
+    inset-inline: 0;
+    bottom: 0;
+  }
+  .interaction-blocker.left {
+    left: 0;
+  }
+  .interaction-blocker.right {
+    right: 0;
   }
   .coach {
     position: fixed;
@@ -328,6 +381,9 @@
   .coach.corner .coach-actions .primary {
     display: inline-flex;
   }
+  .coach.corner .coach-actions .secondary:not(:first-child) {
+    display: none;
+  }
   .coach-meta, .coach-actions {
     display: flex;
     align-items: center;
@@ -340,8 +396,8 @@
     font-weight: 750;
   }
   .guide {
-    width: 24px;
-    height: 24px;
+    width: 32px;
+    height: 32px;
     background: url("./assets/onboarding-guide-sprite.webp") left center / 200% 100% no-repeat;
     animation: guide-idle 1.2s step-end infinite;
     image-rendering: pixelated;
