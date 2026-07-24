@@ -6,16 +6,20 @@
     onboardingStepNumber,
     targetForOnboardingStep,
     type OnboardingCopyKey,
-    type OnboardingContext,
-    type OnboardingState,
+    type OnboardingRoute,
     type OnboardingStep,
-  } from "./state.ts";
-  import { activateOnboardingTarget, observeOnboardingTarget } from "./target-observer.ts";
+  } from "./progression.ts";
+  import type { OnboardingState } from "./state.ts";
+  import {
+    activateOnboardingTarget,
+    observeOnboardingTarget,
+    selectorForOnboardingTarget,
+  } from "./target-observer.ts";
   import { placeOnboardingCoach } from "./placement.ts";
 
   export let step: OnboardingStep;
   export let state: OnboardingState;
-  export let route: OnboardingContext["route"];
+  export let route: OnboardingRoute;
   export let onPause: () => void;
   export let onFinish: () => void;
   export let onAddSource: () => void;
@@ -51,7 +55,9 @@
       obstacleRects,
     )
     : null;
-  $: watchTarget(visible ? targetForOnboardingStep(step, state, route) : null);
+  $: watchTarget(visible
+    ? selectorForOnboardingTarget(targetForOnboardingStep(step, state, route))
+    : null);
   $: if (visible) announce(title);
 
   async function announce(value: string) {
@@ -180,7 +186,7 @@
   function primaryLabel(
     nextStep: OnboardingStep,
     dictionary: Translation,
-    nextRoute: OnboardingContext["route"],
+    nextRoute: OnboardingRoute,
     targetAction?: string,
   ) {
     if (nextStep === "automation-nav") return dictionary.onboarding.openAutomation;

@@ -9,21 +9,28 @@ import {
   ONBOARDING_STORAGE_KEY,
   canResumeAssist,
   createOnboardingState,
-  hasExistingProductData,
   nextOnboardingCredentialKey,
-  onboardingCopyKey,
-  onboardingStepNumber,
   onboardingTaskDisclosure,
   readOnboardingState,
-  resolveOnboardingStep,
   settleAssistTextSubmission,
-  shouldNarrowOnboardingSources,
   singleSourceUpdates,
-  targetForOnboardingStep,
   writeOnboardingState,
-  type OnboardingContext,
 } from "./state.ts";
-import { activateOnboardingTarget, observeOnboardingTarget } from "./target-observer.ts";
+import {
+  hasExistingProductData,
+  onboardingCopyKey,
+  onboardingStepNumber,
+  resolveOnboardingStep,
+  shouldNarrowOnboardingSources,
+  targetForOnboardingStep,
+  type OnboardingFacts,
+  type OnboardingRoute,
+} from "./progression.ts";
+import {
+  activateOnboardingTarget,
+  observeOnboardingTarget,
+  selectorForOnboardingTarget,
+} from "./target-observer.ts";
 
 class MemoryStorage {
   values = new Map<string, string>();
@@ -117,23 +124,32 @@ const automation = (
 const context = (
   selectedTask: AutomationTaskRow,
   options: {
-    route?: OnboardingContext["route"];
+    route?: OnboardingRoute;
     importTask?: AutomationTaskRow;
     accounts?: number;
     importedAt?: string | null;
     gateLocked?: boolean;
     overviewLoadedForImportFinishedAt?: string | null;
   } = {},
-): OnboardingContext => {
+): OnboardingFacts => {
   const model = automation(selectedTask, options.importTask);
   model.automation.importGate = {
     ...model.automation.importGate,
     locked: options.gateLocked ?? model.automation.importGate.locked,
   };
+  const overviewData = overview(options.accounts, options.importedAt);
   return {
     route: options.route ?? "automation",
-    automation: model,
-    overview: overview(options.accounts, options.importedAt),
+    automation: {
+      tasks: model.automation.tasks,
+      credentialGroups: model.credentialGroups,
+      credentials: model.automation.credentials,
+      importGateLocked: model.automation.importGate.locked,
+    },
+    overview: {
+      accounts: overviewData.accounts,
+      importedAt: overviewData.importedAt,
+    },
     overviewLoadedForImportFinishedAt: options.overviewLoadedForImportFinishedAt ?? null,
   };
 };
@@ -279,17 +295,16 @@ assert.equal(hasExistingProductData(context(selectedCrawler, {
   importTask: { ...completedImport, status: "failed" },
 })), false);
 assert.equal(hasExistingProductData(context(selectedCrawler)), false);
-assert.equal(targetForOnboardingStep("credentials", state), '[data-onboarding="automation-credentials"]');
-assert.equal(targetForOnboardingStep("assist", state), '[data-onboarding="automation-assist"]');
+assert.deepEqual(targetForOnboardingStep("credentials", state), { kind: "credentials" });
+assert.deepEqual(targetForOnboardingStep("assist", state), { kind: "assist" });
 assert.equal(onboardingStepNumber("assist"), 3);
 assert.equal(onboardingStepNumber("import-failed"), 4);
 assert.equal(onboardingCopyKey("collection-failed"), "collectionFailed");
 assert.equal(onboardingCopyKey("overview-empty"), "overviewEmpty");
 assert.equal(onboardingCopyKey("hidden"), null);
-assert.equal(
+assert.deepEqual(
   targetForOnboardingStep("collection", state),
-  '[data-onboarding-group="fubon"][data-onboarding-action="primary"],'
-    + '[data-onboarding-task="fubon"][data-onboarding-action="primary"]',
+  { kind: "task", taskId: "fubon", action: "primary" },
 );
 
 const automationDashboard = readFileSync("src/lib/automation/AutomationDashboard.svelte", "utf8");
@@ -316,7 +331,7 @@ assert.match(onboardingCoach, /\.human-viewer-modal \.viewer-floating-input/);
 assert.match(onboardingCoach, /if \(copyKey === "assist"\)[\s\S]*?targetAction/);
 assert.match(onboardingCoach, /\$: key = visible \? onboardingCopyKey\(step\) : null;/);
 assert.match(onboardingCoach, /coachCopy\(\$t,\s*key,\s*target\?\.dataset\.onboardingAction\)/);
-assert.match(onboardingCoach, /function primaryLabel\([\s\S]*nextStep: OnboardingStep,[\s\S]*dictionary: Translation,[\s\S]*nextRoute: OnboardingContext\["route"\]/);
+assert.match(onboardingCoach, /function primaryLabel\([\s\S]*nextStep: OnboardingStep,[\s\S]*dictionary: Translation,[\s\S]*nextRoute: OnboardingRoute/);
 assert.match(onboardingCoach, /\{primaryLabel\(step, \$t, route, target\?\.dataset\.onboardingAction\)\}/);
 assert.match(onboardingCoach, /animation: guide-idle 1\.2s step-end infinite;/);
 assert.doesNotMatch(onboardingCoach, /steps\(2,\s*end\)/);
@@ -508,6 +523,22 @@ test("coach relocalizes when a disclosed target mounts", () => {
   }
 });
 
+test("browser adapter maps semantic onboarding targets to DOM selectors", () => {
+  assert.equal(
+    selectorForOnboardingTarget({ kind: "credentials" }),
+    '[data-onboarding="automation-credentials"]',
+  );
+  assert.equal(
+    selectorForOnboardingTarget({ kind: "task", taskId: "fubon", action: "primary" }),
+    '[data-onboarding-group="fubon"][data-onboarding-action="primary"],'
+      + '[data-onboarding-task="fubon"][data-onboarding-action="primary"]',
+  );
+  assert.equal(
+    selectorForOnboardingTarget({ kind: "overview-empty", route: "automation" }),
+    '[data-onboarding-task="import-downloads-csv"][data-onboarding-action="logs"]',
+  );
+});
+
 test("coach remeasures its target after modal animation", () => {
   assert.match(onboardingCoach, /addEventListener\("animationend", updateRect, true\)/);
   assert.match(onboardingCoach, /removeEventListener\("animationend", updateRect, true\)/);
@@ -640,7 +671,7 @@ test("credentials onboarding requires source, credentials, statements, then save
   assert.match(automationDashboard, /data-onboarding-action="enter-credentials"/);
   assert.match(automationDashboard, /data-onboarding-action="select-statements"/);
   assert.match(automationDashboard, /onboardingCredentialsReady[\s\S]*?data-onboarding-action="save-credentials"/);
-  assert.match(automationDashboard, /onOnboardingSourceSaved\(savedGroupId, new Date\(\)\.toISOString\(\)\)/);
+  assert.match(automationDashboard, /onOnboardingSourceSaved\(\{[\s\S]*selectedCredentialGroupId: savedGroupId,[\s\S]*sourceConfiguredAt:/);
   assert.match(automationDashboard, /savedGroupId[\s\S]*?automation\.tasks\.find/);
   assert.match(automationDashboard, /automation\.run\(selectedTask\.id\)/);
   assert.match(onboardingCoach, /select-source[\s\S]*?enter-credentials[\s\S]*?select-statements/);
@@ -901,13 +932,13 @@ test("overview-empty recovers through Automation and Import Logs without a route
     },
   );
   assert.equal(resolveOnboardingStep(emptyAfterImport, state), "overview-empty");
-  assert.equal(
+  assert.deepEqual(
     targetForOnboardingStep("overview-empty", state, "overview"),
-    '[data-onboarding="nav-automation"]',
+    { kind: "overview-empty", route: "overview" },
   );
-  assert.equal(
+  assert.deepEqual(
     targetForOnboardingStep("overview-empty", state, "automation"),
-    '[data-onboarding-task="import-downloads-csv"][data-onboarding-action="logs"]',
+    { kind: "overview-empty", route: "automation" },
   );
 });
 
