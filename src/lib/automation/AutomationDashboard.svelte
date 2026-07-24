@@ -136,6 +136,10 @@
         (key) => !credentialDrafts[key]?.trim(),
       ) ?? null
     : null;
+  $: onboardingSourceEnabled = Boolean(
+    selectedCredentialGroup
+    && groupEnabled[selectedCredentialGroup.id] !== false,
+  );
   $: onboardingNeedsStatements = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup?.statementTypes?.length
@@ -147,6 +151,7 @@
   $: onboardingCredentialsReady = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup
+    && onboardingSourceEnabled
     && !onboardingCredentialTargetKey
     && !onboardingMissingCredentialKey
     && !onboardingNeedsStatements,
@@ -425,8 +430,9 @@
         credentialGroups.map((group) => [
           group.id,
           group.id === groupId
-            || ((!onboardingSingleSource || !collectionGroupIds.has(group.id))
-              && groupEnabled[group.id] !== false),
+            ? groupEnabled[group.id] !== false
+            : (!onboardingSingleSource || !collectionGroupIds.has(group.id))
+              && groupEnabled[group.id] !== false,
         ]),
       );
     }
@@ -1253,6 +1259,10 @@
                 class:dirty={(groupEnabled[selectedCredentialGroup.id] !== false) !== selectedCredentialGroup.enabled}
                 type="button"
                 aria-pressed={groupEnabled[selectedCredentialGroup.id] !== false}
+                data-onboarding={onboardingSourceSelection && !onboardingSourceEnabled
+                  ? "automation-credentials"
+                  : undefined}
+                data-onboarding-action="enable-source"
                 onclick={() => toggleGroup(selectedCredentialGroup.id)}
               >
                 <span>{$t.common.enabled}</span>
@@ -1268,7 +1278,7 @@
                     type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
                     value={credentialDrafts[key] ?? ""}
                     class:dirty={Boolean(credentialDrafts[key]?.trim())}
-                    data-onboarding={key === onboardingCredentialTargetKey
+                    data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
                       ? "automation-credentials"
                       : undefined}
                     data-onboarding-action="enter-credentials"

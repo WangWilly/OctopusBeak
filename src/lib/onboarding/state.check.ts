@@ -385,8 +385,23 @@ assert.match(automationDashboard, /ononboardingback=\{backOnboardingCredential\}
 assert.match(automationDashboard, /ononboardingback=\{backOnboardingAssist\}/);
 assert.match(
   automationDashboard,
-  /data-onboarding=\{key === onboardingCredentialTargetKey[\s\S]*?data-onboarding-action="enter-credentials"/,
+  /onboardingSourceEnabled[\s\S]*?groupEnabled\[selectedCredentialGroup\.id\] !== false/,
 );
+assert.match(
+  automationDashboard,
+  /class="switch credential-switch"[\s\S]*?data-onboarding-action="enable-source"/,
+);
+assert.match(
+  automationDashboard,
+  /onboardingCredentialsReady = Boolean\([\s\S]*?onboardingSourceEnabled/,
+);
+assert.match(
+  automationDashboard,
+  /data-onboarding=\{onboardingSourceEnabled && key === onboardingCredentialTargetKey[\s\S]*?data-onboarding-action="enter-credentials"/,
+);
+assert.match(onboardingCoach, /targetAction === "enable-source"/);
+assert.match(i18n, /enableSource: "Enable this source"/);
+assert.match(i18n, /enableSource: "啟用這個來源"/);
 assert.match(onboardingCoach, /new CustomEvent\("onboardingback", \{ bubbles: true, cancelable: true \}\)/);
 assert.match(onboardingCoach, /onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/);
 assert.match(page, /onBack=\{backOnboarding\}/);

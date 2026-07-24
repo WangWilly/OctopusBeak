@@ -78,6 +78,7 @@
     } satisfies Record<OnboardingCopyKey, { title: string; body: string }>;
     if (copyKey === "credentials") {
       if (targetAction === "select-source") return dictionary.onboarding.chooseSourceCopy;
+      if (targetAction === "enable-source") return dictionary.onboarding.enableSourceCopy;
       if (targetAction === "enter-credentials") return dictionary.onboarding.enterCredentialsCopy;
       if (targetAction === "select-statements") return dictionary.onboarding.selectStatementsCopy;
       if (targetAction === "save-credentials") return dictionary.onboarding.saveCredentialsCopy;
@@ -182,6 +183,7 @@
     if (nextStep === "automation-nav") return dictionary.onboarding.openAutomation;
     if (nextStep === "credentials") {
       if (targetAction === "select-source") return dictionary.onboarding.chooseSource;
+      if (targetAction === "enable-source") return dictionary.onboarding.enableSource;
       if (targetAction === "enter-credentials") return dictionary.onboarding.enterCredentials;
       if (targetAction === "select-statements") return dictionary.onboarding.selectStatements;
       if (targetAction === "save-credentials") return dictionary.onboarding.saveCredentials;
