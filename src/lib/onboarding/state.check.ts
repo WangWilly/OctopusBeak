@@ -330,7 +330,9 @@ assert.match(onboardingCoach, /--coach-left:\$\{coachPosition\.left\}px;--coach-
 assert.match(onboardingCoach, /top: var\(--coach-top\);/);
 assert.match(onboardingCoach, /left: var\(--coach-left\);/);
 assert.match(onboardingCoach, /class:corner=\{coachPosition\?\.compact\}/);
-assert.doesNotMatch(onboardingCoach, /class:fallback|\.coach\.fallback/);
+assert.match(onboardingCoach, /class:fallback=\{!targetRect\}/);
+assert.match(onboardingCoach, /class="interaction-blocker missing-target"/);
+assert.match(onboardingCoach, /\.coach\.fallback\s*\{[\s\S]*?right: 24px;[\s\S]*?bottom: 24px;/);
 assert.match(onboardingCoach, /max-height: calc\(100vh - 48px\);/);
 assert.match(onboardingCoach, /overflow-y: auto;/);
 assert.match(onboardingCoach, /\.coach\.corner \{[\s\S]*height: var\(--coach-height\);/);

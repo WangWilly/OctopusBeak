@@ -235,47 +235,48 @@
         class="spotlight"
         style={`--target-top:${targetRect.top}px;--target-left:${targetRect.left}px;--target-width:${targetRect.width}px;--target-height:${targetRect.height}px`}
       ></div>
+    {:else}
+      <div class="interaction-blocker missing-target"></div>
     {/if}
   </div>
 
-  {#if targetRect}
-    <div
-      bind:clientWidth={null, measureCoachWidth}
-      bind:clientHeight={null, measureCoachHeight}
-      class:compact
-      class:corner={coachPosition?.compact}
-      class:measuring={!coachPosition}
-      class="coach"
-      role="dialog"
-      aria-modal="false"
-      aria-labelledby="onboarding-title"
-      style={coachPosition
-        ? `--coach-left:${coachPosition.left}px;--coach-top:${coachPosition.top}px;--coach-width:${coachPosition.width}px;--coach-height:${coachPosition.height}px`
-        : undefined}
-    >
-      <div class="coach-meta">
-        <span>{$t.onboarding.stepLabel(current, 5)}</span>
-        <span class="guide" aria-hidden="true"></span>
-      </div>
-      <div class="milestones" aria-hidden="true">
-        {#each [1, 2, 3, 4, 5] as item}<span class:active={item === current}></span>{/each}
-      </div>
-      <h2 id="onboarding-title">{title}</h2>
-      <p>{body}</p>
-      <div class="coach-actions">
-        <button class="button secondary" type="button" onclick={back}>{$t.onboarding.back}</button>
-        {#if step === "complete"}
-          <button class="button secondary" type="button" onclick={onAddSource}>{$t.onboarding.addSource}</button>
-          <button class="button primary" type="button" onclick={onFinish}>{$t.onboarding.finish}</button>
-        {:else}
-          <button class="button secondary" type="button" onclick={onPause}>{$t.onboarding.pause}</button>
-          <button class="button primary" type="button" onclick={activateTarget}>
-            {primaryLabel(step, $t, route, target?.dataset.onboardingAction)}
-          </button>
-        {/if}
-      </div>
+  <div
+    bind:clientWidth={null, measureCoachWidth}
+    bind:clientHeight={null, measureCoachHeight}
+    class:compact
+    class:corner={coachPosition?.compact}
+    class:fallback={!targetRect}
+    class:measuring={Boolean(targetRect) && !coachPosition}
+    class="coach"
+    role="dialog"
+    aria-modal="false"
+    aria-labelledby="onboarding-title"
+    style={coachPosition
+      ? `--coach-left:${coachPosition.left}px;--coach-top:${coachPosition.top}px;--coach-width:${coachPosition.width}px;--coach-height:${coachPosition.height}px`
+      : undefined}
+  >
+    <div class="coach-meta">
+      <span>{$t.onboarding.stepLabel(current, 5)}</span>
+      <span class="guide" aria-hidden="true"></span>
     </div>
-  {/if}
+    <div class="milestones" aria-hidden="true">
+      {#each [1, 2, 3, 4, 5] as item}<span class:active={item === current}></span>{/each}
+    </div>
+    <h2 id="onboarding-title">{title}</h2>
+    <p>{body}</p>
+    <div class="coach-actions">
+      <button class="button secondary" type="button" onclick={back}>{$t.onboarding.back}</button>
+      {#if step === "complete"}
+        <button class="button secondary" type="button" onclick={onAddSource}>{$t.onboarding.addSource}</button>
+        <button class="button primary" type="button" onclick={onFinish}>{$t.onboarding.finish}</button>
+      {:else}
+        <button class="button secondary" type="button" onclick={onPause}>{$t.onboarding.pause}</button>
+        <button class="button primary" type="button" onclick={activateTarget}>
+          {primaryLabel(step, $t, route, target?.dataset.onboardingAction)}
+        </button>
+      {/if}
+    </div>
+  </div>
 {/if}
 
 <span class="visually-hidden" aria-live="polite">{announcement}</span>
@@ -316,6 +317,9 @@
   .interaction-blocker.right {
     right: 0;
   }
+  .interaction-blocker.missing-target {
+    inset: 0;
+  }
   .coach {
     position: fixed;
     z-index: 81;
@@ -337,6 +341,12 @@
     visibility: hidden;
     top: 24px;
     left: 24px;
+  }
+  .coach.fallback {
+    top: auto;
+    right: 24px;
+    bottom: 24px;
+    left: auto;
   }
   .coach.compact {
     width: min(320px, calc(100vw - 48px));
