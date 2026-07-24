@@ -1,6 +1,13 @@
 export function activateOnboardingTarget(target: HTMLElement) {
   target.focus();
-  if (target.dataset.onboardingAction !== "choose-verification-control") target.click();
+  const action = target.dataset.onboardingAction;
+  if (action === "enter-credentials") {
+    if (target instanceof HTMLInputElement && target.value.trim()) {
+      target.dispatchEvent(new CustomEvent("onboardingadvance", { bubbles: true }));
+    }
+    return;
+  }
+  if (action !== "choose-verification-control" && action !== "select-source") target.click();
 }
 
 export function observeOnboardingTarget(

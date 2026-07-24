@@ -62,6 +62,16 @@ export function canSubmitCredentials(onboarding: boolean, ready: boolean) {
   return !onboarding || ready;
 }
 
+export function nextOnboardingCredentialKey(
+  keys: readonly string[],
+  current: string | null,
+  drafts: Readonly<Record<string, string>>,
+) {
+  if (!current || !drafts[current]?.trim()) return current;
+  const index = keys.indexOf(current);
+  return index < 0 ? current : keys[index + 1] ?? null;
+}
+
 export function settleAssistDrag(succeeded: boolean) {
   return succeeded;
 }

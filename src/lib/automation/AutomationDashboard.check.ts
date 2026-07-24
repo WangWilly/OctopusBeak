@@ -186,7 +186,7 @@ const statementFieldsetSource = source.slice(
 assert.match(source, /let statementSelectionError = ""/);
 assert.match(
   statementFieldsetSource,
-  /data-onboarding=\{!onboardingMissingCredentialKey && onboardingNeedsStatements\s+\? "automation-credentials"\s+: undefined\}/,
+  /data-onboarding=\{!onboardingCredentialTargetKey && onboardingNeedsStatements\s+\? "automation-credentials"\s+: undefined\}/,
 );
 assert.match(statementFieldsetSource, /aria-describedby=\{statementSelectionError/);
 assert.match(statementFieldsetSource, /aria-invalid=\{statementSelectionError/);

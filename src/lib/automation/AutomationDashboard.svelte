@@ -7,6 +7,7 @@
   import {
     canResumeAssist,
     canSubmitCredentials,
+    nextOnboardingCredentialKey,
     onboardingTaskDisclosure,
     settleAssistDrag,
     settleAssistTextSubmission,
@@ -59,6 +60,7 @@
   let credentialDrafts: Record<string, string> = {};
   let statementSelectionDrafts: Record<string, string[]> = {};
   let statementSelectionConfirmed = false;
+  let onboardingCredentialTargetKey: string | null = null;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
@@ -145,6 +147,7 @@
   $: onboardingCredentialsReady = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup
+    && !onboardingCredentialTargetKey
     && !onboardingMissingCredentialKey
     && !onboardingNeedsStatements,
   );
@@ -270,6 +273,7 @@
 
   function resetCredentialChanges() {
     credentialDrafts = {};
+    onboardingCredentialTargetKey = null;
     statementSelectionConfirmed = false;
     statementSelectionError = "";
     groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
@@ -306,6 +310,7 @@
     if (event.key !== "Escape") return;
     if (floatingInput) {
       event.preventDefault();
+      event.stopImmediatePropagation();
       floatingInput = null;
       return;
     }
@@ -359,6 +364,46 @@
     };
   }
 
+  function advanceOnboardingCredential() {
+    if (!selectedCredentialGroup) return;
+    onboardingCredentialTargetKey = nextOnboardingCredentialKey(
+      selectedCredentialGroup.credentialKeys,
+      onboardingCredentialTargetKey,
+      credentialDrafts,
+    );
+  }
+
+  function backOnboardingCredential(event: Event) {
+    event.preventDefault();
+    if (!selectedCredentialGroup) {
+      resetCredentialChanges();
+      credentialsOpen = false;
+      return;
+    }
+    const keys = selectedCredentialGroup.credentialKeys;
+    const currentIndex = onboardingCredentialTargetKey
+      ? keys.indexOf(onboardingCredentialTargetKey)
+      : -1;
+    if (currentIndex > 0) {
+      onboardingCredentialTargetKey = keys[currentIndex - 1];
+      return;
+    }
+    if (currentIndex === 0) {
+      selectedCredentialGroupId = "";
+      onboardingCredentialTargetKey = null;
+      statementSelectionConfirmed = false;
+      return;
+    }
+    if (onboardingCredentialsReady && selectedCredentialGroup.statementTypes?.length) {
+      onboardingCredentialTargetKey = null;
+      statementSelectionConfirmed = false;
+      return;
+    }
+    const lastKey = keys.at(-1) ?? null;
+    if (selectedCredentialGroup.statementTypes?.length) statementSelectionConfirmed = false;
+    onboardingCredentialTargetKey = lastKey;
+  }
+
   async function updateCredentialSearch(event: Event) {
     statementSelectionError = "";
     credentialSearch = (event.currentTarget as HTMLInputElement).value;
@@ -372,6 +417,9 @@
     statementSelectionError = "";
     statementSelectionConfirmed = false;
     selectedCredentialGroupId = groupId;
+    onboardingCredentialTargetKey = onboardingSourceSelection
+      ? credentialGroups.find((group) => group.id === groupId)?.credentialKeys[0] ?? null
+      : null;
     if (onboardingSourceSelection) {
       groupEnabled = Object.fromEntries(
         credentialGroups.map((group) => [
@@ -631,6 +679,19 @@
     viewerExpanded = false;
   }
 
+  function backOnboardingAssist(event: Event) {
+    event.preventDefault();
+    if (floatingInput) {
+      floatingInput = null;
+      return;
+    }
+    if (assistInteracted) {
+      assistInteracted = false;
+      return;
+    }
+    closeHumanViewer();
+  }
+
   async function sendViewerInput(input: unknown) {
     if (!humanTask) return false;
     try {
@@ -804,7 +865,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
+<svelte:window onkeydowncapture={handleWindowKeydown} />
 
 <DashboardShell
   active="automation"
@@ -1128,7 +1189,12 @@
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} onclick={closeCredentials}></button>
-    <form class="modal-panel credential-modal" onsubmit={saveCredentials}>
+    <form
+      class="modal-panel credential-modal"
+      onsubmit={saveCredentials}
+      ononboardingadvance={advanceOnboardingCredential}
+      ononboardingback={backOnboardingCredential}
+    >
       <div class="modal-head">
         <div>
           <h2 id="credentials-title">{$t.automation.credentialsTitle}</h2>
@@ -1154,20 +1220,22 @@
             <Search size={18} />
             <input value={credentialSearch} oninput={updateCredentialSearch} placeholder={$t.automation.credentialSearch} />
           </label>
-          <nav aria-label={$t.automation.credentialsTitle}>
+          <nav
+            aria-label={$t.automation.credentialsTitle}
+            tabindex="-1"
+            data-onboarding={onboardingSourceSelection
+              && credentialsOpen
+              && !selectedCredentialGroupId
+                ? "automation-credentials"
+                : undefined}
+            data-onboarding-action="select-source"
+          >
             {#each visibleCredentialGroups as group}
               <button
                 type="button"
                 class:selected={group.id === selectedCredentialGroupId}
                 aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                 data-onboarding-group={group.id}
-                data-onboarding={onboardingSourceSelection
-                  && credentialsOpen
-                  && !selectedCredentialGroupId
-                  && group === visibleCredentialGroups[0]
-                    ? "automation-credentials"
-                    : undefined}
-                data-onboarding-action="select-source"
                 onclick={() => selectCredentialGroup(group.id)}
               >
                 <strong>{group.label}</strong>
@@ -1200,7 +1268,7 @@
                     type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
                     value={credentialDrafts[key] ?? ""}
                     class:dirty={Boolean(credentialDrafts[key]?.trim())}
-                    data-onboarding={key === onboardingMissingCredentialKey
+                    data-onboarding={key === onboardingCredentialTargetKey
                       ? "automation-credentials"
                       : undefined}
                     data-onboarding-action="enter-credentials"
@@ -1216,7 +1284,7 @@
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
                 tabindex="-1"
-                data-onboarding={!onboardingMissingCredentialKey && onboardingNeedsStatements
+                data-onboarding={!onboardingCredentialTargetKey && onboardingNeedsStatements
                   ? "automation-credentials"
                   : undefined}
                 data-onboarding-action="select-statements"
@@ -1328,7 +1396,11 @@
 {#if humanTask}
   <div class="modal" class:viewer-modal-expanded={viewerExpanded} role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
-    <div class="modal-panel human-viewer-modal" class:expanded={viewerExpanded}>
+    <div
+      class="modal-panel human-viewer-modal"
+      class:expanded={viewerExpanded}
+      ononboardingback={backOnboardingAssist}
+    >
       <div class="modal-head viewer-head">
         <div class="viewer-title">
           <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>

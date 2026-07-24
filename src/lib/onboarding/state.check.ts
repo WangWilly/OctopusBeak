@@ -10,6 +10,7 @@ import {
   canResumeAssist,
   createOnboardingState,
   hasExistingProductData,
+  nextOnboardingCredentialKey,
   onboardingCopyKey,
   onboardingStepNumber,
   onboardingTaskDisclosure,
@@ -155,6 +156,9 @@ const selectedCrawler = task({
 
 assert.equal(ONBOARDING_STORAGE_KEY, "octopusbeak-onboarding-v2");
 assert.equal(createOnboardingState().version, 2);
+assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", {}), "USER");
+assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", { USER: "demo-user" }), "PASSWORD");
+assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "PASSWORD", { PASSWORD: "secret" }), null);
 assert.deepEqual(singleSourceUpdates(
   [fubonGroup, esunGroup, maicoinGroup],
   "fubon",
@@ -309,7 +313,7 @@ assert.match(automationDashboard, /class="viewer-floating-input"[\s\S]*?data-onb
 assert.match(automationDashboard, /resumeHumanViewer[\s\S]*?data-onboarding-action="resume-collection"/);
 assert.match(automationDashboard, /humanTask[\s\S]*?assistInteracted/);
 assert.match(onboardingCoach, /\.human-viewer-modal \.viewer-floating-input/);
-assert.match(onboardingCoach, /step === "assist"[\s\S]*?targetAction/);
+assert.match(onboardingCoach, /if \(copyKey === "assist"\)[\s\S]*?targetAction/);
 assert.match(onboardingCoach, /\$: key = visible \? onboardingCopyKey\(step\) : null;/);
 assert.match(onboardingCoach, /coachCopy\(\$t,\s*key,\s*target\?\.dataset\.onboardingAction\)/);
 assert.match(onboardingCoach, /function primaryLabel\([\s\S]*nextStep: OnboardingStep,[\s\S]*dictionary: Translation,[\s\S]*nextRoute: OnboardingContext\["route"\]/);
@@ -353,10 +357,30 @@ assert.match(
   /resumeCollectionCopy: \{ title: "確認驗證完成", body: "銀行頁面完成驗證後，繼續資料收集。" \}/,
 );
 assert.match(i18n, /resumeCollection: "已完成驗證，繼續收集"/);
+assert.doesNotMatch(onboardingCoach, /assistTargetInModal/);
+assert.match(onboardingCoach, /class="interaction-blocker top"/);
+assert.match(onboardingCoach, /document\.documentElement\.style\.overflow = "hidden"/);
+assert.match(onboardingCoach, /nextTarget\.scrollIntoView/);
+assert.match(onboardingCoach, /\.guide \{[\s\S]*?width: 32px;[\s\S]*?height: 32px;/);
+assert.match(onboardingCoach, /event\.key === "Escape" && !event\.defaultPrevented/);
+assert.match(automationDashboard, /<svelte:window onkeydowncapture=\{handleWindowKeydown\}/);
+assert.match(automationDashboard, /event\.stopImmediatePropagation\(\);[\s\S]*?floatingInput = null;/);
 assert.match(
-  onboardingCoach,
-  /step === "assist"[\s\S]*?target\?\.closest\("\.human-viewer-modal"\)/,
+  automationDashboard,
+  /<nav[\s\S]*?data-onboarding=\{onboardingSourceSelection[\s\S]*?data-onboarding-action="select-source"/,
 );
+assert.match(automationDashboard, /ononboardingadvance=\{advanceOnboardingCredential\}/);
+assert.match(automationDashboard, /ononboardingback=\{backOnboardingCredential\}/);
+assert.match(automationDashboard, /ononboardingback=\{backOnboardingAssist\}/);
+assert.match(
+  automationDashboard,
+  /data-onboarding=\{key === onboardingCredentialTargetKey[\s\S]*?data-onboarding-action="enter-credentials"/,
+);
+assert.match(onboardingCoach, /new CustomEvent\("onboardingback", \{ bubbles: true, cancelable: true \}\)/);
+assert.match(onboardingCoach, /onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/);
+assert.match(page, /onBack=\{backOnboarding\}/);
+assert.match(i18n, /back: "Back"/);
+assert.match(i18n, /back: "上一步"/);
 
 const storage = new MemoryStorage();
 assert.equal(readOnboardingState(storage), null);
