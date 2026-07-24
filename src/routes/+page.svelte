@@ -12,13 +12,18 @@
   import {
     completedImportFinishedAt,
     createOnboardingState,
-    hasExistingProductData,
     readOnboardingState,
-    resolveOnboardingStep,
-    shouldNarrowOnboardingSources,
     writeOnboardingState,
     type OnboardingState,
   } from "$lib/onboarding/state.ts";
+  import {
+    hasExistingProductData,
+    resolveOnboardingStep,
+    shouldNarrowOnboardingSources,
+    type CredentialSetupResult,
+    type OnboardingFacts,
+    type OnboardingRoute,
+  } from "$lib/onboarding/progression.ts";
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
@@ -26,7 +31,7 @@
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
 
-  type RouteId = "overview" | "assets" | "liabilities" | "spending" | "automation" | "data-issues" | "settings";
+  type RouteId = OnboardingRoute;
   type LoadState<T> =
     | { status: "loading" }
     | { status: "error"; message: string }
@@ -46,13 +51,36 @@
   let overviewLoadedForImportFinishedAt: string | null = null;
   let overviewReloading = false;
 
-  $: onboardingContext = {
+  function factsForOnboarding(
+    nextRoute: RouteId,
+    automationData: AutomationDesktopModel | null,
+    overviewData: OverviewPageDto | null,
+    overviewLoadedAt: string | null,
+  ): OnboardingFacts {
+    return {
+      route: nextRoute,
+      automation: automationData
+        ? {
+          tasks: automationData.automation.tasks,
+          credentialGroups: automationData.credentialGroups,
+          credentials: automationData.automation.credentials,
+          importGateLocked: automationData.automation.importGate.locked,
+        }
+        : null,
+      overview: overviewData
+        ? { accounts: overviewData.accounts, importedAt: overviewData.importedAt }
+        : null,
+      overviewLoadedForImportFinishedAt: overviewLoadedAt,
+    };
+  }
+
+  $: onboardingFacts = factsForOnboarding(
     route,
-    automation: automation.status === "ready" ? automation.data : null,
-    overview: overview.status === "ready" ? overview.data : null,
+    automation.status === "ready" ? automation.data : null,
+    overview.status === "ready" ? overview.data : null,
     overviewLoadedForImportFinishedAt,
-  };
-  $: onboardingStep = resolveOnboardingStep(onboardingContext, onboardingState);
+  );
+  $: onboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
   $: onboardingCompact = automation.status === "ready"
     && (onboardingStep === "collection" || onboardingStep === "import")
     && automation.data.automation.tasks.some((task) =>
@@ -126,11 +154,11 @@
     if (onboardingState) saveOnboarding({ ...onboardingState, status: "completed" });
   }
 
-  function selectOnboardingSource(groupId: string, sourceConfiguredAt: string) {
+  function selectOnboardingSource({ selectedCredentialGroupId, sourceConfiguredAt }: CredentialSetupResult) {
     const current = onboardingState ?? createOnboardingState();
     saveOnboarding({
       ...current,
-      selectedCredentialGroupId: groupId,
+      selectedCredentialGroupId,
       sourceConfiguredAt,
       status: "active",
     });
@@ -162,12 +190,9 @@
       ]);
       automation = { status: "ready", data: automationData };
       overview = { status: "ready", data: overviewData };
-      if (!onboardingState && !hasExistingProductData({
-        route,
-        automation: automationData,
-        overview: overviewData,
-        overviewLoadedForImportFinishedAt,
-      })) {
+      if (!onboardingState && !hasExistingProductData(
+        factsForOnboarding(route, automationData, overviewData, overviewLoadedForImportFinishedAt),
+      )) {
         saveOnboarding(createOnboardingState());
       }
     } catch (error) {
@@ -240,7 +265,7 @@
       reload={() => loadRoute("automation")}
       onboardingSourceSelection={onboardingStep === "credentials"}
       onboardingSingleSource={shouldNarrowOnboardingSources(
-        onboardingContext,
+        onboardingFacts,
         onboardingState,
         onboardingStep,
       )}

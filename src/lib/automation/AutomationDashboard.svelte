@@ -12,8 +12,8 @@
     settleAssistDrag,
     settleAssistTextSubmission,
     singleSourceUpdates,
-    type OnboardingStep,
   } from "$lib/onboarding/state.ts";
+  import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
@@ -26,7 +26,7 @@
   export let onboardingSingleSource = false;
   export let onboardingStep: OnboardingStep = "hidden";
   export let onboardingSelectedCredentialGroupId: string | null = null;
-  export let onOnboardingSourceSaved: (groupId: string, sourceConfiguredAt: string) => void = () => {};
+  export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
 
   let credentialsOpen = false;
   let syncOpen = false;
@@ -626,7 +626,10 @@
       resetCredentialChanges();
       await reload();
       if (onboardingSourceSelection && savedGroupId) {
-        onOnboardingSourceSaved(savedGroupId, new Date().toISOString());
+        onOnboardingSourceSaved({
+          selectedCredentialGroupId: savedGroupId,
+          sourceConfiguredAt: new Date().toISOString(),
+        });
         credentialsOpen = false;
         const selectedTask = automation.tasks.find(
           (task) => task.kind === "crawler" && task.credentialGroupId === savedGroupId,
