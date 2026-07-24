@@ -933,7 +933,7 @@ test("completed import refreshes stale Overview before confirming empty", () => 
   assert.equal(resolveOnboardingStep(confirmedEmptyBackOnAutomation, state), "overview-empty");
 });
 
-test("existing-user restart keeps onboarding provider selection and save advance active", () => {
+test("onboarding keeps the complete provider list, provider selection, and save advance active", () => {
   const openCredentialsSource = automationDashboard.slice(
     automationDashboard.indexOf("function openCredentials"),
     automationDashboard.indexOf("function closeCredentials"),
@@ -945,13 +945,13 @@ test("existing-user restart keeps onboarding provider selection and save advance
 
   assert.deepEqual({
     prop: automationDashboard.includes("export let onboardingSourceSelection = false"),
-    providerFilter: automationDashboard.includes("!onboardingSourceSelection || collectionGroupIds.has(group.id)"),
+    completeProviderList: !automationDashboard.includes("!onboardingSourceSelection || collectionGroupIds.has(group.id)"),
     initialProvider: openCredentialsSource.includes("onboardingSourceSelection\n        ? remembered"),
     savedProvider: saveCredentialsSource.includes("if (onboardingSourceSelection && savedGroupId)"),
     pageWiring: page.includes('onboardingSourceSelection={onboardingStep === "credentials"}'),
   }, {
     prop: true,
-    providerFilter: true,
+    completeProviderList: true,
     initialProvider: true,
     savedProvider: true,
     pageWiring: true,

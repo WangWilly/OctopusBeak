@@ -125,8 +125,7 @@
   );
   $: revealOnboardingTask(onboardingDisclosure);
   $: visibleCredentialGroups = credentialGroups.filter((group) =>
-    (!onboardingSourceSelection || collectionGroupIds.has(group.id))
-      && group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
+    group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
   );
   $: selectedCredentialGroup =
     visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId)
@@ -2333,7 +2332,8 @@
 
   .credential-modal {
     width: min(1120px, 100%);
-    height: min(760px, calc(100vh - 40px));
+    height: min(960px, calc(100vh - 40px));
+    max-height: min(960px, calc(100vh - 40px));
   }
 
   .credential-layout {
@@ -2355,7 +2355,22 @@
 
   .credential-provider-list nav {
     min-height: 0;
-    overflow-y: auto;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+  }
+
+  .credential-provider-list nav::-webkit-scrollbar {
+    width: 12px;
+  }
+
+  .credential-provider-list nav::-webkit-scrollbar-track {
+    background: var(--surface-soft);
+  }
+
+  .credential-provider-list nav::-webkit-scrollbar-thumb {
+    border: 3px solid var(--surface-soft);
+    border-radius: 999px;
+    background: var(--muted);
   }
 
   .credential-provider-list nav button {
