@@ -339,6 +339,17 @@ assert.doesNotMatch(onboardingCoach, /transition:[^;]*(top|left)/);
 assert.doesNotMatch(onboardingCoach, /class:above=\{placeAbove\}|\.coach\.above/);
 assert.doesNotMatch(onboardingCoach, /bind:this=\{coach\}/);
 assert.match(page, /<OnboardingCoach/);
+assert.match(
+  page,
+  /initialized[\s\S]*?!onboardingEligibilityChecked[\s\S]*?\(route !== "overview" \|\| overview\.status !== "loading"\)/,
+);
+assert.match(
+  page.slice(
+    page.indexOf("async function checkOnboardingEligibility"),
+    page.indexOf("async function loadRoute"),
+  ),
+  /window\.octopusBeak\.overview\.load\(\)/,
+);
 assert.match(settingsPage, /export let onboardingStatus/);
 assert.match(
   i18n,

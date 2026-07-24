@@ -64,7 +64,8 @@
   $: if (
     initialized
     && !onboardingEligibilityChecked
-    && overview.status === "ready"
+    && (route !== "overview" || overview.status !== "loading")
+    && (route !== "automation" || automation.status !== "loading")
   ) {
     onboardingEligibilityChecked = true;
     void checkOnboardingEligibility();
@@ -150,13 +151,21 @@
 
   async function checkOnboardingEligibility() {
     try {
-      if (automation.status !== "ready") {
-        automation = { status: "ready", data: await window.octopusBeak.automation.load() };
-      }
+      if (onboardingState && onboardingState.status !== "active") return;
+      const [automationData, overviewData] = await Promise.all([
+        automation.status === "ready"
+          ? automation.data
+          : window.octopusBeak.automation.load(),
+        overview.status === "ready"
+          ? overview.data
+          : window.octopusBeak.overview.load(),
+      ]);
+      automation = { status: "ready", data: automationData };
+      overview = { status: "ready", data: overviewData };
       if (!onboardingState && !hasExistingProductData({
         route,
-        automation: automation.status === "ready" ? automation.data : null,
-        overview: overview.status === "ready" ? overview.data : null,
+        automation: automationData,
+        overview: overviewData,
         overviewLoadedForImportFinishedAt,
       })) {
         saveOnboarding(createOnboardingState());
