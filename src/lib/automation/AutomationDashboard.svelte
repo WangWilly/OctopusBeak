@@ -413,7 +413,8 @@
     credentialSearch = (event.currentTarget as HTMLInputElement).value;
     await tick();
     if (!visibleCredentialGroups.some((group) => group.id === selectedCredentialGroupId)) {
-      selectedCredentialGroupId = visibleCredentialGroups[0]?.id ?? "";
+      if (onboardingSourceSelection) selectCredentialGroup("");
+      else selectedCredentialGroupId = visibleCredentialGroups[0]?.id ?? "";
     }
   }
 
