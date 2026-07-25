@@ -2,7 +2,7 @@ import { workflow, type LibrettoWorkflowContext } from "libretto";
 import { z } from "zod";
 import {
   BANK_STATEMENT_CAPABILITIES,
-  resolveStatementSelection,
+  selectStatementTypes,
 } from "../lib/automation/statement-selection.js";
 import {
   type CathayCredentials,
@@ -107,10 +107,10 @@ export async function runCathayAllStatements(
   const { page } = ctx;
   const requestedIds = new Set(
     input.statementTypes ??
-      resolveStatementSelection(
+      selectStatementTypes(
         BANK_STATEMENT_CAPABILITIES.cathay,
         process.env,
-        true,
+        "strict",
       ).selectedIds,
   );
   const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes

@@ -146,7 +146,7 @@ assert.match(source, /import type \{ CredentialGroupDto \} from "\$lib\/desktop\
 assert.match(source, /function toggleStatementType\(groupId: string, typeId: string\)/);
 assert.match(source, /function selectAllStatementTypes\(group: CredentialGroupDto\)/);
 assert.match(source, /document\.getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/);
-assert.match(source, /updates\[group\.statementSelectionKey\] = statementSelectionDrafts\[group\.id\]\.join\(","\)/);
+assert.match(source, /buildCredentialSetupPlan/);
 assert.match(source, /aria-live="polite"/);
 assert.match(source, /\.statement-selection:focus\s*\{/);
 assert.match(source, /\.statement-type-option:focus-within\s*\{/);

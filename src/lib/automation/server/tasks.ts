@@ -1,5 +1,5 @@
 import type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
-import { BANK_STATEMENT_CAPABILITIES, resolveStatementSelection } from "../statement-selection.ts";
+import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 
 export type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
 
@@ -24,8 +24,6 @@ export const CSV_IMPORT_DEPENDENCY_IDS = [
 
 export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
   {
-    id: "fubon",
-    enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_FUBON_USER_ID",
       "LIBRETTO_CLOUD_FUBON_ACCOUNT",
@@ -34,8 +32,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.fubon,
   },
   {
-    id: "esun",
-    enabledKey: "LIBRETTO_CLOUD_ESUN_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_ESUN_USER_ID",
       "LIBRETTO_CLOUD_ESUN_ACCOUNT",
@@ -44,8 +40,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.esun,
   },
   {
-    id: "yuanta",
-    enabledKey: "LIBRETTO_CLOUD_YUANTA_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_YUANTA_USER_ID",
       "LIBRETTO_CLOUD_YUANTA_ACCOUNT",
@@ -54,8 +48,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.yuanta,
   },
   {
-    id: "yuanta-trade",
-    enabledKey: "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID",
       "LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD",
@@ -65,8 +57,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES["yuanta-trade"],
   },
   {
-    id: "cathay",
-    enabledKey: "LIBRETTO_CLOUD_CATHAY_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_CATHAY_USER_ID",
       "LIBRETTO_CLOUD_CATHAY_ACCOUNT",
@@ -75,8 +65,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.cathay,
   },
   {
-    id: "hncb",
-    enabledKey: "LIBRETTO_CLOUD_HNCB_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_HNCB_USER_ID",
       "LIBRETTO_CLOUD_HNCB_ACCOUNT",
@@ -85,8 +73,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.hncb,
   },
   {
-    id: "ctbc",
-    enabledKey: "LIBRETTO_CLOUD_CTBC_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_CTBC_USER_ID",
       "LIBRETTO_CLOUD_CTBC_ACCOUNT",
@@ -95,8 +81,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.ctbc,
   },
   {
-    id: "post",
-    enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_POST_USER_ID",
       "LIBRETTO_CLOUD_POST_ACCOUNT",
@@ -105,8 +89,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.post,
   },
   {
-    id: "sinopac",
-    enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_SINOPAC_USER_ID",
       "LIBRETTO_CLOUD_SINOPAC_ACCOUNT",
@@ -115,8 +97,6 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     ...BANK_STATEMENT_CAPABILITIES.sinopac,
   },
   {
-    id: "linebank",
-    enabledKey: "LIBRETTO_CLOUD_LINEBANK_ENABLED",
     credentialKeys: [
       "LIBRETTO_CLOUD_LINEBANK_USER_ID",
       "LIBRETTO_CLOUD_LINEBANK_ACCOUNT",
@@ -343,21 +323,6 @@ export function automationCredentialKeyIsSecret(key: string) {
 
 export function taskById(taskId: string) {
   return AUTOMATION_TASKS.find((task) => task.id === taskId) ?? null;
-}
-
-export function assertTaskStatementSelection(
-  task: AutomationTask,
-  settings: Record<string, string | boolean | undefined>,
-) {
-  if (!task.credentialGroupId) return;
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId);
-  if (!group?.statementSelectionKey || !group.statementTypes) return;
-  const selection = resolveStatementSelection(
-    { label: group.label, statementSelectionKey: group.statementSelectionKey, statementTypes: group.statementTypes },
-    settings,
-    settings[group.enabledKey] !== false,
-  );
-  if (selection.needsSetup) throw new Error(`Select at least one ${group.label} statement type.`);
 }
 
 function taskIsEnabled(task: AutomationTask, enabledGroups: Record<string, boolean>) {

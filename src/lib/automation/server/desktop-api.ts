@@ -3,13 +3,10 @@ import {
   AUTOMATION_CREDENTIAL_KEYS,
   enabledAutomationTasks,
   enabledCsvImportDependencyIds,
-  assertTaskStatementSelection,
   taskById,
 } from "./tasks.ts";
 import {
-  assertValidStatementSelections,
-  resolveStatementSelection,
-  serializeStatementSelection,
+  selectStatementTypes,
 } from "../statement-selection.ts";
 import {
   credentialStatusFromValues,
@@ -70,12 +67,13 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
     const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
       const enabled = enabledGroups[group.id] !== false;
       const selection = group.statementSelectionKey && group.statementTypes
-        ? resolveStatementSelection(
-          { label: group.label, statementSelectionKey: group.statementSelectionKey, statementTypes: group.statementTypes },
-          settings,
-          enabled,
-          { tolerateUnknown: true },
-        )
+        ? selectStatementTypes({
+          id: group.id,
+          label: group.label,
+          enabledKey: group.enabledKey,
+          statementSelectionKey: group.statementSelectionKey,
+          statementTypes: group.statementTypes,
+        }, settings, "display")
         : { selectedIds: [], needsSetup: false };
       return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
     });
@@ -118,7 +116,18 @@ function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDe
   if (row.status === "locked") {
     throw new Error("Import is locked until all crawler dependencies complete for the business day.");
   }
-  assertTaskStatementSelection(task, readAutomationSettings());
+  const group = task.credentialGroupId
+    ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
+    : null;
+  if (group?.statementSelectionKey && group.statementTypes) {
+    selectStatementTypes({
+      id: group.id,
+      label: group.label,
+      enabledKey: group.enabledKey,
+      statementSelectionKey: group.statementSelectionKey,
+      statementTypes: group.statementTypes,
+    }, readAutomationSettings(), "strict");
+  }
   const missing = missingCredentialKeys(taskId, model.automation.credentials);
   if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
   return task;
@@ -136,25 +145,18 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   const split = splitAutomationUpdates(updates);
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
-    if (
-      !group.statementSelectionKey ||
-      !group.statementTypes ||
-      !Object.hasOwn(split.settings, group.statementSelectionKey)
-    ) continue;
-    const selection = resolveStatementSelection(
-      {
-        label: group.label,
-        statementSelectionKey: group.statementSelectionKey,
-        statementTypes: group.statementTypes,
-      },
-      nextSettings,
-      nextSettings[group.enabledKey] !== false,
-    );
-    nextSettings[group.statementSelectionKey] = serializeStatementSelection(
-      selection.selectedIds,
-    );
+    if (!group.statementSelectionKey || !group.statementTypes) continue;
+    const selection = selectStatementTypes({
+      id: group.id,
+      label: group.label,
+      enabledKey: group.enabledKey,
+      statementSelectionKey: group.statementSelectionKey,
+      statementTypes: group.statementTypes,
+    }, nextSettings, "strict");
+    if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
+      nextSettings[group.statementSelectionKey] = selection.selectedIds.join(",");
+    }
   }
-  assertValidStatementSelections(AUTOMATION_CREDENTIAL_GROUPS, nextSettings);
   const nextCredentials = Object.keys(split.credentials).length > 0
     ? {
       ...readAutomationCredentialsFile(),

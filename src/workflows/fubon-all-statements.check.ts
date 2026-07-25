@@ -13,7 +13,7 @@ assert.match(source, /logoutNow/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
-  /resolveStatementSelection\([\s\S]*BANK_STATEMENT_CAPABILITIES\.fubon/,
+  /selectStatementTypes\([\s\S]*BANK_STATEMENT_CAPABILITIES\.fubon/,
 );
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(

@@ -28,7 +28,7 @@ assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
-  /resolveStatementSelection\([\s\S]*BANK_STATEMENT_CAPABILITIES\.yuanta/,
+  /selectStatementTypes\([\s\S]*BANK_STATEMENT_CAPABILITIES\.yuanta/,
 );
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.doesNotMatch(source, /continueOnError/);
