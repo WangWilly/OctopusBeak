@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import {
   BANK_STATEMENT_CAPABILITIES,
+  isStatementSelectionGroup,
   selectStatementTypes,
   StatementSelectionError,
 } from "./statement-selection.ts";
 
 const fubon = BANK_STATEMENT_CAPABILITIES.fubon;
 const esun = BANK_STATEMENT_CAPABILITIES.esun;
+
+assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types", statementTypes: [] }), true);
+assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types" }), false);
 
 assert.deepEqual(selectStatementTypes(fubon, {}, "display"), {
   selectedIds: [], needsSetup: true, persisted: false,
