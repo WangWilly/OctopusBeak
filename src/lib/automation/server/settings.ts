@@ -7,6 +7,7 @@ import {
   type AutomationSettingsFile,
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
+import { automationFlagEnabled } from "../statement-selection.ts";
 import { systemSettings } from "../../settings/system-settings.ts";
 
 export const AUTOMATION_ENV_PATH = ".env";
@@ -16,9 +17,7 @@ export function readAutomationEnvText(envPath = AUTOMATION_ENV_PATH) {
 }
 
 export function envFlagEnabled(value: string | boolean | undefined) {
-  if (value === undefined) return true;
-  if (typeof value === "boolean") return value;
-  return !new Set(["0", "false", "no", "off", "disabled"]).has(value.trim().toLowerCase());
+  return automationFlagEnabled(value);
 }
 
 export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) {
