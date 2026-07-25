@@ -8,10 +8,12 @@ export type StatementSelectionGroup = {
   statementTypes: readonly StatementTypeCapability[];
 };
 
-export function isStatementSelectionGroup(
-  group: { statementSelectionKey?: string; statementTypes?: readonly StatementTypeCapability[] },
-): group is typeof group & StatementSelectionGroup {
-  return Boolean(group.statementSelectionKey && group.statementTypes);
+type StatementSelectionFields = Pick<StatementSelectionGroup, "statementSelectionKey" | "statementTypes">;
+
+export function isStatementSelectionGroup<
+  T extends { statementSelectionKey?: string; statementTypes?: readonly StatementTypeCapability[] },
+>(group: T): group is T & StatementSelectionFields {
+  return Boolean(group.statementSelectionKey && Array.isArray(group.statementTypes));
 }
 
 type Settings = Record<string, string | boolean | undefined>;
