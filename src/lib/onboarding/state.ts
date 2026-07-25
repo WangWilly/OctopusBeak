@@ -1,4 +1,3 @@
-import type { CredentialGroupDto } from "../desktop/api.ts";
 import type { AutomationTaskRow } from "../automation/types.ts";
 import type { OnboardingStep } from "./progression.ts";
 
@@ -76,21 +75,6 @@ export function writeOnboardingState(
   state: OnboardingState,
 ) {
   storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
-}
-
-export function singleSourceUpdates(
-  groups: readonly CredentialGroupDto[],
-  selectedGroupId: string,
-  collectionGroupIds: ReadonlySet<string>,
-) {
-  return Object.fromEntries(
-    groups
-      .filter((group) => collectionGroupIds.has(group.id))
-      .map((group) => [
-        group.enabledKey,
-        group.id === selectedGroupId ? "true" : "false",
-      ]),
-  );
 }
 
 export function onboardingTaskDisclosure(

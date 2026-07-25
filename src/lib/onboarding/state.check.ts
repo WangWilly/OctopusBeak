@@ -4,6 +4,7 @@ import test from "node:test";
 import type { AutomationDesktopModel, CredentialGroupDto } from "../desktop/api.ts";
 import type { AutomationTaskRow } from "../automation/types.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
+import { singleSourceUpdates } from "../automation/credential-setup.ts";
 import * as onboardingState from "./state.ts";
 import {
   ONBOARDING_STORAGE_KEY,
@@ -13,7 +14,6 @@ import {
   onboardingTaskDisclosure,
   readOnboardingState,
   settleAssistTextSubmission,
-  singleSourceUpdates,
   writeOnboardingState,
 } from "./state.ts";
 import {
@@ -319,7 +319,7 @@ const i18n = readFileSync("src/lib/i18n/i18n.ts", "utf8");
 for (const source of [automationDashboard, dashboardShell, overviewDashboard]) {
   assert.match(source, /data-onboarding/);
 }
-assert.match(automationDashboard, /singleSourceUpdates/);
+assert.match(automationDashboard, /buildCredentialSetupPlan/);
 assert.match(onboardingStateSource, /export function settleAssistTextSubmission/);
 assert.match(targetObserverSource, /export function activateOnboardingTarget/);
 assert.match(i18n, /welcomeTitle: "Build your first local overview"/);

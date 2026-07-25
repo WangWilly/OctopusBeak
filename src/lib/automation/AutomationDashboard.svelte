@@ -11,8 +11,11 @@
     onboardingTaskDisclosure,
     settleAssistDrag,
     settleAssistTextSubmission,
-    singleSourceUpdates,
   } from "$lib/onboarding/state.ts";
+  import {
+    buildCredentialSetupPlan,
+    firstInvalidCredentialGroup,
+  } from "$lib/automation/credential-setup.ts";
   import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -584,10 +587,10 @@
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
     if (!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)) return;
-    const invalid = credentialGroups.find((group) =>
-      group.statementTypes?.length
-      && groupEnabled[group.id] !== false
-      && !(statementSelectionDrafts[group.id]?.length)
+    const invalid = firstInvalidCredentialGroup(
+      credentialGroups,
+      groupEnabled,
+      statementSelectionDrafts,
     );
     if (invalid) {
       credentialSearch = "";
@@ -599,30 +602,19 @@
       return;
     }
     statementSelectionError = "";
-    const updates: Record<string, string> = {};
-    for (const group of credentialGroups) {
-      updates[group.enabledKey] = groupEnabled[group.id] !== false ? "true" : "false";
-      if (group.statementSelectionKey && statementSelectionDrafts[group.id]?.length) {
-        updates[group.statementSelectionKey] = statementSelectionDrafts[group.id].join(",");
-      }
-    }
-    for (const [key, value] of Object.entries(credentialDrafts)) {
-      if (value.trim()) updates[key] = value.trim();
-    }
-    if (onboardingSingleSource && selectedCredentialGroupId) {
-      Object.assign(
-        updates,
-        singleSourceUpdates(
-          credentialGroups,
-          selectedCredentialGroupId,
-          collectionGroupIds,
-        ),
-      );
-    }
+    const plan = buildCredentialSetupPlan({
+      groups: credentialGroups,
+      enabled: groupEnabled,
+      statementSelections: statementSelectionDrafts,
+      credentialDrafts,
+      selectedCredentialGroupId,
+      onboardingSingleSource,
+      collectionGroupIds,
+    });
     try {
       actionError = "";
-      const savedGroupId = selectedCredentialGroupId;
-      await window.octopusBeak.automation.saveCredentials(updates);
+      const savedGroupId = plan.selectedCredentialGroupId;
+      await window.octopusBeak.automation.saveCredentials(plan.updates);
       resetCredentialChanges();
       await reload();
       if (onboardingSourceSelection && savedGroupId) {

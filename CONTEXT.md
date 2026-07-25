@@ -9,3 +9,6 @@ The guided sequence that helps a new user configure a credential source, collect
 
 **Credential setup**:
 The act of enabling a credential source, entering its credentials, and choosing the statement types required before collection.
+
+**Statement selection**:
+The set of statement types chosen for an enabled credential source to collect.

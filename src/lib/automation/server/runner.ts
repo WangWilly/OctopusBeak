@@ -36,10 +36,11 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import {
-  assertTaskStatementSelection,
+  AUTOMATION_CREDENTIAL_GROUPS,
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
+import { selectStatementTypes } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
 
 export { closeLibrettoSession };
@@ -357,7 +358,18 @@ export function startAutomationTask(
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   validateScheduledAtUtc(options.scheduledAtUtc);
-  assertTaskStatementSelection(task, readAutomationSettings());
+  const group = task.credentialGroupId
+    ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
+    : null;
+  if (group?.statementSelectionKey && group.statementTypes) {
+    selectStatementTypes({
+      id: group.id,
+      label: group.label,
+      enabledKey: group.enabledKey,
+      statementSelectionKey: group.statementSelectionKey,
+      statementTypes: group.statementTypes,
+    }, readAutomationSettings(), "strict");
+  }
   claimTask(taskId);
   void runAutomationTask(taskId, ledgerDir, {
     claimed: true,
@@ -375,7 +387,18 @@ export function startAutomationTasks(
   for (const taskId of uniqueTaskIds) {
     const task = taskById(taskId);
     if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-    assertTaskStatementSelection(task, readAutomationSettings());
+    const group = task.credentialGroupId
+      ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
+      : null;
+    if (group?.statementSelectionKey && group.statementTypes) {
+      selectStatementTypes({
+        id: group.id,
+        label: group.label,
+        enabledKey: group.enabledKey,
+        statementSelectionKey: group.statementSelectionKey,
+        statementTypes: group.statementTypes,
+      }, readAutomationSettings(), "strict");
+    }
     if (activeTaskRunIds.has(taskId)) throw new Error(`Automation task is already running: ${taskId}`);
   }
   for (const taskId of uniqueTaskIds) {
