@@ -27,6 +27,7 @@ try {
     LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
     LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
   }, null, 2));
+  const initialSettingsText = readFileSync("settings.json", "utf8");
   writeFileSync("credentials.json", JSON.stringify({
     [userIdKey]: "user",
     [accountKey]: "acct",
@@ -72,6 +73,32 @@ try {
     () => api.assertAutomationTaskCanStart("fubon-all-statements", dir),
     /Select at least one Fubon/,
   );
+  const modelWithDisabledFubon = {
+    ...model,
+    credentialGroups: model.credentialGroups.map((group) => group.id === "fubon"
+      ? { ...group, enabled: false }
+      : group),
+  };
+  assert.equal(
+    api.assertAutomationTasksCanStart(["fubon-all-statements"], modelWithDisabledFubon)[0]?.id,
+    "fubon-all-statements",
+  );
+
+  const previousEnabledEnv = process.env[enabledKey];
+  const settingsWithoutEnabledKey = JSON.parse(initialSettingsText) as Record<string, unknown>;
+  delete settingsWithoutEnabledKey[enabledKey];
+  process.env[enabledKey] = "false";
+  writeFileSync("settings.json", `${JSON.stringify(settingsWithoutEnabledKey, null, 2)}\n`);
+  try {
+    const envOverrideModel = api.loadAutomationDesktopModel(dir);
+    const envOverrideGroup = envOverrideModel.credentialGroups.find((group) => group.id === "fubon");
+    assert.equal(envOverrideGroup?.enabled, false);
+    assert.equal(envOverrideGroup?.statementSetupRequired, false);
+  } finally {
+    if (previousEnabledEnv === undefined) delete process.env[enabledKey];
+    else process.env[enabledKey] = previousEnabledEnv;
+    writeFileSync("settings.json", initialSettingsText);
+  }
 
   const settingsBeforeInvalidSave = readFileSync("settings.json", "utf8");
   const credentialsBeforeInvalidSave = readFileSync("credentials.json", "utf8");

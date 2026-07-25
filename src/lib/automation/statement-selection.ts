@@ -10,6 +10,14 @@ export type StatementSelectionGroup = {
 
 type Settings = Record<string, string | boolean | undefined>;
 
+const disabledFlagValues = new Set(["0", "false", "no", "off", "disabled"]);
+
+export function automationFlagEnabled(value: string | boolean | undefined) {
+  if (value === undefined) return true;
+  if (typeof value === "boolean") return value;
+  return !disabledFlagValues.has(value.trim().toLowerCase());
+}
+
 export type StatementSelectionMode = "display" | "strict";
 
 export type StatementSelectionErrorReason =
@@ -67,7 +75,7 @@ export function selectStatementTypes(
   settings: Settings,
   mode: StatementSelectionMode,
 ): StatementSelectionState {
-  const enabled = settings[group.enabledKey] !== false;
+  const enabled = automationFlagEnabled(settings[group.enabledKey]);
   const raw = settings[group.statementSelectionKey];
   if (raw === undefined) {
     const selectedIds = group.statementTypes.length === 1 ? [group.statementTypes[0].id] : [];

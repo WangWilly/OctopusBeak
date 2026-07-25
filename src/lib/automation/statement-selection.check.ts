@@ -41,6 +41,17 @@ assert.deepEqual(
   ).selectedIds,
   ["deposit"],
 );
+assert.deepEqual(
+  selectStatementTypes(
+    fubon,
+    {
+      [fubon.enabledKey]: "false",
+      [fubon.statementSelectionKey]: "",
+    },
+    "strict",
+  ),
+  { selectedIds: [], needsSetup: false, persisted: true },
+);
 
 assert.throws(
   () => selectStatementTypes(
