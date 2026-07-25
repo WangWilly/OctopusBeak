@@ -170,22 +170,46 @@ async function closeOwnedSession(
   owned: OwnedAutomationSession,
   deps: FinalizeSessionDeps,
 ): Promise<void> {
-  let pid = owned.pid;
-  let readError: unknown = null;
+  const { pid, readError } = readOwnedSessionPid(owned);
+  const { closeError, helperTerminationError } = await closeSessionHelper(owned.session, deps);
+
   if (pid === null) {
-    try {
-      pid = readLibrettoSessionState(owned.session)?.pid ?? null;
-    } catch (error) {
-      readError = error;
+    if (closeError) {
+      const readContext = readError ? ` state read: ${String(readError)};` : "";
+      throw new Error(
+        `Could not close Libretto session ${owned.session}:${readContext} graceful close: ${String(closeError)}`,
+      );
     }
+    return;
   }
-  let closeError: unknown = null;
-  const closeHandle = deps.startCloseSession?.(owned.session) ?? {
-    completion: deps.closeSession(owned.session),
-    terminate: async () => { await deps.terminateCloseSession?.(owned.session); },
+
+  const daemonError = await terminateOwnedDaemon(pid, owned.session, deps);
+  throwSessionFinalizationErrors(helperTerminationError, daemonError);
+}
+
+function readOwnedSessionPid(owned: OwnedAutomationSession): {
+  pid: number | null;
+  readError: unknown;
+} {
+  if (owned.pid !== null) return { pid: owned.pid, readError: null };
+  try {
+    return { pid: readLibrettoSessionState(owned.session)?.pid ?? null, readError: null };
+  } catch (readError) {
+    return { pid: null, readError };
+  }
+}
+
+async function closeSessionHelper(
+  session: string,
+  deps: FinalizeSessionDeps,
+): Promise<{ closeError: unknown; helperTerminationError: Error | null }> {
+  const closeHandle = deps.startCloseSession?.(session) ?? {
+    completion: deps.closeSession(session),
+    terminate: async () => { await deps.terminateCloseSession?.(session); },
   };
   const timerDeps = deps.timerDeps ?? defaultTimerDeps;
   const closeResult = await settleWithin(closeHandle.completion, CLOSE_TIMEOUT_MS, timerDeps);
+  let closeError: unknown;
   let helperTerminationError: Error | null = null;
   if (closeResult.timedOut) {
     const termination = await settleWithin(
@@ -204,30 +228,35 @@ async function closeOwnedSession(
   } else {
     closeError = closeResult.error ?? null;
   }
+  return { closeError, helperTerminationError };
+}
 
-  if (pid === null) {
-    if (closeError) {
-      const readContext = readError ? ` state read: ${String(readError)};` : "";
-      throw new Error(
-        `Could not close Libretto session ${owned.session}:${readContext} graceful close: ${String(closeError)}`,
-      );
-    }
-    return;
-  }
+async function terminateOwnedDaemon(
+  pid: number,
+  session: string,
+  deps: FinalizeSessionDeps,
+): Promise<Error | null> {
   let daemonError: Error | null = null;
-  if (deps.isExpectedDaemon(pid, owned.session)) {
+  if (deps.isExpectedDaemon(pid, session)) {
     deps.signalProcessGroup(pid, "SIGTERM");
     await deps.wait(TERM_GRACE_MS);
-    if (deps.isExpectedDaemon(pid, owned.session)) {
+    if (deps.isExpectedDaemon(pid, session)) {
       deps.signalProcessGroup(pid, "SIGKILL");
       await deps.wait(KILL_GRACE_MS);
-      if (deps.isExpectedDaemon(pid, owned.session)) {
+      if (deps.isExpectedDaemon(pid, session)) {
         daemonError = new Error(
-          `Libretto session ${owned.session} daemon ${pid} remained after SIGKILL`,
+          `Libretto session ${session} daemon ${pid} remained after SIGKILL`,
         );
       }
     }
   }
+  return daemonError;
+}
+
+function throwSessionFinalizationErrors(
+  helperTerminationError: Error | null,
+  daemonError: Error | null,
+): void {
   if (helperTerminationError && daemonError) {
     throw new AggregateError([helperTerminationError, daemonError], helperTerminationError.message);
   }
