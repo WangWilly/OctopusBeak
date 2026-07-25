@@ -6,6 +6,7 @@ import {
   taskById,
 } from "./tasks.ts";
 import {
+  isStatementSelectionGroup,
   selectStatementTypes,
 } from "../statement-selection.ts";
 import {
@@ -67,14 +68,8 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
     const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
       const enabled = enabledGroups[group.id] !== false;
       const selectionSettings = { ...settings, [group.enabledKey]: enabled };
-      const selection = group.statementSelectionKey && group.statementTypes
-        ? selectStatementTypes({
-          id: group.id,
-          label: group.label,
-          enabledKey: group.enabledKey,
-          statementSelectionKey: group.statementSelectionKey,
-          statementTypes: group.statementTypes,
-        }, selectionSettings, "display")
+      const selection = isStatementSelectionGroup(group)
+        ? selectStatementTypes(group, selectionSettings, "display")
         : { selectedIds: [], needsSetup: false };
       return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
     });
@@ -120,19 +115,13 @@ function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDe
   const group = task.credentialGroupId
     ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
     : null;
-  if (group?.statementSelectionKey && group.statementTypes) {
+  if (group && isStatementSelectionGroup(group)) {
     const modelGroup = model.credentialGroups.find((candidate) => candidate.id === group.id);
     const selectionSettings = {
       ...readAutomationSettings(),
       ...(modelGroup ? { [group.enabledKey]: modelGroup.enabled } : {}),
     };
-    selectStatementTypes({
-      id: group.id,
-      label: group.label,
-      enabledKey: group.enabledKey,
-      statementSelectionKey: group.statementSelectionKey,
-      statementTypes: group.statementTypes,
-    }, selectionSettings, "strict");
+    selectStatementTypes(group, selectionSettings, "strict");
   }
   const missing = missingCredentialKeys(taskId, model.automation.credentials);
   if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
@@ -151,14 +140,8 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   const split = splitAutomationUpdates(updates);
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
-    if (!group.statementSelectionKey || !group.statementTypes) continue;
-    const selection = selectStatementTypes({
-      id: group.id,
-      label: group.label,
-      enabledKey: group.enabledKey,
-      statementSelectionKey: group.statementSelectionKey,
-      statementTypes: group.statementTypes,
-    }, nextSettings, "strict");
+    if (!isStatementSelectionGroup(group)) continue;
+    const selection = selectStatementTypes(group, nextSettings, "strict");
     if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
       nextSettings[group.statementSelectionKey] = selection.selectedIds.join(",");
     }

@@ -40,7 +40,10 @@ import {
   taskById,
   type AutomationTaskKind,
 } from "./tasks.ts";
-import { selectStatementTypes } from "../statement-selection.ts";
+import {
+  isStatementSelectionGroup,
+  selectStatementTypes,
+} from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
 
 export { closeLibrettoSession };
@@ -361,14 +364,8 @@ export function startAutomationTask(
   const group = task.credentialGroupId
     ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
     : null;
-  if (group?.statementSelectionKey && group.statementTypes) {
-    selectStatementTypes({
-      id: group.id,
-      label: group.label,
-      enabledKey: group.enabledKey,
-      statementSelectionKey: group.statementSelectionKey,
-      statementTypes: group.statementTypes,
-    }, readAutomationSettings(), "strict");
+  if (group && isStatementSelectionGroup(group)) {
+    selectStatementTypes(group, readAutomationSettings(), "strict");
   }
   claimTask(taskId);
   void runAutomationTask(taskId, ledgerDir, {
@@ -384,20 +381,16 @@ export function startAutomationTasks(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
   const uniqueTaskIds = [...new Set(taskIds)];
+  let settings: ReturnType<typeof readAutomationSettings> | undefined;
   for (const taskId of uniqueTaskIds) {
     const task = taskById(taskId);
     if (!task) throw new Error(`Unknown automation task: ${taskId}`);
     const group = task.credentialGroupId
       ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
       : null;
-    if (group?.statementSelectionKey && group.statementTypes) {
-      selectStatementTypes({
-        id: group.id,
-        label: group.label,
-        enabledKey: group.enabledKey,
-        statementSelectionKey: group.statementSelectionKey,
-        statementTypes: group.statementTypes,
-      }, readAutomationSettings(), "strict");
+    if (group && isStatementSelectionGroup(group)) {
+      settings ??= readAutomationSettings();
+      selectStatementTypes(group, settings, "strict");
     }
     if (activeTaskRunIds.has(taskId)) throw new Error(`Automation task is already running: ${taskId}`);
   }
