@@ -66,6 +66,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
     });
     const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
       const enabled = enabledGroups[group.id] !== false;
+      const selectionSettings = { ...settings, [group.enabledKey]: enabled };
       const selection = group.statementSelectionKey && group.statementTypes
         ? selectStatementTypes({
           id: group.id,
@@ -73,7 +74,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
           enabledKey: group.enabledKey,
           statementSelectionKey: group.statementSelectionKey,
           statementTypes: group.statementTypes,
-        }, settings, "display")
+        }, selectionSettings, "display")
         : { selectedIds: [], needsSetup: false };
       return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
     });
@@ -120,13 +121,18 @@ function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDe
     ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
     : null;
   if (group?.statementSelectionKey && group.statementTypes) {
+    const modelGroup = model.credentialGroups.find((candidate) => candidate.id === group.id);
+    const selectionSettings = {
+      ...readAutomationSettings(),
+      ...(modelGroup ? { [group.enabledKey]: modelGroup.enabled } : {}),
+    };
     selectStatementTypes({
       id: group.id,
       label: group.label,
       enabledKey: group.enabledKey,
       statementSelectionKey: group.statementSelectionKey,
       statementTypes: group.statementTypes,
-    }, readAutomationSettings(), "strict");
+    }, selectionSettings, "strict");
   }
   const missing = missingCredentialKeys(taskId, model.automation.credentials);
   if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
