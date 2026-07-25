@@ -50,21 +50,6 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
-import { assertTaskStatementSelection, taskById } from "./tasks.ts";
-
-test("fresh statement tasks require a saved selection", () => {
-  const task = taskById("fubon-all-statements");
-  assert.ok(task);
-  assert.throws(
-    () => assertTaskStatementSelection(task, { LIBRETTO_CLOUD_FUBON_ENABLED: true }),
-    /Select at least one Fubon/,
-  );
-  assert.doesNotThrow(() => assertTaskStatementSelection(task, {
-    LIBRETTO_CLOUD_FUBON_ENABLED: true,
-    LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
-  }));
-});
-
 test("manual and scheduled fresh starts require a saved selection", () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
   const originalCwd = process.cwd();

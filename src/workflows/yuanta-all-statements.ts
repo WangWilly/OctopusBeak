@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { StatementComponentResult } from "../lib/automation/statement-run-summary.js";
 import {
   BANK_STATEMENT_CAPABILITIES,
-  resolveStatementSelection,
+  selectStatementTypes,
 } from "../lib/automation/statement-selection.js";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
@@ -477,10 +477,10 @@ export async function runYuantaAllStatements(
       credit_card: include.creditCard,
       fund: include.fund,
     };
-    const selectedIds = resolveStatementSelection(
+    const selectedIds = selectStatementTypes(
       BANK_STATEMENT_CAPABILITIES.yuanta,
       process.env,
-      true,
+      "strict",
     ).selectedIds.filter((typeId) => includeByType[typeId] !== false);
     const firstSelectedId = selectedIds[0];
     if (!firstSelectedId) throw new Error("Select at least one Yuanta statement type.");

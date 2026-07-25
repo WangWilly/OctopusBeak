@@ -131,7 +131,7 @@ assert.deepEqual(output, {
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
-  /resolveStatementSelection\([\s\S]*BANK_STATEMENT_CAPABILITIES\.cathay/,
+  /selectStatementTypes\([\s\S]*BANK_STATEMENT_CAPABILITIES\.cathay/,
 );
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(

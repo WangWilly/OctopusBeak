@@ -3,7 +3,7 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import {
   BANK_STATEMENT_CAPABILITIES,
-  resolveStatementSelection,
+  selectStatementTypes,
 } from "../lib/automation/statement-selection.js";
 import {
   activateControlWithoutPointer,
@@ -150,10 +150,10 @@ export async function runFubonAllStatements(
   const input = rawInput as Input;
   const { page, session } = ctx;
   console.log("automation-progress: 0");
-  const selectedIds = resolveStatementSelection(
+  const selectedIds = selectStatementTypes(
     BANK_STATEMENT_CAPABILITIES.fubon,
     process.env,
-    true,
+    "strict",
   ).selectedIds;
   if (!selectedIds.length) throw new Error("Select at least one Fubon statement type.");
 
