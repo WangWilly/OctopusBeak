@@ -65,6 +65,70 @@ test("force quit persists failure before surfacing cleanup failure", async () =>
   }
 });
 
+test("force quit finalizes the exact waiting run without appending a log", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-force-quit-success-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "force-quit-success.log"),
+      logTail: "Workflow paused. run `npx libretto resume --session ses-force-quit`.",
+    });
+    db.close();
+
+    assert.deepEqual(
+      await forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir, {
+        readSessionState() { return null; },
+        claimSession() { return true; },
+        async finalizeSession() { return true; },
+      }),
+      { session: "ses-force-quit" },
+    );
+
+    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "failed");
+    verifiedDb.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("force quit leaves a waiting run when its session identity is missing", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-force-quit-missing-session-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "force-quit-missing-session.log"),
+      logTail: "Workflow paused.",
+    });
+    db.close();
+
+    await assert.rejects(
+      forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir),
+      /Missing Libretto resume session/,
+    );
+
+    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "waiting_for_human");
+    verifiedDb.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("force quit leaves a resumed owner untouched", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "automation-force-quit-owner-"));
   const newer = {

@@ -1,13 +1,11 @@
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { readLibrettoSessionState } from "./libretto-session.ts";
-import { appendCleanupError, resumeSessionFromLog } from "./runner.ts";
+import { resumeSessionFromLog } from "./runner.ts";
 import {
-  claimAutomationSessionForCleanup,
-  finalizeExactOwnedAutomationSession,
-} from "./session-lifecycle.ts";
+  finalizeForceQuitTaskRun,
+  type ForceQuitFinalizationDependencies,
+} from "./task-run-finalization.ts";
 import {
   latestTaskRuns,
-  updateTaskRun,
   type AutomationTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
@@ -39,11 +37,7 @@ export function humanSessionForTask(taskId: string, ledgerDir = process.env.LEDG
 export async function forceQuitHumanSessionForTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  dependencies: Partial<{
-    readSessionState: typeof readLibrettoSessionState;
-    claimSession: typeof claimAutomationSessionForCleanup;
-    finalizeSession: typeof finalizeExactOwnedAutomationSession;
-  }> = {},
+  dependencies: ForceQuitFinalizationDependencies = {},
 ) {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
 
@@ -52,46 +46,7 @@ export async function forceQuitHumanSessionForTask(
     const run = latestTaskRuns(db)[taskId];
     if (!run) throw new Error(`Automation task is not waiting for human input: ${taskId}`);
     const session = humanSessionFromRun(run, taskId);
-    const deps = {
-      readSessionState: readLibrettoSessionState,
-      claimSession: claimAutomationSessionForCleanup,
-      finalizeSession: finalizeExactOwnedAutomationSession,
-      ...dependencies,
-    };
-    let cleanupFailure: unknown = null;
-    try {
-      const owner = {
-        taskId,
-        taskRunId: run.taskRunId,
-        session,
-        pid: deps.readSessionState(session)?.pid ?? null,
-      };
-      if (!deps.claimSession(owner)) {
-        throw new Error(`Automation session ownership changed for task: ${taskId}`);
-      }
-      if (!await deps.finalizeSession(owner)) {
-        throw new Error(`Automation session ownership changed for task: ${taskId}`);
-      }
-    } catch (error) {
-      cleanupFailure = error;
-    }
-
-    updateTaskRun(db, run.taskRunId, {
-      status: "failed",
-      finishedAt: new Date().toISOString(),
-      exitCode: null,
-      signal: null,
-      errorMessage: cleanupFailure
-        ? appendCleanupError(
-          "Browser session force quit.",
-          cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure),
-        )
-        : "Browser session force quit.",
-      logTail: run.logTail,
-    });
-
-    if (cleanupFailure) throw cleanupFailure;
-    return { session };
+    return await finalizeForceQuitTaskRun(db, run, session, dependencies);
   } finally {
     db.close();
   }
