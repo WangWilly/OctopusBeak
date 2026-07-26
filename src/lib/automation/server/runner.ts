@@ -599,6 +599,260 @@ export async function shutdownAutomationSessions(
   if (errors.length) throw new AggregateError(errors, "Failed to shut down automation sessions");
 }
 
+type AutomationTaskRunExecution = {
+  task: NonNullable<ReturnType<typeof taskById>>;
+  taskDb: ReturnType<typeof openLedgerDatabase>;
+  run: Pick<AutomationTaskRun, "taskRunId">;
+  logPath: string;
+  command: ReturnType<typeof resolveTaskCommand>;
+  session: string | null;
+  owner: OwnedAutomationSession | null;
+};
+
+type AutomationTaskProcessResult = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  error: Error | null;
+  logTail: string;
+  resumeFailure: string | null;
+  statementSummary: StatementRunSummary | null;
+  outputPersistenceWarnings: string[];
+};
+
+function createAutomationTaskRunExecution(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  taskDb: ReturnType<typeof openLedgerDatabase>,
+  options: StartAutomationTaskOptions & { resumeSession?: string },
+): AutomationTaskRunExecution | null {
+  const attempt = 1;
+  const maxAttempts = 1;
+  const startedAt = new Date().toISOString();
+  const logPath = join(
+    "data",
+    "automation",
+    "logs",
+    `${task.id}-${Date.now()}-${attempt}.log`,
+  );
+  const env = automationProcessEnv();
+  const isLibrettoTask = task.command[0] === "libretto";
+  const session = isLibrettoTask
+    ? options.resumeSession ?? createAutomationSessionId()
+    : null;
+  const command = resolveTaskCommand(task, {
+    resumeSession: options.resumeSession,
+    session: options.resumeSession ? undefined : session ?? undefined,
+  }, env);
+  if (task.id === "exchange-rates" && options.scheduledAtUtc) {
+    if (command.command === "npm") command.args.push("--");
+    command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
+    command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
+  }
+  const run = createTaskRun(taskDb, {
+    taskId: task.id,
+    script: command.display,
+    kind: task.kind,
+    status: "running",
+    attempt,
+    maxAttempts,
+    startedAt,
+    logPath,
+  });
+  activeTaskRunIds.set(task.id, run.taskRunId);
+  const owner = session ? {
+    taskId: task.id,
+    taskRunId: run.taskRunId,
+    session,
+    pid: sessionPid(session),
+  } : null;
+  if (session) {
+    appendLog(logPath, "automation-session: " + session + "\n");
+    const resumeFrom = options.resumeSession
+      ? activeTaskRuns(taskDb).find((candidate) =>
+        candidate.taskId === task.id
+        && candidate.taskRunId !== run.taskRunId
+        && candidate.status === "waiting_for_human"
+        && sessionFromRun(candidate) === options.resumeSession
+      )
+      : undefined;
+    if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
+      resumeSession: options.resumeSession,
+      resumeFrom,
+    })) return null;
+  }
+  return { task, taskDb, run, logPath, command, session, owner };
+}
+
+async function executeAutomationTaskProcess(
+  execution: AutomationTaskRunExecution,
+): Promise<AutomationTaskProcessResult> {
+  let logTail = "";
+  let detectedResumeFailure: string | null = null;
+  let statementSummary: StatementRunSummary | null = null;
+  const outputPersistenceWarnings: string[] = [];
+  const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
+    const recordOutputPersistenceError = (error: unknown) => {
+      const line = `automation-output-write-failed: ${errorMessage(error)}`;
+      console.error(line);
+      logTail = tail(`${logTail}\n${line}\n`);
+      outputPersistenceWarnings.push(line);
+    };
+    const outputBuffer = createAutomationOutputBuffer(
+      () => {
+        if (!isForceQuitRun(taskRunById(execution.taskDb, execution.run.taskRunId))) {
+          updateTaskRun(execution.taskDb, execution.run.taskRunId, liveTaskRunUpdate(logTail));
+        }
+      },
+      500,
+      recordOutputPersistenceError,
+    );
+    const onOutput = (chunk: Buffer) => {
+      const output = accumulateAutomationOutput(
+        { logTail, resumeFailure: detectedResumeFailure },
+        chunk.toString("utf8"),
+      );
+      statementSummary = parseStatementRunSummary(`${logTail}${output.logChunk}`)
+        ?? statementSummary;
+      logTail = output.logTail;
+      detectedResumeFailure = output.resumeFailure;
+      try {
+        appendLog(execution.logPath, output.logChunk);
+      } catch (error) {
+        recordOutputPersistenceError(error);
+      }
+      outputBuffer.push(output.logChunk);
+      if (execution.owner) {
+        ownAutomationSession({ ...execution.owner, pid: sessionPid(execution.owner.session) });
+      }
+    };
+    const child = spawn(execution.command.command, execution.command.args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: execution.command.env,
+    });
+    activeTaskChildren.set(execution.task.id, child);
+    child.stdout.on("data", onOutput);
+    child.stderr.on("data", onOutput);
+    child.on("error", (error) => {
+      activeTaskChildren.delete(execution.task.id);
+      outputBuffer.flush();
+      resolve({ exitCode: null, signal: null, error });
+    });
+    child.on("close", (exitCode, signal) => {
+      activeTaskChildren.delete(execution.task.id);
+      outputBuffer.flush();
+      resolve({ exitCode, signal, error: null });
+    });
+  });
+  return {
+    ...result,
+    logTail,
+    resumeFailure: detectedResumeFailure ?? resumeFailureMessage(logTail),
+    statementSummary,
+    outputPersistenceWarnings,
+  };
+}
+
+function scheduleAutomationTaskRunTimeout(
+  execution: AutomationTaskRunExecution,
+  ledgerDir: string,
+) {
+  if (!execution.session) return;
+  const timeoutOwner = {
+    taskId: execution.task.id,
+    taskRunId: execution.run.taskRunId,
+    session: execution.session,
+  };
+  armAutomationSessionTimeout(execution.task.id, async () => {
+    const timeoutDb = openLedgerDatabase(ledgerDir);
+    try {
+      if (taskRunById(timeoutDb, execution.run.taskRunId)?.status !== "waiting_for_human") return;
+      let timeoutError: string | null = null;
+      try {
+        await finalizeExactOwnedAutomationSession(timeoutOwner);
+      } catch (error) {
+        timeoutError = errorMessage(error);
+      }
+      if (taskRunById(timeoutDb, execution.run.taskRunId)?.status !== "waiting_for_human") return;
+      updateTaskRun(timeoutDb, execution.run.taskRunId, {
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        exitCode: null,
+        signal: null,
+        errorMessage: timeoutError
+          ? appendCleanupError("等待人工操作超過 20 分鐘", timeoutError)
+          : "等待人工操作超過 20 分鐘",
+      });
+    } catch (error) {
+      console.error("automation-session-timeout-failed", error);
+    } finally {
+      timeoutDb.close();
+    }
+  });
+}
+
+async function finalizeAutomationTaskRun(
+  execution: AutomationTaskRunExecution,
+  result: AutomationTaskProcessResult,
+  ledgerDir: string,
+) {
+  const resumeFailure = result.resumeFailure;
+  let status: AutomationTaskStatus = result.error || resumeFailure
+    ? "failed"
+    : nextAttemptStatus({
+      kind: execution.task.kind,
+      attempt: 1,
+      maxAttempts: 1,
+      exitCode: result.exitCode,
+      waitingForHuman: shouldMarkWaitingForHuman(result.logTail),
+    });
+  if (status === "completed" && result.statementSummary) status = result.statementSummary.status;
+  const statementFailure = result.statementSummary?.status === "failed"
+    ? result.statementSummary.results
+      .filter((component) => component.status === "failed")
+      .map((component) => `${component.typeId}: ${component.error ?? "Failed"}`)
+      .join("\n") || "No statement components completed."
+    : null;
+  let taskError = result.error?.message
+    ?? resumeFailure
+    ?? (status === "failed" ? statementFailure || finalFailureMessage(result.logTail, result.exitCode) : null);
+  taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
+  if (execution.owner && !shouldRetainAutomationSession(status)) {
+    const retainedOwner = ownedAutomationSession(execution.task.id) ?? execution.owner;
+    const cleanup = await finalizeTerminalAutomationSession(
+      retainedOwner,
+      taskError,
+      () => finalizeExactOwnedAutomationSession(execution.owner!),
+    );
+    taskError = cleanup.errorMessage;
+    if (cleanup.cleanupFailed && (status === "completed" || status === "partial")) status = "failed";
+  }
+  if (isForceQuitRun(taskRunById(execution.taskDb, execution.run.taskRunId))) return { status: "failed" as const };
+  let logTail = result.logTail;
+  if (result.statementSummary) {
+    const summaryLine = statementRunSummaryLine(result.statementSummary.results);
+    try {
+      appendLog(execution.logPath, `\n${summaryLine}\n`);
+    } catch (error) {
+      const warning = `automation-output-write-failed: ${errorMessage(error)}`;
+      console.error(warning);
+      taskError = [taskError, warning].filter(Boolean).join("\n") || null;
+      logTail = tail(`${logTail}\n${warning}\n`);
+    }
+    logTail = tail(`${logTail}\n${summaryLine}\n`);
+  }
+  updateTaskRun(execution.taskDb, execution.run.taskRunId, {
+    status,
+    finishedAt: new Date().toISOString(),
+    exitCode: result.exitCode,
+    signal: result.signal,
+    logTail,
+    errorMessage: taskError,
+  });
+  if (execution.session && shouldRetainAutomationSession(status)) {
+    scheduleAutomationTaskRunTimeout(execution, ledgerDir);
+  }
+  return { status };
+}
+
 export async function runAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
@@ -612,226 +866,10 @@ export async function runAutomationTask(
   let db: ReturnType<typeof openLedgerDatabase> | null = null;
   try {
     db = openLedgerDatabase(ledgerDir);
-    const taskDb = db;
-    const maxAttempts = 1;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const startedAt = new Date().toISOString();
-      const logPath = join(
-        "data",
-        "automation",
-        "logs",
-        `${task.id}-${Date.now()}-${attempt}.log`,
-      );
-      const env = automationProcessEnv();
-      const isLibrettoTask = task.command[0] === "libretto";
-      const session = isLibrettoTask
-        ? options.resumeSession ?? createAutomationSessionId()
-        : null;
-      const command = resolveTaskCommand(task, {
-        resumeSession: options.resumeSession,
-        session: options.resumeSession ? undefined : session ?? undefined,
-      }, env);
-      if (task.id === "exchange-rates" && options.scheduledAtUtc) {
-        if (command.command === "npm") command.args.push("--");
-        command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
-        command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
-      }
-      const script = command.display;
-      const run = createTaskRun(taskDb, {
-        taskId: task.id,
-        script,
-        kind: task.kind,
-        status: "running",
-        attempt,
-        maxAttempts,
-        startedAt,
-        logPath,
-      });
-      activeTaskRunIds.set(task.id, run.taskRunId);
-      const owner = session ? {
-        taskId: task.id,
-        taskRunId: run.taskRunId,
-        session,
-        pid: sessionPid(session),
-      } : null;
-      if (session) {
-        appendLog(logPath, "automation-session: " + session + "\n");
-        const resumeFrom = options.resumeSession
-          ? activeTaskRuns(taskDb).find((candidate) =>
-            candidate.taskId === task.id
-            && candidate.taskRunId !== run.taskRunId
-            && candidate.status === "waiting_for_human"
-            && sessionFromRun(candidate) === options.resumeSession
-          )
-          : undefined;
-        if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
-          resumeSession: options.resumeSession,
-          resumeFrom,
-        })) {
-          return { status: "failed" as const };
-        }
-      }
-      let logTail = "";
-      let detectedResumeFailure: string | null = null;
-      const detectedStatementSummary: { value: StatementRunSummary | null } = { value: null };
-      const outputPersistenceWarnings: string[] = [];
-
-      const result = await new Promise<{
-        exitCode: number | null;
-        signal: NodeJS.Signals | null;
-        error: Error | null;
-      }>((resolve) => {
-        const recordOutputPersistenceError = (error: unknown) => {
-          const line = `automation-output-write-failed: ${errorMessage(error)}`;
-          console.error(line);
-          logTail = tail(`${logTail}\n${line}\n`);
-          outputPersistenceWarnings.push(line);
-        };
-        const outputBuffer = createAutomationOutputBuffer(
-          () => {
-            if (!isForceQuitRun(taskRunById(taskDb, run.taskRunId))) {
-              updateTaskRun(taskDb, run.taskRunId, liveTaskRunUpdate(logTail));
-            }
-          },
-          500,
-          recordOutputPersistenceError,
-        );
-        const onOutput = (chunk: Buffer) => {
-          const output = accumulateAutomationOutput(
-            { logTail, resumeFailure: detectedResumeFailure },
-            chunk.toString("utf8"),
-          );
-          detectedStatementSummary.value = parseStatementRunSummary(`${logTail}${output.logChunk}`)
-            ?? detectedStatementSummary.value;
-          logTail = output.logTail;
-          detectedResumeFailure = output.resumeFailure;
-          try {
-            appendLog(logPath, output.logChunk);
-          } catch (error) {
-            recordOutputPersistenceError(error);
-          }
-          outputBuffer.push(output.logChunk);
-          if (session) {
-            ownAutomationSession({
-              taskId: task.id,
-              taskRunId: run.taskRunId,
-              session,
-              pid: sessionPid(session),
-            });
-          }
-        };
-        const child = spawn(command.command, command.args, {
-          stdio: ["ignore", "pipe", "pipe"],
-          env: command.env,
-        });
-        activeTaskChildren.set(task.id, child);
-        child.stdout.on("data", onOutput);
-        child.stderr.on("data", onOutput);
-        child.on("error", (error) => {
-          activeTaskChildren.delete(task.id);
-          outputBuffer.flush();
-          resolve({ exitCode: null, signal: null, error });
-        });
-        child.on("close", (exitCode, signal) => {
-          activeTaskChildren.delete(task.id);
-          outputBuffer.flush();
-          resolve({ exitCode, signal, error: null });
-        });
-      });
-
-      const resumeFailure = detectedResumeFailure ?? resumeFailureMessage(logTail);
-      let status: AutomationTaskStatus = result.error || resumeFailure
-        ? "failed"
-        : nextAttemptStatus({
-          kind: task.kind,
-          attempt,
-          maxAttempts,
-          exitCode: result.exitCode,
-          waitingForHuman: shouldMarkWaitingForHuman(logTail),
-        });
-      if (status === "completed" && detectedStatementSummary.value) {
-        status = detectedStatementSummary.value.status;
-      }
-      const statementFailure = detectedStatementSummary.value?.status === "failed"
-        ? detectedStatementSummary.value.results
-          .filter((component) => component.status === "failed")
-          .map((component) => `${component.typeId}: ${component.error ?? "Failed"}`)
-          .join("\n") || "No statement components completed."
-        : null;
-      let taskError = result.error?.message
-        ?? resumeFailure
-        ?? (status === "failed" ? statementFailure || finalFailureMessage(logTail, result.exitCode) : null);
-      taskError = [taskError, ...outputPersistenceWarnings].filter(Boolean).join("\n") || null;
-      if (owner && !shouldRetainAutomationSession(status)) {
-        const retainedOwner = ownedAutomationSession(task.id) ?? owner;
-        const cleanup = await finalizeTerminalAutomationSession(
-          retainedOwner,
-          taskError,
-          () => finalizeExactOwnedAutomationSession(owner),
-        );
-        taskError = cleanup.errorMessage;
-        if (cleanup.cleanupFailed && (status === "completed" || status === "partial")) {
-          status = "failed";
-        }
-      }
-      if (isForceQuitRun(taskRunById(taskDb, run.taskRunId))) return { status: "failed" };
-      if (detectedStatementSummary.value) {
-        const summaryLine = statementRunSummaryLine(detectedStatementSummary.value.results);
-        try {
-          appendLog(logPath, `\n${summaryLine}\n`);
-        } catch (error) {
-          const warning = `automation-output-write-failed: ${errorMessage(error)}`;
-          console.error(warning);
-          taskError = [taskError, warning].filter(Boolean).join("\n") || null;
-          logTail = tail(`${logTail}\n${warning}\n`);
-        }
-        logTail = tail(`${logTail}\n${summaryLine}\n`);
-      }
-      updateTaskRun(taskDb, run.taskRunId, {
-        status,
-        finishedAt: new Date().toISOString(),
-        exitCode: result.exitCode,
-        signal: result.signal,
-        logTail,
-        errorMessage: taskError,
-      });
-      if (session && shouldRetainAutomationSession(status)) {
-        const timeoutOwner = {
-          taskId: task.id,
-          taskRunId: run.taskRunId,
-          session,
-        };
-        armAutomationSessionTimeout(task.id, async () => {
-          const timeoutDb = openLedgerDatabase(ledgerDir);
-          try {
-            if (taskRunById(timeoutDb, run.taskRunId)?.status !== "waiting_for_human") return;
-            let timeoutError: string | null = null;
-            try {
-              await finalizeExactOwnedAutomationSession(timeoutOwner);
-            } catch (error) {
-              timeoutError = errorMessage(error);
-            }
-            if (taskRunById(timeoutDb, run.taskRunId)?.status !== "waiting_for_human") return;
-            updateTaskRun(timeoutDb, run.taskRunId, {
-              status: "failed",
-              finishedAt: new Date().toISOString(),
-              exitCode: null,
-              signal: null,
-              errorMessage: timeoutError
-                ? appendCleanupError("等待人工操作超過 20 分鐘", timeoutError)
-                : "等待人工操作超過 20 分鐘",
-            });
-          } catch (error) {
-            console.error("automation-session-timeout-failed", error);
-          } finally {
-            timeoutDb.close();
-          }
-        });
-      }
-      if (status !== "completed") return { status };
-      return { status };
-    }
-    return { status: "failed" as const };
+    const execution = createAutomationTaskRunExecution(task, db, options);
+    if (!execution) return { status: "failed" as const };
+    const result = await executeAutomationTaskProcess(execution);
+    return await finalizeAutomationTaskRun(execution, result, ledgerDir);
   } finally {
     activeTaskRunIds.delete(taskId);
     activeTaskChildren.delete(taskId);
