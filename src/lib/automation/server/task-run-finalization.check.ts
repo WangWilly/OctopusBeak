@@ -39,8 +39,6 @@ function createExecution(ledgerDir: string) {
     taskRunId: run.taskRunId,
     logPath,
     ledgerDir,
-    session: null,
-    owner: null,
   } satisfies AutomationTaskRunFinalizationContext;
   return { db, run, finalization };
 }
