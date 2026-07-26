@@ -145,7 +145,7 @@ assert.deepEqual(
 );
 
 test("persisted session recovery uses a bounded log read", () => {
-  const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./task-run-finalization.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /readFileSync\(run\.logPath/);
   assert.match(source, /readSync\([^;]+SESSION_LOG_PREFIX_BYTES/s);
 });

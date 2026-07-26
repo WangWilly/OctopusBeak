@@ -25,3 +25,6 @@ A reusable scheduled unit that can be started manually, in a batch, or as a resu
 
 **Automation task run**:
 One persisted execution attempt of an automation task, including its output, status, and any retained session.
+
+**Automation task run finalization**:
+The act of deciding an automation task run's terminal outcome, recording its result, and relinquishing or retaining its automation session.
