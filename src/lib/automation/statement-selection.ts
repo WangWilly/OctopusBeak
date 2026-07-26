@@ -54,7 +54,7 @@ export class StatementSelectionError extends Error {
     const message = reason === "missing-selection"
       ? "Select at least one " + group.label + " statement type."
       : reason === "unknown-type"
-        ? "Unknown " + group.label + " statement type: " + unknownIds[0]
+        ? "Unknown " + group.label + " statement type: " + (unknownIds[0] ?? "unknown")
         : group.statementSelectionKey + " must be a string.";
     super(message);
     this.groupId = groupId;

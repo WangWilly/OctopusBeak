@@ -72,6 +72,10 @@ assert.throws(
     return true;
   },
 );
+assert.equal(
+  new StatementSelectionError(fubon.id, "unknown-type", fubon).message,
+  "Unknown Fubon statement type: unknown",
+);
 assert.deepEqual(
   selectStatementTypes(
     fubon,
