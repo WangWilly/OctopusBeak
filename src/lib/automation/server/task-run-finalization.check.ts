@@ -15,7 +15,7 @@ import {
   finalizeAutomationTaskRun,
   finalizePersistedRun,
   type AutomationTaskProcessResult,
-  type AutomationTaskRunExecution,
+  type AutomationTaskRunFinalizationContext,
 } from "./task-run-finalization.ts";
 
 function createExecution(ledgerDir: string) {
@@ -32,16 +32,17 @@ function createExecution(ledgerDir: string) {
     startedAt: new Date().toISOString(),
     logPath,
   });
-  const execution = {
-    task,
+  const finalization = {
     taskDb: db,
-    run: { taskRunId: run.taskRunId },
+    taskId: task.id,
+    taskKind: task.kind,
+    taskRunId: run.taskRunId,
     logPath,
-    command: {},
+    ledgerDir,
     session: null,
     owner: null,
-  } as AutomationTaskRunExecution;
-  return { db, run, execution };
+  } satisfies AutomationTaskRunFinalizationContext;
+  return { db, run, finalization };
 }
 
 function result(overrides: Partial<AutomationTaskProcessResult> = {}): AutomationTaskProcessResult {
@@ -60,7 +61,7 @@ function result(overrides: Partial<AutomationTaskProcessResult> = {}): Automatio
 test("live finalization persists a partial statement outcome through one transition", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-live-"));
   try {
-    const { db, run, execution } = createExecution(ledgerDir);
+    const { db, run, finalization } = createExecution(ledgerDir);
     const summary = {
       status: "partial" as const,
       results: [
@@ -70,7 +71,7 @@ test("live finalization persists a partial statement outcome through one transit
     };
 
     assert.deepEqual(
-      await finalizeAutomationTaskRun(execution, result({ statementSummary: summary }), ledgerDir),
+      await finalizeAutomationTaskRun(finalization, result({ statementSummary: summary })),
       { status: "partial" },
     );
     const persisted = taskRunById(db, run.taskRunId)!;
@@ -86,17 +87,16 @@ test("live finalization persists a partial statement outcome through one transit
 test("waiting for human remains active until a later run takes over", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-waiting-"));
   try {
-    const { db, run, execution } = createExecution(ledgerDir);
+    const { db, run, finalization } = createExecution(ledgerDir);
     assert.deepEqual(
       await finalizeAutomationTaskRun(
-        execution,
+        finalization,
         result({ logTail: "Workflow paused. resume --session ses-waiting" }),
-        ledgerDir,
       ),
       { status: "waiting_for_human" },
     );
     assert.deepEqual(
-      await finalizeAutomationTaskRun(execution, result(), ledgerDir),
+      await finalizeAutomationTaskRun(finalization, result()),
       { status: "waiting_for_human" },
     );
     assert.equal(taskRunById(db, run.taskRunId)?.status, "waiting_for_human");

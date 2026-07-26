@@ -20,6 +20,7 @@ import {
   shouldMarkWaitingForHuman,
   tail,
   type AutomationTaskProcessResult,
+  type AutomationTaskRunFinalizationContext,
   type AutomationTaskRunExecution,
 } from "./task-run-finalization.ts";
 import {
@@ -328,7 +329,17 @@ export async function runAutomationTaskExecution(
   onRunCreated(execution.run.taskRunId);
   try {
     const result = await executeAutomationTaskProcess(execution);
-    return await finalizeAutomationTaskRun(execution, result, ledgerDir);
+    const finalizationContext: AutomationTaskRunFinalizationContext = {
+      taskDb,
+      taskId: task.id,
+      taskKind: task.kind,
+      taskRunId: execution.run.taskRunId,
+      logPath: execution.logPath,
+      ledgerDir,
+      session: execution.session,
+      owner: execution.owner,
+    };
+    return await finalizeAutomationTaskRun(finalizationContext, result);
   } finally {
     activeTaskChildren.delete(task.id);
   }
