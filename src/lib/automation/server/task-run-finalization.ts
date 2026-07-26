@@ -138,6 +138,84 @@ export async function finalizeTerminalAutomationSession(
   }
 }
 
+type SessionCleanupResult = {
+  errorMessage: string | null;
+  cleanupFailed: boolean;
+};
+
+type TaskRunFinalizationPlan = {
+  status: AutomationTaskStatus;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  errorMessage: string | null;
+  logTail: string;
+  logAppend?: string | ((cleanup: SessionCleanupResult | null) => string);
+  cleanup?: (workflowError: string | null) => Promise<SessionCleanupResult>;
+};
+
+function isTerminalTaskRunStatus(status: AutomationTaskStatus) {
+  return status === "completed" || status === "partial" || status === "failed";
+}
+
+async function finalizeTaskRunTransition(
+  db: ReturnType<typeof openLedgerDatabase>,
+  run: Pick<AutomationTaskRun, "taskRunId" | "logPath">,
+  plan: TaskRunFinalizationPlan,
+) {
+  const current = taskRunById(db, run.taskRunId);
+  if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
+  if (isTerminalTaskRunStatus(current.status)) return { status: current.status, skipped: true };
+  if (current.status !== "running" && current.status !== "waiting_for_human") {
+    return { status: current.status, skipped: true };
+  }
+  if (current.status === "waiting_for_human" && plan.status !== "failed") {
+    return { status: current.status, skipped: true };
+  }
+
+  let status = plan.status;
+  let taskError = plan.errorMessage;
+  let logTail = plan.logTail;
+  let cleanupResult: SessionCleanupResult | null = null;
+  if (plan.cleanup) {
+    cleanupResult = await plan.cleanup(taskError);
+    taskError = cleanupResult.errorMessage;
+    if (cleanupResult.cleanupFailed && (status === "completed" || status === "partial")) {
+      status = "failed";
+    }
+  }
+
+  const afterCleanup = taskRunById(db, run.taskRunId);
+  if (!afterCleanup) throw new Error(`Missing automation task run: ${run.taskRunId}`);
+  if (isTerminalTaskRunStatus(afterCleanup.status)) {
+    return { status: afterCleanup.status, skipped: true };
+  }
+
+  if (plan.logAppend) {
+    try {
+      appendLog(
+        run.logPath,
+        typeof plan.logAppend === "function"
+          ? plan.logAppend(cleanupResult)
+          : plan.logAppend,
+      );
+    } catch (error) {
+      const warning = `automation-output-write-failed: ${errorMessage(error)}`;
+      console.error(warning);
+      taskError = [taskError, warning].filter(Boolean).join("\n") || null;
+      logTail = tail(`${logTail}\n${warning}\n`);
+    }
+  }
+  updateTaskRun(db, run.taskRunId, {
+    status,
+    finishedAt: new Date().toISOString(),
+    exitCode: plan.exitCode,
+    signal: plan.signal,
+    logTail,
+    errorMessage: taskError,
+  });
+  return { status, skipped: false };
+}
+
 export function sessionPid(session: string) {
   try {
     return readLibrettoSessionState(session)?.pid ?? null;
@@ -180,30 +258,36 @@ export async function finalizePersistedRun(
 ) {
   const session = sessionFromRun(run);
   const pid = session ? sessionPid(session) : null;
-  let cleanupError: string | null = null;
-  if (!session) {
-    cleanupError = "Missing Libretto session identity";
-  } else {
-    ownAutomationSession({ taskId: run.taskId, taskRunId: run.taskRunId, session, pid });
-    try {
-      await finalizeOwnedAutomationSession(run.taskId);
-    } catch (error) {
-      cleanupError = errorMessage(error);
-    }
-  }
-  updateTaskRun(db, run.taskRunId, {
+  const owner = session
+    ? { taskId: run.taskId, taskRunId: run.taskRunId, session, pid }
+    : null;
+  let cleanupError: string | null = owner ? null : "Missing Libretto session identity";
+  const result = await finalizeTaskRunTransition(db, run, {
     status: "failed",
-    finishedAt: new Date().toISOString(),
     exitCode: null,
     signal: null,
-    errorMessage: cleanupError
-      ? appendCleanupError(run.errorMessage ?? reason, cleanupError)
-      : run.errorMessage ?? reason,
+    errorMessage: run.errorMessage ?? reason,
+    logTail: run.logTail,
+    logAppend: () => "automation-session-finalize: session="
+      + (session ?? "unknown")
+      + " pid=" + (pid ?? "unknown")
+      + " cleanup-error=" + (cleanupError ?? "none") + "\n",
+    cleanup: owner
+      ? async (workflowError) => {
+        ownAutomationSession(owner);
+        const result = await finalizeTerminalAutomationSession(
+          owner,
+          workflowError,
+          () => finalizeOwnedAutomationSession(run.taskId),
+        );
+        if (result.cleanupFailed) cleanupError = result.errorMessage;
+        return result;
+      }
+      : async (workflowError) => ({
+        errorMessage: appendCleanupError(workflowError, cleanupError ?? "Missing Libretto session identity"),
+        cleanupFailed: true,
+      }),
   });
-  appendLog(
-    run.logPath,
-    `automation-session-finalize: session=${session ?? "unknown"} pid=${pid ?? "unknown"} cleanup-error=${cleanupError ?? "none"}\n`,
-  );
 }
 
 export async function finalizePersistedActiveRuns(
@@ -232,30 +316,28 @@ function scheduleAutomationTaskRunTimeout(
   ledgerDir: string,
 ) {
   if (!execution.session) return;
-  const timeoutOwner = {
+  const timeoutOwner = execution.owner ?? {
     taskId: execution.task.id,
     taskRunId: execution.run.taskRunId,
     session: execution.session,
+    pid: sessionPid(execution.session),
   };
   armAutomationSessionTimeout(execution.task.id, async () => {
     const timeoutDb = openLedgerDatabase(ledgerDir);
     try {
-      if (taskRunById(timeoutDb, execution.run.taskRunId)?.status !== "waiting_for_human") return;
-      let timeoutError: string | null = null;
-      try {
-        await finalizeExactOwnedAutomationSession(timeoutOwner);
-      } catch (error) {
-        timeoutError = errorMessage(error);
-      }
-      if (taskRunById(timeoutDb, execution.run.taskRunId)?.status !== "waiting_for_human") return;
-      updateTaskRun(timeoutDb, execution.run.taskRunId, {
+      const run = taskRunById(timeoutDb, execution.run.taskRunId);
+      if (!run || run.status !== "waiting_for_human") return;
+      await finalizeTaskRunTransition(timeoutDb, run, {
         status: "failed",
-        finishedAt: new Date().toISOString(),
         exitCode: null,
         signal: null,
-        errorMessage: timeoutError
-          ? appendCleanupError("等待人工操作超過 20 分鐘", timeoutError)
-          : "等待人工操作超過 20 分鐘",
+        errorMessage: "等待人工操作超過 20 分鐘",
+        logTail: run.logTail,
+        cleanup: (workflowError) => finalizeTerminalAutomationSession(
+          timeoutOwner,
+          workflowError,
+          () => finalizeExactOwnedAutomationSession(timeoutOwner),
+        ),
       });
     } catch (error) {
       console.error("automation-session-timeout-failed", error);
@@ -291,40 +373,36 @@ export async function finalizeAutomationTaskRun(
     ?? resumeFailure
     ?? (status === "failed" ? statementFailure || finalFailureMessage(result.logTail, result.exitCode) : null);
   taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
-  if (execution.owner && !shouldRetainAutomationSession(status)) {
-    const retainedOwner = ownedAutomationSession(execution.task.id) ?? execution.owner;
-    const cleanup = await finalizeTerminalAutomationSession(
-      retainedOwner,
-      taskError,
-      () => finalizeExactOwnedAutomationSession(execution.owner!),
-    );
-    taskError = cleanup.errorMessage;
-    if (cleanup.cleanupFailed && (status === "completed" || status === "partial")) status = "failed";
-  }
   if (isForceQuitRun(taskRunById(execution.taskDb, execution.run.taskRunId))) return { status: "failed" as const };
   let logTail = result.logTail;
+  let summaryLine: string | undefined;
   if (result.statementSummary) {
-    const summaryLine = statementRunSummaryLine(result.statementSummary.results);
-    try {
-      appendLog(execution.logPath, `\n${summaryLine}\n`);
-    } catch (error) {
-      const warning = `automation-output-write-failed: ${errorMessage(error)}`;
-      console.error(warning);
-      taskError = [taskError, warning].filter(Boolean).join("\n") || null;
-      logTail = tail(`${logTail}\n${warning}\n`);
-    }
+    summaryLine = statementRunSummaryLine(result.statementSummary.results);
     logTail = tail(`${logTail}\n${summaryLine}\n`);
   }
-  updateTaskRun(execution.taskDb, execution.run.taskRunId, {
+  const owner = execution.owner && !shouldRetainAutomationSession(status)
+    ? ownedAutomationSession(execution.task.id) ?? execution.owner
+    : null;
+  const transition = await finalizeTaskRunTransition(execution.taskDb, {
+    taskRunId: execution.run.taskRunId,
+    logPath: execution.logPath,
+  }, {
     status,
-    finishedAt: new Date().toISOString(),
     exitCode: result.exitCode,
     signal: result.signal,
-    logTail,
     errorMessage: taskError,
+    logTail,
+    logAppend: summaryLine ? `\n${summaryLine}\n` : undefined,
+    cleanup: owner
+      ? async (workflowError) => finalizeTerminalAutomationSession(
+        owner,
+        workflowError,
+        () => finalizeExactOwnedAutomationSession(execution.owner!),
+      )
+      : undefined,
   });
-  if (execution.session && shouldRetainAutomationSession(status)) {
+  if (!transition.skipped && execution.session && shouldRetainAutomationSession(status)) {
     scheduleAutomationTaskRunTimeout(execution, ledgerDir);
   }
-  return { status };
+  return { status: transition.status };
 }
