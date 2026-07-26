@@ -16,3 +16,9 @@ The set of statement types chosen for an enabled credential source to collect.
 **Automation session finalization**:
 The act of relinquishing an owned automation session after a run, including graceful close, daemon teardown when needed, and removal of the session's ownership record.
 _Avoid_: Session close (which names only the graceful close operation).
+
+**Automation task**:
+A reusable scheduled unit that can be started manually, in a batch, or as a resume.
+
+**Automation task run**:
+One persisted execution attempt of an automation task, including its output, status, and any retained session.
