@@ -34,3 +34,6 @@ The stated outcome and session disposition that guide how an automation task run
 
 **Automation session disposition**:
 The decision to retain an automation session for human assistance or relinquish it after a task run.
+
+**Automation task run force-quit**:
+An operator-initiated action that ends a task run waiting for human input by relinquishing its exact automation session and finalizing the run as failed.

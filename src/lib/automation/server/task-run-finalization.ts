@@ -9,6 +9,7 @@ import { resolveTaskCommand } from "./desktop-command.ts";
 import { readLibrettoSessionState } from "./libretto-session.ts";
 import {
   armAutomationSessionTimeout,
+  claimAutomationSessionForCleanup,
   finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
   ownAutomationSession,
@@ -46,6 +47,12 @@ export type AutomationTaskRunFinalizationContext = {
   session: string | null;
   owner: OwnedAutomationSession | null;
 };
+
+export type ForceQuitFinalizationDependencies = Partial<{
+  readSessionState: typeof readLibrettoSessionState;
+  claimSession: typeof claimAutomationSessionForCleanup;
+  finalizeSession: typeof finalizeExactOwnedAutomationSession;
+}>;
 
 export type AutomationTaskProcessResult = {
   exitCode: number | null;
@@ -310,6 +317,74 @@ export async function finalizePersistedRun(
     sessionCleanupMode: "owned",
     sessionCleanupError: owner ? null : "Missing Libretto session identity",
   });
+}
+
+export async function finalizeForceQuitTaskRun(
+  db: ReturnType<typeof openLedgerDatabase>,
+  run: AutomationTaskRun,
+  session: string,
+  dependencies: ForceQuitFinalizationDependencies = {},
+) {
+  const current = taskRunById(db, run.taskRunId);
+  if (!current || current.status !== "waiting_for_human") {
+    throw new Error(`Automation task is not waiting for human input: ${run.taskId}`);
+  }
+
+  const deps = {
+    readSessionState: readLibrettoSessionState,
+    claimSession: claimAutomationSessionForCleanup,
+    finalizeSession: finalizeExactOwnedAutomationSession,
+    ...dependencies,
+  };
+  let owner: OwnedAutomationSession = {
+    taskId: run.taskId,
+    taskRunId: run.taskRunId,
+    session,
+    pid: null,
+  };
+  let cleanupFailure: unknown = null;
+  const workflowError = "Browser session force quit.";
+  let taskError = workflowError;
+  try {
+    owner = {
+      ...owner,
+      pid: deps.readSessionState(session)?.pid ?? null,
+    };
+    if (!deps.claimSession(owner)) {
+      throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
+    }
+    let finalizeFailure: unknown = null;
+    const cleanupResult = await finalizeTerminalAutomationSession(
+      owner,
+      workflowError,
+      async () => {
+        try {
+          if (!await deps.finalizeSession(owner)) {
+            throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
+          }
+        } catch (error) {
+          finalizeFailure = error;
+          throw error;
+        }
+      },
+    );
+    cleanupFailure = finalizeFailure;
+    taskError = cleanupResult.errorMessage ?? workflowError;
+  } catch (error) {
+    cleanupFailure = error;
+    taskError = appendCleanupError(workflowError, errorMessage(error));
+  }
+
+  await finalizeTaskRunTransition(db, run, {
+    status: "failed",
+    sessionDisposition: "relinquish",
+    exitCode: null,
+    signal: null,
+    errorMessage: taskError,
+    logTail: run.logTail,
+  });
+  if (cleanupFailure) throw cleanupFailure;
+  return { session };
 }
 
 export async function finalizePersistedActiveRuns(
