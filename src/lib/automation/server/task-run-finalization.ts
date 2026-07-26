@@ -171,6 +171,9 @@ type TaskRunFinalizationIntent = {
   errorMessage: string | null;
   logTail: string;
   statementSummary?: StatementRunSummary | null;
+};
+
+type TaskRunFinalizationImplementation = {
   sessionFinalizationLog?: boolean;
   sessionOwner?: OwnedAutomationSession | null;
   sessionCleanupMode?: "exact" | "owned";
@@ -185,6 +188,7 @@ async function finalizeTaskRunTransition(
   db: ReturnType<typeof openLedgerDatabase>,
   run: Pick<AutomationTaskRun, "taskRunId" | "logPath">,
   intent: TaskRunFinalizationIntent,
+  implementation: TaskRunFinalizationImplementation = {},
 ) {
   const current = taskRunById(db, run.taskRunId);
   if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
@@ -201,18 +205,18 @@ async function finalizeTaskRunTransition(
   let logTail = intent.logTail;
   let cleanupResult: SessionCleanupResult | null = null;
   if (intent.sessionDisposition === "relinquish") {
-    if (intent.sessionCleanupError) {
+    if (implementation.sessionCleanupError) {
       cleanupResult = {
-        errorMessage: appendCleanupError(taskError, intent.sessionCleanupError),
+        errorMessage: appendCleanupError(taskError, implementation.sessionCleanupError),
         cleanupFailed: true,
       };
-    } else if (intent.sessionOwner) {
-      if (intent.sessionCleanupMode === "owned") ownAutomationSession(intent.sessionOwner);
+    } else if (implementation.sessionOwner) {
+      if (implementation.sessionCleanupMode === "owned") ownAutomationSession(implementation.sessionOwner);
       cleanupResult = await finalizeTerminalAutomationSession(
-        intent.sessionOwner,
+        implementation.sessionOwner,
         taskError,
-        intent.sessionCleanupMode === "owned"
-          ? () => finalizeOwnedAutomationSession(intent.sessionOwner!.taskId)
+        implementation.sessionCleanupMode === "owned"
+          ? () => finalizeOwnedAutomationSession(implementation.sessionOwner!.taskId)
           : undefined,
       );
     }
@@ -231,11 +235,11 @@ async function finalizeTaskRunTransition(
   const summaryLine = intent.statementSummary
     ? statementRunSummaryLine(intent.statementSummary.results)
     : null;
-  const logAppend = intent.sessionFinalizationLog
+  const logAppend = implementation.sessionFinalizationLog
     ? "automation-session-finalize: session="
-      + (intent.sessionOwner?.session ?? "unknown")
-      + " pid=" + (intent.sessionOwner?.pid ?? "unknown")
-      + " cleanup-error=" + (cleanupResult?.cleanupFailed ? "failed" : intent.sessionCleanupError ?? "none") + "\n"
+      + (implementation.sessionOwner?.session ?? "unknown")
+      + " pid=" + (implementation.sessionOwner?.pid ?? "unknown")
+      + " cleanup-error=" + (cleanupResult?.cleanupFailed ? "failed" : implementation.sessionCleanupError ?? "none") + "\n"
     : summaryLine
       ? `\n${summaryLine}\n`
       : null;
@@ -312,6 +316,7 @@ export async function finalizePersistedRun(
     signal: null,
     errorMessage: run.errorMessage ?? reason,
     logTail: run.logTail,
+  }, {
     sessionFinalizationLog: true,
     sessionOwner: owner,
     sessionCleanupMode: "owned",
@@ -430,6 +435,7 @@ function scheduleAutomationTaskRunTimeout(
         signal: null,
         errorMessage: "等待人工操作超過 20 分鐘",
         logTail: run.logTail,
+      }, {
         sessionOwner: timeoutOwner,
         sessionCleanupMode: "exact",
       });
@@ -486,6 +492,7 @@ export async function finalizeAutomationTaskRun(
     errorMessage: taskError,
     logTail,
     statementSummary: result.statementSummary,
+  }, {
     sessionOwner: owner,
     sessionCleanupMode: "exact",
   });
