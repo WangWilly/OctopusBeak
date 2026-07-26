@@ -13,29 +13,26 @@ import { validateLibrettoSessionName } from "./libretto-session.ts";
 import {
   appendLog,
   errorMessage,
+  sessionPid,
+  tail,
+  claimAutomationTaskRunSession,
+  refreshAutomationSession,
+  sessionFromRun,
+  type OwnedAutomationSession,
+} from "./automation-session-disposition.ts";
+import {
   finalizeAutomationTaskRun,
   isForceQuitRun,
-  sessionFromRun,
-  sessionPid,
   shouldMarkWaitingForHuman,
-  tail,
   type AutomationTaskProcessResult,
   type AutomationTaskRunFinalizationContext,
   type AutomationTaskRunExecution,
 } from "./task-run-finalization.ts";
 import {
-  disarmAutomationSessionTimeout,
-  ownAutomationSession,
-  ownedAutomationSession,
-  restoreAutomationSessionOwnership,
-  type OwnedAutomationSession,
-} from "./session-lifecycle.ts";
-import {
   activeTaskRuns,
   createTaskRun,
   taskRunById,
   updateTaskRun,
-  type AutomationTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 
@@ -103,66 +100,7 @@ export function createAutomationOutputBuffer(
   };
 }
 
-export function claimRunAutomationSession(
-  db: ReturnType<typeof openLedgerDatabase>,
-  taskRunId: string,
-  owner: OwnedAutomationSession,
-  options: { resumeSession?: string; resumeFrom?: AutomationTaskRun } = {},
-) {
-  const current = ownedAutomationSession(owner.taskId);
-  const resumeFrom = options.resumeFrom;
-  let claimError: unknown = null;
-  const isResumeHandoff = Boolean(
-    options.resumeSession
-      && options.resumeSession === owner.session
-      && resumeFrom?.status === "waiting_for_human"
-      && resumeFrom.taskId === owner.taskId
-      && resumeFrom.taskRunId !== taskRunId
-      && sessionFromRun(resumeFrom) === owner.session
-      && (!current
-        || (current.taskRunId === resumeFrom.taskRunId && current.session === owner.session)),
-  );
-  if ((!options.resumeSession || isResumeHandoff) && (!current || isResumeHandoff)) {
-    if (resumeFrom) {
-      const claimRejected = new Error("Automation session registry claim rejected");
-      let registryClaimed = false;
-      db.exec("BEGIN");
-      try {
-        updateTaskRun(db, resumeFrom.taskRunId, {
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-          errorMessage: `Superseded by resume handoff: ${taskRunId}`,
-          logTail: tail(`${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`),
-        });
-        if (!ownAutomationSession(owner)) throw claimRejected;
-        registryClaimed = true;
-        db.exec("COMMIT");
-        disarmAutomationSessionTimeout(owner.taskId);
-        return true;
-      } catch (error) {
-        try {
-          db.exec("ROLLBACK");
-        } finally {
-          if (registryClaimed) restoreAutomationSessionOwnership(owner, current);
-        }
-        claimError = error;
-      }
-    } else if (ownAutomationSession(owner)) {
-      disarmAutomationSessionTimeout(owner.taskId);
-      return true;
-    }
-  }
-  updateTaskRun(db, taskRunId, {
-    status: "failed",
-    finishedAt: new Date().toISOString(),
-    exitCode: null,
-    signal: null,
-    errorMessage: claimError && errorMessage(claimError) !== "Automation session registry claim rejected"
-      ? `Automation session handoff failed: ${errorMessage(claimError)}`
-      : "Automation session is still closing. Try again after cleanup finishes.",
-  });
-  return false;
-}
+export const claimRunAutomationSession = claimAutomationTaskRunSession;
 
 export function accumulateAutomationOutput(
   state: { logTail: string; resumeFailure: string | null },
@@ -280,7 +218,7 @@ async function executeAutomationTaskProcess(
       }
       outputBuffer.push(output.logChunk);
       if (execution.owner) {
-        ownAutomationSession({ ...execution.owner, pid: sessionPid(execution.owner.session) });
+        refreshAutomationSession(execution.owner);
       }
     };
     const child = spawn(execution.command.command, execution.command.args, {
@@ -336,8 +274,6 @@ export async function runAutomationTaskExecution(
       taskRunId: execution.run.taskRunId,
       logPath: execution.logPath,
       ledgerDir,
-      session: execution.session,
-      owner: execution.owner,
     };
     return await finalizeAutomationTaskRun(finalizationContext, result);
   } finally {

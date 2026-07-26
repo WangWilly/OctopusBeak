@@ -43,8 +43,8 @@ export {
 import {
   closeLibrettoSession,
   finalizeAllOwnedAutomationSessions,
-  finalizeOwnedAutomationSession,
 } from "./session-lifecycle.ts";
+import { relinquishAutomationSessionForTask } from "./automation-session-disposition.ts";
 import {
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -245,7 +245,7 @@ export async function cancelAutomationTask(taskId: string) {
   const child = automationTaskChild(taskId);
   if (!child) throw new Error(`Automation task has not started a process yet: ${taskId}`);
   child.kill("SIGTERM");
-  await finalizeOwnedAutomationSession(taskId);
+  await relinquishAutomationSessionForTask(taskId);
   return { cancelled: taskId };
 }
 

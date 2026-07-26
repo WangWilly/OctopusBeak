@@ -1,9 +1,9 @@
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { resumeSessionFromLog } from "./runner.ts";
 import {
   finalizeForceQuitTaskRun,
   type ForceQuitFinalizationDependencies,
 } from "./task-run-finalization.ts";
+import { resumeSessionFromLog } from "./automation-session-disposition.ts";
 import {
   latestTaskRuns,
   type AutomationTaskRun,
@@ -45,8 +45,7 @@ export async function forceQuitHumanSessionForTask(
   try {
     const run = latestTaskRuns(db)[taskId];
     if (!run) throw new Error(`Automation task is not waiting for human input: ${taskId}`);
-    const session = humanSessionFromRun(run, taskId);
-    return await finalizeForceQuitTaskRun(db, run, session, dependencies);
+    return await finalizeForceQuitTaskRun(db, run, dependencies);
   } finally {
     db.close();
   }

@@ -1,21 +1,32 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readSync } from "node:fs";
-import { dirname } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   statementRunSummaryLine,
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
-import { readLibrettoSessionState } from "./libretto-session.ts";
 import {
-  armAutomationSessionTimeout,
-  claimAutomationSessionForCleanup,
-  finalizeExactOwnedAutomationSession,
-  finalizeOwnedAutomationSession,
-  ownAutomationSession,
-  ownedAutomationSession,
+  appendLog,
+  automationSessionOwnerForRun,
+  errorMessage,
+  finalizeAutomationSessionForRun,
+  forceQuitAutomationSessionForRun,
+  armAutomationSessionDispositionTimeout,
+  sessionFromRun,
+  tail,
+  type AutomationSessionCleanupResult,
+  type AutomationSessionDisposition,
+  type ForceQuitFinalizationDependencies,
   type OwnedAutomationSession,
-} from "./session-lifecycle.ts";
+} from "./automation-session-disposition.ts";
+export {
+  appendCleanupError,
+  automationCleanupFailureDetails,
+  automationSessionFromLog,
+  errorMessage,
+  finalizeAutomationSession as finalizeTerminalAutomationSession,
+  resumeSessionFromLog,
+} from "./automation-session-disposition.ts";
+export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
   activeTaskRuns,
   taskRunById,
@@ -24,8 +35,6 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import { taskById, type AutomationTaskKind } from "./tasks.ts";
-
-const SESSION_LOG_PREFIX_BYTES = 4_000;
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -44,15 +53,7 @@ export type AutomationTaskRunFinalizationContext = {
   taskRunId: string;
   logPath: string;
   ledgerDir: string;
-  session: string | null;
-  owner: OwnedAutomationSession | null;
 };
-
-export type ForceQuitFinalizationDependencies = Partial<{
-  readSessionState: typeof readLibrettoSessionState;
-  claimSession: typeof claimAutomationSessionForCleanup;
-  finalizeSession: typeof finalizeExactOwnedAutomationSession;
-}>;
 
 export type AutomationTaskProcessResult = {
   exitCode: number | null;
@@ -64,26 +65,8 @@ export type AutomationTaskProcessResult = {
   outputPersistenceWarnings: string[];
 };
 
-export function appendLog(logPath: string, chunk: string) {
-  mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, chunk);
-}
-
-export function tail(value: string) {
-  return value.slice(-4000);
-}
-
-export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export function shouldRetainAutomationSession(status: AutomationTaskStatus) {
   return status === "waiting_for_human";
-}
-
-export function appendCleanupError(message: string | null, cleanup: string) {
-  const suffix = "Session cleanup failed: " + cleanup;
-  return message ? message + "\n" + suffix : suffix;
 }
 
 export function shouldMarkWaitingForHuman(output: string) {
@@ -124,45 +107,6 @@ export function nextAttemptStatus(input: {
   return "failed";
 }
 
-export function automationCleanupFailureDetails(
-  owner: OwnedAutomationSession,
-  error: unknown,
-) {
-  return {
-    taskRunId: owner.taskRunId,
-    sessionId: owner.session,
-    retainedPid: owner.pid,
-    error: errorMessage(error),
-  };
-}
-
-export async function finalizeTerminalAutomationSession(
-  owner: OwnedAutomationSession,
-  workflowError: string | null,
-  finalize: () => Promise<unknown> = () => finalizeExactOwnedAutomationSession(owner),
-) {
-  try {
-    await finalize();
-    return { errorMessage: workflowError, cleanupFailed: false };
-  } catch (error) {
-    console.error(
-      "automation-session-cleanup-failed",
-      automationCleanupFailureDetails(owner, error),
-    );
-    return {
-      errorMessage: appendCleanupError(workflowError, errorMessage(error)),
-      cleanupFailed: true,
-    };
-  }
-}
-
-type SessionCleanupResult = {
-  errorMessage: string | null;
-  cleanupFailed: boolean;
-};
-
-type AutomationSessionDisposition = "retain" | "relinquish";
-
 type TaskRunFinalizationIntent = {
   status: AutomationTaskStatus;
   sessionDisposition: AutomationSessionDisposition;
@@ -175,9 +119,7 @@ type TaskRunFinalizationIntent = {
 
 type TaskRunFinalizationImplementation = {
   sessionFinalizationLog?: boolean;
-  sessionOwner?: OwnedAutomationSession | null;
-  sessionCleanupMode?: "exact" | "owned";
-  sessionCleanupError?: string | null;
+  sessionCleanup?: AutomationSessionCleanupResult | null;
 };
 
 function isTerminalTaskRunStatus(status: AutomationTaskStatus) {
@@ -203,25 +145,12 @@ async function finalizeTaskRunTransition(
   let status = intent.status;
   let taskError = intent.errorMessage;
   let logTail = intent.logTail;
-  let cleanupResult: SessionCleanupResult | null = null;
-  if (intent.sessionDisposition === "relinquish") {
-    if (implementation.sessionCleanupError) {
-      cleanupResult = {
-        errorMessage: appendCleanupError(taskError, implementation.sessionCleanupError),
-        cleanupFailed: true,
-      };
-    } else if (implementation.sessionOwner) {
-      if (implementation.sessionCleanupMode === "owned") ownAutomationSession(implementation.sessionOwner);
-      cleanupResult = await finalizeTerminalAutomationSession(
-        implementation.sessionOwner,
-        taskError,
-        implementation.sessionCleanupMode === "owned"
-          ? () => finalizeOwnedAutomationSession(implementation.sessionOwner!.taskId)
-          : undefined,
-      );
-    }
-    if (cleanupResult) taskError = cleanupResult.errorMessage;
-    if (cleanupResult?.cleanupFailed && (status === "completed" || status === "partial")) {
+  const cleanupResult = intent.sessionDisposition === "relinquish"
+    ? implementation.sessionCleanup
+    : null;
+  if (cleanupResult) {
+    taskError = cleanupResult.errorMessage;
+    if (cleanupResult.cleanupFailed && (status === "completed" || status === "partial")) {
       status = "failed";
     }
   }
@@ -237,9 +166,9 @@ async function finalizeTaskRunTransition(
     : null;
   const logAppend = implementation.sessionFinalizationLog
     ? "automation-session-finalize: session="
-      + (implementation.sessionOwner?.session ?? "unknown")
-      + " pid=" + (implementation.sessionOwner?.pid ?? "unknown")
-      + " cleanup-error=" + (cleanupResult?.cleanupFailed ? "failed" : implementation.sessionCleanupError ?? "none") + "\n"
+      + (cleanupResult?.session ?? "unknown")
+      + " pid=" + (cleanupResult?.pid ?? "unknown")
+      + " cleanup-error=" + (cleanupResult?.cleanupFailed ? "failed" : "none") + "\n"
     : summaryLine
       ? `\n${summaryLine}\n`
       : null;
@@ -264,132 +193,56 @@ async function finalizeTaskRunTransition(
   return { status, skipped: false };
 }
 
-export function sessionPid(session: string) {
-  try {
-    return readLibrettoSessionState(session)?.pid ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export function sessionFromRun(run: AutomationTaskRun) {
-  try {
-    const buffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
-    const descriptor = openSync(run.logPath, "r");
-    let length: number;
-    try {
-      length = readSync(descriptor, buffer, 0, SESSION_LOG_PREFIX_BYTES, 0);
-    } finally {
-      closeSync(descriptor);
-    }
-    const output = buffer.toString("utf8", 0, length);
-    const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
-    if (session) return session;
-  } catch {
-    // The bounded log tail remains the recovery source when the log file is unavailable.
-  }
-  return automationSessionFromLog(run.logTail) ?? resumeSessionFromLog(run.logTail);
-}
-
-export function automationSessionFromLog(output: string) {
-  return output.match(/automation-session:\s+([A-Za-z0-9._-]+)/i)?.[1] ?? null;
-}
-
-export function resumeSessionFromLog(output: string) {
-  return output.match(/libretto resume --session\s+([\w-]+)/i)?.[1] ?? null;
-}
-
 export async function finalizePersistedRun(
   db: ReturnType<typeof openLedgerDatabase>,
   run: AutomationTaskRun,
   reason: string,
 ) {
-  const session = sessionFromRun(run);
-  const pid = session ? sessionPid(session) : null;
-  const owner = session
-    ? { taskId: run.taskId, taskRunId: run.taskRunId, session, pid }
-    : null;
-  const result = await finalizeTaskRunTransition(db, run, {
+  const current = taskRunById(db, run.taskRunId);
+  if (!current || isTerminalTaskRunStatus(current.status)) return;
+  const sessionCleanup = await finalizeAutomationSessionForRun(
+    current,
+    current.errorMessage ?? reason,
+    "recovery",
+  );
+  await finalizeTaskRunTransition(db, run, {
     status: "failed",
     sessionDisposition: "relinquish",
     exitCode: null,
     signal: null,
-    errorMessage: run.errorMessage ?? reason,
-    logTail: run.logTail,
+    errorMessage: null,
+    logTail: current.logTail,
   }, {
     sessionFinalizationLog: true,
-    sessionOwner: owner,
-    sessionCleanupMode: "owned",
-    sessionCleanupError: owner ? null : "Missing Libretto session identity",
+    sessionCleanup,
   });
 }
 
 export async function finalizeForceQuitTaskRun(
   db: ReturnType<typeof openLedgerDatabase>,
   run: AutomationTaskRun,
-  session: string,
   dependencies: ForceQuitFinalizationDependencies = {},
 ) {
   const current = taskRunById(db, run.taskRunId);
   if (!current || current.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${run.taskId}`);
   }
-
-  const deps = {
-    readSessionState: readLibrettoSessionState,
-    claimSession: claimAutomationSessionForCleanup,
-    finalizeSession: finalizeExactOwnedAutomationSession,
-    ...dependencies,
-  };
-  let owner: OwnedAutomationSession = {
-    taskId: run.taskId,
-    taskRunId: run.taskRunId,
-    session,
-    pid: null,
-  };
-  let cleanupFailure: unknown = null;
-  const workflowError = "Browser session force quit.";
-  let taskError = workflowError;
-  try {
-    owner = {
-      ...owner,
-      pid: deps.readSessionState(session)?.pid ?? null,
-    };
-    if (!deps.claimSession(owner)) {
-      throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
-    }
-    let finalizeFailure: unknown = null;
-    const cleanupResult = await finalizeTerminalAutomationSession(
-      owner,
-      workflowError,
-      async () => {
-        try {
-          if (!await deps.finalizeSession(owner)) {
-            throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
-          }
-        } catch (error) {
-          finalizeFailure = error;
-          throw error;
-        }
-      },
-    );
-    cleanupFailure = finalizeFailure;
-    taskError = cleanupResult.errorMessage ?? workflowError;
-  } catch (error) {
-    cleanupFailure = error;
-    taskError = appendCleanupError(workflowError, errorMessage(error));
-  }
-
+  const { operationalError, ...sessionCleanup } = await forceQuitAutomationSessionForRun(
+    run,
+    dependencies,
+  );
   await finalizeTaskRunTransition(db, run, {
     status: "failed",
     sessionDisposition: "relinquish",
     exitCode: null,
     signal: null,
-    errorMessage: taskError,
+    errorMessage: null,
     logTail: run.logTail,
+  }, {
+    sessionCleanup,
   });
-  if (cleanupFailure) throw cleanupFailure;
-  return { session };
+  if (operationalError) throw operationalError;
+  return { session: sessionCleanup.session };
 }
 
 export async function finalizePersistedActiveRuns(
@@ -416,28 +269,27 @@ export async function finalizePersistedActiveRuns(
 function scheduleAutomationTaskRunTimeout(
   context: AutomationTaskRunFinalizationContext,
 ) {
-  if (!context.session) return;
-  const timeoutOwner = context.owner ?? {
-    taskId: context.taskId,
-    taskRunId: context.taskRunId,
-    session: context.session,
-    pid: sessionPid(context.session),
-  };
-  armAutomationSessionTimeout(context.taskId, async () => {
+  const initialRun = taskRunById(context.taskDb, context.taskRunId);
+  if (!initialRun || !sessionFromRun(initialRun)) return;
+  armAutomationSessionDispositionTimeout(context.taskId, async () => {
     const timeoutDb = openLedgerDatabase(context.ledgerDir);
     try {
       const run = taskRunById(timeoutDb, context.taskRunId);
       if (!run || run.status !== "waiting_for_human") return;
+      const sessionCleanup = await finalizeAutomationSessionForRun(
+        run,
+        "等待人工操作超過 20 分鐘",
+        "exact",
+      );
       await finalizeTaskRunTransition(timeoutDb, run, {
         status: "failed",
         sessionDisposition: "relinquish",
         exitCode: null,
         signal: null,
-        errorMessage: "等待人工操作超過 20 分鐘",
+        errorMessage: null,
         logTail: run.logTail,
       }, {
-        sessionOwner: timeoutOwner,
-        sessionCleanupMode: "exact",
+        sessionCleanup,
       });
     } catch (error) {
       console.error("automation-session-timeout-failed", error);
@@ -472,14 +324,18 @@ export async function finalizeAutomationTaskRun(
     ?? resumeFailure
     ?? (status === "failed" ? statementFailure || finalFailureMessage(result.logTail, result.exitCode) : null);
   taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
-  if (isForceQuitRun(taskRunById(context.taskDb, context.taskRunId))) return { status: "failed" as const };
+  const currentRun = taskRunById(context.taskDb, context.taskRunId);
+  if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
+  if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
+  if (isForceQuitRun(currentRun)) return { status: "failed" as const };
   let logTail = result.logTail;
   if (result.statementSummary) {
     logTail = tail(`${logTail}\n${statementRunSummaryLine(result.statementSummary.results)}\n`);
   }
   const sessionDisposition = shouldRetainAutomationSession(status) ? "retain" : "relinquish";
-  const owner = context.owner && sessionDisposition === "relinquish"
-    ? ownedAutomationSession(context.taskId) ?? context.owner
+  const sessionCleanup = sessionDisposition === "relinquish" && currentRun
+    && automationSessionOwnerForRun(currentRun)
+    ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
     : null;
   const transition = await finalizeTaskRunTransition(context.taskDb, {
     taskRunId: context.taskRunId,
@@ -493,10 +349,9 @@ export async function finalizeAutomationTaskRun(
     logTail,
     statementSummary: result.statementSummary,
   }, {
-    sessionOwner: owner,
-    sessionCleanupMode: "exact",
+    sessionCleanup,
   });
-  if (!transition.skipped && context.session && sessionDisposition === "retain") {
+  if (!transition.skipped && sessionDisposition === "retain") {
     scheduleAutomationTaskRunTimeout(context);
   }
   return { status: transition.status };
