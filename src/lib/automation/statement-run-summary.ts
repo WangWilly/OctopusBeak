@@ -22,14 +22,7 @@ export function aggregateStatementResults(results: readonly StatementComponentRe
 }
 
 export function statementRunSummaryLine(results: readonly StatementComponentResult[]) {
-  const boundedResults = results.map((result) => (
-    result.error && result.error.length > STATEMENT_RUN_ERROR_MAX_LENGTH
-      ? {
-          ...result,
-          error: `${result.error.slice(0, STATEMENT_RUN_ERROR_MAX_LENGTH - 3)}...`,
-        }
-      : result
-  ));
+  const boundedResults = boundStatementErrors(results);
   return STATEMENT_RUN_SUMMARY_PREFIX + JSON.stringify({
     status: aggregateStatementResults(boundedResults),
     results: boundedResults,
@@ -48,20 +41,42 @@ function isStatementComponentResult(value: unknown): value is StatementComponent
 
 export function parseStatementRunSummary(text: string): StatementRunSummary | null {
   for (const line of text.split(/\r?\n/).toReversed()) {
-    if (!line.startsWith(STATEMENT_RUN_SUMMARY_PREFIX)) continue;
-    try {
-      const value = JSON.parse(line.slice(STATEMENT_RUN_SUMMARY_PREFIX.length)) as Record<string, unknown>;
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.results)) {
-        continue;
-      }
-      if (!["completed", "partial", "failed"].includes(String(value.status))) continue;
-      if (!value.results.every(isStatementComponentResult)) continue;
-      const results = value.results;
-      if (value.status !== aggregateStatementResults(results)) continue;
-      return { status: value.status as StatementRunSummary["status"], results };
-    } catch {
-      continue;
-    }
+    const summary = parseStatementRunSummaryLine(line);
+    if (summary) return summary;
   }
   return null;
+}
+
+function boundStatementErrors(results: readonly StatementComponentResult[]) {
+  return results.map((result) => (
+    result.error && result.error.length > STATEMENT_RUN_ERROR_MAX_LENGTH
+      ? {
+          ...result,
+          error: `${result.error.slice(0, STATEMENT_RUN_ERROR_MAX_LENGTH - 3)}...`,
+        }
+      : result
+  ));
+}
+
+function parseStatementRunSummaryLine(line: string): StatementRunSummary | null {
+  if (!line.startsWith(STATEMENT_RUN_SUMMARY_PREFIX)) return null;
+  try {
+    return parseStatementRunSummaryValue(
+      JSON.parse(line.slice(STATEMENT_RUN_SUMMARY_PREFIX.length)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function parseStatementRunSummaryValue(value: unknown): StatementRunSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.results)) return null;
+  const status = String(record.status);
+  if (!["completed", "partial", "failed"].includes(status)) return null;
+  if (!record.results.every(isStatementComponentResult)) return null;
+  const results = record.results;
+  if (status !== aggregateStatementResults(results)) return null;
+  return { status: status as StatementRunSummary["status"], results };
 }
