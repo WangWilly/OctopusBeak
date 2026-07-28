@@ -121,7 +121,9 @@ function cleanText(value: string | null | undefined): string {
 export function isNoStatementDataText(
   value: string | null | undefined,
 ): boolean {
-  return /查無資料|無資料|無交易|查無符合/.test(cleanText(value));
+  return /查\s*無\s*資\s*料|無\s*資\s*料|無\s*交\s*易|查\s*無\s*符\s*合/u.test(
+    cleanText(value),
+  );
 }
 
 function digitsOnly(value: string): string {
@@ -514,6 +516,22 @@ export async function ensureHncbStatementForm(
   });
 }
 
+export async function prepareHncbStatementQueryForm(
+  mainFrame: Frame,
+): Promise<void> {
+  await mainFrame
+    .locator('form[name="form1"]')
+    .first()
+    .evaluate((element) => {
+      const form = element as HTMLFormElement;
+      form.target = "_self";
+      const excelDownload = form.elements.namedItem("excel_download");
+      if (excelDownload instanceof HTMLInputElement) {
+        excelDownload.value = "";
+      }
+    });
+}
+
 function statementDownloadLink(mainFrame: Frame): Locator {
   return mainFrame
     .locator(
@@ -588,6 +606,7 @@ async function queryAccountStatements(
   dateRange: WorkflowOutput["dateRange"],
 ): Promise<Frame | null> {
   const mainFrame = await ensureHncbStatementForm(page);
+  await prepareHncbStatementQueryForm(mainFrame);
   await mainFrame.locator("#acct1").selectOption(account.value);
   await mainFrame.locator('input[name="inqtype"][value="3"]').check({
     force: true,
