@@ -1,9 +1,38 @@
 import assert from "node:assert/strict";
-import type { Frame, Page } from "playwright";
+import { chromium, type Frame, type Page } from "playwright";
 import {
   ensureHncbStatementForm,
+  isNoStatementDataText,
   normalizeHncbTransactionRows,
+  prepareHncbStatementQueryForm,
 } from "./hncb-statements.ts";
+
+const browser = await chromium.launch();
+try {
+  const browserPage = await browser.newPage();
+  await browserPage.setContent(`
+    <form name="form1" target="acct">
+      <input type="hidden" name="excel_download" value="52">
+    </form>
+  `);
+
+  await prepareHncbStatementQueryForm(browserPage.mainFrame());
+
+  const form = browserPage.locator('form[name="form1"]');
+  assert.equal(await form.getAttribute("target"), "_self");
+  assert.equal(
+    await form.locator('input[name="excel_download"]').inputValue(),
+    "",
+  );
+} finally {
+  await browser.close();
+}
+
+assert.equal(
+  isNoStatementDataText("查     無     資     料"),
+  true,
+  "a spaced HNCB no-data result must finish instead of timing out",
+);
 
 const normalizedRows = normalizeHncbTransactionRows([
   ["交易日期", "交易時間", "帳務日期"],
