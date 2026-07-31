@@ -16,19 +16,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 25
           cache: npm
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Check package lock
         run: npm run check:package-lock
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Check pinned GitHub Actions
+        run: npm run check:actions-pinned
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
@@ -50,7 +53,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-reports
           path: |

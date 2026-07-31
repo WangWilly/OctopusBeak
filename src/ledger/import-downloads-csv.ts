@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import XLSX from "xlsx";
 import { z } from "zod";
+import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import {
   ledgerSqlitePath,
   openLedgerDatabase,
@@ -1087,34 +1087,26 @@ function firstRowCsvLayout(matrix: unknown[][]): CsvLayout {
   };
 }
 
-function parseCsvRows(csvText: string): ParsedCsv {
-  const workbook = XLSX.read(csvText, { raw: true, type: "string" });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
+export function parseCsvRows(csvText: string): ParsedCsv {
+  const sourceSheetName = "Sheet1";
+  const matrix = parseCsvMatrix(csvText);
+  if (matrix.length === 0) {
     return {
-      sourceSheetName: null,
-      csvLayout: emptyCsvLayout(["CSV workbook has no worksheets."]),
+      sourceSheetName,
+      csvLayout: emptyCsvLayout(["CSV has no rows."]),
       headers: [],
       recordKeys: [],
       rows: [],
     };
   }
 
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(
-    workbook.Sheets[sheetName],
-    {
-      defval: "",
-      header: 1,
-      raw: true,
-    },
-  );
   const csvLayout = firstRowCsvLayout(matrix);
   if (
     csvLayout.headerRowIndex === null ||
     csvLayout.dataStartRowIndex === null
   ) {
     return {
-      sourceSheetName: sheetName,
+      sourceSheetName,
       csvLayout,
       headers: [],
       recordKeys: [],
@@ -1140,7 +1132,7 @@ function parseCsvRows(csvText: string): ParsedCsv {
   }
 
   return {
-    sourceSheetName: sheetName,
+    sourceSheetName,
     csvLayout,
     headers,
     recordKeys,

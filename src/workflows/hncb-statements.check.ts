@@ -4,8 +4,75 @@ import {
   ensureHncbStatementForm,
   isNoStatementDataText,
   normalizeHncbTransactionRows,
+  parseStatementExport,
   prepareHncbStatementQueryForm,
 } from "./hncb-statements.ts";
+
+const parsedStatement = parseStatementExport(
+  `
+    <html><body><table>
+      <tr><td>帳號</td><td>123-456</td></tr>
+      <tr><td>資料起訖日</td><td>2025/01/01-2025/01/31</td></tr>
+      <tr><td>幣別</td><td>TWD</td></tr>
+      <tr>
+        <td>交易日期</td><td>交易時間</td><td>帳務日期</td><td>幣別</td>
+        <td>支出金額</td><td>存入金額</td><td>即時餘額</td><td>摘要</td>
+        <td>存款人代號</td><td>備註</td><td>補摺日期/票據號碼</td>
+      </tr>
+      <tr>
+        <td>0114/01/02</td><td>08:30:00</td><td>0114/01/02</td><td>TWD</td>
+        <td>100</td><td></td><td>900</td><td>手續費&nbsp;測試</td>
+        <td></td><td>A&amp;B</td><td></td>
+      </tr>
+    </table></body></html>
+  `,
+  "fallback",
+);
+assert.equal(parsedStatement.account, "123-456");
+assert.equal(parsedStatement.accountId, "123456");
+assert.equal(parsedStatement.queryPeriod, "2025/01/01-2025/01/31");
+assert.equal(parsedStatement.currency, "TWD");
+assert.deepEqual(parsedStatement.rows, [
+  [
+    "2025/01/02",
+    "08:30:00",
+    "2025/01/02",
+    "TWD",
+    "100",
+    "",
+    "900",
+    "手續費 測試",
+    "",
+    "A&B",
+    "",
+  ],
+]);
+assert.throws(
+  () => parseStatementExport("x".repeat(16 * 1024 * 1024 + 1), "fallback"),
+  /16 MiB safety limit/,
+);
+
+const browserCompatibleStatement = parseStatementExport(
+  `<table>
+    <tr><td data-note="1 > 0">帳號<td>789-012
+    <tr><td>資料起訖日<td>2025/02/01-2025/02/28
+    <tr><td>幣別<td>TWD
+    <tr><td>交易日期<td>交易時間<td>帳務日期<td>幣別<td>支出金額<td>存入金額<td>即時餘額<td>摘要<td>存款人代號<td>備註<td>補摺日期/票據號碼
+    <tr><td>0114/02/03<td>09:00:00<td>0114/02/03<td>TWD<td><td>250<td>1250<td>入帳<td><td><td>
+  </table>`,
+  "fallback",
+);
+assert.equal(browserCompatibleStatement.account, "789-012");
+assert.deepEqual(browserCompatibleStatement.rows[0]?.slice(0, 8), [
+  "2025/02/03",
+  "09:00:00",
+  "2025/02/03",
+  "TWD",
+  "",
+  "250",
+  "1250",
+  "入帳",
+]);
 
 const browser = await chromium.launch();
 try {

@@ -24,6 +24,7 @@
     "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
+    "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
     "libretto:status": "libretto status",
@@ -64,8 +65,8 @@
   "dependencies": {
     "drizzle-orm": "^0.45.2",
     "libretto": "^0.6.31",
+    "parse5": "^8.0.1",
     "playwright": "^1.61.0",
-    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -81,6 +82,7 @@
     "svelte": "^5.56.4",
     "svelte-check": "^4.7.1",
     "typescript": "^5.9.0",
-    "vite": "^8.1.0"
+    "vite": "^8.1.0",
+    "yaml": "^2.9.0"
   }
 }

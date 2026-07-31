@@ -3,7 +3,31 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "./db/client.ts";
-import { importDownloadsCsv, insertRecord } from "./import-downloads-csv.ts";
+import {
+  importDownloadsCsv,
+  insertRecord,
+  parseCsvRows,
+} from "./import-downloads-csv.ts";
+
+const parsedQuotedCsv = parseCsvRows(
+  '\uFEFFname,note,empty\n"Alpha","line 1\nline 2",\n',
+);
+assert.equal(parsedQuotedCsv.sourceSheetName, "Sheet1");
+assert.deepEqual(parsedQuotedCsv.headers, ["name", "note", "empty"]);
+assert.deepEqual(parsedQuotedCsv.rows, [
+  {
+    sourceRowIndex: 2,
+    rawPayload: {
+      name: "Alpha",
+      note: "line 1\nline 2",
+      empty: "",
+    },
+  },
+]);
+assert.throws(
+  () => parseCsvRows("x".repeat(16 * 1024 * 1024 + 1)),
+  /16 MiB safety limit/,
+);
 
 const rootDir = await mkdtemp(join(tmpdir(), "einvoice-import-"));
 const downloadsDir = join(rootDir, "downloads");

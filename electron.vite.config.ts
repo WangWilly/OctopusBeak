@@ -8,7 +8,6 @@ const external = [
   /^drizzle-orm/,
   /^libretto/,
   /^playwright/,
-  /^xlsx/,
   /^zod/,
   /^@ai-sdk\/openai/,
 ];

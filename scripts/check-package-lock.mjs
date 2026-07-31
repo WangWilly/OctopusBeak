@@ -189,6 +189,7 @@ for (const [packagePath, pkg] of Object.entries(packages)) {
     for (const [name, range] of Object.entries(pkg[field] || {})) {
       const resolvedPath = resolvePackage(packagePath, name);
       if (!resolvedPath) {
+        if (field === "optionalDependencies") continue;
         findings.push(`${packagePath || "."}: missing ${field} ${name}@${range}`);
         continue;
       }

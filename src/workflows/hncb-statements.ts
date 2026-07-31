@@ -8,8 +8,8 @@ import {
   type LibrettoWorkflowContext,
 } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
-import XLSX from "xlsx";
 import { z } from "zod";
+import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -224,15 +224,8 @@ function metadataValue(rows: string[][], label: string): string {
 }
 
 function workbookSheetsFromHtml(content: string): string[][][] {
-  const workbook = XLSX.read(content, { type: "string" });
-  return workbook.SheetNames.map((sheetName) =>
-    XLSX.utils
-      .sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
-        header: 1,
-        raw: false,
-        blankrows: false,
-      })
-      .map((row) => row.map((cell) => cleanText(String(cell ?? "")))),
+  return parseHtmlTableMatrices(content).map((rows) =>
+    rows.map((row) => row.map((cell) => cleanText(cell)))
   );
 }
 
@@ -281,7 +274,7 @@ export function normalizeHncbTransactionRows(rows: string[][]): string[][] {
     .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
 }
 
-function parseStatementExport(
+export function parseStatementExport(
   content: string,
   fallbackAccount: string,
 ): ParsedStatement {
