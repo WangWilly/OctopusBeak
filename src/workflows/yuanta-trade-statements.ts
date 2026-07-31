@@ -86,6 +86,7 @@ const outputSchema = z.object({
   holdingPageCount: z.number().int().nonnegative(),
   holdingGridCount: z.number().int().nonnegative(),
   holdingRowCount: z.number().int().nonnegative(),
+  holdingCaptureComplete: z.boolean(),
   tradePageCount: z.number().int().nonnegative(),
   tradeGridCount: z.number().int().nonnegative(),
   tradeRowCount: z.number().int().nonnegative(),
@@ -732,6 +733,33 @@ function gridCount(pages: ReportPage[]): number {
   return pages.reduce((total, page) => total + page.grids.length, 0);
 }
 
+type HoldingCaptureEvidence = Pick<
+  ReportPage,
+  "reportType" | "url" | "currentAssetType" | "summaryRows" | "grids"
+>;
+
+export function isCompleteHoldingCapture(
+  pages: HoldingCaptureEvidence[],
+  requestedTypes: readonly string[],
+): boolean {
+  if (requestedTypes.length === 0 || pages.length !== requestedTypes.length) {
+    return false;
+  }
+  const pagesByType = new Map(pages.map((page) => [page.reportType, page]));
+  return requestedTypes.every((reportType) => {
+    const page = pagesByType.get(reportType);
+    if (!page || page.currentAssetType !== reportType) return false;
+    let routeName = "";
+    try {
+      routeName = new URL(page.url).pathname.split("/").filter(Boolean).at(-1) ?? "";
+    } catch {
+      return false;
+    }
+    const hasParsedReportStructure = page.grids.length > 0 || page.summaryRows.length > 0;
+    return routeName === reportType && hasParsedReportStructure;
+  });
+}
+
 function normalizeTradeRows(
   pages: ReportPage[],
   dateRange: { startDate: string; endDate: string },
@@ -1023,6 +1051,7 @@ async function writeResultsFiles(
   outputDir: string,
   result: {
     holdings: CsvRow[];
+    holdingsCaptureComplete: boolean;
     trades: CsvRow[];
     summaries: CsvRow[];
   },
@@ -1040,7 +1069,7 @@ async function writeResultsFiles(
     );
   }
 
-  if (result.holdings.length > 0) {
+  if (result.holdingsCaptureComplete) {
     files.push(
       await writeTableWithMetadata(
         outputDir,
@@ -1173,8 +1202,18 @@ export default workflow("yuantaTradeStatements", {
     const tradeRows = normalizeTradeRows(trades, dateRange);
     const holdingRows = normalizeHoldingRows(holdings, dateRange);
     const summaryRows = normalizeSummaryRows([...holdings, ...trades], dateRange);
+    const holdingCaptureComplete = input.includeHoldings && isCompleteHoldingCapture(
+      holdings,
+      input.holdingTypes,
+    );
+    if (input.includeHoldings && !holdingCaptureComplete) {
+      console.warn(
+        "Holding capture was incomplete; preserving the previous authoritative snapshot.",
+      );
+    }
     const files = await writeResultsFiles(input.outputDir, {
       holdings: holdingRows,
+      holdingsCaptureComplete: holdingCaptureComplete,
       trades: tradeRows,
       summaries: summaryRows,
     });
@@ -1186,6 +1225,7 @@ export default workflow("yuantaTradeStatements", {
       holdingPageCount: holdings.length,
       holdingGridCount: gridCount(holdings),
       holdingRowCount: holdingRows.length,
+      holdingCaptureComplete,
       tradePageCount: trades.length,
       tradeGridCount: gridCount(trades),
       tradeRowCount: tradeRows.length,

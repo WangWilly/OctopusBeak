@@ -6,6 +6,7 @@ import {
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
 import { historyPointKey, type AccountRowDto, type CurrencyAmountDto, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
+import { sourceImportScopeKey } from "../../shared-ledger/server/source-import-scope.ts";
 
 export function buildDailyHistory(data: LedgerQueryData): DailyHistoryRowDto[] {
   const rows = dailyHistoryPoints(data);
@@ -120,23 +121,26 @@ function snapshotData(data: LedgerQueryData, point: HistoryPoint): LedgerQueryDa
     creditCardCaptures,
     creditCardCaptureEntries,
   }).filter((snapshot) => snapshot.asOfDate <= point.date);
-  const sourceFileIds = new Set(
-    data.sourceFiles
-      .filter((source) => sourceFileDate(source) <= point.date)
-      .map((source) => source.sourceFileId),
-  );
+  const sourceFiles = data.sourceFiles
+    .filter((source) => sourceFileDate(source) <= point.date);
+  const sourceScopes = new Set(sourceFiles.map(
+    sourceImportScopeKey,
+  ));
+  const isVisibleAtPoint = (row: { sourceFileId: string; importRunId: string }) =>
+    sourceScopes.has(sourceImportScopeKey(row));
   return {
     ...data,
-    sourceFiles: data.sourceFiles.filter((source) => sourceFileIds.has(source.sourceFileId)),
-    accountTransactions: data.accountTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    creditCardStatementLines: data.creditCardStatementLines.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    sourceFiles,
+    sourceRowLineage: data.sourceRowLineage.filter(isVisibleAtPoint),
+    accountTransactions: data.accountTransactions.filter(isVisibleAtPoint),
+    foreignCurrencyTransactions: data.foreignCurrencyTransactions.filter(isVisibleAtPoint),
+    creditCardStatementLines: data.creditCardStatementLines.filter(isVisibleAtPoint),
     creditCardCaptures,
     creditCardCaptureEntries,
     creditCardSnapshots,
-    loanTransactions: data.loanTransactions.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    fundHoldings: data.fundHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
-    brokerageHoldings: data.brokerageHoldings.filter((row) => sourceFileIds.has(row.sourceFileId)),
+    loanTransactions: data.loanTransactions.filter(isVisibleAtPoint),
+    fundHoldings: data.fundHoldings.filter(isVisibleAtPoint),
+    brokerageHoldings: data.brokerageHoldings.filter(isVisibleAtPoint),
     maicoinAccountSnapshots: data.maicoinAccountSnapshots.filter((row) => row.capturedAt.slice(0, 10) <= point.date),
   };
 }

@@ -4,6 +4,7 @@ import type { Page } from "playwright";
 import {
   dismissPasswordChangeReminderIfPresent,
   fillTradeLoginForm,
+  isCompleteHoldingCapture,
 } from "./yuanta-trade-statements.ts";
 
 function fakePage(reminderVisible: boolean | Error) {
@@ -85,4 +86,35 @@ test("removes focus from the YuanTa password field after filling credentials", a
     "fill:#loginPWD:password",
     "blur:#loginPWD",
   ]);
+});
+
+const completeHoldingPage = {
+  reportType: "Stock",
+  url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
+  currentAssetType: "Stock",
+  summaryRows: [],
+  grids: [{
+    gridId: "gridStock",
+    category: "Stock",
+    columns: [],
+    rows: [],
+  }],
+};
+
+test("accepts a verified empty YuanTa holdings page as authoritative", () => {
+  assert.equal(isCompleteHoldingCapture([completeHoldingPage], ["Stock"]), true);
+});
+
+test("rejects an empty YuanTa extraction without report structure", () => {
+  assert.equal(isCompleteHoldingCapture(
+    [{ ...completeHoldingPage, grids: [] }],
+    ["Stock"],
+  ), false);
+});
+
+test("rejects a partial YuanTa holdings capture", () => {
+  assert.equal(isCompleteHoldingCapture(
+    [completeHoldingPage],
+    ["Stock", "Bond"],
+  ), false);
 });

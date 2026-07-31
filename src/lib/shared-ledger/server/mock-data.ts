@@ -1,4 +1,5 @@
 import type { LedgerQueryData } from "./accounts.ts";
+import { sourceImportScopeKey } from "./source-import-scope.ts";
 
 type LedgerRow<K extends keyof LedgerQueryData> = LedgerQueryData[K][number];
 
@@ -34,6 +35,7 @@ export function mockLedgerQueryData(referenceDate = new Date()): LedgerQueryData
   return shiftTemplateDates({
     importRuns,
     sourceFiles,
+    sourceRowLineage: mockPositionSourceRowLineage(),
     accountTransactions,
     foreignCurrencyTransactions,
     creditCardStatementLines,
@@ -51,6 +53,26 @@ export function mockLedgerQueryData(referenceDate = new Date()): LedgerQueryData
     maicoinAccountSnapshots,
     maicoinStatementRows,
   }, referenceDate);
+}
+
+function mockPositionSourceRowLineage(): LedgerQueryData["sourceRowLineage"] {
+  const versionByScope = new Map(sourceFiles.map((source) => [
+    sourceImportScopeKey(source),
+    source.sourceVersionKey,
+  ]));
+  return [
+    ...fundHoldings.map((row) => ({ row, projectionTable: "fund_holdings" })),
+    ...brokerageHoldings.map((row) => ({ row, projectionTable: "brokerage_holdings" })),
+  ].map(({ row, projectionTable }) => ({
+    sourceFileId: row.sourceFileId,
+    importRunId: row.importRunId,
+    sourceVersionKey: versionByScope.get(sourceImportScopeKey(row)) ?? "",
+    sourceRowIndex: row.sourceRowIndex,
+    projectionTable,
+    statementRowId: row.statementRowId,
+    outcome: "inserted",
+    createdAt: row.importedAt,
+  }));
 }
 
 const TEMPLATE_LATEST_DATE = Date.UTC(2026, 5, 28);

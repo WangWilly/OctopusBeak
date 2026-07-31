@@ -23,6 +23,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
   try {
     const [
       sourceFiles,
+      sourceRowLineage,
       accountTransactions,
       foreignCurrencyTransactions,
       creditCardStatementLines,
@@ -36,6 +37,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
       maicoinStatementRows,
     ] = await Promise.all([
       db.select().from(schema.sourceFileImports).all(),
+      db.select().from(schema.sourceRowLineage).all(),
       db.select().from(schema.accountTransactions).all(),
       db.select().from(schema.foreignCurrencyTransactions).all(),
       db.select().from(schema.creditCardStatementLines).all(),
@@ -52,6 +54,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
     const data: LedgerQueryData = {
       ...emptyLedgerQueryData(),
       sourceFiles,
+      sourceRowLineage,
       accountTransactions,
       foreignCurrencyTransactions,
       creditCardStatementLines,
