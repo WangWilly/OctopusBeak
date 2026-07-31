@@ -18,7 +18,9 @@ import type {
   maicoinAccountSnapshots,
   maicoinStatementRows,
   sourceFileImports,
+  sourceRowLineage,
 } from "../../../ledger/db/schema.ts";
+import { latestPositionSnapshotRows } from "./position-snapshots.ts";
 import type {
   AccountGroup,
   AccountKind,
@@ -47,6 +49,7 @@ type MaicoinAccountSnapshot = typeof maicoinAccountSnapshots.$inferSelect;
 type MaicoinStatementRow = typeof maicoinStatementRows.$inferSelect;
 type ImportRun = typeof importRuns.$inferSelect;
 type SourceFile = typeof sourceFileImports.$inferSelect;
+type SourceRowLineage = typeof sourceRowLineage.$inferSelect;
 
 type CommonRow = {
   bank: string;
@@ -58,6 +61,7 @@ type CommonRow = {
 export type LedgerQueryData = {
   importRuns: ImportRun[];
   sourceFiles: SourceFile[];
+  sourceRowLineage: SourceRowLineage[];
   accountTransactions: AccountTransaction[];
   foreignCurrencyTransactions: ForeignCurrencyTransaction[];
   creditCardStatementLines: CreditCardStatementLine[];
@@ -93,6 +97,7 @@ export function emptyLedgerQueryData(): LedgerQueryData {
   return {
     importRuns: [],
     sourceFiles: [],
+    sourceRowLineage: [],
     accountTransactions: [],
     foreignCurrencyTransactions: [],
     creditCardStatementLines: [],
@@ -191,8 +196,18 @@ export function buildRawPositions(data: LedgerQueryData): RawPosition[] {
       latestVerifiedCreditCardRows(data),
     ),
     ...loanPositions(data.loanTransactions),
-    ...fundPositions(data.fundHoldings),
-    ...brokeragePositions(data.brokerageHoldings),
+    ...fundPositions(latestPositionSnapshotRows(
+      data.fundHoldings,
+      data.sourceFiles,
+      data.sourceRowLineage,
+      "fund_holdings",
+    )),
+    ...brokeragePositions(latestPositionSnapshotRows(
+      data.brokerageHoldings,
+      data.sourceFiles,
+      data.sourceRowLineage,
+      "brokerage_holdings",
+    )),
     ...maicoinPositions(data.maicoinAccountSnapshots, data.maicoinStatementRows),
   ];
 }

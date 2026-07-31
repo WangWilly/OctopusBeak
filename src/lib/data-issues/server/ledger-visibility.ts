@@ -7,8 +7,12 @@ import {
   type UnavailableAccountIssue,
   unavailableAccountFromIssue,
 } from "../../shared-ledger/server/accounts.ts";
+import {
+  sourceImportScopeKey,
+  type SourceImportScope,
+} from "../../shared-ledger/server/source-import-scope.ts";
 
-export type ImportScope = `${string}|${string}`;
+export type ImportScope = SourceImportScope;
 
 export type ActiveLedgerSupport = {
   statementKeys: ReadonlySet<string>;
@@ -19,9 +23,7 @@ export type ActiveLedgerSupport = {
 export const statementSupportKey = (table: string, statementRowId: string) =>
   `${table}|${statementRowId}`;
 
-export function importScope(row: { sourceFileId: string; importRunId: string }): ImportScope {
-  return `${row.sourceFileId}|${row.importRunId}`;
-}
+export const importScope = sourceImportScopeKey;
 
 function completeCaptureIds(
   captures: LedgerQueryData["creditCardCaptures"],
@@ -74,6 +76,7 @@ function filterLedgerData(
   return {
     ...data,
     sourceFiles: visible(data.sourceFiles),
+    sourceRowLineage: visible(data.sourceRowLineage),
     accountTransactions: visible(data.accountTransactions),
     foreignCurrencyTransactions: visible(data.foreignCurrencyTransactions),
     creditCardStatementLines,
@@ -137,6 +140,8 @@ export function applyLedgerVisibility(
   return {
     ...data,
     sourceFiles: data.sourceFiles.filter((row) => support.sourceVersionKeys.has(row.sourceVersionKey)),
+    sourceRowLineage: data.sourceRowLineage
+      .filter((row) => support.sourceVersionKeys.has(row.sourceVersionKey)),
     accountTransactions: visible(data.accountTransactions, PROJECTIONS.accountTransactions),
     foreignCurrencyTransactions: visible(
       data.foreignCurrencyTransactions,
