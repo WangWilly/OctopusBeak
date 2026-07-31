@@ -19,16 +19,7 @@
   <link rel="alternate" hreflang="zh-Hant" href="https://wangwilly.github.io/OctopusBeak/" />
   <link rel="alternate" hreflang="en" href="https://wangwilly.github.io/OctopusBeak/?lang=en" />
   <link rel="alternate" hreflang="x-default" href="https://wangwilly.github.io/OctopusBeak/" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=Noto+Serif+TC:wght@600;700;800&display=swap"
-    rel="stylesheet"
-  />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0"
-    rel="stylesheet"
-  />
+  <link rel="stylesheet" href="assets/fonts/fonts.css" />
   <meta property="og:title" content="OctopusBeak｜銀行、信用卡與投資帳戶，一次看懂" />
   <meta
     property="og:description"
@@ -159,20 +150,11 @@
       outline-offset: 4px;
     }
 
-    .material-symbols-rounded {
-      font-family: "Material Symbols Rounded";
-      font-size: 22px;
-      font-weight: normal;
-      font-style: normal;
-      line-height: 1;
-      letter-spacing: normal;
-      text-transform: none;
-      white-space: nowrap;
-      word-wrap: normal;
-      direction: ltr;
-      -webkit-font-feature-settings: "liga";
-      -webkit-font-smoothing: antialiased;
-      font-feature-settings: "liga";
+    .icon {
+      width: 22px;
+      height: 22px;
+      flex: 0 0 auto;
+      fill: currentColor;
     }
 
     .container {
@@ -383,9 +365,10 @@
       font-size: 14px;
     }
 
-    .support-line .material-symbols-rounded {
+    .support-line .icon {
       color: var(--green);
-      font-size: 19px;
+      width: 19px;
+      height: 19px;
     }
 
     .demo-stage {
@@ -950,12 +933,16 @@
               class="btn btn-secondary"
               href="#demo"
             >
-              <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
               <span data-zh="觀看完整示範" data-en="Watch the full demo">觀看完整示範</span>
             </a>
           </div>
           <p class="support-line">
-            <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9Z" />
+            </svg>
             <span
               data-zh="適用 Apple silicon｜目前為測試版本"
               data-en="Requires Apple silicon · Beta release"

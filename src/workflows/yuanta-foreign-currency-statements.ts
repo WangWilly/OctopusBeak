@@ -9,6 +9,7 @@ import {
 } from "libretto";
 import type { Dialog, Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
@@ -189,51 +190,6 @@ function stripSpreadsheetTextPrefix(value: string): string {
   return text.replace(/^'+/, "").replace(/'+$/, "");
 }
 
-function parseCsvRows(content: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let quoted = false;
-
-  for (let index = 0; index < content.length; index += 1) {
-    const char = content[index];
-    const nextChar = content[index + 1];
-
-    if (quoted) {
-      if (char === "\"" && nextChar === "\"") {
-        cell += "\"";
-        index += 1;
-      } else if (char === "\"") {
-        quoted = false;
-      } else {
-        cell += char;
-      }
-      continue;
-    }
-
-    if (char === "\"") {
-      quoted = true;
-    } else if (char === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (char === "\n") {
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else if (char !== "\r") {
-      cell += char;
-    }
-  }
-
-  if (cell || row.length > 0) {
-    row.push(cell);
-    rows.push(row);
-  }
-
-  return rows;
-}
-
 function isRepeatedHeaderRow(values: string[]): boolean {
   return values.length === downloadedForeignCurrencyHeaders.length &&
     values.every(
@@ -263,7 +219,7 @@ function transactionRowsFromDownloadedCsv(
   accountLabel: string,
   queryCurrencyLabel: string,
 ): ForeignCurrencyTransactionRow[] {
-  const rows = parseCsvRows(content).map((row) =>
+  const rows = parseCsvMatrix(content).map((row) =>
     row.map(stripSpreadsheetTextPrefix),
   );
   const headerIndex = rows.findIndex(isRepeatedHeaderRow);
