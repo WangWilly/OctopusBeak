@@ -762,7 +762,6 @@ assert.equal(
 assert.deepEqual(
   liveTaskRunUpdate(failedResumeLog),
   {
-    status: "failed",
     errorMessage: failedResumeMessage,
     logTail: failedResumeLog,
   },

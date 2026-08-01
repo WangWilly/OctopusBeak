@@ -250,7 +250,7 @@ async function executeAutomationTaskProcess(
 
 export function liveTaskRunUpdate(logTail: string) {
   const resumeFailure = resumeFailureMessage(logTail);
-  if (resumeFailure) return { status: "failed" as const, errorMessage: resumeFailure, logTail };
+  if (resumeFailure) return { errorMessage: resumeFailure, logTail };
   if (shouldMarkWaitingForHuman(logTail)) return { status: "waiting_for_human" as const, logTail };
   return { logTail };
 }
