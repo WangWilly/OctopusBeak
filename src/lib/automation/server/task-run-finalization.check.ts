@@ -9,8 +9,10 @@ import {
   activeTaskRuns,
   createTaskRun,
   taskRunById,
+  updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import { liveTaskRunUpdate } from "./task-run-execution.ts";
 import {
   finalizeAutomationTaskRun,
   finalizePersistedRun,
@@ -99,6 +101,33 @@ test("waiting for human remains active until a later run takes over", async () =
     );
     assert.equal(taskRunById(db, run.taskRunId)?.status, "waiting_for_human");
     assert.deepEqual(activeTaskRuns(db).map((active) => active.taskRunId), [run.taskRunId]);
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("resume failure remains in flight until task-run finalization completes", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-resume-failure-"));
+  try {
+    const { db, run, finalization } = createExecution(ledgerDir);
+    const logTail = "Workflow failed after resume: Unexpected end of JSON input";
+    updateTaskRun(db, run.taskRunId, liveTaskRunUpdate(logTail));
+
+    assert.deepEqual(
+      await finalizeAutomationTaskRun(
+        finalization,
+        result({
+          exitCode: 1,
+          logTail,
+          resumeFailure: "Unexpected end of JSON input",
+        }),
+      ),
+      { status: "failed" },
+    );
+    const persisted = taskRunById(db, run.taskRunId)!;
+    assert.equal(persisted.status, "failed");
+    assert.ok(persisted.finishedAt, "failed run must be finalized after its process exits");
     db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
