@@ -363,7 +363,7 @@ async function selectDateRange(page: Page, month: YearMonth): Promise<void> {
   await clickPickerDay(page, monthEndDay(month));
 }
 
-async function waitForListResponse(
+export async function waitForListResponse(
   page: Page,
 ): Promise<InvoiceListResponse> {
   const response = await page.waitForResponse(
@@ -372,6 +372,14 @@ async function waitForListResponse(
       candidate.request().method() === "POST",
     { timeout: 60_000 },
   );
+  if (response.status() === 204) {
+    return {
+      totalElements: 0,
+      totalPages: 0,
+      size: 0,
+      content: [],
+    };
+  }
   return (await response.json()) as InvoiceListResponse;
 }
 

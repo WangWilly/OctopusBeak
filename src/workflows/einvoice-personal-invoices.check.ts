@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import type { Page } from "playwright";
-import { closeInvoiceDetailModal } from "./einvoice-personal-invoices.ts";
+import {
+  closeInvoiceDetailModal,
+  waitForListResponse,
+} from "./einvoice-personal-invoices.ts";
 
 const actions: string[] = [];
 let modalVisible = true;
@@ -65,3 +68,48 @@ assert.deepEqual(actions, [
   "modal-visible",
   "wait-backdrop-hidden",
 ]);
+
+const noContentListResponse = await waitForListResponse({
+  async waitForResponse(
+    predicate: (response: {
+      url(): string;
+      request(): { method(): string };
+    }) => boolean,
+  ) {
+    const response = {
+      url: () =>
+        "https://www.einvoice.nat.gov.tw/btc/cloud/api/btc502w/searchCarrierInvoice",
+      request: () => ({ method: () => "POST" }),
+    };
+    assert.equal(predicate(response), true);
+    return {
+      status: () => 204,
+      json: async () => await new Response(null, { status: 204 }).json(),
+    };
+  },
+} as unknown as Page);
+
+assert.deepEqual(noContentListResponse, {
+  totalElements: 0,
+  totalPages: 0,
+  size: 0,
+  content: [],
+});
+
+const populatedListResponse = {
+  totalElements: 1,
+  totalPages: 1,
+  size: 1,
+  content: [],
+};
+assert.equal(
+  await waitForListResponse({
+    async waitForResponse() {
+      return {
+        status: () => 200,
+        json: async () => populatedListResponse,
+      };
+    },
+  } as unknown as Page),
+  populatedListResponse,
+);
