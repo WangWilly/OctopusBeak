@@ -26,7 +26,8 @@ try {
     cwd: fixtureRoot,
     encoding: "utf8",
   });
-  assert.equal(optionalMissing.status, 0, optionalMissing.stderr);
+  assert.equal(optionalMissing.status, 1);
+  assert.match(optionalMissing.stderr, /missing optionalDependencies optional@\^1\.0\.0/);
 
   writeFileSync(
     lockPath,
