@@ -14,8 +14,120 @@ The act of enabling a credential source, entering its credentials, and choosing 
 The set of statement types chosen for an enabled credential source to collect.
 
 **Trusted financial overview**:
-A reviewable, traceable view that unifies a person's financial positions and statement activity across supported Taiwan financial institutions.
+A reviewable, traceable view that unifies a person's imported cash, deposits, liabilities, investments, foreign currency, crypto assets, income, spending, and statement activity across supported sources. Analysis must preserve the distinction between verified data, known gaps, and user-supplied assumptions.
 _Avoid_: Dashboard, portfolio view, financial summary
+
+**Local-first AI financial assistant**:
+An assistant that lets a person use a locally available language model to explore their trusted financial overview, learn from it, and assess trends and risks with traceable external information. Product and technical boundaries—including privacy, model providers, advice, and external-information handling—are defined by an implementation-ready specification before build work begins.
+_Avoid_: Cloud financial advisor, autonomous investment manager
+
+**Personalized financial decision support**:
+Evidence-backed explanation, scenario comparison, and risk identification based on a person's trusted financial overview. An unlicensed product limits this to general education, descriptive analysis, and user-directed simulations; actionable recommendations about individual securities or portfolio changes require a licensed investment-advisory route or accountable licensed partnership. It distinguishes sourced facts, model inference, uncertainty, and suggestions, and never executes trades or presents a buy-or-sell conclusion as certain.
+_Avoid_: Automated investment advice, autonomous portfolio management
+
+**Unlicensed general financial decision support**:
+The first-release product route that provides financial facts, descriptive risk analysis, general education, and user-directed simulations without selecting or recommending an action on an individual security or portfolio. Licensed investment advice or an accountable licensed partnership is a later, separate product stage.
+_Avoid_: Unlicensed investment advice, robo-advisor lite
+
+**User-defined financial policy**:
+A threshold, target, constraint, or scenario assumption explicitly chosen by the person. The system may calculate and explain deviations from it, but does not choose the policy, convert a simulation into an instruction, or treat a general educational benchmark as the person's target.
+_Avoid_: AI-recommended allocation, inferred investment policy
+
+**Financially neutral product revenue**:
+First-release software purchase or subscription revenue that is not linked to a financial product, issuer, referral, transaction, asset ranking, or model output. Sponsored placement, transaction-linked compensation, issuer commissions, and paid product promotion are excluded.
+_Avoid_: Financial-product monetization, recommendation revenue
+
+**Paid operational value**:
+The time and maintenance burden removed by reliable collection automation, model catalog management, maintained external-data access, and scheduled risk monitoring. Financial analysis and conversation are core product capabilities; payment is for dependable ongoing operations, not for a particular investment answer.
+_Avoid_: Paid investment answer, advice subscription
+
+**Fact clarification**:
+A free capability that helps a person inspect, question, and understand traceable financial facts, calculations, data gaps, and evidence without turning them into an investment instruction.
+_Avoid_: Financial recommendation, portfolio diagnosis
+
+**Intent clarification**:
+A free conversation that helps a person articulate and restate their own goals, constraints, time horizon, and risk concerns. The assistant does not select a goal, infer a financial policy, or translate the clarified intent into a security trade or portfolio instruction.
+_Avoid_: AI-selected goal, inferred risk profile
+
+**Licensed advice stage gate**:
+The separate product stage required before any actionable personalized recommendation about an individual security or portfolio may be offered. It requires written Taiwan regulatory counsel review of actual product outputs, an investment-advisory licence or accountable licensed service provider, and the applicable suitability, disclosure, contract, complaint, recordkeeping, and algorithm-governance controls.
+_Avoid_: Advice feature flag, disclaimer-based approval
+
+**Local financial data boundary**:
+The privacy boundary under which financial accounts, identifiers, transactions, and positions remain on the person's device and may be observed by an authorized local agent when relevant. Authentication secrets are never placed in agent context. Open-weight models process financial data locally; external information is brought onto the device, while outbound discovery queries are minimized and de-identified. Any future cloud-model mode is separately enabled and discloses the data sent for each use.
+_Avoid_: Local-only product, anonymous financial data
+
+**Authentication secret**:
+A login password, one-time code, session token, cookie, API key, credential answer, or equivalent material that can authenticate as the person. It is never exposed to a model or agent tool, even when other financial data is locally observable.
+_Avoid_: Financial account identifier, account data
+
+**Financial context pack**:
+A broad, local view of the trusted financial overview supplied so an agent can understand the person's overall situation. The agent may use authorized tools to inspect any additional non-secret financial detail relevant to a new analytical angle; authentication secrets remain excluded.
+_Avoid_: Full credential context, fixed dashboard payload
+
+**External local provider trust**:
+The lower trust assigned to a separately installed local model daemon whose version, logs, updates, and model sources are not controlled by the product. It receives financial data only after explicit enablement and disclosure, only over an eligible loopback endpoint, and never receives authentication secrets.
+_Avoid_: Built-in provider trust, local-equals-trusted
+
+**Active local generation model**:
+The single local model currently allowed to generate responses for the application. Switching may release the previous model and its cache from memory, but does not remove its installed artifact from storage.
+_Avoid_: Installed model, downloaded model
+
+**Installed model artifact**:
+A model file retained in local storage until the person explicitly removes it. Runtime memory release, provider failure, catalog retirement, application restart, and model switching do not delete the artifact or require it to be downloaded again.
+_Avoid_: Loaded model, active model
+
+**Model catalog**:
+The product-curated index of candidate, verified, deprecated, revoked, and system-provided models, including their provenance, integrity, licensing, device-fit, and lifecycle records. Membership means the model is visible and governed by the catalog; it does not by itself claim verified behavioral quality.
+_Avoid_: Verified model catalog, open model registry
+
+**Verified model artifact**:
+An exact, immutable model artifact that has passed every first-release conversation, financial explanation, tool use, evidence synthesis, risk reasoning, context, safety, licensing, integrity, and runtime-compatibility gate. Verification promises complete first-release capability and belongs only to that artifact and evaluation version, not to its model family, provider, another quantization, or an externally managed copy.
+_Avoid_: Verified model family, approved brand
+
+**Catalog recommendation**:
+A contextual label applied to an activatable catalog model for a particular device and user preference. It is recalculated from current evidence rather than treated as a permanent model rank or a claim of verification.
+_Avoid_: Best model, universal default
+
+**Catalog candidate**:
+An exact model artifact that has passed the activation safety floor but not the complete first-release capability evaluation. It may use every first-release assistant capability after a one-time disclosure; the status limits the product's quality claim, not the model's functional access.
+_Avoid_: Verified model, unsupported model
+
+**Model activation safety floor**:
+The deterministic provenance, integrity, format, runtime, host-authority, credential-boundary, and device-preflight checks required before a model artifact may be activated. It verifies App-controlled boundaries rather than model intentions and makes no claim about the model's behavioral safety or financial-assistant quality.
+_Avoid_: Full model verification, quality benchmark
+
+**Model verification record**:
+A product-published record that binds an artifact hash and evaluation version to the results of the fixed complete-capability process. The first-release app consumes and presents signed records; it does not reproduce the full evaluation or grant verification from user-device results.
+_Avoid_: Device benchmark result, community rating
+
+**Catalog retirement**:
+The catalog transition that stops recommending a deprecated model artifact while leaving it activatable, or prevents loading a revoked artifact because integrity, security, or licensing requires it. Retirement never deletes an installed artifact; storage removal remains the person's decision.
+_Avoid_: Model deletion, automatic uninstall
+
+**Evidence-backed current information**:
+Time-sensitive market, policy, and international-event information retrieved for the current analysis with visible source, publication time, and retrieval time. Primary sources take precedence; conflicts, staleness, and missing corroboration reduce confidence or prevent a conclusion. Model training memory is not current evidence.
+_Avoid_: Model knowledge, latest information
+
+**Traceable financial computation**:
+A deterministic calculation of balances, returns, allocation, cash flow, concentration, or exposure whose method and source records can be inspected. Language models may request and explain these results but do not calculate, overwrite, or become the source of financial facts.
+_Avoid_: AI-calculated balance, model-derived financial fact
+
+**Local analysis lineage**:
+The on-device record needed to reproduce and inspect an analysis: financial-data snapshot time, deterministic calculation and rule versions, external-source timestamps, model and policy versions, answer or refusal, and user corrections. The person can inspect, export, and delete it; provider diagnostics exclude raw assets, transactions, positions, and complete conversations unless separately and explicitly authorized.
+_Avoid_: Cloud conversation history, provider financial log
+
+**Transparent model fallback**:
+A pre-authorized switch away from the person's selected primary model only when it is unavailable, unfit for the requested capability, or prohibited by a safety gate. The product identifies the actual provider and model, explains the switch, and discloses what conversation context is transferred; it never silently substitutes an unverified model.
+_Avoid_: Automatic model substitution, invisible routing
+
+**Authorized tool request**:
+A model-proposed request that the host validates against an allowlist, schema, permissions, sensitivity rules, and resource limits before any tool runs. Models and provider adapters hold no direct ledger, filesystem, network, shell, or application authority; rejected requests remain visible in local analysis lineage.
+_Avoid_: Model-executed tool, provider permission
+
+**User-directed source retrieval**:
+Retrieval of a URL explicitly supplied or selected by the person, performed by the evidence layer without browser identity, financial context, or provider network authority. Retrieved content remains untrusted, is cleaned and provenance-recorded, and does not authorize following additional links or executing embedded instructions.
+_Avoid_: Model web browsing, authenticated browser handoff
 
 **Core user**:
 A person in Taiwan who manages at least three bank, credit-card, or investment accounts and is tired of consolidating them manually in spreadsheets. This is the initial audience, not a permanent limit on who OctopusBeak may serve.
