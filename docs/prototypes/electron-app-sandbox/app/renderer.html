@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8">
+  <title>THROWAWAY Electron sandbox probe</title>
+  <body>
+    <script>
+      const rendererFacts = {
+        requireType: typeof globalThis.require,
+        processType: typeof globalThis.process,
+        probeKeys: Object.keys(globalThis.probe || {}),
+      };
+      globalThis.probe.run(rendererFacts).catch(() => {});
+    </script>
+  </body>
+</html>
