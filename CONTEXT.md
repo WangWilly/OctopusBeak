@@ -85,6 +85,10 @@ _Avoid_: Verified model catalog, open model registry
 An exact, immutable model artifact that has passed every first-release conversation, financial explanation, tool use, evidence synthesis, risk reasoning, context, safety, licensing, integrity, and runtime-compatibility gate. Verification promises complete first-release capability and belongs only to that artifact and evaluation version, not to its model family, provider, another quantization, or an externally managed copy.
 _Avoid_: Verified model family, approved brand
 
+**Supported system model**:
+An operating-system-managed model that has passed the first-release behavioral, tool, cancellation, recovery, and fallback gates through its public provider API even though the product cannot pin or inspect its underlying artifact. Its support identity is the OS build, provider API, availability gate, device tier, and benchmark version; unavailable performance or memory counters are recorded as provider limitations rather than invented artifact evidence.
+_Avoid_: Verified model artifact, built-in model file, unversioned system AI
+
 **Catalog recommendation**:
 A contextual label applied to an activatable catalog model for a particular device and user preference. It is recalculated from current evidence rather than treated as a permanent model rank or a claim of verification.
 _Avoid_: Best model, universal default
