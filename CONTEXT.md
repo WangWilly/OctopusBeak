@@ -117,13 +117,45 @@ _Avoid_: AI-calculated balance, model-derived financial fact
 The on-device record needed to reproduce and inspect an analysis: financial-data snapshot time, deterministic calculation and rule versions, external-source timestamps, model and policy versions, answer or refusal, and user corrections. The person can inspect, export, and delete it; provider diagnostics exclude raw assets, transactions, positions, and complete conversations unless separately and explicitly authorized.
 _Avoid_: Cloud conversation history, provider financial log
 
+**Agent support diagnostics**:
+A user-controlled local projection of agent lifecycle metadata for developer troubleshooting, including provider/model identity, transition reason, checkpoint validity, and Authorized tool execution outcomes. It stays outside the main assistant view, is never uploaded without explicit export, can be deleted by the person, and fails export when its allowlist/redaction gate cannot exclude Authentication secrets, raw financial data, complete conversations, and executable authority.
+_Avoid_: Main-screen debug panel, provider telemetry, raw agent log
+
 **Transparent model fallback**:
-A pre-authorized switch away from the person's selected primary model only when it is unavailable, unfit for the requested capability, or prohibited by a safety gate. The product identifies the actual provider and model, explains the switch, and discloses what conversation context is transferred; it never silently substitutes an unverified model.
+A post-MVP, pre-authorized switch away from the person's selected primary model only when it is unavailable, unfit for the requested capability, or prohibited by a safety gate. The first release never substitutes a model within the same run: primary-model failure is terminal, and choosing another model starts a new run without transferring the failed run's checkpoint or conversation context.
 _Avoid_: Automatic model substitution, invisible routing
+
+**Agent run suspension**:
+A non-terminal interruption of an agent run that may resume only from a valid safe checkpoint. User pause, orderly application shutdown, and recoverable memory pressure may suspend a run; memory pressure unloads the Active local generation model without deleting its Installed model artifact and never reloads it in the background.
+_Avoid_: Cancellation, terminal stop
+
+**Agent run resumption**:
+The person's explicit continuation of a suspended agent run from its Agent safe checkpoint using the same provider, exact model artifact, disclosure/policy versions, and authorized data classes. Application restart may restore the option to resume but never loads the model or continues generation automatically; any authorization-boundary change makes the old run terminal and requires consent in a new run.
+_Avoid_: Automatic startup recovery, retry, fallback
+
+**Agent run cancellation**:
+A terminal end of an agent run explicitly cancelled by the person: generation and new tool dispatch stop immediately, while an already-dispatched tool gets bounded time to record a durable outcome solely for lineage and diagnostics. A cancelled run never consumes that result or resumes; a later attempt is a new run with its own lineage.
+_Avoid_: Pause, resumable cancellation
+
+**Agent safe checkpoint**:
+A versioned, integrity-validated, Authentication-secret-free snapshot created only while no Authorized tool request is in flight. It contains host-owned canonical conversation state, immutable financial/tool-result references, durable tool outcomes, and run lineage/version identity—but no provider runtime memory, execution authority, or partial generation—and is the sole state from which the same run may resume.
+_Avoid_: Conversation backup, raw provider state, best-effort recovery state
+
+**Agent run retry**:
+A new agent run started after a terminal run, optionally with a different selected model. It has new lineage and does not inherit the terminal run's checkpoint or conversation context.
+_Avoid_: Resume, fallback, terminal-run revival
+
+**Agent run terminal failure**:
+The unrecoverable end of an agent run caused by helper crash, provider unavailability, model unfitness or prohibition, invalid checkpoint, or an unexpected Authorized tool execution outcome that is unknown outside explicit cancellation settlement. A terminally failed run never resumes; a later attempt is an Agent run retry.
+_Avoid_: Recoverable failure, automatic helper restart, failed-run resume
 
 **Authorized tool request**:
 A model-proposed request that the host validates against an allowlist, schema, permissions, sensitivity rules, and resource limits before any tool runs. Models and provider adapters hold no direct ledger, filesystem, network, shell, or application authority; rejected requests remain visible in local analysis lineage.
 _Avoid_: Model-executed tool, provider permission
+
+**Authorized tool execution outcome**:
+The host-owned durable status of an Authorized tool request: not dispatched, completed with a persisted validated result, or outcome unknown after dispatch without durable completion. Recovery may revalidate a request not yet dispatched or replay a completed result, but an unknown outcome makes the agent run terminal and is never guessed or automatically repeated.
+_Avoid_: Provider tool state, assumed tool success, blind retry
 
 **User-directed source retrieval**:
 Retrieval of a URL explicitly supplied or selected by the person, performed by the evidence layer without browser identity, financial context, or provider network authority. Retrieved content remains untrusted, is cleaned and provenance-recorded, and does not authorize following additional links or executing embedded instructions.
