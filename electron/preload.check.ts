@@ -7,6 +7,7 @@ assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
+assert.equal(octopusBeakApiChannels.includes("agent:v1:activate"), true);
 assert.equal(octopusBeakApiChannels.includes("agent:v1:start"), true);
 assert.equal(octopusBeakApiChannels.includes("agent:v1:status"), true);
 assert.equal(octopusBeakApiChannels.includes("agent:v1:cancel"), true);
@@ -18,6 +19,7 @@ assert.deepEqual(
   "sandboxed preload must stay self-contained after bundling",
 );
 for (const method of [
+  ["activate", "agent:v1:activate"],
   ["start", "agent:v1:start"],
   ["status", "agent:v1:status"],
   ["cancel", "agent:v1:cancel"],
