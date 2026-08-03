@@ -34,6 +34,7 @@
     "prototype:agent-runtime": "node docs/prototypes/agent-runtime/index.mjs",
     "audit:agent-secret-boundary": "node --no-warnings --experimental-strip-types docs/prototypes/agent-secret-boundary-audit/index.mjs",
     "prototype:electron-app-sandbox": "node docs/prototypes/electron-app-sandbox/run.mjs",
+    "prototype:provider-model-benchmark": "node docs/prototypes/provider-model-benchmark/run.mjs",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",

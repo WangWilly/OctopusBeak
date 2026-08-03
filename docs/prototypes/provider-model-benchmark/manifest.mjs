@@ -1,0 +1,127 @@
+export const BENCHMARK_VERSION = "issue-68/v1";
+
+export const LLAMA_CPP = {
+  version: "b10218",
+  url: "https://github.com/ggml-org/llama.cpp/releases/download/b10218/llama-b10218-bin-macos-arm64.tar.gz",
+  file: "llama-b10218-bin-macos-arm64.tar.gz",
+  bytes: 10_938_782,
+  sha256: "f3e87f1664c09183a861f16758c55a5adc925672705cd3a47e3dc4444504c914",
+};
+
+export const GGUF_MODELS = [
+  {
+    id: "smollm3-3b-q4_k_m",
+    support: { status: "unsupported", reason: "tool-and-recovery-hard-gates" },
+    family: "SmolLM3",
+    parameters: "3B",
+    quantization: "Q4_K_M",
+    license: "Apache-2.0",
+    repository: "ggml-org/SmolLM3-3B-GGUF",
+    revision: "4965cb60b150737b68a0408c36aeefb65078f894",
+    files: [{
+      name: "SmolLM3-Q4_K_M.gguf",
+      bytes: 1_915_305_312,
+      sha256: "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e",
+      url: "https://huggingface.co/ggml-org/SmolLM3-3B-GGUF/resolve/4965cb60b150737b68a0408c36aeefb65078f894/SmolLM3-Q4_K_M.gguf",
+    }],
+  },
+  {
+    id: "qwen2.5-7b-instruct-q4_k_m",
+    support: { status: "supported", role: "optional-quality-tier", hardwareGiB: [16] },
+    family: "Qwen2.5 Instruct",
+    parameters: "7B",
+    quantization: "Q4_K_M",
+    license: "Apache-2.0",
+    repository: "Qwen/Qwen2.5-7B-Instruct-GGUF",
+    revision: "bb5d59e06d9551d752d08b292a50eb208b07ab1f",
+    files: [
+      {
+        name: "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        bytes: 3_993_201_344,
+        sha256: "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+        url: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+      },
+      {
+        name: "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+        bytes: 689_872_288,
+        sha256: "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+        url: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+      },
+    ],
+  },
+  {
+    id: "granite-4.0-micro-3b-q4_k_m",
+    support: { status: "supported", role: "default-local", hardwareGiB: [16] },
+    family: "Granite 4.0 Micro",
+    parameters: "3B",
+    quantization: "Q4_K_M",
+    license: "Apache-2.0",
+    repository: "ibm-granite/granite-4.0-micro-GGUF",
+    revision: "ec48475f0c811d812fbfb61975717a9c36eeb652",
+    files: [{
+      name: "granite-4.0-micro-Q4_K_M.gguf",
+      bytes: 2_099_502_528,
+      sha256: "97c417dcc0534b0737c74016fb2af083cb17c3b51eaac621192d23961b7024eb",
+      url: "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/ec48475f0c811d812fbfb61975717a9c36eeb652/granite-4.0-micro-Q4_K_M.gguf",
+    }],
+  },
+  {
+    id: "qwen3-4b-q4_k_m",
+    support: { status: "supported", role: "optional-balanced", hardwareGiB: [16] },
+    family: "Qwen3",
+    parameters: "4B",
+    quantization: "Q4_K_M",
+    license: "Apache-2.0",
+    repository: "Qwen/Qwen3-4B-GGUF",
+    revision: "bc640142c66e1fdd12af0bd68f40445458f3869b",
+    chatTemplateKwargs: { enable_thinking: false },
+    files: [{
+      name: "Qwen3-4B-Q4_K_M.gguf",
+      bytes: 2_497_280_256,
+      sha256: "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      url: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf",
+    }],
+  },
+  {
+    id: "llama-3.2-3b-instruct-q4_k_m",
+    support: { status: "compatible", reason: "license-and-artifact-provenance-pending" },
+    family: "Llama 3.2 Instruct",
+    parameters: "3B",
+    quantization: "Q4_K_M",
+    license: "Llama-3.2 Community License",
+    repository: "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    upstreamRepository: "meta-llama/Llama-3.2-3B-Instruct",
+    revision: "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+    files: [{
+      name: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      bytes: 2_019_377_696,
+      sha256: "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
+      url: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    }],
+  },
+  {
+    id: "phi-4-mini-instruct-3.8b-q4_k_m",
+    support: { status: "unsupported", reason: "authorized-tool-hard-gate" },
+    family: "Phi-4 Mini Instruct",
+    parameters: "3.8B",
+    quantization: "Q4_K_M",
+    license: "MIT",
+    repository: "Mungert/Phi-4-mini-instruct-GGUF",
+    upstreamRepository: "microsoft/Phi-4-mini-instruct",
+    revision: "3f50bce741652322519e5cee95e4f0c8cae4cd5e",
+    files: [{
+      name: "Phi-4-mini-instruct-q4_k_m.gguf",
+      bytes: 2_491_874_912,
+      sha256: "1a4abbc12f38676c09c15a31f0ae12dbffad8349160a67ff0f07d4a9c85d6ebb",
+      url: "https://huggingface.co/Mungert/Phi-4-mini-instruct-GGUF/resolve/3f50bce741652322519e5cee95e4f0c8cae4cd5e/Phi-4-mini-instruct-q4_k_m.gguf",
+    }],
+  },
+];
+
+export const APPLE_PROVIDER = {
+  id: "apple-foundation-models-system",
+  support: { status: "supported", role: "os-managed-system-provider", hardwareGiB: [16] },
+  provider: "FoundationModels.SystemLanguageModel.default",
+  artifactIdentity: "os-managed-not-exported-by-public-api",
+  contextTokens: 4096,
+};
