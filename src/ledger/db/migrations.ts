@@ -783,6 +783,39 @@ function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
   `);
 }
 
+function createAgentHarnessSchema(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      run_id TEXT PRIMARY KEY,
+      analysis_id TEXT,
+      phase TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      record_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_run_lineage (
+      run_id TEXT NOT NULL,
+      analysis_id TEXT,
+      seq INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      data_classes_json TEXT NOT NULL,
+      secret_fields_json TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (run_id, seq),
+      FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_run_lineage_run
+    ON agent_run_lineage(run_id, seq);
+  `);
+}
+
+function addAgentAnalysisId(db: LedgerDatabase) {
+  addColumnIfMissing(db, "agent_runs", "analysis_id", "analysis_id TEXT");
+  addColumnIfMissing(db, "agent_run_lineage", "analysis_id", "analysis_id TEXT");
+}
+
 function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   for (const table of TYPED_STATEMENT_TABLES) {
     if (
@@ -2037,6 +2070,16 @@ const migrations: LedgerMigration[] = [
     version: 27,
     name: "positive_source_import_observation_count",
     up: constrainSourceImportObservationCount,
+  },
+  {
+    version: 28,
+    name: "agent_harness_lineage",
+    up: createAgentHarnessSchema,
+  },
+  {
+    version: 29,
+    name: "agent_run_analysis_identity",
+    up: addAgentAnalysisId,
   },
 ];
 

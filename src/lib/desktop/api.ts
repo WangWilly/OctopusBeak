@@ -1,4 +1,6 @@
 import type { AssetsPageDto } from "$lib/assets/types.ts";
+import type { AgentStartInput } from "$lib/agent/server/harness.ts";
+import type { AgentStatusDto } from "./agent-api.ts";
 import type { AutomationCredentialGroup, AutomationPageModel, AutomationTaskHistoryRow } from "$lib/automation/types.ts";
 import type {
   ConfirmExclusionInput,
@@ -95,6 +97,11 @@ export type OctopusBeakApi = {
     updateItemCategory(input: { itemKey: string; category: SpendingCategory }): Promise<{ ok: true }>;
     updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
+  agent: {
+    start(input?: AgentStartInput): Promise<AgentStatusDto>;
+    status(runId: string): Promise<AgentStatusDto>;
+    cancel(runId: string): Promise<AgentStatusDto>;
+  };
   automation: {
     load(): Promise<AutomationDesktopModel>;
     saveCredentials(updates: Record<string, string>): Promise<{ saved: true }>;
@@ -129,6 +136,9 @@ export const octopusBeakApiChannels = [
   "spending:load",
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
+  "agent:v1:start",
+  "agent:v1:status",
+  "agent:v1:cancel",
   "automation:load",
   "automation:saveCredentials",
   "automation:run",
