@@ -18,6 +18,7 @@ import {
 import { updateTaskRun, type AutomationTaskRun } from "./store.ts";
 import {
   createAutomationSecretBoundaryGate,
+  secretBoundaryFailureMessage,
   type SecretBoundaryGate,
 } from "./secret-boundary.ts";
 
@@ -49,9 +50,12 @@ export function appendLog(
   chunk: string,
   secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
-  const protectedChunk = secretGate.protectText("filesystem-log", chunk).value;
+  const protectedChunk = secretGate.protectText("filesystem-log", chunk);
+  if (protectedChunk.failure) {
+    throw new Error(secretBoundaryFailureMessage(protectedChunk.failure));
+  }
   mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, protectedChunk);
+  appendFileSync(logPath, protectedChunk.value);
 }
 
 export function tail(value: string) {
