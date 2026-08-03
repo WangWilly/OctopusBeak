@@ -111,7 +111,7 @@ test("a helper crash is terminal, ordinary activation cannot replace it, and Sta
 
 test("a synchronous helper start write failure terminals once, ignores late output, and permits a clean new run", async () => {
   let launches = 0;
-  let firstListener: ((line: string) => void) | null = null;
+  const firstListener = { value: null as ((line: string) => void) | null };
   let firstTerminates = 0;
   const client = createAppleSystemModelProtocolClient({
     launchProcess: () => {
@@ -121,7 +121,7 @@ test("a synchronous helper start write failure terminals once, ignores late outp
       return {
         onLine(nextListener) {
           listener = nextListener;
-          if (currentLaunch === 1) firstListener = nextListener;
+          if (currentLaunch === 1) firstListener.value = nextListener;
           queueMicrotask(() => listener?.(JSON.stringify({
             protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
             type: "handshake",
@@ -173,7 +173,7 @@ test("a synchronous helper start write failure terminals once, ignores late outp
   assert.throws(() => service.start({ prompt: "Must fail once." }), /Agent helper launch failed/);
   assert.equal(service.status("write-run-1").phase, "failed");
   assert.equal(firstTerminates, 1);
-  firstListener?.(JSON.stringify({
+  firstListener.value?.(JSON.stringify({
     protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
     type: "stream",
     runId: "write-run-1",
