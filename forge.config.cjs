@@ -10,6 +10,9 @@ module.exports = {
     appCategoryType: "public.app-category.finance",
     icon: "electron/assets/icon",
     asar: false,
+    extraResource: process.platform === "darwin"
+      ? ["build-helpers/apple-system-model-helper"]
+      : [],
     ignore: [
       /^\/\.git($|\/)/,
       /^\/\.githooks($|\/)/,
@@ -27,6 +30,7 @@ module.exports = {
       /^\/downloads($|\/)/,
       /^\/playground($|\/)/,
       /^\/out($|\/)/,
+      /^\/build-helpers($|\/)/,
     ],
     ...(shouldSign
       ? {
