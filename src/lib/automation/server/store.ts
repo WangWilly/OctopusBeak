@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
+import {
+  createAutomationSecretBoundaryGate,
+  type SecretBoundaryGate,
+} from "./secret-boundary.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -82,14 +86,37 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
   };
 }
 
-function taskRunRecordJson(run: AutomationTaskRun) {
-  const { recordJson: _recordJson, ...record } = run;
-  return JSON.stringify(record);
+function protectTaskRunRecord<T extends Record<string, unknown>>(
+  record: T,
+  secretGate: SecretBoundaryGate,
+  surface: "sqlite-persistence" | "diagnostic-export",
+) {
+  return secretGate.protectRecord(
+    surface,
+    "automation-task-run",
+    record,
+  ).value;
 }
 
-export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
+function protectedPersistedTaskRunRecord(
+  run: AutomationTaskRun,
+  secretGate: SecretBoundaryGate,
+) {
+  const { recordJson: _recordJson, ...record } = run;
+  return protectTaskRunRecord(record, secretGate, "sqlite-persistence");
+}
+
+export function createTaskRun(
+  db: LedgerDatabase,
+  input: CreateTaskRunInput,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+) {
   const taskRunId = randomUUID();
-  const record = { taskRunId, ...input };
+  const record = protectTaskRunRecord(
+    { taskRunId, ...input },
+    secretGate,
+    "sqlite-persistence",
+  );
   db.prepare(`
     INSERT INTO automation_task_runs (
       task_run_id, task_id, script, kind, status, attempt, max_attempts,
@@ -99,19 +126,19 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     taskRunId,
-    input.taskId,
-    input.script,
-    input.kind,
-    input.status,
-    input.attempt,
-    input.maxAttempts,
-    input.startedAt,
-    input.finishedAt ?? null,
-    input.exitCode ?? null,
-    input.signal ?? null,
-    input.errorMessage ?? null,
-    input.logPath,
-    input.logTail ?? "",
+    record.taskId,
+    record.script,
+    record.kind,
+    record.status,
+    record.attempt,
+    record.maxAttempts,
+    record.startedAt,
+    record.finishedAt ?? null,
+    record.exitCode ?? null,
+    record.signal ?? null,
+    record.errorMessage ?? null,
+    record.logPath,
+    record.logTail ?? "",
     JSON.stringify(record),
   );
   return { taskRunId };
@@ -121,6 +148,7 @@ export function updateTaskRun(
   db: LedgerDatabase,
   taskRunId: string,
   update: Partial<Pick<AutomationTaskRun, "status" | "finishedAt" | "exitCode" | "signal" | "errorMessage" | "logTail">>,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
   const row = db.prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?").get(taskRunId) as
     | Record<string, unknown>
@@ -130,18 +158,19 @@ export function updateTaskRun(
     ...rowToTaskRun(row),
     ...update,
   };
+  const protectedNext = protectedPersistedTaskRunRecord(next, secretGate);
   db.prepare(`
     UPDATE automation_task_runs
     SET status = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
     WHERE task_run_id = ?
   `).run(
-    next.status,
-    next.finishedAt,
-    next.exitCode,
-    next.signal,
-    next.errorMessage,
-    next.logTail,
-    taskRunRecordJson(next),
+    protectedNext.status,
+    protectedNext.finishedAt,
+    protectedNext.exitCode,
+    protectedNext.signal,
+    protectedNext.errorMessage,
+    protectedNext.logTail,
+    JSON.stringify(protectedNext),
     taskRunId,
   );
 }
@@ -163,7 +192,11 @@ export function activeTaskRuns(db: LedgerDatabase): AutomationTaskRun[] {
   return rows.map(rowToTaskRun);
 }
 
-export function latestTaskRuns(db: LedgerDatabase) {
+export function latestTaskRuns(
+  db: LedgerDatabase,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+) {
+  secretGate.assertRecordSchema("diagnostic-export", "automation-task-run");
   const rows = db.prepare(`
     SELECT run.*
     FROM automation_task_runs run
@@ -177,7 +210,16 @@ export function latestTaskRuns(db: LedgerDatabase) {
 
   return Object.fromEntries(rows.map((row) => {
     const taskRun = rowToTaskRun(row);
-    return [taskRun.taskId, taskRun];
+    const { recordJson: _recordJson, ...record } = taskRun;
+    const protectedRun = protectTaskRunRecord(
+      record,
+      secretGate,
+      "diagnostic-export",
+    );
+    return [protectedRun.taskId, {
+      ...protectedRun,
+      recordJson: JSON.stringify(protectedRun),
+    }];
   }));
 }
 
@@ -210,7 +252,12 @@ export function hasSuccessfulTaskRunSince(
   `).get(taskId, occurrence));
 }
 
-export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
+export function recentTaskRuns(
+  db: LedgerDatabase,
+  limit = 100,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+): AutomationTaskHistoryRow[] {
+  secretGate.assertRecordSchema("diagnostic-export", "automation-history");
   const rows = db.prepare(`
     SELECT
       task_run_id,
@@ -228,19 +275,23 @@ export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskH
     ORDER BY started_at DESC
     LIMIT ?
   `).all(limit) as Record<string, unknown>[];
-  return rows.map((row) => ({
-    taskRunId: String(row.task_run_id),
-    taskId: String(row.task_id),
-    script: String(row.script),
-    kind: row.kind as AutomationTaskKind,
-    status: row.status as AutomationTaskStatus,
-    startedAt: String(row.started_at),
-    finishedAt: nullableString(row.finished_at),
-    exitCode: nullableNumber(row.exit_code),
-    signal: nullableString(row.signal),
-    errorMessage: nullableString(row.error_message),
-    logPath: String(row.log_path),
-  }));
+  return rows.map((row) => secretGate.protectRecord(
+    "diagnostic-export",
+    "automation-history",
+    {
+      taskRunId: String(row.task_run_id),
+      taskId: String(row.task_id),
+      script: String(row.script),
+      kind: row.kind as AutomationTaskKind,
+      status: row.status as AutomationTaskStatus,
+      startedAt: String(row.started_at),
+      finishedAt: nullableString(row.finished_at),
+      exitCode: nullableNumber(row.exit_code),
+      signal: nullableString(row.signal),
+      errorMessage: nullableString(row.error_message),
+      logPath: String(row.log_path),
+    },
+  ).value);
 }
 
 export function importGateStatus(

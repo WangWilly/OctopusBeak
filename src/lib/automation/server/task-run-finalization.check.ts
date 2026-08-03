@@ -54,6 +54,7 @@ function result(overrides: Partial<AutomationTaskProcessResult> = {}): Automatio
     resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
+    secretBoundaryFailure: null,
     ...overrides,
   };
 }

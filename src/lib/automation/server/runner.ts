@@ -50,6 +50,7 @@ import {
 } from "./store.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
+  AUTOMATION_SECRET_KEYS,
   taskById,
 } from "./tasks.ts";
 import {
@@ -57,6 +58,12 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
+import {
+  createAutomationSecretBoundaryGate,
+  secretBoundaryFailureMessage,
+  type SecretBoundaryFailure,
+  type SecretBoundaryGate,
+} from "./secret-boundary.ts";
 
 export { closeLibrettoSession };
 
@@ -87,6 +94,35 @@ export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
   return command ? [command.command, ...command.args] as const : null;
 }
 
+export function logLibrettoRunCdpPatchOutput(
+  patch: { stdout?: string | null; stderr?: string | null },
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate({
+    additionalSecretValues: AUTOMATION_SECRET_KEYS.flatMap((key) =>
+      process.env[key] ? [process.env[key]] : []
+    ),
+  }),
+  logger: Pick<Console, "info" | "warn"> = console,
+) {
+  let failure: SecretBoundaryFailure | null = null;
+  if (patch.stdout) {
+    const protectedStdout = secretGate.protectText(
+      "patch-stdout",
+      patch.stdout.trim(),
+    );
+    logger.info(protectedStdout.value);
+    failure ??= protectedStdout.failure;
+  }
+  if (patch.stderr) {
+    const protectedStderr = secretGate.protectText(
+      "patch-stderr",
+      patch.stderr.trim(),
+    );
+    logger.warn(protectedStderr.value);
+    failure ??= protectedStderr.failure;
+  }
+  if (failure) throw new Error(secretBoundaryFailureMessage(failure));
+}
+
 export function prepareLibrettoRunCdpPatch(runPatch: () => void = () => {
   const command = resolvePatchCommand({});
   if (!command) return;
@@ -94,8 +130,7 @@ export function prepareLibrettoRunCdpPatch(runPatch: () => void = () => {
     env: command.env,
     encoding: "utf8",
   });
-  if (patch.stdout) console.info(patch.stdout.trim());
-  if (patch.stderr) console.warn(patch.stderr.trim());
+  logLibrettoRunCdpPatchOutput(patch);
   if (patch.error || patch.status !== 0) {
     throw patch.error ?? new Error(`Libretto CDP patch exited with code ${patch.status}`);
   }
