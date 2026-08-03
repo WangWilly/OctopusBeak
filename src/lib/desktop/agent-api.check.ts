@@ -6,7 +6,10 @@ import {
   projectAgentRunStatus,
   type AgentDesktopService,
 } from "./agent-api.ts";
-import { createAgentSecretBoundaryGate } from "../agent/server/harness.ts";
+import {
+  createAgentSecretBoundaryGate,
+  type SecretBoundaryGate,
+} from "../agent/server/harness.ts";
 
 test("versioned Agent IPC handlers validate, forward, and project one legal action", () => {
   const calls: Array<{ operation: string; value: unknown }> = [];
@@ -90,5 +93,38 @@ test("renderer projection fails closed when an Agent status contains a canary", 
       finishedAt: "2026-08-03T00:00:01.000Z",
     }, createAgentSecretBoundaryGate({ secretValues: [canary] })),
     /SECRET_BOUNDARY_VIOLATION surface=diagnostic-export/,
+  );
+});
+
+test("renderer projection reports the secret-boundary failure metadata returned by the gate", () => {
+  const failureGate: SecretBoundaryGate = {
+    ...createAgentSecretBoundaryGate({ secretValues: [] }),
+    protectRecord(_surface, _schema, value) {
+      return {
+        value,
+        failure: {
+          surface: "sqlite-persistence",
+          reason: "authentication-secret-detected",
+        },
+      };
+    },
+  };
+
+  assert.throws(
+    () => projectAgentRunStatus({
+      runId: "run-metadata-failure",
+      phase: "completed",
+      action: null,
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+    }, failureGate),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        "SECRET_BOUNDARY_VIOLATION surface=sqlite-persistence reason=authentication-secret-detected",
+      );
+      return true;
+    },
   );
 });
