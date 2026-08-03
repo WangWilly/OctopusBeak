@@ -12,9 +12,30 @@ export type { SecretBoundaryDependencies, SecretBoundaryGate } from "../../autom
 
 export type AgentStartInput = {
   analysisId?: string;
+  prompt?: string;
 };
 
 export type AgentRunPhase = "running" | "completed" | "cancelled" | "failed";
+
+export const AGENT_FAILURE_REASONS = [
+  "context-window-exceeded",
+  "provider-assets-unavailable",
+  "provider-guardrail-violation",
+  "provider-guide-unsupported",
+  "provider-language-or-locale-unsupported",
+  "provider-decoding-failed",
+  "provider-rate-limited",
+  "provider-concurrent-request",
+  "provider-refused",
+  "provider-generation-failed",
+  "provider-failed",
+  "helper-launch-failed",
+  "secret-boundary-violation",
+] as const;
+
+export type AgentFailureReason = (typeof AGENT_FAILURE_REASONS)[number];
+
+export type AgentTransitionReason = AgentFailureReason | "user-cancelled" | null;
 
 export type AgentRunStatus = {
   runId: string;
@@ -22,6 +43,7 @@ export type AgentRunStatus = {
   action: { type: "cancel" } | null;
   startedAt: string;
   finishedAt: string | null;
+  output: string;
 };
 
 export type AgentLineageEvent = {
@@ -32,6 +54,10 @@ export type AgentLineageEvent = {
   status: "allowed" | "observed";
   occurredAt: string;
   dataClasses: readonly string[];
+  providerIdentity: string;
+  osBuild: string;
+  providerAssurance: AgentSystemModelActivation["assurance"];
+  transitionReason: AgentTransitionReason;
   secretFields: readonly [];
 };
 
@@ -40,6 +66,7 @@ export type AgentDiagnosticsEvent = {
   kind: AgentLineageEvent["kind"];
   phase: AgentRunPhase;
   occurredAt: string;
+  transitionReason: AgentTransitionReason;
   secretFields: readonly [];
 };
 
@@ -60,10 +87,29 @@ export type AgentProviderStart = {
   runId: string;
   input: AgentStartInput;
   toolGateway: AgentToolGateway;
+  onStream: (content: string) => void;
   onComplete: () => void;
+  onFailure: (error: Error) => void;
 };
 
+export type AgentProviderActivation = {
+  availability: "available" | "unavailable" | "incompatible";
+  providerIdentity: string;
+  osBuild: string;
+  reason?: string;
+};
+
+export type AgentSystemModelActivation = Omit<AgentProviderActivation, "availability" | "reason"> & {
+  availability: "available";
+  assurance: "verified-build" | "unverified-build";
+};
+
+export const VERIFIED_APPLE_SYSTEM_MODEL_PROVIDER_IDENTITY =
+  "apple.foundation-models:SystemLanguageModel.default";
+export const VERIFIED_APPLE_SYSTEM_MODEL_OS_BUILD = "25C56";
+
 export type AgentProvider = {
+  activate(options?: { userStartedNewRun?: boolean }): Promise<AgentProviderActivation>;
   start(input: AgentProviderStart): void;
   cancel(runId: string): void;
 };
@@ -87,12 +133,20 @@ export type AgentRunRecord = {
   phase: AgentRunPhase;
   startedAt: string;
   finishedAt: string | null;
+  output: string;
+  failureReason: AgentFailureReason | null;
 };
 
 export type AgentRunStore = {
   createRun(record: AgentRunRecord): void;
   getRun(runId: string): AgentRunRecord | null;
-  updateRun(runId: string, update: Partial<Pick<AgentRunRecord, "phase" | "finishedAt">>): void;
+  updateRun(
+    runId: string,
+    update: Partial<Pick<
+      AgentRunRecord,
+      "phase" | "finishedAt" | "output" | "failureReason"
+    >>,
+  ): void;
   appendLineage(event: AgentLineageEvent): void;
   getLineage(runId: string): AgentLineageEvent[];
 };
@@ -102,7 +156,9 @@ export type AgentDiagnosticsSink = {
 };
 
 export type AgentHarnessService = {
+  activate(options?: { userStartedNewRun?: boolean }): Promise<AgentSystemModelActivation>;
   start(input: AgentStartInput): AgentRunStatus;
+  startNewRun(input: AgentStartInput): Promise<AgentRunStatus>;
   status(runId: string): AgentRunStatus;
   cancel(runId: string): AgentRunStatus;
   complete(runId: string): AgentRunStatus;
@@ -110,7 +166,15 @@ export type AgentHarnessService = {
 };
 
 export const AGENT_SECRET_SCHEMA_ALLOWLIST: SecretSchemaAllowlist = {
-  "agent-run": ["runId", "analysisId", "phase", "startedAt", "finishedAt"],
+  "agent-run": [
+    "runId",
+    "analysisId",
+    "phase",
+    "startedAt",
+    "finishedAt",
+    "output",
+    "failureReason",
+  ],
   "agent-lineage": [
     "runId",
     "analysisId",
@@ -119,11 +183,24 @@ export const AGENT_SECRET_SCHEMA_ALLOWLIST: SecretSchemaAllowlist = {
     "status",
     "occurredAt",
     "dataClasses",
+    "providerIdentity",
+    "osBuild",
+    "providerAssurance",
+    "transitionReason",
     "secretFields",
   ],
-  "agent-diagnostic": ["runId", "kind", "phase", "occurredAt", "secretFields"],
-  "agent-start-input": ["analysisId"],
-  "agent-status": ["apiVersion", "runId", "phase", "action", "startedAt", "finishedAt"],
+  "agent-diagnostic": [
+    "runId",
+    "kind",
+    "phase",
+    "occurredAt",
+    "transitionReason",
+    "secretFields",
+  ],
+  "agent-start-input": ["analysisId", "prompt"],
+  "agent-activation": ["apiVersion", "availability", "warning"],
+  "agent-stream": ["output"],
+  "agent-status": ["apiVersion", "runId", "phase", "action", "startedAt", "finishedAt", "output"],
 };
 
 export function createAgentSecretBoundaryGate({
@@ -203,6 +280,10 @@ export function createInlineAgentHelper(): AgentHelper {
           providers.delete(input.runId);
           input.onComplete();
         },
+        onFailure: (error) => {
+          providers.delete(input.runId);
+          input.onFailure(error);
+        },
       });
     },
     cancel(runId) {
@@ -216,6 +297,13 @@ export function createInlineAgentHelper(): AgentHelper {
 
 export function createNoToolAgentProvider(): AgentProvider {
   return {
+    async activate(options = {}) {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
     start({ onComplete }) {
       onComplete();
     },
@@ -236,14 +324,27 @@ export type AgentHarnessDependencies = {
   secretBoundaryDependencies?: Partial<SecretBoundaryDependencies>;
 };
 
-function statusFor(record: AgentRunRecord): AgentRunStatus {
+function statusFor(record: AgentRunRecord, output = record.output): AgentRunStatus {
   return {
     runId: record.runId,
     phase: record.phase,
     action: record.phase === "running" ? { type: "cancel" } : null,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
+    output,
   };
+}
+
+const AGENT_FAILURE_REASON_SET: ReadonlySet<string> = new Set(AGENT_FAILURE_REASONS);
+
+export function isAgentFailureReason(value: unknown): value is AgentFailureReason {
+  return typeof value === "string" && AGENT_FAILURE_REASON_SET.has(value);
+}
+
+function boundedAgentFailureReason(error: Error): AgentFailureReason {
+  return isAgentFailureReason(error.message)
+    ? error.message
+    : "provider-failed";
 }
 
 function requireRun(runStore: AgentRunStore, runId: string) {
@@ -269,6 +370,10 @@ export function createAgentHarnessService({
     additionalSecretValues,
     dependencies: secretBoundaryDependencies,
   });
+  let activeProvider: AgentSystemModelActivation | null = null;
+  let activationGeneration = 0;
+  const outputs = new Map<string, string>();
+  const runProviders = new Map<string, AgentSystemModelActivation>();
 
   function recordLineage(event: AgentLineageEvent) {
     const protectedEvent = secretBoundary.protectRecord(
@@ -294,14 +399,25 @@ export function createAgentHarnessService({
     diagnosticsSink.record(protectedEvent.value as AgentDiagnosticsEvent);
   }
 
-  function transition(runId: string, kind: AgentLineageEvent["kind"], phase: AgentRunPhase) {
+  function transition(
+    runId: string,
+    kind: AgentLineageEvent["kind"],
+    phase: AgentRunPhase,
+    transitionReason: AgentTransitionReason = null,
+  ) {
     const record = requireRun(runStore, runId);
-    if (record.phase !== "running") return statusFor(record);
+    if (record.phase !== "running") return statusFor(record, outputs.get(runId));
+    const runProvider = runProviders.get(runId);
+    if (!runProvider) throw new Error("Agent run provider metadata not found.");
     const occurredAt = clock.now();
+    const output = outputs.get(runId) ?? record.output;
+    const failureReason = phase === "failed"
+      ? transitionReason as AgentFailureReason
+      : null;
     const protectedRecord = secretBoundary.protectRecord(
       "sqlite-persistence",
       "agent-run",
-      { ...record, phase, finishedAt: occurredAt },
+      { ...record, phase, finishedAt: occurredAt, output, failureReason },
     );
     if (protectedRecord.failure) {
       throw new Error(secretBoundaryFailureMessage(protectedRecord.failure));
@@ -309,6 +425,8 @@ export function createAgentHarnessService({
     runStore.updateRun(runId, {
       phase: protectedRecord.value.phase as AgentRunPhase,
       finishedAt: protectedRecord.value.finishedAt as string,
+      output: protectedRecord.value.output as string,
+      failureReason: protectedRecord.value.failureReason as AgentFailureReason | null,
     });
     recordLineage({
       runId,
@@ -318,18 +436,60 @@ export function createAgentHarnessService({
       status: "observed",
       occurredAt,
       dataClasses: [],
+      providerIdentity: runProvider.providerIdentity,
+      osBuild: runProvider.osBuild,
+      providerAssurance: runProvider.assurance,
+      transitionReason,
       secretFields: [],
     });
-    recordDiagnostics({ runId, kind, phase, occurredAt, secretFields: [] });
+    recordDiagnostics({
+      runId,
+      kind,
+      phase,
+      occurredAt,
+      transitionReason,
+      secretFields: [],
+    });
+    runProviders.delete(runId);
+    outputs.delete(runId);
     return status(runId);
   }
 
   function status(runId: string) {
-    return statusFor(requireRun(runStore, runId));
+    return statusFor(requireRun(runStore, runId), outputs.get(runId));
   }
 
   return {
+    async activate(options = {}) {
+      const generation = ++activationGeneration;
+      activeProvider = null;
+      const activation = await provider.activate(options);
+      if (generation !== activationGeneration) {
+        throw new Error("Apple system model activation superseded.");
+      }
+      if (activation.availability === "unavailable") {
+        throw new Error("Apple system model activation blocked: provider unavailable.");
+      }
+      if (activation.availability === "incompatible") {
+        throw new Error("Apple system model activation blocked: provider API incompatible.");
+      }
+      activeProvider = {
+        availability: activation.availability,
+        providerIdentity: activation.providerIdentity,
+        osBuild: activation.osBuild,
+        assurance: activation.providerIdentity
+            === VERIFIED_APPLE_SYSTEM_MODEL_PROVIDER_IDENTITY
+          && activation.osBuild === VERIFIED_APPLE_SYSTEM_MODEL_OS_BUILD
+          ? "verified-build"
+          : "unverified-build",
+      };
+      return activeProvider;
+    },
     start(input) {
+      if (!activeProvider) {
+        throw new Error("Apple system model must be activated before starting a run.");
+      }
+      const runProvider = activeProvider;
       const runId = idFactory();
       const startedAt = clock.now();
       const protectedInput = secretBoundary.protectRecord(
@@ -346,6 +506,8 @@ export function createAgentHarnessService({
         phase: "running" as const,
         startedAt,
         finishedAt: null,
+        output: "",
+        failureReason: null,
       };
       const protectedRecord = secretBoundary.protectRecord(
         "sqlite-persistence",
@@ -356,6 +518,8 @@ export function createAgentHarnessService({
         throw new Error(secretBoundaryFailureMessage(protectedRecord.failure));
       }
       runStore.createRun(protectedRecord.value as typeof record);
+      outputs.set(runId, "");
+      runProviders.set(runId, runProvider);
       recordLineage({
         runId,
         analysisId: record.analysisId,
@@ -364,22 +528,61 @@ export function createAgentHarnessService({
         status: "allowed",
         occurredAt: startedAt,
         dataClasses: [],
+        providerIdentity: runProvider.providerIdentity,
+        osBuild: runProvider.osBuild,
+        providerAssurance: runProvider.assurance,
+        transitionReason: null,
         secretFields: [],
       });
-      recordDiagnostics({ runId, kind: "run.started", phase: "running", occurredAt: startedAt, secretFields: [] });
+      recordDiagnostics({
+        runId,
+        kind: "run.started",
+        phase: "running",
+        occurredAt: startedAt,
+        transitionReason: null,
+        secretFields: [],
+      });
       try {
         helper.launch({
           runId,
           input: protectedInput.value as AgentStartInput,
           provider,
           toolGateway,
+          onStream: (output) => {
+            if (requireRun(runStore, runId).phase !== "running") return;
+            const protectedStream = secretBoundary.protectRecord(
+              "diagnostic-export",
+              "agent-stream",
+              { output },
+            );
+            if (protectedStream.failure) {
+              transition(
+                runId,
+                "run.failed",
+                "failed",
+                "secret-boundary-violation",
+              );
+              return;
+            }
+            outputs.set(runId, protectedStream.value.output as string);
+          },
           onComplete: () => transition(runId, "run.completed", "completed"),
+          onFailure: (error) => transition(
+            runId,
+            "run.failed",
+            "failed",
+            boundedAgentFailureReason(error),
+          ),
         });
       } catch {
-        transition(runId, "run.failed", "failed");
+        transition(runId, "run.failed", "failed", "helper-launch-failed");
         throw new Error("Agent helper launch failed.");
       }
       return status(runId);
+    },
+    async startNewRun(input) {
+      await this.activate({ userStartedNewRun: true });
+      return this.start(input);
     },
     status,
     cancel(runId) {
@@ -390,9 +593,9 @@ export function createAgentHarnessService({
         } catch {
           throw new Error("Agent cancellation failed.");
         }
-        return transition(runId, "run.cancelled", "cancelled");
+        return transition(runId, "run.cancelled", "cancelled", "user-cancelled");
       }
-      return statusFor(record);
+      return statusFor(record, outputs.get(runId));
     },
     complete(runId) {
       return transition(runId, "run.completed", "completed");

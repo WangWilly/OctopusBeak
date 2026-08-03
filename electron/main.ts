@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
@@ -12,8 +14,12 @@ import {
   createAgentHarnessService,
   createInlineAgentHelper,
   createNoToolAgentGateway,
-  createNoToolAgentProvider,
 } from "../src/lib/agent/server/harness.ts";
+import {
+  createAppleSystemModelProtocolClient,
+  createAppleSystemModelProvider,
+  spawnEmbeddedAppleSystemModelHelper,
+} from "../src/lib/agent/server/apple-system-model-provider.ts";
 import { createSqliteAgentRunStore } from "../src/lib/agent/server/store.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { hasSuccessfulTaskRunSince } from "../src/lib/automation/server/store.ts";
@@ -50,12 +56,15 @@ let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 let agentStore: ReturnType<typeof createSqliteAgentRunStore> | null = null;
+let agentProviderClient: ReturnType<typeof createAppleSystemModelProtocolClient> | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: () => {
     scheduler?.stop();
+    agentProviderClient?.close();
+    agentProviderClient = null;
     agentStore?.close();
     agentStore = null;
     return shutdownAutomationSessions();
@@ -72,6 +81,16 @@ function projectRoot() {
 
 function rendererEntry(appRoot: string) {
   return pathToFileURL(path.join(appRoot, "build", "index.html")).href;
+}
+
+function appleSystemModelHelperPath(appRoot: string) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "apple-system-model-helper")
+    : path.join(appRoot, "build-helpers", "apple-system-model-helper");
+}
+
+function hostOsBuild() {
+  return execFileSync("/usr/bin/sw_vers", ["-buildVersion"], { encoding: "utf8" }).trim();
 }
 
 function isAllowedNavigation(targetUrl: string, rendererUrl: string) {
@@ -177,9 +196,19 @@ async function start() {
   });
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   agentStore = createSqliteAgentRunStore(ledgerDir);
+  agentProviderClient = createAppleSystemModelProtocolClient({
+    launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
+      executablePath: appleSystemModelHelperPath(appRoot),
+    }),
+    requestIdFactory: () => randomUUID(),
+  });
+  const agentProvider = createAppleSystemModelProvider({
+    client: agentProviderClient,
+    hostOsBuild,
+  });
   const agentService = createAgentHarnessService({
     helper: createInlineAgentHelper(),
-    provider: createNoToolAgentProvider(),
+    provider: agentProvider,
     runStore: agentStore,
     toolGateway: createNoToolAgentGateway(),
     clock: { now: () => new Date().toISOString() },

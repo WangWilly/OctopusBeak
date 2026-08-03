@@ -3,6 +3,7 @@ node_modules
 .svelte-kit/
 build/
 /build-electron/
+/build-helpers/
 out/
 /reports/
 .env

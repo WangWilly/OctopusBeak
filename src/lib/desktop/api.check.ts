@@ -10,6 +10,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "spending:load",
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
+  "agent:v1:activate",
   "agent:v1:start",
   "agent:v1:status",
   "agent:v1:cancel",
