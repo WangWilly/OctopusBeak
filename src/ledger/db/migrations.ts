@@ -787,7 +787,6 @@ function createAgentHarnessSchema(db: LedgerDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_runs (
       run_id TEXT PRIMARY KEY,
-      analysis_id TEXT,
       phase TEXT NOT NULL,
       started_at TEXT NOT NULL,
       finished_at TEXT,
@@ -795,7 +794,6 @@ function createAgentHarnessSchema(db: LedgerDatabase) {
     );
     CREATE TABLE IF NOT EXISTS agent_run_lineage (
       run_id TEXT NOT NULL,
-      analysis_id TEXT,
       seq INTEGER NOT NULL,
       kind TEXT NOT NULL,
       status TEXT NOT NULL,

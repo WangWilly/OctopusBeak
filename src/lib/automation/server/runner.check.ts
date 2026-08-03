@@ -17,6 +17,7 @@ import {
   ownAutomationSession,
   ownedAutomationSession,
 } from "./session-lifecycle.ts";
+import { createSecretBoundaryGate } from "./secret-boundary.ts";
 import {
   accumulateAutomationOutput,
   activeAutomationTaskIds,
@@ -130,6 +131,24 @@ assert.equal(
   "workflow failed\nSession cleanup failed: IPC timeout",
 );
 assert.equal(appendCleanupError(null, "IPC timeout"), "Session cleanup failed: IPC timeout");
+
+test("cleanup error composition projects a deterministic boundary violation", () => {
+  const canary = "runtime-canary-cleanup-composition";
+  const gate = createSecretBoundaryGate({ secretValues: [canary] });
+
+  const message = appendCleanupError(
+    "workflow failed",
+    `IPC exposed ${canary}`,
+    gate,
+  );
+
+  assert.equal(
+    message,
+    "SECRET_BOUNDARY_VIOLATION surface=cleanup-error reason=authentication-secret-detected",
+  );
+  assert.equal(message.includes(canary), false);
+});
+
 assert.deepEqual(
   automationCleanupFailureDetails({
     taskId: "task-log",
@@ -144,6 +163,26 @@ assert.deepEqual(
     error: "IPC timeout",
   },
 );
+
+test("cleanup diagnostics project a deterministic boundary violation", () => {
+  const canary = "runtime-canary-cleanup-diagnostic";
+  const gate = createSecretBoundaryGate({ secretValues: [canary] });
+
+  const details = automationCleanupFailureDetails({
+    taskId: "task-secret-diagnostic",
+    taskRunId: "run-secret-diagnostic",
+    session: "ses-secret-diagnostic",
+    pid: 778,
+  }, new Error(`IPC exposed ${canary}`), gate);
+
+  assert.deepEqual(details, {
+    taskRunId: "run-secret-diagnostic",
+    sessionId: "ses-secret-diagnostic",
+    retainedPid: 778,
+    error: "SECRET_BOUNDARY_VIOLATION surface=cleanup-error reason=authentication-secret-detected",
+  });
+  assert.equal(JSON.stringify(details).includes(canary), false);
+});
 
 test("persisted session recovery uses a bounded log read", () => {
   const source = readFileSync(new URL("./automation-session-disposition.ts", import.meta.url), "utf8");
@@ -180,6 +219,62 @@ test("terminal cleanup catch logs owner and appends the workflow error", async (
       error: "close timeout",
     },
   ]]);
+});
+
+test("successful terminal cleanup preserves a workflow boundary violation", async () => {
+  const canary = "runtime-canary-cleanup-workflow";
+  const gate = createSecretBoundaryGate({ secretValues: [canary] });
+
+  const result = await finalizeTerminalAutomationSession({
+    taskId: "task-secret-workflow",
+    taskRunId: "run-secret-workflow",
+    session: "ses-secret-workflow",
+    pid: 779,
+  }, `workflow exposed ${canary}`, async () => {}, gate);
+
+  assert.deepEqual(result, {
+    errorMessage:
+      "SECRET_BOUNDARY_VIOLATION surface=cleanup-error reason=authentication-secret-detected",
+    cleanupFailed: false,
+  });
+  assert.equal(JSON.stringify(result).includes(canary), false);
+});
+
+test("failed terminal cleanup projects one boundary violation through result and diagnostics", async () => {
+  const canary = "runtime-canary-cleanup-failure";
+  const gate = createSecretBoundaryGate({ secretValues: [canary] });
+  const messages: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { messages.push(args); };
+  try {
+    const result = await finalizeTerminalAutomationSession({
+      taskId: "task-secret-cleanup",
+      taskRunId: "run-secret-cleanup",
+      session: "ses-secret-cleanup",
+      pid: 780,
+    }, "workflow failed", async () => {
+      throw new Error(`IPC exposed ${canary}`);
+    }, gate);
+
+    assert.deepEqual(result, {
+      errorMessage:
+        "SECRET_BOUNDARY_VIOLATION surface=cleanup-error reason=authentication-secret-detected",
+      cleanupFailed: true,
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert.deepEqual(messages, [[
+    "automation-session-cleanup-failed",
+    {
+      taskRunId: "run-secret-cleanup",
+      sessionId: "ses-secret-cleanup",
+      retainedPid: 780,
+      error:
+        "SECRET_BOUNDARY_VIOLATION surface=cleanup-error reason=authentication-secret-detected",
+    },
+  ]]);
+  assert.equal(JSON.stringify(messages).includes(canary), false);
 });
 
 const exchangeRateTask = taskById("exchange-rates");

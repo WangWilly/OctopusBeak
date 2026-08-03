@@ -231,14 +231,19 @@ export function createSecretBoundaryGate({
     for (const character of value) {
       pending += character;
       while (pending) {
-        if (secrets.includes(pending)) {
-          protectedValue += redactText(surface, pending);
+        const matchedSecret = secrets.find((secret) => pending.startsWith(secret));
+        const mayMatchLongerSecret = secrets.some(
+          (secret) => secret.length > pending.length && secret.startsWith(pending),
+        );
+        if (mayMatchLongerSecret) break;
+        if (matchedSecret) {
+          protectedValue += redactText(surface, matchedSecret);
           failure ??= {
             surface,
             reason: "authentication-secret-detected",
           };
-          pending = "";
-          break;
+          pending = pending.slice(matchedSecret.length);
+          continue;
         }
         if (secrets.some((secret) => secret.startsWith(pending))) break;
         protectedValue += pending[0];
@@ -246,8 +251,20 @@ export function createSecretBoundaryGate({
       }
     }
     if (flush) {
-      protectedValue += pending;
-      pending = "";
+      while (pending) {
+        const matchedSecret = secrets.find((secret) => pending.startsWith(secret));
+        if (matchedSecret) {
+          protectedValue += redactText(surface, matchedSecret);
+          failure ??= {
+            surface,
+            reason: "authentication-secret-detected",
+          };
+          pending = pending.slice(matchedSecret.length);
+          continue;
+        }
+        protectedValue += pending[0];
+        pending = pending.slice(1);
+      }
     }
     streamPending.set(surface, pending);
     assertProtectedText(surface, protectedValue);

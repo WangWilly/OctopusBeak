@@ -179,6 +179,91 @@ test("stdout accumulation holds a possible secret prefix across chunks", () => {
   });
 });
 
+test("stream protection prefers the longest secret across chunk boundaries", () => {
+  const reports: unknown[] = [];
+  const gate = createSecretBoundaryGate({
+    secretValues: ["ab", "abc"],
+    report: (failure) => reports.push(failure),
+  });
+
+  const first = gate.protectStreamText("stdout", "a");
+  const second = gate.protectStreamText("stdout", "b");
+  const third = gate.protectStreamText("stdout", "c");
+
+  assert.deepEqual(first, { value: "", failure: null });
+  assert.deepEqual(second, { value: "", failure: null });
+  assert.deepEqual(third, {
+    value: "[REDACTED]",
+    failure: {
+      surface: "stdout",
+      reason: "authentication-secret-detected",
+    },
+  });
+  assert.equal(
+    [first.value, second.value, third.value].join("").includes("abc"),
+    false,
+  );
+  assert.deepEqual(reports, [third.failure]);
+});
+
+test("stream flush redacts an exact secret that is also a longer secret prefix", () => {
+  const reports: unknown[] = [];
+  const gate = createSecretBoundaryGate({
+    secretValues: ["ab", "abc"],
+    report: (failure) => reports.push(failure),
+  });
+
+  const held = gate.protectStreamText("stderr", "ab");
+  const flushed = gate.protectStreamText("stderr", "", true);
+
+  assert.deepEqual(held, { value: "", failure: null });
+  assert.deepEqual(flushed, {
+    value: "[REDACTED]",
+    failure: {
+      surface: "stderr",
+      reason: "authentication-secret-detected",
+    },
+  });
+  assert.deepEqual(reports, [flushed.failure]);
+});
+
+test("stream flush releases an incomplete unmatched prefix without reporting a secret", () => {
+  const reports: unknown[] = [];
+  const gate = createSecretBoundaryGate({
+    secretValues: ["abc"],
+    report: (failure) => reports.push(failure),
+  });
+
+  const held = gate.protectStreamText("stdout", "ab");
+  const flushed = gate.protectStreamText("stdout", "", true);
+
+  assert.deepEqual(held, { value: "", failure: null });
+  assert.deepEqual(flushed, { value: "ab", failure: null });
+  assert.deepEqual(reports, []);
+});
+
+test("stream protection redacts the shorter secret after a longer match diverges", () => {
+  const reports: unknown[] = [];
+  const gate = createSecretBoundaryGate({
+    secretValues: ["ab", "abc"],
+    report: (failure) => reports.push(failure),
+  });
+
+  const held = gate.protectStreamText("stdout", "ab");
+  const diverged = gate.protectStreamText("stdout", "x");
+
+  assert.deepEqual(held, { value: "", failure: null });
+  assert.deepEqual(diverged, {
+    value: "[REDACTED]x",
+    failure: {
+      surface: "stdout",
+      reason: "authentication-secret-detected",
+    },
+  });
+  assert.equal(diverged.value.includes("ab"), false);
+  assert.deepEqual(reports, [diverged.failure]);
+});
+
 test("final failure and cleanup diagnostics share the secret gate contract", () => {
   const canary = `runtime-canary-${randomUUID()}`;
   const reports: unknown[] = [];
