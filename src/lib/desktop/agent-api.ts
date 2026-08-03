@@ -6,6 +6,7 @@ import {
   type SecretBoundaryDependencies,
   type SecretBoundaryGate,
 } from "../agent/server/harness.ts";
+import { secretBoundaryFailureMessage } from "../automation/server/secret-boundary.ts";
 
 export const AGENT_DESKTOP_API_VERSION = "v1" as const;
 
@@ -61,7 +62,7 @@ export function projectAgentRunStatus(
     projected,
   );
   if (protectedProjection.failure) {
-    throw new Error("SECRET_BOUNDARY_VIOLATION surface=diagnostic-export reason=authentication-secret-detected");
+    throw new Error(secretBoundaryFailureMessage(protectedProjection.failure));
   }
   return protectedProjection.value as AgentStatusDto;
 }
