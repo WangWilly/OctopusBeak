@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -103,6 +104,22 @@ function observedChildEnvironment(env) {
   return JSON.parse(child.stdout);
 }
 
+function captureProcessOutput() {
+  const emitted = [];
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = (chunk) => {
+    emitted.push(String(chunk));
+    return true;
+  };
+  process.stderr.write = (chunk) => {
+    emitted.push(String(chunk));
+    return true;
+  };
+  return { emitted, stdout, stderr };
+}
+
+let capturedOutput = null;
 try {
   assert.ok(
     AUTOMATION_SECRET_KEYS.length >= 2,
@@ -131,6 +148,7 @@ try {
     [unrelatedKey]: `audit-canary-${randomUUID()}`,
   };
   const canaries = Object.values(credentials);
+  capturedOutput = captureProcessOutput();
 
   setAutomationCredentialCodec({ encrypt, decrypt });
   writeAutomationCredentialsFile(credentialPath, credentials);
@@ -189,12 +207,17 @@ try {
     secretGate,
   );
   const logPath = join(tempRoot, "automation.log");
-  appendLog(
-    logPath,
-    `filesystem diagnostic: ${credentials[requestedKey]}\n`,
-    secretGate,
-  );
-  const filesystemLog = readFileSync(logPath, "utf8");
+  let filesystemLogFailure = "";
+  try {
+    appendLog(
+      logPath,
+      `filesystem diagnostic: ${credentials[requestedKey]}\n`,
+      secretGate,
+    );
+  } catch (error) {
+    filesystemLogFailure = error instanceof Error ? error.message : String(error);
+  }
+  const filesystemLog = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
   const taskDb = openLedgerDatabase(join(tempRoot, "ledger"));
   const taskRun = createTaskRun(taskDb, {
     taskId: "secret-boundary-audit",
@@ -205,13 +228,18 @@ try {
     maxAttempts: 1,
     startedAt: "2026-08-03T00:00:00.000Z",
     logPath,
-    logTail: `sqlite tail: ${credentials[requestedKey]}`,
+    logTail: "safe sqlite tail",
   }, secretGate);
-  updateTaskRun(taskDb, taskRun.taskRunId, {
-    status: "failed",
-    finishedAt: "2026-08-03T00:00:01.000Z",
-    errorMessage: `sqlite failure: ${credentials[unrelatedKey]}`,
-  }, secretGate);
+  let sqlitePersistenceFailure = "";
+  try {
+    updateTaskRun(taskDb, taskRun.taskRunId, {
+      status: "failed",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+      errorMessage: `sqlite failure: ${credentials[unrelatedKey]}`,
+    }, secretGate);
+  } catch (error) {
+    sqlitePersistenceFailure = error instanceof Error ? error.message : String(error);
+  }
   const sqliteRecord = taskDb.prepare(
     "SELECT error_message, log_tail, record_json FROM automation_task_runs WHERE task_run_id = ?",
   ).get(taskRun.taskRunId);
@@ -225,8 +253,20 @@ try {
     JSON.stringify({ errorMessage: credentials[requestedKey] }),
     taskRun.taskRunId,
   );
-  const diagnosticExport = recentTaskRuns(taskDb, 1, secretGate);
-  const rendererProjection = latestTaskRuns(taskDb, secretGate);
+  let diagnosticExport = null;
+  let diagnosticExportFailure = "";
+  try {
+    diagnosticExport = recentTaskRuns(taskDb, 1, secretGate);
+  } catch (error) {
+    diagnosticExportFailure = error instanceof Error ? error.message : String(error);
+  }
+  let rendererProjection = null;
+  let rendererProjectionFailure = "";
+  try {
+    rendererProjection = latestTaskRuns(taskDb, secretGate);
+  } catch (error) {
+    rendererProjectionFailure = error instanceof Error ? error.message : String(error);
+  }
   taskDb.close();
   const patchDiagnostics = [];
   let patchDiagnosticFailure = "";
@@ -349,22 +389,39 @@ try {
     ),
     observation(
       "filesystem-log-redaction",
-      containsCanary(filesystemLog, canaries) ? "FAIL" : "PASS",
-      "The filesystem log writer gates content before append.",
+      !containsCanary({ filesystemLog, filesystemLogFailure }, canaries) &&
+        filesystemLogFailure ===
+          "SECRET_BOUNDARY_VIOLATION surface=filesystem-log reason=authentication-secret-detected"
+        ? "PASS"
+        : "FAIL",
+      "The filesystem log writer rejects a canary before append and emits no secret value.",
       "production-automation-worker",
     ),
     observation(
       "sqlite-persistence-redaction",
-      containsCanary(sqliteRecord, canaries) ? "FAIL" : "PASS",
-      "SQLite columns and record_json pass through the allowlisted persistence gate.",
+      !containsCanary({ sqliteRecord, sqlitePersistenceFailure }, canaries) &&
+        sqlitePersistenceFailure ===
+          "SECRET_BOUNDARY_VIOLATION surface=sqlite-persistence reason=authentication-secret-detected"
+        ? "PASS"
+        : "FAIL",
+      "SQLite persistence rejects a canary before mutation and emits no secret value.",
       "production-automation-worker",
     ),
     observation(
       "diagnostic-export-redaction",
-      !containsCanary({ diagnosticExport, rendererProjection }, canaries)
+      !containsCanary({
+        diagnosticExport,
+        diagnosticExportFailure,
+        rendererProjection,
+        rendererProjectionFailure,
+      }, canaries) &&
+        diagnosticExportFailure ===
+          "SECRET_BOUNDARY_VIOLATION surface=diagnostic-export reason=authentication-secret-detected" &&
+        rendererProjectionFailure ===
+          "SECRET_BOUNDARY_VIOLATION surface=diagnostic-export reason=authentication-secret-detected"
         ? "PASS"
         : "FAIL",
-      "Automation history and renderer task-run projections use allowlisted export schemas.",
+      "Automation history and renderer task-run projections reject canaries through the allowlisted export gate.",
       "production-automation-worker",
     ),
     observation(
@@ -425,10 +482,18 @@ try {
     "The prototype contract leaked a canary.",
   );
 
-  process.stdout.write(`${JSON.stringify({
+  const canaryValuesEmitted = capturedOutput.emitted.some((chunk) =>
+    containsCanary(chunk, canaries)
+  );
+  assert.equal(
+    canaryValuesEmitted,
+    false,
+    "The audit process emitted a runtime canary.",
+  );
+  capturedOutput.stdout(`${JSON.stringify({
     audit: "agent-authentication-secret-host-only-boundary",
     verdict: productionFailures.length === 0 ? "SHIP-ELIGIBLE" : "BLOCKED",
-    canaryValuesEmitted: false,
+    canaryValuesEmitted,
     requestedCredentialKey: requestedKey,
     unrelatedCredentialKey: unrelatedKey,
     requestedTaskId: requestedTask.id,
@@ -436,6 +501,10 @@ try {
     observations,
   }, null, 2)}\n`);
 } finally {
+  if (capturedOutput) {
+    process.stdout.write = capturedOutput.stdout;
+    process.stderr.write = capturedOutput.stderr;
+  }
   setAutomationCredentialCodec(null);
   rmSync(tempRoot, { recursive: true, force: true });
 }

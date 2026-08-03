@@ -4,6 +4,7 @@ import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 import {
   createAutomationSecretBoundaryGate,
+  secretBoundaryFailureMessage,
   type SecretBoundaryGate,
 } from "./secret-boundary.ts";
 
@@ -91,11 +92,15 @@ function protectTaskRunRecord<T extends Record<string, unknown>>(
   secretGate: SecretBoundaryGate,
   surface: "sqlite-persistence" | "diagnostic-export",
 ) {
-  return secretGate.protectRecord(
+  const protectedRecord = secretGate.protectRecord(
     surface,
     "automation-task-run",
     record,
-  ).value;
+  );
+  if (protectedRecord.failure) {
+    throw new Error(secretBoundaryFailureMessage(protectedRecord.failure));
+  }
+  return protectedRecord.value;
 }
 
 function protectedPersistedTaskRunRecord(
@@ -275,10 +280,7 @@ export function recentTaskRuns(
     ORDER BY started_at DESC
     LIMIT ?
   `).all(limit) as Record<string, unknown>[];
-  return rows.map((row) => secretGate.protectRecord(
-    "diagnostic-export",
-    "automation-history",
-    {
+  return rows.map((row) => protectTaskRunRecord({
       taskRunId: String(row.task_run_id),
       taskId: String(row.task_id),
       script: String(row.script),
@@ -290,8 +292,7 @@ export function recentTaskRuns(
       signal: nullableString(row.signal),
       errorMessage: nullableString(row.error_message),
       logPath: String(row.log_path),
-    },
-  ).value);
+    }, secretGate, "diagnostic-export"));
 }
 
 export function importGateStatus(
