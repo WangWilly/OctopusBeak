@@ -272,12 +272,17 @@ export function createAppleSystemModelProtocolClient({
     for (const waiter of messageWaiters.splice(0)) waiter.reject(error);
     for (const waiter of activationWaiters.values()) waiter.reject(error);
     activationWaiters.clear();
-    for (const run of runs.values()) {
-      clearRunDeadline(run);
-      run.onFailure(error);
-    }
+    const activeRuns = [...runs.values()];
     runs.clear();
     bufferedMessages.length = 0;
+    for (const run of activeRuns) {
+      clearRunDeadline(run);
+      try {
+        run.onFailure(error);
+      } catch {
+        // A consumer callback cannot replace the transport failure or stop teardown.
+      }
+    }
     if (terminate) helperProcess.terminate();
   }
 

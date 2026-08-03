@@ -1157,6 +1157,126 @@ test("embedded Apple helper reports a neutral exit after handshake", async () =>
   assert.doesNotMatch(error.message, /before handshake/);
 });
 
+test("a throwing run failure callback cannot interrupt transport teardown or a later replacement", async () => {
+  const listeners: Array<(line: string) => void> = [];
+  let launchCount = 0;
+  let firstProcessTerminated = false;
+  const receivedFailures: Error[] = [];
+  const lateOutput: string[] = [];
+  const firstProcess: EmbeddedHelperProcess = {
+    onLine(listener) {
+      listeners.push(listener);
+      queueMicrotask(() => listener(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { type: string; requestId?: string };
+      if (request.type === "activate") queueMicrotask(() => listeners[0](JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "available",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {
+      firstProcessTerminated = true;
+    },
+  };
+  const replacementProcess: EmbeddedHelperProcess = {
+    onLine(listener) {
+      listeners.push(listener);
+      queueMicrotask(() => listener(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { type: string; requestId?: string };
+      if (request.type === "activate") queueMicrotask(() => listeners[1](JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "available",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {},
+  };
+  const client = createAppleSystemModelProtocolClient({
+    launchProcess: () => (++launchCount === 1 ? firstProcess : replacementProcess),
+    requestIdFactory: () => `failure-callback-${launchCount}`,
+  });
+
+  await client.activate();
+  client.start({
+    runId: "throwing-failure-run",
+    prompt: "Fail safely.",
+    onStream: (content) => lateOutput.push(content),
+    onComplete() {
+      assert.fail("failed run must not complete");
+    },
+    onFailure() {
+      throw new Error("downstream failure callback threw");
+    },
+  });
+  client.start({
+    runId: "notified-failure-run",
+    prompt: "Receive the transport failure.",
+    onStream: (content) => lateOutput.push(content),
+    onComplete() {
+      assert.fail("failed run must not complete");
+    },
+    onFailure: (error) => receivedFailures.push(error),
+  });
+
+  listeners[0](JSON.stringify({
+    protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+    type: "complete",
+    runId: "notified-failure-run",
+    content: "invalid extra field",
+  }));
+
+  assert.equal(firstProcessTerminated, true);
+  assert.equal(receivedFailures.length, 1);
+  assert.match(receivedFailures[0].message, /run response was invalid/);
+
+  listeners[0](JSON.stringify({
+    protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+    type: "stream",
+    runId: "notified-failure-run",
+    content: "late output",
+  }));
+  assert.deepEqual(lateOutput, []);
+
+  assert.deepEqual(await client.activate({ userStartedNewRun: true }), {
+    availability: "available",
+    providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+    osBuild: "25C56",
+  });
+  assert.doesNotThrow(() => client.start({
+    runId: "replacement-run",
+    prompt: "Start cleanly.",
+    onStream() {},
+    onComplete() {},
+    onFailure() {},
+  }));
+});
+
 test("production embedded helper spawn failure rejects activation without crashing the host", async () => {
   const client = createAppleSystemModelProtocolClient({
     launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
