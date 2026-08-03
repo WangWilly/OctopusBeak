@@ -8,6 +8,13 @@ import {
   shutdownAutomationSessions,
   startAutomationTask,
 } from "../src/lib/automation/server/runner.ts";
+import {
+  createAgentHarnessService,
+  createInlineAgentHelper,
+  createNoToolAgentGateway,
+  createNoToolAgentProvider,
+} from "../src/lib/agent/server/harness.ts";
+import { createSqliteAgentRunStore } from "../src/lib/agent/server/store.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { hasSuccessfulTaskRunSince } from "../src/lib/automation/server/store.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
@@ -42,12 +49,15 @@ let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
+let agentStore: ReturnType<typeof createSqliteAgentRunStore> | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: () => {
     scheduler?.stop();
+    agentStore?.close();
+    agentStore = null;
     return shutdownAutomationSessions();
   },
   quit: () => app.quit(),
@@ -166,6 +176,15 @@ async function start() {
     console.warn("automation-session-startup-recovery-failed", error);
   });
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
+  agentStore = createSqliteAgentRunStore(ledgerDir);
+  const agentService = createAgentHarnessService({
+    helper: createInlineAgentHelper(),
+    provider: createNoToolAgentProvider(),
+    runStore: agentStore,
+    toolGateway: createNoToolAgentGateway(),
+    clock: { now: () => new Date().toISOString() },
+    diagnosticsSink: { record() {} },
+  });
   scheduler = createExchangeRateScheduler({
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
@@ -185,7 +204,7 @@ async function start() {
     },
     reportError: (error) => console.error("exchange-rate-scheduler-error", error),
   });
-  registerOctopusBeakIpc({ onSystemSettingsChanged: scheduler.reschedule });
+  registerOctopusBeakIpc({ onSystemSettingsChanged: scheduler.reschedule, agentService });
   scheduler.start();
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
