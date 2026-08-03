@@ -13,7 +13,9 @@ import {
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 import { liveTaskRunUpdate } from "./task-run-execution.ts";
+import { createSecretBoundaryGate } from "./secret-boundary.ts";
 import {
+  finalFailureMessage,
   finalizeAutomationTaskRun,
   finalizePersistedRun,
   type AutomationTaskProcessResult,
@@ -83,6 +85,23 @@ test("live finalization persists a partial statement outcome through one transit
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
+});
+
+test("final failure projects a deterministic boundary violation from its protected log", () => {
+  const canary = `runtime-canary-finalization`;
+  const gate = createSecretBoundaryGate({ secretValues: [canary] });
+
+  const message = finalFailureMessage(
+    `provider failed with ${canary}`,
+    1,
+    gate,
+  );
+
+  assert.equal(
+    message,
+    "SECRET_BOUNDARY_VIOLATION surface=final-failure reason=authentication-secret-detected",
+  );
+  assert.equal(message.includes(canary), false);
 });
 
 test("waiting for human remains active until a later run takes over", async () => {

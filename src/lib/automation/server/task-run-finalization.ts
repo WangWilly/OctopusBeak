@@ -87,8 +87,11 @@ export function finalFailureMessage(
   exitCode: number | null,
   secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
-  const protectedLogTail = secretGate.protectText("final-failure", logTail).value;
-  const message = protectedLogTail
+  const protectedLogTail = secretGate.protectText("final-failure", logTail);
+  if (protectedLogTail.failure) {
+    return secretBoundaryFailureMessage(protectedLogTail.failure);
+  }
+  const message = protectedLogTail.value
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
