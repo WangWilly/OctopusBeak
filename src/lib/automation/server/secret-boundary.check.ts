@@ -224,8 +224,11 @@ test("filesystem, SQLite, and diagnostic export persistence share one fail-close
     secretValues: [canary],
   });
   try {
-    appendLog(logPath, `provider failed with ${canary}\n`, gate);
-    assert.equal(readFileSync(logPath, "utf8").includes(canary), false);
+    assert.throws(
+      () => appendLog(logPath, `provider failed with ${canary}\n`, gate),
+      /SECRET_BOUNDARY_VIOLATION surface=filesystem-log reason=authentication-secret-detected$/,
+    );
+    assert.equal(existsSync(logPath), false);
 
     const db = openLedgerDatabase(join(root, "ledger"));
     const run = createTaskRun(db, {
@@ -237,13 +240,16 @@ test("filesystem, SQLite, and diagnostic export persistence share one fail-close
       maxAttempts: 1,
       startedAt: "2026-08-03T00:00:00.000Z",
       logPath,
-      logTail: `provider failed with ${canary}`,
+      logTail: "safe log tail",
     }, gate);
-    updateTaskRun(db, run.taskRunId, {
-      status: "failed",
-      finishedAt: "2026-08-03T00:00:01.000Z",
-      errorMessage: `failure projected ${canary}`,
-    }, gate);
+    assert.throws(
+      () => updateTaskRun(db, run.taskRunId, {
+        status: "failed",
+        finishedAt: "2026-08-03T00:00:01.000Z",
+        errorMessage: `failure projected ${canary}`,
+      }, gate),
+      /SECRET_BOUNDARY_VIOLATION surface=sqlite-persistence reason=authentication-secret-detected$/,
+    );
 
     const rawRow = db.prepare(
       "SELECT error_message, log_tail, record_json FROM automation_task_runs WHERE task_run_id = ?",
@@ -255,7 +261,14 @@ test("filesystem, SQLite, and diagnostic export persistence share one fail-close
       SET error_message = ?, log_tail = ?, record_json = ?
       WHERE task_run_id = ?
     `).run(canary, canary, JSON.stringify({ errorMessage: canary }), run.taskRunId);
-    assert.equal(JSON.stringify(latestTaskRuns(db, gate)).includes(canary), false);
+    assert.throws(
+      () => recentTaskRuns(db, 1, gate),
+      /SECRET_BOUNDARY_VIOLATION surface=diagnostic-export reason=authentication-secret-detected$/,
+    );
+    assert.throws(
+      () => latestTaskRuns(db, gate),
+      /SECRET_BOUNDARY_VIOLATION surface=diagnostic-export reason=authentication-secret-detected$/,
+    );
     db.close();
 
     const unavailableGate = createAutomationSecretBoundaryGate({
