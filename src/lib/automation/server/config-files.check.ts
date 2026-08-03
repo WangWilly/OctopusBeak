@@ -15,6 +15,7 @@ import {
   readAutomationCredentialsFile,
   readAutomationSettingsFile,
   setAutomationCredentialCodec,
+  setAutomationCredentialEncryptionRequired,
   settingsToEnv,
   splitAutomationUpdates,
   writeAutomationCredentialsFile,
@@ -189,6 +190,15 @@ try {
   });
 
   setAutomationCredentialCodec(null);
+  setAutomationCredentialEncryptionRequired(true);
+  assert.throws(
+    () => writeAutomationCredentialsFile(join(dir, "plaintext-refused.json"), {
+      [fubonPasswordKey]: "must-not-be-plaintext",
+    }),
+    /Credential encryption is required/,
+  );
+  setAutomationCredentialEncryptionRequired(false);
+
   assert.throws(
     () => readAutomationCredentialsFile(encryptedCredentialsPath),
     /Credential encryption is not configured/,
@@ -207,5 +217,6 @@ try {
   assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), false);
   setAutomationCredentialCodec(null);
 } finally {
+  setAutomationCredentialEncryptionRequired(false);
   rmSync(dir, { recursive: true, force: true });
 }

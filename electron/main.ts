@@ -155,6 +155,7 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
+  registerAutomationCredentialSafeStorage();
   try {
     prepareLibrettoRunCdpPatch();
   } catch (error) {
@@ -164,7 +165,6 @@ async function start() {
   await recoverAbandonedAutomationSessions().catch((error) => {
     console.warn("automation-session-startup-recovery-failed", error);
   });
-  registerAutomationCredentialSafeStorage();
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   scheduler = createExchangeRateScheduler({
     now: () => new Date(),

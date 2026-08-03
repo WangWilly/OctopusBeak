@@ -2,10 +2,12 @@ import { safeStorage } from "electron";
 import {
   migrateAutomationCredentialsFileEncryption,
   setAutomationCredentialCodec,
+  setAutomationCredentialEncryptionRequired,
 } from "../src/lib/automation/server/config-files.ts";
 import { assertSafeStorageCanEncrypt } from "./safe-storage-availability.ts";
 
 export function registerAutomationCredentialSafeStorage() {
+  setAutomationCredentialEncryptionRequired(true);
   assertSafeStorageCanEncrypt(safeStorage);
 
   setAutomationCredentialCodec({

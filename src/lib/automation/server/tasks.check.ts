@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_NON_SECRET_KEYS,
@@ -43,3 +44,12 @@ assert.equal(
   ].map((id) => [id, false]))).some(({ id }) => id === task.id),
   true,
 );
+
+const maicoinTask = taskById("sync-maicoin");
+assert.ok(maicoinTask);
+assert.equal(maicoinTask.command.includes("--env-file-if-exists=.env"), false);
+
+const packageJson = JSON.parse(
+  readFileSync(new URL("../../../../package.json", import.meta.url), "utf8"),
+) as { scripts: Record<string, string> };
+assert.doesNotMatch(packageJson.scripts["run:sync-maicoin"], /--env-file/);

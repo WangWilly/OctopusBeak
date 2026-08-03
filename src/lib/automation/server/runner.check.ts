@@ -10,6 +10,7 @@ import {
   statementRunSummaryLine,
 } from "../statement-run-summary.ts";
 import { activeTaskRuns, createTaskRun, latestTaskRuns, recentTaskRuns, taskRunById } from "./store.ts";
+import { taskById } from "./tasks.ts";
 import {
   armAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
@@ -181,8 +182,24 @@ test("terminal cleanup catch logs owner and appends the workflow error", async (
   ]]);
 });
 
-assert.equal(automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV, "development");
-assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
+const exchangeRateTask = taskById("exchange-rates");
+assert.ok(exchangeRateTask);
+assert.equal(
+  automationProcessEnv(exchangeRateTask, {
+    baseEnv: { NODE_ENV: "production" },
+    settings: {},
+    credentials: {},
+  }).NODE_ENV,
+  "development",
+);
+assert.equal(
+  automationProcessEnv(exchangeRateTask, {
+    baseEnv: { NODE_ENV: "test" },
+    settings: {},
+    credentials: {},
+  }).NODE_ENV,
+  "test",
+);
 
 test("Libretto CDP patch is prepared once per app process", () => {
   let calls = 0;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   readFileSync,
@@ -16,17 +17,24 @@ import {
 } from "node:crypto";
 
 import {
-  automationConfigEnv,
   credentialStatusFromValues,
   readAutomationCredentialsFile,
   setAutomationCredentialCodec,
   writeAutomationCredentialsFile,
 } from "../../../src/lib/automation/server/config-files.ts";
-import { AUTOMATION_SECRET_KEYS } from "../../../src/lib/automation/server/tasks.ts";
+import {
+  AUTOMATION_SECRET_KEYS,
+  AUTOMATION_TASKS,
+} from "../../../src/lib/automation/server/tasks.ts";
 import { automationCleanupFailureDetails } from "../../../src/lib/automation/server/automation-session-disposition.ts";
 import {
   accumulateAutomationOutput,
+  automationProcessEnv,
 } from "../../../src/lib/automation/server/task-run-execution.ts";
+import {
+  agentHelperProcessEnv,
+  agentProviderProcessEnv,
+} from "../../../src/lib/agent/server/process-environment.ts";
 import { finalFailureMessage } from "../../../src/lib/automation/server/task-run-finalization.ts";
 import {
   createInitialState,
@@ -69,6 +77,16 @@ function observation(id, status, evidence, boundary) {
   return { id, status, evidence, boundary };
 }
 
+function observedChildEnvironment(env) {
+  const child = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "process.stdout.write(JSON.stringify(process.env))"],
+    { env, encoding: "utf8" },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  return JSON.parse(child.stdout);
+}
+
 try {
   assert.ok(
     AUTOMATION_SECRET_KEYS.length >= 2,
@@ -83,6 +101,15 @@ try {
     "The audit requires at least two value-bearing Authentication secret keys.",
   );
   const [requestedKey, unrelatedKey] = auditCredentialKeys;
+  const requestedTask = AUTOMATION_TASKS.find((task) =>
+    task.credentialKeys.includes(requestedKey)
+  );
+  assert.ok(requestedTask, `No automation task declares ${requestedKey}.`);
+  assert.equal(
+    requestedTask.credentialKeys.includes(unrelatedKey),
+    false,
+    "The task-scoped audit requires an unrelated credential.",
+  );
   const credentials = {
     [requestedKey]: `audit-canary-${randomUUID()}`,
     [unrelatedKey]: `audit-canary-${randomUUID()}`,
@@ -98,11 +125,22 @@ try {
     restoredCredentials,
     [requestedKey, unrelatedKey],
   );
-  const workerEnv = automationConfigEnv({
-    baseEnv: { PATH: process.env.PATH },
+  const workerEnv = automationProcessEnv(requestedTask, {
+    baseEnv: {
+      PATH: process.env.PATH,
+      [requestedKey]: credentials[requestedKey],
+      [unrelatedKey]: credentials[unrelatedKey],
+    },
     settings: {},
     credentials: restoredCredentials,
   });
+  const agentBaseEnv = {
+    PATH: process.env.PATH,
+    [requestedKey]: credentials[requestedKey],
+    [unrelatedKey]: credentials[unrelatedKey],
+  };
+  const helperEnv = observedChildEnvironment(agentHelperProcessEnv(agentBaseEnv));
+  const providerEnv = observedChildEnvironment(agentProviderProcessEnv(agentBaseEnv));
 
   const output = accumulateAutomationOutput(
     { logTail: "", resumeFailure: null },
@@ -154,7 +192,7 @@ try {
     observation(
       "packaged-root-secret-exclusion",
       packagedRootCredentialsExcluded ? "PASS" : "FAIL",
-      "Electron Forge does not exclude the gitignored root credentials.json from packaged App resources.",
+      "Electron Forge explicitly excludes the root credentials.json from packaged App resources.",
       "production-desktop",
     ),
     observation(
@@ -172,8 +210,20 @@ try {
         workerEnv[unrelatedKey] === undefined
         ? "PASS"
         : "FAIL",
-      "A worker requesting one credential receives the unrelated credential too.",
+      "The selected worker receives its declared credential and not the unrelated credential.",
       "production-automation-worker",
+    ),
+    observation(
+      "agent-helper-process-environment",
+      containsCanary(helperEnv, canaries) ? "FAIL" : "PASS",
+      "The App-owned helper child environment is built from a non-secret allowlist.",
+      "production-agent-launch-contract",
+    ),
+    observation(
+      "agent-provider-process-environment",
+      containsCanary(providerEnv, canaries) ? "FAIL" : "PASS",
+      "The provider child environment is built from the same zero-secret allowlist.",
+      "production-agent-launch-contract",
     ),
     observation(
       "stdout-stderr-redaction",
@@ -230,8 +280,6 @@ try {
   assert.deepEqual(
     productionFailures.map(({ id }) => id),
     [
-      "packaged-root-secret-exclusion",
-      "task-scoped-worker-capability",
       "stdout-stderr-redaction",
       "persisted-failure-redaction",
       "cleanup-diagnostic-redaction",
@@ -253,6 +301,7 @@ try {
     canaryValuesEmitted: false,
     requestedCredentialKey: requestedKey,
     unrelatedCredentialKey: unrelatedKey,
+    requestedTaskId: requestedTask.id,
     productionFailureCount: productionFailures.length,
     observations,
   }, null, 2)}\n`);

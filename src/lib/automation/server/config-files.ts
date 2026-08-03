@@ -33,9 +33,14 @@ type EncryptedAutomationCredentialsFile = {
 };
 
 let automationCredentialCodec: AutomationCredentialCodec | null = null;
+let automationCredentialEncryptionRequired = false;
 
 export function setAutomationCredentialCodec(codec: AutomationCredentialCodec | null) {
   automationCredentialCodec = codec;
+}
+
+export function setAutomationCredentialEncryptionRequired(required: boolean) {
+  automationCredentialEncryptionRequired = required;
 }
 
 const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
@@ -113,7 +118,14 @@ function decodeCredentialsRecord(record: Record<string, unknown>) {
 
 function credentialsFileText(credentials: AutomationCredentialsFile) {
   const cleaned = cleanCredentials(credentials);
-  if (!automationCredentialCodec) return `${JSON.stringify(cleaned, null, 2)}\n`;
+  if (!automationCredentialCodec) {
+    if (automationCredentialEncryptionRequired) {
+      throw new Error(
+        "Credential encryption is required. Refusing to write plaintext automation credentials.",
+      );
+    }
+    return `${JSON.stringify(cleaned, null, 2)}\n`;
+  }
   return `${JSON.stringify({
     format: AUTOMATION_CREDENTIALS_FORMAT,
     data: automationCredentialCodec.encrypt(JSON.stringify(cleaned)),
