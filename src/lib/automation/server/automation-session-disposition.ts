@@ -72,10 +72,13 @@ export function appendCleanupError(
   secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
   const suffix = "Session cleanup failed: " + cleanup;
-  return secretGate.protectText(
+  const protectedMessage = secretGate.protectText(
     "cleanup-error",
     message ? message + "\n" + suffix : suffix,
-  ).value;
+  );
+  return protectedMessage.failure
+    ? secretBoundaryFailureMessage(protectedMessage.failure)
+    : protectedMessage.value;
 }
 
 export function automationCleanupFailureDetails(
@@ -83,11 +86,17 @@ export function automationCleanupFailureDetails(
   error: unknown,
   secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
+  const protectedError = secretGate.protectText(
+    "cleanup-error",
+    errorMessage(error),
+  );
   return {
     taskRunId: owner.taskRunId,
     sessionId: owner.session,
     retainedPid: owner.pid,
-    error: secretGate.protectText("cleanup-error", errorMessage(error)).value,
+    error: protectedError.failure
+      ? secretBoundaryFailureMessage(protectedError.failure)
+      : protectedError.value,
   };
 }
 
@@ -233,10 +242,15 @@ export async function finalizeAutomationSession(
 ) {
   try {
     await finalize();
+    const protectedWorkflowError = workflowError === null
+      ? null
+      : secretGate.protectText("cleanup-error", workflowError);
     return {
-      errorMessage: workflowError === null
+      errorMessage: protectedWorkflowError === null
         ? null
-        : secretGate.protectText("cleanup-error", workflowError).value,
+        : protectedWorkflowError.failure
+          ? secretBoundaryFailureMessage(protectedWorkflowError.failure)
+          : protectedWorkflowError.value,
       cleanupFailed: false,
     };
   } catch (error) {

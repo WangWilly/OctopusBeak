@@ -165,6 +165,9 @@ const orphanSourceVersionLedgerDir = mkdtempSync(
 const mergedExclusionLedgerDir = mkdtempSync(
   join(tmpdir(), "merged-source-exclusion-"),
 );
+const agentMigrationLedgerDir = mkdtempSync(
+  join(tmpdir(), "agent-migration-"),
+);
 
 function resetSourceVersionsToVersion25(db: LedgerDatabase) {
   db.exec(`
@@ -686,6 +689,12 @@ try {
     versions.map((row) => row.version),
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
   );
+  for (const table of ["agent_runs", "agent_run_lineage"]) {
+    const columns = migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    assert.equal(columns.filter((column) => column.name === "analysis_id").length, 1);
+  }
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
   ).all() as Array<{ name: string; notnull: number }>;
@@ -1564,6 +1573,65 @@ try {
     "SELECT COUNT(*) AS count FROM source_file_imports",
   ).get() as { count: number }).count, 1);
   persistentDataIssuesDb.close();
+
+  const agentMigrationDb = openLedgerDatabase(agentMigrationLedgerDir);
+  agentMigrationDb.exec(`
+    DELETE FROM schema_migrations WHERE version >= 28;
+    DROP TABLE agent_run_lineage;
+    DROP TABLE agent_runs;
+  `);
+  let pendingAgentMigration = 0;
+  const version28OnlyDb = new Proxy(agentMigrationDb, {
+    get(target, property) {
+      if (property === "exec") {
+        return (sql: string) => {
+          if (sql === "BEGIN" && ++pendingAgentMigration === 2) {
+            throw new Error("stop after agent migration version 28");
+          }
+          return target.exec(sql);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as LedgerDatabase;
+  assert.throws(
+    () => migrateLedgerDb(version28OnlyDb),
+    /stop after agent migration version 28/,
+  );
+  for (const table of ["agent_runs", "agent_run_lineage"]) {
+    const columns = agentMigrationDb.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    assert.equal(columns.some((column) => column.name === "analysis_id"), false);
+  }
+  assert.equal(appliedVersion(agentMigrationDb, 28), true);
+  assert.equal(appliedVersion(agentMigrationDb, 29), false);
+
+  migrateLedgerDb(agentMigrationDb);
+  for (const table of ["agent_runs", "agent_run_lineage"]) {
+    const columns = agentMigrationDb.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    assert.equal(columns.filter((column) => column.name === "analysis_id").length, 1);
+  }
+  agentMigrationDb.exec(`
+    INSERT INTO agent_runs (
+      run_id, analysis_id, phase, started_at, record_json
+    ) VALUES (
+      'existing-v28-run', 'analysis-existing', 'completed',
+      '2026-08-03T00:00:00.000Z', '{}'
+    );
+    DELETE FROM schema_migrations WHERE version = 29;
+  `);
+  migrateLedgerDb(agentMigrationDb);
+  assert.deepEqual(
+    { ...agentMigrationDb.prepare(`
+      SELECT run_id, analysis_id FROM agent_runs WHERE run_id = 'existing-v28-run'
+    `).get() },
+    { run_id: "existing-v28-run", analysis_id: "analysis-existing" },
+  );
+  agentMigrationDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
@@ -1581,6 +1649,7 @@ try {
     tiedSourceVersionLedgerDir,
     orphanSourceVersionLedgerDir,
     mergedExclusionLedgerDir,
+    agentMigrationLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }
