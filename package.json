@@ -33,6 +33,7 @@
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "prototype:agent-runtime": "node docs/prototypes/agent-runtime/index.mjs",
     "audit:agent-secret-boundary": "node --no-warnings --experimental-strip-types docs/prototypes/agent-secret-boundary-audit/index.mjs",
+    "prototype:electron-app-sandbox": "node docs/prototypes/electron-app-sandbox/run.mjs",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
