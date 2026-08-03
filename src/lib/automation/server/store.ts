@@ -91,10 +91,11 @@ function protectTaskRunRecord<T extends Record<string, unknown>>(
   record: T,
   secretGate: SecretBoundaryGate,
   surface: "sqlite-persistence" | "diagnostic-export",
+  schema: "automation-task-run" | "automation-history" = "automation-task-run",
 ) {
   const protectedRecord = secretGate.protectRecord(
     surface,
-    "automation-task-run",
+    schema,
     record,
   );
   if (protectedRecord.failure) {
@@ -292,7 +293,7 @@ export function recentTaskRuns(
       signal: nullableString(row.signal),
       errorMessage: nullableString(row.error_message),
       logPath: String(row.log_path),
-    }, secretGate, "diagnostic-export"));
+    }, secretGate, "diagnostic-export", "automation-history"));
 }
 
 export function importGateStatus(
