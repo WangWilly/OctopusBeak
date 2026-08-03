@@ -35,6 +35,12 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import { taskById, type AutomationTaskKind } from "./tasks.ts";
+import {
+  createAutomationSecretBoundaryGate,
+  secretBoundaryFailureMessage,
+  type SecretBoundaryGate,
+  type SecretBoundaryFailure,
+} from "./secret-boundary.ts";
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -44,6 +50,7 @@ export type AutomationTaskRunExecution = {
   command: ReturnType<typeof resolveTaskCommand>;
   session: string | null;
   owner: OwnedAutomationSession | null;
+  secretGate: SecretBoundaryGate;
 };
 
 export type AutomationTaskRunFinalizationContext = {
@@ -53,6 +60,7 @@ export type AutomationTaskRunFinalizationContext = {
   taskRunId: string;
   logPath: string;
   ledgerDir: string;
+  secretGate?: SecretBoundaryGate;
 };
 
 export type AutomationTaskProcessResult = {
@@ -63,6 +71,7 @@ export type AutomationTaskProcessResult = {
   resumeFailure: string | null;
   statementSummary: StatementRunSummary | null;
   outputPersistenceWarnings: string[];
+  secretBoundaryFailure: SecretBoundaryFailure | null;
 };
 
 export function shouldRetainAutomationSession(status: AutomationTaskStatus) {
@@ -73,8 +82,13 @@ export function shouldMarkWaitingForHuman(output: string) {
   return /manual-(?:auth|otp)-required|workflow paused|resume --session|\benter\b[^\r\n]*(?:captcha|otp|verification|certificate)/i.test(output);
 }
 
-export function finalFailureMessage(logTail: string, exitCode: number | null) {
-  const message = logTail
+export function finalFailureMessage(
+  logTail: string,
+  exitCode: number | null,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+) {
+  const protectedLogTail = secretGate.protectText("final-failure", logTail).value;
+  const message = protectedLogTail
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
@@ -131,6 +145,7 @@ async function finalizeTaskRunTransition(
   run: Pick<AutomationTaskRun, "taskRunId" | "logPath">,
   intent: TaskRunFinalizationIntent,
   implementation: TaskRunFinalizationImplementation = {},
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
   const current = taskRunById(db, run.taskRunId);
   if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
@@ -174,7 +189,7 @@ async function finalizeTaskRunTransition(
       : null;
   if (logAppend) {
     try {
-      appendLog(run.logPath, logAppend);
+      appendLog(run.logPath, logAppend, secretGate);
     } catch (error) {
       const warning = `automation-output-write-failed: ${errorMessage(error)}`;
       console.error(warning);
@@ -189,7 +204,7 @@ async function finalizeTaskRunTransition(
     signal: intent.signal,
     logTail,
     errorMessage: taskError,
-  });
+  }, secretGate);
   return { status, skipped: false };
 }
 
@@ -198,12 +213,14 @@ export async function finalizePersistedRun(
   run: AutomationTaskRun,
   reason: string,
 ) {
+  const secretGate = createAutomationSecretBoundaryGate();
   const current = taskRunById(db, run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
   const sessionCleanup = await finalizeAutomationSessionForRun(
     current,
     current.errorMessage ?? reason,
     "recovery",
+    secretGate,
   );
   await finalizeTaskRunTransition(db, run, {
     status: "failed",
@@ -215,7 +232,7 @@ export async function finalizePersistedRun(
   }, {
     sessionFinalizationLog: true,
     sessionCleanup,
-  });
+  }, secretGate);
 }
 
 export async function finalizeForceQuitTaskRun(
@@ -223,6 +240,7 @@ export async function finalizeForceQuitTaskRun(
   run: AutomationTaskRun,
   dependencies: ForceQuitFinalizationDependencies = {},
 ) {
+  const secretGate = createAutomationSecretBoundaryGate();
   const current = taskRunById(db, run.taskRunId);
   if (!current || current.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${run.taskId}`);
@@ -230,6 +248,7 @@ export async function finalizeForceQuitTaskRun(
   const { operationalError, ...sessionCleanup } = await forceQuitAutomationSessionForRun(
     run,
     dependencies,
+    secretGate,
   );
   await finalizeTaskRunTransition(db, run, {
     status: "failed",
@@ -240,7 +259,7 @@ export async function finalizeForceQuitTaskRun(
     logTail: run.logTail,
   }, {
     sessionCleanup,
-  });
+  }, secretGate);
   if (operationalError) throw operationalError;
   return { session: sessionCleanup.session };
 }
@@ -280,6 +299,7 @@ function scheduleAutomationTaskRunTimeout(
         run,
         "等待人工操作超過 20 分鐘",
         "exact",
+        context.secretGate,
       );
       await finalizeTaskRunTransition(timeoutDb, run, {
         status: "failed",
@@ -290,7 +310,7 @@ function scheduleAutomationTaskRunTimeout(
         logTail: run.logTail,
       }, {
         sessionCleanup,
-      });
+      }, context.secretGate);
     } catch (error) {
       console.error("automation-session-timeout-failed", error);
     } finally {
@@ -303,8 +323,11 @@ export async function finalizeAutomationTaskRun(
   context: AutomationTaskRunFinalizationContext,
   result: AutomationTaskProcessResult,
 ) {
+  const secretGate = context.secretGate ?? createAutomationSecretBoundaryGate();
   const resumeFailure = result.resumeFailure;
-  let status: AutomationTaskStatus = result.error || resumeFailure
+  let status: AutomationTaskStatus = result.error
+      || resumeFailure
+      || result.secretBoundaryFailure
     ? "failed"
     : nextAttemptStatus({
       kind: context.taskKind,
@@ -320,10 +343,25 @@ export async function finalizeAutomationTaskRun(
       .map((statement) => `${statement.typeId}: ${statement.error ?? "Failed"}`)
       .join("\n") || "No statement components completed."
     : null;
-  let taskError = result.error?.message
+  const taskErrorCandidate = result.error?.message
     ?? resumeFailure
-    ?? (status === "failed" ? statementFailure || finalFailureMessage(result.logTail, result.exitCode) : null);
-  taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
+    ?? (status === "failed"
+      ? statementFailure || finalFailureMessage(result.logTail, result.exitCode, secretGate)
+      : null);
+  const combinedTaskError = [
+    taskErrorCandidate,
+    ...result.outputPersistenceWarnings,
+  ].filter(Boolean).join("\n") || null;
+  const protectedTaskError = combinedTaskError === null
+    ? null
+    : secretGate.protectText("final-failure", combinedTaskError);
+  const boundaryFailure = result.secretBoundaryFailure
+    ?? protectedTaskError?.failure
+    ?? null;
+  if (boundaryFailure) status = "failed";
+  const taskError = boundaryFailure
+    ? secretBoundaryFailureMessage(boundaryFailure)
+    : protectedTaskError?.value ?? null;
   const currentRun = taskRunById(context.taskDb, context.taskRunId);
   if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
   if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
@@ -335,7 +373,12 @@ export async function finalizeAutomationTaskRun(
   const sessionDisposition = shouldRetainAutomationSession(status) ? "retain" : "relinquish";
   const sessionCleanup = sessionDisposition === "relinquish" && currentRun
     && automationSessionOwnerForRun(currentRun)
-    ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
+    ? await finalizeAutomationSessionForRun(
+      currentRun,
+      taskError,
+      "exact",
+      secretGate,
+    )
     : null;
   const transition = await finalizeTaskRunTransition(context.taskDb, {
     taskRunId: context.taskRunId,
@@ -350,7 +393,7 @@ export async function finalizeAutomationTaskRun(
     statementSummary: result.statementSummary,
   }, {
     sessionCleanup,
-  });
+  }, secretGate);
   if (!transition.skipped && sessionDisposition === "retain") {
     scheduleAutomationTaskRunTimeout(context);
   }

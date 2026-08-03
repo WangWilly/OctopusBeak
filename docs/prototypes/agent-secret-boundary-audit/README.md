@@ -16,8 +16,10 @@ observation fails the command so the evidence cannot silently drift.
 
 ## Verdict
 
-**BLOCKED.** The current repository does not yet establish a production
-host-only boundary.
+**REVIEWED PRODUCTION SURFACES GREEN.** The combined #75/#76 audit establishes
+the packaged App, task-scoped worker, zero-secret helper/provider launch, and
+automation redaction/persistence boundaries. Broader future Agent runtime
+surfaces remain outside this integration ticket.
 
 The packaged desktop credential path has two useful controls: the Electron main
 process installs a `safeStorage` codec before credential IPC is registered, and
@@ -25,10 +27,10 @@ the credential file is an encrypted envelope written with mode `0600`.
 Renderer-facing desktop state projects credential presence as booleans and does
 not return values.
 
-The packaging, credential writer, automation worker, and future Agent-process
-launch contracts now establish narrower capabilities. The remaining blockers in
-this audit are the existing automation log and diagnostic redaction gaps, which
-are outside issue #75:
+The packaging, credential writer, automation worker, helper/provider launch
+contracts, and shared redaction gate now establish narrower capabilities. The
+remaining provisional or unproven rows are future runtime surfaces and are not
+blockers attributable to #75 or #76.
 
 | Surface | Current evidence | Result |
 | --- | --- | --- |
@@ -36,10 +38,13 @@ are outside issue #75:
 | Repository root → packaged App resources | Forge explicitly ignores `.env`, root `credentials.json`, and data directories; the qualification test stages a canary in denied files | Pass |
 | Electron main → renderer | Actual status projection contains booleans only | Pass |
 | Electron main → automation child env | `automationProcessEnv` strips every known credential from the inherited environment, then projects only the selected task's declared credential keys | Pass |
-| Child stdout/stderr → log tail | `accumulateAutomationOutput` removes terminal controls only | **Blocker: canary survives** |
-| Log tail → persisted failure | `finalFailureMessage` selects a raw log line | **Blocker: canary survives** |
-| Cleanup error → diagnostic object | `automationCleanupFailureDetails` copies the raw Error message | **Blocker: canary survives** |
 | Host → Agent helper/provider | The production launch-env builders inherit only explicitly allowlisted non-secret process plumbing; a child-process assertion injects canaries into helper and provider inputs | Pass (launch contract; adapter pending in parent issue) |
+| Child stdout/stderr → log tail | Shared redaction/assertion gate removes runtime canaries across chunks and reports the source surface | Pass |
+| Log tail → filesystem and SQLite | Shared gate protects the log writer, SQLite columns, and `record_json` | Pass |
+| Log tail → persisted failure | `finalFailureMessage` uses the shared gate before projecting a failure | Pass |
+| Cleanup error → diagnostic object | Cleanup errors use the shared gate before console/error projection | Pass |
+| Automation history → support export | Explicit schema allowlist plus shared redaction/assertion gate | Pass |
+| Libretto patch stdout/stderr → console | Shared gate redacts diagnostics and turns a hit into deterministic failure | Pass |
 | Tool gateway → provider | Throwaway state machine rejects secret tools and projects `authority: "none"` | Provisional contract evidence only |
 | Checkpoint/fallback → lineage/logs | Throwaway state machine excludes an injected canary | Provisional contract evidence only |
 | Crash/telemetry export | No production Agent crash/telemetry schema or redaction gate exists | **Unproven** |
@@ -59,13 +64,16 @@ are outside issue #75:
 4. Electron main → automation child: the child environment removes all known
    credentials before adding back only the selected task's declared keys.
 5. Child stdout/stderr → filesystem log → SQLite `log_tail`/`record_json` →
-   `error_message`: output is persisted without secret-aware redaction. A
-   credential printed by a child can cross every one of these surfaces.
+   `error_message`: the shared fail-closed gate removes known Authentication
+   secret values before accumulation, validates persistence/export schemas, and
+   converts a hit into a deterministic surface/reason failure projection.
 6. Agent helper/provider launch: production environment builders inherit a
    narrow non-secret allowlist, and the re-runnable process assertion verifies
    injected Authentication-secret canaries do not cross into either child.
-   Tool results and checkpoint/fallback remain represented only by the
-   throwaway state-machine shape.
+7. Agent tool results, checkpoint/fallback, lineage, and diagnostics remain
+   represented only by the throwaway state-machine shape. Its empty
+   `secretFields` arrays are a desired schema, not evidence of a production
+   enforcement point.
 
 ## Required production contract
 
@@ -87,6 +95,6 @@ are outside issue #75:
 - Packaging must use an allowlist or an explicit secret-file denylist and must
   fail qualification if any credential canary is present in the App bundle.
 
-Until the remaining production log/diagnostic paths implement shared redaction
-and later runtime slices complete their own gates, the overall audit remains
-no-ship.
+Later runtime slices still need their own production helper/provider adapters,
+recovery gates, and crash/telemetry export controls; those are outside #91 and
+must not be inferred from this integration audit.

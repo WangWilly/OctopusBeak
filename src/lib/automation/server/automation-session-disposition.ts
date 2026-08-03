@@ -16,6 +16,10 @@ import {
   type TimerDeps,
 } from "./session-lifecycle.ts";
 import { updateTaskRun, type AutomationTaskRun } from "./store.ts";
+import {
+  createAutomationSecretBoundaryGate,
+  type SecretBoundaryGate,
+} from "./secret-boundary.ts";
 
 const SESSION_LOG_PREFIX_BYTES = 4_000;
 
@@ -40,9 +44,14 @@ export type ForceQuitAutomationSessionResult = AutomationSessionCleanupResult & 
   operationalError: unknown | null;
 };
 
-export function appendLog(logPath: string, chunk: string) {
+export function appendLog(
+  logPath: string,
+  chunk: string,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+) {
+  const protectedChunk = secretGate.protectText("filesystem-log", chunk).value;
   mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, chunk);
+  appendFileSync(logPath, protectedChunk);
 }
 
 export function tail(value: string) {
@@ -53,20 +62,28 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function appendCleanupError(message: string | null, cleanup: string) {
+export function appendCleanupError(
+  message: string | null,
+  cleanup: string,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+) {
   const suffix = "Session cleanup failed: " + cleanup;
-  return message ? message + "\n" + suffix : suffix;
+  return secretGate.protectText(
+    "cleanup-error",
+    message ? message + "\n" + suffix : suffix,
+  ).value;
 }
 
 export function automationCleanupFailureDetails(
   owner: OwnedAutomationSession,
   error: unknown,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
   return {
     taskRunId: owner.taskRunId,
     sessionId: owner.session,
     retainedPid: owner.pid,
-    error: errorMessage(error),
+    error: secretGate.protectText("cleanup-error", errorMessage(error)).value,
   };
 }
 
@@ -208,17 +225,23 @@ export async function finalizeAutomationSession(
       throw new Error(`Automation session ownership changed for task: ${owner.taskId}`);
     }
   },
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ) {
   try {
     await finalize();
-    return { errorMessage: workflowError, cleanupFailed: false };
+    return {
+      errorMessage: workflowError === null
+        ? null
+        : secretGate.protectText("cleanup-error", workflowError).value,
+      cleanupFailed: false,
+    };
   } catch (error) {
     console.error(
       "automation-session-cleanup-failed",
-      automationCleanupFailureDetails(owner, error),
+      automationCleanupFailureDetails(owner, error, secretGate),
     );
     return {
-      errorMessage: appendCleanupError(workflowError, errorMessage(error)),
+      errorMessage: appendCleanupError(workflowError, errorMessage(error), secretGate),
       cleanupFailed: true,
     };
   }
@@ -228,13 +251,18 @@ export async function finalizeAutomationSessionForRun(
   run: AutomationTaskRun,
   workflowError: string | null,
   mode: "exact" | "recovery",
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ): Promise<AutomationSessionCleanupResult> {
   const owner = automationSessionOwnerForRun(run);
   if (!owner) {
     return {
       session: null,
       pid: null,
-      errorMessage: appendCleanupError(workflowError, "Missing Libretto session identity"),
+      errorMessage: appendCleanupError(
+        workflowError,
+        "Missing Libretto session identity",
+        secretGate,
+      ),
       cleanupFailed: true,
     };
   }
@@ -246,6 +274,7 @@ export async function finalizeAutomationSessionForRun(
       errorMessage: appendCleanupError(
         workflowError,
         `Automation session ownership changed for task: ${run.taskId}`,
+        secretGate,
       ),
       cleanupFailed: true,
     };
@@ -256,13 +285,14 @@ export async function finalizeAutomationSessionForRun(
     if (!finalized) {
       throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
     }
-  });
+  }, secretGate);
   return { ...result, session: owner.session, pid: owner.pid };
 }
 
 export async function forceQuitAutomationSessionForRun(
   run: AutomationTaskRun,
   dependencies: ForceQuitFinalizationDependencies = {},
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
 ): Promise<ForceQuitAutomationSessionResult> {
   const session = sessionFromRun(run);
   if (!session) throw new Error(`Missing Libretto resume session for automation task: ${run.taskId}`);
@@ -299,6 +329,7 @@ export async function forceQuitAutomationSessionForRun(
           throw error;
         }
       },
+      secretGate,
     );
     operationalError = finalizeFailure;
     result = { ...cleanupResult, session, pid: owner.pid };
@@ -307,7 +338,11 @@ export async function forceQuitAutomationSessionForRun(
     result = {
       session,
       pid: owner.pid,
-      errorMessage: appendCleanupError("Browser session force quit.", errorMessage(error)),
+      errorMessage: appendCleanupError(
+        "Browser session force quit.",
+        errorMessage(error),
+        secretGate,
+      ),
       cleanupFailed: true,
     };
   }

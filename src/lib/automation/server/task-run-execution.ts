@@ -42,9 +42,16 @@ import {
 } from "./store.ts";
 import {
   AUTOMATION_NON_SECRET_KEYS,
+  AUTOMATION_SECRET_KEYS,
   taskById,
   type AutomationTask,
 } from "./tasks.ts";
+import {
+  createAutomationSecretBoundaryGate,
+  type SecretBoundaryGate,
+  type SecretBoundaryFailure,
+  type SecretBoundarySurface,
+} from "./secret-boundary.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
@@ -178,13 +185,22 @@ export const claimRunAutomationSession = claimAutomationTaskRunSession;
 export function accumulateAutomationOutput(
   state: { logTail: string; resumeFailure: string | null },
   chunk: string,
+  secretGate: SecretBoundaryGate = createAutomationSecretBoundaryGate(),
+  surface: Extract<SecretBoundarySurface, "stdout" | "stderr"> = "stdout",
+  flush = false,
 ) {
-  const logChunk = stripVTControlCharacters(chunk);
+  const protectedChunk = secretGate.protectStreamText(
+    surface,
+    stripVTControlCharacters(chunk),
+    flush,
+  );
+  const logChunk = protectedChunk.value;
   const combined = state.logTail + logChunk;
   return {
     logChunk,
     logTail: tail(combined),
     resumeFailure: state.resumeFailure ?? resumeFailureMessage(combined),
+    secretBoundaryFailure: protectedChunk.failure,
   };
 }
 
@@ -203,6 +219,11 @@ function createAutomationTaskRunExecution(
     `${task.id}-${Date.now()}-${attempt}.log`,
   );
   const env = automationProcessEnv(task);
+  const secretGate = createAutomationSecretBoundaryGate({
+    secretValues: AUTOMATION_SECRET_KEYS.flatMap((key) =>
+      env[key] ? [env[key]] : []
+    ),
+  });
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
     ? options.resumeSession ?? createAutomationSessionId()
@@ -225,7 +246,7 @@ function createAutomationTaskRunExecution(
     maxAttempts,
     startedAt,
     logPath,
-  });
+  }, secretGate);
   const owner = session ? {
     taskId: task.id,
     taskRunId: run.taskRunId,
@@ -233,7 +254,7 @@ function createAutomationTaskRunExecution(
     pid: sessionPid(session),
   } : null;
   if (session) {
-    appendLog(logPath, "automation-session: " + session + "\n");
+    appendLog(logPath, "automation-session: " + session + "\n", secretGate);
     const resumeFrom = options.resumeSession
       ? activeTaskRuns(taskDb).find((candidate) =>
         candidate.taskId === task.id
@@ -247,7 +268,7 @@ function createAutomationTaskRunExecution(
       resumeFrom,
     })) return null;
   }
-  return { task, taskDb, run, logPath, command, session, owner };
+  return { task, taskDb, run, logPath, command, session, owner, secretGate };
 }
 
 async function executeAutomationTaskProcess(
@@ -255,6 +276,7 @@ async function executeAutomationTaskProcess(
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
+  let secretBoundaryFailure: SecretBoundaryFailure | null = null;
   let statementSummary: StatementRunSummary | null = null;
   const outputPersistenceWarnings: string[] = [];
   const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
@@ -269,29 +291,39 @@ async function executeAutomationTaskProcess(
         if (!isForceQuitRun(taskRunById(execution.taskDb, execution.run.taskRunId))) {
           updateTaskRun(execution.taskDb, execution.run.taskRunId, {
             ...liveTaskRunUpdate(logTail),
-          });
+          }, execution.secretGate);
         }
       },
       500,
       recordOutputPersistenceError,
     );
-    const onOutput = (chunk: Buffer) => {
+    const onOutput = (
+      surface: Extract<SecretBoundarySurface, "stdout" | "stderr">,
+      chunk: Buffer | string,
+      flush = false,
+    ) => {
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
-        chunk.toString("utf8"),
+        typeof chunk === "string" ? chunk : chunk.toString("utf8"),
+        execution.secretGate,
+        surface,
+        flush,
       );
+      secretBoundaryFailure ??= output.secretBoundaryFailure;
       statementSummary = parseStatementRunSummary(`${logTail}${output.logChunk}`)
         ?? statementSummary;
       logTail = output.logTail;
       detectedResumeFailure = output.resumeFailure;
-      try {
-        appendLog(execution.logPath, output.logChunk);
-      } catch (error) {
-        recordOutputPersistenceError(error);
-      }
-      outputBuffer.push(output.logChunk);
-      if (execution.owner) {
-        refreshAutomationSession(execution.owner);
+      if (output.logChunk.length > 0) {
+        try {
+          appendLog(execution.logPath, output.logChunk, execution.secretGate);
+        } catch (error) {
+          recordOutputPersistenceError(error);
+        }
+        outputBuffer.push(output.logChunk);
+        if (execution.owner) {
+          refreshAutomationSession(execution.owner);
+        }
       }
     };
     const child = spawn(execution.command.command, execution.command.args, {
@@ -299,15 +331,19 @@ async function executeAutomationTaskProcess(
       env: execution.command.env,
     });
     activeTaskChildren.set(execution.task.id, child);
-    child.stdout.on("data", onOutput);
-    child.stderr.on("data", onOutput);
+    child.stdout.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
     child.on("error", (error) => {
       activeTaskChildren.delete(execution.task.id);
+      onOutput("stdout", "", true);
+      onOutput("stderr", "", true);
       outputBuffer.flush();
       resolve({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
       activeTaskChildren.delete(execution.task.id);
+      onOutput("stdout", "", true);
+      onOutput("stderr", "", true);
       outputBuffer.flush();
       resolve({ exitCode, signal, error: null });
     });
@@ -318,6 +354,7 @@ async function executeAutomationTaskProcess(
     resumeFailure: detectedResumeFailure ?? resumeFailureMessage(logTail),
     statementSummary,
     outputPersistenceWarnings,
+    secretBoundaryFailure,
   };
 }
 
@@ -347,6 +384,7 @@ export async function runAutomationTaskExecution(
       taskRunId: execution.run.taskRunId,
       logPath: execution.logPath,
       ledgerDir,
+      secretGate: execution.secretGate,
     };
     return await finalizeAutomationTaskRun(finalizationContext, result);
   } finally {
