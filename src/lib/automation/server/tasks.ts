@@ -269,7 +269,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     script: "run:sync-maicoin",
     command: [
       "node",
-      "--env-file-if-exists=.env",
       "--no-warnings",
       "--experimental-strip-types",
       "src/ledger/sync-maicoin.ts",

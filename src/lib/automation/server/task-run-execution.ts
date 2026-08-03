@@ -8,7 +8,13 @@ import {
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
-import { automationConfigEnv } from "./config-files.ts";
+import {
+  automationConfigEnv,
+  readAutomationCredentialsFile,
+  readAutomationSettingsFile,
+  type AutomationCredentialsFile,
+  type AutomationSettingsFile,
+} from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
 import {
   appendLog,
@@ -34,7 +40,11 @@ import {
   taskRunById,
   updateTaskRun,
 } from "./store.ts";
-import { taskById } from "./tasks.ts";
+import {
+  AUTOMATION_NON_SECRET_KEYS,
+  taskById,
+  type AutomationTask,
+} from "./tasks.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
@@ -60,8 +70,71 @@ export function parseAutomationProgress(output: string) {
   return progress;
 }
 
-export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
-  return automationConfigEnv({ baseEnv });
+const AUTOMATION_PROCESS_INHERITED_ENV_KEYS = new Set<string>([
+  "CAPTURE_PATH",
+  "CI",
+  "COLORTERM",
+  "ComSpec",
+  "DISPLAY",
+  "FORCE_COLOR",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LEDGER_DIR",
+  "LIBRETTO_REPO_ROOT",
+  "LOGNAME",
+  "NODE_ENV",
+  "NO_COLOR",
+  "OCTOPUSBEAK_APP_ROOT",
+  "OCTOPUSBEAK_DESKTOP",
+  "OCTOPUSBEAK_NODE_PATH",
+  "OCTOPUSBEAK_USER_DATA",
+  "PATH",
+  "PATHEXT",
+  "PLAYWRIGHT_BROWSERS_PATH",
+  "Path",
+  "SHELL",
+  "SYSTEMROOT",
+  "SystemRoot",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "TZ",
+  "USER",
+  "WINDIR",
+  ...AUTOMATION_NON_SECRET_KEYS,
+]);
+
+export function automationProcessEnv(
+  task: Pick<AutomationTask, "credentialKeys">,
+  {
+    baseEnv = process.env,
+    settings = readAutomationSettingsFile(),
+    credentials = readAutomationCredentialsFile(),
+  }: {
+    baseEnv?: NodeJS.ProcessEnv;
+    settings?: AutomationSettingsFile;
+    credentials?: AutomationCredentialsFile;
+  } = {},
+) {
+  const nonCredentialEnv = Object.fromEntries(
+    Object.entries(baseEnv).filter(([key]) =>
+      AUTOMATION_PROCESS_INHERITED_ENV_KEYS.has(key)
+    ),
+  );
+  const taskCredentials = Object.fromEntries(
+    task.credentialKeys.flatMap((key) => {
+      const value = credentials[key] ?? baseEnv[key];
+      return typeof value === "string" && value.trim() ? [[key, value]] : [];
+    }),
+  );
+  return automationConfigEnv({
+    baseEnv: nonCredentialEnv,
+    settings,
+    credentials: taskCredentials,
+  });
 }
 
 export function createAutomationOutputBuffer(
@@ -129,7 +202,7 @@ function createAutomationTaskRunExecution(
     "logs",
     `${task.id}-${Date.now()}-${attempt}.log`,
   );
-  const env = automationProcessEnv();
+  const env = automationProcessEnv(task);
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
     ? options.resumeSession ?? createAutomationSessionId()
