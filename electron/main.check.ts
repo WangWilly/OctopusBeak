@@ -14,3 +14,8 @@ assert.ok(
     < startSource.indexOf("recoverAbandonedAutomationSessions()"),
   "released startup must install the encrypted credential writer before recovery",
 );
+
+assert.match(
+  source,
+  /const agentProvider = process\.platform === "darwin"[\s\S]*createAppleSystemModelProtocolClient[\s\S]*createUnsupportedAppleSystemModelProvider\(process\.platform\)/,
+);
