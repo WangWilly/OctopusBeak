@@ -18,6 +18,7 @@ import {
 import {
   createAppleSystemModelProtocolClient,
   createAppleSystemModelProvider,
+  createUnsupportedAppleSystemModelProvider,
   spawnEmbeddedAppleSystemModelHelper,
 } from "../src/lib/agent/server/apple-system-model-provider.ts";
 import { createSqliteAgentRunStore } from "../src/lib/agent/server/store.ts";
@@ -196,16 +197,20 @@ async function start() {
   });
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   agentStore = createSqliteAgentRunStore(ledgerDir);
-  agentProviderClient = createAppleSystemModelProtocolClient({
-    launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
-      executablePath: appleSystemModelHelperPath(appRoot),
-    }),
-    requestIdFactory: () => randomUUID(),
-  });
-  const agentProvider = createAppleSystemModelProvider({
-    client: agentProviderClient,
-    hostOsBuild,
-  });
+  const agentProvider = process.platform === "darwin"
+    ? (() => {
+        agentProviderClient = createAppleSystemModelProtocolClient({
+          launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
+            executablePath: appleSystemModelHelperPath(appRoot),
+          }),
+          requestIdFactory: () => randomUUID(),
+        });
+        return createAppleSystemModelProvider({
+          client: agentProviderClient,
+          hostOsBuild,
+        });
+      })()
+    : createUnsupportedAppleSystemModelProvider(process.platform);
   const agentService = createAgentHarnessService({
     helper: createInlineAgentHelper(),
     provider: agentProvider,

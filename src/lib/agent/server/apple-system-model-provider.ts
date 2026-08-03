@@ -413,8 +413,9 @@ export function createAppleSystemModelProtocolClient({
       }
     });
     helperProcess.onExit((code, signal) => {
+      const phase = handshakeComplete ? "" : " before handshake";
       const error = new Error(
-        `Apple system model helper exited before handshake (code=${code ?? "none"} signal=${signal ?? "none"}).`,
+        `Apple system model helper exited${phase} (code=${code ?? "none"} signal=${signal ?? "none"}).`,
       );
       failTransport(helperProcess, error, false);
     });
@@ -611,6 +612,25 @@ export function createAppleSystemModelProtocolClient({
 export type AppleSystemModelProtocolClient = ReturnType<
   typeof createAppleSystemModelProtocolClient
 >;
+
+export function createUnsupportedAppleSystemModelProvider(
+  platform: NodeJS.Platform,
+): AgentProvider {
+  return {
+    async activate() {
+      return {
+        availability: "unavailable",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "unavailable",
+        reason: `unsupported-platform:${platform}`,
+      };
+    },
+    start() {
+      throw new Error(`Apple system model is unavailable on ${platform}.`);
+    },
+    cancel() {},
+  };
+}
 
 export function createAppleSystemModelProvider({
   client,

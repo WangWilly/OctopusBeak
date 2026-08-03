@@ -5,9 +5,11 @@ import {
   AppleSystemModelProtocolError,
   createAppleSystemModelProvider,
   createAppleSystemModelProtocolClient,
+  createUnsupportedAppleSystemModelProvider,
   spawnEmbeddedAppleSystemModelHelper,
   type EmbeddedHelperProcess,
 } from "./apple-system-model-provider.ts";
+import { createNoToolAgentGateway } from "./harness.ts";
 
 test("a silent live helper fails a started run at its bounded first-response deadline", async () => {
   let listener: ((line: string) => void) | null = null;
@@ -1098,6 +1100,63 @@ test("embedded Apple helper fails closed when the process exits before handshake
   );
 });
 
+test("embedded Apple helper reports a neutral exit after handshake", async () => {
+  let lineListener: ((line: string) => void) | null = null;
+  const exitListeners: Array<
+    (code: number | null, signal: NodeJS.Signals | null) => void
+  > = [];
+  const process: EmbeddedHelperProcess = {
+    onLine(nextListener) {
+      lineListener = nextListener;
+      queueMicrotask(() => lineListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit(nextListener) {
+      exitListeners.push(nextListener);
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { type: string; requestId: string };
+      if (request.type === "activate") queueMicrotask(() => lineListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "available",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {},
+  };
+  const client = createAppleSystemModelProtocolClient({
+    launchProcess: () => process,
+    requestIdFactory: () => "activation-before-exit",
+  });
+
+  await client.activate();
+  const failure = new Promise<Error>((resolve) => {
+    client.start({
+      runId: "exit-after-handshake",
+      prompt: "Hello",
+      onStream() {},
+      onComplete() {},
+      onFailure: resolve,
+    });
+  });
+  exitListeners[0]?.(1, null);
+
+  const error = await failure;
+  assert.equal(
+    error.message,
+    "Apple system model helper exited (code=1 signal=none).",
+  );
+  assert.doesNotMatch(error.message, /before handshake/);
+});
+
 test("production embedded helper spawn failure rejects activation without crashing the host", async () => {
   const client = createAppleSystemModelProtocolClient({
     launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
@@ -1248,6 +1307,29 @@ test("Apple system provider blocks activation when the helper protocol is incomp
     osBuild: "26A100",
     reason: "helper-protocol-incompatible",
   });
+});
+
+test("unsupported Apple system provider reports unavailable without a helper client", async () => {
+  const provider = createUnsupportedAppleSystemModelProvider("linux");
+
+  assert.deepEqual(await provider.activate(), {
+    availability: "unavailable",
+    providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+    osBuild: "unavailable",
+    reason: "unsupported-platform:linux",
+  });
+  assert.throws(
+    () => provider.start({
+      runId: "unsupported-run",
+      input: { prompt: "Hello" },
+      toolGateway: createNoToolAgentGateway(),
+      onStream() {},
+      onComplete() {},
+      onFailure() {},
+    }),
+    /Apple system model is unavailable on linux/,
+  );
+  assert.doesNotThrow(() => provider.cancel("unsupported-run"));
 });
 
 test("production embedded helper spawn environment contains zero Authentication secrets", async () => {
