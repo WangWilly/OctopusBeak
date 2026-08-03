@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from "electron";
 import {
   createDataIssueIpcHandlers,
 } from "../src/lib/desktop/api.ts";
+import { createAgentIpcHandlers, type AgentDesktopService } from "../src/lib/desktop/agent-api.ts";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
@@ -54,9 +55,11 @@ import { isFiniteDisplayScale, trafficLightPositionForScale } from "./window-opt
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
+  agentService,
 }: {
   onSystemSettingsChanged?: (settings: SystemSettingsDto) => void | Promise<void>;
-} = {}) {
+  agentService: AgentDesktopService;
+}) {
   const dataIssueHandlers = createDataIssueIpcHandlers({
     list: listDataIssues,
     create: createDataIssue,
@@ -67,6 +70,7 @@ export function registerOctopusBeakIpc({
     previewRestore: previewDataIssueRestore,
     confirmRestore: confirmDataIssueRestore,
   });
+  const agentHandlers = createAgentIpcHandlers(agentService);
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -99,6 +103,9 @@ export function registerOctopusBeakIpc({
     updateSpendingTransactionOverride(input);
     return { ok: true as const };
   });
+  ipcMain.handle("agent:v1:start", agentHandlers.start);
+  ipcMain.handle("agent:v1:status", agentHandlers.status);
+  ipcMain.handle("agent:v1:cancel", agentHandlers.cancel);
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
