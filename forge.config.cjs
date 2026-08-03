@@ -18,6 +18,7 @@ module.exports = {
       /^\/\.agents($|\/)/,
       /^\/\.svelte-kit($|\/)/,
       /^\/\.env(?:\..*)?$/,
+      /^\/credentials\.json$/,
       /^\/\.libretto($|\/)/,
       /^\/\.superpowers($|\/)/,
       /^\/site($|\/)/,
