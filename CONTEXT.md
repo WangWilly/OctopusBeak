@@ -66,27 +66,55 @@ A broad, local view of the trusted financial overview supplied so an agent can u
 _Avoid_: Full credential context, fixed dashboard payload
 
 **External local provider trust**:
-The lower trust assigned to a separately installed local model daemon whose version, logs, updates, and model sources are not controlled by the product. It receives financial data only after explicit enablement and disclosure, only over an eligible loopback endpoint, and never receives authentication secrets.
+A post-MVP trust boundary for a separately installed local model daemon whose version, logs, updates, and model sources are not controlled by the product. The first release does not connect to external loopback providers; externally obtained artifacts run only through the App-owned embedded helper.
 _Avoid_: Built-in provider trust, local-equals-trusted
+
+**App-owned model helper**:
+The signed embedded process that loads App-managed GGUF artifacts with no Authentication secrets, tool authority, or renderer-visible endpoint, and may retain one Warm local model. Its crash makes the current run terminal and clears warm state; it is recreated only when the person starts a new run.
+_Avoid_: External local provider, autonomous agent process, background respawn
 
 **Active local generation model**:
 The single local model currently allowed to generate responses for the application. Switching may release the previous model and its cache from memory, but does not remove its installed artifact from storage.
 _Avoid_: Installed model, downloaded model
 
+**Warm local model**:
+The one model runtime that may remain loaded while the application is open after its run authority and all conversation, checkpoint, and tool context have been cleared. It has no idle timeout and unloads only for application quit, memory pressure, revocation, helper failure, or an explicit model change.
+_Avoid_: Active run, retained conversation, background agent
+
 **Installed model artifact**:
-A model file retained in local storage until the person explicitly removes it. Runtime memory release, provider failure, catalog retirement, application restart, and model switching do not delete the artifact or require it to be downloaded again.
+A model file retained under an exact immutable identity until the person explicitly removes it. New revisions install side by side; runtime memory release, provider failure, catalog retirement, application restart, model switching, and suspended-run resumption neither replace nor delete the bound artifact.
 _Avoid_: Loaded model, active model
 
+**Model artifact staging**:
+The Application Support intake and temporary storage for a download or user-placed import that has not passed artifact identity, compatibility, device-fit, and isolated-load gates. Staged files are not App-managed Installed model artifacts; only an atomic promotion after validation transfers management to the App.
+_Avoid_: Installed model, partial installation
+
+**Model artifact removal**:
+The person's explicit deletion of an App-managed Installed model artifact after any Warm local model is unloaded and no active run uses it. Removing an artifact bound to a suspended run requires confirmation and makes that run terminal; failed removal leaves the artifact installed.
+_Avoid_: Automatic cleanup, catalog retirement, runtime unload
+
+**User-imported model artifact**:
+An externally obtained GGUF file loaded only through the App-owned embedded helper after its hash identity, bundled-runtime compatibility, device fit, isolated load, and user attestation of local-use rights are recorded. Any quantization the bundled helper can trial-load may use the full host-gated assistant capabilities after disclosure, but its provenance remains unverified, it never becomes a catalog candidate, verified artifact, or recommendation, and no attestation can bypass a failed activation or revocation gate.
+_Avoid_: External provider model, catalog candidate, trusted local model
+
+**System-provided model**:
+An OS-managed generation model with availability and provider identity but no App-owned artifact to download, hash, install, update, or remove. A measured OS build may carry verified provider evidence; another available build remains usable only with an unverified-build warning and never becomes a Verified model artifact.
+_Avoid_: Installed model artifact, Apple model file, verified system artifact
+
 **Model catalog**:
-The product-curated index of candidate, verified, deprecated, revoked, and system-provided models, including their provenance, integrity, licensing, device-fit, and lifecycle records. Membership means the model is visible and governed by the catalog; it does not by itself claim verified behavioral quality.
+The product-curated index of candidate, verified, deprecated, revoked, and system-provided models, including their provenance, integrity, licensing, device-fit, and lifecycle records. In the first release its authority is the catalog bundled with the signed application release, so catalog changes and emergency revocations require another application release; membership alone does not claim verified behavioral quality.
 _Avoid_: Verified model catalog, open model registry
+
+**Catalog model artifact**:
+An exact immutable artifact identity listed by the bundled Model catalog with its revision, byte size, hash, licensing/provenance record, and optional pinned upstream locator. Bytes obtained through any channel are the same catalog artifact only when that exact identity matches; a different hash is a User-imported model artifact.
+_Avoid_: Catalog download, model family, similar quantization
 
 **Verified model artifact**:
 An exact, immutable model artifact that has passed every first-release conversation, financial explanation, tool use, evidence synthesis, risk reasoning, context, safety, licensing, integrity, and runtime-compatibility gate. Verification promises complete first-release capability and belongs only to that artifact and evaluation version, not to its model family, provider, another quantization, or an externally managed copy.
 _Avoid_: Verified model family, approved brand
 
 **Catalog recommendation**:
-A contextual label applied to an activatable catalog model for a particular device and user preference. It is recalculated from current evidence rather than treated as a permanent model rank or a claim of verification.
+A contextual label applied to an activatable catalog model for a particular device and user preference. It may seed the person's first selection but never changes an existing selection, downloads or loads a model, or substitutes for an unavailable model; it is not a permanent rank or verification claim.
 _Avoid_: Best model, universal default
 
 **Catalog candidate**:
@@ -94,15 +122,23 @@ An exact model artifact that has passed the activation safety floor but not the 
 _Avoid_: Verified model, unsupported model
 
 **Model activation safety floor**:
-The deterministic provenance, integrity, format, runtime, host-authority, credential-boundary, and device-preflight checks required before a model artifact may be activated. It verifies App-controlled boundaries rather than model intentions and makes no claim about the model's behavioral safety or financial-assistant quality.
+The deterministic provenance status, full cold-load integrity check, format/runtime compatibility, host-authority, credential-boundary, and device-preflight checks required before a model artifact may be activated. It verifies App-controlled boundaries rather than model intentions and makes no claim about the model's behavioral safety or financial-assistant quality.
 _Avoid_: Full model verification, quality benchmark
+
+**Model activation disclosure**:
+The person's one-time acknowledgement of the exact identity and limited assurance of a catalog candidate, User-imported model artifact, or System-provided model on an unmeasured OS build. Its persistent status badge remains visible, and the acknowledgement expires when the artifact hash, helper version, OS build, or disclosure version changes; revocation and failed safety gates are never overridable.
+_Avoid_: Risk-warning bypass, verification consent, repeated modal
 
 **Model verification record**:
 A product-published record that binds an artifact hash and evaluation version to the results of the fixed complete-capability process. The first-release app consumes and presents signed records; it does not reproduce the full evaluation or grant verification from user-device results.
 _Avoid_: Device benchmark result, community rating
 
+**Model compatibility record**:
+A local activation result bound to an exact artifact hash, embedded-helper runtime version, and device class. It is invalidated by helper or device change and may be recreated lazily, but it never grants catalog verification or permits removal of the artifact after a failed recheck.
+_Avoid_: Model verification record, permanent compatibility
+
 **Catalog retirement**:
-The catalog transition that stops recommending a deprecated model artifact while leaving it activatable, or prevents loading a revoked artifact because integrity, security, or licensing requires it. Retirement never deletes an installed artifact; storage removal remains the person's decision.
+The catalog transition that stops recommending a deprecated model artifact while leaving it activatable, or permanently prohibits an exact revoked hash—including a matching user import—because integrity, security, or licensing requires it. A locally observed revocation survives application downgrade and invalidates suspended-run resumption, but never deletes the installed artifact; storage removal remains the person's decision.
 _Avoid_: Model deletion, automatic uninstall
 
 **Evidence-backed current information**:
