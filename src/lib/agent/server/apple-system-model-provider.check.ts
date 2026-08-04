@@ -180,6 +180,102 @@ test("concurrent first activations share the handshake and correlate reversed re
   client.cancel("latest-concurrent-activation-run");
 });
 
+test("an activation write failure rejects concurrent waiters and tears down the helper transport", async () => {
+  let launchCount = 0;
+  let firstListener: ((line: string) => void) | null = null;
+  let firstTerminateCalls = 0;
+  let replacementWrites = 0;
+  const runFailures: Error[] = [];
+  const firstProcess: EmbeddedHelperProcess = {
+    onLine(nextListener) {
+      firstListener = nextListener;
+      queueMicrotask(() => firstListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { type: string; requestId?: string };
+      if (request.type === "activate") {
+        if (request.requestId === "activation-write-failure-1") {
+          queueMicrotask(() => firstListener?.(JSON.stringify({
+            protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+            type: "activation",
+            requestId: request.requestId,
+            availability: "available",
+            providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+            osBuild: "25C56",
+          })));
+          return;
+        }
+        throw new Error("write EPIPE");
+      }
+    },
+    terminate() {
+      firstTerminateCalls += 1;
+    },
+  };
+  const replacementProcess: EmbeddedHelperProcess = {
+    onLine() {
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine() {
+      replacementWrites += 1;
+      throw new Error("replacement helper must not receive activation");
+    },
+    terminate() {},
+  };
+  const client = createAppleSystemModelProtocolClient({
+    launchProcess: () => {
+      launchCount += 1;
+      return launchCount === 1 ? firstProcess : replacementProcess;
+    },
+    requestIdFactory: (() => {
+      let sequence = 0;
+      return () => `activation-write-failure-${++sequence}`;
+    })(),
+    activationTimeoutMs: 20,
+  });
+
+  await client.activate();
+  client.start({
+    runId: "activation-write-failure-run",
+    prompt: "Fail all activation waiters safely.",
+    onStream() {},
+    onComplete() {
+      assert.fail("transport failure must not complete the active run");
+    },
+    onFailure(error) {
+      runFailures.push(error);
+    },
+  });
+
+  const results = await Promise.race([
+    Promise.allSettled([client.activate(), client.activate()]),
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error("timed out waiting for activation write failures")),
+      100,
+    )),
+  ]);
+
+  assert.deepEqual(results.map(({ status }) => status), ["rejected", "rejected"]);
+  for (const result of results) {
+    assert.equal((result as PromiseRejectedResult).reason.message, "write EPIPE");
+  }
+  assert.equal(launchCount, 1);
+  assert.equal(replacementWrites, 0);
+  assert.deepEqual(runFailures.map(({ message }) => message), ["write EPIPE"]);
+  assert.equal(firstTerminateCalls, 1);
+});
+
 test("an invalid activation response rejects only its correlated waiter", async () => {
   let listener: ((line: string) => void) | null = null;
   const requestIds: string[] = [];

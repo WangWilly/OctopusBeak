@@ -549,7 +549,7 @@ export function createAgentHarnessService({
           provider,
           toolGateway,
           onStream: (output) => {
-            if (requireRun(runStore, runId).phase !== "running") return;
+            if (!runProviders.has(runId)) return;
             const protectedStream = secretBoundary.protectRecord(
               "diagnostic-export",
               "agent-stream",
