@@ -530,6 +530,46 @@ test("host-owned harness exposes streamed Apple system model output and completi
   assert.equal(service.status(started.runId).phase, "completed");
 });
 
+test("stream callbacks use in-memory lifecycle state and ignore late chunks after terminalization", async () => {
+  const adapter = deterministicAdapter();
+  const baseStore = createInMemoryAgentRunStore();
+  let getRunCalls = 0;
+  const runStore = {
+    createRun: baseStore.createRun,
+    getRun(runId: string) {
+      getRunCalls += 1;
+      return baseStore.getRun(runId);
+    },
+    updateRun: baseStore.updateRun,
+    appendLineage: baseStore.appendLineage,
+    getLineage: baseStore.getLineage,
+  };
+  const service = createAgentHarnessService({
+    helper: adapter.helper,
+    provider: adapter.provider,
+    runStore,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-in-memory-stream-state",
+  });
+
+  await service.activate();
+  const started = service.start({ prompt: "Use in-memory lifecycle state." });
+  const callsAfterStart = getRunCalls;
+  adapter.stream(started.runId, "first chunk");
+  adapter.stream(started.runId, "second chunk");
+  assert.equal(getRunCalls, callsAfterStart);
+  assert.equal(service.status(started.runId).output, "second chunk");
+
+  adapter.complete(started.runId);
+  const callsAfterComplete = getRunCalls;
+  adapter.stream(started.runId, "late chunk");
+  assert.equal(getRunCalls, callsAfterComplete);
+  assert.equal(service.status(started.runId).phase, "completed");
+  assert.equal(service.status(started.runId).output, "second chunk");
+});
+
 test("host-owned harness records a bounded provider failure transition reason", async () => {
   const failure = {
     callback: null as ((error: Error) => void) | null,
