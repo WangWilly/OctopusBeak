@@ -45,7 +45,17 @@ const compiled = spawnSync("xcrun", [
 });
 
 if (compiled.status !== 0) {
-  process.stderr.write(compiled.stderr);
+  if (typeof compiled.stderr === "string" && compiled.stderr.length > 0) {
+    process.stderr.write(compiled.stderr);
+  }
+  if (compiled.error) {
+    const detail = compiled.error instanceof Error
+      ? compiled.error.message
+      : String(compiled.error);
+    process.stderr.write(`Apple system model helper build failed to launch xcrun: ${detail}\n`);
+  } else if (compiled.status === null) {
+    process.stderr.write("Apple system model helper build failed: xcrun exited without a status.\n");
+  }
   process.exit(compiled.status ?? 1);
 }
 chmodSync(executable, 0o755);
