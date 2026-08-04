@@ -526,8 +526,9 @@ export function createAppleSystemModelProtocolClient({
         || response.osBuild.trim().length === 0
       );
       if (invalidResponse) {
-        if (requestGeneration === activationGeneration) activated = false;
-        throw new Error("Apple system model helper activation response was invalid.");
+        const error = new Error("Apple system model helper activation response was invalid.");
+        failTransport(helperProcess, error, true);
+        throw error;
       }
       const activation: AgentProviderActivation = {
         availability: response.availability as AgentProviderActivation["availability"],

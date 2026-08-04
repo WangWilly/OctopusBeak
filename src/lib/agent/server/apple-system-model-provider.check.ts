@@ -276,8 +276,9 @@ test("an activation write failure rejects concurrent waiters and tears down the 
   assert.equal(firstTerminateCalls, 1);
 });
 
-test("an invalid activation response rejects only its correlated waiter", async () => {
+test("an invalid activation response poisons the transport and rejects all waiters", async () => {
   let listener: ((line: string) => void) | null = null;
+  let terminated = false;
   const requestIds: string[] = [];
   const process: EmbeddedHelperProcess = {
     onLine(nextListener) {
@@ -301,22 +302,24 @@ test("an invalid activation response rejects only its correlated waiter", async 
         listener?.(JSON.stringify({
           protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
           type: "activation",
-          requestId: requestIds[1],
-          availability: "available",
+          requestId: requestIds[0],
+          availability: "invalid",
           providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
           osBuild: "25C56",
         }));
         listener?.(JSON.stringify({
           protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
           type: "activation",
-          requestId: requestIds[0],
-          availability: "invalid",
+          requestId: requestIds[1],
+          availability: "available",
           providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
           osBuild: "25C56",
         }));
       });
     },
-    terminate() {},
+    terminate() {
+      terminated = true;
+    },
   };
   let requestSequence = 0;
   const client = createAppleSystemModelProtocolClient({
@@ -332,13 +335,84 @@ test("an invalid activation response rejects only its correlated waiter", async 
     )),
   ]);
 
-  assert.equal(results[0].status, "rejected");
-  assert.match((results[0] as PromiseRejectedResult).reason.message, /response was invalid/);
-  assert.equal(results[1].status, "fulfilled");
-  assert.equal(
-    (results[1] as PromiseFulfilledResult<{ availability: string }>).value.availability,
-    "available",
-  );
+  assert.deepEqual(results.map(({ status }) => status), ["rejected", "rejected"]);
+  for (const result of results) {
+    assert.match((result as PromiseRejectedResult).reason.message, /response was invalid/);
+  }
+  assert.equal(terminated, true);
+});
+
+test("an invalid activation requires an explicit new run before helper replacement", async () => {
+  let launchCount = 0;
+  let firstListener: ((line: string) => void) | null = null;
+  let replacementListener: ((line: string) => void) | null = null;
+  let firstTerminated = false;
+  const firstProcess: EmbeddedHelperProcess = {
+    onLine(nextListener) {
+      firstListener = nextListener;
+      queueMicrotask(() => firstListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { type: string; requestId?: string };
+      if (request.type !== "activate") return;
+      queueMicrotask(() => firstListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "invalid",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {
+      firstTerminated = true;
+    },
+  };
+  const replacementProcess: EmbeddedHelperProcess = {
+    onLine(nextListener) {
+      replacementListener = nextListener;
+      queueMicrotask(() => replacementListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() {
+      return () => {};
+    },
+    writeLine(line) {
+      const request = JSON.parse(line) as { requestId: string };
+      queueMicrotask(() => replacementListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "available",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {},
+  };
+  const client = createAppleSystemModelProtocolClient({
+    launchProcess: () => ++launchCount === 1 ? firstProcess : replacementProcess,
+    requestIdFactory: () => `invalid-recovery-${launchCount}`,
+  });
+
+  await assert.rejects(client.activate(), /activation response was invalid/);
+  assert.equal(firstTerminated, true);
+  await assert.rejects(client.activate(), /replacement requires starting a new run/);
+  assert.equal(launchCount, 1);
+  assert.equal((await client.activate({ userStartedNewRun: true })).availability, "available");
+  assert.equal(launchCount, 2);
 });
 
 for (const [field, invalidValue] of [
@@ -347,6 +421,7 @@ for (const [field, invalidValue] of [
 ] as const) {
   test(`an activation response rejects a blank ${field} before granting authority`, async () => {
     let listener: ((line: string) => void) | null = null;
+    let terminated = false;
     const process: EmbeddedHelperProcess = {
       onLine(nextListener) {
         listener = nextListener;
@@ -372,7 +447,9 @@ for (const [field, invalidValue] of [
           [field]: invalidValue,
         })));
       },
-      terminate() {},
+      terminate() {
+        terminated = true;
+      },
     };
     const client = createAppleSystemModelProtocolClient({
       launchProcess: () => process,
@@ -380,6 +457,7 @@ for (const [field, invalidValue] of [
     });
 
     await assert.rejects(client.activate(), /activation response was invalid/);
+    assert.equal(terminated, true);
     assert.throws(() => client.start({
       runId: `blank-${field}-run`,
       prompt: "Must not start.",

@@ -125,7 +125,7 @@ private actor RunRegistry {
     }
 
     func start(runId: String, prompt: String) {
-        guard activated, tasks[runId] == nil else {
+        guard activated else {
             Task {
                 await emitter.emit(RunEvent(
                     protocolVersion: protocolVersion,
@@ -133,6 +133,18 @@ private actor RunRegistry {
                     runId: runId,
                     content: nil,
                     reason: "provider-not-activated"
+                ))
+            }
+            return
+        }
+        if tasks[runId] != nil {
+            Task {
+                await emitter.emit(RunEvent(
+                    protocolVersion: protocolVersion,
+                    type: "failure",
+                    runId: runId,
+                    content: nil,
+                    reason: "provider-concurrent-request"
                 ))
             }
             return

@@ -126,6 +126,109 @@ test("production Apple system model helper checks provider availability on activ
   }
 });
 
+test("production Apple system model helper rejects a start while inactive", {
+  ...appleHelperTestOptions,
+}, async () => {
+  const fixture = compileAndLaunchHelper("apple-system-model-inactive-run-");
+  const { child, lines } = fixture;
+  try {
+    await waitForEventWithTimeout(lines, "line", "inactive-run handshake");
+    child.stdin.write(`${JSON.stringify({
+      protocolVersion,
+      type: "start",
+      runId: "run-inactive",
+      prompt: "Must be rejected while inactive.",
+    })}\n`);
+    const [line] = await waitForEventWithTimeout(lines, "line", "inactive-run failure");
+    assert.deepEqual(JSON.parse(line), {
+      protocolVersion,
+      type: "failure",
+      runId: "run-inactive",
+      reason: "provider-not-activated",
+    });
+    child.kill("SIGTERM");
+    await waitForEventWithTimeout(child, "exit", "inactive-run helper exit");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("production Apple system model helper rejects duplicate run IDs as concurrent requests", {
+  ...appleHelperTestOptions,
+}, async (t) => {
+  const fixture = compileAndLaunchHelper("apple-system-model-duplicate-run-");
+  const { child, lines } = fixture;
+  try {
+    await waitForEventWithTimeout(lines, "line", "duplicate-run handshake");
+    child.stdin.write(`${JSON.stringify({
+      protocolVersion,
+      type: "activate",
+      requestId: "activation-duplicate-run",
+    })}\n`);
+    const [activationLine] = await waitForEventWithTimeout(
+      lines,
+      "line",
+      "duplicate-run activation response",
+    );
+    const activation = JSON.parse(activationLine);
+    if (activation.availability !== "available") {
+      t.skip("Foundation Models provider is unavailable on this host");
+      return;
+    }
+
+    const runMessages = [];
+    lines.on("line", (line) => {
+      const message = JSON.parse(line);
+      if (message.runId === "run-duplicate") runMessages.push(message);
+    });
+    const duplicateFailure = new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("timed out waiting for duplicate-run failure")),
+        5_000,
+      );
+      const onLine = (line) => {
+        const message = JSON.parse(line);
+        if (message.runId !== "run-duplicate" || message.type !== "failure") return;
+        clearTimeout(timeout);
+        lines.off("line", onLine);
+        resolve(message);
+      };
+      lines.on("line", onLine);
+    });
+    child.stdin.write(`${JSON.stringify({
+      protocolVersion,
+      type: "start",
+      runId: "run-duplicate",
+      prompt: "Start the first duplicate-run request.",
+    })}\n`);
+    child.stdin.write(`${JSON.stringify({
+      protocolVersion,
+      type: "start",
+      runId: "run-duplicate",
+      prompt: "Reject this duplicate request.",
+    })}\n`);
+    assert.deepEqual(await duplicateFailure, {
+      protocolVersion,
+      type: "failure",
+      runId: "run-duplicate",
+      reason: "provider-concurrent-request",
+    });
+
+    child.stdin.write(`${JSON.stringify({
+      protocolVersion,
+      type: "cancel",
+      runId: "run-duplicate",
+    })}\n`);
+    const cancellationBoundary = runMessages.length;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.deepEqual(runMessages.slice(cancellationBoundary), []);
+    child.kill("SIGTERM");
+    await waitForEventWithTimeout(child, "exit", "duplicate-run helper exit");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("production Apple system model helper terminates on malformed or non-exact inbound commands", {
   ...appleHelperTestOptions,
 }, async () => {
