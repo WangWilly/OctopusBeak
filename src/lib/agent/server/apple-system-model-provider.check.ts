@@ -1516,6 +1516,145 @@ test("a throwing run failure callback cannot interrupt transport teardown or a l
   }));
 });
 
+test("close isolates throwing first and middle run failure callbacks", async () => {
+  for (const throwingRunId of ["close-first-run", "close-middle-run"]) {
+    let firstListener: ((line: string) => void) | null = null;
+    let replacementListener: ((line: string) => void) | null = null;
+    let activationResponses = 0;
+    let terminateCalls = 0;
+    const failureCounts = new Map<string, number>();
+    const firstProcess: EmbeddedHelperProcess = {
+      onLine(listener) {
+        firstListener = listener;
+        queueMicrotask(() => listener(JSON.stringify({
+          protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+          type: "handshake",
+          helperVersion: "1",
+        })));
+        return () => {};
+      },
+      onExit() {
+        return () => {};
+      },
+      writeLine(line) {
+        const request = JSON.parse(line) as { type: string; requestId?: string };
+        if (request.type !== "activate" || activationResponses++ > 0) return;
+        queueMicrotask(() => firstListener?.(JSON.stringify({
+          protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+          type: "activation",
+          requestId: request.requestId,
+          availability: "available",
+          providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+          osBuild: "25C56",
+        })));
+      },
+      terminate() {
+        terminateCalls += 1;
+      },
+    };
+    const replacementProcess: EmbeddedHelperProcess = {
+      onLine(listener) {
+        replacementListener = listener;
+        queueMicrotask(() => listener(JSON.stringify({
+          protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+          type: "handshake",
+          helperVersion: "1",
+        })));
+        return () => {};
+      },
+      onExit() {
+        return () => {};
+      },
+      writeLine(line) {
+        const request = JSON.parse(line) as { type: string; requestId?: string };
+        if (request.type !== "activate") return;
+        queueMicrotask(() => replacementListener?.(JSON.stringify({
+          protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+          type: "activation",
+          requestId: request.requestId,
+          availability: "available",
+          providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+          osBuild: "25C56",
+        })));
+      },
+      terminate() {},
+    };
+    let launchCount = 0;
+    const client = createAppleSystemModelProtocolClient({
+      launchProcess: () => (++launchCount === 1 ? firstProcess : replacementProcess),
+      requestIdFactory: () => `close-${throwingRunId}`,
+    });
+
+    await client.activate();
+    for (const runId of ["close-first-run", "close-middle-run", "close-last-run"]) {
+      client.start({
+        runId,
+        prompt: "Close all active runs.",
+        onStream() {},
+        onComplete() {
+          assert.fail("closing runs must not complete");
+        },
+        onFailure() {
+          failureCounts.set(runId, (failureCounts.get(runId) ?? 0) + 1);
+          if (runId === throwingRunId) throw new Error("consumer close callback failed");
+        },
+      });
+    }
+    const pendingActivation = client.activate();
+
+    assert.doesNotThrow(() => client.close());
+    await assert.rejects(pendingActivation, /Apple system model helper client closed\./);
+    assert.deepEqual(
+      [...failureCounts.entries()],
+      [
+        ["close-first-run", 1],
+        ["close-middle-run", 1],
+        ["close-last-run", 1],
+      ],
+    );
+    assert.equal(terminateCalls, 1);
+
+    const lateListener = firstListener as ((line: string) => void) | null;
+    lateListener?.(JSON.stringify({
+      protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+      type: "stream",
+      runId: "close-last-run",
+      content: "late output",
+    }));
+    lateListener?.(JSON.stringify({
+      protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+      type: "complete",
+      runId: "close-last-run",
+    }));
+    lateListener?.(JSON.stringify({
+      protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+      type: "failure",
+      runId: "close-last-run",
+      reason: "late failure",
+    }));
+    assert.deepEqual(
+      [...failureCounts.entries()],
+      [
+        ["close-first-run", 1],
+        ["close-middle-run", 1],
+        ["close-last-run", 1],
+      ],
+    );
+
+    assert.doesNotThrow(() => client.close());
+    assert.equal(terminateCalls, 1);
+    await client.activate({ userStartedNewRun: true });
+    assert.doesNotThrow(() => client.start({
+      runId: "close-first-run",
+      prompt: "Run after close.",
+      onStream() {},
+      onComplete() {},
+      onFailure() {},
+    }));
+    client.cancel("close-first-run");
+  }
+});
+
 test("production embedded helper spawn failure rejects activation without crashing the host", async () => {
   const client = createAppleSystemModelProtocolClient({
     launchProcess: () => spawnEmbeddedAppleSystemModelHelper({
