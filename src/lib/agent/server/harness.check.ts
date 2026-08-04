@@ -618,6 +618,312 @@ test("host-owned harness records a bounded provider failure transition reason", 
   );
 });
 
+test("host-owned harness terminalizes a generic helper cancellation failure", async () => {
+  const runStore = createInMemoryAgentRunStore();
+  const diagnostics: unknown[] = [];
+  const callbacks: {
+    stream: ((content: string) => void) | null;
+    failure: ((error: Error) => void) | null;
+  } = { stream: null, failure: null };
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start({ onStream, onFailure }) {
+      callbacks.stream = onStream;
+      callbacks.failure = onFailure;
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        throw new Error("generic cancel failure");
+      },
+    },
+    provider,
+    runStore,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record: (event) => diagnostics.push(event) },
+    idFactory: () => "run-generic-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+
+  assert.deepEqual(service.status(started.runId), {
+    ...started,
+    phase: "failed",
+    action: null,
+    finishedAt: "2026-08-03T00:00:00.000Z",
+  });
+  assert.equal(runStore.getRun(started.runId)?.failureReason, "provider-failed");
+  assert.deepEqual(service.lineage(started.runId).map((event) => event.kind), [
+    "run.started",
+    "run.failed",
+  ]);
+  assert.equal(service.lineage(started.runId).at(-1)?.transitionReason, "provider-failed");
+  assert.equal(
+    (diagnostics.at(-1) as { transitionReason?: string }).transitionReason,
+    "provider-failed",
+  );
+
+  callbacks.stream?.("late output");
+  callbacks.failure?.(new Error("provider-rate-limited"));
+  assert.equal(service.status(started.runId).output, "");
+  assert.deepEqual(service.lineage(started.runId).map((event) => event.kind), [
+    "run.started",
+    "run.failed",
+  ]);
+  assert.equal(service.lineage(started.runId).at(-1)?.transitionReason, "provider-failed");
+});
+
+test("host-owned harness fails synchronously for a rejected asynchronous helper cancellation", async () => {
+  const callbacks: { stream: ((content: string) => void) | null } = { stream: null };
+  const cancellationControl: { reject: ((error: Error) => void) | null } = { reject: null };
+  const cancellation = new Promise<void>((_resolve, reject) => {
+    cancellationControl.reject = reject;
+  });
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start({ onStream }) {
+      callbacks.stream = onStream;
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        return cancellation;
+      },
+    },
+    provider,
+    runStore: createInMemoryAgentRunStore(),
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-async-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+    assert.equal(service.status(started.runId).phase, "failed");
+    callbacks.stream?.("late output");
+    assert.equal(service.status(started.runId).output, "");
+    cancellationControl.reject?.(new Error("async cancel failure"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("host-owned harness fails synchronously for a resolved asynchronous helper cancellation", async () => {
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start() {},
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        return Promise.resolve();
+      },
+    },
+    provider,
+    runStore: createInMemoryAgentRunStore(),
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-resolved-async-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+  assert.equal(service.status(started.runId).phase, "failed");
+});
+
+test("host-owned harness keeps cancellation errors stable when diagnostics fail", async () => {
+  const callbacks: { stream: ((content: string) => void) | null } = { stream: null };
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start({ onStream }) {
+      callbacks.stream = onStream;
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        throw new Error("generic cancel failure");
+      },
+    },
+    provider,
+    runStore: createInMemoryAgentRunStore(),
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: {
+      record(event) {
+        if (event.phase === "failed") throw new Error("diag boom");
+      },
+    },
+    idFactory: () => "run-diagnostics-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+  assert.equal(service.status(started.runId).phase, "failed");
+  callbacks.stream?.("late output");
+  assert.equal(service.status(started.runId).output, "");
+});
+
+test("host-owned harness keeps cancellation errors stable when run persistence fails", async () => {
+  const callbacks: { stream: ((content: string) => void) | null } = { stream: null };
+  const baseStore = createInMemoryAgentRunStore();
+  const runStore = {
+    ...baseStore,
+    updateRun(runId: string, update: Parameters<typeof baseStore.updateRun>[1]) {
+      if (update.phase === "failed") throw new Error("store boom");
+      baseStore.updateRun(runId, update);
+    },
+  };
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start({ onStream }) {
+      callbacks.stream = onStream;
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        throw new Error("generic cancel failure");
+      },
+    },
+    provider,
+    runStore,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-store-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+  assert.equal(service.status(started.runId).phase, "running");
+  callbacks.stream?.("late output");
+  assert.equal(service.status(started.runId).output, "");
+});
+
+test("host-owned harness preserves a callback failure when cancellation then throws", async () => {
+  const diagnostics: unknown[] = [];
+  let failure: ((error: Error) => void) | null = null;
+  const provider: AgentProvider = {
+    async activate() {
+      return {
+        availability: "available",
+        providerIdentity: "deterministic.no-tool-provider",
+        osBuild: "deterministic",
+      };
+    },
+    start({ onFailure }) {
+      failure = onFailure;
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: {
+      launch(input) {
+        input.provider.start(input);
+      },
+      cancel() {
+        failure?.(new Error("provider-rate-limited"));
+        throw new Error("generic cancel failure after callback");
+      },
+    },
+    provider,
+    runStore: createInMemoryAgentRunStore(),
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record: (event) => diagnostics.push(event) },
+    idFactory: () => "run-callback-cancel-failure",
+    secretValues: [],
+  });
+  await service.activate();
+
+  const started = service.start({ prompt: "Keep this run pending." });
+  assert.throws(() => service.cancel(started.runId), /Agent cancellation failed/);
+
+  assert.equal(service.status(started.runId).phase, "failed");
+  assert.deepEqual(service.lineage(started.runId).map((event) => event.kind), [
+    "run.started",
+    "run.failed",
+  ]);
+  assert.equal(service.lineage(started.runId).at(-1)?.transitionReason, "provider-rate-limited");
+  assert.equal(
+    (diagnostics.at(-1) as { transitionReason?: string }).transitionReason,
+    "provider-rate-limited",
+  );
+});
+
 test("host-owned harness makes a failed Apple cancellation terminal before a retry", async () => {
   let listener: ((line: string) => void) | null = null;
   const helperProcess: EmbeddedHelperProcess = {
