@@ -476,7 +476,12 @@ export function createAppleSystemModelProtocolClient({
       if (transportFailure && !process && !userStartedNewRun) {
         throw new Error("Apple system model helper replacement requires starting a new run.");
       }
+      const processAtRequest = process;
       await requireHandshake();
+      if (transportFailure) throw transportFailure;
+      if (processAtRequest && process !== processAtRequest) {
+        throw new Error("Apple system model helper transport changed before activation settled.");
+      }
       const helperProcess = ensureProcess();
       const requestId = requestIdFactory();
       if (activationWaiters.has(requestId)) {
@@ -491,8 +496,9 @@ export function createAppleSystemModelProtocolClient({
             requestId,
           })}\n`);
         } catch (error) {
-          activationWaiters.delete(requestId);
-          reject(error instanceof Error ? error : new Error(String(error)));
+          const transportError = error instanceof Error ? error : new Error(String(error));
+          failTransport(helperProcess, transportError, true);
+          reject(transportError);
         }
       });
       const response = await withTransportDeadline(
