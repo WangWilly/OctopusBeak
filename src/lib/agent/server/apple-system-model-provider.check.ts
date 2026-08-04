@@ -934,6 +934,71 @@ test("handshake settlement rejects a same-burst failure and replacement handshak
   assert.equal(launchCount, 2);
 });
 
+test("a helper exit after its handshake cannot replace transport until the user starts a new run", async () => {
+  let launchCount = 0;
+  let firstListener: ((line: string) => void) | null = null;
+  let firstExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | null = null;
+  let replacementListener: ((line: string) => void) | null = null;
+  const exitedAfterHandshake: EmbeddedHelperProcess = {
+    onLine(listener) {
+      firstListener = listener;
+      return () => {};
+    },
+    onExit(listener) {
+      firstExit = listener;
+      return () => {};
+    },
+    writeLine() {
+      assert.fail("an ordinary activation must not write to a replacement helper");
+    },
+    terminate() {},
+  };
+  const replacement: EmbeddedHelperProcess = {
+    onLine(listener) {
+      replacementListener = listener;
+      queueMicrotask(() => replacementListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "handshake",
+        helperVersion: "1",
+      })));
+      return () => {};
+    },
+    onExit() { return () => {}; },
+    writeLine(line) {
+      const request = JSON.parse(line) as { requestId: string };
+      queueMicrotask(() => replacementListener?.(JSON.stringify({
+        protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+        type: "activation",
+        requestId: request.requestId,
+        availability: "available",
+        providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+        osBuild: "25C56",
+      })));
+    },
+    terminate() {},
+  };
+  const client = createAppleSystemModelProtocolClient({
+    launchProcess: () => ++launchCount === 1 ? exitedAfterHandshake : replacement,
+    requestIdFactory: () => `post-handshake-exit-${launchCount}`,
+  });
+
+  const ordinaryActivation = client.activate();
+  firstListener?.(JSON.stringify({
+    protocolVersion: APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
+    type: "handshake",
+    helperVersion: "1",
+  }));
+  firstExit?.(1, null);
+  await assert.rejects(ordinaryActivation, /replacement requires starting a new run|helper exited/);
+  assert.equal(launchCount, 1);
+  assert.deepEqual(await client.activate({ userStartedNewRun: true }), {
+    availability: "available",
+    providerIdentity: "apple.foundation-models:SystemLanguageModel.default",
+    osBuild: "25C56",
+  });
+  assert.equal(launchCount, 2);
+});
+
 test("activation settlement rejects when a same-burst frame kills its transport", async () => {
   let listener: ((line: string) => void) | null = null;
   const process: EmbeddedHelperProcess = {
