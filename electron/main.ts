@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -32,6 +31,7 @@ import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
+import { readHostOsBuild } from "./host-os-build.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -91,7 +91,7 @@ function appleSystemModelHelperPath(appRoot: string) {
 }
 
 function hostOsBuild() {
-  return execFileSync("/usr/bin/sw_vers", ["-buildVersion"], { encoding: "utf8" }).trim();
+  return readHostOsBuild();
 }
 
 function isAllowedNavigation(targetUrl: string, rendererUrl: string) {
