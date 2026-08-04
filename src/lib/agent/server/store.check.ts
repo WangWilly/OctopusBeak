@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
 import { createSqliteAgentRunStore } from "./store.ts";
+import { createReadFinancialOverviewProposal, type AgentToolExecutionRecord } from "./tool-gateway.ts";
 
 type RunRowOverrides = {
   analysisId?: string | null;
@@ -418,6 +420,148 @@ test("SQLite Agent store rejects whitespace-only v1 and present legacy lineage i
       () => store.getLineage("run-blank-legacy-build"),
       /Invalid Agent lineage record/,
     );
+    store.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent store persists durable Authorized tool outcomes and replays validated results", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-outcomes-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-store",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const proposal = createReadFinancialOverviewProposal("run-tool-store", "request-store");
+    const resultData: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data: {
+        aggregateVersion: "financial-overview.aggregate.v1",
+        snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+        totalsByCurrency: {},
+        overview: {
+          cashAssets: {}, foreignAssets: {}, investmentAssets: {},
+          unbilledCreditCard: {}, loans: {}, netAssets: {},
+        },
+        counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+        quality: { status: "pass", issueCount: 0 },
+      },
+      reference: { referenceVersion: "immutable-result-ref.v1", value: "" },
+      secretFields: [],
+    };
+    resultData.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(resultData.data))}`;
+    const record: AgentToolExecutionRecord = {
+      runId: "run-tool-store",
+      requestId: "request-store",
+      proposal,
+      decision: {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "allowed",
+      },
+      outcome: "completed",
+      result: resultData,
+    resultReference: resultData.reference,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    };
+    store.recordToolRequest?.(record);
+    store.appendLineage({
+      runId: "run-tool-store",
+      analysisId: null,
+      seq: 1,
+      kind: "tool.proposal",
+      status: "proposed",
+      occurredAt: "2026-08-04T00:00:01.000Z",
+      dataClasses: ["financial.derived"],
+      providerIdentity: "test-provider",
+      osBuild: "test",
+      providerAssurance: "unverified-build",
+      transitionReason: null,
+      secretFields: [],
+      tool: { requestId: "request-store", toolName: "read_financial_overview", proposal },
+    });
+    store.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(reopened.getToolRequest?.("run-tool-store", "request-store"), record);
+    assert.deepEqual(reopened.listToolRequests?.("run-tool-store"), [record]);
+    assert.equal(reopened.getLineage("run-tool-store")[0]?.tool?.proposal?.proposalVersion, "agent-tool-proposal.v1");
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcomes are monotonic and never regress a terminal result", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-monotonic-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-monotonic",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const proposal = createReadFinancialOverviewProposal("run-tool-monotonic", "request-monotonic");
+    const data: NonNullable<AgentToolExecutionRecord["result"]>["data"] = {
+      aggregateVersion: "financial-overview.aggregate.v1",
+      snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+      totalsByCurrency: {},
+      overview: {
+        cashAssets: {}, foreignAssets: {}, investmentAssets: {},
+        unbilledCreditCard: {}, loans: {}, netAssets: {},
+      },
+      counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+      quality: { status: "pass", issueCount: 0 },
+    };
+    const completedResult: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data,
+      reference: {
+        referenceVersion: "immutable-result-ref.v1",
+        value: `immutable-result-ref.v1:${hashBytes(stableStringify(data))}`,
+      },
+      secretFields: [],
+    };
+    const base: AgentToolExecutionRecord = {
+      runId: "run-tool-monotonic",
+      requestId: "request-monotonic",
+      proposal,
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: true, reason: "allowed" },
+      outcome: "outcome-unknown",
+      result: null,
+      resultReference: null,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    };
+    store.recordToolRequest?.(base);
+    store.recordToolRequest?.({
+      ...base,
+      outcome: "completed",
+      result: completedResult,
+      resultReference: completedResult.reference,
+      occurredAt: "2026-08-04T00:00:02.000Z",
+    });
+    store.recordToolRequest?.({
+      ...base,
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: false, reason: "run-authority-denied" },
+      outcome: "not-dispatched",
+      occurredAt: "2026-08-04T00:00:03.000Z",
+    });
+    const persisted = store.getToolRequest?.("run-tool-monotonic", "request-monotonic");
+    assert.equal(persisted?.outcome, "outcome-unknown");
+    assert.equal(persisted?.result, null);
     store.close();
   } finally {
     rmSync(root, { recursive: true, force: true });

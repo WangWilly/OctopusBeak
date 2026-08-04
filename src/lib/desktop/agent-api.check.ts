@@ -200,6 +200,32 @@ test("renderer projection fails closed when an Agent status contains a canary", 
   );
 });
 
+test("renderer receives only safe tool outcome state and no tool authority", () => {
+  const projected = projectAgentRunStatus({
+    runId: "run-safe-tool-state",
+    phase: "running",
+    action: { type: "cancel" },
+    startedAt: "2026-08-03T00:00:00.000Z",
+    finishedAt: null,
+    output: "",
+    toolState: {
+      outcome: "completed",
+      toolName: "read_financial_overview",
+      resultReference: "immutable-result-ref.v1:abc",
+      settlement: "normal",
+    },
+  }, createAgentSecretBoundaryGate({ secretValues: [] }));
+  assert.deepEqual(projected.toolState, {
+    outcome: "completed",
+    toolName: "read_financial_overview",
+    resultReference: "immutable-result-ref.v1:abc",
+    settlement: "normal",
+  });
+  assert.equal(Object.hasOwn(projected, "execute"), false);
+  assert.equal(Object.hasOwn(projected, "credentials"), false);
+  assert.equal(Object.hasOwn(projected, "rawRows"), false);
+});
+
 test("renderer projection reports the secret-boundary failure metadata returned by the gate", () => {
   const failureGate: SecretBoundaryGate = {
     ...createAgentSecretBoundaryGate({ secretValues: [] }),

@@ -7,6 +7,16 @@ import {
   type SecretBoundaryGate,
   type SecretSchemaAllowlist,
 } from "../../automation/server/secret-boundary.ts";
+import type {
+  AgentToolProposal,
+  AgentProviderToolGateway,
+  AgentToolExecutionRecord,
+  AgentToolSubmission,
+} from "./tool-gateway.ts";
+import {
+  createReadFinancialOverviewProposal,
+  validateAgentToolProposal,
+} from "./tool-gateway.ts";
 
 export type { SecretBoundaryDependencies, SecretBoundaryGate } from "../../automation/server/secret-boundary.ts";
 
@@ -28,6 +38,7 @@ export const AGENT_FAILURE_REASONS = [
   "provider-concurrent-request",
   "provider-refused",
   "provider-generation-failed",
+  "tool-outcome-unknown",
   "provider-failed",
   "helper-launch-failed",
   "secret-boundary-violation",
@@ -44,14 +55,21 @@ export type AgentRunStatus = {
   startedAt: string;
   finishedAt: string | null;
   output: string;
+  toolState?: {
+    outcome: "not-dispatched" | "completed" | "outcome-unknown";
+    toolName: string;
+    resultReference: string | null;
+    settlement: "normal" | "cancelled-in-flight";
+  };
 };
 
 export type AgentLineageEvent = {
   runId: string;
   analysisId: string | null;
   seq: number;
-  kind: "run.started" | "run.completed" | "run.cancelled" | "run.failed";
-  status: "allowed" | "observed";
+  kind: "run.started" | "run.completed" | "run.cancelled" | "run.failed"
+    | "tool.proposal" | "tool.decision" | "tool.outcome";
+  status: "allowed" | "observed" | "proposed" | "blocked";
   occurredAt: string;
   dataClasses: readonly string[];
   providerIdentity: string;
@@ -59,6 +77,16 @@ export type AgentLineageEvent = {
   providerAssurance: AgentSystemModelActivation["assurance"];
   transitionReason: AgentTransitionReason;
   secretFields: readonly [];
+  tool?: {
+    requestId: string;
+    toolName: string;
+    proposal?: Record<string, unknown>;
+    decision?: { decisionVersion: string; allowed: boolean; reason: string };
+    decisionReason?: string;
+    outcome?: "not-dispatched" | "completed" | "outcome-unknown";
+    resultReference?: string | null;
+    settlement?: "normal" | "cancelled-in-flight";
+  };
 };
 
 export type AgentDiagnosticsEvent = {
@@ -68,6 +96,14 @@ export type AgentDiagnosticsEvent = {
   occurredAt: string;
   transitionReason: AgentTransitionReason;
   secretFields: readonly [];
+  tool?: {
+    requestId: string;
+    toolName: string;
+    decision?: { decisionVersion: string; allowed: boolean; reason: string };
+    outcome?: "not-dispatched" | "completed" | "outcome-unknown";
+    resultReference?: string | null;
+    settlement?: "normal" | "cancelled-in-flight";
+  };
 };
 
 export type AgentToolRequest = {
@@ -79,14 +115,21 @@ export type AgentToolResult = {
   status: "rejected" | "completed";
 };
 
-export type AgentToolGateway = {
+/**
+ * Kept as a narrow compatibility boundary for callers that have not yet
+ * installed the host gateway. The provider-facing value is always the
+ * proposal-only `submit` capability below; it never contains `execute`.
+ */
+/** Compatibility name for the single proposal-only provider capability. */
+export type AgentToolGateway = AgentProviderToolGateway;
+export type LegacyAgentToolGateway = {
   execute(request: AgentToolRequest): AgentToolResult;
 };
 
 export type AgentProviderStart = {
   runId: string;
   input: AgentStartInput;
-  toolGateway: AgentToolGateway;
+  toolGateway: AgentProviderToolGateway;
   onStream: (content: string) => void;
   onComplete: () => void;
   onFailure: (error: Error) => void;
@@ -149,6 +192,9 @@ export type AgentRunStore = {
   ): void;
   appendLineage(event: AgentLineageEvent): void;
   getLineage(runId: string): AgentLineageEvent[];
+  recordToolRequest?(record: AgentToolExecutionRecord): void;
+  getToolRequest?(runId: string, requestId: string): AgentToolExecutionRecord | null;
+  listToolRequests?(runId: string): AgentToolExecutionRecord[];
 };
 
 export type AgentDiagnosticsSink = {
@@ -188,6 +234,7 @@ export const AGENT_SECRET_SCHEMA_ALLOWLIST: SecretSchemaAllowlist = {
     "providerAssurance",
     "transitionReason",
     "secretFields",
+    "tool",
   ],
   "agent-diagnostic": [
     "runId",
@@ -196,11 +243,21 @@ export const AGENT_SECRET_SCHEMA_ALLOWLIST: SecretSchemaAllowlist = {
     "occurredAt",
     "transitionReason",
     "secretFields",
+    "tool",
   ],
   "agent-start-input": ["analysisId", "prompt"],
   "agent-activation": ["apiVersion", "availability", "warning"],
   "agent-stream": ["output"],
-  "agent-status": ["apiVersion", "runId", "phase", "action", "startedAt", "finishedAt", "output"],
+  "agent-status": ["apiVersion", "runId", "phase", "action", "startedAt", "finishedAt", "output", "toolState"],
+  "agent-tool-proposal": [
+    "proposalVersion", "requestId", "runId", "toolName", "input", "permission",
+    "sensitivity", "resource", "runAuthority",
+  ],
+  "agent-tool-decision": ["decisionVersion", "allowed", "reason"],
+  "agent-tool-result": ["resultVersion", "toolName", "data", "reference", "secretFields"],
+  "agent-tool-outcome": [
+    "runId", "requestId", "proposal", "decision", "outcome", "result", "resultReference", "occurredAt", "settlement",
+  ],
 };
 
 export function createAgentSecretBoundaryGate({
@@ -231,6 +288,20 @@ export function createAgentSecretBoundaryGate({
 export function createInMemoryAgentRunStore(): AgentRunStore {
   const runs = new Map<string, AgentRunRecord>();
   const lineage = new Map<string, AgentLineageEvent[]>();
+  const toolRequests = new Map<string, AgentToolExecutionRecord>();
+  const outcomeRank = { "not-dispatched": 1, "outcome-unknown": 2, completed: 3 } as const;
+  const canUpgradeOutcome = (
+    next: AgentToolExecutionRecord,
+    current: AgentToolExecutionRecord,
+  ) => {
+    if (outcomeRank[next.outcome] <= outcomeRank[current.outcome]) return false;
+    if (current.outcome === "outcome-unknown") {
+      return current.settlement === "cancelled-in-flight"
+        && next.outcome === "completed"
+        && next.settlement === "cancelled-in-flight";
+    }
+    return current.outcome === "not-dispatched";
+  };
   return {
     createRun(record) {
       if (runs.has(record.runId)) throw new Error("Agent run already exists.");
@@ -258,13 +329,44 @@ export function createInMemoryAgentRunStore(): AgentRunStore {
         secretFields: [],
       }));
     },
+    recordToolRequest(record) {
+      const key = `${record.runId}:${record.requestId}`;
+      const existing = toolRequests.get(key);
+      if (!existing || canUpgradeOutcome(record, existing)) {
+        toolRequests.set(key, { ...record });
+      }
+    },
+    getToolRequest(runId, requestId) {
+      const record = toolRequests.get(`${runId}:${requestId}`);
+      return record ? { ...record } : null;
+    },
+    listToolRequests(runId) {
+      return [...toolRequests.values()]
+        .filter((record) => record.runId === runId)
+        .map((record) => ({ ...record }));
+    },
   };
 }
 
-export function createNoToolAgentGateway(): AgentToolGateway {
+export function createNoToolAgentGateway(): AgentProviderToolGateway {
   return {
-    execute() {
-      return { status: "rejected" };
+    async submit(proposal) {
+      const requestId = typeof proposal === "object" && proposal !== null
+        && typeof (proposal as { requestId?: unknown }).requestId === "string"
+        ? (proposal as { requestId: string }).requestId
+        : "unknown";
+      return {
+        requestId,
+        decision: {
+          decisionVersion: "agent-tool-decision.v1",
+          allowed: false,
+          reason: "tool-not-allowlisted",
+        },
+        outcome: "not-dispatched",
+        result: null,
+        resultReference: null,
+        settlement: "normal",
+      };
     },
   };
 }
@@ -315,7 +417,7 @@ export type AgentHarnessDependencies = {
   helper: AgentHelper;
   provider: AgentProvider;
   runStore: AgentRunStore;
-  toolGateway: AgentToolGateway;
+  toolGateway: AgentToolGateway | LegacyAgentToolGateway;
   clock: AgentClock;
   diagnosticsSink: AgentDiagnosticsSink;
   idFactory?: () => string;
@@ -324,7 +426,11 @@ export type AgentHarnessDependencies = {
   secretBoundaryDependencies?: Partial<SecretBoundaryDependencies>;
 };
 
-function statusFor(record: AgentRunRecord, output = record.output): AgentRunStatus {
+function statusFor(
+  record: AgentRunRecord,
+  output = record.output,
+  toolState?: AgentRunStatus["toolState"],
+): AgentRunStatus {
   return {
     runId: record.runId,
     phase: record.phase,
@@ -332,6 +438,7 @@ function statusFor(record: AgentRunRecord, output = record.output): AgentRunStat
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
     output,
+    ...(toolState ? { toolState } : {}),
   };
 }
 
@@ -374,10 +481,34 @@ export function createAgentHarnessService({
   let activationGeneration = 0;
   const outputs = new Map<string, string>();
   const runProviders = new Map<string, AgentSystemModelActivation>();
+  const runContinuations = new Map<string, boolean>();
+  const pendingToolRequests = new Map<string, number>();
+  const completionRequested = new Map<string, boolean>();
 
   function cleanupRun(runId: string) {
+    if ((pendingToolRequests.get(runId) ?? 0) > 0) {
+      outputs.delete(runId);
+      return;
+    }
     runProviders.delete(runId);
+    runContinuations.delete(runId);
+    completionRequested.delete(runId);
     outputs.delete(runId);
+  }
+
+  function beginToolRequest(runId: string) {
+    pendingToolRequests.set(runId, (pendingToolRequests.get(runId) ?? 0) + 1);
+  }
+
+  function endToolRequest(runId: string): boolean {
+    const remaining = (pendingToolRequests.get(runId) ?? 1) - 1;
+    if (remaining > 0) {
+      pendingToolRequests.set(runId, remaining);
+      return false;
+    }
+    pendingToolRequests.delete(runId);
+    if (runStore.getRun(runId)?.phase !== "running") cleanupRun(runId);
+    return true;
   }
 
   function recordLineage(event: AgentLineageEvent) {
@@ -390,6 +521,150 @@ export function createAgentHarnessService({
       throw new Error(secretBoundaryFailureMessage(protectedEvent.failure));
     }
     runStore.appendLineage(protectedEvent.value as unknown as AgentLineageEvent);
+  }
+
+  function safeProviderProposal(runId: string, rawProposal: unknown): AgentToolProposal | Record<string, unknown> {
+    const validation = validateAgentToolProposal(rawProposal);
+    if (validation.value) {
+      const protectedProposal = secretBoundary.protectRecord(
+        "diagnostic-export",
+        "agent-tool-proposal",
+        validation.value as unknown as Record<string, unknown>,
+      );
+      if (protectedProposal.failure) {
+        const safe = createReadFinancialOverviewProposal(runId, "redacted");
+        const { input: _input, ...malformed } = safe;
+        return malformed;
+      }
+      if (validation.value.runId === runId && validation.value.runAuthority === runId) {
+        return validation.value;
+      }
+      return {
+        ...validation.value,
+        runId,
+        runAuthority: "invalid",
+      };
+    }
+    const safe = createReadFinancialOverviewProposal(runId, "redacted");
+    const { input: _input, ...malformed } = safe;
+    return malformed;
+  }
+
+  function createProviderToolGateway(runId: string): AgentProviderToolGateway {
+    const runProvider = runProviders.get(runId);
+    if (!runProvider) throw new Error("Agent run provider metadata not found.");
+    return {
+      submit: async (rawProposal): Promise<AgentToolSubmission> => {
+        beginToolRequest(runId);
+        try {
+          const proposal = safeProviderProposal(runId, rawProposal);
+          const proposedRecord = proposal as Record<string, unknown>;
+          const requestId = typeof proposedRecord.requestId === "string"
+            ? proposedRecord.requestId
+            : "redacted";
+          const toolName = typeof proposedRecord.toolName === "string"
+            ? proposedRecord.toolName
+            : "unknown";
+          const appendToolEvent = (
+          kind: AgentLineageEvent["kind"],
+          status: AgentLineageEvent["status"],
+          submission?: AgentToolSubmission,
+          ) => {
+            if (!runStore.getRun(runId)) return;
+            recordLineage({
+            runId,
+            analysisId: requireRun(runStore, runId).analysisId,
+            seq: runStore.getLineage(runId).length + 1,
+            kind,
+            status,
+            occurredAt: clock.now(),
+            dataClasses: ["financial.derived"],
+            providerIdentity: runProvider.providerIdentity,
+            osBuild: runProvider.osBuild,
+            providerAssurance: runProvider.assurance,
+            transitionReason: null,
+            secretFields: [],
+            tool: {
+              requestId,
+              toolName,
+              proposal: proposedRecord,
+              ...(submission ? {
+                decision: submission.decision,
+                decisionReason: submission.decision.reason,
+                outcome: submission.outcome,
+                resultReference: submission.resultReference?.value ?? null,
+                settlement: submission.settlement,
+              } : {}),
+            },
+            });
+          };
+          appendToolEvent("tool.proposal", "proposed");
+          let submission: AgentToolSubmission;
+          if ("submit" in toolGateway && typeof toolGateway.submit === "function") {
+            submission = await toolGateway.submit(proposal);
+          } else {
+            submission = {
+              requestId,
+              decision: {
+                decisionVersion: "agent-tool-decision.v1",
+                allowed: false,
+                reason: "tool-not-allowlisted",
+              },
+              outcome: "not-dispatched",
+              result: null,
+              resultReference: null,
+              settlement: "normal",
+            };
+          }
+          const durableSubmission = submission;
+          appendToolEvent("tool.decision", durableSubmission.decision.allowed ? "allowed" : "blocked", durableSubmission);
+          appendToolEvent("tool.outcome", "observed", durableSubmission);
+          const currentPhase = runStore.getRun(runId)?.phase;
+          recordDiagnostics({
+            runId,
+            kind: "tool.outcome",
+            phase: currentPhase ?? "cancelled",
+            occurredAt: clock.now(),
+            transitionReason: null,
+            secretFields: [],
+            tool: {
+              requestId: durableSubmission.requestId,
+              toolName,
+              decision: durableSubmission.decision,
+              outcome: durableSubmission.outcome,
+              resultReference: durableSubmission.resultReference?.value ?? null,
+              settlement: durableSubmission.settlement,
+            },
+          });
+          if (durableSubmission.outcome === "outcome-unknown" && currentPhase === "running") {
+            transition(runId, "run.failed", "failed", "tool-outcome-unknown");
+          }
+          if (currentPhase !== "running" && durableSubmission.result !== null) {
+            return {
+              requestId: durableSubmission.requestId,
+              decision: {
+                decisionVersion: "agent-tool-decision.v1",
+                allowed: false,
+                reason: "run-authority-denied",
+              },
+              outcome: "not-dispatched",
+              result: null,
+              resultReference: null,
+              settlement: durableSubmission.settlement,
+            };
+          }
+          return durableSubmission;
+        } finally {
+          const noPending = endToolRequest(runId);
+          if (noPending
+            && completionRequested.get(runId) === true
+            && runStore.getRun(runId)?.phase === "running") {
+            completionRequested.delete(runId);
+            transition(runId, "run.completed", "completed");
+          }
+        }
+      },
+    };
   }
 
   function recordDiagnostics(event: AgentDiagnosticsEvent) {
@@ -412,6 +687,7 @@ export function createAgentHarnessService({
   ) {
     const record = requireRun(runStore, runId);
     if (record.phase !== "running") return statusFor(record, outputs.get(runId));
+    runContinuations.set(runId, false);
     const runProvider = runProviders.get(runId);
     if (!runProvider) throw new Error("Agent run provider metadata not found.");
     try {
@@ -463,7 +739,14 @@ export function createAgentHarnessService({
   }
 
   function status(runId: string) {
-    return statusFor(requireRun(runStore, runId), outputs.get(runId));
+    const record = requireRun(runStore, runId);
+    const latestTool = runStore.listToolRequests?.(runId).at(-1);
+    return statusFor(record, outputs.get(runId), latestTool ? {
+      outcome: latestTool.outcome,
+      toolName: latestTool.proposal.toolName,
+      resultReference: latestTool.resultReference?.value ?? null,
+      settlement: latestTool.settlement ?? "normal",
+    } : undefined);
   }
 
   function failCancellation(runId: string): never {
@@ -546,6 +829,7 @@ export function createAgentHarnessService({
       runStore.createRun(protectedRecord.value as typeof record);
       outputs.set(runId, "");
       runProviders.set(runId, runProvider);
+      runContinuations.set(runId, true);
       recordLineage({
         runId,
         analysisId: record.analysisId,
@@ -573,9 +857,9 @@ export function createAgentHarnessService({
           runId,
           input: protectedInput.value as AgentStartInput,
           provider,
-          toolGateway,
+          toolGateway: createProviderToolGateway(runId),
           onStream: (output) => {
-            if (!runProviders.has(runId)) return;
+            if (!runProviders.has(runId) || runContinuations.get(runId) !== true) return;
             const protectedStream = secretBoundary.protectRecord(
               "diagnostic-export",
               "agent-stream",
@@ -597,7 +881,13 @@ export function createAgentHarnessService({
             }
             outputs.set(runId, protectedStream.value.output as string);
           },
-          onComplete: () => transition(runId, "run.completed", "completed"),
+          onComplete: () => {
+            if ((pendingToolRequests.get(runId) ?? 0) > 0) {
+              completionRequested.set(runId, true);
+              return;
+            }
+            transition(runId, "run.completed", "completed");
+          },
           onFailure: (error) => transition(
             runId,
             "run.failed",

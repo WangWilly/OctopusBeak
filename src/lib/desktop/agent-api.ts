@@ -25,6 +25,12 @@ export type AgentStatusDto = {
   startedAt: string;
   finishedAt: string | null;
   output: string;
+  toolState?: {
+    outcome: "not-dispatched" | "completed" | "outcome-unknown";
+    toolName: string;
+    resultReference: string | null;
+    settlement: "normal" | "cancelled-in-flight";
+  };
 };
 
 export type AgentDesktopService = Pick<AgentHarnessService, "activate" | "startNewRun" | "status" | "cancel">;
@@ -77,6 +83,14 @@ export function projectAgentRunStatus(
     startedAt: status.startedAt,
     finishedAt: status.finishedAt,
     output: status.output,
+    ...(status.toolState ? {
+      toolState: {
+        outcome: status.toolState.outcome,
+        toolName: status.toolState.toolName,
+        resultReference: status.toolState.resultReference,
+        settlement: status.toolState.settlement,
+      },
+    } : {}),
   };
   const protectedProjection = secretBoundary.protectRecord(
     "diagnostic-export",
