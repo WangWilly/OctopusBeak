@@ -562,6 +562,11 @@ export function createAgentHarnessService({
                 "failed",
                 "secret-boundary-violation",
               );
+              try {
+                helper.cancel(runId);
+              } catch {
+                // A helper cancellation failure cannot keep a secret-boundary violation running.
+              }
               return;
             }
             outputs.set(runId, protectedStream.value.output as string);
