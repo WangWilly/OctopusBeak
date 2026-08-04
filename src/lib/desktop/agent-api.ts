@@ -29,11 +29,15 @@ export type AgentStatusDto = {
 
 export type AgentDesktopService = Pick<AgentHarnessService, "activate" | "startNewRun" | "status" | "cancel">;
 
+export type ValidatedAgentStartInput = Omit<AgentStartInput, "prompt"> & {
+  prompt: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function validateAgentStartInput(input: unknown): AgentStartInput {
+export function validateAgentStartInput(input: unknown): ValidatedAgentStartInput {
   if (!isRecord(input)
     || Object.keys(input).some((key) => key !== "analysisId" && key !== "prompt")) {
     throw new TypeError("Invalid Agent start input.");
@@ -47,7 +51,11 @@ export function validateAgentStartInput(input: unknown): AgentStartInput {
     || input.prompt.length > 20_000) {
     throw new TypeError("Invalid Agent start input.");
   }
-  return input as AgentStartInput;
+  const analysisId = input.analysisId;
+  const prompt = input.prompt;
+  return analysisId === undefined
+    ? { prompt }
+    : { analysisId, prompt };
 }
 
 export function validateAgentRunId(input: unknown): string {

@@ -5,6 +5,7 @@ import {
   createAgentIpcHandlers,
   projectAgentRunStatus,
   registerAgentIpcHandlers,
+  validateAgentStartInput,
   type AgentDesktopService,
 } from "./agent-api.ts";
 import {
@@ -157,6 +158,31 @@ test("Agent IPC input validation rejects renderer-shaped extras", async () => {
   await assert.rejects(handlers.start({}, { providerId: "model-catalog" }), /Invalid Agent start input/);
   assert.throws(() => handlers.status({}, ""), /Invalid Agent run id/);
   assert.throws(() => handlers.cancel({}, 42), /Invalid Agent run id/);
+});
+
+test("validated Agent start input refines prompt to a non-empty string", () => {
+  assert.throws(
+    () => validateAgentStartInput(undefined),
+    /Invalid Agent start input/,
+  );
+  assert.throws(
+    () => validateAgentStartInput({ prompt: " \t" }),
+    /Invalid Agent start input/,
+  );
+
+  const input = validateAgentStartInput({
+    analysisId: "analysis-normalized",
+    prompt: "  Summarize this analysis.  ",
+  });
+
+  // This assignment is intentional: the validator's return type must make
+  // prompt safe to pass to consumers without another optional-field check.
+  const prompt: string = input.prompt;
+  assert.equal(prompt, "  Summarize this analysis.  ");
+  assert.deepEqual(input, {
+    analysisId: "analysis-normalized",
+    prompt: "  Summarize this analysis.  ",
+  });
 });
 
 test("renderer projection fails closed when an Agent status contains a canary", () => {

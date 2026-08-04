@@ -95,6 +95,8 @@ private func generationFailureReason(_ error: Error) -> String {
         return "provider-concurrent-request"
     case .refusal:
         return "provider-refused"
+    @unknown default:
+        return "provider-failed"
     }
 }
 
