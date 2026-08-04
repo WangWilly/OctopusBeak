@@ -375,6 +375,11 @@ export function createAgentHarnessService({
   const outputs = new Map<string, string>();
   const runProviders = new Map<string, AgentSystemModelActivation>();
 
+  function cleanupRun(runId: string) {
+    runProviders.delete(runId);
+    outputs.delete(runId);
+  }
+
   function recordLineage(event: AgentLineageEvent) {
     const protectedEvent = secretBoundary.protectRecord(
       "sqlite-persistence",
@@ -409,54 +414,75 @@ export function createAgentHarnessService({
     if (record.phase !== "running") return statusFor(record, outputs.get(runId));
     const runProvider = runProviders.get(runId);
     if (!runProvider) throw new Error("Agent run provider metadata not found.");
-    const occurredAt = clock.now();
-    const output = outputs.get(runId) ?? record.output;
-    const failureReason = phase === "failed"
-      ? transitionReason as AgentFailureReason
-      : null;
-    const protectedRecord = secretBoundary.protectRecord(
-      "sqlite-persistence",
-      "agent-run",
-      { ...record, phase, finishedAt: occurredAt, output, failureReason },
-    );
-    if (protectedRecord.failure) {
-      throw new Error(secretBoundaryFailureMessage(protectedRecord.failure));
+    try {
+      const occurredAt = clock.now();
+      const output = outputs.get(runId) ?? record.output;
+      const failureReason = phase === "failed"
+        ? transitionReason as AgentFailureReason
+        : null;
+      const protectedRecord = secretBoundary.protectRecord(
+        "sqlite-persistence",
+        "agent-run",
+        { ...record, phase, finishedAt: occurredAt, output, failureReason },
+      );
+      if (protectedRecord.failure) {
+        throw new Error(secretBoundaryFailureMessage(protectedRecord.failure));
+      }
+      runStore.updateRun(runId, {
+        phase: protectedRecord.value.phase as AgentRunPhase,
+        finishedAt: protectedRecord.value.finishedAt as string,
+        output: protectedRecord.value.output as string,
+        failureReason: protectedRecord.value.failureReason as AgentFailureReason | null,
+      });
+      recordLineage({
+        runId,
+        analysisId: record.analysisId,
+        seq: runStore.getLineage(runId).length + 1,
+        kind,
+        status: "observed",
+        occurredAt,
+        dataClasses: [],
+        providerIdentity: runProvider.providerIdentity,
+        osBuild: runProvider.osBuild,
+        providerAssurance: runProvider.assurance,
+        transitionReason,
+        secretFields: [],
+      });
+      recordDiagnostics({
+        runId,
+        kind,
+        phase,
+        occurredAt,
+        transitionReason,
+        secretFields: [],
+      });
+      return status(runId);
+    } finally {
+      cleanupRun(runId);
     }
-    runStore.updateRun(runId, {
-      phase: protectedRecord.value.phase as AgentRunPhase,
-      finishedAt: protectedRecord.value.finishedAt as string,
-      output: protectedRecord.value.output as string,
-      failureReason: protectedRecord.value.failureReason as AgentFailureReason | null,
-    });
-    recordLineage({
-      runId,
-      analysisId: record.analysisId,
-      seq: runStore.getLineage(runId).length + 1,
-      kind,
-      status: "observed",
-      occurredAt,
-      dataClasses: [],
-      providerIdentity: runProvider.providerIdentity,
-      osBuild: runProvider.osBuild,
-      providerAssurance: runProvider.assurance,
-      transitionReason,
-      secretFields: [],
-    });
-    recordDiagnostics({
-      runId,
-      kind,
-      phase,
-      occurredAt,
-      transitionReason,
-      secretFields: [],
-    });
-    runProviders.delete(runId);
-    outputs.delete(runId);
-    return status(runId);
   }
 
   function status(runId: string) {
     return statusFor(requireRun(runStore, runId), outputs.get(runId));
+  }
+
+  function failCancellation(runId: string): never {
+    try {
+      if (requireRun(runStore, runId).phase === "running" && runProviders.has(runId)) {
+        transition(runId, "run.failed", "failed", "provider-failed");
+      }
+    } catch {
+      // Preserve the stable public cancellation error when terminal persistence or diagnostics fail.
+    } finally {
+      cleanupRun(runId);
+    }
+    throw new Error("Agent cancellation failed.");
+  }
+
+  function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+    return value !== null
+      && (typeof value === "object" || typeof value === "function")
+      && typeof (value as { then?: unknown }).then === "function";
   }
 
   return {
@@ -593,10 +619,15 @@ export function createAgentHarnessService({
     cancel(runId) {
       const record = requireRun(runStore, runId);
       if (record.phase === "running") {
+        if (!runProviders.has(runId)) return failCancellation(runId);
         try {
-          helper.cancel(runId);
+          const cancellation = helper.cancel(runId) as unknown;
+          if (isPromiseLike(cancellation)) {
+            void Promise.resolve(cancellation).catch(() => undefined);
+            return failCancellation(runId);
+          }
         } catch {
-          throw new Error("Agent cancellation failed.");
+          failCancellation(runId);
         }
         return transition(runId, "run.cancelled", "cancelled", "user-cancelled");
       }
