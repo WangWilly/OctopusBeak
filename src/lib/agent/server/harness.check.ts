@@ -716,6 +716,82 @@ test("secret boundary fails closed before agent persistence and diagnostics", as
   assert.equal(JSON.stringify(diagnostics).includes(canary), false);
 });
 
+for (const [label, cancel] of [
+  ["cancels the helper", () => {}],
+  ["still fails closed when helper cancellation throws", () => { throw new Error("cancel failure"); }],
+] as const) {
+  test(`a secret-bearing stream ${label} without retaining the secret`, async () => {
+    const canary = "agent-harness-stream-secret-canary";
+    const runStore = createInMemoryAgentRunStore();
+    const diagnostics: unknown[] = [];
+    const adapter = deterministicAdapter();
+    const cancelled: string[] = [];
+    const service = createAgentHarnessService({
+      helper: {
+        launch: adapter.helper.launch,
+        cancel(runId) {
+          cancelled.push(runId);
+          cancel();
+        },
+      },
+      provider: adapter.provider,
+      runStore,
+      toolGateway: { execute: () => ({ status: "rejected" }) },
+      clock: { now: () => "2026-08-03T00:00:00.000Z" },
+      diagnosticsSink: { record: (event) => diagnostics.push(event) },
+      idFactory: () => `run-stream-secret-${label}`,
+      secretValues: [canary],
+    });
+
+    await service.activate();
+    const started = service.start({ prompt: "Do not retain secret-bearing output." });
+    adapter.stream(started.runId, `Generated output includes ${canary}.`);
+    adapter.complete(started.runId);
+
+    assert.deepEqual(cancelled, [started.runId]);
+    assert.equal(service.status(started.runId).phase, "failed");
+    assert.equal(service.status(started.runId).output.includes(canary), false);
+    assert.equal(runStore.getRun(started.runId)?.output.includes(canary), false);
+    assert.equal(service.lineage(started.runId).at(-1)?.transitionReason, "secret-boundary-violation");
+    assert.equal(JSON.stringify(diagnostics).includes(canary), false);
+  });
+}
+
+test("a secret-bearing stream remains failed when synchronous helper cancellation completes the run", async () => {
+  const canary = "agent-harness-reentrant-stream-secret-canary";
+  const runStore = createInMemoryAgentRunStore();
+  const diagnostics: unknown[] = [];
+  const adapter = deterministicAdapter();
+  const cancelled: string[] = [];
+  const service = createAgentHarnessService({
+    helper: {
+      launch: adapter.helper.launch,
+      cancel(runId) {
+        cancelled.push(runId);
+        adapter.complete(runId);
+      },
+    },
+    provider: adapter.provider,
+    runStore,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-03T00:00:00.000Z" },
+    diagnosticsSink: { record: (event) => diagnostics.push(event) },
+    idFactory: () => "run-reentrant-stream-secret",
+    secretValues: [canary],
+  });
+
+  await service.activate();
+  const started = service.start({ prompt: "Do not retain secret-bearing output." });
+  adapter.stream(started.runId, `Generated output includes ${canary}.`);
+
+  assert.deepEqual(cancelled, [started.runId]);
+  assert.equal(service.status(started.runId).phase, "failed");
+  assert.equal(service.status(started.runId).output.includes(canary), false);
+  assert.equal(runStore.getRun(started.runId)?.output.includes(canary), false);
+  assert.equal(service.lineage(started.runId).at(-1)?.transitionReason, "secret-boundary-violation");
+  assert.equal(JSON.stringify(diagnostics).includes(canary), false);
+});
+
 test("secret boundary rejects an Authentication canary before provider prompt projection", async () => {
   const canary = "agent-provider-prompt-secret-canary";
   let providerStarts = 0;
