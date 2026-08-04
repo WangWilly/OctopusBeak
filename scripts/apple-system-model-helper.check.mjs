@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -9,6 +9,7 @@ import { agentHelperProcessEnv } from "../src/lib/agent/server/process-environme
 
 const protocolVersion = "apple-system-model/v1";
 const source = new URL("../electron/apple-system-model-helper.swift", import.meta.url);
+const helperSource = readFileSync(source, "utf8");
 const qualifiesRealProvider = process.env.OCTOPUSBEAK_FOUNDATION_MODELS_QUALIFICATION === "1";
 const supportsAppleHelper = process.platform === "darwin"
   && Number.parseInt(release().split(".")[0] ?? "0", 10) >= 25;
@@ -19,6 +20,10 @@ const swiftTarget = `${swiftArchitecture}-apple-macosx26.0`;
 if (qualifiesRealProvider && !supportsAppleHelper) {
   throw new Error("Apple Foundation Models qualification requires macOS.");
 }
+
+test("generation failure mapping has a bounded forward-compatible fallback", () => {
+  assert.match(helperSource, /@unknown\s+default:\s*\n\s*return\s+"provider-failed"/);
+});
 
 function waitForEventWithTimeout(emitter, event, description, timeoutMs = 5_000) {
   return new Promise((resolve, reject) => {
