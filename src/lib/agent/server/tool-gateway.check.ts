@@ -223,6 +223,80 @@ test("completed replay requires the same canonical proposal and an active run", 
   assert.equal(calls, 1);
 });
 
+test("a mismatched duplicate never replaces a completed durable record or its canonical replay", async () => {
+  const store = runningStore();
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+  const proposal = createReadFinancialOverviewProposal("run-tool-1", "request-monotonicity");
+  const completed = await gateway.submit(proposal);
+  assert.equal(completed.outcome, "completed");
+  const durableBefore = store.getToolRequest?.("run-tool-1", "request-monotonicity");
+  assert.equal(durableBefore?.outcome, "completed");
+  assert.deepEqual(durableBefore?.result, completed.result);
+
+  const changed = await gateway.submit({ ...proposal, runAuthority: "run-tool-other" });
+  assert.equal(changed.outcome, "not-dispatched");
+  assert.equal(changed.result, null);
+  assert.equal(changed.resultReference, null);
+  assert.equal(calls, 1);
+  assert.equal(store.getToolRequest?.("run-tool-1", "request-monotonicity")?.outcome, "completed");
+
+  const malformed = await gateway.submit({ ...proposal, input: { unexpected: true } });
+  assert.equal(malformed.outcome, "not-dispatched");
+  assert.equal(malformed.result, null);
+  assert.equal(malformed.resultReference, null);
+  assert.equal(calls, 1);
+  assert.equal(store.getToolRequest?.("run-tool-1", "request-monotonicity")?.outcome, "completed");
+
+  const replay = await gateway.submit(proposal);
+  assert.deepEqual(replay, completed);
+  assert.equal(replay.outcome, "completed");
+  assert.deepEqual(store.getToolRequest?.("run-tool-1", "request-monotonicity")?.result, completed.result);
+  assert.equal(calls, 1);
+});
+
+test("a fresh durable terminal record supersedes a stale nonterminal cache across gateways", async () => {
+  const store = runningStore();
+  let gatewayACalls = 0;
+  let gatewayBCalls = 0;
+  const gatewayA = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async () => {
+      gatewayACalls += 1;
+      return result();
+    },
+  });
+  const gatewayB = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async () => {
+      gatewayBCalls += 1;
+      return result();
+    },
+  });
+  const proposal = createReadFinancialOverviewProposal("run-tool-1", "request-shared-store");
+
+  const denied = await gatewayA.submit({ ...proposal, runAuthority: "wrong-authority" });
+  assert.equal(denied.outcome, "not-dispatched");
+  assert.equal(store.getToolRequest?.("run-tool-1", "request-shared-store")?.outcome, "not-dispatched");
+
+  const completed = await gatewayB.submit(proposal);
+  assert.equal(completed.outcome, "completed");
+  assert.equal(gatewayBCalls, 1);
+  assert.equal(store.getToolRequest?.("run-tool-1", "request-shared-store")?.outcome, "completed");
+
+  const replay = await gatewayA.submit(proposal);
+  assert.deepEqual(replay, completed);
+  assert.equal(replay.outcome, "completed");
+  assert.equal(gatewayACalls, 0);
+  assert.equal(gatewayBCalls, 1);
+});
+
 test("a not-dispatched request is revalidated and dispatches after authority becomes valid", async () => {
   const store = runningStore();
   let calls = 0;

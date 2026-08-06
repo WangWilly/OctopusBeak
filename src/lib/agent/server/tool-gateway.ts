@@ -533,17 +533,17 @@ export function createFinancialOverviewToolGateway({
     return protectedValue.value as T;
   }
 
-  function persist(record: AgentToolExecutionRecord): AgentToolExecutionRecord {
+  function persistRecord(record: AgentToolExecutionRecord): AgentToolExecutionRecord {
     const protectedRecord = protect("agent-tool-outcome", record as unknown as Record<string, unknown>);
     const next = protectedRecord as unknown as AgentToolExecutionRecord;
     const key = `${next.runId}:${next.requestId}`;
     if (!runStore.getRun(next.runId)) return next;
-    const existing = records.get(key) ?? runStore.getToolRequest?.(next.runId, next.requestId) ?? null;
+    const existing = existingRecord(next.runId, next.requestId);
     const identityDiffers = existing
       && agentToolProposalIdentity(existing.proposal) !== agentToolProposalIdentity(next.proposal);
     if (identityDiffers && existing?.outcome !== "not-dispatched") {
       records.set(key, existing);
-      return next;
+      return existing;
     }
     if (existing && !isMoreFinalOutcome(next.outcome, existing.outcome)) {
       records.set(key, existing);
@@ -553,6 +553,28 @@ export function createFinancialOverviewToolGateway({
     const persisted = runStore.getToolRequest?.(next.runId, next.requestId) ?? next;
     records.set(key, persisted);
     return persisted;
+  }
+
+  function persistSubmission(record: AgentToolExecutionRecord): AgentToolSubmission {
+    const durable = persistRecord(record);
+    const caller = agentToolProposalIdentity(durable.proposal)
+      === agentToolProposalIdentity(record.proposal)
+      ? durable
+      : record;
+    return replaySubmission(caller);
+  }
+
+  function existingRecord(runId: string, requestId: string): AgentToolExecutionRecord | null {
+    const key = `${runId}:${requestId}`;
+    const cached = records.get(key) ?? null;
+    const durable = runStore.getToolRequest?.(runId, requestId) ?? null;
+    if (durable && durable.outcome !== "not-dispatched") {
+      records.set(key, durable);
+      return durable;
+    }
+    if (cached) return cached;
+    if (durable) records.set(key, durable);
+    return durable;
   }
 
   return {
@@ -617,14 +639,12 @@ export function createFinancialOverviewToolGateway({
           resultReference: null,
           occurredAt: clock.now(),
         };
-        return replaySubmission(persist(record));
+        return persistSubmission(record);
       }
 
       const run = runStore.getRun(proposal.runId);
       const active = Boolean(run && run.phase === "running" && proposal.runAuthority === proposal.runId);
-      const existing = records.get(`${proposal.runId}:${proposal.requestId}`)
-        ?? runStore.getToolRequest?.(proposal.runId, proposal.requestId)
-        ?? null;
+      const existing = existingRecord(proposal.runId, proposal.requestId);
       if (existing) {
         if (active && agentToolProposalIdentity(existing.proposal) === agentToolProposalIdentity(proposal)) {
           if (existing.outcome !== "not-dispatched") {
@@ -661,7 +681,7 @@ export function createFinancialOverviewToolGateway({
           resultReference: null,
           occurredAt: clock.now(),
         };
-        return replaySubmission(persist(record));
+        return persistSubmission(record);
       }
       const key = `${proposal.runId}:${proposal.requestId}`;
       const identity = agentToolProposalIdentity(proposal);
@@ -690,7 +710,7 @@ export function createFinancialOverviewToolGateway({
           resultReference: null,
           occurredAt: clock.now(),
         };
-        return replaySubmission(persist(record));
+        return persistSubmission(record);
       }
 
       const dispatch = (async (): Promise<AgentToolSubmission> => {
@@ -726,7 +746,7 @@ export function createFinancialOverviewToolGateway({
             occurredAt: clock.now(),
             settlement,
           };
-          return replaySubmission(persist(record));
+          return persistSubmission(record);
         } catch {
           const record = {
             runId: proposal.runId,
@@ -741,7 +761,7 @@ export function createFinancialOverviewToolGateway({
               ? "cancelled-in-flight"
               : "normal") as AgentToolSettlement,
           };
-          return replaySubmission(persist(record));
+          return persistSubmission(record);
         } finally {
           if (timeout) clearTimeout(timeout);
           snapshotDb?.close();

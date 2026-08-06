@@ -555,6 +555,24 @@ export function createAgentHarnessService({
     return malformed;
   }
 
+  function unknownToolSubmission(
+    requestId: string,
+    settlement: AgentToolSubmission["settlement"],
+  ): AgentToolSubmission {
+    return {
+      requestId,
+      decision: {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: false,
+        reason: "tool-not-allowlisted",
+      },
+      outcome: "outcome-unknown",
+      result: null,
+      resultReference: null,
+      settlement,
+    };
+  }
+
   function createProviderToolGateway(runId: string): AgentProviderToolGateway {
     const runProvider = runProviders.get(runId);
     if (!runProvider) throw new Error("Agent run provider metadata not found.");
@@ -606,7 +624,18 @@ export function createAgentHarnessService({
           appendToolEvent("tool.proposal", "proposed");
           let submission: AgentToolSubmission;
           if ("submit" in toolGateway && typeof toolGateway.submit === "function") {
-            submission = await toolGateway.submit(proposal);
+            try {
+              submission = await toolGateway.submit(proposal);
+            } catch {
+              // A gateway rejection means dispatch settlement is unknown. Keep
+              // the provider-facing record bounded and never project the error.
+              submission = unknownToolSubmission(
+                requestId,
+                runStore.getRun(runId)?.phase === "cancelled"
+                  ? "cancelled-in-flight"
+                  : "normal",
+              );
+            }
           } else {
             submission = {
               requestId,

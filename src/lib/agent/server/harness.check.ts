@@ -1188,3 +1188,77 @@ test("SQLite Agent store rejects a canary before writing a run", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a rejected provider gateway becomes a bounded unknown outcome without leaking its error", async () => {
+  const store = createInMemoryAgentRunStore();
+  const diagnostics: unknown[] = [];
+  const canary = "provider-gateway-secret-canary";
+  let submission!: Promise<{
+    requestId: string;
+    decision: { decisionVersion: string; allowed: boolean; reason: string };
+    outcome: string;
+    result: unknown;
+    resultReference: unknown;
+    settlement: string;
+  }>;
+  let complete!: () => void;
+  const provider: AgentProvider = {
+    async activate() {
+      return { availability: "available", providerIdentity: "test-provider", osBuild: "test" };
+    },
+    start({ runId, toolGateway: capability, onComplete }) {
+      complete = onComplete;
+      submission = capability.submit({
+        proposalVersion: "agent-tool-proposal.v1",
+        requestId: "request-gateway-rejection",
+        runId,
+        toolName: "read_financial_overview",
+        input: {},
+        permission: "financial.overview.read",
+        sensitivity: "derived-financial",
+        resource: "ledger.overview",
+        runAuthority: runId,
+      });
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: { launch(input) { input.provider.start(input); }, cancel() {} },
+    provider,
+    runStore: store,
+    toolGateway: {
+      async submit() {
+        throw new Error(`gateway rejected with ${canary}`);
+      },
+    },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record(event) { diagnostics.push(event); } },
+    idFactory: () => "run-gateway-rejection",
+    secretValues: [canary],
+  });
+
+  await service.activate();
+  service.start({});
+  complete();
+  const bounded = await submission;
+  assert.equal(bounded.requestId, "request-gateway-rejection");
+  assert.equal(bounded.decision.decisionVersion, "agent-tool-decision.v1");
+  assert.equal(bounded.decision.allowed, false);
+  assert.equal(bounded.outcome, "outcome-unknown");
+  assert.equal(bounded.result, null);
+  assert.equal(bounded.resultReference, null);
+  assert.equal(bounded.settlement, "normal");
+  assert.equal(service.status("run-gateway-rejection").phase, "failed");
+  assert.equal(store.getRun("run-gateway-rejection")?.failureReason, "tool-outcome-unknown");
+  assert.deepEqual(service.lineage("run-gateway-rejection").map((event) => event.kind), [
+    "run.started", "tool.proposal", "tool.decision", "tool.outcome", "run.failed",
+  ]);
+  assert.equal(service.lineage("run-gateway-rejection").at(-1)?.transitionReason, "tool-outcome-unknown");
+  assert.equal(JSON.stringify(bounded).includes(canary), false);
+  assert.equal(JSON.stringify(service.lineage("run-gateway-rejection")).includes(canary), false);
+  assert.equal(JSON.stringify(diagnostics).includes(canary), false);
+
+  complete();
+  assert.equal(service.complete("run-gateway-rejection").phase, "failed");
+  assert.equal(service.cancel("run-gateway-rejection").phase, "failed");
+});
