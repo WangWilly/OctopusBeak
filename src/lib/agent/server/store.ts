@@ -307,6 +307,8 @@ function decodeLineageRecord(
   value: unknown,
   legacy: boolean,
 ): AgentLineageEvent {
+  const hasTool = isRecord(value) && Object.hasOwn(value, "tool");
+  const decodedTool = hasTool ? decodeToolLineage(value.tool) : undefined;
   if (!isRecord(value)
     || !hasOnlyExpectedKeys(
       value,
@@ -347,7 +349,7 @@ function decodeLineageRecord(
       ))
     || !Array.isArray(value.secretFields)
     || value.secretFields.length !== 0
-    || (Object.hasOwn(value, "tool") && !decodeToolLineage(value.tool))
+    || (hasTool && !decodedTool)
     || (typeof value.kind === "string" && value.kind.startsWith("tool.") && !Object.hasOwn(value, "tool"))
     || (!legacy && !isValidV1LineageState(value))) {
     throw new Error("Invalid Agent lineage record.");
@@ -371,7 +373,7 @@ function decodeLineageRecord(
       ? null
       : value.transitionReason as AgentLineageEvent["transitionReason"],
     secretFields: [],
-    ...(Object.hasOwn(value, "tool") ? { tool: decodeToolLineage(value.tool) } : {}),
+    ...(decodedTool ? { tool: decodedTool } : {}),
   };
 }
 
@@ -621,12 +623,15 @@ export function createSqliteAgentRunStore(
         if (canUpgradeAgentToolOutcome(protectedRecord, current)) {
           db.prepare(`
             UPDATE agent_tool_outcomes
-            SET outcome = ?, result_reference = ?, result_json = ?, occurred_at = ?, record_json = ?, updated_at = ?
+            SET outcome = ?, result_reference = ?, result_json = ?, proposal_json = ?, decision_json = ?,
+              occurred_at = ?, record_json = ?, updated_at = ?
             WHERE run_id = ? AND request_id = ?
           `).run(
             protectedRecord.outcome,
             protectedRecord.resultReference?.value ?? null,
             protectedRecord.result ? JSON.stringify(protectedRecord.result) : null,
+            JSON.stringify(protectedRecord.proposal),
+            JSON.stringify(protectedRecord.decision),
             protectedRecord.occurredAt,
             encoded,
             protectedRecord.occurredAt,
