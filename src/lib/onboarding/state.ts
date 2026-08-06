@@ -39,6 +39,52 @@ export function nextOnboardingCredentialKey(
   return index < 0 ? current : keys[index + 1] ?? null;
 }
 
+export type OnboardingCredentialState = {
+  selectedCredentialGroupId: string;
+  targetKey: string | null;
+  statementSelectionConfirmed: boolean;
+};
+
+export function previousOnboardingCredentialState(
+  keys: readonly string[],
+  state: OnboardingCredentialState,
+  hasStatements = false,
+) {
+  const unchanged = {
+    ...state,
+    closeCredentials: false,
+  };
+  if (!state.selectedCredentialGroupId) {
+    return { ...unchanged, closeCredentials: true };
+  }
+
+  if (state.targetKey) {
+    const currentIndex = keys.indexOf(state.targetKey);
+    if (currentIndex > 0) {
+      return { ...unchanged, targetKey: keys[currentIndex - 1] };
+    }
+    return {
+      selectedCredentialGroupId: "",
+      targetKey: null,
+      statementSelectionConfirmed: false,
+      closeCredentials: false,
+    };
+  }
+
+  if (hasStatements && state.statementSelectionConfirmed) {
+    return { ...unchanged, statementSelectionConfirmed: false };
+  }
+
+  const lastKey = keys.at(-1);
+  if (lastKey) return { ...unchanged, targetKey: lastKey };
+  return {
+    selectedCredentialGroupId: "",
+    targetKey: null,
+    statementSelectionConfirmed: false,
+    closeCredentials: false,
+  };
+}
+
 export function settleAssistDrag(succeeded: boolean) {
   return succeeded;
 }

@@ -2,6 +2,7 @@
   import { onDestroy, tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import {
+    onboardingCanGoBack,
     onboardingCopyKey,
     onboardingStepNumber,
     targetForOnboardingStep,
@@ -12,6 +13,7 @@
   import type { OnboardingState } from "./state.ts";
   import {
     activateOnboardingTarget,
+    focusOnboardingTarget,
     observeOnboardingTarget,
     selectorForOnboardingTarget,
   } from "./target-observer.ts";
@@ -38,8 +40,10 @@
   let rootOverflow = "";
   let bodyOverflow = "";
   let stopObserving = () => {};
+  let targetResizeObserver: ResizeObserver | null = null;
   let watchedSelector: string | null | undefined;
   let announcement = "";
+  let showPrimaryAction = true;
 
   $: visible = step !== "hidden";
   $: key = visible ? onboardingCopyKey(step) : null;
@@ -47,6 +51,14 @@
   $: title = copy?.title ?? "";
   $: body = copy?.body ?? "";
   $: current = onboardingStepNumber(step);
+  $: canGoBack = onboardingCanGoBack(step);
+  $: {
+    const targetAction = target?.dataset.onboardingAction;
+    showPrimaryAction = true;
+    if (step === "assist" && targetAction === "choose-verification-control") {
+      showPrimaryAction = false;
+    }
+  }
   $: coachPosition = targetRect && coachWidth && coachHeight
     ? placeOnboardingCoach(
       targetRect,
@@ -104,6 +116,8 @@
     watchedSelector = selector;
     stopObserving();
     stopObserving = () => {};
+    targetResizeObserver?.disconnect();
+    targetResizeObserver = null;
     target = null;
     targetRect = null;
     obstacleRects = [];
@@ -113,11 +127,18 @@
     }
     stopObserving = observeOnboardingTarget(selector, (nextTarget) => {
       if (nextTarget && nextTarget !== target) {
+        targetResizeObserver?.disconnect();
+        targetResizeObserver = new ResizeObserver(updateRect);
+        targetResizeObserver.observe(nextTarget);
         nextTarget.scrollIntoView({
           behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
           block: "center",
           inline: "center",
         });
+        focusOnboardingTarget(nextTarget);
+      } else if (!nextTarget) {
+        targetResizeObserver?.disconnect();
+        targetResizeObserver = null;
       }
       target = nextTarget;
       updateRect();
@@ -201,8 +222,8 @@
     if (nextStep === "assist" && targetAction === "resume-collection") {
       return dictionary.onboarding.resumeCollection;
     }
-    if (nextStep === "assist" && targetAction === "choose-verification-control") {
-      return dictionary.onboarding.focusVerificationViewer;
+    if (nextStep === "assist" && targetAction === "enter-verification") {
+      return dictionary.onboarding.submitVerification;
     }
     if (nextStep === "overview") return dictionary.onboarding.openOverview;
     if (nextStep === "overview-empty") {
@@ -215,6 +236,7 @@
 
   onDestroy(() => {
     stopObserving();
+    targetResizeObserver?.disconnect();
     stopListening();
   });
 </script>
@@ -271,15 +293,19 @@
     <h2 id="onboarding-title">{title}</h2>
     <p>{body}</p>
     <div class="coach-actions">
-      <button class="button secondary" type="button" onclick={back}>{$t.onboarding.back}</button>
+      {#if canGoBack}
+        <button class="button secondary" type="button" onclick={back}>{$t.onboarding.back}</button>
+      {/if}
       {#if step === "complete"}
         <button class="button secondary" type="button" onclick={onAddSource}>{$t.onboarding.addSource}</button>
         <button class="button primary" type="button" onclick={onFinish}>{$t.onboarding.finish}</button>
       {:else}
         <button class="button secondary" type="button" onclick={onPause}>{$t.onboarding.pause}</button>
-        <button class="button primary" type="button" onclick={activateTarget}>
-          {primaryLabel(step, $t, route, target?.dataset.onboardingAction)}
-        </button>
+        {#if showPrimaryAction}
+          <button class="button primary" type="button" onclick={activateTarget}>
+            {primaryLabel(step, $t, route, target?.dataset.onboardingAction)}
+          </button>
+        {/if}
       {/if}
     </div>
   </div>

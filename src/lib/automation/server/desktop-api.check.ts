@@ -26,6 +26,7 @@ try {
     LIBRETTO_CLOUD_POST_ENABLED: false,
     LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
     LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
+    LIBRETTO_CLOUD_EINVOICE_ENABLED: true,
   }, null, 2));
   const initialSettingsText = readFileSync("settings.json", "utf8");
   writeFileSync("credentials.json", JSON.stringify({

@@ -198,6 +198,10 @@ export function onboardingStepNumber(step: OnboardingStep) {
   return 5;
 }
 
+export function onboardingCanGoBack(step: OnboardingStep) {
+  return step === "credentials" || step === "assist";
+}
+
 export function onboardingCopyKey(step: OnboardingStep): OnboardingCopyKey | null {
   if (step === "hidden") return null;
   if (step === "automation-nav") return "automation";

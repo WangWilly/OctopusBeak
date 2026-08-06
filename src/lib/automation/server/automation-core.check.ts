@@ -88,6 +88,7 @@ assert.equal(automationCredentialKeyIsSecret("MAX_SECRET_KEY"), true);
 assert.equal(automationCredentialKeyIsSecret("MAX_SUB_ACCOUNT"), false);
 
 const enabledGroups = automationGroupEnabledStatus({
+  LIBRETTO_CLOUD_FUBON_ENABLED: true,
   LIBRETTO_CLOUD_ESUN_ENABLED: false,
 });
 assert.equal(enabledGroups.fubon, true);
@@ -96,18 +97,7 @@ assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "e
 assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "import-downloads-csv"), true);
 assert.deepEqual(
   enabledCsvImportDependencyIds(enabledGroups),
-  [
-    "fubon-all-statements",
-    "yuanta-all-statements",
-    "yuanta-trade-statements",
-    "cathay-all-statements",
-    "hncb-statements",
-    "ctbc-statements",
-    "post-statements",
-    "sinopac-statements",
-    "linebank-statements",
-    "einvoice-personal-invoices",
-  ],
+  ["fubon-all-statements"],
 );
 
 const taipeiRange = businessDayUtcRange(

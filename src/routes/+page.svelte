@@ -173,8 +173,7 @@
   }
 
   function backOnboarding() {
-    if (history.length > 1) history.back();
-    else location.hash = route === "automation" ? "/overview" : "/automation";
+    location.hash = route === "automation" ? "/overview" : "/automation";
   }
 
   async function checkOnboardingEligibility() {

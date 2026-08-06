@@ -9,6 +9,7 @@
     canSubmitCredentials,
     nextOnboardingCredentialKey,
     onboardingTaskDisclosure,
+    previousOnboardingCredentialState,
     settleAssistDrag,
     settleAssistTextSubmission,
   } from "$lib/onboarding/state.ts";
@@ -371,44 +372,49 @@
     };
   }
 
-  function advanceOnboardingCredential() {
+  function handleOnboardingCredentialKeydown(key: string, event: KeyboardEvent) {
+    if (
+      event.key !== "Enter"
+      || event.isComposing
+      || !onboardingSourceSelection
+      || key !== onboardingCredentialTargetKey
+      || !credentialDrafts[key]?.trim()
+    ) return;
+    event.preventDefault();
+    void advanceOnboardingCredential();
+  }
+
+  async function advanceOnboardingCredential() {
     if (!selectedCredentialGroup) return;
-    onboardingCredentialTargetKey = nextOnboardingCredentialKey(
+    const nextKey = nextOnboardingCredentialKey(
       selectedCredentialGroup.credentialKeys,
       onboardingCredentialTargetKey,
       credentialDrafts,
     );
+    onboardingCredentialTargetKey = nextKey;
+    await tick();
+    if (nextKey) document.getElementById(`credential-input-${nextKey}`)?.focus();
   }
 
   function backOnboardingCredential(event: Event) {
     event.preventDefault();
-    if (!selectedCredentialGroup) {
+    const previous = previousOnboardingCredentialState(
+      selectedCredentialGroup?.credentialKeys ?? [],
+      {
+        selectedCredentialGroupId,
+        targetKey: onboardingCredentialTargetKey,
+        statementSelectionConfirmed,
+      },
+      Boolean(selectedCredentialGroup?.statementTypes?.length),
+    );
+    if (previous.closeCredentials) {
       resetCredentialChanges();
       credentialsOpen = false;
       return;
     }
-    const keys = selectedCredentialGroup.credentialKeys;
-    const currentIndex = onboardingCredentialTargetKey
-      ? keys.indexOf(onboardingCredentialTargetKey)
-      : -1;
-    if (currentIndex > 0) {
-      onboardingCredentialTargetKey = keys[currentIndex - 1];
-      return;
-    }
-    if (currentIndex === 0) {
-      selectedCredentialGroupId = "";
-      onboardingCredentialTargetKey = null;
-      statementSelectionConfirmed = false;
-      return;
-    }
-    if (onboardingCredentialsReady && selectedCredentialGroup.statementTypes?.length) {
-      onboardingCredentialTargetKey = null;
-      statementSelectionConfirmed = false;
-      return;
-    }
-    const lastKey = keys.at(-1) ?? null;
-    if (selectedCredentialGroup.statementTypes?.length) statementSelectionConfirmed = false;
-    onboardingCredentialTargetKey = lastKey;
+    selectedCredentialGroupId = previous.selectedCredentialGroupId;
+    onboardingCredentialTargetKey = previous.targetKey;
+    statementSelectionConfirmed = previous.statementSelectionConfirmed;
   }
 
   async function updateCredentialSearch(event: Event) {
@@ -1269,6 +1275,7 @@
                 <label class="credential-field">
                   <span>{credentialLabel(key, $t)}</span>
                   <input
+                    id={`credential-input-${key}`}
                     name={key}
                     type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
                     value={credentialDrafts[key] ?? ""}
@@ -1278,6 +1285,7 @@
                       : undefined}
                     data-onboarding-action="enter-credentials"
                     oninput={(event) => updateCredentialDraft(key, event)}
+                    onkeydown={(event) => handleOnboardingCredentialKeydown(key, event)}
                     placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
                     autocomplete="off"
                   />
@@ -1449,6 +1457,11 @@
             onpointerup={handleViewerPointerUp}
             onpointercancel={handleViewerPointerCancel}
           />
+          {#if onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted}
+            <div class="verification-viewer-tooltip" role="tooltip">
+              {$t.onboarding.clickVerificationField}
+            </div>
+          {/if}
           <button
             class="viewer-expand-action"
             type="button"
@@ -2711,9 +2724,26 @@
     user-select: none;
   }
 
+  .viewer-image:focus,
   .viewer-image:focus-visible {
     outline: 3px solid var(--accent);
     outline-offset: -3px;
+  }
+
+  .verification-viewer-tooltip {
+    position: absolute;
+    z-index: 3;
+    left: 50%;
+    bottom: var(--space-4);
+    max-width: min(360px, calc(100% - 32px));
+    padding: 10px 14px;
+    border: 1px solid rgb(255 255 255 / 0.32);
+    border-radius: 999px;
+    color: white;
+    background: rgb(15 23 42 / 0.9);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+    transform: translateX(-50%);
   }
 
   .human-viewer-modal.expanded .viewer-image {
