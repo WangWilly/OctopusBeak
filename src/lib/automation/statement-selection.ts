@@ -21,7 +21,7 @@ type Settings = Record<string, string | boolean | undefined>;
 const disabledFlagValues = new Set(["0", "false", "no", "off", "disabled"]);
 
 export function automationFlagEnabled(value: string | boolean | undefined) {
-  if (value === undefined) return true;
+  if (value === undefined) return false;
   if (typeof value === "boolean") return value;
   return !disabledFlagValues.has(value.trim().toLowerCase());
 }
