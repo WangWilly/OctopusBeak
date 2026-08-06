@@ -140,6 +140,315 @@ test("proposal validation is strict and rejects unknown, malformed, and credenti
   );
 });
 
+test("direct proposal validation snapshots hostile accessors and prototypes without reads", () => {
+  const accessorProposal = createReadFinancialOverviewProposal("run-tool-1", "request-direct-accessor");
+  let accessorReads = 0;
+  Object.defineProperty(accessorProposal, "requestId", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      accessorReads += 1;
+      return "request-direct-accessor";
+    },
+  });
+  const accessorValidation = validateAgentToolProposal(accessorProposal);
+  assert.equal(accessorValidation.value, null);
+  assert.notEqual(accessorValidation.reason, null);
+  assert.equal(accessorReads, 0);
+
+  const proxyTarget = createReadFinancialOverviewProposal("run-tool-1", "request-direct-proxy");
+  let proxyReads = 0;
+  const proxyProposal = new Proxy(proxyTarget, {
+    get(target, key, receiver) {
+      proxyReads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const proxyValidation = validateAgentToolProposal(proxyProposal);
+  assert.ok(proxyValidation.value);
+  assert.equal(proxyValidation.reason, null);
+  assert.notEqual(proxyValidation.value, proxyProposal);
+  assert.equal(Object.getPrototypeOf(proxyValidation.value), null);
+  assert.equal(proxyReads, 0);
+
+  const lyingProxy = new Proxy(proxyTarget, {
+    get(target, key, receiver) {
+      proxyReads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+    getOwnPropertyDescriptor() {
+      throw new Error("lying-descriptor");
+    },
+  });
+  const lyingValidation = validateAgentToolProposal(lyingProxy);
+  assert.equal(lyingValidation.value, null);
+  assert.notEqual(lyingValidation.reason, null);
+  assert.equal(proxyReads, 0);
+
+  let inheritedReads = 0;
+  const customPrototype = Object.create({
+    get inheritedSecret() {
+      inheritedReads += 1;
+      return "inherited-secret-canary";
+    },
+  });
+  const customProposal = Object.assign(
+    customPrototype,
+    createReadFinancialOverviewProposal("run-tool-1", "request-direct-custom"),
+  );
+  const customValidation = validateAgentToolProposal(customProposal);
+  assert.equal(customValidation.value, null);
+  assert.notEqual(customValidation.reason, null);
+  assert.equal(inheritedReads, 0);
+
+  const nestedPrototype = Object.create({
+    get password() {
+      inheritedReads += 1;
+      return "nested-inherited-secret-canary";
+    },
+  });
+  const nestedProposal = createReadFinancialOverviewProposal("run-tool-1", "request-direct-nested");
+  nestedProposal.input = nestedPrototype;
+  const nestedValidation = validateAgentToolProposal(nestedProposal);
+  assert.equal(nestedValidation.value, null);
+  assert.notEqual(nestedValidation.reason, null);
+  assert.equal(inheritedReads, 0);
+});
+
+test("proposal own-key validation rejects hidden credential and symbol fields before dispatch", async () => {
+  const store = runningStore();
+  const canary = "hidden-password-canary";
+  const hiddenSymbol = Symbol("hidden-symbol-key");
+  const proposal = createReadFinancialOverviewProposal("run-tool-1", "request-hidden-fields");
+  let hiddenGetterReads = 0;
+  Object.defineProperty(proposal, "password", {
+    configurable: true,
+    enumerable: false,
+    value: canary,
+  });
+  Object.defineProperty(proposal, "hiddenAccessor", {
+    configurable: true,
+    enumerable: false,
+    get() {
+      hiddenGetterReads += 1;
+      throw new Error("hidden-accessor-must-not-be-read");
+    },
+  });
+  Object.defineProperty(proposal, hiddenSymbol, {
+    configurable: true,
+    enumerable: false,
+    value: "hidden-symbol-value",
+  });
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [canary],
+    adapter: async ({ proposal: dispatched }) => {
+      calls += 1;
+      assert.equal(Object.hasOwn(dispatched, "password"), true);
+      assert.equal((dispatched as Record<string, unknown>).password, canary);
+      return result();
+    },
+  });
+
+  const submission = await gateway.submit(proposal);
+  assert.equal(calls, 0);
+  assert.equal(hiddenGetterReads, 0);
+  assert.equal(submission.outcome, "not-dispatched");
+  assert.ok(["malformed-proposal", "credential-boundary"].includes(submission.decision.reason));
+  assert.equal(submission.result, null);
+  assert.equal(submission.resultReference, null);
+  assert.equal(JSON.stringify(submission).includes(canary), false);
+  assert.equal(JSON.stringify(submission).includes("hidden-symbol-value"), false);
+  assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(canary), false);
+  assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes("hidden-symbol-value"), false);
+  assert.equal(Object.getOwnPropertySymbols(submission).length, 0);
+
+  const replay = await gateway.submit(proposal);
+  assert.deepEqual(replay, submission);
+  assert.equal(calls, 0);
+});
+
+test("proposal preflight rejects accessors before authority validation or dispatch", async () => {
+  const store = runningStore();
+  const target = createReadFinancialOverviewProposal("run-tool-1", "request-accessor-proposal");
+  let getterReads = 0;
+  let proxyReads = 0;
+  let dispatched = false;
+  Object.defineProperty(target, "requestId", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return "request-accessor-proposal";
+    },
+  });
+  Object.defineProperty(target, "runAuthority", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return dispatched ? "evil-run" : target.runId;
+    },
+  });
+  const proposal = new Proxy(target, {
+    get(current, key, receiver) {
+      proxyReads += 1;
+      return Reflect.get(current, key, receiver);
+    },
+  });
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async ({ proposal: received }) => {
+      dispatched = true;
+      calls += 1;
+      assert.equal(received.runAuthority, "evil-run");
+      return result();
+    },
+  });
+
+  const submission = await gateway.submit(proposal);
+  assert.equal(calls, 0);
+  assert.equal(getterReads, 0);
+  assert.equal(proxyReads, 0);
+  assert.equal(submission.outcome, "not-dispatched");
+  assert.equal(submission.decision.reason, "malformed-proposal");
+  assert.equal(submission.result, null);
+  assert.equal(submission.resultReference, null);
+});
+
+test("proposal preflight rejects inherited credential material before dispatch", async () => {
+  const store = runningStore();
+  const canary = "inherited-password-canary";
+  const nestedCanary = "nested-inherited-password-canary";
+  const proposal = Object.assign(
+    Object.create({ password: canary }),
+    createReadFinancialOverviewProposal("run-tool-1", "request-inherited-password"),
+  );
+  const nestedProposal = createReadFinancialOverviewProposal(
+    "run-tool-1",
+    "request-nested-inherited-password",
+  );
+  nestedProposal.input = Object.create({ password: nestedCanary });
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [canary, nestedCanary],
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+  const submission = await gateway.submit(proposal);
+  assert.equal(calls, 0);
+  assert.equal(submission.outcome, "not-dispatched");
+  assert.equal(submission.decision.reason, "malformed-proposal");
+  assert.equal(JSON.stringify(submission).includes(canary), false);
+
+  const nestedSubmission = await gateway.submit(nestedProposal);
+  assert.equal(calls, 0);
+  assert.equal(nestedSubmission.outcome, "not-dispatched");
+  assert.equal(nestedSubmission.decision.reason, "malformed-proposal");
+  assert.equal(JSON.stringify(nestedSubmission).includes(nestedCanary), false);
+});
+
+test("proposal preflight never passes a proxy or hidden configurable field to the adapter", async () => {
+  const store = runningStore();
+  const canary = "proxy-hidden-password-canary";
+  const target = createReadFinancialOverviewProposal("run-tool-1", "request-proxy-hidden-password");
+  Object.defineProperty(target, "password", {
+    configurable: true,
+    enumerable: false,
+    value: canary,
+  });
+  const proposal = new Proxy(target, {
+    ownKeys(current) {
+      return Reflect.ownKeys(current).filter((key) => key !== "password");
+    },
+  });
+  let received: Record<string, unknown> | null = null;
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [canary],
+    adapter: async ({ proposal: dispatched }) => {
+      calls += 1;
+      received = dispatched as unknown as Record<string, unknown>;
+      return result();
+    },
+  });
+  const submission = await gateway.submit(proposal);
+  assert.equal(submission.outcome, "completed");
+  assert.equal(calls, 1);
+  assert.notEqual(received, proposal);
+  assert.ok(received);
+  assert.equal(Object.getPrototypeOf(received), null);
+  assert.equal(Object.hasOwn(received, "password"), false);
+  assert.equal(JSON.stringify(submission).includes(canary), false);
+});
+
+test("own-key validation handles revoked proxies and non-enumerable expected fields without throwing", async () => {
+  const canonical = createReadFinancialOverviewProposal("run-tool-1", "request-own-key-controls");
+  const throwingProxy = new Proxy(canonical, {
+    ownKeys() {
+      throw new Error("hostile-own-keys");
+    },
+  });
+  const revocable = Proxy.revocable(canonical, {});
+  revocable.revoke();
+  for (const hostile of [throwingProxy, revocable.proxy]) {
+    let validation: ReturnType<typeof validateAgentToolProposal> | undefined;
+    assert.doesNotThrow(() => {
+      validation = validateAgentToolProposal(hostile);
+    });
+    assert.equal(validation?.reason, "malformed-proposal");
+  }
+
+  const nonEnumerableProposal = createReadFinancialOverviewProposal(
+    "run-tool-1",
+    "request-own-key-non-enumerable",
+  );
+  Object.defineProperty(nonEnumerableProposal, "requestId", {
+    configurable: true,
+    enumerable: false,
+    value: nonEnumerableProposal.requestId,
+  });
+  assert.doesNotThrow(() => validateAgentToolProposal(nonEnumerableProposal));
+  assert.equal(validateAgentToolProposal(nonEnumerableProposal).reason, null);
+
+  const nonEnumerableResult = result();
+  Object.defineProperty(nonEnumerableResult.data, "aggregateVersion", {
+    configurable: true,
+    enumerable: false,
+    value: nonEnumerableResult.data.aggregateVersion,
+  });
+  nonEnumerableResult.reference.value = `immutable-result-ref.v1:${hashBytes(
+    stableStringify(nonEnumerableResult.data),
+  )}`;
+  assert.doesNotThrow(() => validateAgentToolResult(nonEnumerableResult));
+  assert.equal(validateAgentToolResult(nonEnumerableResult), true);
+
+  const store = runningStore();
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+  for (const hostile of [throwingProxy, revocable.proxy]) {
+    let submission: AgentToolSubmission | undefined;
+    await assert.doesNotReject(async () => {
+      submission = await gateway.submit(hostile);
+    });
+    assert.equal(submission?.outcome, "not-dispatched");
+    assert.equal(submission?.decision.reason, "malformed-proposal");
+  }
+  assert.equal(calls, 0);
+});
+
 test("v1 financial result currency keys accept only UNKNOWN or exactly three ASCII uppercase letters", () => {
   const validKeys = ["TWD", "USD", "JPY", "EUR", "HKD", "CNY", "BTC", "UNKNOWN"];
   for (const currency of validKeys) {
@@ -276,6 +585,66 @@ test("read_financial_overview returns a deterministic safe aggregate and immutab
   assert.equal(JSON.stringify(first).includes("credential"), false);
   assert.equal(first.resultReference?.referenceVersion, "immutable-result-ref.v1");
   assert.equal(first.settlement, "normal");
+});
+
+test("adapter mutation cannot alter authoritative proposal identity or replay", async () => {
+  const canary = "adapter-mutation-password-canary";
+  for (const mode of ["memory", "sqlite"] as const) {
+    const root = mode === "sqlite"
+      ? mkdtempSync(join(tmpdir(), "agent-tool-adapter-mutation-"))
+      : null;
+    try {
+      const store = mode === "sqlite"
+        ? createSqliteAgentRunStore(root!, { secretValues: [canary] })
+        : runningStore();
+      if (mode === "sqlite") {
+        store.createRun({
+          runId: "run-adapter-mutation",
+          analysisId: null,
+          phase: "running",
+          startedAt: "2026-08-04T00:00:00.000Z",
+          finishedAt: null,
+          output: "",
+          failureReason: null,
+        });
+      }
+      const runId = mode === "sqlite" ? "run-adapter-mutation" : "run-tool-1";
+      const requestId = `request-adapter-mutation-${mode}`;
+      const proposal = createReadFinancialOverviewProposal(runId, requestId);
+      let calls = 0;
+      const gateway = createFinancialOverviewToolGateway({
+        ledgerDir: root ?? "data/ledger",
+        runStore: store,
+        secretValues: [canary],
+        adapter: async ({ proposal: received }) => {
+          calls += 1;
+          const mutable = received as unknown as Record<string, unknown>;
+          mutable.runAuthority = "evil-authority";
+          mutable.requestId = "evil-request";
+          mutable.input = { password: canary };
+          return result();
+        },
+      });
+      const first = await gateway.submit(proposal);
+      assert.equal(first.outcome, "completed");
+      assert.equal(first.requestId, requestId);
+      assert.equal(first.decision.reason, "allowed");
+      assert.equal(calls, 1);
+      assert.equal(JSON.stringify(first).includes(canary), false);
+      const durable = store.getToolRequest?.(runId, requestId);
+      assert.equal(durable?.outcome, "completed");
+      assert.equal(durable?.proposal.runId, runId);
+      assert.equal(durable?.proposal.requestId, requestId);
+      assert.equal(durable?.proposal.runAuthority, runId);
+      assert.deepEqual(durable?.proposal.input, {});
+      const replay = await gateway.submit(createReadFinancialOverviewProposal(runId, requestId));
+      assert.deepEqual(replay, first);
+      assert.equal(calls, 1);
+      assert.equal(JSON.stringify(replay).includes(canary), false);
+    } finally {
+      if (root) rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test("completed requests replay the persisted result and unknown outcomes never retry", async () => {

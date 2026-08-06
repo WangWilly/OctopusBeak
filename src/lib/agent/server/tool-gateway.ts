@@ -161,12 +161,35 @@ const TOP_LEVEL_PROPOSAL_KEYS = [
 const INPUT_KEYS: readonly string[] = [];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (value === null || typeof value !== "object") return false;
+  try {
+    return !Array.isArray(value);
+  } catch {
+    // A revoked proxy can throw even for the array brand check. Treat it as
+    // malformed input so validators and the gateway fail closed outwardly.
+    return false;
+  }
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]) {
-  return Object.keys(value).length === keys.length
-    && keys.every((key) => Object.hasOwn(value, key));
+  return hasExactOwnKeys(value, keys);
+}
+
+/**
+ * Validate an object's complete own-key set without reading any property
+ * values. Reflect.ownKeys includes non-enumerable properties and symbols;
+ * both must be accounted for before a record can cross a trust boundary.
+ * Hostile proxies may throw from ownKeys, so schema validation fails closed.
+ */
+function hasExactOwnKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  try {
+    const ownKeys = Reflect.ownKeys(value);
+    return ownKeys.length === keys.length
+      && ownKeys.every((key): key is string => typeof key === "string")
+      && keys.every((key) => ownKeys.includes(key) && Object.hasOwn(value, key));
+  } catch {
+    return false;
+  }
 }
 
 function hasCredentialKey(key: string) {
@@ -194,6 +217,140 @@ function safeIdentifier(value: unknown, fallback: string): string {
   return value;
 }
 
+const MAX_PROPOSAL_SNAPSHOT_DEPTH = 32;
+const MAX_PROPOSAL_SNAPSHOT_NODES = 10_000;
+const PROPOSAL_SNAPSHOT_FAILURE = Symbol("agent-tool-proposal-snapshot-failure");
+
+type ProposalSnapshotValue = unknown | typeof PROPOSAL_SNAPSHOT_FAILURE;
+type ProposalSnapshot = {
+  value: Record<string, unknown> | null;
+  runId: unknown;
+  requestId: unknown;
+};
+
+/**
+ * Materialize one bounded plain-data view of a provider proposal. Descriptors
+ * are read once so validation, authority checks, persistence, and adapter
+ * dispatch never observe the provider's original object or an accessor.
+ */
+function snapshotAgentToolProposal(value: unknown): ProposalSnapshot {
+  let nodes = 0;
+  let bytes = 0;
+  let runId: unknown;
+  let requestId: unknown;
+  const active = new WeakSet<object>();
+
+  function account(amount: number): boolean {
+    if (!Number.isSafeInteger(amount) || amount < 0) return false;
+    bytes += amount;
+    return bytes <= AGENT_TOOL_RESOURCE_LIMITS.maxProposalBytes;
+  }
+
+  function primitive(current: unknown): ProposalSnapshotValue {
+    if (current === null) return account(4) ? null : PROPOSAL_SNAPSHOT_FAILURE;
+    if (typeof current === "string") {
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : PROPOSAL_SNAPSHOT_FAILURE;
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+    }
+    if (typeof current === "boolean") {
+      return account(current ? 4 : 5) ? current : PROPOSAL_SNAPSHOT_FAILURE;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) return PROPOSAL_SNAPSHOT_FAILURE;
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : PROPOSAL_SNAPSHOT_FAILURE;
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+    }
+    return PROPOSAL_SNAPSHOT_FAILURE;
+  }
+
+  function visit(current: unknown, depth: number): ProposalSnapshotValue {
+    if (depth > MAX_PROPOSAL_SNAPSHOT_DEPTH) return PROPOSAL_SNAPSHOT_FAILURE;
+    if (current === null || typeof current !== "object") return primitive(current);
+    if (active.has(current)) return PROPOSAL_SNAPSHOT_FAILURE;
+    if (++nodes > MAX_PROPOSAL_SNAPSHOT_NODES || !account(1)) {
+      return PROPOSAL_SNAPSHOT_FAILURE;
+    }
+    active.add(current);
+    try {
+      let prototype: object | null;
+      let descriptors: PropertyDescriptorMap;
+      try {
+        prototype = Object.getPrototypeOf(current);
+        descriptors = Object.getOwnPropertyDescriptors(current);
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+      let array = false;
+      try {
+        array = Array.isArray(current);
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+      if (array || (prototype !== null && prototype !== Object.prototype)) {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+
+      const keys = Reflect.ownKeys(descriptors);
+      if (keys.some((key) => typeof key !== "string")) return PROPOSAL_SNAPSHOT_FAILURE;
+      const clone = Object.create(null) as Record<string, unknown>;
+      if (!account(2)) return PROPOSAL_SNAPSHOT_FAILURE;
+      for (const key of keys) {
+        const descriptor = descriptors[key];
+        if (!descriptor
+          || descriptor.get !== undefined
+          || descriptor.set !== undefined
+          || !Object.hasOwn(descriptor, "value")) {
+          return PROPOSAL_SNAPSHOT_FAILURE;
+        }
+        if (depth === 0 && key === "runId") runId = descriptor.value;
+        if (depth === 0 && key === "requestId") requestId = descriptor.value;
+        const encodedKey = JSON.stringify(key);
+        if (typeof encodedKey !== "string" || !account(utf8Bytes(encodedKey))) {
+          return PROPOSAL_SNAPSHOT_FAILURE;
+        }
+        const child = visit(descriptor.value, depth + 1);
+        if (child === PROPOSAL_SNAPSHOT_FAILURE) return PROPOSAL_SNAPSHOT_FAILURE;
+        Object.defineProperty(clone, key, {
+          value: child,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      return clone;
+    } finally {
+      active.delete(current);
+    }
+  }
+
+  const snapshot = visit(value, 0);
+  return {
+    value: snapshot === PROPOSAL_SNAPSHOT_FAILURE || !isRecord(snapshot)
+      ? null
+      : snapshot,
+    runId,
+    requestId,
+  };
+}
+
+function cloneAgentToolProposalForAdapter(value: AgentToolProposal): AgentToolProposal {
+  const snapshot = snapshotAgentToolProposal(value).value;
+  if (snapshot === null) throw new Error("invalid-adapter-proposal-clone");
+  return snapshot as AgentToolProposal;
+}
+
 export function agentToolProposalIdentity(proposal: AgentToolProposal): string {
   return hashBytes(stableStringify(proposal));
 }
@@ -216,6 +373,24 @@ export function createReadFinancialOverviewProposal(
 }
 
 export function validateAgentToolProposal(value: unknown):
+  | { value: AgentToolProposal; reason: null }
+  | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
+  const snapshot = snapshotAgentToolProposal(value).value;
+  if (snapshot === null) return { value: null, reason: "malformed-proposal" };
+  return validateAgentToolProposalSnapshot(snapshot);
+}
+
+function validateAgentToolProposalSnapshot(value: unknown):
+  | { value: AgentToolProposal; reason: null }
+  | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
+  try {
+    return validateAgentToolProposalUnsafe(value);
+  } catch {
+    return { value: null, reason: "malformed-proposal" };
+  }
+}
+
+function validateAgentToolProposalUnsafe(value: unknown):
   | { value: AgentToolProposal; reason: null }
   | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
   if (!isRecord(value) || !hasExactKeys(value, TOP_LEVEL_PROPOSAL_KEYS)) {
@@ -270,8 +445,7 @@ function resultReference(data: FinancialOverviewAggregate): AgentToolResultRefer
 }
 
 function exactRecordKeys(value: Record<string, unknown>, keys: readonly string[]) {
-  return Object.keys(value).length === keys.length
-    && keys.every((key) => Object.hasOwn(value, key));
+  return hasExactOwnKeys(value, keys);
 }
 
 function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
@@ -291,6 +465,14 @@ function isFiniteCurrencyRecord(value: unknown): value is Record<string, number>
 }
 
 export function validateAgentToolResult(value: unknown): value is AgentToolResult {
+  try {
+    return validateAgentToolResultUnsafe(value);
+  } catch {
+    return false;
+  }
+}
+
+function validateAgentToolResultUnsafe(value: unknown): value is AgentToolResult {
   if (!isRecord(value)
     || !exactRecordKeys(value, ["resultVersion", "toolName", "data", "reference", "secretFields"])
     || value.resultVersion !== AGENT_TOOL_RESULT_VERSION
@@ -791,32 +973,34 @@ export function createFinancialOverviewToolGateway({
 
   return {
     async submit(rawProposal) {
-      let containsSecret = false;
-      try {
-        containsSecret = containsCredentialMaterial(rawProposal);
-      } catch {
-        containsSecret = true;
-      }
+      const proposalPreflight = snapshotAgentToolProposal(rawProposal);
+      const proposalSnapshot = proposalPreflight.value;
+      let containsSecret = proposalSnapshot === null;
       let serializedProposal = "";
       let serializedSecretDetected = false;
-      try {
-        const serialized = stableStringify(rawProposal);
-        serializedProposal = typeof serialized === "string" ? serialized : String(serialized);
+      if (proposalSnapshot) {
         try {
-          serializedSecretDetected = Boolean(
-            secretBoundary.protectText("diagnostic-export", serializedProposal).failure,
-          );
+          const serialized = stableStringify(proposalSnapshot);
+          serializedProposal = typeof serialized === "string" ? serialized : String(serialized);
+          try {
+            serializedSecretDetected = Boolean(
+              secretBoundary.protectText("diagnostic-export", serializedProposal).failure,
+            );
+          } catch {
+            serializedSecretDetected = true;
+          }
         } catch {
-          serializedSecretDetected = true;
+          serializedProposal = "[unserializable]";
+          containsSecret = true;
         }
-      } catch {
+      } else {
         serializedProposal = "[unserializable]";
       }
-      const rawProposalRecord = isRecord(rawProposal) ? rawProposal : null;
-      let rawRunId: unknown;
-      let rawRequestId: unknown;
+      const rawProposalRecord = proposalSnapshot;
+      let rawRunId: unknown = proposalPreflight.runId;
+      let rawRequestId: unknown = proposalPreflight.requestId;
       let rawIdentifierSecretDetected = false;
-      if (rawProposalRecord) {
+      if (rawProposalRecord && rawRunId === undefined && rawRequestId === undefined) {
         try {
           rawRunId = rawProposalRecord.runId;
           rawRequestId = rawProposalRecord.requestId;
@@ -844,7 +1028,8 @@ export function createFinancialOverviewToolGateway({
             "agent-tool-proposal",
             rawProposalRecord,
           );
-          proposalHasSecret = Boolean(protectedProposal.failure) || containsSecret;
+          proposalHasSecret = Boolean(protectedProposal.failure)
+            || containsCredentialMaterial(rawProposalRecord);
         } catch {
           proposalHasSecret = true;
         }
@@ -856,7 +1041,9 @@ export function createFinancialOverviewToolGateway({
         ? { value: null, reason: "resource-denied" as const }
         : proposalHasSecret
           ? { value: null, reason: "credential-boundary" as const }
-          : validateAgentToolProposal(rawProposal);
+          : proposalSnapshot === null
+            ? { value: null, reason: "malformed-proposal" as const }
+            : validateAgentToolProposalSnapshot(proposalSnapshot);
       const proposal = validation.value;
       const runId = containsSecret ? "redacted" : safeIdentifier(rawRunId, "unknown");
       const requestId = containsSecret
@@ -958,11 +1145,12 @@ export function createFinancialOverviewToolGateway({
       const dispatch = (async (): Promise<AgentToolSubmission> => {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
+          const adapterProposal = cloneAgentToolProposalForAdapter(proposal);
           const timeoutMs = Number.isFinite(executionTimeoutMs) && executionTimeoutMs > 0
             ? executionTimeoutMs
             : AGENT_TOOL_DEFAULT_EXECUTION_TIMEOUT_MS;
           const adapterResult = await Promise.race([
-            adapter({ ledgerDir, proposal }),
+            adapter({ ledgerDir, proposal: adapterProposal }),
             new Promise<never>((_, reject) => {
               timeout = setTimeout(() => reject(new Error("tool-execution-timeout")), timeoutMs);
             }),
