@@ -427,6 +427,154 @@ function resultWithinResourceLimits(result: AgentToolResult): boolean {
     && counts.every((count) => count <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount);
 }
 
+const MAX_RESULT_SNAPSHOT_DEPTH = 32;
+const MAX_RESULT_SNAPSHOT_NODES = 100_000;
+const SNAPSHOT_FAILURE = Symbol("agent-tool-snapshot-failure");
+
+type SnapshotValue = unknown | typeof SNAPSHOT_FAILURE;
+
+/**
+ * Materialize one immutable, plain-data view of an adapter result. Reading an
+ * adapter result directly during validation, hashing, or protection can make
+ * those checks observe different values when the result contains an accessor.
+ * Descriptors let this preflight reject accessors without invoking them.
+ */
+function snapshotAgentToolResult(value: unknown): AgentToolResult | null {
+  let nodes = 0;
+  let bytes = 0;
+  const active = new WeakSet<object>();
+
+  function account(amount: number): boolean {
+    if (!Number.isSafeInteger(amount) || amount < 0) return false;
+    bytes += amount;
+    return bytes <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes;
+  }
+
+  function primitive(current: unknown): SnapshotValue {
+    if (current === null) return account(4) ? null : SNAPSHOT_FAILURE;
+    if (typeof current === "string") {
+      if (current.length > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes) return SNAPSHOT_FAILURE;
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : SNAPSHOT_FAILURE;
+      } catch {
+        return SNAPSHOT_FAILURE;
+      }
+    }
+    if (typeof current === "boolean") return account(current ? 4 : 5) ? current : SNAPSHOT_FAILURE;
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) return SNAPSHOT_FAILURE;
+      const encoded = JSON.stringify(current);
+      return typeof encoded === "string" && account(utf8Bytes(encoded))
+        ? current
+        : SNAPSHOT_FAILURE;
+    }
+    return SNAPSHOT_FAILURE;
+  }
+
+  function visit(current: unknown, depth: number): SnapshotValue {
+    if (depth > MAX_RESULT_SNAPSHOT_DEPTH) return SNAPSHOT_FAILURE;
+    if (current === null || typeof current !== "object") return primitive(current);
+    if (active.has(current)) return SNAPSHOT_FAILURE;
+    if (++nodes > MAX_RESULT_SNAPSHOT_NODES || !account(1)) return SNAPSHOT_FAILURE;
+    active.add(current);
+    try {
+      let prototype: object | null;
+      let descriptors: PropertyDescriptorMap;
+      try {
+        prototype = Object.getPrototypeOf(current);
+        descriptors = Object.getOwnPropertyDescriptors(current);
+      } catch {
+        return SNAPSHOT_FAILURE;
+      }
+      if (prototype !== null && prototype !== Object.prototype
+        && prototype !== Array.prototype) {
+        return SNAPSHOT_FAILURE;
+      }
+
+      const keys = Reflect.ownKeys(descriptors);
+      if (keys.some((key) => typeof key !== "string")) return SNAPSHOT_FAILURE;
+      if (Array.isArray(current)) {
+        if (prototype !== Array.prototype) return SNAPSHOT_FAILURE;
+        const lengthDescriptor = descriptors.length;
+        if (!lengthDescriptor
+          || lengthDescriptor.get !== undefined
+          || lengthDescriptor.set !== undefined
+          || !Object.hasOwn(lengthDescriptor, "value")
+          || !Number.isSafeInteger(lengthDescriptor.value)
+          || lengthDescriptor.value < 0
+          || lengthDescriptor.value > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes) {
+          return SNAPSHOT_FAILURE;
+        }
+        const clone: unknown[] = new Array(lengthDescriptor.value);
+        if (!account(2)) return SNAPSHOT_FAILURE;
+        for (const key of keys) {
+          if (typeof key !== "string") return SNAPSHOT_FAILURE;
+          if (key === "length") continue;
+          if (!/^\d+$/.test(key)) return SNAPSHOT_FAILURE;
+          const index = Number(key);
+          if (!Number.isSafeInteger(index)
+            || index < 0
+            || index >= lengthDescriptor.value
+            || String(index) !== key) {
+            return SNAPSHOT_FAILURE;
+          }
+          const descriptor = descriptors[key];
+          if (!descriptor
+            || !descriptor.enumerable
+            || descriptor.get !== undefined
+            || descriptor.set !== undefined
+            || !Object.hasOwn(descriptor, "value")) {
+            return SNAPSHOT_FAILURE;
+          }
+          if (!account(1)) return SNAPSHOT_FAILURE;
+          const child = visit(descriptor.value, depth + 1);
+          if (child === SNAPSHOT_FAILURE) return SNAPSHOT_FAILURE;
+          clone[index] = child;
+        }
+        return clone;
+      }
+
+      if (prototype !== null && prototype !== Object.prototype) return SNAPSHOT_FAILURE;
+      const clone = Object.create(null) as Record<string, unknown>;
+      if (!account(2)) return SNAPSHOT_FAILURE;
+      for (const key of keys) {
+        if (typeof key !== "string") return SNAPSHOT_FAILURE;
+        const descriptor = descriptors[key];
+        if (!descriptor
+          || !descriptor.enumerable
+          || descriptor.get !== undefined
+          || descriptor.set !== undefined
+          || !Object.hasOwn(descriptor, "value")) {
+          return SNAPSHOT_FAILURE;
+        }
+        if (key.length > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes
+          || !account(utf8Bytes(JSON.stringify(key)))) {
+          return SNAPSHOT_FAILURE;
+        }
+        const child = visit(descriptor.value, depth + 1);
+        if (child === SNAPSHOT_FAILURE) return SNAPSHOT_FAILURE;
+        Object.defineProperty(clone, key, {
+          value: child,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      return clone;
+    } finally {
+      active.delete(current);
+    }
+  }
+
+  const snapshot = visit(value, 0);
+  return snapshot === SNAPSHOT_FAILURE || !isRecord(snapshot)
+    ? null
+    : snapshot as AgentToolResult;
+}
+
 const MAX_SECRET_KEY_SCAN_DEPTH = 32;
 const MAX_SECRET_KEY_SCAN_NODES = 100_000;
 
@@ -611,10 +759,27 @@ export function createFinancialOverviewToolGateway({
     return replaySubmission(caller);
   }
 
+  function persistUnknownSafely(record: AgentToolExecutionRecord): AgentToolSubmission {
+    try {
+      return persistSubmission(record);
+    } catch {
+      // A malformed terminal row must not turn a bounded tool failure into an
+      // outward store exception. Cache the sanitized terminal state so this
+      // gateway also replays it without retrying the adapter.
+      records.set(`${record.runId}:${record.requestId}`, record);
+      return replaySubmission(record);
+    }
+  }
+
   function existingRecord(runId: string, requestId: string): AgentToolExecutionRecord | null {
     const key = `${runId}:${requestId}`;
     const cached = records.get(key) ?? null;
-    const durable = runStore.getToolRequest?.(runId, requestId) ?? null;
+    let durable: AgentToolExecutionRecord | null = null;
+    try {
+      durable = runStore.getToolRequest?.(runId, requestId) ?? null;
+    } catch {
+      return cached;
+    }
     if (durable && durable.outcome !== "not-dispatched") {
       records.set(key, durable);
       return durable;
@@ -802,10 +967,13 @@ export function createFinancialOverviewToolGateway({
               timeout = setTimeout(() => reject(new Error("tool-execution-timeout")), timeoutMs);
             }),
           ]);
-          if (!validateAgentToolResult(adapterResult) || !resultWithinResourceLimits(adapterResult)) {
+          const snapshot = snapshotAgentToolResult(adapterResult);
+          if (!snapshot
+            || !validateAgentToolResult(snapshot)
+            || !resultWithinResourceLimits(snapshot)) {
             throw new Error("invalid-tool-result");
           }
-          if (containsSecretObjectKey(adapterResult, secretBoundary)) {
+          if (containsSecretObjectKey(snapshot, secretBoundary)) {
             throw new Error("secret-key-detected");
           }
           if (!ledgerBefore || !sameLedgerSnapshot(ledgerBefore, ledgerResourceSnapshot(ledgerDir, snapshotDb))) {
@@ -814,7 +982,7 @@ export function createFinancialOverviewToolGateway({
           const settlement: AgentToolSettlement = runStore.getRun(proposal.runId)?.phase === "cancelled"
             ? "cancelled-in-flight" as const
             : "normal";
-          const protectedResult = protect("agent-tool-result", adapterResult as unknown as Record<string, unknown>) as unknown as AgentToolResult;
+          const protectedResult = protect("agent-tool-result", snapshot as unknown as Record<string, unknown>) as unknown as AgentToolResult;
           const record = {
             runId: proposal.runId,
             requestId: proposal.requestId,
@@ -841,7 +1009,7 @@ export function createFinancialOverviewToolGateway({
               ? "cancelled-in-flight"
               : "normal") as AgentToolSettlement,
           };
-          return persistSubmission(record);
+          return persistUnknownSafely(record);
         } finally {
           if (timeout) clearTimeout(timeout);
           snapshotDb?.close();

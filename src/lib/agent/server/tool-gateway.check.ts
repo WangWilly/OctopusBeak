@@ -72,6 +72,52 @@ function result(): AgentToolResult {
   };
 }
 
+function alternatingAccessorResult(): AgentToolResult {
+  const candidate = result();
+  const variantA = structuredClone(candidate.data);
+  const variantB = structuredClone(candidate.data);
+  variantA.totalsByCurrency.TWD!.assets = 101;
+  variantA.totalsByCurrency.TWD!.net = 81;
+  variantB.totalsByCurrency.TWD!.assets = 202;
+  variantB.totalsByCurrency.TWD!.net = 182;
+  let reads = 0;
+  Object.defineProperty(candidate.data, "totalsByCurrency", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads % 2 === 0 ? variantB.totalsByCurrency : variantA.totalsByCurrency;
+    },
+  });
+  candidate.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(variantB))}`;
+  return candidate;
+}
+
+function symbolBearingResult(): AgentToolResult {
+  const candidate = result();
+  Object.defineProperty(candidate.data, Symbol("hostile-result-key"), {
+    configurable: true,
+    enumerable: true,
+    value: "must-not-be-persisted",
+  });
+  return candidate;
+}
+
+function throwingProxyResult(): AgentToolResult {
+  const candidate = result();
+  return new Proxy(candidate, {
+    ownKeys() {
+      throw new Error("hostile-own-keys");
+    },
+  });
+}
+
+function nonPlainResult(): AgentToolResult {
+  const candidate = result();
+  candidate.data = Object.assign(new Date("2026-08-04T00:00:00.000Z"), candidate.data) as unknown as AgentToolResult["data"];
+  return candidate;
+}
+
 test("proposal validation is strict and rejects unknown, malformed, and credential-bearing requests", () => {
   const valid = createReadFinancialOverviewProposal("run-tool-1", "request-1");
   assert.equal(validateAgentToolProposal(valid).reason, null);
@@ -411,6 +457,97 @@ test("concurrent same-identity submissions dispatch the adapter once", async () 
   const [one, two] = await Promise.all([first, second]);
   assert.deepEqual(one, two);
   assert.equal(one.outcome, "completed");
+});
+
+test("accessor-bearing adapter results fail closed in memory and replay a stable unknown outcome", async () => {
+  const store = runningStore();
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    adapter: async () => {
+      calls += 1;
+      return alternatingAccessorResult();
+    },
+  });
+  const proposal = createReadFinancialOverviewProposal("run-tool-1", "request-accessor-memory");
+  const first = await gateway.submit(proposal);
+  assert.equal(first.outcome, "outcome-unknown");
+  assert.equal(first.result, null);
+  assert.equal(first.resultReference, null);
+  assert.equal(calls, 1);
+  const replay = await gateway.submit(proposal);
+  assert.deepEqual(replay, first);
+  assert.equal(calls, 1);
+  assert.equal(store.getToolRequest?.("run-tool-1", proposal.requestId)?.outcome, "outcome-unknown");
+  assert.equal(store.getToolRequest?.("run-tool-1", proposal.requestId)?.result, null);
+});
+
+test("accessor-bearing adapter results fail closed in SQLite without an invalid completed row", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-tool-accessor-sqlite-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-accessor-sqlite",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    let calls = 0;
+    const gateway = createFinancialOverviewToolGateway({
+      ledgerDir: root,
+      runStore: store,
+      adapter: async () => {
+        calls += 1;
+        return alternatingAccessorResult();
+      },
+    });
+    const proposal = createReadFinancialOverviewProposal("run-accessor-sqlite", "request-accessor-sqlite");
+    const first = await gateway.submit(proposal);
+    assert.equal(first.outcome, "outcome-unknown");
+    assert.equal(first.result, null);
+    assert.equal(first.resultReference, null);
+    assert.equal(calls, 1);
+    const replay = await gateway.submit(proposal);
+    assert.deepEqual(replay, first);
+    assert.equal(calls, 1);
+    const durable = store.getToolRequest?.("run-accessor-sqlite", proposal.requestId);
+    assert.equal(durable?.outcome, "outcome-unknown");
+    assert.equal(durable?.result, null);
+    assert.equal(durable?.resultReference, null);
+    store.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("symbol-bearing, proxy, and non-plain adapter results fail closed and replay without retry", async () => {
+  const variants: Array<[string, () => AgentToolResult]> = [
+    ["symbol", symbolBearingResult],
+    ["proxy", throwingProxyResult],
+    ["non-plain", nonPlainResult],
+  ];
+  for (const [name, hostileResult] of variants) {
+    const store = runningStore();
+    let calls = 0;
+    const gateway = createFinancialOverviewToolGateway({
+      runStore: store,
+      adapter: async () => {
+        calls += 1;
+        return hostileResult();
+      },
+    });
+    const proposal = createReadFinancialOverviewProposal("run-tool-1", `request-hostile-${name}`);
+    const first = await gateway.submit(proposal);
+    assert.equal(first.outcome, "outcome-unknown", name);
+    assert.equal(first.result, null, name);
+    assert.equal(first.resultReference, null, name);
+    const replay = await gateway.submit(proposal);
+    assert.deepEqual(replay, first, name);
+    assert.equal(calls, 1, name);
+  }
 });
 
 test("direct malformed unknown-run proposals fail closed without an invalid foreign-key insert", async () => {
