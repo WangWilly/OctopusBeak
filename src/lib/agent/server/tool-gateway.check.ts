@@ -445,9 +445,110 @@ test("malformed proposals are durably sanitized before persistence", async () =>
     extra: { accountId: canary, password: canary },
   });
   assert.equal(submission.outcome, "not-dispatched");
-  assert.equal(submission.decision.reason, "malformed-proposal");
+  assert.equal(submission.decision.reason, "credential-boundary");
   assert.equal(store.getToolRequest?.("redacted", "redacted"), null);
   assert.equal(JSON.stringify(submission).includes(canary), false);
+});
+
+test("serialized malformed canaries in runId or requestId are redacted before persistence", async () => {
+  const store = runningStore();
+  const runIdCanary = "serialized-run-id-secret-canary";
+  const requestIdCanary = "serialized-request-id-secret-canary";
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [runIdCanary, requestIdCanary],
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+
+  for (const proposal of [
+    {
+      runId: runIdCanary,
+      requestId: "safe-request-id",
+      malformedExtra: "unknown-field",
+    },
+    {
+      runId: "run-tool-1",
+      requestId: requestIdCanary,
+      malformedExtra: "unknown-field",
+    },
+  ]) {
+    const submission = await gateway.submit(proposal);
+    assert.equal(submission.decision.reason, "credential-boundary");
+    assert.equal(submission.outcome, "not-dispatched");
+    assert.equal(submission.result, null);
+    assert.equal(submission.resultReference, null);
+    assert.equal(JSON.stringify(submission).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(submission).includes(requestIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(requestIdCanary), false);
+  }
+  assert.equal(calls, 0);
+});
+
+test("raw escaped identifier canaries are redacted before persistence", async () => {
+  const store = runningStore();
+  const runIdCanary = "escaped\nrun-id-secret\\\"";
+  const requestIdCanary = "escaped\nrequest-id-secret\\\"";
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [runIdCanary, requestIdCanary],
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+
+  for (const proposal of [
+    { runId: runIdCanary, requestId: "safe-request-id", malformedExtra: "unknown-field" },
+    { runId: "run-tool-1", requestId: requestIdCanary, malformedExtra: "unknown-field" },
+  ]) {
+    const submission = await gateway.submit(proposal);
+    assert.equal(submission.decision.reason, "credential-boundary");
+    assert.equal(submission.outcome, "not-dispatched");
+    assert.equal(submission.result, null);
+    assert.equal(submission.resultReference, null);
+    assert.equal(JSON.stringify(submission).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(submission).includes(requestIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(requestIdCanary), false);
+  }
+  assert.equal(calls, 0);
+});
+
+test("unserializable malformed extras still redact secret identifiers before persistence", async () => {
+  const store = runningStore();
+  const runIdCanary = "unserializable-run-id-secret";
+  const requestIdCanary = "unserializable-request-id-secret";
+  let calls = 0;
+  const gateway = createFinancialOverviewToolGateway({
+    runStore: store,
+    secretValues: [runIdCanary, requestIdCanary],
+    adapter: async () => {
+      calls += 1;
+      return result();
+    },
+  });
+
+  for (const proposal of [
+    { runId: runIdCanary, requestId: "safe-request-id", malformedExtra: 1n },
+    { runId: "run-tool-1", requestId: requestIdCanary, malformedExtra: 1n },
+  ]) {
+    const submission = await gateway.submit(proposal);
+    assert.equal(submission.decision.reason, "credential-boundary");
+    assert.equal(submission.outcome, "not-dispatched");
+    assert.equal(submission.result, null);
+    assert.equal(submission.resultReference, null);
+    assert.equal(JSON.stringify(submission).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(submission).includes(requestIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(runIdCanary), false);
+    assert.equal(JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(requestIdCanary), false);
+  }
+  assert.equal(calls, 0);
 });
 
 test("quantitative resource limits deny an oversized ledger before dispatch", async () => {

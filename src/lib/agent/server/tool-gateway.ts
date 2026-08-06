@@ -585,28 +585,60 @@ export function createFinancialOverviewToolGateway({
       } catch {
         containsSecret = true;
       }
-      const exactProposal = isRecord(rawProposal) && hasExactKeys(rawProposal, TOP_LEVEL_PROPOSAL_KEYS);
+      let serializedProposal = "";
+      let serializedSecretDetected = false;
+      try {
+        const serialized = stableStringify(rawProposal);
+        serializedProposal = typeof serialized === "string" ? serialized : String(serialized);
+        try {
+          serializedSecretDetected = Boolean(
+            secretBoundary.protectText("diagnostic-export", serializedProposal).failure,
+          );
+        } catch {
+          serializedSecretDetected = true;
+        }
+      } catch {
+        serializedProposal = "[unserializable]";
+      }
+      const rawProposalRecord = isRecord(rawProposal) ? rawProposal : null;
+      let rawRunId: unknown;
+      let rawRequestId: unknown;
+      let rawIdentifierSecretDetected = false;
+      if (rawProposalRecord) {
+        try {
+          rawRunId = rawProposalRecord.runId;
+          rawRequestId = rawProposalRecord.requestId;
+        } catch {
+          rawIdentifierSecretDetected = true;
+        }
+      }
+      for (const identifier of [rawRunId, rawRequestId]) {
+        if (typeof identifier !== "string") continue;
+        try {
+          rawIdentifierSecretDetected ||= Boolean(
+            secretBoundary.protectText("diagnostic-export", identifier).failure,
+          );
+        } catch {
+          rawIdentifierSecretDetected = true;
+        }
+      }
+      const exactProposal = rawProposalRecord !== null
+        && hasExactKeys(rawProposalRecord, TOP_LEVEL_PROPOSAL_KEYS);
       let proposalHasSecret = false;
       if (exactProposal) {
         try {
           const protectedProposal = secretBoundary.protectRecord(
             "diagnostic-export",
             "agent-tool-proposal",
-            rawProposal,
+            rawProposalRecord,
           );
           proposalHasSecret = Boolean(protectedProposal.failure) || containsSecret;
         } catch {
           proposalHasSecret = true;
         }
       }
+      proposalHasSecret ||= serializedSecretDetected || rawIdentifierSecretDetected;
       containsSecret ||= proposalHasSecret;
-      let serializedProposal = "";
-      try {
-        const serialized = stableStringify(rawProposal);
-        serializedProposal = typeof serialized === "string" ? serialized : String(serialized);
-      } catch {
-        serializedProposal = "[unserializable]";
-      }
       const proposalTooLarge = utf8Bytes(serializedProposal) > AGENT_TOOL_RESOURCE_LIMITS.maxProposalBytes;
       const validation = proposalTooLarge
         ? { value: null, reason: "resource-denied" as const }
@@ -614,8 +646,6 @@ export function createFinancialOverviewToolGateway({
           ? { value: null, reason: "credential-boundary" as const }
           : validateAgentToolProposal(rawProposal);
       const proposal = validation.value;
-      const rawRunId = isRecord(rawProposal) ? rawProposal.runId : undefined;
-      const rawRequestId = isRecord(rawProposal) ? rawProposal.requestId : undefined;
       const runId = containsSecret ? "redacted" : safeIdentifier(rawRunId, "unknown");
       const requestId = containsSecret
         ? "redacted"

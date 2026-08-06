@@ -11,6 +11,10 @@ import {
   type AgentProvider,
 } from "./harness.ts";
 import {
+  createReadFinancialOverviewProposal,
+  type AgentToolExecutionRecord,
+} from "./tool-gateway.ts";
+import {
   APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
   createAppleSystemModelProvider,
   createAppleSystemModelProtocolClient,
@@ -58,6 +62,124 @@ function deterministicAdapter() {
     cancellations,
   };
 }
+
+function toolRecord(
+  runId: string,
+  requestId: string,
+  outcome: AgentToolExecutionRecord["outcome"],
+  occurredAt: string,
+): AgentToolExecutionRecord {
+  return {
+    runId,
+    requestId,
+    proposal: createReadFinancialOverviewProposal(runId, requestId),
+    decision: {
+      decisionVersion: "agent-tool-decision.v1",
+      allowed: outcome !== "not-dispatched",
+      reason: outcome === "not-dispatched" ? "run-authority-denied" : "allowed",
+    },
+    outcome,
+    result: null,
+    resultReference: null,
+    occurredAt,
+  };
+}
+
+test("in-memory tool requests use durable occurredAt/requestId ordering for list and latest status", async () => {
+  const store = createInMemoryAgentRunStore();
+  store.createRun({
+    runId: "run-tool-ordering-memory",
+    analysisId: null,
+    phase: "running",
+    startedAt: "2026-08-04T00:00:00.000Z",
+    finishedAt: null,
+    output: "",
+    failureReason: null,
+  });
+
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-a",
+    "not-dispatched",
+    "2026-08-04T00:00:01.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-b",
+    "not-dispatched",
+    "2026-08-04T00:00:02.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-a",
+    "outcome-unknown",
+    "2026-08-04T00:00:03.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-z",
+    "not-dispatched",
+    "2026-08-04T00:00:03.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-earlier",
+    "not-dispatched",
+    "2026-08-04T00:00:00.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-y",
+    "not-dispatched",
+    "2026-08-04T00:00:03.000Z",
+  ));
+
+  assert.deepEqual(
+    store.listToolRequests?.("run-tool-ordering-memory").map((record) => [
+      record.requestId,
+      record.outcome,
+      record.occurredAt,
+    ]),
+    [
+      ["request-earlier", "not-dispatched", "2026-08-04T00:00:00.000Z"],
+      ["request-b", "not-dispatched", "2026-08-04T00:00:02.000Z"],
+      ["request-a", "outcome-unknown", "2026-08-04T00:00:03.000Z"],
+      ["request-y", "not-dispatched", "2026-08-04T00:00:03.000Z"],
+      ["request-z", "not-dispatched", "2026-08-04T00:00:03.000Z"],
+    ],
+  );
+
+  const adapter = deterministicAdapter();
+  const service = createAgentHarnessService({
+    helper: adapter.helper,
+    provider: adapter.provider,
+    runStore: store,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-tool-ordering-status",
+  });
+  await service.activate();
+  const started = service.start({});
+  for (const record of [
+    toolRecord(started.runId, "request-a", "not-dispatched", "2026-08-04T00:00:01.000Z"),
+    toolRecord(started.runId, "request-b", "not-dispatched", "2026-08-04T00:00:02.000Z"),
+    toolRecord(started.runId, "request-a", "outcome-unknown", "2026-08-04T00:00:03.000Z"),
+    toolRecord(started.runId, "request-z", "not-dispatched", "2026-08-04T00:00:03.000Z"),
+    toolRecord(started.runId, "request-earlier", "not-dispatched", "2026-08-04T00:00:00.000Z"),
+    toolRecord(started.runId, "request-y", "not-dispatched", "2026-08-04T00:00:03.000Z"),
+  ]) {
+    store.recordToolRequest?.(record);
+  }
+  assert.equal(service.status(started.runId).toolState?.toolName, "read_financial_overview");
+  assert.equal(service.status(started.runId).toolState?.outcome, "not-dispatched");
+  assert.equal(service.status(started.runId).toolState?.settlement, "normal");
+  assert.equal(service.status(started.runId).toolState?.resultReference, null);
+  assert.equal(
+    store.listToolRequests?.(started.runId).at(-1)?.requestId,
+    "request-z",
+  );
+});
 
 test("a helper crash is terminal, ordinary activation cannot replace it, and Start new run performs the replacement handshake", async () => {
   let helperLaunches = 0;

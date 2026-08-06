@@ -343,6 +343,13 @@ export function createInMemoryAgentRunStore(): AgentRunStore {
     listToolRequests(runId) {
       return [...toolRequests.values()]
         .filter((record) => record.runId === runId)
+        .sort((left, right) => {
+          if (left.occurredAt < right.occurredAt) return -1;
+          if (left.occurredAt > right.occurredAt) return 1;
+          if (left.requestId < right.requestId) return -1;
+          if (left.requestId > right.requestId) return 1;
+          return 0;
+        })
         .map((record) => ({ ...record }));
     },
   };
