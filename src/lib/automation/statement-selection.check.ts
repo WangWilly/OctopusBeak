@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   BANK_STATEMENT_CAPABILITIES,
+  automationFlagEnabled,
   isStatementSelectionGroup,
   selectStatementTypes,
   StatementSelectionError,
@@ -11,9 +12,10 @@ const esun = BANK_STATEMENT_CAPABILITIES.esun;
 
 assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types", statementTypes: [] }), true);
 assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types" }), false);
+assert.equal(automationFlagEnabled(undefined), false);
 
 assert.deepEqual(selectStatementTypes(fubon, {}, "display"), {
-  selectedIds: [], needsSetup: true, persisted: false,
+  selectedIds: [], needsSetup: false, persisted: false,
 });
 assert.deepEqual(selectStatementTypes(esun, {}, "strict"), {
   selectedIds: ["credit_card"], needsSetup: false, persisted: false,
@@ -60,7 +62,10 @@ assert.deepEqual(
 assert.throws(
   () => selectStatementTypes(
     fubon,
-    { [fubon.statementSelectionKey]: "deposit,unknown" },
+    {
+      [fubon.enabledKey]: true,
+      [fubon.statementSelectionKey]: "deposit,unknown",
+    },
     "strict",
   ),
   (error: unknown) => {
@@ -79,7 +84,10 @@ assert.equal(
 assert.deepEqual(
   selectStatementTypes(
     fubon,
-    { [fubon.statementSelectionKey]: "deposit,unknown" },
+    {
+      [fubon.enabledKey]: true,
+      [fubon.statementSelectionKey]: "deposit,unknown",
+    },
     "display",
   ),
   { selectedIds: ["deposit"], needsSetup: true, persisted: true },
@@ -87,7 +95,10 @@ assert.deepEqual(
 assert.throws(
   () => selectStatementTypes(
     fubon,
-    { [fubon.statementSelectionKey]: "" },
+    {
+      [fubon.enabledKey]: true,
+      [fubon.statementSelectionKey]: "",
+    },
     "strict",
   ),
   (error: unknown) => {

@@ -12,12 +12,14 @@ import {
   createOnboardingState,
   nextOnboardingCredentialKey,
   onboardingTaskDisclosure,
+  previousOnboardingCredentialState,
   readOnboardingState,
   settleAssistTextSubmission,
   writeOnboardingState,
 } from "./state.ts";
 import {
   hasExistingProductData,
+  onboardingCanGoBack,
   onboardingCopyKey,
   onboardingStepNumber,
   resolveOnboardingStep,
@@ -28,6 +30,7 @@ import {
 } from "./progression.ts";
 import {
   activateOnboardingTarget,
+  focusOnboardingTarget,
   observeOnboardingTarget,
   selectorForOnboardingTarget,
 } from "./target-observer.ts";
@@ -175,6 +178,53 @@ assert.equal(createOnboardingState().version, 2);
 assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", {}), "USER");
 assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", { USER: "demo-user" }), "PASSWORD");
 assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "PASSWORD", { PASSWORD: "secret" }), null);
+assert.deepEqual(
+  previousOnboardingCredentialState(["USER", "PASSWORD"], {
+    selectedCredentialGroupId: "fubon",
+    targetKey: "PASSWORD",
+    statementSelectionConfirmed: false,
+  }),
+  {
+    selectedCredentialGroupId: "fubon",
+    targetKey: "USER",
+    statementSelectionConfirmed: false,
+    closeCredentials: false,
+  },
+);
+assert.deepEqual(
+  previousOnboardingCredentialState(["USER", "PASSWORD"], {
+    selectedCredentialGroupId: "fubon",
+    targetKey: null,
+    statementSelectionConfirmed: true,
+  }, true),
+  {
+    selectedCredentialGroupId: "fubon",
+    targetKey: null,
+    statementSelectionConfirmed: false,
+    closeCredentials: false,
+  },
+);
+assert.deepEqual(
+  previousOnboardingCredentialState([], {
+    selectedCredentialGroupId: "fubon",
+    targetKey: null,
+    statementSelectionConfirmed: false,
+  }, true),
+  {
+    selectedCredentialGroupId: "",
+    targetKey: null,
+    statementSelectionConfirmed: false,
+    closeCredentials: false,
+  },
+);
+assert.equal(
+  previousOnboardingCredentialState([], {
+    selectedCredentialGroupId: "",
+    targetKey: null,
+    statementSelectionConfirmed: false,
+  }).closeCredentials,
+  true,
+);
 assert.deepEqual(singleSourceUpdates(
   [fubonGroup, esunGroup, maicoinGroup],
   "fubon",
@@ -184,6 +234,11 @@ assert.deepEqual(singleSourceUpdates(
   LIBRETTO_CLOUD_ESUN_ENABLED: "false",
 });
 assert.equal(resolveOnboardingStep(context(selectedCrawler, { route: "overview" }), state), "automation-nav");
+assert.equal(onboardingCanGoBack("automation-nav"), false);
+assert.equal(onboardingCanGoBack("credentials"), true);
+assert.equal(onboardingCanGoBack("assist"), true);
+assert.equal(onboardingCanGoBack("collection"), false);
+assert.equal(onboardingCanGoBack("import"), false);
 assert.equal(resolveOnboardingStep(context(selectedCrawler), createOnboardingState()), "credentials");
 assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "running", isActive: true }), state), "collection");
 assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "waiting_for_human", humanSession: "fubon" }), state), "assist");
@@ -420,8 +475,9 @@ assert.match(onboardingCoach, /targetAction === "enable-source"/);
 assert.match(i18n, /enableSource: "Enable this source"/);
 assert.match(i18n, /enableSource: "啟用這個來源"/);
 assert.match(onboardingCoach, /new CustomEvent\("onboardingback", \{ bubbles: true, cancelable: true \}\)/);
-assert.match(onboardingCoach, /onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/);
+assert.match(onboardingCoach, /\{#if canGoBack\}[\s\S]*?onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/);
 assert.match(page, /onBack=\{backOnboarding\}/);
+assert.doesNotMatch(page, /history\.back\(\)/);
 assert.match(i18n, /back: "Back"/);
 assert.match(i18n, /back: "上一步"/);
 
@@ -544,6 +600,12 @@ test("coach remeasures its target after modal animation", () => {
   assert.match(onboardingCoach, /removeEventListener\("animationend", updateRect, true\)/);
 });
 
+test("coach remeasures an asynchronously loaded verification image", () => {
+  assert.match(onboardingCoach, /targetResizeObserver = new ResizeObserver\(updateRect\)/);
+  assert.match(onboardingCoach, /targetResizeObserver\.observe\(nextTarget\)/);
+  assert.match(onboardingCoach, /targetResizeObserver\?\.disconnect\(\)/);
+});
+
 test("coach measures only while a target selector is active", () => {
   const watchTargetSource = onboardingCoach.slice(
     onboardingCoach.indexOf("function watchTarget"),
@@ -617,6 +679,47 @@ test("pointer-only verification target is focused without an inert synthetic cli
   assert.deepEqual({ focused, clicked }, { focused: 2, clicked: 1 });
 });
 
+test("completed verification text can advance from the coach button", () => {
+  const inputDescriptor = Object.getOwnPropertyDescriptor(globalThis, "HTMLInputElement");
+  let submitted = 0;
+  let focused = 0;
+
+  class FakeInputElement {
+    dataset = { onboardingAction: "enter-verification" };
+    value = "123456";
+    form = { requestSubmit: () => submitted += 1 };
+    focus() { focused += 1; }
+    click() {}
+  }
+
+  Object.defineProperty(globalThis, "HTMLInputElement", {
+    configurable: true,
+    value: FakeInputElement,
+  });
+  try {
+    activateOnboardingTarget(new FakeInputElement() as unknown as HTMLElement);
+    assert.deepEqual({ focused, submitted }, { focused: 1, submitted: 1 });
+  } finally {
+    if (inputDescriptor) Object.defineProperty(globalThis, "HTMLInputElement", inputDescriptor);
+    else Reflect.deleteProperty(globalThis, "HTMLInputElement");
+  }
+});
+
+test("interactive onboarding fields receive focus as soon as their target changes", () => {
+  let focused = 0;
+  const target = {
+    dataset: { onboardingAction: "enter-credentials" },
+    focus: () => focused += 1,
+  } as unknown as HTMLElement;
+
+  assert.equal(focusOnboardingTarget(target), true);
+  target.dataset.onboardingAction = "choose-verification-control";
+  assert.equal(focusOnboardingTarget(target), true);
+  target.dataset.onboardingAction = "save-credentials";
+  assert.equal(focusOnboardingTarget(target), false);
+  assert.equal(focused, 2);
+});
+
 test("verification screenshot exposes a clear keyboard focus path", () => {
   assert.match(
     automationDashboard,
@@ -626,7 +729,34 @@ test("verification screenshot exposes a clear keyboard focus path", () => {
   assert.match(onboardingCoach, /activateOnboardingTarget\(target\)/);
   assert.match(
     onboardingCoach,
-    /targetAction === "choose-verification-control"[\s\S]*?focusVerificationViewer/,
+    /targetAction === "choose-verification-control"[\s\S]*?showPrimaryAction = false/,
+  );
+  assert.match(onboardingCoach, /\{#if showPrimaryAction\}[\s\S]*?class="button primary"/);
+  assert.match(
+    automationDashboard,
+    /class="verification-viewer-tooltip"[\s\S]*?role="tooltip"[\s\S]*?\$t\.onboarding\.clickVerificationField/,
+  );
+  assert.match(automationDashboard, /\.verification-viewer-tooltip\s*\{[\s\S]*?pointer-events: none;/);
+});
+
+test("credential onboarding advances with Enter and focuses the next input", () => {
+  const advanceSource = automationDashboard.slice(
+    automationDashboard.indexOf("async function advanceOnboardingCredential"),
+    automationDashboard.indexOf("function backOnboardingCredential"),
+  );
+  const keydownSource = automationDashboard.slice(
+    automationDashboard.indexOf("function handleOnboardingCredentialKeydown"),
+    automationDashboard.indexOf("async function advanceOnboardingCredential"),
+  );
+
+  assert.match(keydownSource, /event\.key !== "Enter"/);
+  assert.match(keydownSource, /event\.preventDefault\(\)/);
+  assert.match(keydownSource, /void advanceOnboardingCredential\(\)/);
+  assert.match(advanceSource, /await tick\(\)/);
+  assert.match(advanceSource, /getElementById\(`credential-input-\$\{nextKey\}`\)\?\.focus\(\)/);
+  assert.match(
+    automationDashboard,
+    /id=\{`credential-input-\$\{key\}`\}[\s\S]*?onkeydown=\{\(event\) => handleOnboardingCredentialKeydown\(key, event\)\}/,
   );
 });
 

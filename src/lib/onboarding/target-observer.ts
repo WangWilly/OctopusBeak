@@ -19,6 +19,12 @@ export function selectorForOnboardingTarget(target: OnboardingTarget | null) {
 export function activateOnboardingTarget(target: HTMLElement) {
   target.focus();
   const action = target.dataset.onboardingAction;
+  if (action === "enter-verification") {
+    if (target instanceof HTMLInputElement && target.value.trim()) {
+      target.form?.requestSubmit();
+    }
+    return;
+  }
   if (action === "enter-credentials") {
     if (target instanceof HTMLInputElement && target.value.trim()) {
       target.dispatchEvent(new CustomEvent("onboardingadvance", { bubbles: true }));
@@ -26,6 +32,13 @@ export function activateOnboardingTarget(target: HTMLElement) {
     return;
   }
   if (action !== "choose-verification-control" && action !== "select-source") target.click();
+}
+
+export function focusOnboardingTarget(target: HTMLElement) {
+  const action = target.dataset.onboardingAction;
+  if (action !== "enter-credentials" && action !== "choose-verification-control") return false;
+  target.focus({ preventScroll: true });
+  return true;
 }
 
 export function observeOnboardingTarget(
