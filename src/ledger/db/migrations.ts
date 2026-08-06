@@ -814,6 +814,27 @@ function addAgentAnalysisId(db: LedgerDatabase) {
   addColumnIfMissing(db, "agent_run_lineage", "analysis_id", "analysis_id TEXT");
 }
 
+function createAgentToolOutcomeSchema(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tool_outcomes (
+      run_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('not-dispatched', 'completed', 'outcome-unknown')),
+      result_reference TEXT,
+      result_json TEXT,
+      proposal_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (run_id, request_id),
+      FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_tool_outcomes_run
+    ON agent_tool_outcomes(run_id, occurred_at, request_id);
+  `);
+}
+
 function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   for (const table of TYPED_STATEMENT_TABLES) {
     if (
@@ -2078,6 +2099,11 @@ const migrations: LedgerMigration[] = [
     version: 29,
     name: "agent_run_analysis_identity",
     up: addAgentAnalysisId,
+  },
+  {
+    version: 30,
+    name: "agent_tool_outcomes",
+    up: createAgentToolOutcomeSchema,
   },
 ];
 

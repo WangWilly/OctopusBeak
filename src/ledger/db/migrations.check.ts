@@ -687,7 +687,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
   );
   for (const table of ["agent_runs", "agent_run_lineage"]) {
     const columns = migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{
@@ -695,6 +695,13 @@ try {
     }>;
     assert.equal(columns.filter((column) => column.name === "analysis_id").length, 1);
   }
+  const agentToolOutcomeColumns = migrated.prepare(
+    "PRAGMA table_info(agent_tool_outcomes)",
+  ).all() as Array<{ name: string }>;
+  assert.deepEqual(agentToolOutcomeColumns.map((column) => column.name), [
+    "run_id", "request_id", "outcome", "result_reference", "result_json",
+    "proposal_json", "decision_json", "occurred_at", "updated_at", "record_json",
+  ]);
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
   ).all() as Array<{ name: string; notnull: number }>;

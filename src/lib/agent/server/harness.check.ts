@@ -11,6 +11,10 @@ import {
   type AgentProvider,
 } from "./harness.ts";
 import {
+  createReadFinancialOverviewProposal,
+  type AgentToolExecutionRecord,
+} from "./tool-gateway.ts";
+import {
   APPLE_SYSTEM_MODEL_HELPER_PROTOCOL_VERSION,
   createAppleSystemModelProvider,
   createAppleSystemModelProtocolClient,
@@ -58,6 +62,124 @@ function deterministicAdapter() {
     cancellations,
   };
 }
+
+function toolRecord(
+  runId: string,
+  requestId: string,
+  outcome: AgentToolExecutionRecord["outcome"],
+  occurredAt: string,
+): AgentToolExecutionRecord {
+  return {
+    runId,
+    requestId,
+    proposal: createReadFinancialOverviewProposal(runId, requestId),
+    decision: {
+      decisionVersion: "agent-tool-decision.v1",
+      allowed: outcome !== "not-dispatched",
+      reason: outcome === "not-dispatched" ? "run-authority-denied" : "allowed",
+    },
+    outcome,
+    result: null,
+    resultReference: null,
+    occurredAt,
+  };
+}
+
+test("in-memory tool requests use durable occurredAt/requestId ordering for list and latest status", async () => {
+  const store = createInMemoryAgentRunStore();
+  store.createRun({
+    runId: "run-tool-ordering-memory",
+    analysisId: null,
+    phase: "running",
+    startedAt: "2026-08-04T00:00:00.000Z",
+    finishedAt: null,
+    output: "",
+    failureReason: null,
+  });
+
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-a",
+    "not-dispatched",
+    "2026-08-04T00:00:01.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-b",
+    "not-dispatched",
+    "2026-08-04T00:00:02.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-a",
+    "outcome-unknown",
+    "2026-08-04T00:00:03.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-z",
+    "not-dispatched",
+    "2026-08-04T00:00:03.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-earlier",
+    "not-dispatched",
+    "2026-08-04T00:00:00.000Z",
+  ));
+  store.recordToolRequest?.(toolRecord(
+    "run-tool-ordering-memory",
+    "request-y",
+    "not-dispatched",
+    "2026-08-04T00:00:03.000Z",
+  ));
+
+  assert.deepEqual(
+    store.listToolRequests?.("run-tool-ordering-memory").map((record) => [
+      record.requestId,
+      record.outcome,
+      record.occurredAt,
+    ]),
+    [
+      ["request-earlier", "not-dispatched", "2026-08-04T00:00:00.000Z"],
+      ["request-b", "not-dispatched", "2026-08-04T00:00:02.000Z"],
+      ["request-a", "outcome-unknown", "2026-08-04T00:00:03.000Z"],
+      ["request-y", "not-dispatched", "2026-08-04T00:00:03.000Z"],
+      ["request-z", "not-dispatched", "2026-08-04T00:00:03.000Z"],
+    ],
+  );
+
+  const adapter = deterministicAdapter();
+  const service = createAgentHarnessService({
+    helper: adapter.helper,
+    provider: adapter.provider,
+    runStore: store,
+    toolGateway: { execute: () => ({ status: "rejected" }) },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-tool-ordering-status",
+  });
+  await service.activate();
+  const started = service.start({});
+  for (const record of [
+    toolRecord(started.runId, "request-a", "not-dispatched", "2026-08-04T00:00:01.000Z"),
+    toolRecord(started.runId, "request-b", "not-dispatched", "2026-08-04T00:00:02.000Z"),
+    toolRecord(started.runId, "request-a", "outcome-unknown", "2026-08-04T00:00:03.000Z"),
+    toolRecord(started.runId, "request-z", "not-dispatched", "2026-08-04T00:00:03.000Z"),
+    toolRecord(started.runId, "request-earlier", "not-dispatched", "2026-08-04T00:00:00.000Z"),
+    toolRecord(started.runId, "request-y", "not-dispatched", "2026-08-04T00:00:03.000Z"),
+  ]) {
+    store.recordToolRequest?.(record);
+  }
+  assert.equal(service.status(started.runId).toolState?.toolName, "read_financial_overview");
+  assert.equal(service.status(started.runId).toolState?.outcome, "not-dispatched");
+  assert.equal(service.status(started.runId).toolState?.settlement, "normal");
+  assert.equal(service.status(started.runId).toolState?.resultReference, null);
+  assert.equal(
+    store.listToolRequests?.(started.runId).at(-1)?.requestId,
+    "request-z",
+  );
+});
 
 test("a helper crash is terminal, ordinary activation cannot replace it, and Start new run performs the replacement handshake", async () => {
   let helperLaunches = 0;
@@ -1187,4 +1309,139 @@ test("SQLite Agent store rejects a canary before writing a run", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a rejected provider gateway becomes a bounded unknown outcome without leaking its error", async () => {
+  const store = createInMemoryAgentRunStore();
+  const diagnostics: unknown[] = [];
+  const canary = "provider-gateway-secret-canary";
+  let submission!: Promise<{
+    requestId: string;
+    decision: { decisionVersion: string; allowed: boolean; reason: string };
+    outcome: string;
+    result: unknown;
+    resultReference: unknown;
+    settlement: string;
+  }>;
+  let complete!: () => void;
+  const provider: AgentProvider = {
+    async activate() {
+      return { availability: "available", providerIdentity: "test-provider", osBuild: "test" };
+    },
+    start({ runId, toolGateway: capability, onComplete }) {
+      complete = onComplete;
+      submission = capability.submit({
+        proposalVersion: "agent-tool-proposal.v1",
+        requestId: "request-gateway-rejection",
+        runId,
+        toolName: "read_financial_overview",
+        input: {},
+        permission: "financial.overview.read",
+        sensitivity: "derived-financial",
+        resource: "ledger.overview",
+        runAuthority: runId,
+      });
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: { launch(input) { input.provider.start(input); }, cancel() {} },
+    provider,
+    runStore: store,
+    toolGateway: {
+      async submit() {
+        throw new Error(`gateway rejected with ${canary}`);
+      },
+    },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record(event) { diagnostics.push(event); } },
+    idFactory: () => "run-gateway-rejection",
+    secretValues: [canary],
+  });
+
+  await service.activate();
+  service.start({});
+  complete();
+  const bounded = await submission;
+  assert.equal(bounded.requestId, "request-gateway-rejection");
+  assert.equal(bounded.decision.decisionVersion, "agent-tool-decision.v1");
+  assert.equal(bounded.decision.allowed, false);
+  assert.equal(bounded.outcome, "outcome-unknown");
+  assert.equal(bounded.result, null);
+  assert.equal(bounded.resultReference, null);
+  assert.equal(bounded.settlement, "normal");
+  assert.equal(service.status("run-gateway-rejection").phase, "failed");
+  assert.equal(store.getRun("run-gateway-rejection")?.failureReason, "tool-outcome-unknown");
+  assert.deepEqual(service.lineage("run-gateway-rejection").map((event) => event.kind), [
+    "run.started", "tool.proposal", "tool.decision", "tool.outcome", "run.failed",
+  ]);
+  assert.equal(service.lineage("run-gateway-rejection").at(-1)?.transitionReason, "tool-outcome-unknown");
+  assert.equal(JSON.stringify(bounded).includes(canary), false);
+  assert.equal(JSON.stringify(service.lineage("run-gateway-rejection")).includes(canary), false);
+  assert.equal(JSON.stringify(diagnostics).includes(canary), false);
+
+  complete();
+  assert.equal(service.complete("run-gateway-rejection").phase, "failed");
+  assert.equal(service.cancel("run-gateway-rejection").phase, "failed");
+});
+
+test("tool lineage retains the sanitized proposal only on proposal events", async () => {
+  const store = createInMemoryAgentRunStore();
+  let submissionDone!: () => void;
+  const done = new Promise<void>((resolve) => { submissionDone = resolve; });
+  const provider: AgentProvider = {
+    async activate() {
+      return { availability: "available", providerIdentity: "test-provider", osBuild: "test" };
+    },
+    start({ runId, toolGateway: capability, onComplete }) {
+      void capability.submit(createReadFinancialOverviewProposal(runId, "request-lineage-shape"))
+        .finally(() => {
+          onComplete();
+          submissionDone();
+        });
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: { launch(input) { input.provider.start(input); }, cancel() {} },
+    provider,
+    runStore: store,
+    toolGateway: {
+      async submit(proposal) {
+        const requestId = (proposal as { requestId: string }).requestId;
+        return {
+          requestId,
+          decision: {
+            decisionVersion: "agent-tool-decision.v1",
+            allowed: false,
+            reason: "permission-denied" as const,
+          },
+          outcome: "not-dispatched" as const,
+          result: null,
+          resultReference: null,
+          settlement: "normal" as const,
+        };
+      },
+    },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-lineage-shape",
+  });
+  await service.activate();
+  service.start({});
+  await done;
+  const events = service.lineage("run-lineage-shape");
+  const proposalEvent = events.find((event) => event.kind === "tool.proposal");
+  const decisionEvent = events.find((event) => event.kind === "tool.decision");
+  const outcomeEvent = events.find((event) => event.kind === "tool.outcome");
+  assert.ok(proposalEvent?.tool?.proposal);
+  assert.equal(proposalEvent?.tool?.proposal?.requestId, "request-lineage-shape");
+  assert.equal(decisionEvent?.tool?.proposal, undefined);
+  assert.equal(outcomeEvent?.tool?.proposal, undefined);
+  assert.equal(decisionEvent?.tool?.requestId, "request-lineage-shape");
+  assert.equal(decisionEvent?.tool?.toolName, "read_financial_overview");
+  assert.equal(decisionEvent?.tool?.decision?.reason, "permission-denied");
+  assert.equal(outcomeEvent?.tool?.requestId, "request-lineage-shape");
+  assert.equal(outcomeEvent?.tool?.outcome, "not-dispatched");
+  assert.equal(outcomeEvent?.tool?.resultReference, null);
 });

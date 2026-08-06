@@ -10,6 +10,17 @@ import {
   type SecretBoundaryDependencies,
   type SecretBoundaryGate,
 } from "./harness.ts";
+import {
+  AGENT_TOOL_DECISION_REASONS,
+  AGENT_TOOL_OUTCOMES,
+  AGENT_TOOL_DECISION_VERSION,
+  AGENT_TOOL_RESULT_VERSION,
+  AGENT_TOOL_REFERENCE_VERSION,
+  AGENT_TOOL_SETTLEMENTS,
+  validateAgentToolProposal,
+  validateAgentToolResult,
+  type AgentToolExecutionRecord,
+} from "./tool-gateway.ts";
 
 type AgentStoreOptions = {
   secretValues?: readonly string[];
@@ -29,10 +40,15 @@ const AGENT_LINEAGE_KINDS: readonly AgentLineageEvent["kind"][] = [
   "run.completed",
   "run.cancelled",
   "run.failed",
+  "tool.proposal",
+  "tool.decision",
+  "tool.outcome",
 ];
 const AGENT_LINEAGE_STATUSES: readonly AgentLineageEvent["status"][] = [
   "allowed",
   "observed",
+  "proposed",
+  "blocked",
 ];
 const AGENT_PROVIDER_ASSURANCES: readonly AgentLineageEvent["providerAssurance"][] = [
   "verified-build",
@@ -42,6 +58,32 @@ const AGENT_TRANSITION_REASONS: readonly Exclude<
   AgentLineageEvent["transitionReason"],
   null
 >[] = [...AGENT_FAILURE_REASONS, "user-cancelled"];
+
+const AGENT_TOOL_OUTCOME_RANK = {
+  "not-dispatched": 1,
+  "outcome-unknown": 2,
+  completed: 3,
+} as const;
+
+/**
+ * A durable unknown outcome is terminal. The one explicitly recorded
+ * cancellation settlement is the only case where a later, already in-flight
+ * completion may be retained; all other writes are monotonic no-ops.
+ */
+function canUpgradeAgentToolOutcome(
+  next: AgentToolExecutionRecord,
+  current: AgentToolExecutionRecord,
+): boolean {
+  if (AGENT_TOOL_OUTCOME_RANK[next.outcome] <= AGENT_TOOL_OUTCOME_RANK[current.outcome]) {
+    return false;
+  }
+  if (current.outcome === "outcome-unknown") {
+    return current.settlement === "cancelled-in-flight"
+      && next.outcome === "completed"
+      && next.settlement === "cancelled-in-flight";
+  }
+  return current.outcome === "not-dispatched";
+}
 
 const RUN_RECORD_KEYS = [
   "runId",
@@ -67,6 +109,7 @@ const LINEAGE_RECORD_KEYS = [
   "transitionReason",
   "secretFields",
 ] as const;
+const LINEAGE_ALLOWED_KEYS = [...LINEAGE_RECORD_KEYS, "tool"] as const;
 const LEGACY_LINEAGE_REQUIRED_KEYS = [
   "runId",
   "analysisId",
@@ -77,7 +120,6 @@ const LEGACY_LINEAGE_REQUIRED_KEYS = [
   "dataClasses",
   "secretFields",
 ] as const;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -196,19 +238,81 @@ function isValidV1LineageState(value: Record<string, unknown>) {
       return value.status === "observed" && value.transitionReason === "user-cancelled";
     case "run.failed":
       return value.status === "observed" && isAgentFailureReason(value.transitionReason);
+    case "tool.proposal":
+      return value.status === "proposed" && value.transitionReason === null;
+    case "tool.decision":
+      return (value.status === "allowed" || value.status === "blocked")
+        && value.transitionReason === null;
+    case "tool.outcome":
+      return value.status === "observed" && value.transitionReason === null;
     default:
       return false;
   }
+}
+
+function decodeToolLineage(value: unknown): AgentLineageEvent["tool"] {
+  if (!isRecord(value)
+    || !hasOnlyExpectedKeys(
+      value,
+      ["requestId", "toolName", "proposal", "decision", "decisionReason", "outcome", "resultReference", "settlement"],
+      ["requestId", "toolName"],
+    )
+    || typeof value.requestId !== "string"
+    || value.requestId.length === 0
+    || typeof value.toolName !== "string"
+    || value.toolName.length === 0
+    || (value.proposal !== undefined && !isRecord(value.proposal))
+    || (value.decision !== undefined
+      && (!isRecord(value.decision)
+        || !hasOnlyExpectedKeys(value.decision, ["decisionVersion", "allowed", "reason"], ["decisionVersion", "allowed", "reason"])
+        || value.decision.decisionVersion !== AGENT_TOOL_DECISION_VERSION
+        || typeof value.decision.allowed !== "boolean"
+        || !AGENT_TOOL_DECISION_REASONS.includes(value.decision.reason as never)))
+    || (value.decisionReason !== undefined
+      && !AGENT_TOOL_DECISION_REASONS.includes(value.decisionReason as never))
+    || (value.outcome !== undefined
+      && !AGENT_TOOL_OUTCOMES.includes(value.outcome as never))
+    || (value.resultReference !== undefined
+      && value.resultReference !== null
+      && typeof value.resultReference !== "string")
+    || (value.settlement !== undefined
+      && !AGENT_TOOL_SETTLEMENTS.includes(value.settlement as never))) {
+    throw new Error("Invalid Agent lineage record.");
+  }
+  return {
+    requestId: value.requestId,
+    toolName: value.toolName,
+    ...(value.proposal ? { proposal: value.proposal } : {}),
+    ...(value.decision ? {
+      decision: {
+        decisionVersion: value.decision.decisionVersion as string,
+        allowed: value.decision.allowed as boolean,
+        reason: value.decision.reason as string,
+      },
+    } : {}),
+    ...(typeof value.decisionReason === "string" ? { decisionReason: value.decisionReason } : {}),
+    ...(typeof value.outcome === "string"
+      ? { outcome: value.outcome as "not-dispatched" | "completed" | "outcome-unknown" }
+      : {}),
+    ...(Object.hasOwn(value, "resultReference")
+      ? { resultReference: value.resultReference as string | null }
+      : {}),
+    ...(typeof value.settlement === "string"
+      ? { settlement: value.settlement as "normal" | "cancelled-in-flight" }
+      : {}),
+  };
 }
 
 function decodeLineageRecord(
   value: unknown,
   legacy: boolean,
 ): AgentLineageEvent {
+  const hasTool = isRecord(value) && Object.hasOwn(value, "tool");
+  const decodedTool = hasTool ? decodeToolLineage(value.tool) : undefined;
   if (!isRecord(value)
     || !hasOnlyExpectedKeys(
       value,
-      LINEAGE_RECORD_KEYS,
+      LINEAGE_ALLOWED_KEYS,
       legacy ? LEGACY_LINEAGE_REQUIRED_KEYS : LINEAGE_RECORD_KEYS,
     )
     || typeof value.runId !== "string"
@@ -245,6 +349,8 @@ function decodeLineageRecord(
       ))
     || !Array.isArray(value.secretFields)
     || value.secretFields.length !== 0
+    || (hasTool && !decodedTool)
+    || (typeof value.kind === "string" && value.kind.startsWith("tool.") && !Object.hasOwn(value, "tool"))
     || (!legacy && !isValidV1LineageState(value))) {
     throw new Error("Invalid Agent lineage record.");
   }
@@ -267,6 +373,7 @@ function decodeLineageRecord(
       ? null
       : value.transitionReason as AgentLineageEvent["transitionReason"],
     secretFields: [],
+    ...(decodedTool ? { tool: decodedTool } : {}),
   };
 }
 
@@ -299,7 +406,7 @@ function encodeRecord(
 
 function protectRecord<T extends Record<string, unknown>>(
   gate: SecretBoundaryGate,
-  schema: "agent-run" | "agent-lineage",
+  schema: "agent-run" | "agent-lineage" | "agent-tool-outcome",
   record: T,
 ) {
   const protectedRecord = gate.protectRecord("sqlite-persistence", schema, record);
@@ -372,6 +479,60 @@ export function createSqliteAgentRunStore(
       | undefined;
     if (!row) throw new Error("Agent run not found.");
     return row;
+  }
+
+  function decodeToolRecord(raw: unknown): AgentToolExecutionRecord {
+    const value = parseJsonRecord(raw, "Invalid Agent tool outcome record.");
+    if (value.recordVersion !== 1
+      || !hasOnlyExpectedKeys(value, ["recordVersion", "record"], ["recordVersion", "record"])) {
+      throw new Error("Unsupported Agent tool outcome record version.");
+    }
+    const record = value.record;
+    const validatedProposal = isRecord(record)
+      ? validateAgentToolProposal(record.proposal).value
+      : null;
+    if (!isRecord(record)
+      || !hasOnlyExpectedKeys(
+        record,
+        ["runId", "requestId", "proposal", "decision", "outcome", "result", "resultReference", "occurredAt", "settlement"],
+        ["runId", "requestId", "proposal", "decision", "outcome", "result", "resultReference", "occurredAt"],
+      )
+      || typeof record.runId !== "string"
+      || typeof record.requestId !== "string"
+      || typeof record.occurredAt !== "string"
+      || !AGENT_TOOL_OUTCOMES.includes(record.outcome as never)
+      || !validatedProposal
+      || validatedProposal.runId !== record.runId
+      || validatedProposal.requestId !== record.requestId
+      || !isRecord(record.decision)
+      || record.decision.decisionVersion !== AGENT_TOOL_DECISION_VERSION
+      || typeof record.decision.allowed !== "boolean"
+      || !AGENT_TOOL_DECISION_REASONS.includes(record.decision.reason as never)
+      || (record.settlement !== undefined && !AGENT_TOOL_SETTLEMENTS.includes(record.settlement as never))
+      || (record.resultReference !== null && !isRecord(record.resultReference))
+      || (record.result !== null && !isRecord(record.result))) {
+      throw new Error("Invalid Agent tool outcome record.");
+    }
+    if (record.resultReference !== null
+      && (record.resultReference.referenceVersion !== AGENT_TOOL_REFERENCE_VERSION
+        || typeof record.resultReference.value !== "string")) {
+      throw new Error("Invalid Agent tool outcome record.");
+    }
+    if (record.result !== null && (record.result.resultVersion !== AGENT_TOOL_RESULT_VERSION
+      || !validateAgentToolResult(record.result))) {
+      throw new Error("Invalid Agent tool outcome record.");
+    }
+    if ((!record.decision.allowed && record.outcome !== "not-dispatched")
+      || (record.settlement !== undefined && record.outcome === "not-dispatched")
+      || (record.outcome === "completed" && (record.result === null || record.resultReference === null))
+      || (record.outcome !== "completed" && (record.result !== null || record.resultReference !== null))
+      || (record.result !== null && record.resultReference?.value !== record.result.reference.value)) {
+      throw new Error("Invalid Agent tool outcome record.");
+    }
+    return {
+      ...record,
+      ...(typeof record.settlement === "string" ? { settlement: record.settlement } : {}),
+    } as unknown as AgentToolExecutionRecord;
   }
 
   return {
@@ -450,6 +611,88 @@ export function createSqliteAgentRunStore(
         ORDER BY seq ASC
       `).all(runId) as Record<string, unknown>[];
       return rows.map(rowToLineage);
+    },
+    recordToolRequest(record) {
+      const protectedRecord = protectRecord(
+        gate,
+        "agent-tool-outcome",
+        record as unknown as Record<string, unknown>,
+      ) as unknown as AgentToolExecutionRecord;
+      const encoded = JSON.stringify({ recordVersion: 1, record: protectedRecord });
+      const existing = db.prepare(
+        "SELECT record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
+      ).get(protectedRecord.runId, protectedRecord.requestId) as { record_json: string } | undefined;
+      if (existing) {
+        const current = decodeToolRecord(existing.record_json);
+        if (canUpgradeAgentToolOutcome(protectedRecord, current)) {
+          db.prepare(`
+            UPDATE agent_tool_outcomes
+            SET outcome = ?, result_reference = ?, result_json = ?, proposal_json = ?, decision_json = ?,
+              occurred_at = ?, record_json = ?, updated_at = ?
+            WHERE run_id = ? AND request_id = ?
+          `).run(
+            protectedRecord.outcome,
+            protectedRecord.resultReference?.value ?? null,
+            protectedRecord.result ? JSON.stringify(protectedRecord.result) : null,
+            JSON.stringify(protectedRecord.proposal),
+            JSON.stringify(protectedRecord.decision),
+            protectedRecord.occurredAt,
+            encoded,
+            protectedRecord.occurredAt,
+            protectedRecord.runId,
+            protectedRecord.requestId,
+          );
+        }
+        return;
+      }
+      db.prepare(`
+        INSERT INTO agent_tool_outcomes (
+          run_id, request_id, outcome, result_reference, result_json,
+          proposal_json, decision_json, occurred_at, updated_at, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        protectedRecord.runId,
+        protectedRecord.requestId,
+        protectedRecord.outcome,
+        protectedRecord.resultReference?.value ?? null,
+        protectedRecord.result ? JSON.stringify(protectedRecord.result) : null,
+        JSON.stringify(protectedRecord.proposal),
+        JSON.stringify(protectedRecord.decision),
+        protectedRecord.occurredAt,
+        protectedRecord.occurredAt,
+        encoded,
+      );
+    },
+    getToolRequest(runId, requestId) {
+      const row = db.prepare(
+        "SELECT run_id, request_id, record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
+      ).get(runId, requestId) as {
+        run_id: string;
+        request_id: string;
+        record_json: string;
+      } | undefined;
+      if (!row) return null;
+      const record = decodeToolRecord(row.record_json);
+      if (record.runId !== row.run_id || record.requestId !== row.request_id) {
+        throw new Error("Invalid Agent tool outcome record.");
+      }
+      return record;
+    },
+    listToolRequests(runId) {
+      const rows = db.prepare(
+        "SELECT run_id, request_id, record_json FROM agent_tool_outcomes WHERE run_id = ? ORDER BY occurred_at, request_id",
+      ).all(runId) as Array<{
+        run_id: string;
+        request_id: string;
+        record_json: string;
+      }>;
+      return rows.map((row) => {
+        const record = decodeToolRecord(row.record_json);
+        if (record.runId !== row.run_id || record.requestId !== row.request_id) {
+          throw new Error("Invalid Agent tool outcome record.");
+        }
+        return record;
+      });
     },
     close() {
       db.close();

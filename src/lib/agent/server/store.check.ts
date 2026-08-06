@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
 import { createSqliteAgentRunStore } from "./store.ts";
+import { createReadFinancialOverviewProposal, type AgentToolExecutionRecord } from "./tool-gateway.ts";
 
 type RunRowOverrides = {
   analysisId?: string | null;
@@ -419,6 +421,723 @@ test("SQLite Agent store rejects whitespace-only v1 and present legacy lineage i
       /Invalid Agent lineage record/,
     );
     store.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent store persists durable Authorized tool outcomes and replays validated results", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-outcomes-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-store",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const proposal = createReadFinancialOverviewProposal("run-tool-store", "request-store");
+    const resultData: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data: {
+        aggregateVersion: "financial-overview.aggregate.v1",
+        snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+        totalsByCurrency: {},
+        overview: {
+          cashAssets: {}, foreignAssets: {}, investmentAssets: {},
+          unbilledCreditCard: {}, loans: {}, netAssets: {},
+        },
+        counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+        quality: { status: "pass", issueCount: 0 },
+      },
+      reference: { referenceVersion: "immutable-result-ref.v1", value: "" },
+      secretFields: [],
+    };
+    resultData.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(resultData.data))}`;
+    const record: AgentToolExecutionRecord = {
+      runId: "run-tool-store",
+      requestId: "request-store",
+      proposal,
+      decision: {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "allowed",
+      },
+      outcome: "completed",
+      result: resultData,
+    resultReference: resultData.reference,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    };
+    store.recordToolRequest?.(record);
+    store.appendLineage({
+      runId: "run-tool-store",
+      analysisId: null,
+      seq: 1,
+      kind: "tool.proposal",
+      status: "proposed",
+      occurredAt: "2026-08-04T00:00:01.000Z",
+      dataClasses: ["financial.derived"],
+      providerIdentity: "test-provider",
+      osBuild: "test",
+      providerAssurance: "unverified-build",
+      transitionReason: null,
+      secretFields: [],
+      tool: { requestId: "request-store", toolName: "read_financial_overview", proposal },
+    });
+    store.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(reopened.getToolRequest?.("run-tool-store", "request-store"), record);
+    assert.deepEqual(reopened.listToolRequests?.("run-tool-store"), [record]);
+    assert.deepEqual(reopened.getLineage("run-tool-store")[0]?.tool, {
+      requestId: "request-store",
+      toolName: "read_financial_overview",
+      proposal,
+    });
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent lineage rejects a malformed tool payload at the existing invalid-record boundary", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-lineage-invalid-tool-"));
+  try {
+    insertRun(root, "run-lineage-invalid-tool", {
+      recordVersion: 1,
+      record: {
+        runId: "run-lineage-invalid-tool",
+        analysisId: null,
+        phase: "completed",
+        startedAt: "2026-08-03T00:00:00.000Z",
+        finishedAt: "2026-08-03T00:00:01.000Z",
+        output: "",
+        failureReason: null,
+      },
+    });
+    insertLineage(root, "run-lineage-invalid-tool", {
+      recordVersion: 1,
+      record: {
+        runId: "run-lineage-invalid-tool",
+        analysisId: null,
+        seq: 1,
+        kind: "tool.proposal",
+        status: "proposed",
+        occurredAt: "2026-08-03T00:00:01.000Z",
+        dataClasses: ["financial.derived"],
+        providerIdentity: "test-provider",
+        osBuild: "test",
+        providerAssurance: "unverified-build",
+        transitionReason: null,
+        secretFields: [],
+        tool: {
+          requestId: "request-lineage-invalid-tool",
+          toolName: "",
+        },
+      },
+    });
+
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.throws(
+      () => store.getLineage("run-lineage-invalid-tool"),
+      /Invalid Agent lineage record/,
+    );
+    store.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent lineage requires canonical nested tool decision values in persisted records", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-lineage-decision-canonical-"));
+  const baseRecord = (runId: string, decision: Record<string, unknown>): Record<string, unknown> => ({
+    runId,
+    analysisId: null,
+    seq: 1,
+    kind: "tool.decision",
+    status: "allowed",
+    occurredAt: "2026-08-03T00:00:01.000Z",
+    dataClasses: ["prompt", "model-output"],
+    providerIdentity: "test-provider",
+    osBuild: "test",
+    providerAssurance: "unverified-build",
+    transitionReason: null,
+    secretFields: [],
+    tool: {
+      requestId: `request-${runId}`,
+      toolName: "read_financial_overview",
+      decision,
+      decisionReason: "allowed",
+    },
+  });
+  const rejectPersisted = (
+    runId: string,
+    record: Record<string, unknown>,
+    envelope: boolean,
+    sensitiveValue: string,
+  ) => {
+    insertRun(root, runId, {
+      runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+    });
+    insertLineage(
+      root,
+      runId,
+      envelope ? { recordVersion: 1, record } : record,
+      { kind: "tool.decision", status: "allowed" },
+    );
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    try {
+      let error: Error | undefined;
+      try {
+        store.getLineage(runId);
+      } catch (caught) {
+        error = caught as Error;
+      }
+      assert.ok(error);
+      assert.equal(error.message, "Invalid Agent lineage record.");
+      assert.equal(error.message.includes(sensitiveValue), false);
+    } finally {
+      store.close();
+    }
+  };
+
+  try {
+    rejectPersisted(
+      "run-lineage-bogus-decision-version",
+      baseRecord("run-lineage-bogus-decision-version", {
+        decisionVersion: "tampered-decision-version-secret",
+        allowed: true,
+        reason: "allowed",
+      }),
+      true,
+      "tampered-decision-version-secret",
+    );
+    rejectPersisted(
+      "run-lineage-bogus-decision-reason",
+      baseRecord("run-lineage-bogus-decision-reason", {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "unbounded-sensitive-decision-reason-secret",
+      }),
+      true,
+      "unbounded-sensitive-decision-reason-secret",
+    );
+    rejectPersisted(
+      "run-lineage-legacy-bogus-decision",
+      baseRecord("run-lineage-legacy-bogus-decision", {
+        decisionVersion: "legacy-tampered-decision-version-secret",
+        allowed: true,
+        reason: "legacy-sensitive-decision-reason-secret",
+      }),
+      false,
+      "legacy-tampered-decision-version-secret",
+    );
+    rejectPersisted(
+      "run-lineage-legacy-bogus-reason",
+      baseRecord("run-lineage-legacy-bogus-reason", {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "legacy-sensitive-decision-reason-secret",
+      }),
+      false,
+      "legacy-sensitive-decision-reason-secret",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent lineage roundtrips canonical nested tool decisions across reopen", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-lineage-decision-roundtrip-"));
+  try {
+    const record = {
+      runId: "run-lineage-canonical-decision",
+      analysisId: null,
+      seq: 1,
+      kind: "tool.decision" as const,
+      status: "allowed" as const,
+      occurredAt: "2026-08-03T00:00:01.000Z",
+      dataClasses: ["financial.derived"],
+      providerIdentity: "test-provider",
+      osBuild: "test",
+      providerAssurance: "unverified-build" as const,
+      transitionReason: null,
+      secretFields: [] as const,
+      tool: {
+        requestId: "request-lineage-canonical-decision",
+        toolName: "read_financial_overview",
+        decision: {
+          decisionVersion: "agent-tool-decision.v1",
+          allowed: true,
+          reason: "allowed",
+        },
+        decisionReason: "allowed",
+      },
+    };
+    const optionalDecisionRecord = {
+      ...record,
+      seq: 2,
+      status: "blocked" as const,
+      tool: {
+        requestId: "request-lineage-optional-decision",
+        toolName: "read_financial_overview",
+        decisionReason: "permission-denied",
+      },
+    };
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: record.runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+      output: "",
+      failureReason: null,
+    });
+    store.appendLineage(record);
+    store.appendLineage(optionalDecisionRecord);
+    store.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(reopened.getLineage(record.runId), [record, optionalDecisionRecord]);
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcomes are monotonic and never regress a terminal result", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-monotonic-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-monotonic",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const proposal = createReadFinancialOverviewProposal("run-tool-monotonic", "request-monotonic");
+    const data: NonNullable<AgentToolExecutionRecord["result"]>["data"] = {
+      aggregateVersion: "financial-overview.aggregate.v1",
+      snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+      totalsByCurrency: {},
+      overview: {
+        cashAssets: {}, foreignAssets: {}, investmentAssets: {},
+        unbilledCreditCard: {}, loans: {}, netAssets: {},
+      },
+      counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+      quality: { status: "pass", issueCount: 0 },
+    };
+    const completedResult: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data,
+      reference: {
+        referenceVersion: "immutable-result-ref.v1",
+        value: `immutable-result-ref.v1:${hashBytes(stableStringify(data))}`,
+      },
+      secretFields: [],
+    };
+    const base: AgentToolExecutionRecord = {
+      runId: "run-tool-monotonic",
+      requestId: "request-monotonic",
+      proposal,
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: true, reason: "allowed" },
+      outcome: "outcome-unknown",
+      result: null,
+      resultReference: null,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    };
+    store.recordToolRequest?.(base);
+    store.recordToolRequest?.({
+      ...base,
+      outcome: "completed",
+      result: completedResult,
+      resultReference: completedResult.reference,
+      occurredAt: "2026-08-04T00:00:02.000Z",
+    });
+    store.recordToolRequest?.({
+      ...base,
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: false, reason: "run-authority-denied" },
+      outcome: "not-dispatched",
+      occurredAt: "2026-08-04T00:00:03.000Z",
+    });
+    const persisted = store.getToolRequest?.("run-tool-monotonic", "request-monotonic");
+    assert.equal(persisted?.outcome, "outcome-unknown");
+    assert.equal(persisted?.result, null);
+    store.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcome upgrades synchronize denormalized proposal and decision columns", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-denormalized-update-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-denormalized-update",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const requestId = "request-denormalized-update";
+    const proposalA = {
+      ...createReadFinancialOverviewProposal("run-tool-denormalized-update", requestId),
+      runAuthority: "other-run",
+    };
+    const proposalB = createReadFinancialOverviewProposal("run-tool-denormalized-update", requestId);
+    const decisionA = {
+      decisionVersion: "agent-tool-decision.v1" as const,
+      allowed: false,
+      reason: "run-authority-denied" as const,
+    };
+    const decisionB = {
+      decisionVersion: "agent-tool-decision.v1" as const,
+      allowed: true,
+      reason: "allowed" as const,
+    };
+    const initial: AgentToolExecutionRecord = {
+      runId: "run-tool-denormalized-update",
+      requestId,
+      proposal: proposalA,
+      decision: decisionA,
+      outcome: "not-dispatched",
+      result: null,
+      resultReference: null,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    };
+    const stable = {
+      ...initial,
+      requestId: "request-stable",
+      proposal: {
+        ...createReadFinancialOverviewProposal("run-tool-denormalized-update", "request-stable"),
+        runAuthority: "other-run",
+      },
+      occurredAt: "2026-08-04T00:00:02.000Z",
+    } satisfies AgentToolExecutionRecord;
+    store.recordToolRequest?.(initial);
+    store.recordToolRequest?.(stable);
+    store.recordToolRequest?.({
+      ...initial,
+      proposal: proposalB,
+      decision: decisionB,
+      outcome: "outcome-unknown",
+      occurredAt: "2026-08-04T00:00:03.000Z",
+    });
+    store.close();
+
+    const db = openLedgerDatabase(root);
+    const rows = db.prepare(`
+      SELECT request_id, outcome, result_json, proposal_json, decision_json, occurred_at, record_json
+      FROM agent_tool_outcomes
+      WHERE run_id = ?
+      ORDER BY occurred_at, request_id
+    `).all("run-tool-denormalized-update") as Array<{
+      request_id: string;
+      outcome: string;
+      result_json: string | null;
+      proposal_json: string;
+      decision_json: string;
+      occurred_at: string;
+      record_json: string;
+    }>;
+    assert.deepEqual(rows.map((row) => row.request_id), ["request-stable", requestId]);
+    const updated = rows.find((row) => row.request_id === requestId);
+    assert.ok(updated);
+    const persisted = JSON.parse(updated.record_json) as {
+      record: AgentToolExecutionRecord;
+    };
+    assert.equal(updated.proposal_json, JSON.stringify(persisted.record.proposal));
+    assert.equal(updated.decision_json, JSON.stringify(persisted.record.decision));
+    assert.deepEqual(persisted.record.proposal, proposalB);
+    assert.deepEqual(persisted.record.decision, decisionB);
+    assert.equal(updated.outcome, "outcome-unknown");
+    assert.equal(updated.result_json, null);
+    assert.equal(updated.occurred_at, "2026-08-04T00:00:03.000Z");
+    db.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(reopened.getToolRequest?.("run-tool-denormalized-update", requestId), {
+      ...initial,
+      proposal: proposalB,
+      decision: decisionB,
+      outcome: "outcome-unknown",
+      occurredAt: "2026-08-04T00:00:03.000Z",
+    });
+    assert.deepEqual(
+      reopened.listToolRequests?.("run-tool-denormalized-update").map((item) => [
+        item.requestId,
+        item.outcome,
+        item.occurredAt,
+        item.result,
+      ]),
+      [
+        ["request-stable", "not-dispatched", "2026-08-04T00:00:02.000Z", null],
+        [requestId, "outcome-unknown", "2026-08-04T00:00:03.000Z", null],
+      ],
+    );
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcome upgrades update occurred_at for durable ordering and record replay", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-ordering-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-ordering",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const record = (requestId: string, outcome: AgentToolExecutionRecord["outcome"], occurredAt: string): AgentToolExecutionRecord => ({
+      runId: "run-tool-ordering",
+      requestId,
+      proposal: createReadFinancialOverviewProposal("run-tool-ordering", requestId),
+      decision: {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: outcome !== "not-dispatched",
+        reason: outcome === "not-dispatched" ? "run-authority-denied" : "allowed",
+      },
+      outcome,
+      result: null,
+      resultReference: null,
+      occurredAt,
+    });
+    const first = record("request-first", "not-dispatched", "2026-08-04T00:00:01.000Z");
+    const second = record("request-second", "not-dispatched", "2026-08-04T00:00:02.000Z");
+    store.recordToolRequest?.(first);
+    store.recordToolRequest?.(second);
+    const upgraded = record("request-first", "outcome-unknown", "2026-08-04T00:00:03.000Z");
+    store.recordToolRequest?.(upgraded);
+    store.close();
+
+    const db = openLedgerDatabase(root);
+    const rows = db.prepare(`
+      SELECT request_id, occurred_at, record_json
+      FROM agent_tool_outcomes
+      WHERE run_id = ?
+      ORDER BY occurred_at, request_id
+    `).all("run-tool-ordering") as Array<{
+      request_id: string;
+      occurred_at: string;
+      record_json: string;
+    }>;
+    assert.deepEqual(rows.map((row) => row.request_id), ["request-second", "request-first"]);
+    assert.deepEqual(
+      rows.map((row) => [row.request_id, row.occurred_at, JSON.parse(row.record_json).record.occurredAt]),
+      [
+        ["request-second", "2026-08-04T00:00:02.000Z", "2026-08-04T00:00:02.000Z"],
+        ["request-first", "2026-08-04T00:00:03.000Z", "2026-08-04T00:00:03.000Z"],
+      ],
+    );
+    db.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(
+      reopened.listToolRequests?.("run-tool-ordering").map((item) => [item.requestId, item.outcome, item.occurredAt]),
+      [
+        ["request-second", "not-dispatched", "2026-08-04T00:00:02.000Z"],
+        ["request-first", "outcome-unknown", "2026-08-04T00:00:03.000Z"],
+      ],
+    );
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcome decoding rejects tampered nested proposals without echoing values", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-proposal-integrity-"));
+  const runId = "run-tool-proposal-integrity";
+  const requestId = "request-tool-proposal-integrity";
+  const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["tampered-proposal-version-secret", (value) => { value.proposalVersion = "tampered-proposal-version-secret"; }],
+    ["tampered-tool-name-secret", (value) => { value.toolName = "tampered-tool-name-secret"; }],
+    ["tampered-permission-secret", (value) => { value.permission = "tampered-permission-secret"; }],
+    ["tampered-sensitivity-secret", (value) => { value.sensitivity = "tampered-sensitivity-secret"; }],
+    ["tampered-resource-secret", (value) => { value.resource = "tampered-resource-secret"; }],
+    ["tampered-run-authority-secret", (value) => { value.runAuthority = 42; }],
+    ["tampered-run-id-secret", (value) => { value.runId = "tampered-run-id-secret"; }],
+    ["tampered-request-id-secret", (value) => { value.requestId = "tampered-request-id-secret"; }],
+    ["tampered-input-shape-secret", (value) => { value.input = { unexpected: "tampered-input-shape-secret" }; }],
+    ["tampered-extra-shape-secret", (value) => { value.extra = "tampered-extra-shape-secret"; }],
+  ];
+  try {
+    insertRun(root, runId, {
+      runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: "2026-08-04T00:00:01.000Z",
+      output: "",
+      failureReason: null,
+    });
+    const db = openLedgerDatabase(root);
+    for (const [index, [secret, mutate]] of mutations.entries()) {
+      const rowRequestId = `${requestId}-${index}`;
+      const nested = createReadFinancialOverviewProposal(runId, rowRequestId) as unknown as Record<string, unknown>;
+      mutate(nested);
+      const tamperedRequestId = rowRequestId;
+      db.prepare(`
+        INSERT INTO agent_tool_outcomes (
+          run_id, request_id, outcome, result_reference, result_json,
+          proposal_json, decision_json, occurred_at, updated_at, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        tamperedRequestId,
+        "not-dispatched",
+        null,
+        null,
+        JSON.stringify(nested),
+        JSON.stringify({
+          decisionVersion: "agent-tool-decision.v1",
+          allowed: false,
+          reason: "run-authority-denied",
+        }),
+        "2026-08-04T00:00:02.000Z",
+        "2026-08-04T00:00:02.000Z",
+        JSON.stringify({
+          recordVersion: 1,
+          record: {
+            runId,
+            requestId: tamperedRequestId,
+            proposal: nested,
+            decision: {
+              decisionVersion: "agent-tool-decision.v1",
+              allowed: false,
+              reason: "run-authority-denied",
+            },
+            outcome: "not-dispatched",
+            result: null,
+            resultReference: null,
+            occurredAt: "2026-08-04T00:00:02.000Z",
+          },
+        }),
+      );
+      const store = createSqliteAgentRunStore(root, { secretValues: [] });
+      try {
+        assert.ok(store.getToolRequest);
+        assert.ok(store.listToolRequests);
+        assert.throws(
+          () => store.getToolRequest!(runId, tamperedRequestId),
+          (error: unknown) => error instanceof Error
+            && error.message === "Invalid Agent tool outcome record."
+            && !error.message.includes(secret),
+        );
+        assert.throws(
+          () => store.listToolRequests!(runId),
+          /Invalid Agent tool outcome record\./,
+        );
+      } finally {
+        store.close();
+      }
+    }
+    db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcome decoding rejects a persisted result with an invalid currency key", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-result-currency-"));
+  const runId = "run-tool-result-currency";
+  const requestId = "request-tool-result-currency";
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId,
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const data: NonNullable<AgentToolExecutionRecord["result"]>["data"] = {
+      aggregateVersion: "financial-overview.aggregate.v1",
+      snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+      totalsByCurrency: { TWD: { assets: 1, liabilities: 0, net: 1 } },
+      overview: {
+        cashAssets: {},
+        foreignAssets: {},
+        investmentAssets: {},
+        unbilledCreditCard: {},
+        loans: {},
+        netAssets: {},
+      },
+      counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+      quality: { status: "pass", issueCount: 0 },
+    };
+    const completedResult: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data,
+      reference: {
+        referenceVersion: "immutable-result-ref.v1",
+        value: `immutable-result-ref.v1:${hashBytes(stableStringify(data))}`,
+      },
+      secretFields: [],
+    };
+    store.recordToolRequest?.({
+      runId,
+      requestId,
+      proposal: createReadFinancialOverviewProposal(runId, requestId),
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: true, reason: "allowed" },
+      outcome: "completed",
+      result: completedResult,
+      resultReference: completedResult.reference,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    });
+    store.close();
+
+    const db = openLedgerDatabase(root);
+    const row = db.prepare(
+      "SELECT record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
+    ).get(runId, requestId) as { record_json: string };
+    const persisted = JSON.parse(row.record_json) as {
+      record: AgentToolExecutionRecord;
+    };
+    const persistedResult = persisted.record.result;
+    assert.ok(persistedResult);
+    persistedResult.data.totalsByCurrency = {
+      usd: { assets: 1, liabilities: 0, net: 1 },
+    };
+    persistedResult.reference.value =
+      `immutable-result-ref.v1:${hashBytes(stableStringify(persistedResult.data))}`;
+    persisted.record.resultReference = persistedResult.reference;
+    db.prepare(
+      "UPDATE agent_tool_outcomes SET record_json = ? WHERE run_id = ? AND request_id = ?",
+    ).run(JSON.stringify(persisted), runId, requestId);
+    db.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.throws(
+      () => reopened.getToolRequest!(runId, requestId),
+      /Invalid Agent tool outcome record\./,
+    );
+    reopened.close();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

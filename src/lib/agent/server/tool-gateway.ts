@@ -1,0 +1,1214 @@
+import { existsSync, statSync } from "node:fs";
+import { hashBytes, stableStringify } from "../../../ledger/content-hash.ts";
+import { ledgerSqlitePath, openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import { buildFinancialModel } from "../../../ledger/financial-dashboard-model.ts";
+import { TYPED_STATEMENT_TABLES, type FinancialModel } from "../../../ledger/financial-dashboard-types.ts";
+import {
+  createAgentSecretBoundaryGate,
+  type AgentRunStore,
+  type SecretBoundaryDependencies,
+  type SecretBoundaryGate,
+} from "./harness.ts";
+
+export const AGENT_TOOL_PROPOSAL_VERSION = "agent-tool-proposal.v1" as const;
+export const AGENT_TOOL_DECISION_VERSION = "agent-tool-decision.v1" as const;
+export const AGENT_TOOL_RESULT_VERSION = "agent-tool-result.v1" as const;
+export const AGENT_TOOL_REFERENCE_VERSION = "immutable-result-ref.v1" as const;
+export const FINANCIAL_OVERVIEW_AGGREGATE_VERSION = "financial-overview.aggregate.v1" as const;
+
+/** Quantitative host-owned limits for the first allowlisted tool. */
+export const AGENT_TOOL_RESOURCE_LIMITS = Object.freeze({
+  maxLedgerPathBytes: 4_096,
+  maxLedgerBytes: 64 * 1024 * 1024,
+  maxLedgerRows: 500_000,
+  maxProposalBytes: 16_384,
+  maxAggregateBytes: 262_144,
+  maxCurrencyBuckets: 128,
+  maxAggregateCount: 1_000_000,
+});
+export const AGENT_TOOL_DEFAULT_EXECUTION_TIMEOUT_MS = 5_000;
+
+export const AGENT_TOOL_OUTCOMES = [
+  "not-dispatched",
+  "completed",
+  "outcome-unknown",
+] as const;
+export type AgentToolOutcome = (typeof AGENT_TOOL_OUTCOMES)[number];
+
+export const AGENT_TOOL_DECISION_REASONS = [
+  "allowed",
+  "malformed-proposal",
+  "tool-not-allowlisted",
+  "schema-invalid",
+  "permission-denied",
+  "sensitivity-denied",
+  "resource-denied",
+  "run-authority-denied",
+  "credential-boundary",
+  "secret-boundary-violation",
+] as const;
+export type AgentToolDecisionReason = (typeof AGENT_TOOL_DECISION_REASONS)[number];
+
+export type ReadFinancialOverviewInput = Record<string, never>;
+
+export type AgentToolProposal = {
+  proposalVersion: typeof AGENT_TOOL_PROPOSAL_VERSION;
+  requestId: string;
+  runId: string;
+  toolName: "read_financial_overview";
+  input: ReadFinancialOverviewInput;
+  permission: "financial.overview.read";
+  sensitivity: "derived-financial";
+  resource: "ledger.overview";
+  runAuthority: string;
+};
+
+export type AgentToolResultReference = {
+  referenceVersion: typeof AGENT_TOOL_REFERENCE_VERSION;
+  value: string;
+};
+
+export type AgentToolDecision = {
+  decisionVersion: typeof AGENT_TOOL_DECISION_VERSION;
+  allowed: boolean;
+  reason: AgentToolDecisionReason;
+};
+
+export type FinancialOverviewAggregate = {
+  aggregateVersion: typeof FINANCIAL_OVERVIEW_AGGREGATE_VERSION;
+  snapshot: {
+    snapshotId: string;
+    importedAt: string | null;
+    snapshotDate: string | null;
+  };
+  totalsByCurrency: Record<string, {
+    assets: number;
+    liabilities: number;
+    net: number;
+  }>;
+  overview: {
+    cashAssets: Record<string, number>;
+    foreignAssets: Record<string, number>;
+    investmentAssets: Record<string, number>;
+    unbilledCreditCard: Record<string, number>;
+    loans: Record<string, number>;
+    netAssets: Record<string, number>;
+  };
+  counts: {
+    normalizedTransactions: number;
+    assetPositions: number;
+    includedPositions: number;
+    assetSnapshots: number;
+  };
+  quality: {
+    status: FinancialModel["quality"]["status"];
+    issueCount: number;
+  };
+};
+
+export type AgentToolResult = {
+  resultVersion: typeof AGENT_TOOL_RESULT_VERSION;
+  toolName: "read_financial_overview";
+  data: FinancialOverviewAggregate;
+  reference: AgentToolResultReference;
+  secretFields: readonly [];
+};
+
+export const AGENT_TOOL_SETTLEMENTS = ["normal", "cancelled-in-flight"] as const;
+export type AgentToolSettlement = (typeof AGENT_TOOL_SETTLEMENTS)[number];
+
+export type AgentToolExecutionRecord = {
+  runId: string;
+  requestId: string;
+  proposal: AgentToolProposal;
+  decision: AgentToolDecision;
+  outcome: AgentToolOutcome;
+  result: AgentToolResult | null;
+  resultReference: AgentToolResultReference | null;
+  occurredAt: string;
+  settlement?: AgentToolSettlement;
+};
+
+export type AgentToolSubmission = {
+  requestId: string;
+  decision: AgentToolDecision;
+  outcome: AgentToolOutcome;
+  result: AgentToolResult | null;
+  resultReference: AgentToolResultReference | null;
+  settlement: AgentToolSettlement;
+};
+
+export type AgentProviderToolGateway = {
+  submit(proposal: unknown): Promise<AgentToolSubmission>;
+};
+
+type FinancialOverviewAdapter = (input: {
+  ledgerDir: string;
+  proposal: AgentToolProposal;
+}) => Promise<AgentToolResult>;
+
+const TOP_LEVEL_PROPOSAL_KEYS = [
+  "proposalVersion",
+  "requestId",
+  "runId",
+  "toolName",
+  "input",
+  "permission",
+  "sensitivity",
+  "resource",
+  "runAuthority",
+] as const;
+const INPUT_KEYS: readonly string[] = [];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  try {
+    return !Array.isArray(value);
+  } catch {
+    // A revoked proxy can throw even for the array brand check. Treat it as
+    // malformed input so validators and the gateway fail closed outwardly.
+    return false;
+  }
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  return hasExactOwnKeys(value, keys);
+}
+
+/**
+ * Validate an object's complete own-key set without reading any property
+ * values. Reflect.ownKeys includes non-enumerable properties and symbols;
+ * both must be accounted for before a record can cross a trust boundary.
+ * Hostile proxies may throw from ownKeys, so schema validation fails closed.
+ */
+function hasExactOwnKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  try {
+    const ownKeys = Reflect.ownKeys(value);
+    return ownKeys.length === keys.length
+      && ownKeys.every((key): key is string => typeof key === "string")
+      && keys.every((key) => ownKeys.includes(key) && Object.hasOwn(value, key));
+  } catch {
+    return false;
+  }
+}
+
+function hasCredentialKey(key: string) {
+  return /(?:credential|password|passcode|secret|token|cookie|api[-_]?key|authorization)/i.test(key);
+}
+
+function containsCredentialMaterial(value: unknown, key = ""): boolean {
+  if (hasCredentialKey(key)) return value !== null && value !== undefined && value !== "";
+  if (typeof value === "string") return false;
+  if (Array.isArray(value)) return value.some((item) => containsCredentialMaterial(item));
+  if (isRecord(value)) {
+    return Object.entries(value).some(([childKey, childValue]) =>
+      containsCredentialMaterial(childValue, childKey));
+  }
+  return false;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function safeIdentifier(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 200) return fallback;
+  if (containsCredentialMaterial(value)) return "redacted";
+  return value;
+}
+
+const MAX_PROPOSAL_SNAPSHOT_DEPTH = 32;
+const MAX_PROPOSAL_SNAPSHOT_NODES = 10_000;
+const PROPOSAL_SNAPSHOT_FAILURE = Symbol("agent-tool-proposal-snapshot-failure");
+
+type ProposalSnapshotValue = unknown | typeof PROPOSAL_SNAPSHOT_FAILURE;
+type ProposalSnapshot = {
+  value: Record<string, unknown> | null;
+  runId: unknown;
+  requestId: unknown;
+};
+
+/**
+ * Materialize one bounded plain-data view of a provider proposal. Descriptors
+ * are read once so validation, authority checks, persistence, and adapter
+ * dispatch never observe the provider's original object or an accessor.
+ */
+function snapshotAgentToolProposal(value: unknown): ProposalSnapshot {
+  let nodes = 0;
+  let bytes = 0;
+  let runId: unknown;
+  let requestId: unknown;
+  const active = new WeakSet<object>();
+
+  function account(amount: number): boolean {
+    if (!Number.isSafeInteger(amount) || amount < 0) return false;
+    bytes += amount;
+    return bytes <= AGENT_TOOL_RESOURCE_LIMITS.maxProposalBytes;
+  }
+
+  function primitive(current: unknown): ProposalSnapshotValue {
+    if (current === null) return account(4) ? null : PROPOSAL_SNAPSHOT_FAILURE;
+    if (typeof current === "string") {
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : PROPOSAL_SNAPSHOT_FAILURE;
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+    }
+    if (typeof current === "boolean") {
+      return account(current ? 4 : 5) ? current : PROPOSAL_SNAPSHOT_FAILURE;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) return PROPOSAL_SNAPSHOT_FAILURE;
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : PROPOSAL_SNAPSHOT_FAILURE;
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+    }
+    return PROPOSAL_SNAPSHOT_FAILURE;
+  }
+
+  function visit(current: unknown, depth: number): ProposalSnapshotValue {
+    if (depth > MAX_PROPOSAL_SNAPSHOT_DEPTH) return PROPOSAL_SNAPSHOT_FAILURE;
+    if (current === null || typeof current !== "object") return primitive(current);
+    if (active.has(current)) return PROPOSAL_SNAPSHOT_FAILURE;
+    if (++nodes > MAX_PROPOSAL_SNAPSHOT_NODES || !account(1)) {
+      return PROPOSAL_SNAPSHOT_FAILURE;
+    }
+    active.add(current);
+    try {
+      let prototype: object | null;
+      let descriptors: PropertyDescriptorMap;
+      try {
+        prototype = Object.getPrototypeOf(current);
+        descriptors = Object.getOwnPropertyDescriptors(current);
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+      let array = false;
+      try {
+        array = Array.isArray(current);
+      } catch {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+      if (array || (prototype !== null && prototype !== Object.prototype)) {
+        return PROPOSAL_SNAPSHOT_FAILURE;
+      }
+
+      const keys = Reflect.ownKeys(descriptors);
+      if (keys.some((key) => typeof key !== "string")) return PROPOSAL_SNAPSHOT_FAILURE;
+      const clone = Object.create(null) as Record<string, unknown>;
+      if (!account(2)) return PROPOSAL_SNAPSHOT_FAILURE;
+      for (const key of keys) {
+        const descriptor = descriptors[key];
+        if (!descriptor
+          || descriptor.get !== undefined
+          || descriptor.set !== undefined
+          || !Object.hasOwn(descriptor, "value")) {
+          return PROPOSAL_SNAPSHOT_FAILURE;
+        }
+        if (depth === 0 && key === "runId") runId = descriptor.value;
+        if (depth === 0 && key === "requestId") requestId = descriptor.value;
+        const encodedKey = JSON.stringify(key);
+        if (typeof encodedKey !== "string" || !account(utf8Bytes(encodedKey))) {
+          return PROPOSAL_SNAPSHOT_FAILURE;
+        }
+        const child = visit(descriptor.value, depth + 1);
+        if (child === PROPOSAL_SNAPSHOT_FAILURE) return PROPOSAL_SNAPSHOT_FAILURE;
+        Object.defineProperty(clone, key, {
+          value: child,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      return clone;
+    } finally {
+      active.delete(current);
+    }
+  }
+
+  const snapshot = visit(value, 0);
+  return {
+    value: snapshot === PROPOSAL_SNAPSHOT_FAILURE || !isRecord(snapshot)
+      ? null
+      : snapshot,
+    runId,
+    requestId,
+  };
+}
+
+function cloneAgentToolProposalForAdapter(value: AgentToolProposal): AgentToolProposal {
+  const snapshot = snapshotAgentToolProposal(value).value;
+  if (snapshot === null) throw new Error("invalid-adapter-proposal-clone");
+  return snapshot as AgentToolProposal;
+}
+
+export function agentToolProposalIdentity(proposal: AgentToolProposal): string {
+  return hashBytes(stableStringify(proposal));
+}
+
+export function createReadFinancialOverviewProposal(
+  runId: string,
+  requestId: string,
+): AgentToolProposal {
+  return {
+    proposalVersion: AGENT_TOOL_PROPOSAL_VERSION,
+    requestId,
+    runId,
+    toolName: "read_financial_overview",
+    input: {},
+    permission: "financial.overview.read",
+    sensitivity: "derived-financial",
+    resource: "ledger.overview",
+    runAuthority: runId,
+  };
+}
+
+export function validateAgentToolProposal(value: unknown):
+  | { value: AgentToolProposal; reason: null }
+  | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
+  const snapshot = snapshotAgentToolProposal(value).value;
+  if (snapshot === null) return { value: null, reason: "malformed-proposal" };
+  return validateAgentToolProposalSnapshot(snapshot);
+}
+
+function validateAgentToolProposalSnapshot(value: unknown):
+  | { value: AgentToolProposal; reason: null }
+  | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
+  try {
+    return validateAgentToolProposalUnsafe(value);
+  } catch {
+    return { value: null, reason: "malformed-proposal" };
+  }
+}
+
+function validateAgentToolProposalUnsafe(value: unknown):
+  | { value: AgentToolProposal; reason: null }
+  | { value: null; reason: Exclude<AgentToolDecisionReason, "allowed"> } {
+  if (!isRecord(value) || !hasExactKeys(value, TOP_LEVEL_PROPOSAL_KEYS)) {
+    return { value: null, reason: "malformed-proposal" };
+  }
+  if (containsCredentialMaterial(value)) {
+    return { value: null, reason: "credential-boundary" };
+  }
+  if (value.proposalVersion !== AGENT_TOOL_PROPOSAL_VERSION
+    || typeof value.requestId !== "string"
+    || value.requestId.length === 0
+    || value.requestId.length > 200
+    || typeof value.runId !== "string"
+    || value.runId.length === 0
+    || value.runId.length > 200) {
+    return { value: null, reason: "schema-invalid" };
+  }
+  if (value.toolName !== "read_financial_overview") {
+    return { value: null, reason: "tool-not-allowlisted" };
+  }
+  if (!isRecord(value.input) || !hasExactKeys(value.input, INPUT_KEYS)) {
+    return { value: null, reason: "schema-invalid" };
+  }
+  if (value.permission !== "financial.overview.read") {
+    return { value: null, reason: "permission-denied" };
+  }
+  if (value.sensitivity !== "derived-financial") {
+    return { value: null, reason: "sensitivity-denied" };
+  }
+  if (value.resource !== "ledger.overview") {
+    return { value: null, reason: "resource-denied" };
+  }
+  if (typeof value.runAuthority !== "string" || value.runAuthority.length === 0) {
+    return { value: null, reason: "run-authority-denied" };
+  }
+  return { value: value as AgentToolProposal, reason: null };
+}
+
+function emptyDecision(reason: AgentToolDecisionReason): AgentToolDecision {
+  return {
+    decisionVersion: AGENT_TOOL_DECISION_VERSION,
+    allowed: reason === "allowed",
+    reason,
+  };
+}
+
+function resultReference(data: FinancialOverviewAggregate): AgentToolResultReference {
+  return {
+    referenceVersion: AGENT_TOOL_REFERENCE_VERSION,
+    value: `${AGENT_TOOL_REFERENCE_VERSION}:${hashBytes(stableStringify(data))}`,
+  };
+}
+
+function exactRecordKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  return hasExactOwnKeys(value, keys);
+}
+
+function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
+  return isRecord(value)
+    && Object.values(value).every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+const CURRENCY_KEY_PATTERN = /^[A-Z]{3}$/;
+
+function isCurrencyKey(value: string): boolean {
+  return value === "UNKNOWN" || CURRENCY_KEY_PATTERN.test(value);
+}
+
+function isFiniteCurrencyRecord(value: unknown): value is Record<string, number> {
+  return isFiniteNumberRecord(value)
+    && Object.keys(value).every(isCurrencyKey);
+}
+
+export function validateAgentToolResult(value: unknown): value is AgentToolResult {
+  try {
+    return validateAgentToolResultUnsafe(value);
+  } catch {
+    return false;
+  }
+}
+
+function validateAgentToolResultUnsafe(value: unknown): value is AgentToolResult {
+  if (!isRecord(value)
+    || !exactRecordKeys(value, ["resultVersion", "toolName", "data", "reference", "secretFields"])
+    || value.resultVersion !== AGENT_TOOL_RESULT_VERSION
+    || value.toolName !== "read_financial_overview"
+    || !Array.isArray(value.secretFields)
+    || value.secretFields.length !== 0
+    || !isRecord(value.reference)
+    || value.reference.referenceVersion !== AGENT_TOOL_REFERENCE_VERSION
+    || typeof value.reference.value !== "string"
+    || !isRecord(value.data)
+    || !exactRecordKeys(value.data, ["aggregateVersion", "snapshot", "totalsByCurrency", "overview", "counts", "quality"])
+    || value.data.aggregateVersion !== FINANCIAL_OVERVIEW_AGGREGATE_VERSION
+    || !isRecord(value.data.snapshot)
+    || !exactRecordKeys(value.data.snapshot, ["snapshotId", "importedAt", "snapshotDate"])
+    || typeof value.data.snapshot.snapshotId !== "string"
+    || (value.data.snapshot.importedAt !== null && typeof value.data.snapshot.importedAt !== "string")
+    || (value.data.snapshot.snapshotDate !== null && typeof value.data.snapshot.snapshotDate !== "string")
+    || !isRecord(value.data.totalsByCurrency)
+    || Object.keys(value.data.totalsByCurrency).some((currency) => !isCurrencyKey(currency))
+    || Object.values(value.data.totalsByCurrency).some((totals) =>
+      !isRecord(totals)
+      || !exactRecordKeys(totals, ["assets", "liabilities", "net"])
+      || Object.values(totals).some((item) => typeof item !== "number" || !Number.isFinite(item)))
+    || !isRecord(value.data.overview)
+    || !exactRecordKeys(value.data.overview, [
+      "cashAssets", "foreignAssets", "investmentAssets", "unbilledCreditCard", "loans", "netAssets",
+    ])
+    || !Object.values(value.data.overview).every(isFiniteCurrencyRecord)
+    || !isRecord(value.data.counts)
+    || !exactRecordKeys(value.data.counts, ["normalizedTransactions", "assetPositions", "includedPositions", "assetSnapshots"])
+    || Object.values(value.data.counts).some((item) => !Number.isSafeInteger(item) || (item as number) < 0)
+    || !isRecord(value.data.quality)
+    || !exactRecordKeys(value.data.quality, ["status", "issueCount"])
+    || !["pass", "warn", "fail"].includes(value.data.quality.status as string)
+    || !Number.isSafeInteger(value.data.quality.issueCount)
+    || (value.data.quality.issueCount as number) < 0) {
+    return false;
+  }
+  const canonical = resultReference(value.data as unknown as FinancialOverviewAggregate);
+  return value.reference.value === canonical.value;
+}
+
+function aggregateFromModel(model: FinancialModel): FinancialOverviewAggregate {
+  const snapshots = model.snapshotHistory.snapshots;
+  const latestSnapshot = snapshots.at(-1) ?? null;
+  const snapshotIdentity = hashBytes(stableStringify(snapshots.map((snapshot) => ({
+    importRunId: snapshot.importRunId,
+    importedAt: snapshot.importedAt,
+    snapshotDate: snapshot.snapshotDate,
+  }))));
+  const overview = model.dashboard.overview;
+  const totalsByCurrency = Object.fromEntries(
+    Object.entries(model.totals.includedByCurrency)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([currency, totals]) => [currency, {
+        assets: totals.assets,
+        liabilities: totals.liabilities,
+        net: totals.net,
+      }]),
+  );
+  const data: FinancialOverviewAggregate = {
+    aggregateVersion: FINANCIAL_OVERVIEW_AGGREGATE_VERSION,
+    snapshot: {
+      snapshotId: `${FINANCIAL_OVERVIEW_AGGREGATE_VERSION}:${snapshotIdentity}`,
+      importedAt: latestSnapshot?.importedAt ?? null,
+      snapshotDate: latestSnapshot?.snapshotDate ?? null,
+    },
+    totalsByCurrency,
+    overview: {
+      cashAssets: { ...overview.assets.totalTwdAssets },
+      foreignAssets: { ...overview.assets.totalForeignAssets },
+      investmentAssets: { ...overview.assets.totalInvestmentAssets },
+      unbilledCreditCard: { ...overview.liabilities.unbilledCreditCardAmount },
+      loans: { ...overview.liabilities.loanTotalBalance },
+      netAssets: { ...overview.netAssets },
+    },
+    counts: {
+      normalizedTransactions: model.counts.normalizedTransactions,
+      assetPositions: model.counts.assetPositions,
+      includedPositions: model.counts.includedPositions,
+      assetSnapshots: model.counts.assetSnapshots,
+    },
+    quality: {
+      status: model.quality.status,
+      issueCount: model.quality.issues.length,
+    },
+  };
+  return data;
+}
+
+export async function readFinancialOverviewResult(
+  ledgerDir: string,
+  buildModel: (input: { ledgerDir: string; outputDir: string }) => Promise<FinancialModel> = buildFinancialModel,
+): Promise<AgentToolResult> {
+  const model = await buildModel({ ledgerDir, outputDir: ledgerDir });
+  if (!modelWithinResourceLimits(model)) throw new Error("tool-resource-limit-exceeded");
+  const data = aggregateFromModel(model);
+  return {
+    resultVersion: AGENT_TOOL_RESULT_VERSION,
+    toolName: "read_financial_overview",
+    data,
+    reference: resultReference(data),
+    secretFields: [],
+  };
+}
+
+function replaySubmission(record: AgentToolExecutionRecord): AgentToolSubmission {
+  return {
+    requestId: record.requestId,
+    decision: record.decision,
+    outcome: record.outcome,
+    result: record.result,
+    resultReference: record.resultReference,
+    settlement: record.settlement ?? "normal",
+  };
+}
+
+const TOOL_OUTCOME_RANK: Record<AgentToolOutcome, number> = {
+  "not-dispatched": 1,
+  "outcome-unknown": 2,
+  completed: 3,
+};
+
+function isMoreFinalOutcome(next: AgentToolOutcome, current: AgentToolOutcome): boolean {
+  return TOOL_OUTCOME_RANK[next] > TOOL_OUTCOME_RANK[current];
+}
+
+function resultWithinResourceLimits(result: AgentToolResult): boolean {
+  const currencyCount = Object.keys(result.data.totalsByCurrency).length
+    + Object.values(result.data.overview).reduce((total, bucket) => total + Object.keys(bucket).length, 0);
+  const counts = Object.values(result.data.counts);
+  return utf8Bytes(stableStringify(result)) <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes
+    && currencyCount <= AGENT_TOOL_RESOURCE_LIMITS.maxCurrencyBuckets
+    && counts.every((count) => count <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount);
+}
+
+const MAX_RESULT_SNAPSHOT_DEPTH = 32;
+const MAX_RESULT_SNAPSHOT_NODES = 100_000;
+const SNAPSHOT_FAILURE = Symbol("agent-tool-snapshot-failure");
+
+type SnapshotValue = unknown | typeof SNAPSHOT_FAILURE;
+
+/**
+ * Materialize one immutable, plain-data view of an adapter result. Reading an
+ * adapter result directly during validation, hashing, or protection can make
+ * those checks observe different values when the result contains an accessor.
+ * Descriptors let this preflight reject accessors without invoking them.
+ */
+function snapshotAgentToolResult(value: unknown): AgentToolResult | null {
+  let nodes = 0;
+  let bytes = 0;
+  const active = new WeakSet<object>();
+
+  function account(amount: number): boolean {
+    if (!Number.isSafeInteger(amount) || amount < 0) return false;
+    bytes += amount;
+    return bytes <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes;
+  }
+
+  function primitive(current: unknown): SnapshotValue {
+    if (current === null) return account(4) ? null : SNAPSHOT_FAILURE;
+    if (typeof current === "string") {
+      if (current.length > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes) return SNAPSHOT_FAILURE;
+      try {
+        const encoded = JSON.stringify(current);
+        return typeof encoded === "string" && account(utf8Bytes(encoded))
+          ? current
+          : SNAPSHOT_FAILURE;
+      } catch {
+        return SNAPSHOT_FAILURE;
+      }
+    }
+    if (typeof current === "boolean") return account(current ? 4 : 5) ? current : SNAPSHOT_FAILURE;
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) return SNAPSHOT_FAILURE;
+      const encoded = JSON.stringify(current);
+      return typeof encoded === "string" && account(utf8Bytes(encoded))
+        ? current
+        : SNAPSHOT_FAILURE;
+    }
+    return SNAPSHOT_FAILURE;
+  }
+
+  function visit(current: unknown, depth: number): SnapshotValue {
+    if (depth > MAX_RESULT_SNAPSHOT_DEPTH) return SNAPSHOT_FAILURE;
+    if (current === null || typeof current !== "object") return primitive(current);
+    if (active.has(current)) return SNAPSHOT_FAILURE;
+    if (++nodes > MAX_RESULT_SNAPSHOT_NODES || !account(1)) return SNAPSHOT_FAILURE;
+    active.add(current);
+    try {
+      let prototype: object | null;
+      let descriptors: PropertyDescriptorMap;
+      try {
+        prototype = Object.getPrototypeOf(current);
+        descriptors = Object.getOwnPropertyDescriptors(current);
+      } catch {
+        return SNAPSHOT_FAILURE;
+      }
+      if (prototype !== null && prototype !== Object.prototype
+        && prototype !== Array.prototype) {
+        return SNAPSHOT_FAILURE;
+      }
+
+      const keys = Reflect.ownKeys(descriptors);
+      if (keys.some((key) => typeof key !== "string")) return SNAPSHOT_FAILURE;
+      if (Array.isArray(current)) {
+        if (prototype !== Array.prototype) return SNAPSHOT_FAILURE;
+        const lengthDescriptor = descriptors.length;
+        if (!lengthDescriptor
+          || lengthDescriptor.get !== undefined
+          || lengthDescriptor.set !== undefined
+          || !Object.hasOwn(lengthDescriptor, "value")
+          || !Number.isSafeInteger(lengthDescriptor.value)
+          || lengthDescriptor.value < 0
+          || lengthDescriptor.value > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes) {
+          return SNAPSHOT_FAILURE;
+        }
+        const clone: unknown[] = new Array(lengthDescriptor.value);
+        if (!account(2)) return SNAPSHOT_FAILURE;
+        for (const key of keys) {
+          if (typeof key !== "string") return SNAPSHOT_FAILURE;
+          if (key === "length") continue;
+          if (!/^\d+$/.test(key)) return SNAPSHOT_FAILURE;
+          const index = Number(key);
+          if (!Number.isSafeInteger(index)
+            || index < 0
+            || index >= lengthDescriptor.value
+            || String(index) !== key) {
+            return SNAPSHOT_FAILURE;
+          }
+          const descriptor = descriptors[key];
+          if (!descriptor
+            || !descriptor.enumerable
+            || descriptor.get !== undefined
+            || descriptor.set !== undefined
+            || !Object.hasOwn(descriptor, "value")) {
+            return SNAPSHOT_FAILURE;
+          }
+          if (!account(1)) return SNAPSHOT_FAILURE;
+          const child = visit(descriptor.value, depth + 1);
+          if (child === SNAPSHOT_FAILURE) return SNAPSHOT_FAILURE;
+          clone[index] = child;
+        }
+        return clone;
+      }
+
+      if (prototype !== null && prototype !== Object.prototype) return SNAPSHOT_FAILURE;
+      const clone = Object.create(null) as Record<string, unknown>;
+      if (!account(2)) return SNAPSHOT_FAILURE;
+      for (const key of keys) {
+        if (typeof key !== "string") return SNAPSHOT_FAILURE;
+        const descriptor = descriptors[key];
+        if (!descriptor
+          || !descriptor.enumerable
+          || descriptor.get !== undefined
+          || descriptor.set !== undefined
+          || !Object.hasOwn(descriptor, "value")) {
+          return SNAPSHOT_FAILURE;
+        }
+        if (key.length > AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes
+          || !account(utf8Bytes(JSON.stringify(key)))) {
+          return SNAPSHOT_FAILURE;
+        }
+        const child = visit(descriptor.value, depth + 1);
+        if (child === SNAPSHOT_FAILURE) return SNAPSHOT_FAILURE;
+        Object.defineProperty(clone, key, {
+          value: child,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      return clone;
+    } finally {
+      active.delete(current);
+    }
+  }
+
+  const snapshot = visit(value, 0);
+  return snapshot === SNAPSHOT_FAILURE || !isRecord(snapshot)
+    ? null
+    : snapshot as AgentToolResult;
+}
+
+const MAX_SECRET_KEY_SCAN_DEPTH = 32;
+const MAX_SECRET_KEY_SCAN_NODES = 100_000;
+
+/**
+ * Secret-boundary protection covers record values, while result maps also
+ * carry untrusted data in their object keys (for example currency codes).
+ * Scan those keys before any result is protected or persisted. A bounded
+ * fail-closed walk keeps hostile object graphs from turning this guard into
+ * an unbounded traversal.
+ */
+function containsSecretObjectKey(
+  value: unknown,
+  secretBoundary: SecretBoundaryGate,
+): boolean {
+  const seen = new WeakSet<object>();
+  let remaining = MAX_SECRET_KEY_SCAN_NODES;
+  function visit(current: unknown, depth: number): boolean {
+    if (remaining-- <= 0 || depth > MAX_SECRET_KEY_SCAN_DEPTH) return true;
+    if (Array.isArray(current)) return current.some((item) => visit(item, depth + 1));
+    if (!isRecord(current)) return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    for (const [key, child] of Object.entries(current)) {
+      try {
+        if (secretBoundary.protectText("diagnostic-export", key).failure) return true;
+      } catch {
+        return true;
+      }
+      if (visit(child, depth + 1)) return true;
+    }
+    return false;
+  }
+  return visit(value, 0);
+}
+
+function modelWithinResourceLimits(model: FinancialModel): boolean {
+  return model.counts.normalizedTransactions <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount
+    && model.counts.assetPositions <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount
+    && model.counts.assetSnapshots <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount
+    && model.normalizedTransactions.length <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount
+    && model.assetPositions.length <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount
+    && model.snapshotHistory.snapshots.length <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount;
+}
+
+type LedgerResourceSnapshot = {
+  fileSignature: string;
+  dataVersion: number | null;
+  totalBytes: number;
+  totalRows: number;
+};
+
+function ledgerResourceSnapshot(
+  ledgerDir: string,
+  snapshotDb?: LedgerDatabase,
+): LedgerResourceSnapshot | null {
+  const sqlitePath = ledgerSqlitePath(ledgerDir);
+  try {
+    const files = [sqlitePath, `${sqlitePath}-wal`, `${sqlitePath}-shm`];
+    const fileStats = files.map((file) => {
+      try {
+        const stats = statSync(file);
+        return { file, size: stats.size, mtimeMs: stats.mtimeMs };
+      } catch {
+        return { file, size: 0, mtimeMs: null };
+      }
+    });
+    const totalBytes = fileStats.reduce((total, file) => total + file.size, 0);
+    if (totalBytes > AGENT_TOOL_RESOURCE_LIMITS.maxLedgerBytes) return null;
+    if (!existsSync(sqlitePath)) {
+      return totalBytes === 0
+        ? { fileSignature: "missing", dataVersion: null, totalBytes: 0, totalRows: 0 }
+        : null;
+    }
+    const fileSignature = fileStats.map((file) =>
+      `${file.file}:${file.size}:${file.mtimeMs === null ? "missing" : file.mtimeMs}`).join("|");
+    const db = snapshotDb ?? openLedgerDatabase(ledgerDir, { readOnly: true });
+    try {
+      const dataVersionRow = db.prepare("PRAGMA data_version").get() as { data_version?: number };
+      const tables = ["import_runs", "source_files", ...TYPED_STATEMENT_TABLES] as const;
+      const totalRows = tables.reduce((total, table) => {
+        const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+        return total + Number(row.count);
+      }, 0);
+      return {
+        fileSignature,
+        dataVersion: typeof dataVersionRow.data_version === "number"
+          ? dataVersionRow.data_version
+          : null,
+        totalBytes,
+        totalRows,
+      };
+    } finally {
+      if (!snapshotDb) db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function ledgerSnapshotWithinResourceLimits(snapshot: LedgerResourceSnapshot | null): boolean {
+  return snapshot !== null
+    && snapshot.totalBytes <= AGENT_TOOL_RESOURCE_LIMITS.maxLedgerBytes
+    && snapshot.totalRows <= AGENT_TOOL_RESOURCE_LIMITS.maxLedgerRows;
+}
+
+function sameLedgerSnapshot(
+  before: LedgerResourceSnapshot,
+  after: LedgerResourceSnapshot | null,
+): boolean {
+  return after !== null
+    && before.fileSignature === after.fileSignature
+    && before.totalBytes === after.totalBytes
+    && (before.dataVersion === null
+      || after.dataVersion === null
+      || before.dataVersion === after.dataVersion)
+    && before.totalRows === after.totalRows;
+}
+
+export function createFinancialOverviewToolGateway({
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  runStore,
+  clock = { now: () => new Date().toISOString() },
+  adapter = ({ ledgerDir: root }) => readFinancialOverviewResult(root),
+  executionTimeoutMs = AGENT_TOOL_DEFAULT_EXECUTION_TIMEOUT_MS,
+  secretValues,
+  additionalSecretValues,
+  secretBoundaryDependencies,
+}: {
+  ledgerDir?: string;
+  runStore: AgentRunStore;
+  clock?: { now(): string };
+  adapter?: FinancialOverviewAdapter;
+  executionTimeoutMs?: number;
+  secretValues?: readonly string[];
+  additionalSecretValues?: readonly string[];
+  secretBoundaryDependencies?: Partial<SecretBoundaryDependencies>;
+}): AgentProviderToolGateway {
+  const secretBoundary: SecretBoundaryGate = createAgentSecretBoundaryGate({
+    secretValues,
+    additionalSecretValues,
+    dependencies: secretBoundaryDependencies,
+  });
+  const records = new Map<string, AgentToolExecutionRecord>();
+  const inFlight = new Map<string, { identity: string; submission: Promise<AgentToolSubmission> }>();
+
+  function protect<T extends Record<string, unknown>>(schema: string, value: T) {
+    const protectedValue = secretBoundary.protectRecord("sqlite-persistence", schema, value);
+    if (protectedValue.failure) {
+      throw new Error("SECRET_BOUNDARY_VIOLATION surface=sqlite-persistence reason=authentication-secret-detected");
+    }
+    return protectedValue.value as T;
+  }
+
+  function persistRecord(record: AgentToolExecutionRecord): AgentToolExecutionRecord {
+    const protectedRecord = protect("agent-tool-outcome", record as unknown as Record<string, unknown>);
+    const next = protectedRecord as unknown as AgentToolExecutionRecord;
+    const key = `${next.runId}:${next.requestId}`;
+    if (!runStore.getRun(next.runId)) return next;
+    const existing = existingRecord(next.runId, next.requestId);
+    const identityDiffers = existing
+      && agentToolProposalIdentity(existing.proposal) !== agentToolProposalIdentity(next.proposal);
+    if (identityDiffers && existing?.outcome !== "not-dispatched") {
+      records.set(key, existing);
+      return existing;
+    }
+    if (existing && !isMoreFinalOutcome(next.outcome, existing.outcome)) {
+      records.set(key, existing);
+      return existing;
+    }
+    runStore.recordToolRequest?.(next);
+    const persisted = runStore.getToolRequest?.(next.runId, next.requestId) ?? next;
+    records.set(key, persisted);
+    return persisted;
+  }
+
+  function persistSubmission(record: AgentToolExecutionRecord): AgentToolSubmission {
+    const durable = persistRecord(record);
+    const caller = agentToolProposalIdentity(durable.proposal)
+      === agentToolProposalIdentity(record.proposal)
+      ? durable
+      : record;
+    return replaySubmission(caller);
+  }
+
+  function persistUnknownSafely(record: AgentToolExecutionRecord): AgentToolSubmission {
+    try {
+      return persistSubmission(record);
+    } catch {
+      // A malformed terminal row must not turn a bounded tool failure into an
+      // outward store exception. Cache the sanitized terminal state so this
+      // gateway also replays it without retrying the adapter.
+      records.set(`${record.runId}:${record.requestId}`, record);
+      return replaySubmission(record);
+    }
+  }
+
+  function existingRecord(runId: string, requestId: string): AgentToolExecutionRecord | null {
+    const key = `${runId}:${requestId}`;
+    const cached = records.get(key) ?? null;
+    let durable: AgentToolExecutionRecord | null = null;
+    try {
+      durable = runStore.getToolRequest?.(runId, requestId) ?? null;
+    } catch {
+      return cached;
+    }
+    if (durable && durable.outcome !== "not-dispatched") {
+      records.set(key, durable);
+      return durable;
+    }
+    if (cached) return cached;
+    if (durable) records.set(key, durable);
+    return durable;
+  }
+
+  return {
+    async submit(rawProposal) {
+      const proposalPreflight = snapshotAgentToolProposal(rawProposal);
+      const proposalSnapshot = proposalPreflight.value;
+      let containsSecret = proposalSnapshot === null;
+      let serializedProposal = "";
+      let serializedSecretDetected = false;
+      if (proposalSnapshot) {
+        try {
+          const serialized = stableStringify(proposalSnapshot);
+          serializedProposal = typeof serialized === "string" ? serialized : String(serialized);
+          try {
+            serializedSecretDetected = Boolean(
+              secretBoundary.protectText("diagnostic-export", serializedProposal).failure,
+            );
+          } catch {
+            serializedSecretDetected = true;
+          }
+        } catch {
+          serializedProposal = "[unserializable]";
+          containsSecret = true;
+        }
+      } else {
+        serializedProposal = "[unserializable]";
+      }
+      const rawProposalRecord = proposalSnapshot;
+      let rawRunId: unknown = proposalPreflight.runId;
+      let rawRequestId: unknown = proposalPreflight.requestId;
+      let rawIdentifierSecretDetected = false;
+      if (rawProposalRecord && rawRunId === undefined && rawRequestId === undefined) {
+        try {
+          rawRunId = rawProposalRecord.runId;
+          rawRequestId = rawProposalRecord.requestId;
+        } catch {
+          rawIdentifierSecretDetected = true;
+        }
+      }
+      for (const identifier of [rawRunId, rawRequestId]) {
+        if (typeof identifier !== "string") continue;
+        try {
+          rawIdentifierSecretDetected ||= Boolean(
+            secretBoundary.protectText("diagnostic-export", identifier).failure,
+          );
+        } catch {
+          rawIdentifierSecretDetected = true;
+        }
+      }
+      const exactProposal = rawProposalRecord !== null
+        && hasExactKeys(rawProposalRecord, TOP_LEVEL_PROPOSAL_KEYS);
+      let proposalHasSecret = false;
+      if (exactProposal) {
+        try {
+          const protectedProposal = secretBoundary.protectRecord(
+            "diagnostic-export",
+            "agent-tool-proposal",
+            rawProposalRecord,
+          );
+          proposalHasSecret = Boolean(protectedProposal.failure)
+            || containsCredentialMaterial(rawProposalRecord);
+        } catch {
+          proposalHasSecret = true;
+        }
+      }
+      proposalHasSecret ||= serializedSecretDetected || rawIdentifierSecretDetected;
+      containsSecret ||= proposalHasSecret;
+      const proposalTooLarge = utf8Bytes(serializedProposal) > AGENT_TOOL_RESOURCE_LIMITS.maxProposalBytes;
+      const validation = proposalTooLarge
+        ? { value: null, reason: "resource-denied" as const }
+        : proposalHasSecret
+          ? { value: null, reason: "credential-boundary" as const }
+          : proposalSnapshot === null
+            ? { value: null, reason: "malformed-proposal" as const }
+            : validateAgentToolProposalSnapshot(proposalSnapshot);
+      const proposal = validation.value;
+      const runId = containsSecret ? "redacted" : safeIdentifier(rawRunId, "unknown");
+      const requestId = containsSecret
+        ? "redacted"
+        : safeIdentifier(
+          rawRequestId,
+          `invalid-${hashBytes(serializedProposal).slice(0, 16)}`,
+        );
+
+      if (!proposal) {
+        const decision = emptyDecision(validation.reason);
+        const record = {
+          runId,
+          requestId,
+          proposal: {
+            ...createReadFinancialOverviewProposal(runId, requestId),
+            runAuthority: "invalid",
+          },
+          decision,
+          outcome: "not-dispatched" as const,
+          result: null,
+          resultReference: null,
+          occurredAt: clock.now(),
+        };
+        return persistSubmission(record);
+      }
+
+      const run = runStore.getRun(proposal.runId);
+      const active = Boolean(run && run.phase === "running" && proposal.runAuthority === proposal.runId);
+      const existing = existingRecord(proposal.runId, proposal.requestId);
+      if (existing) {
+        if (active && agentToolProposalIdentity(existing.proposal) === agentToolProposalIdentity(proposal)) {
+          if (existing.outcome !== "not-dispatched") {
+            records.set(`${proposal.runId}:${proposal.requestId}`, existing);
+            return replaySubmission(existing);
+          }
+        } else if (existing.outcome !== "not-dispatched") {
+          const decision = emptyDecision(active ? "schema-invalid" : "run-authority-denied");
+          return replaySubmission({
+            runId: proposal.runId,
+            requestId: proposal.requestId,
+            proposal,
+            decision,
+            outcome: "not-dispatched",
+            result: null,
+            resultReference: null,
+            occurredAt: clock.now(),
+          });
+        }
+      }
+
+      const reason: AgentToolDecisionReason = !active
+        ? "run-authority-denied"
+        : "allowed";
+      const decision = emptyDecision(reason);
+      if (!decision.allowed) {
+        const record = {
+          runId: proposal.runId,
+          requestId: proposal.requestId,
+          proposal,
+          decision,
+          outcome: "not-dispatched" as const,
+          result: null,
+          resultReference: null,
+          occurredAt: clock.now(),
+        };
+        return persistSubmission(record);
+      }
+      const key = `${proposal.runId}:${proposal.requestId}`;
+      const identity = agentToolProposalIdentity(proposal);
+      const concurrent = inFlight.get(key);
+      if (concurrent?.identity === identity) return concurrent.submission;
+
+      let snapshotDb: LedgerDatabase | undefined;
+      if (existsSync(ledgerSqlitePath(ledgerDir))) {
+        try {
+          snapshotDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+        } catch {
+          snapshotDb = undefined;
+        }
+      }
+      const ledgerBefore = ledgerResourceSnapshot(ledgerDir, snapshotDb);
+      if (utf8Bytes(ledgerDir) > AGENT_TOOL_RESOURCE_LIMITS.maxLedgerPathBytes
+        || !ledgerSnapshotWithinResourceLimits(ledgerBefore)) {
+        snapshotDb?.close();
+        const record = {
+          runId: proposal.runId,
+          requestId: proposal.requestId,
+          proposal,
+          decision: emptyDecision("resource-denied"),
+          outcome: "not-dispatched" as const,
+          result: null,
+          resultReference: null,
+          occurredAt: clock.now(),
+        };
+        return persistSubmission(record);
+      }
+
+      const dispatch = (async (): Promise<AgentToolSubmission> => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const adapterProposal = cloneAgentToolProposalForAdapter(proposal);
+          const timeoutMs = Number.isFinite(executionTimeoutMs) && executionTimeoutMs > 0
+            ? executionTimeoutMs
+            : AGENT_TOOL_DEFAULT_EXECUTION_TIMEOUT_MS;
+          const adapterResult = await Promise.race([
+            adapter({ ledgerDir, proposal: adapterProposal }),
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("tool-execution-timeout")), timeoutMs);
+            }),
+          ]);
+          const snapshot = snapshotAgentToolResult(adapterResult);
+          if (!snapshot
+            || !validateAgentToolResult(snapshot)
+            || !resultWithinResourceLimits(snapshot)) {
+            throw new Error("invalid-tool-result");
+          }
+          if (containsSecretObjectKey(snapshot, secretBoundary)) {
+            throw new Error("secret-key-detected");
+          }
+          if (!ledgerBefore || !sameLedgerSnapshot(ledgerBefore, ledgerResourceSnapshot(ledgerDir, snapshotDb))) {
+            throw new Error("ledger-changed-during-tool-read");
+          }
+          const settlement: AgentToolSettlement = runStore.getRun(proposal.runId)?.phase === "cancelled"
+            ? "cancelled-in-flight" as const
+            : "normal";
+          const protectedResult = protect("agent-tool-result", snapshot as unknown as Record<string, unknown>) as unknown as AgentToolResult;
+          const record = {
+            runId: proposal.runId,
+            requestId: proposal.requestId,
+            proposal,
+            decision,
+            outcome: "completed" as const,
+            result: protectedResult,
+            resultReference: protectedResult.reference,
+            occurredAt: clock.now(),
+            settlement,
+          };
+          return persistSubmission(record);
+        } catch {
+          const record = {
+            runId: proposal.runId,
+            requestId: proposal.requestId,
+            proposal,
+            decision,
+            outcome: "outcome-unknown" as const,
+            result: null,
+            resultReference: null,
+            occurredAt: clock.now(),
+            settlement: (runStore.getRun(proposal.runId)?.phase === "cancelled"
+              ? "cancelled-in-flight"
+              : "normal") as AgentToolSettlement,
+          };
+          return persistUnknownSafely(record);
+        } finally {
+          if (timeout) clearTimeout(timeout);
+          snapshotDb?.close();
+        }
+      })();
+      inFlight.set(key, { identity, submission: dispatch });
+      try {
+        return await dispatch;
+      } finally {
+        if (inFlight.get(key)?.submission === dispatch) inFlight.delete(key);
+      }
+    },
+  };
+}

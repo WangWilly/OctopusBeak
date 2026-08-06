@@ -12,8 +12,8 @@ import {
 import {
   createAgentHarnessService,
   createInlineAgentHelper,
-  createNoToolAgentGateway,
 } from "../src/lib/agent/server/harness.ts";
+import { createFinancialOverviewToolGateway } from "../src/lib/agent/server/tool-gateway.ts";
 import {
   createAppleSystemModelProtocolClient,
   createAppleSystemModelProvider,
@@ -215,7 +215,11 @@ async function start() {
     helper: createInlineAgentHelper(),
     provider: agentProvider,
     runStore: agentStore,
-    toolGateway: createNoToolAgentGateway(),
+    toolGateway: createFinancialOverviewToolGateway({
+      ledgerDir,
+      runStore: agentStore,
+      clock: { now: () => new Date().toISOString() },
+    }),
     clock: { now: () => new Date().toISOString() },
     diagnosticsSink: { record() {} },
   });
