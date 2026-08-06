@@ -966,3 +966,179 @@ test("SQLite tool outcome upgrades update occurred_at for durable ordering and r
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("SQLite tool outcome decoding rejects tampered nested proposals without echoing values", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-proposal-integrity-"));
+  const runId = "run-tool-proposal-integrity";
+  const requestId = "request-tool-proposal-integrity";
+  const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["tampered-proposal-version-secret", (value) => { value.proposalVersion = "tampered-proposal-version-secret"; }],
+    ["tampered-tool-name-secret", (value) => { value.toolName = "tampered-tool-name-secret"; }],
+    ["tampered-permission-secret", (value) => { value.permission = "tampered-permission-secret"; }],
+    ["tampered-sensitivity-secret", (value) => { value.sensitivity = "tampered-sensitivity-secret"; }],
+    ["tampered-resource-secret", (value) => { value.resource = "tampered-resource-secret"; }],
+    ["tampered-run-authority-secret", (value) => { value.runAuthority = 42; }],
+    ["tampered-run-id-secret", (value) => { value.runId = "tampered-run-id-secret"; }],
+    ["tampered-request-id-secret", (value) => { value.requestId = "tampered-request-id-secret"; }],
+    ["tampered-input-shape-secret", (value) => { value.input = { unexpected: "tampered-input-shape-secret" }; }],
+    ["tampered-extra-shape-secret", (value) => { value.extra = "tampered-extra-shape-secret"; }],
+  ];
+  try {
+    insertRun(root, runId, {
+      runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: "2026-08-04T00:00:01.000Z",
+      output: "",
+      failureReason: null,
+    });
+    const db = openLedgerDatabase(root);
+    for (const [index, [secret, mutate]] of mutations.entries()) {
+      const rowRequestId = `${requestId}-${index}`;
+      const nested = createReadFinancialOverviewProposal(runId, rowRequestId) as unknown as Record<string, unknown>;
+      mutate(nested);
+      const tamperedRequestId = rowRequestId;
+      db.prepare(`
+        INSERT INTO agent_tool_outcomes (
+          run_id, request_id, outcome, result_reference, result_json,
+          proposal_json, decision_json, occurred_at, updated_at, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        tamperedRequestId,
+        "not-dispatched",
+        null,
+        null,
+        JSON.stringify(nested),
+        JSON.stringify({
+          decisionVersion: "agent-tool-decision.v1",
+          allowed: false,
+          reason: "run-authority-denied",
+        }),
+        "2026-08-04T00:00:02.000Z",
+        "2026-08-04T00:00:02.000Z",
+        JSON.stringify({
+          recordVersion: 1,
+          record: {
+            runId,
+            requestId: tamperedRequestId,
+            proposal: nested,
+            decision: {
+              decisionVersion: "agent-tool-decision.v1",
+              allowed: false,
+              reason: "run-authority-denied",
+            },
+            outcome: "not-dispatched",
+            result: null,
+            resultReference: null,
+            occurredAt: "2026-08-04T00:00:02.000Z",
+          },
+        }),
+      );
+      const store = createSqliteAgentRunStore(root, { secretValues: [] });
+      try {
+        assert.ok(store.getToolRequest);
+        assert.ok(store.listToolRequests);
+        assert.throws(
+          () => store.getToolRequest!(runId, tamperedRequestId),
+          (error: unknown) => error instanceof Error
+            && error.message === "Invalid Agent tool outcome record."
+            && !error.message.includes(secret),
+        );
+        assert.throws(
+          () => store.listToolRequests!(runId),
+          /Invalid Agent tool outcome record\./,
+        );
+      } finally {
+        store.close();
+      }
+    }
+    db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite tool outcome decoding rejects a persisted result with an invalid currency key", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-result-currency-"));
+  const runId = "run-tool-result-currency";
+  const requestId = "request-tool-result-currency";
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId,
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const data: NonNullable<AgentToolExecutionRecord["result"]>["data"] = {
+      aggregateVersion: "financial-overview.aggregate.v1",
+      snapshot: { snapshotId: "snapshot", importedAt: null, snapshotDate: null },
+      totalsByCurrency: { TWD: { assets: 1, liabilities: 0, net: 1 } },
+      overview: {
+        cashAssets: {},
+        foreignAssets: {},
+        investmentAssets: {},
+        unbilledCreditCard: {},
+        loans: {},
+        netAssets: {},
+      },
+      counts: { normalizedTransactions: 0, assetPositions: 0, includedPositions: 0, assetSnapshots: 0 },
+      quality: { status: "pass", issueCount: 0 },
+    };
+    const completedResult: NonNullable<AgentToolExecutionRecord["result"]> = {
+      resultVersion: "agent-tool-result.v1",
+      toolName: "read_financial_overview",
+      data,
+      reference: {
+        referenceVersion: "immutable-result-ref.v1",
+        value: `immutable-result-ref.v1:${hashBytes(stableStringify(data))}`,
+      },
+      secretFields: [],
+    };
+    store.recordToolRequest?.({
+      runId,
+      requestId,
+      proposal: createReadFinancialOverviewProposal(runId, requestId),
+      decision: { decisionVersion: "agent-tool-decision.v1", allowed: true, reason: "allowed" },
+      outcome: "completed",
+      result: completedResult,
+      resultReference: completedResult.reference,
+      occurredAt: "2026-08-04T00:00:01.000Z",
+    });
+    store.close();
+
+    const db = openLedgerDatabase(root);
+    const row = db.prepare(
+      "SELECT record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
+    ).get(runId, requestId) as { record_json: string };
+    const persisted = JSON.parse(row.record_json) as {
+      record: AgentToolExecutionRecord;
+    };
+    const persistedResult = persisted.record.result;
+    assert.ok(persistedResult);
+    persistedResult.data.totalsByCurrency = {
+      usd: { assets: 1, liabilities: 0, net: 1 },
+    };
+    persistedResult.reference.value =
+      `immutable-result-ref.v1:${hashBytes(stableStringify(persistedResult.data))}`;
+    persisted.record.resultReference = persistedResult.reference;
+    db.prepare(
+      "UPDATE agent_tool_outcomes SET record_json = ? WHERE run_id = ? AND request_id = ?",
+    ).run(JSON.stringify(persisted), runId, requestId);
+    db.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.throws(
+      () => reopened.getToolRequest!(runId, requestId),
+      /Invalid Agent tool outcome record\./,
+    );
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

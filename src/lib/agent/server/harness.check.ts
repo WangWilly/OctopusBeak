@@ -1384,3 +1384,64 @@ test("a rejected provider gateway becomes a bounded unknown outcome without leak
   assert.equal(service.complete("run-gateway-rejection").phase, "failed");
   assert.equal(service.cancel("run-gateway-rejection").phase, "failed");
 });
+
+test("tool lineage retains the sanitized proposal only on proposal events", async () => {
+  const store = createInMemoryAgentRunStore();
+  let submissionDone!: () => void;
+  const done = new Promise<void>((resolve) => { submissionDone = resolve; });
+  const provider: AgentProvider = {
+    async activate() {
+      return { availability: "available", providerIdentity: "test-provider", osBuild: "test" };
+    },
+    start({ runId, toolGateway: capability, onComplete }) {
+      void capability.submit(createReadFinancialOverviewProposal(runId, "request-lineage-shape"))
+        .finally(() => {
+          onComplete();
+          submissionDone();
+        });
+    },
+    cancel() {},
+  };
+  const service = createAgentHarnessService({
+    helper: { launch(input) { input.provider.start(input); }, cancel() {} },
+    provider,
+    runStore: store,
+    toolGateway: {
+      async submit(proposal) {
+        const requestId = (proposal as { requestId: string }).requestId;
+        return {
+          requestId,
+          decision: {
+            decisionVersion: "agent-tool-decision.v1",
+            allowed: false,
+            reason: "permission-denied" as const,
+          },
+          outcome: "not-dispatched" as const,
+          result: null,
+          resultReference: null,
+          settlement: "normal" as const,
+        };
+      },
+    },
+    clock: { now: () => "2026-08-04T00:00:00.000Z" },
+    diagnosticsSink: { record() {} },
+    idFactory: () => "run-lineage-shape",
+  });
+  await service.activate();
+  service.start({});
+  await done;
+  const events = service.lineage("run-lineage-shape");
+  const proposalEvent = events.find((event) => event.kind === "tool.proposal");
+  const decisionEvent = events.find((event) => event.kind === "tool.decision");
+  const outcomeEvent = events.find((event) => event.kind === "tool.outcome");
+  assert.ok(proposalEvent?.tool?.proposal);
+  assert.equal(proposalEvent?.tool?.proposal?.requestId, "request-lineage-shape");
+  assert.equal(decisionEvent?.tool?.proposal, undefined);
+  assert.equal(outcomeEvent?.tool?.proposal, undefined);
+  assert.equal(decisionEvent?.tool?.requestId, "request-lineage-shape");
+  assert.equal(decisionEvent?.tool?.toolName, "read_financial_overview");
+  assert.equal(decisionEvent?.tool?.decision?.reason, "permission-denied");
+  assert.equal(outcomeEvent?.tool?.requestId, "request-lineage-shape");
+  assert.equal(outcomeEvent?.tool?.outcome, "not-dispatched");
+  assert.equal(outcomeEvent?.tool?.resultReference, null);
+});

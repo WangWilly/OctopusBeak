@@ -13,11 +13,11 @@ import {
 import {
   AGENT_TOOL_DECISION_REASONS,
   AGENT_TOOL_OUTCOMES,
-  AGENT_TOOL_PROPOSAL_VERSION,
   AGENT_TOOL_DECISION_VERSION,
   AGENT_TOOL_RESULT_VERSION,
   AGENT_TOOL_REFERENCE_VERSION,
   AGENT_TOOL_SETTLEMENTS,
+  validateAgentToolProposal,
   validateAgentToolResult,
   type AgentToolExecutionRecord,
 } from "./tool-gateway.ts";
@@ -488,6 +488,9 @@ export function createSqliteAgentRunStore(
       throw new Error("Unsupported Agent tool outcome record version.");
     }
     const record = value.record;
+    const validatedProposal = isRecord(record)
+      ? validateAgentToolProposal(record.proposal).value
+      : null;
     if (!isRecord(record)
       || !hasOnlyExpectedKeys(
         record,
@@ -498,8 +501,9 @@ export function createSqliteAgentRunStore(
       || typeof record.requestId !== "string"
       || typeof record.occurredAt !== "string"
       || !AGENT_TOOL_OUTCOMES.includes(record.outcome as never)
-      || !isRecord(record.proposal)
-      || record.proposal.proposalVersion !== AGENT_TOOL_PROPOSAL_VERSION
+      || !validatedProposal
+      || validatedProposal.runId !== record.runId
+      || validatedProposal.requestId !== record.requestId
       || !isRecord(record.decision)
       || record.decision.decisionVersion !== AGENT_TOOL_DECISION_VERSION
       || typeof record.decision.allowed !== "boolean"
@@ -661,15 +665,34 @@ export function createSqliteAgentRunStore(
     },
     getToolRequest(runId, requestId) {
       const row = db.prepare(
-        "SELECT record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
-      ).get(runId, requestId) as { record_json: string } | undefined;
-      return row ? decodeToolRecord(row.record_json) : null;
+        "SELECT run_id, request_id, record_json FROM agent_tool_outcomes WHERE run_id = ? AND request_id = ?",
+      ).get(runId, requestId) as {
+        run_id: string;
+        request_id: string;
+        record_json: string;
+      } | undefined;
+      if (!row) return null;
+      const record = decodeToolRecord(row.record_json);
+      if (record.runId !== row.run_id || record.requestId !== row.request_id) {
+        throw new Error("Invalid Agent tool outcome record.");
+      }
+      return record;
     },
     listToolRequests(runId) {
       const rows = db.prepare(
-        "SELECT record_json FROM agent_tool_outcomes WHERE run_id = ? ORDER BY occurred_at, request_id",
-      ).all(runId) as Array<{ record_json: string }>;
-      return rows.map((row) => decodeToolRecord(row.record_json));
+        "SELECT run_id, request_id, record_json FROM agent_tool_outcomes WHERE run_id = ? ORDER BY occurred_at, request_id",
+      ).all(runId) as Array<{
+        run_id: string;
+        request_id: string;
+        record_json: string;
+      }>;
+      return rows.map((row) => {
+        const record = decodeToolRecord(row.record_json);
+        if (record.runId !== row.run_id || record.requestId !== row.request_id) {
+          throw new Error("Invalid Agent tool outcome record.");
+        }
+        return record;
+      });
     },
     close() {
       db.close();

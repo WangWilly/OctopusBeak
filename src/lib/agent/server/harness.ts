@@ -596,28 +596,15 @@ export function createAgentHarnessService({
             ? proposedRecord.toolName
             : "unknown";
           const appendToolEvent = (
-          kind: AgentLineageEvent["kind"],
-          status: AgentLineageEvent["status"],
-          submission?: AgentToolSubmission,
+            kind: AgentLineageEvent["kind"],
+            status: AgentLineageEvent["status"],
+            submission?: AgentToolSubmission,
           ) => {
             if (!runStore.getRun(runId)) return;
-            recordLineage({
-            runId,
-            analysisId: requireRun(runStore, runId).analysisId,
-            seq: runStore.getLineage(runId).length + 1,
-            kind,
-            status,
-            occurredAt: clock.now(),
-            dataClasses: ["financial.derived"],
-            providerIdentity: runProvider.providerIdentity,
-            osBuild: runProvider.osBuild,
-            providerAssurance: runProvider.assurance,
-            transitionReason: null,
-            secretFields: [],
-            tool: {
+            const tool: NonNullable<AgentLineageEvent["tool"]> = {
               requestId,
               toolName,
-              proposal: proposedRecord,
+              ...(kind === "tool.proposal" ? { proposal: proposedRecord } : {}),
               ...(submission ? {
                 decision: submission.decision,
                 decisionReason: submission.decision.reason,
@@ -625,7 +612,21 @@ export function createAgentHarnessService({
                 resultReference: submission.resultReference?.value ?? null,
                 settlement: submission.settlement,
               } : {}),
-            },
+            };
+            recordLineage({
+              runId,
+              analysisId: requireRun(runStore, runId).analysisId,
+              seq: runStore.getLineage(runId).length + 1,
+              kind,
+              status,
+              occurredAt: clock.now(),
+              dataClasses: ["financial.derived"],
+              providerIdentity: runProvider.providerIdentity,
+              osBuild: runProvider.osBuild,
+              providerAssurance: runProvider.assurance,
+              transitionReason: null,
+              secretFields: [],
+              tool,
             });
           };
           appendToolEvent("tool.proposal", "proposed");

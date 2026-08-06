@@ -10,6 +10,7 @@ import {
   readFinancialOverviewResult,
   AGENT_TOOL_RESOURCE_LIMITS,
   validateAgentToolProposal,
+  validateAgentToolResult,
   type AgentToolResult,
   type AgentToolSubmission,
 } from "./tool-gateway.ts";
@@ -91,6 +92,81 @@ test("proposal validation is strict and rejects unknown, malformed, and credenti
     null,
     "run authority is checked by the host with the active run, not by schema parsing",
   );
+});
+
+test("v1 financial result currency keys accept only UNKNOWN or exactly three ASCII uppercase letters", () => {
+  const validKeys = ["TWD", "USD", "JPY", "EUR", "HKD", "CNY", "BTC", "UNKNOWN"];
+  for (const currency of validKeys) {
+    const candidate = result();
+    candidate.data.totalsByCurrency = {
+      [currency]: { assets: 1, liabilities: 0, net: 1 },
+    };
+    candidate.data.overview = {
+      cashAssets: { [currency]: 1 },
+      foreignAssets: { [currency]: 1 },
+      investmentAssets: { [currency]: 1 },
+      unbilledCreditCard: { [currency]: 1 },
+      loans: { [currency]: 1 },
+      netAssets: { [currency]: 1 },
+    };
+    candidate.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(candidate.data))}`;
+    assert.equal(validateAgentToolResult(candidate), true, currency);
+  }
+  for (const currency of ["usd", "美金", "", "$", "1234567890", "USDT"]) {
+    const candidate = result();
+    candidate.data.totalsByCurrency = {
+      [currency]: { assets: 1, liabilities: 0, net: 1 },
+    };
+    candidate.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(candidate.data))}`;
+    assert.equal(validateAgentToolResult(candidate), false, currency);
+  }
+});
+
+test("secret-bearing currency object keys fail closed after one adapter call without persistence", async () => {
+  for (const [index, secretCurrency] of ["ABC", "USD"].entries()) {
+    const proposal = createReadFinancialOverviewProposal("run-tool-1", `request-secret-currency-${index}`);
+    assert.equal(JSON.stringify(proposal).includes(secretCurrency), false);
+
+    const controlStore = runningStore();
+    const controlCandidate = result();
+    let controlCalls = 0;
+    const controlGateway = createFinancialOverviewToolGateway({
+      runStore: controlStore,
+      adapter: async () => {
+        controlCalls += 1;
+        return controlCandidate;
+      },
+    });
+    const control = await controlGateway.submit(proposal);
+    assert.equal(controlCalls, 1);
+    assert.equal(control.outcome, "completed");
+
+    const store = runningStore();
+    let calls = 0;
+    const candidate = result();
+    candidate.data.totalsByCurrency = {
+      [secretCurrency]: { assets: 1, liabilities: 0, net: 1 },
+    };
+    candidate.reference.value = `immutable-result-ref.v1:${hashBytes(stableStringify(candidate.data))}`;
+    const gateway = createFinancialOverviewToolGateway({
+      runStore: store,
+      secretValues: [secretCurrency],
+      adapter: async () => {
+        calls += 1;
+        return candidate;
+      },
+    });
+    const submission = await gateway.submit(proposal);
+    assert.equal(calls, 1);
+    assert.equal(submission.outcome, "outcome-unknown");
+    assert.equal(submission.result, null);
+    assert.equal(submission.resultReference, null);
+    assert.equal(JSON.stringify(submission).includes(secretCurrency), false);
+    assert.equal(
+      JSON.stringify(store.listToolRequests?.("run-tool-1")).includes(secretCurrency),
+      false,
+    );
+  }
 });
 
 test("host gates permission, sensitivity, resource, and run authority before dispatch with bounded reasons", async () => {

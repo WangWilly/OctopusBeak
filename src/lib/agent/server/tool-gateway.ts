@@ -279,6 +279,17 @@ function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
     && Object.values(value).every((item) => typeof item === "number" && Number.isFinite(item));
 }
 
+const CURRENCY_KEY_PATTERN = /^[A-Z]{3}$/;
+
+function isCurrencyKey(value: string): boolean {
+  return value === "UNKNOWN" || CURRENCY_KEY_PATTERN.test(value);
+}
+
+function isFiniteCurrencyRecord(value: unknown): value is Record<string, number> {
+  return isFiniteNumberRecord(value)
+    && Object.keys(value).every(isCurrencyKey);
+}
+
 export function validateAgentToolResult(value: unknown): value is AgentToolResult {
   if (!isRecord(value)
     || !exactRecordKeys(value, ["resultVersion", "toolName", "data", "reference", "secretFields"])
@@ -298,6 +309,7 @@ export function validateAgentToolResult(value: unknown): value is AgentToolResul
     || (value.data.snapshot.importedAt !== null && typeof value.data.snapshot.importedAt !== "string")
     || (value.data.snapshot.snapshotDate !== null && typeof value.data.snapshot.snapshotDate !== "string")
     || !isRecord(value.data.totalsByCurrency)
+    || Object.keys(value.data.totalsByCurrency).some((currency) => !isCurrencyKey(currency))
     || Object.values(value.data.totalsByCurrency).some((totals) =>
       !isRecord(totals)
       || !exactRecordKeys(totals, ["assets", "liabilities", "net"])
@@ -306,7 +318,7 @@ export function validateAgentToolResult(value: unknown): value is AgentToolResul
     || !exactRecordKeys(value.data.overview, [
       "cashAssets", "foreignAssets", "investmentAssets", "unbilledCreditCard", "loans", "netAssets",
     ])
-    || !Object.values(value.data.overview).every(isFiniteNumberRecord)
+    || !Object.values(value.data.overview).every(isFiniteCurrencyRecord)
     || !isRecord(value.data.counts)
     || !exactRecordKeys(value.data.counts, ["normalizedTransactions", "assetPositions", "includedPositions", "assetSnapshots"])
     || Object.values(value.data.counts).some((item) => !Number.isSafeInteger(item) || (item as number) < 0)
@@ -413,6 +425,41 @@ function resultWithinResourceLimits(result: AgentToolResult): boolean {
   return utf8Bytes(stableStringify(result)) <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateBytes
     && currencyCount <= AGENT_TOOL_RESOURCE_LIMITS.maxCurrencyBuckets
     && counts.every((count) => count <= AGENT_TOOL_RESOURCE_LIMITS.maxAggregateCount);
+}
+
+const MAX_SECRET_KEY_SCAN_DEPTH = 32;
+const MAX_SECRET_KEY_SCAN_NODES = 100_000;
+
+/**
+ * Secret-boundary protection covers record values, while result maps also
+ * carry untrusted data in their object keys (for example currency codes).
+ * Scan those keys before any result is protected or persisted. A bounded
+ * fail-closed walk keeps hostile object graphs from turning this guard into
+ * an unbounded traversal.
+ */
+function containsSecretObjectKey(
+  value: unknown,
+  secretBoundary: SecretBoundaryGate,
+): boolean {
+  const seen = new WeakSet<object>();
+  let remaining = MAX_SECRET_KEY_SCAN_NODES;
+  function visit(current: unknown, depth: number): boolean {
+    if (remaining-- <= 0 || depth > MAX_SECRET_KEY_SCAN_DEPTH) return true;
+    if (Array.isArray(current)) return current.some((item) => visit(item, depth + 1));
+    if (!isRecord(current)) return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    for (const [key, child] of Object.entries(current)) {
+      try {
+        if (secretBoundary.protectText("diagnostic-export", key).failure) return true;
+      } catch {
+        return true;
+      }
+      if (visit(child, depth + 1)) return true;
+    }
+    return false;
+  }
+  return visit(value, 0);
 }
 
 function modelWithinResourceLimits(model: FinancialModel): boolean {
@@ -757,6 +804,9 @@ export function createFinancialOverviewToolGateway({
           ]);
           if (!validateAgentToolResult(adapterResult) || !resultWithinResourceLimits(adapterResult)) {
             throw new Error("invalid-tool-result");
+          }
+          if (containsSecretObjectKey(adapterResult, secretBoundary)) {
+            throw new Error("secret-key-detected");
           }
           if (!ledgerBefore || !sameLedgerSnapshot(ledgerBefore, ledgerResourceSnapshot(ledgerDir, snapshotDb))) {
             throw new Error("ledger-changed-during-tool-read");
