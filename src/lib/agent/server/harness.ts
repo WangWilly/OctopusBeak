@@ -524,26 +524,31 @@ export function createAgentHarnessService({
   }
 
   function safeProviderProposal(runId: string, rawProposal: unknown): AgentToolProposal | Record<string, unknown> {
-    const validation = validateAgentToolProposal(rawProposal);
-    if (validation.value) {
-      const protectedProposal = secretBoundary.protectRecord(
-        "diagnostic-export",
-        "agent-tool-proposal",
-        validation.value as unknown as Record<string, unknown>,
-      );
-      if (protectedProposal.failure) {
-        const safe = createReadFinancialOverviewProposal(runId, "redacted");
-        const { input: _input, ...malformed } = safe;
-        return malformed;
+    try {
+      const validation = validateAgentToolProposal(rawProposal);
+      if (validation.value) {
+        const protectedProposal = secretBoundary.protectRecord(
+          "diagnostic-export",
+          "agent-tool-proposal",
+          validation.value as unknown as Record<string, unknown>,
+        );
+        if (protectedProposal.failure) {
+          const safe = createReadFinancialOverviewProposal(runId, "redacted");
+          const { input: _input, ...malformed } = safe;
+          return malformed;
+        }
+        if (validation.value.runId === runId && validation.value.runAuthority === runId) {
+          return validation.value;
+        }
+        return {
+          ...validation.value,
+          runId,
+          runAuthority: "invalid",
+        };
       }
-      if (validation.value.runId === runId && validation.value.runAuthority === runId) {
-        return validation.value;
-      }
-      return {
-        ...validation.value,
-        runId,
-        runAuthority: "invalid",
-      };
+    } catch {
+      // Provider input is untrusted. Cyclic or otherwise unserializable values
+      // must follow the same bounded malformed-proposal path as schema failures.
     }
     const safe = createReadFinancialOverviewProposal(runId, "redacted");
     const { input: _input, ...malformed } = safe;

@@ -621,12 +621,13 @@ export function createSqliteAgentRunStore(
         if (canUpgradeAgentToolOutcome(protectedRecord, current)) {
           db.prepare(`
             UPDATE agent_tool_outcomes
-            SET outcome = ?, result_reference = ?, result_json = ?, record_json = ?, updated_at = ?
+            SET outcome = ?, result_reference = ?, result_json = ?, occurred_at = ?, record_json = ?, updated_at = ?
             WHERE run_id = ? AND request_id = ?
           `).run(
             protectedRecord.outcome,
             protectedRecord.resultReference?.value ?? null,
             protectedRecord.result ? JSON.stringify(protectedRecord.result) : null,
+            protectedRecord.occurredAt,
             encoded,
             protectedRecord.occurredAt,
             protectedRecord.runId,

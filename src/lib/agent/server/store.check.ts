@@ -567,3 +567,73 @@ test("SQLite tool outcomes are monotonic and never regress a terminal result", (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("SQLite tool outcome upgrades update occurred_at for durable ordering and record replay", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-tool-ordering-"));
+  try {
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: "run-tool-ordering",
+      analysisId: null,
+      phase: "running",
+      startedAt: "2026-08-04T00:00:00.000Z",
+      finishedAt: null,
+      output: "",
+      failureReason: null,
+    });
+    const record = (requestId: string, outcome: AgentToolExecutionRecord["outcome"], occurredAt: string): AgentToolExecutionRecord => ({
+      runId: "run-tool-ordering",
+      requestId,
+      proposal: createReadFinancialOverviewProposal("run-tool-ordering", requestId),
+      decision: {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: outcome !== "not-dispatched",
+        reason: outcome === "not-dispatched" ? "run-authority-denied" : "allowed",
+      },
+      outcome,
+      result: null,
+      resultReference: null,
+      occurredAt,
+    });
+    const first = record("request-first", "not-dispatched", "2026-08-04T00:00:01.000Z");
+    const second = record("request-second", "not-dispatched", "2026-08-04T00:00:02.000Z");
+    store.recordToolRequest?.(first);
+    store.recordToolRequest?.(second);
+    const upgraded = record("request-first", "outcome-unknown", "2026-08-04T00:00:03.000Z");
+    store.recordToolRequest?.(upgraded);
+    store.close();
+
+    const db = openLedgerDatabase(root);
+    const rows = db.prepare(`
+      SELECT request_id, occurred_at, record_json
+      FROM agent_tool_outcomes
+      WHERE run_id = ?
+      ORDER BY occurred_at, request_id
+    `).all("run-tool-ordering") as Array<{
+      request_id: string;
+      occurred_at: string;
+      record_json: string;
+    }>;
+    assert.deepEqual(rows.map((row) => row.request_id), ["request-second", "request-first"]);
+    assert.deepEqual(
+      rows.map((row) => [row.request_id, row.occurred_at, JSON.parse(row.record_json).record.occurredAt]),
+      [
+        ["request-second", "2026-08-04T00:00:02.000Z", "2026-08-04T00:00:02.000Z"],
+        ["request-first", "2026-08-04T00:00:03.000Z", "2026-08-04T00:00:03.000Z"],
+      ],
+    );
+    db.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(
+      reopened.listToolRequests?.("run-tool-ordering").map((item) => [item.requestId, item.outcome, item.occurredAt]),
+      [
+        ["request-second", "not-dispatched", "2026-08-04T00:00:02.000Z"],
+        ["request-first", "outcome-unknown", "2026-08-04T00:00:03.000Z"],
+      ],
+    );
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -789,6 +789,8 @@ test("a never-settling adapter reaches bounded outcome-unknown after cancellatio
 
 test("a pre-submit sanitization exception still releases pending authority", async () => {
   const store = createInMemoryAgentRunStore();
+  const diagnostics: unknown[] = [];
+  const canary = "cyclic-provider-secret";
   let stream!: (content: string) => void;
   let submit!: (proposal: unknown) => Promise<unknown>;
   const provider: AgentProvider = {
@@ -805,10 +807,15 @@ test("a pre-submit sanitization exception still releases pending authority", asy
     helper: { launch(input) { input.provider.start(input); }, cancel() {} },
     provider,
     runStore: store,
-    toolGateway: createFinancialOverviewToolGateway({ runStore: store, adapter: async () => result() }),
+    toolGateway: createFinancialOverviewToolGateway({
+      runStore: store,
+      secretValues: [canary],
+      adapter: async () => result(),
+    }),
     clock: { now: () => "2026-08-04T00:00:00.000Z" },
-    diagnosticsSink: { record() {} },
+    diagnosticsSink: { record(event) { diagnostics.push(event); } },
     idFactory: () => "run-pre-submit-error",
+    secretValues: [canary],
   });
   await service.activate();
   service.start({});
@@ -817,8 +824,25 @@ test("a pre-submit sanitization exception still releases pending authority", asy
     "request-circular",
   );
   circular.input = circular;
-  await assert.rejects(() => submit(circular));
+  circular.runAuthority = canary;
+  const submission = await submit(circular) as {
+    outcome: string;
+    result: unknown;
+    decision: { reason: string };
+  };
+  assert.equal(submission.outcome, "not-dispatched");
+  assert.equal(submission.result, null);
+  assert.equal(submission.decision.reason, "malformed-proposal");
+  const lineage = service.lineage("run-pre-submit-error");
+  const proposalEvent = lineage.find((event) => event.kind === "tool.proposal");
+  assert.equal(proposalEvent?.tool?.requestId, "redacted");
+  assert.equal(Object.hasOwn(proposalEvent?.tool?.proposal ?? {}, "input"), false);
+  assert.equal(JSON.stringify(lineage).includes(canary), false);
+  assert.ok(JSON.stringify(lineage).length < 4_096);
+  assert.equal(JSON.stringify(diagnostics).includes(canary), false);
+  assert.ok(diagnostics.length <= 2);
   assert.equal(service.cancel("run-pre-submit-error").phase, "cancelled");
+  assert.equal(service.complete("run-pre-submit-error").phase, "cancelled");
   stream("late output after pre-submit error");
   assert.equal(service.status("run-pre-submit-error").output, "");
 });
