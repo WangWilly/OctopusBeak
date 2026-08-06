@@ -552,6 +552,168 @@ test("SQLite Agent lineage rejects a malformed tool payload at the existing inva
   }
 });
 
+test("SQLite Agent lineage requires canonical nested tool decision values in persisted records", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-lineage-decision-canonical-"));
+  const baseRecord = (runId: string, decision: Record<string, unknown>): Record<string, unknown> => ({
+    runId,
+    analysisId: null,
+    seq: 1,
+    kind: "tool.decision",
+    status: "allowed",
+    occurredAt: "2026-08-03T00:00:01.000Z",
+    dataClasses: ["prompt", "model-output"],
+    providerIdentity: "test-provider",
+    osBuild: "test",
+    providerAssurance: "unverified-build",
+    transitionReason: null,
+    secretFields: [],
+    tool: {
+      requestId: `request-${runId}`,
+      toolName: "read_financial_overview",
+      decision,
+      decisionReason: "allowed",
+    },
+  });
+  const rejectPersisted = (
+    runId: string,
+    record: Record<string, unknown>,
+    envelope: boolean,
+    sensitiveValue: string,
+  ) => {
+    insertRun(root, runId, {
+      runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+    });
+    insertLineage(
+      root,
+      runId,
+      envelope ? { recordVersion: 1, record } : record,
+      { kind: "tool.decision", status: "allowed" },
+    );
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    try {
+      let error: Error | undefined;
+      try {
+        store.getLineage(runId);
+      } catch (caught) {
+        error = caught as Error;
+      }
+      assert.ok(error);
+      assert.equal(error.message, "Invalid Agent lineage record.");
+      assert.equal(error.message.includes(sensitiveValue), false);
+    } finally {
+      store.close();
+    }
+  };
+
+  try {
+    rejectPersisted(
+      "run-lineage-bogus-decision-version",
+      baseRecord("run-lineage-bogus-decision-version", {
+        decisionVersion: "tampered-decision-version-secret",
+        allowed: true,
+        reason: "allowed",
+      }),
+      true,
+      "tampered-decision-version-secret",
+    );
+    rejectPersisted(
+      "run-lineage-bogus-decision-reason",
+      baseRecord("run-lineage-bogus-decision-reason", {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "unbounded-sensitive-decision-reason-secret",
+      }),
+      true,
+      "unbounded-sensitive-decision-reason-secret",
+    );
+    rejectPersisted(
+      "run-lineage-legacy-bogus-decision",
+      baseRecord("run-lineage-legacy-bogus-decision", {
+        decisionVersion: "legacy-tampered-decision-version-secret",
+        allowed: true,
+        reason: "legacy-sensitive-decision-reason-secret",
+      }),
+      false,
+      "legacy-tampered-decision-version-secret",
+    );
+    rejectPersisted(
+      "run-lineage-legacy-bogus-reason",
+      baseRecord("run-lineage-legacy-bogus-reason", {
+        decisionVersion: "agent-tool-decision.v1",
+        allowed: true,
+        reason: "legacy-sensitive-decision-reason-secret",
+      }),
+      false,
+      "legacy-sensitive-decision-reason-secret",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite Agent lineage roundtrips canonical nested tool decisions across reopen", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-store-lineage-decision-roundtrip-"));
+  try {
+    const record = {
+      runId: "run-lineage-canonical-decision",
+      analysisId: null,
+      seq: 1,
+      kind: "tool.decision" as const,
+      status: "allowed" as const,
+      occurredAt: "2026-08-03T00:00:01.000Z",
+      dataClasses: ["financial.derived"],
+      providerIdentity: "test-provider",
+      osBuild: "test",
+      providerAssurance: "unverified-build" as const,
+      transitionReason: null,
+      secretFields: [] as const,
+      tool: {
+        requestId: "request-lineage-canonical-decision",
+        toolName: "read_financial_overview",
+        decision: {
+          decisionVersion: "agent-tool-decision.v1",
+          allowed: true,
+          reason: "allowed",
+        },
+        decisionReason: "allowed",
+      },
+    };
+    const optionalDecisionRecord = {
+      ...record,
+      seq: 2,
+      status: "blocked" as const,
+      tool: {
+        requestId: "request-lineage-optional-decision",
+        toolName: "read_financial_overview",
+        decisionReason: "permission-denied",
+      },
+    };
+    const store = createSqliteAgentRunStore(root, { secretValues: [] });
+    store.createRun({
+      runId: record.runId,
+      analysisId: null,
+      phase: "completed",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:00:01.000Z",
+      output: "",
+      failureReason: null,
+    });
+    store.appendLineage(record);
+    store.appendLineage(optionalDecisionRecord);
+    store.close();
+
+    const reopened = createSqliteAgentRunStore(root, { secretValues: [] });
+    assert.deepEqual(reopened.getLineage(record.runId), [record, optionalDecisionRecord]);
+    reopened.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("SQLite tool outcomes are monotonic and never regress a terminal result", () => {
   const root = mkdtempSync(join(tmpdir(), "agent-store-tool-monotonic-"));
   try {

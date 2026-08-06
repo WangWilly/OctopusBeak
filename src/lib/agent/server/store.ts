@@ -265,9 +265,9 @@ function decodeToolLineage(value: unknown): AgentLineageEvent["tool"] {
     || (value.decision !== undefined
       && (!isRecord(value.decision)
         || !hasOnlyExpectedKeys(value.decision, ["decisionVersion", "allowed", "reason"], ["decisionVersion", "allowed", "reason"])
-        || typeof value.decision.decisionVersion !== "string"
+        || value.decision.decisionVersion !== AGENT_TOOL_DECISION_VERSION
         || typeof value.decision.allowed !== "boolean"
-        || typeof value.decision.reason !== "string"))
+        || !AGENT_TOOL_DECISION_REASONS.includes(value.decision.reason as never)))
     || (value.decisionReason !== undefined
       && !AGENT_TOOL_DECISION_REASONS.includes(value.decisionReason as never))
     || (value.outcome !== undefined
