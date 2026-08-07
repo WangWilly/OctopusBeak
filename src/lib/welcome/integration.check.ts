@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { resolveCompletedFirstRunWelcome } from "./integration.ts";
@@ -43,4 +44,18 @@ test("does not resolve an active or bypassed Welcome as completed", () => {
     currentSlide: 1,
     bankAutomationChoice: null,
   }), null);
+});
+
+test("completion updates the destination URL and normalizes the route exactly once", async () => {
+  const page = await readFile(new URL("../../routes/+page.svelte", import.meta.url), "utf8");
+  const navigation = page.match(/function navigateToRoute\(nextRoute: RouteId\) \{([\s\S]*?)\n  \}/)?.[1];
+  const completion = page.match(/function completeFirstRunWelcome\(\) \{([\s\S]*?)\n  \}/)?.[1];
+
+  assert.ok(navigation);
+  assert.ok(completion);
+  assert.match(navigation, /const destinationHash = `#\/\$\{nextRoute\}`;/);
+  assert.match(navigation, /if \(location\.hash !== destinationHash\) history\.pushState\(history\.state, "", destinationHash\);/);
+  assert.equal(navigation.match(/normalizeRoute\(\)/g)?.length, 1);
+  assert.match(completion, /navigateToRoute\(destination\.route\);/);
+  assert.doesNotMatch(completion, /location\.hash|normalizeRoute\(\)/);
 });
