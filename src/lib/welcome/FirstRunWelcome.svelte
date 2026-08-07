@@ -195,8 +195,23 @@
     }
   }
 
+  function isInteractivePointerTarget(event: PointerEvent) {
+    return event.composedPath().some((target) => {
+      if (!(target instanceof Element)) return false;
+      if (target.matches(
+        "button, a, input, select, textarea, label, summary, option, " +
+        "[role='button'], [role='link'], [role='checkbox'], [role='radio'], " +
+        "[role='tab'], [role='switch'], [contenteditable='true']",
+      )) return true;
+      return target instanceof HTMLElement && target.tabIndex >= 0;
+    });
+  }
+
   function handlePointerDown(event: PointerEvent) {
-    if (event.button !== 0 || transitionLocked) return;
+    if (event.button !== 0 || transitionLocked || isInteractivePointerTarget(event)) {
+      pointerStart = null;
+      return;
+    }
     pointerStart = { x: event.clientX, time: performance.now(), id: event.pointerId };
     root.setPointerCapture?.(event.pointerId);
   }
