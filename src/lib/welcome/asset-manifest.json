@@ -24,6 +24,14 @@
     "decodedPixelSha256": "e659ad2b1bcedc70426239bf4e109a4ac407630bcacb76b95310ec6524af6236"
   },
   {
+    "source": "~/Downloads/Curved Arrow Animation.svg",
+    "destination": "src/lib/welcome/assets/curved-arrow-animation.svg",
+    "kind": "illustration",
+    "originalBytes": 10220,
+    "finalBytes": 10220,
+    "contentSha256": "31c0737ac44293b36f0dfbac93c4838c32b3c21b9d8e7eeccaf7113cdb4f02a1"
+  },
+  {
     "source": "~/Documents/ob-welcome/1-overview/en.png",
     "destination": "src/lib/welcome/assets/screenshots/01-overview.en.png",
     "kind": "screenshot",

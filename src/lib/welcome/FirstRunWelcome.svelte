@@ -3,6 +3,7 @@
 
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import appIcon from "./assets/app-icon.png";
+  import curvedArrow from "./assets/curved-arrow-animation.svg";
   import inkBackground from "./assets/ink-background.png";
   import iconOverview from "./assets/icons/01-overview.png";
   import iconAssets from "./assets/icons/04-asset.png";
@@ -316,7 +317,7 @@
         <h1 id="welcome-introduction-heading">{$t.firstRunWelcome.introductionTitle}</h1>
         <p>{$t.firstRunWelcome.introductionBody}</p>
       </div>
-      <div class="icon-arrow" aria-hidden="true">↟</div>
+      <img class="icon-arrow" src={curvedArrow} alt="" aria-hidden="true" draggable="false" />
     </section>
   {:else if slide}
     <section class="product-slide" data-slide={slide.number} aria-labelledby={`welcome-slide-${slide.number}-heading`}>
@@ -416,14 +417,12 @@
     background: var(--deep-blue);
   }
 
-  .intro-slide,
   .product-slide {
     position: absolute;
     inset: 0;
     animation: slide-in 320ms cubic-bezier(.2, .8, .2, 1) both;
   }
 
-  .backward .intro-slide,
   .backward .product-slide {
     animation-name: slide-in-back;
   }
@@ -531,21 +530,18 @@
     font: inherit;
     font-weight: 750;
     cursor: pointer;
-    animation: copy-rise 260ms cubic-bezier(.2, .8, .2, 1) both;
   }
 
   .transitioning .language-slide .force-heading {
-    opacity: 0;
     transform: scale(1.08);
-    transition: opacity 240ms ease, transform 360ms ease;
+    transition: transform 360ms ease;
   }
 
   .transitioning .language-slide .language-options,
   .transitioning .language-slide .language-prompt,
   .transitioning .language-slide .language-continue {
-    opacity: 0;
     transform: translateY(12px);
-    transition: opacity 220ms ease, transform 300ms ease;
+    transition: transform 300ms ease;
   }
 
   .transitioning .language-slide .language-app-icon {
@@ -568,7 +564,6 @@
     background: transparent;
     filter: drop-shadow(0 20px 32px rgb(7 31 74 / 24%));
     cursor: pointer;
-    animation: icon-arrive 600ms cubic-bezier(.16, 1, .3, 1) both;
   }
 
   .introduction-icon img {
@@ -585,7 +580,6 @@
     margin: 0;
     font-size: clamp(1.7rem, 3.2vw, 3rem);
     letter-spacing: -.04em;
-    animation: copy-rise 500ms 180ms both;
   }
 
   .introduction-copy p {
@@ -594,17 +588,18 @@
     color: rgb(7 31 74 / 76%);
     font-size: clamp(1rem, 1.45vw, 1.25rem);
     line-height: 1.65;
-    animation: copy-rise 500ms 360ms both;
   }
 
   .icon-arrow {
     position: absolute;
     top: clamp(250px, 36vh, 350px);
     left: calc(50% + clamp(85px, 13vw, 160px));
-    color: var(--deep-blue);
-    font-size: 2.8rem;
-    transform: rotate(-28deg);
-    animation: arrow-float 1.4s ease-in-out infinite alternate;
+    width: clamp(150px, 16vw, 220px);
+    height: auto;
+    transform: rotate(45deg);
+    transform-origin: center;
+    pointer-events: none;
+    user-select: none;
   }
 
   .intro-back {
@@ -824,21 +819,6 @@
     to { opacity: 1; transform: translateX(0); }
   }
 
-  @keyframes icon-arrive {
-    from { opacity: 0; transform: translateY(42px) scale(.72); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
-  @keyframes copy-rise {
-    from { opacity: 0; transform: translateY(18px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes arrow-float {
-    from { transform: translateY(4px) rotate(-28deg); }
-    to { transform: translateY(-7px) rotate(-28deg); }
-  }
-
   @keyframes circle-cover {
     from { transform: translate(-50%, -50%) scale(1); }
     68%, 86% { transform: translate(-50%, -50%) scale(160); opacity: 1; }
@@ -933,7 +913,6 @@
       transition-duration: 120ms !important;
     }
 
-    .intro-slide,
     .product-slide {
       animation-name: reduced-fade;
     }
