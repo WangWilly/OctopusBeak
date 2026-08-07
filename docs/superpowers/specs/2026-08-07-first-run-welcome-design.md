@@ -165,7 +165,8 @@ Do not recolor or place gradients over product screenshots. For feature icons on
 3. apply a blue-to-teal gradient to the line through CSS masking;
 4. enlarge it behind the copy at low opacity.
 
-The app icon retains its supplied appearance.
+The app icon retains its supplied artwork, while the surrounding square export
+margin is clipped so only the rounded icon is visible.
 
 ### Lossless compression
 
@@ -191,7 +192,12 @@ Do not migrate unrelated repository PNG files. Add `lfs: true` to checkout in `.
 
 ## Motion
 
-- Slide 1 to 2: approximately 600 ms. Force text disperses, language cards fade, and the app icon expands and moves upward before the introduction appears in two staggered beats.
+- On slide 1 load and language changes, a reduced set of particles contracts
+  from outside the text stage to form the localized Welcome heading. While the
+  Welcome window is focused and visible, the ForceSimulation remains active.
+- Slide 1 to 2: approximately 600 ms. After explicit language confirmation,
+  Force text disperses, language cards fade, and the app icon expands and moves
+  upward before the introduction appears in two staggered beats.
 - Slide 2 to 3: approximately 700 ms. A deep-blue circle expands from the app icon, covers the viewport, swaps the underlying content, and fades.
 - Slides 3 to 6: approximately 320 ms. The screenshot composition moves horizontally according to direction while fading; copy and background icon cross-fade.
 - Reduced motion replaces spatial movement, parallax, force simulation, and circular expansion with short opacity transitions.
@@ -200,15 +206,19 @@ Do not autoplay between slides.
 
 ## Input and navigation
 
-- Support horizontal trackpad swipe and pointer drag after a deliberate distance/velocity threshold.
+- Support horizontal trackpad wheel gestures; pointer dragging never changes slides.
 - Support Left and Right Arrow keys.
 - Support visible previous/next icon buttons where progression is not gated.
 - Let every slide after the first return to the previous slide.
-- Slide 1 advances only through language confirmation.
+- Choosing a language keeps slide 1 visible and reveals a Continue button below
+  the language cards. Only that button confirms the choice and advances.
 - Slide 2 advances only through app-icon activation.
 - Slide 6 completes only through `Start setup` or `Maybe later`.
 - Ignore a second navigation request while a transition is active.
 - Preserve logical focus after every transition and expose visible focus states.
+- Provide an invisible full-width draggable region at the top of every Welcome
+  slide. Interactive controls remain excluded from the window drag region.
+- Place slide 2's Back control at the bottom center.
 
 ## Implementation shape
 
@@ -251,11 +261,12 @@ LayerChart 2.0.0 already exports `layerchart/force`. Add `d3-force` as a direct 
 
 ### Interaction and accessibility
 
-- pointer drag, trackpad-style wheel input, icon buttons, and keyboard arrows;
+- absence of pointer-drag paging, trackpad-style wheel input, icon buttons, and keyboard arrows;
 - transition lockout against double advancement;
 - focus restoration and accessible page announcements;
 - reduced-motion behavior;
-- ForceSimulation cooling and bounded particle count.
+- continuous focused ForceSimulation, external-to-inward formation, and bounded
+  particle count.
 
 ### Assets and delivery
 

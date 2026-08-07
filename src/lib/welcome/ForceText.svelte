@@ -15,36 +15,73 @@
   let host: HTMLDivElement;
   let particles: TextParticle[] = [];
   let simulation: Simulation<TextParticle, undefined> | null = null;
-  let stopped = false;
-  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = true;
   let coolTimer: ReturnType<typeof setTimeout> | undefined;
+  let ambientTimer: ReturnType<typeof setInterval> | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let rasterWidth = 600;
-  const rasterHeight = 150;
+  let rasterHeight = 180;
+  let mounted = false;
+  let rebuildSignature = "";
+  let ambientPhase = 0;
+
+  function animatedTargetX(datum: TextParticle) {
+    return datum.targetX + Math.sin(ambientPhase + datum.targetY * 0.045) * 1.4;
+  }
+
+  function animatedTargetY(datum: TextParticle) {
+    return datum.targetY + Math.cos(ambientPhase + datum.targetX * 0.035) * 1.1;
+  }
 
   $: forces = {
-    x: forceX<TextParticle>((datum) => datum.targetX).strength(0.16),
-    y: forceY<TextParticle>((datum) => datum.targetY).strength(0.16),
-    collide: forceCollide<TextParticle>(1.25).strength(0.45),
+    x: forceX<TextParticle>(animatedTargetX).strength(0.24),
+    y: forceY<TextParticle>(animatedTargetY).strength(0.24),
+    collide: forceCollide<TextParticle>(1.4).strength(0.5),
   };
 
-  function rebuild(width: number) {
+  $: if (mounted && host) {
+    const signature = `${text}:${reducedMotion}`;
+    if (signature !== rebuildSignature) {
+      rebuildSignature = signature;
+      rebuild(host.clientWidth, host.clientHeight);
+    }
+  }
+
+  function rebuild(width: number, height: number) {
     if (reducedMotion || typeof document === "undefined") return;
     rasterWidth = Math.max(260, Math.min(720, Math.round(width)));
+    rasterHeight = Math.max(120, Math.round(height));
     particles = rasterizeText(text, {
       width: rasterWidth,
       height: rasterHeight,
-      font: "800 76px Inter, ui-sans-serif, system-ui, sans-serif",
-      maxPoints: resolveTextParticleBudget(rasterWidth, window.devicePixelRatio),
+      font: `800 ${Math.round(rasterHeight * 0.82)}px Inter, ui-sans-serif, system-ui, sans-serif`,
+      maxPoints: Math.min(
+        text.length > 4 ? 520 : 420,
+        resolveTextParticleBudget(rasterWidth, window.devicePixelRatio),
+      ),
       seed: text === "歡迎" ? 0x6f63747a : 0x6f637465,
     });
-    stopped = false;
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      simulation?.alphaTarget(0);
-      simulation?.stop();
+    stopped = !shouldRun();
+    if (simulation) {
+      simulation.nodes(particles);
+      syncSimulationActivity();
+    }
+  }
+
+  function shouldRun() {
+    return !reducedMotion && !document.hidden && document.hasFocus();
+  }
+
+  function syncSimulationActivity() {
+    if (!simulation) return;
+    if (shouldRun()) {
+      stopped = false;
+      simulation.alpha(Math.max(simulation.alpha(), 0.16)).alphaTarget(0.035).restart();
+    } else {
+      simulation.alphaTarget(0);
+      simulation.stop();
       stopped = true;
-    }, 1_200);
+    }
   }
 
   function handlePointerMove(event: PointerEvent) {
@@ -65,27 +102,40 @@
     stopped = false;
     simulation.alpha(0.18).alphaTarget(0.03).restart();
     clearTimeout(coolTimer);
-    coolTimer = setTimeout(() => {
-      simulation?.alphaTarget(0);
-      simulation?.stop();
-      stopped = true;
-    }, 220);
+    coolTimer = setTimeout(syncSimulationActivity, 220);
   }
 
   onMount(() => {
     if (reducedMotion) return;
-    rebuild(host.clientWidth);
+    mounted = true;
+    rebuildSignature = `${text}:${reducedMotion}`;
+    rebuild(host.clientWidth, host.clientHeight);
     resizeObserver = new ResizeObserver(([entry]) => {
       const nextWidth = entry?.contentRect.width ?? host.clientWidth;
-      if (Math.abs(nextWidth - rasterWidth) > 80) rebuild(nextWidth);
+      const nextHeight = entry?.contentRect.height ?? host.clientHeight;
+      if (Math.abs(nextWidth - rasterWidth) > 40 || Math.abs(nextHeight - rasterHeight) > 10) {
+        rebuild(nextWidth, nextHeight);
+      }
     });
     resizeObserver.observe(host);
+    window.addEventListener("focus", syncSimulationActivity);
+    window.addEventListener("blur", syncSimulationActivity);
+    document.addEventListener("visibilitychange", syncSimulationActivity);
+    ambientTimer = setInterval(() => {
+      if (!simulation || !shouldRun()) return;
+      ambientPhase += 0.16;
+      simulation.alpha(Math.max(simulation.alpha(), 0.055)).restart();
+    }, 180);
   });
 
   onDestroy(() => {
-    clearTimeout(settleTimer);
+    mounted = false;
     clearTimeout(coolTimer);
+    clearInterval(ambientTimer);
     resizeObserver?.disconnect();
+    window.removeEventListener("focus", syncSimulationActivity);
+    window.removeEventListener("blur", syncSimulationActivity);
+    document.removeEventListener("visibilitychange", syncSimulationActivity);
     simulation?.stop();
   });
 </script>
@@ -96,7 +146,7 @@
   role="presentation"
   bind:this={host}
   onpointermove={handlePointerMove}
-  onpointerleave={() => simulation?.alphaTarget(0)}
+  onpointerleave={syncSimulationActivity}
 >
   <h1 class:particle-heading={!reducedMotion}>{text}</h1>
   {#if !reducedMotion && particles.length}
@@ -108,12 +158,15 @@
         alphaDecay={0.075}
         alphaMin={0.015}
         velocityDecay={0.38}
-        onStart={({ simulation: nextSimulation }) => (simulation = nextSimulation)}
+        onStart={({ simulation: nextSimulation }) => {
+          simulation = nextSimulation;
+          syncSimulationActivity();
+        }}
       >
         {#snippet children({ nodes })}
           <svg viewBox={`0 0 ${rasterWidth} ${rasterHeight}`} role="presentation">
             {#each nodes as node}
-              <circle cx={node.x ?? node.targetX} cy={node.y ?? node.targetY} r="1.45"></circle>
+              <circle cx={node.x ?? node.targetX} cy={node.y ?? node.targetY} r="1.65"></circle>
             {/each}
           </svg>
         {/snippet}
@@ -127,7 +180,7 @@
     position: relative;
     display: grid;
     width: min(720px, 76vw);
-    min-height: 150px;
+    height: 100%;
     place-items: center;
     color: #071f4a;
   }
@@ -135,7 +188,7 @@
   h1 {
     z-index: 1;
     margin: 0;
-    font-size: clamp(3rem, 6vw, 5rem);
+    font-size: clamp(4.5rem, 10vw, 8.5rem);
     font-weight: 800;
     letter-spacing: -0.055em;
     line-height: 1;
@@ -158,6 +211,6 @@
   }
 
   .reduced {
-    min-height: 120px;
+    height: 100%;
   }
 </style>
