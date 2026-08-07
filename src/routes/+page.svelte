@@ -139,13 +139,18 @@
     if (next.status === "completed") completingFirstRunWelcome = true;
   }
 
+  function navigateToRoute(nextRoute: RouteId) {
+    const destinationHash = `#/${nextRoute}`;
+    if (location.hash !== destinationHash) history.pushState(history.state, "", destinationHash);
+    normalizeRoute();
+  }
+
   function completeFirstRunWelcome() {
     if (!firstRunWelcomeState) return;
     const destination = resolveCompletedFirstRunWelcome(firstRunWelcomeState);
     if (!destination) return;
     if (destination.onboardingState) saveOnboarding(destination.onboardingState);
-    location.hash = `/${destination.route}`;
-    normalizeRoute();
+    navigateToRoute(destination.route);
     completingFirstRunWelcome = false;
   }
 

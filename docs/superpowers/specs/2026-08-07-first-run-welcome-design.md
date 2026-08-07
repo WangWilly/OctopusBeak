@@ -280,7 +280,7 @@ LayerChart 2.0.0 already exports `layerchart/force`. Add `d3-force` as a direct 
 
 ### Assets and delivery
 
-- exactly 35 manifest entries and shipping outputs;
+- exactly 36 manifest entries and shipping outputs;
 - strict decoded-pixel equality after compression;
 - transparent processed icon masks;
 - Git LFS attributes and pointer checks;
