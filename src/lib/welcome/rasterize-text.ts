@@ -22,6 +22,9 @@ export type TextParticle = RasterPoint & {
   vy?: number;
 };
 
+/** Keep raster targets on a stable lattice so font anti-aliasing cannot move them by a pixel. */
+export const PARTICLE_GRID_SPACING = 12;
+
 export function resolveTextParticleBudget(width: number, devicePixelRatio = 1) {
   const normalizedWidth = Math.max(0, Number.isFinite(width) ? width : 0);
   const normalizedRatio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
@@ -68,10 +71,17 @@ export function sampleAlphaRaster(
   if (!maxPoints || raster.width <= 0 || raster.height <= 0) return [];
   const threshold = options.alphaThreshold ?? 32;
   const candidates: RasterPoint[] = [];
+  const occupiedCells = new Set<string>();
   for (let y = 0; y < raster.height; y += 1) {
     for (let x = 0; x < raster.width; x += 1) {
       if ((raster.data[(y * raster.width + x) * 4 + 3] ?? 0) >= threshold) {
-        candidates.push({ x, y });
+        const gridX = Math.floor(x / PARTICLE_GRID_SPACING) * PARTICLE_GRID_SPACING;
+        const gridY = Math.floor(y / PARTICLE_GRID_SPACING) * PARTICLE_GRID_SPACING;
+        const cell = `${gridX}:${gridY}`;
+        if (!occupiedCells.has(cell)) {
+          occupiedCells.add(cell);
+          candidates.push({ x: gridX, y: gridY });
+        }
       }
     }
   }

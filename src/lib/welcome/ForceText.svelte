@@ -36,7 +36,7 @@
   $: forces = {
     x: forceX<TextParticle>(animatedTargetX).strength(0.24),
     y: forceY<TextParticle>(animatedTargetY).strength(0.24),
-    collide: forceCollide<TextParticle>(1.4).strength(0.5),
+    collide: forceCollide<TextParticle>(4).strength(1),
   };
 
   $: if (mounted && host) {
@@ -166,7 +166,7 @@
         {#snippet children({ nodes })}
           <svg viewBox={`0 0 ${rasterWidth} ${rasterHeight}`} role="presentation">
             {#each nodes as node}
-              <circle cx={node.x ?? node.targetX} cy={node.y ?? node.targetY} r="1.65"></circle>
+              <circle cx={node.x ?? node.targetX} cy={node.y ?? node.targetY} r="4"></circle>
             {/each}
           </svg>
         {/snippet}
