@@ -239,9 +239,18 @@ function optimizeSvg(source, sourcePath) {
   if (!/<svg\b[^>]*>/i.test(text)) {
     throw new Error(`${sourcePath} does not contain an SVG root element`);
   }
+  // Keep the supplied path artwork intact while shortening its staged reveal
+  // to the Welcome introduction's 1.2 s motion budget.
+  const accelerated = text
+    .replace(
+      /((?:begin|dur)=")([\d.]+)s(")/g,
+      (_match, prefix, seconds, suffix) => `${prefix}${Number(seconds) / 2}s${suffix}`,
+    )
+    .replace(/[ \t]+$/gm, "");
+  const bytes = Buffer.from(accelerated, "utf8");
   return {
-    bytes: source,
-    contentSha256: createHash("sha256").update(source).digest("hex"),
+    bytes,
+    contentSha256: createHash("sha256").update(bytes).digest("hex"),
   };
 }
 
