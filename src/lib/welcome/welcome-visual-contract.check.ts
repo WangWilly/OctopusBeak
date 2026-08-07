@@ -24,6 +24,10 @@ test("intro slides cover the full viewport and the arrow reveal finishes near 1.
     welcomeSource,
     /\.intro-slide\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;/s,
   );
+  assert.match(
+    welcomeSource,
+    /:global\(html:has\(\.welcome\)\)[\s\S]*?scrollbar-gutter:\s*auto;/,
+  );
   const timings = [...arrowSource.matchAll(/(?:begin|dur)=\"([\d.]+)s\"/g)]
     .map((match) => Number(match[1]));
   assert.ok(timings.length > 0);

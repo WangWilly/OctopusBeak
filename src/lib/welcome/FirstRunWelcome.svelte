@@ -357,6 +357,7 @@
   :global(html:has(.welcome)),
   :global(body:has(.welcome)) {
     overflow: hidden;
+    scrollbar-gutter: auto;
   }
 
   .welcome {
