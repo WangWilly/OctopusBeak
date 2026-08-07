@@ -18,6 +18,8 @@ type StorageReader = Pick<Storage, "getItem">;
 type StorageWriter = Pick<Storage, "setItem">;
 
 export type FirstRunWelcomeAutomationTask = {
+  id: string;
+  kind: "crawler" | "sync" | "import";
   latestStartedAt: string | null;
   latestFinishedAt: string | null;
 };
@@ -66,8 +68,22 @@ export function shouldShowFirstRunWelcome(facts: FirstRunWelcomeEligibilityFacts
   if (facts.welcomeState || facts.onboardingState) return false;
   if (facts.overview?.accounts.length || facts.overview?.importedAt) return false;
   return !facts.automation?.tasks.some(
-    (task) => Boolean(task.latestStartedAt || task.latestFinishedAt),
+    (task) => (task.kind !== "sync" || task.id !== "exchange-rates")
+      && Boolean(task.latestStartedAt || task.latestFinishedAt),
   );
+}
+
+export function resolveFirstRunWelcomeBoot(
+  facts: FirstRunWelcomeEligibilityFacts,
+): FirstRunWelcomeState {
+  if (facts.welcomeState) return facts.welcomeState;
+  if (shouldShowFirstRunWelcome(facts)) return createFirstRunWelcomeState();
+  return {
+    version: 1,
+    status: "bypassed",
+    currentSlide: 1,
+    bankAutomationChoice: null,
+  };
 }
 
 export function reduceFirstRunWelcome(

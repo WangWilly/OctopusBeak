@@ -5,6 +5,7 @@ import {
   createFirstRunWelcomeState,
   reduceFirstRunWelcome,
   readFirstRunWelcomeState,
+  resolveFirstRunWelcomeBoot,
   shouldShowFirstRunWelcome,
   writeFirstRunWelcomeState,
   type FirstRunWelcomeEligibilityFacts,
@@ -87,8 +88,8 @@ test("shows Welcome only for a genuinely empty installation", () => {
   assert.equal(shouldShowFirstRunWelcome(importedOverview), false);
 
   for (const history of [
-    { latestStartedAt: "2026-08-07T00:00:00.000Z", latestFinishedAt: null },
-    { latestStartedAt: null, latestFinishedAt: "2026-08-07T00:01:00.000Z" },
+    { id: "fubon-all-statements", kind: "crawler" as const, latestStartedAt: "2026-08-07T00:00:00.000Z", latestFinishedAt: null },
+    { id: "import-downloads-csv", kind: "import" as const, latestStartedAt: null, latestFinishedAt: "2026-08-07T00:01:00.000Z" },
   ]) {
     const existingAutomation = emptyEligibilityFacts();
     existingAutomation.automation = { tasks: [history] };
@@ -96,8 +97,55 @@ test("shows Welcome only for a genuinely empty installation", () => {
   }
 
   const queuedAutomation = emptyEligibilityFacts();
-  queuedAutomation.automation = { tasks: [{ latestStartedAt: null, latestFinishedAt: null }] };
+  queuedAutomation.automation = { tasks: [{ id: "fubon-all-statements", kind: "crawler", latestStartedAt: null, latestFinishedAt: null }] };
   assert.equal(shouldShowFirstRunWelcome(queuedAutomation), true);
+});
+
+test("ignores system-maintenance history when identifying an existing user", () => {
+  const maintenanceOnly = emptyEligibilityFacts();
+  maintenanceOnly.automation = { tasks: [{
+    id: "exchange-rates",
+    kind: "sync",
+    latestStartedAt: "2026-08-07T07:26:16.023Z",
+    latestFinishedAt: "2026-08-07T07:26:16.459Z",
+  }] };
+
+  assert.equal(shouldShowFirstRunWelcome(maintenanceOnly), true);
+  assert.deepEqual(resolveFirstRunWelcomeBoot(maintenanceOnly), createFirstRunWelcomeState());
+});
+
+test("resolves first-use boot to a resumable Welcome or a durable bypass", () => {
+  const active = activeAt(4);
+  assert.deepEqual(resolveFirstRunWelcomeBoot({
+    ...emptyEligibilityFacts(),
+    welcomeState: active,
+  }), active);
+
+  const completed: FirstRunWelcomeState = {
+    ...activeAt(6),
+    status: "completed",
+    bankAutomationChoice: "later",
+  };
+  assert.deepEqual(resolveFirstRunWelcomeBoot({
+    ...emptyEligibilityFacts(),
+    welcomeState: completed,
+  }), completed);
+
+  assert.deepEqual(
+    resolveFirstRunWelcomeBoot(emptyEligibilityFacts()),
+    createFirstRunWelcomeState(),
+  );
+
+  const existingUser = emptyEligibilityFacts();
+  existingUser.automation = {
+    tasks: [{ id: "sync-maicoin", kind: "sync", latestStartedAt: "2026-08-07T00:00:00.000Z", latestFinishedAt: null }],
+  };
+  assert.deepEqual(resolveFirstRunWelcomeBoot(existingUser), {
+    version: 1,
+    status: "bypassed",
+    currentSlide: 1,
+    bankAutomationChoice: null,
+  });
 });
 
 const activeAt = (currentSlide: FirstRunWelcomeState["currentSlide"]): FirstRunWelcomeState => ({
