@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { sampleAlphaRaster } from "./rasterize-text.ts";
+import { resolveTextParticleBudget, sampleAlphaRaster } from "./rasterize-text.ts";
+
+test("text particle budget responds to device pixel ratio without exceeding its cap", () => {
+  assert.equal(resolveTextParticleBudget(260, 1), 360);
+  assert.equal(resolveTextParticleBudget(600, 1), 690);
+  assert.equal(resolveTextParticleBudget(600, 1.25), 863);
+  assert.equal(resolveTextParticleBudget(600, 2), 900);
+  assert.equal(resolveTextParticleBudget(2_000, 4), 900);
+  assert.equal(resolveTextParticleBudget(600, 0), 690);
+});
 
 test("text raster sampling is deterministic and bounded", () => {
   const alpha = new Uint8ClampedArray(20 * 12 * 4);

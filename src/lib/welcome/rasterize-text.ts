@@ -22,6 +22,14 @@ export type TextParticle = RasterPoint & {
   vy?: number;
 };
 
+export function resolveTextParticleBudget(width: number, devicePixelRatio = 1) {
+  const normalizedWidth = Math.max(0, Number.isFinite(width) ? width : 0);
+  const normalizedRatio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+    ? devicePixelRatio
+    : 1;
+  return Math.min(900, Math.max(360, Math.round(normalizedWidth * 1.15 * normalizedRatio)));
+}
+
 /**
  * Samples opaque pixels in scan order with deterministic, evenly distributed
  * positions. The public seam accepts an alpha raster so its cap and stability
