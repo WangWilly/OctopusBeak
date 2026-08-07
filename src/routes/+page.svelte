@@ -17,7 +17,6 @@
     type OnboardingState,
   } from "$lib/onboarding/state.ts";
   import {
-    hasExistingProductData,
     resolveOnboardingStep,
     shouldNarrowOnboardingSources,
     type CredentialSetupResult,
@@ -30,6 +29,14 @@
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
+  import FirstRunWelcome from "$lib/welcome/FirstRunWelcome.svelte";
+  import { resolveCompletedFirstRunWelcome } from "$lib/welcome/integration.ts";
+  import {
+    readFirstRunWelcomeState,
+    resolveFirstRunWelcomeBoot,
+    writeFirstRunWelcomeState,
+    type FirstRunWelcomeState,
+  } from "$lib/welcome/state.ts";
 
   type RouteId = OnboardingRoute;
   type LoadState<T> =
@@ -47,7 +54,8 @@
   let spending: LoadState<SpendingPageDto> = { status: "loading" };
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
   let onboardingState: OnboardingState | null = null;
-  let onboardingEligibilityChecked = false;
+  let firstRunWelcomeState: FirstRunWelcomeState | null = null;
+  let completingFirstRunWelcome = false;
   let overviewLoadedForImportFinishedAt: string | null = null;
   let overviewReloading = false;
 
@@ -90,15 +98,6 @@
         : task.credentialGroupId === onboardingState?.selectedCredentialGroupId),
     );
   $: if (
-    initialized
-    && !onboardingEligibilityChecked
-    && (route !== "overview" || overview.status !== "loading")
-    && (route !== "automation" || automation.status !== "loading")
-  ) {
-    onboardingEligibilityChecked = true;
-    void checkOnboardingEligibility();
-  }
-  $: if (
     route === "overview"
     && onboardingStep === "overview"
     && !overviewReloading
@@ -132,6 +131,22 @@
   function saveOnboarding(next: OnboardingState) {
     onboardingState = next;
     writeOnboardingState(localStorage, next);
+  }
+
+  function saveFirstRunWelcome(next: FirstRunWelcomeState) {
+    firstRunWelcomeState = next;
+    writeFirstRunWelcomeState(localStorage, next);
+    if (next.status === "completed") completingFirstRunWelcome = true;
+  }
+
+  function completeFirstRunWelcome() {
+    if (!firstRunWelcomeState) return;
+    const destination = resolveCompletedFirstRunWelcome(firstRunWelcomeState);
+    if (!destination) return;
+    if (destination.onboardingState) saveOnboarding(destination.onboardingState);
+    location.hash = `/${destination.route}`;
+    normalizeRoute();
+    completingFirstRunWelcome = false;
   }
 
   function pauseOnboarding() {
@@ -176,26 +191,35 @@
     location.hash = route === "automation" ? "/overview" : "/automation";
   }
 
-  async function checkOnboardingEligibility() {
+  async function resolveFirstRunWelcome() {
+    const storedWelcome = readFirstRunWelcomeState(localStorage);
+    if (storedWelcome || onboardingState) {
+      firstRunWelcomeState = resolveFirstRunWelcomeBoot({
+        welcomeState: storedWelcome,
+        onboardingState,
+        overview: null,
+        automation: null,
+      });
+      if (!storedWelcome) writeFirstRunWelcomeState(localStorage, firstRunWelcomeState);
+      return;
+    }
+
     try {
-      if (onboardingState && onboardingState.status !== "active") return;
       const [automationData, overviewData] = await Promise.all([
-        automation.status === "ready"
-          ? automation.data
-          : window.octopusBeak.automation.load(),
-        overview.status === "ready"
-          ? overview.data
-          : window.octopusBeak.overview.load(),
+        window.octopusBeak.automation.load(),
+        window.octopusBeak.overview.load(),
       ]);
       automation = { status: "ready", data: automationData };
       overview = { status: "ready", data: overviewData };
-      if (!onboardingState && !hasExistingProductData(
-        factsForOnboarding(route, automationData, overviewData, overviewLoadedForImportFinishedAt),
-      )) {
-        saveOnboarding(createOnboardingState());
-      }
+      firstRunWelcomeState = resolveFirstRunWelcomeBoot({
+        welcomeState: null,
+        onboardingState: null,
+        overview: { accounts: overviewData.accounts, importedAt: overviewData.importedAt },
+        automation: { tasks: automationData.automation.tasks },
+      });
+      writeFirstRunWelcomeState(localStorage, firstRunWelcomeState);
     } catch (error) {
-      console.warn("onboarding-eligibility-load-failed", message(error));
+      console.warn("welcome-eligibility-load-failed", message(error));
     }
   }
 
@@ -226,13 +250,15 @@
   }
 
   onMount(() => {
-    void window.octopusBeak.settings.load().then((value) => {
-      applySystemSettings(value);
-    }).catch((error) => console.warn("system-settings-load-failed", error)).finally(() => {
-      onboardingState = readOnboardingState(localStorage);
-      initialized = true;
-      normalizeRoute();
-    });
+    void window.octopusBeak.settings.load()
+      .then((value) => applySystemSettings(value))
+      .catch((error) => console.warn("system-settings-load-failed", error))
+      .then(async () => {
+        onboardingState = readOnboardingState(localStorage);
+        await resolveFirstRunWelcome();
+        initialized = true;
+        normalizeRoute();
+      });
     addEventListener("hashchange", normalizeRoute);
     return () => removeEventListener("hashchange", normalizeRoute);
   });
@@ -240,6 +266,14 @@
 
 {#if !initialized}
   <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+{:else if firstRunWelcomeState?.status === "active" || completingFirstRunWelcome}
+  {#if firstRunWelcomeState}
+    <FirstRunWelcome
+      state={firstRunWelcomeState}
+      onStateChange={saveFirstRunWelcome}
+      onComplete={completeFirstRunWelcome}
+    />
+  {/if}
 {:else if route === "overview"}
   {#if overview.status === "ready"}<OverviewDashboard overview={overview.data} />{/if}
   {#if overview.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
@@ -285,7 +319,7 @@
   />
 {/if}
 
-{#if onboardingState}
+{#if onboardingState && firstRunWelcomeState?.status !== "active" && !completingFirstRunWelcome}
   <OnboardingCoach
     step={onboardingStep}
     state={onboardingState}
