@@ -52,10 +52,13 @@
   };
 
   let root: HTMLElement;
+  let introductionIcon: HTMLButtonElement;
   let transitionLocked = false;
   let direction: "forward" | "backward" = "forward";
   let circleCover = false;
-  let reducedMotion = false;
+  let reducedMotion = typeof window === "undefined"
+    ? true
+    : window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let pointerStart: { x: number; time: number; id: number } | null = null;
   let wheelDistance = 0;
   let wheelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -143,6 +146,10 @@
     if (next === state) return;
     transitionLocked = true;
     direction = "forward";
+    const rootRect = root.getBoundingClientRect();
+    const iconRect = introductionIcon.getBoundingClientRect();
+    root.style.setProperty("--circle-origin-x", `${iconRect.left - rootRect.left + iconRect.width / 2}px`);
+    root.style.setProperty("--circle-origin-y", `${iconRect.top - rootRect.top + iconRect.height / 2}px`);
     circleCover = true;
     clearTimeout(coverTimer);
     coverTimer = setTimeout(() => {
@@ -168,6 +175,7 @@
 
   async function restoreFocus(nextSlide: number) {
     await tick();
+    if (state.status !== "active" || !root?.isConnected) return;
     root?.querySelector<HTMLElement>(`[data-slide="${nextSlide}"] [data-focus-default]`)?.focus();
   }
 
@@ -231,6 +239,7 @@
     const updateMotion = () => (reducedMotion = motionQuery?.matches ?? false);
     updateMotion();
     motionQuery.addEventListener("change", updateMotion);
+    void restoreFocus(currentSlide);
     return () => motionQuery?.removeEventListener("change", updateMotion);
   });
 
@@ -298,7 +307,7 @@
       <button class="intro-back" data-focus-default type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
         <span aria-hidden="true">←</span>
       </button>
-      <button class="introduction-icon" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
+      <button bind:this={introductionIcon} class="introduction-icon" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
         <img src={appIcon} alt="" aria-hidden="true" />
       </button>
       <div class="introduction-copy">
@@ -352,6 +361,8 @@
     --teal: #18a9a4;
     --parallax-x: 0px;
     --parallax-y: 0px;
+    --circle-origin-x: 50%;
+    --circle-origin-y: 31%;
     position: fixed;
     z-index: 100;
     inset: 0;
@@ -406,7 +417,7 @@
     justify-content: center;
     box-sizing: border-box;
     padding: 54px 28px 36px;
-    background-image: linear-gradient(rgb(244 248 245 / 14%), rgb(244 248 245 / 14%)), var(--ink-background);
+    background-image: var(--ink-background);
     background-position: center;
     background-size: cover;
   }
@@ -721,8 +732,8 @@
   .circle-cover {
     position: fixed;
     z-index: 20;
-    top: 31%;
-    left: 50%;
+    top: var(--circle-origin-y);
+    left: var(--circle-origin-x);
     width: 22px;
     aspect-ratio: 1;
     border-radius: 50%;

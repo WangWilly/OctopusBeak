@@ -10,7 +10,8 @@ First-run Welcome is not part of Settings onboarding. Restarting onboarding from
 
 ## Product boundaries
 
-- Show First-run Welcome only when there is no Welcome state, no existing onboarding state, and no product data or automation history that identifies an existing user.
+- Show First-run Welcome only when there is no Welcome state, no existing onboarding state, and no product data or user financial automation history that identifies an existing user.
+- Treat crawler, import, and user financial sync history as evidence of an existing user. Ignore automatic system-maintenance history such as the `exchange-rates` sync task, which runs on a fresh installation without user activity.
 - Mark an existing user as having bypassed Welcome so an upgrade does not interrupt them later.
 - Keep Welcome state independent from the existing `OnboardingState`.
 - Persist the current slide after every completed transition.
@@ -35,7 +36,7 @@ type FirstRunWelcomeState = {
 
 The selected locale remains owned by the existing `octopusbeak-locale` setting rather than being duplicated in this object. An active state resumes at `currentSlide`; completed and bypassed states never render Welcome.
 
-Eligibility must load enough of the existing Overview and Automation models to distinguish an empty installation from an existing user. Existing product data, automation history, or any existing onboarding state suppresses Welcome. Settings actions never clear or recreate Welcome state.
+Eligibility must load enough of the existing Overview and Automation models to distinguish an empty installation from an existing user. Existing product data, crawler/import/user financial sync history, or any existing onboarding state suppresses Welcome. Automatic system-maintenance history such as `exchange-rates` does not suppress it. Settings actions never clear or recreate Welcome state.
 
 ## Six-slide narrative
 
@@ -129,7 +130,7 @@ Use Credential settings as the single main screenshot. Use the processed key-vau
 
 ## Layout
 
-Welcome occupies the full renderer window before the Dashboard shell is rendered. It is not a modal over the product.
+Welcome occupies the full renderer window before the application shell is rendered. It is not a modal over the product.
 
 Slides 1 and 2 use a centered vertical composition. Slides 3 through 6 use a stable split:
 

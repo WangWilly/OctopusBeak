@@ -49,8 +49,11 @@ test("rejects malformed or future Welcome state records", () => {
     JSON.stringify({ version: 1, status: "active", currentSlide: 1, bankAutomationChoice: "never" }),
     JSON.stringify({ version: 1, status: "active", currentSlide: 1, bankAutomationChoice: null, extra: true }),
     JSON.stringify({ version: 1, status: "active", currentSlide: 1, bankAutomationChoice: "later" }),
+    JSON.stringify({ version: 1, status: "completed", currentSlide: 1, bankAutomationChoice: "start" }),
+    JSON.stringify({ version: 1, status: "completed", currentSlide: 5, bankAutomationChoice: "later" }),
     JSON.stringify({ version: 1, status: "completed", currentSlide: 6, bankAutomationChoice: null }),
     JSON.stringify({ version: 1, status: "bypassed", currentSlide: 1, bankAutomationChoice: "start" }),
+    JSON.stringify({ version: 1, status: "bypassed", currentSlide: 2, bankAutomationChoice: null }),
   ];
 
   for (const record of invalidRecords) {
