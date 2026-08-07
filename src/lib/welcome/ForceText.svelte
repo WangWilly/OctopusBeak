@@ -3,7 +3,11 @@
   import { ForceSimulation } from "layerchart/svg";
   import { onDestroy, onMount } from "svelte";
 
-  import { rasterizeText, type TextParticle } from "./rasterize-text.ts";
+  import {
+    rasterizeText,
+    resolveTextParticleBudget,
+    type TextParticle,
+  } from "./rasterize-text.ts";
 
   export let text: string;
   export let reducedMotion = false;
@@ -31,7 +35,7 @@
       width: rasterWidth,
       height: rasterHeight,
       font: "800 76px Inter, ui-sans-serif, system-ui, sans-serif",
-      maxPoints: Math.min(900, Math.max(360, Math.round(rasterWidth * 1.15))),
+      maxPoints: resolveTextParticleBudget(rasterWidth, window.devicePixelRatio),
       seed: text === "歡迎" ? 0x6f63747a : 0x6f637465,
     });
     stopped = false;

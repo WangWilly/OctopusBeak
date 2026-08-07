@@ -138,7 +138,12 @@ function isFirstRunWelcomeState(value: unknown): value is FirstRunWelcomeState {
       || record.bankAutomationChoice === "start"
       || record.bankAutomationChoice === "later");
   if (!validShape) return false;
-  return record.status === "completed"
-    ? record.bankAutomationChoice === "start" || record.bankAutomationChoice === "later"
-    : record.bankAutomationChoice === null;
+  if (record.status === "completed") {
+    return record.currentSlide === 6
+      && (record.bankAutomationChoice === "start" || record.bankAutomationChoice === "later");
+  }
+  if (record.status === "bypassed") {
+    return record.currentSlide === 1 && record.bankAutomationChoice === null;
+  }
+  return record.bankAutomationChoice === null;
 }
