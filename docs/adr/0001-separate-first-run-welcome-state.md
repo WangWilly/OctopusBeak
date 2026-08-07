@@ -1,0 +1,3 @@
+# Keep First-run Welcome separate from onboarding progression
+
+First-run Welcome uses its own versioned, resumable renderer state instead of becoming an introductory step in Onboarding progression. It is shown only to a genuinely empty new user, completes when that person explicitly chooses whether to begin bank automation, and is permanently bypassed for an existing user; restarting onboarding from Settings therefore starts the bank-automation progression directly. This separation avoids coupling a one-time product introduction to milestone state derived from credentials, automation runs, imports, and Overview data, at the cost of maintaining one additional small local state record and an explicit eligibility check.

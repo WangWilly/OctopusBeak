@@ -5,7 +5,12 @@ This context covers guided first-run setup and the financial automation needed t
 ## Language
 
 **Onboarding progression**:
-The guided sequence that helps a new user configure a credential source, collect statements, import them, and confirm the resulting overview. It may pause for human assistance and resume later.
+The guided sequence that helps a person configure a credential source, collect statements, import them, and confirm the resulting overview. It begins after the person opts in from First-run Welcome or restarts it from Settings; it may pause for human assistance and resume later.
+_Avoid_: First-run Welcome, welcome screens
+
+**First-run Welcome**:
+A one-time, resumable, swipe-through introduction shown before Onboarding progression for a genuinely empty new user. Existing product data or any existing Onboarding progression state identifies an existing user and bypasses it. First-run Welcome preserves the selected language and current slide across restarts, and completes only after the person explicitly chooses whether to begin bank automation; restarting onboarding from Settings never includes it.
+_Avoid_: Welcome screens, onboarding intro
 
 **Credential setup**:
 The act of enabling a credential source, entering its credentials, and choosing the statement types required before collection.
