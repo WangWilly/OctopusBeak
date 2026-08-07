@@ -428,6 +428,8 @@
   }
 
   .intro-slide {
+    position: absolute;
+    inset: 0;
     --welcome-hero-size: clamp(150px, 17vw, 210px);
     display: flex;
     flex-direction: column;
@@ -596,7 +598,7 @@
     left: calc(50% + clamp(85px, 13vw, 160px));
     width: clamp(150px, 16vw, 220px);
     height: auto;
-    transform: rotate(45deg);
+    transform: translateY(-110px) rotate(-15deg);
     transform-origin: center;
     pointer-events: none;
     user-select: none;

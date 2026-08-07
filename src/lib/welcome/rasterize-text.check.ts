@@ -42,7 +42,7 @@ test("text raster sampling is deterministic and bounded", () => {
 
   assert.deepEqual(first, second);
   assert.equal(first.length, 17);
-  assert.ok(first.every(({ x, y }) => x % 12 === 0 && y % 12 === 0));
+  assert.ok(first.every(({ x, y }) => x % 8 === 0 && y % 8 === 0));
 });
 
 test("text raster sampling ignores transparent and nearly transparent pixels", () => {
@@ -52,7 +52,7 @@ test("text raster sampling ignores transparent and nearly transparent pixels", (
 
   assert.deepEqual(
     sampleAlphaRaster({ width: 24, height: 1, data }, { maxPoints: 520 }),
-    [{ x: 12, y: 0 }],
+    [{ x: 8, y: 0 }],
   );
 });
 
@@ -68,7 +68,7 @@ test("a one-particle cap still returns a valid deterministic target", () => {
   );
 });
 
-test("text raster targets stay on the deterministic 12px particle grid", () => {
+test("text raster targets stay on the deterministic 8px particle grid", () => {
   const alpha = new Uint8ClampedArray(72 * 36 * 4);
   for (let y = 0; y < 36; y += 1) {
     for (let x = 0; x < 72; x += 1) alpha[(y * 72 + x) * 4 + 3] = 255;
@@ -80,7 +80,7 @@ test("text raster targets stay on the deterministic 12px particle grid", () => {
   );
 
   assert.ok(targets.length > 0);
-  assert.ok(targets.every(({ x, y }) => x % 12 === 0 && y % 12 === 0));
+  assert.ok(targets.every(({ x, y }) => x % 8 === 0 && y % 8 === 0));
   assert.deepEqual(
     targets,
     sampleAlphaRaster(

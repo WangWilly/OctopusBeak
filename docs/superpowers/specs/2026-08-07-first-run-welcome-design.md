@@ -196,17 +196,18 @@ Do not migrate unrelated repository PNG files. Add `lfs: true` to checkout in `.
 - On slide 1 load and language changes, a reduced set of particles contracts
   from outside the text stage to form the localized Welcome heading. While the
   Welcome window is focused and visible, the ForceSimulation remains active.
-- Slide 1 particle targets are deterministic points on a 12 px lattice. Render
-  particles at radius 4 with an equally sized collision radius and full
+- Slide 1 particle targets are deterministic points on an 8 px lattice. Render
+  particles at radius 2 with an equally sized collision radius and full
   collision strength so the settled word remains legible across rasterization
   and device-pixel-ratio changes.
 - Slide 1 to 2: approximately 600 ms. After explicit language confirmation,
   Force text disperses, language cards move aside, and the app icon expands and moves
   upward before the introduction appears in two staggered beats.
 - Slides 1 and 2 do not use opacity entry or exit animations. Slide 2 renders
-  the supplied curved-arrow SVG at the existing cue position, rotated 45°
-  clockwise, without an additional CSS bob animation. Product slides retain
-  their directional transitions.
+  the supplied curved-arrow SVG above the introduction copy, rotated 15°
+  counterclockwise, without an additional CSS bob animation. Its staged reveal
+  completes in approximately 1.2 s. Product slides retain their directional
+  transitions.
 - Slide 2 to 3: approximately 700 ms. A deep-blue circle expands from the app icon, covers the viewport, swaps the underlying content, and fades.
 - Slides 3 to 6: approximately 320 ms. The screenshot composition moves horizontally according to direction while fading; copy and background icon cross-fade.
 - Reduced motion replaces spatial movement, parallax, force simulation, and circular expansion with short opacity transitions.

@@ -28,8 +28,8 @@
     "destination": "src/lib/welcome/assets/curved-arrow-animation.svg",
     "kind": "illustration",
     "originalBytes": 10220,
-    "finalBytes": 10220,
-    "contentSha256": "31c0737ac44293b36f0dfbac93c4838c32b3c21b9d8e7eeccaf7113cdb4f02a1"
+    "finalBytes": 10213,
+    "contentSha256": "e9e8f9a5b04263856965c9a79c97f4a69f1b4d9b6ce35b35e60204e0999ecbf4"
   },
   {
     "source": "~/Documents/ob-welcome/1-overview/en.png",

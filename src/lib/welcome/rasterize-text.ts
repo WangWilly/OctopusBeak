@@ -23,7 +23,7 @@ export type TextParticle = RasterPoint & {
 };
 
 /** Keep raster targets on a stable lattice so font anti-aliasing cannot move them by a pixel. */
-export const PARTICLE_GRID_SPACING = 12;
+export const PARTICLE_GRID_SPACING = 8;
 
 export function resolveTextParticleBudget(width: number, devicePixelRatio = 1) {
   const normalizedWidth = Math.max(0, Number.isFinite(width) ? width : 0);
