@@ -73,6 +73,7 @@
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "dependencies": {
+    "d3-force": "^3.0.0",
     "drizzle-orm": "^0.45.2",
     "libretto": "^0.6.31",
     "parse5": "^8.0.1",
@@ -86,6 +87,7 @@
     "@lucide/svelte": "^1.25.0",
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.68.0",
+    "@types/d3-force": "^3.0.10",
     "@types/node": "^26.0.0",
     "electron": "^43.0.0",
     "layerchart": "^2.0.0",
