@@ -32,31 +32,27 @@ test("particle starts are deterministic and remain outside the raster", () => {
 });
 
 test("text raster sampling is deterministic and bounded", () => {
-  const alpha = new Uint8ClampedArray(20 * 12 * 4);
-  for (let y = 2; y < 10; y += 1) {
-    for (let x = 3; x < 18; x += 1) alpha[(y * 20 + x) * 4 + 3] = 255;
+  const alpha = new Uint8ClampedArray(120 * 120 * 4);
+  for (let y = 2; y < 110; y += 1) {
+    for (let x = 3; x < 110; x += 1) alpha[(y * 120 + x) * 4 + 3] = 255;
   }
 
-  const first = sampleAlphaRaster({ width: 20, height: 12, data: alpha }, { maxPoints: 17, seed: 42 });
-  const second = sampleAlphaRaster({ width: 20, height: 12, data: alpha }, { maxPoints: 17, seed: 42 });
+  const first = sampleAlphaRaster({ width: 120, height: 120, data: alpha }, { maxPoints: 17, seed: 42 });
+  const second = sampleAlphaRaster({ width: 120, height: 120, data: alpha }, { maxPoints: 17, seed: 42 });
 
   assert.deepEqual(first, second);
   assert.equal(first.length, 17);
-  assert.deepEqual(first[0], { x: 6, y: 2 });
-  assert.deepEqual(first.at(-1), { x: 12, y: 9 });
+  assert.ok(first.every(({ x, y }) => x % 12 === 0 && y % 12 === 0));
 });
 
 test("text raster sampling ignores transparent and nearly transparent pixels", () => {
-  const data = new Uint8ClampedArray([
-    0, 0, 0, 0,
-    0, 0, 0, 31,
-    0, 0, 0, 32,
-    0, 0, 0, 255,
-  ]);
+  const data = new Uint8ClampedArray(24 * 4);
+  data[2 * 4 + 3] = 31;
+  data[14 * 4 + 3] = 32;
 
   assert.deepEqual(
-    sampleAlphaRaster({ width: 4, height: 1, data }, { maxPoints: 520 }),
-    [{ x: 2, y: 0 }, { x: 3, y: 0 }],
+    sampleAlphaRaster({ width: 24, height: 1, data }, { maxPoints: 520 }),
+    [{ x: 12, y: 0 }],
   );
 });
 
@@ -68,6 +64,28 @@ test("a one-particle cap still returns a valid deterministic target", () => {
 
   assert.deepEqual(
     sampleAlphaRaster({ width: 3, height: 1, data }, { maxPoints: 1, seed: 7 }),
-    [{ x: 1, y: 0 }],
+    [{ x: 0, y: 0 }],
+  );
+});
+
+test("text raster targets stay on the deterministic 12px particle grid", () => {
+  const alpha = new Uint8ClampedArray(72 * 36 * 4);
+  for (let y = 0; y < 36; y += 1) {
+    for (let x = 0; x < 72; x += 1) alpha[(y * 72 + x) * 4 + 3] = 255;
+  }
+
+  const targets = sampleAlphaRaster(
+    { width: 72, height: 36, data: alpha },
+    { maxPoints: 40, seed: 42 },
+  );
+
+  assert.ok(targets.length > 0);
+  assert.ok(targets.every(({ x, y }) => x % 12 === 0 && y % 12 === 0));
+  assert.deepEqual(
+    targets,
+    sampleAlphaRaster(
+      { width: 72, height: 36, data: alpha },
+      { maxPoints: 40, seed: 42 },
+    ),
   );
 });

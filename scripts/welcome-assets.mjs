@@ -65,6 +65,11 @@ const ASSETS = [
     destination: "src/lib/welcome/assets/ink-background.png",
     kind: "background",
   },
+  {
+    source: "~/Downloads/Curved Arrow Animation.svg",
+    destination: "src/lib/welcome/assets/curved-arrow-animation.svg",
+    kind: "illustration",
+  },
   ...SCREENSHOTS.flatMap(([base, sourceDirectory]) => [
     {
       source: `~/Documents/ob-welcome/${sourceDirectory}/en.png`,
@@ -229,6 +234,17 @@ function optimizePng(source, sourcePath) {
   };
 }
 
+function optimizeSvg(source, sourcePath) {
+  const text = source.toString("utf8");
+  if (!/<svg\b[^>]*>/i.test(text)) {
+    throw new Error(`${sourcePath} does not contain an SVG root element`);
+  }
+  return {
+    bytes: source,
+    contentSha256: createHash("sha256").update(source).digest("hex"),
+  };
+}
+
 function expandedSource(source) {
   return resolve(homedir(), source.slice(2));
 }
@@ -242,22 +258,31 @@ export async function generateWelcomeAssets() {
   for (const asset of ASSETS) {
     const sourcePath = expandedSource(asset.source);
     const source = await readFile(sourcePath);
-    const optimized = optimizePng(source, asset.source);
+    const optimized = asset.kind === "illustration"
+      ? optimizeSvg(source, asset.source)
+      : optimizePng(source, asset.source);
     const destinationPath = resolve(REPO_ROOT, asset.destination);
     await mkdir(dirname(destinationPath), { recursive: true });
     await writeFile(destinationPath, optimized.bytes);
-    manifest.push({
+    const entry = {
       source: asset.source,
       destination: asset.destination,
       kind: asset.kind,
-      width: optimized.metadata.width,
-      height: optimized.metadata.height,
-      bitDepth: optimized.metadata.bitDepth,
-      colorType: optimized.metadata.colorType,
-      originalBytes: source.length,
-      finalBytes: optimized.bytes.length,
-      decodedPixelSha256: optimized.decodedPixelSha256,
-    });
+    };
+    if (asset.kind === "illustration") {
+      entry.originalBytes = source.length;
+      entry.finalBytes = optimized.bytes.length;
+      entry.contentSha256 = optimized.contentSha256;
+    } else {
+      entry.width = optimized.metadata.width;
+      entry.height = optimized.metadata.height;
+      entry.bitDepth = optimized.metadata.bitDepth;
+      entry.colorType = optimized.metadata.colorType;
+      entry.originalBytes = source.length;
+      entry.finalBytes = optimized.bytes.length;
+      entry.decodedPixelSha256 = optimized.decodedPixelSha256;
+    }
+    manifest.push(entry);
   }
   await writeFile(
     resolve(REPO_ROOT, MANIFEST_PATH),
@@ -347,7 +372,7 @@ function checkoutHasLfs(yaml) {
   );
 }
 
-async function listPngFiles(directory, relativeDirectory = "") {
+async function listWelcomeFiles(directory, relativeDirectory = "") {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
@@ -356,9 +381,9 @@ async function listPngFiles(directory, relativeDirectory = "") {
       : entry.name;
     if (entry.isDirectory()) {
       files.push(
-        ...(await listPngFiles(resolve(directory, entry.name), relativePath)),
+        ...(await listWelcomeFiles(resolve(directory, entry.name), relativePath)),
       );
-    } else if (entry.isFile() && entry.name.endsWith(".png")) {
+    } else if (entry.isFile() && /\.(?:png|svg)$/i.test(entry.name)) {
       files.push(`src/lib/welcome/assets/${relativePath}`);
     }
   }
@@ -402,13 +427,13 @@ export async function validateWelcomeAssets() {
   ) {
     invalidAssets.push("manifest source-to-destination mapping differs from contract");
   }
-  const shippingPngs = await listPngFiles(
+  const shippingAssets = await listWelcomeFiles(
     resolve(REPO_ROOT, "src/lib/welcome/assets"),
   );
   if (
-    JSON.stringify(shippingPngs) !== JSON.stringify([...expected].sort())
+    JSON.stringify(shippingAssets) !== JSON.stringify([...expected].sort())
   ) {
-    invalidAssets.push("shipping directory must contain exactly 35 contracted PNGs");
+    invalidAssets.push("shipping directory must contain exactly the contracted Welcome assets");
   }
 
   const trackedByLfs = new Set(
@@ -422,37 +447,47 @@ export async function validateWelcomeAssets() {
     let bytes;
     try {
       bytes = await readFile(resolve(REPO_ROOT, entry.destination));
-      const parsed = parsePng(bytes, entry.destination);
-      const hash = createHash("sha256").update(parsed.inflated).digest("hex");
-      for (const field of [
-        "width",
-        "height",
-        "bitDepth",
-        "colorType",
-      ]) {
-        if (entry[field] !== parsed.metadata[field]) {
-          errors.push(`${field} differs from manifest`);
+      if (entry.kind === "illustration") {
+        if (!/<svg\b[^>]*>/i.test(bytes.toString("utf8"))) {
+          errors.push("illustration does not contain an SVG root element");
+        }
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        if (entry.contentSha256 !== hash) {
+          errors.push("content hash differs from manifest");
+        }
+      } else {
+        const parsed = parsePng(bytes, entry.destination);
+        const hash = createHash("sha256").update(parsed.inflated).digest("hex");
+        for (const field of [
+          "width",
+          "height",
+          "bitDepth",
+          "colorType",
+        ]) {
+          if (entry[field] !== parsed.metadata[field]) {
+            errors.push(`${field} differs from manifest`);
+          }
+        }
+        if (entry.decodedPixelSha256 !== hash) {
+          errors.push("decoded scanline hash differs");
+        }
+        if (entry.kind === "icon") {
+          if (parsed.metadata.colorType !== 6) {
+            errors.push("feature icon is not RGBA");
+          } else {
+            const stats = rgbaAlphaStats(parsed);
+            if (stats.transparent === 0 || stats.visible === 0) {
+              errors.push("feature icon lacks both transparent and visible pixels");
+            }
+            if (stats.transparentBorder / stats.borderPixels < 0.95) {
+              errors.push("feature icon border is not at least 95% transparent");
+            }
+          }
         }
       }
       if (entry.finalBytes !== bytes.length) errors.push("finalBytes differs");
       if (!Number.isInteger(entry.originalBytes) || entry.originalBytes < bytes.length) {
         errors.push("originalBytes is invalid or smaller than finalBytes");
-      }
-      if (entry.decodedPixelSha256 !== hash) {
-        errors.push("decoded scanline hash differs");
-      }
-      if (entry.kind === "icon") {
-        if (parsed.metadata.colorType !== 6) {
-          errors.push("feature icon is not RGBA");
-        } else {
-          const stats = rgbaAlphaStats(parsed);
-          if (stats.transparent === 0 || stats.visible === 0) {
-            errors.push("feature icon lacks both transparent and visible pixels");
-          }
-          if (stats.transparentBorder / stats.borderPixels < 0.95) {
-            errors.push("feature icon border is not at least 95% transparent");
-          }
-        }
       }
     } catch (error) {
       errors.push(error.message);

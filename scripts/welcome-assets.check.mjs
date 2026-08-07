@@ -24,6 +24,7 @@ const EXPECTED_SCREENSHOT_BASES = [
 const EXPECTED_DESTINATIONS = [
   "src/lib/welcome/assets/app-icon.png",
   "src/lib/welcome/assets/ink-background.png",
+  "src/lib/welcome/assets/curved-arrow-animation.svg",
   ...EXPECTED_SCREENSHOT_BASES.flatMap((base) => [
     `src/lib/welcome/assets/screenshots/${base}.en.png`,
     `src/lib/welcome/assets/screenshots/${base}.zh-TW.png`,
@@ -43,6 +44,6 @@ test("Welcome asset delivery exposes exactly the specified destinations", () => 
 
 test("all Welcome assets are lossless, transparent where required, and LFS-safe", async () => {
   const report = await validateWelcomeAssets();
-  assert.equal(report.assetCount, 35);
+  assert.equal(report.assetCount, 36);
   assert.equal(report.invalidAssets.length, 0, report.invalidAssets.join("\n"));
 });
