@@ -34,6 +34,8 @@
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
+    "check:welcome-assets": "node --test scripts/welcome-assets.check.mjs",
+    "generate:welcome-assets": "node scripts/welcome-assets.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
     "libretto:status": "libretto status",
     "libretto:setup": "libretto setup",
