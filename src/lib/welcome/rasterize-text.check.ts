@@ -1,15 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveTextParticleBudget, sampleAlphaRaster } from "./rasterize-text.ts";
+import {
+  createExteriorParticleStart,
+  resolveTextParticleBudget,
+  sampleAlphaRaster,
+} from "./rasterize-text.ts";
 
 test("text particle budget responds to device pixel ratio without exceeding its cap", () => {
-  assert.equal(resolveTextParticleBudget(260, 1), 360);
-  assert.equal(resolveTextParticleBudget(600, 1), 690);
-  assert.equal(resolveTextParticleBudget(600, 1.25), 863);
-  assert.equal(resolveTextParticleBudget(600, 2), 900);
-  assert.equal(resolveTextParticleBudget(2_000, 4), 900);
-  assert.equal(resolveTextParticleBudget(600, 0), 690);
+  assert.equal(resolveTextParticleBudget(260, 1), 220);
+  assert.equal(resolveTextParticleBudget(600, 1), 432);
+  assert.equal(resolveTextParticleBudget(600, 1.25), 520);
+  assert.equal(resolveTextParticleBudget(600, 2), 520);
+  assert.equal(resolveTextParticleBudget(2_000, 4), 520);
+  assert.equal(resolveTextParticleBudget(600, 0), 432);
+});
+
+test("particle starts are deterministic and remain outside the raster", () => {
+  const width = 600;
+  const height = 180;
+  const starts = Array.from(
+    { length: 64 },
+    (_, index) => createExteriorParticleStart(index, width, height, 42),
+  );
+
+  assert.deepEqual(starts, Array.from(
+    { length: 64 },
+    (_, index) => createExteriorParticleStart(index, width, height, 42),
+  ));
+  assert.ok(starts.every(({ x, y }) => x < 0 || x > width || y < 0 || y > height));
 });
 
 test("text raster sampling is deterministic and bounded", () => {
@@ -36,7 +55,7 @@ test("text raster sampling ignores transparent and nearly transparent pixels", (
   ]);
 
   assert.deepEqual(
-    sampleAlphaRaster({ width: 4, height: 1, data }, { maxPoints: 900 }),
+    sampleAlphaRaster({ width: 4, height: 1, data }, { maxPoints: 520 }),
     [{ x: 2, y: 0 }, { x: 3, y: 0 }],
   );
 });

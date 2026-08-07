@@ -36,7 +36,6 @@
     type FirstRunWelcomeAction,
     type FirstRunWelcomeState,
   } from "./state.ts";
-  import { classifyHorizontalSwipe } from "./gesture.ts";
 
   export let state: FirstRunWelcomeState;
   export let onStateChange: (next: FirstRunWelcomeState) => void;
@@ -54,14 +53,14 @@
 
   let root: HTMLElement;
   let introductionIcon: HTMLButtonElement;
+  let languageContinueButton: HTMLButtonElement;
+  let languageSelected = false;
   let transitionLocked = false;
   let direction: "forward" | "backward" = "forward";
   let circleCover = false;
   let reducedMotion = typeof window === "undefined"
     ? true
     : window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let pointerStart: { x: number; y: number; id: number } | null = null;
-  let pointerLast: { x: number; y: number } | null = null;
   let wheelDistance = 0;
   let wheelTimer: ReturnType<typeof setTimeout> | undefined;
   let unlockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -126,11 +125,18 @@
     unlockTimer = setTimeout(() => (transitionLocked = false), reducedMotion ? 120 : duration);
   }
 
-  function chooseLanguage(value: Locale) {
+  async function chooseLanguage(value: Locale) {
     if (transitionLocked) return;
+    setLocale(value);
+    languageSelected = true;
+    await tick();
+    languageContinueButton?.focus();
+  }
+
+  function confirmLanguage() {
+    if (transitionLocked || !languageSelected) return;
     const next = reduceFirstRunWelcome(state, { type: "confirm-language" });
     if (next === state) return;
-    setLocale(value);
     transitionLocked = true;
     direction = "forward";
     clearTimeout(coverTimer);
@@ -197,29 +203,6 @@
     }
   }
 
-  function isInteractivePointerTarget(event: PointerEvent) {
-    return event.composedPath().some((target) => {
-      if (!(target instanceof Element)) return false;
-      if (target.matches(
-        "button, a, input, select, textarea, label, summary, option, " +
-        "[role='button'], [role='link'], [role='checkbox'], [role='radio'], " +
-        "[role='tab'], [role='switch'], [contenteditable='true']",
-      )) return true;
-      return target instanceof HTMLElement && target.tabIndex >= 0;
-    });
-  }
-
-  function handlePointerDown(event: PointerEvent) {
-    if (event.button !== 0 || transitionLocked || isInteractivePointerTarget(event)) {
-      pointerStart = null;
-      pointerLast = null;
-      return;
-    }
-    pointerStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
-    pointerLast = { x: event.clientX, y: event.clientY };
-    root.setPointerCapture?.(event.pointerId);
-  }
-
   function handlePointerMove(event: PointerEvent) {
     if (!reducedMotion && currentSlide >= 3) {
       const x = event.clientX / Math.max(1, innerWidth) - 0.5;
@@ -227,33 +210,6 @@
       root.style.setProperty("--parallax-x", `${x * 8}px`);
       root.style.setProperty("--parallax-y", `${y * 6}px`);
     }
-
-    const start = pointerStart;
-    if (!start || start.id !== event.pointerId) return;
-    const current = { x: event.clientX, y: event.clientY };
-    pointerLast = current;
-    const swipe = classifyHorizontalSwipe(start, current);
-    if (!swipe) return;
-
-    pointerStart = null;
-    pointerLast = null;
-    if (root.hasPointerCapture?.(event.pointerId)) root.releasePointerCapture?.(event.pointerId);
-    navigate(swipe);
-  }
-
-  function handlePointerUp(event: PointerEvent) {
-    const start = pointerStart;
-    pointerStart = null;
-    const last = pointerLast ?? { x: event.clientX, y: event.clientY };
-    pointerLast = null;
-    if (!start || start.id !== event.pointerId) return;
-    const swipe = classifyHorizontalSwipe(start, last);
-    if (swipe) navigate(swipe);
-  }
-
-  function handlePointerCancel() {
-    pointerStart = null;
-    pointerLast = null;
   }
 
   function handleWheel(event: WheelEvent) {
@@ -294,12 +250,10 @@
   class:backward={direction === "backward"}
   class:reduced-motion={reducedMotion}
   bind:this={root}
-  onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointercancel={handlePointerCancel}
   onwheel={handleWheel}
 >
+  <div class="window-drag-region" aria-hidden="true"></div>
   <div class="progress" aria-hidden="true">
     {#each [1, 2, 3, 4, 5, 6] as item}<span class:active={item === currentSlide}></span>{/each}
   </div>
@@ -315,7 +269,9 @@
       <div id="welcome-language-heading" class="force-heading">
         <ForceText text={$t.firstRunWelcome.languageHeading} {reducedMotion} />
       </div>
-      <img class="app-icon" src={appIcon} alt="" aria-hidden="true" draggable="false" />
+      <div class="app-icon-shell language-app-icon" aria-hidden="true">
+        <img src={appIcon} alt="" draggable="false" />
+      </div>
       <p class="language-prompt">{$t.firstRunWelcome.languagePrompt}</p>
       <div class="language-options" role="group" aria-label={$t.firstRunWelcome.languageOptions}>
         {#each locales as item}
@@ -331,6 +287,17 @@
           </button>
         {/each}
       </div>
+      {#if languageSelected}
+        <button
+          class="language-continue"
+          bind:this={languageContinueButton}
+          type="button"
+          onclick={confirmLanguage}
+        >
+          {$t.firstRunWelcome.continue}
+          <span aria-hidden="true">→</span>
+        </button>
+      {/if}
     </section>
   {:else if currentSlide === 2}
     <section
@@ -342,7 +309,7 @@
       <button class="intro-back" data-focus-default type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
         <span aria-hidden="true">←</span>
       </button>
-      <button bind:this={introductionIcon} class="introduction-icon" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
+      <button bind:this={introductionIcon} class="introduction-icon app-icon-shell" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
         <img src={appIcon} alt="" aria-hidden="true" draggable="false" />
       </button>
       <div class="introduction-copy">
@@ -405,7 +372,21 @@
     color: var(--deep-blue);
     background: #edf4f1;
     font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    touch-action: pan-y;
+    touch-action: auto;
+  }
+
+  .window-drag-region {
+    position: fixed;
+    z-index: 7;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 44px;
+    -webkit-app-region: drag;
+  }
+
+  .welcome button {
+    -webkit-app-region: no-drag;
   }
 
   .progress {
@@ -416,6 +397,8 @@
     display: flex;
     gap: 8px;
     transform: translateX(-50%);
+    pointer-events: none;
+    -webkit-app-region: drag;
   }
 
   .progress span {
@@ -446,6 +429,7 @@
   }
 
   .intro-slide {
+    --welcome-hero-size: clamp(150px, 17vw, 210px);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -458,12 +442,31 @@
   }
 
   .force-heading {
-    margin-bottom: -10px;
+    width: min(720px, 76vw);
+    height: var(--welcome-hero-size);
+    margin-bottom: -18px;
   }
 
-  .app-icon {
-    width: clamp(92px, 11vw, 144px);
+  .app-icon-shell {
+    overflow: hidden;
+    border-radius: 25%;
     filter: drop-shadow(0 16px 24px rgb(7 31 74 / 20%));
+  }
+
+  .app-icon-shell > img {
+    display: block;
+    width: 114%;
+    height: 114%;
+    max-width: none;
+    object-fit: cover;
+    transform: translate(-6.15%, -6.15%);
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .language-app-icon {
+    width: var(--welcome-hero-size);
+    height: var(--welcome-hero-size);
   }
 
   .language-prompt {
@@ -511,6 +514,26 @@
     opacity: 1;
   }
 
+  .language-continue {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-width: 180px;
+    min-height: 50px;
+    margin-top: 18px;
+    padding: 0 24px;
+    border: 1px solid var(--deep-blue);
+    border-radius: 16px;
+    color: white;
+    background: var(--deep-blue);
+    box-shadow: 0 14px 32px rgb(7 31 74 / 22%);
+    font: inherit;
+    font-weight: 750;
+    cursor: pointer;
+    animation: copy-rise 260ms cubic-bezier(.2, .8, .2, 1) both;
+  }
+
   .transitioning .language-slide .force-heading {
     opacity: 0;
     transform: scale(1.08);
@@ -518,13 +541,14 @@
   }
 
   .transitioning .language-slide .language-options,
-  .transitioning .language-slide .language-prompt {
+  .transitioning .language-slide .language-prompt,
+  .transitioning .language-slide .language-continue {
     opacity: 0;
     transform: translateY(12px);
     transition: opacity 220ms ease, transform 300ms ease;
   }
 
-  .transitioning .language-slide .app-icon {
+  .transitioning .language-slide .language-app-icon {
     transform: translateY(-30px) scale(1.35);
     transition: transform 560ms cubic-bezier(.16, 1, .3, 1);
   }
@@ -537,6 +561,7 @@
   .introduction-icon {
     z-index: 2;
     width: clamp(132px, 18vw, 220px);
+    aspect-ratio: 1;
     padding: 0;
     border: 0;
     border-radius: 28%;
@@ -547,8 +572,7 @@
   }
 
   .introduction-icon img {
-    display: block;
-    width: 100%;
+    max-width: none;
   }
 
   .introduction-copy {
@@ -585,8 +609,8 @@
 
   .intro-back {
     position: absolute;
-    top: 24px;
-    left: 24px;
+    bottom: 28px;
+    left: 50%;
     width: 44px;
     height: 44px;
     border: 1px solid rgb(7 31 74 / 14%);
@@ -594,6 +618,7 @@
     color: var(--deep-blue);
     background: rgb(255 255 255 / 58%);
     font-size: 1.25rem;
+    transform: translateX(-50%);
     cursor: pointer;
   }
 

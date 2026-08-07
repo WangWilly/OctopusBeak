@@ -27,7 +27,32 @@ export function resolveTextParticleBudget(width: number, devicePixelRatio = 1) {
   const normalizedRatio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
     ? devicePixelRatio
     : 1;
-  return Math.min(900, Math.max(360, Math.round(normalizedWidth * 1.15 * normalizedRatio)));
+  return Math.min(520, Math.max(220, Math.round(normalizedWidth * 0.72 * normalizedRatio)));
+}
+
+export function createExteriorParticleStart(
+  index: number,
+  width: number,
+  height: number,
+  seed = 0x6f63746f,
+  padding = 28,
+): RasterPoint {
+  const angle = seededUnit(seed + index * 2_654_435_761) * Math.PI * 2;
+  const directionX = Math.cos(angle);
+  const directionY = Math.sin(angle);
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const horizontalScale = Math.abs(directionX) < 0.0001
+    ? Number.POSITIVE_INFINITY
+    : halfWidth / Math.abs(directionX);
+  const verticalScale = Math.abs(directionY) < 0.0001
+    ? Number.POSITIVE_INFINITY
+    : halfHeight / Math.abs(directionY);
+  const boundaryScale = Math.min(horizontalScale, verticalScale) + padding;
+  return {
+    x: halfWidth + directionX * boundaryScale,
+    y: halfHeight + directionY * boundaryScale,
+  };
 }
 
 /**
@@ -79,17 +104,20 @@ export function rasterizeText(text: string, options: RasterizeTextOptions): Text
   context.fillText(text, canvas.width / 2, canvas.height / 2);
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   const targets = sampleAlphaRaster(image, {
-    maxPoints: Math.min(900, options.maxPoints ?? 900),
+    maxPoints: Math.min(520, options.maxPoints ?? 520),
     seed: options.seed,
     alphaThreshold: options.alphaThreshold,
   });
   const seed = options.seed ?? 0x6f63746f;
-  return targets.map((target, index) => ({
-    x: seededUnit(seed + index * 2) * canvas.width,
-    y: seededUnit(seed + index * 2 + 1) * canvas.height,
-    targetX: target.x,
-    targetY: target.y,
-  }));
+  return targets.map((target, index) => {
+    const start = createExteriorParticleStart(index, canvas.width, canvas.height, seed);
+    return {
+      x: start.x,
+      y: start.y,
+      targetX: target.x,
+      targetY: target.y,
+    };
+  });
 }
 
 function seededUnit(seed: number) {
