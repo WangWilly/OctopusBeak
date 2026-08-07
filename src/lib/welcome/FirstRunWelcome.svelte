@@ -36,6 +36,7 @@
     type FirstRunWelcomeAction,
     type FirstRunWelcomeState,
   } from "./state.ts";
+  import { classifyHorizontalSwipe } from "./gesture.ts";
 
   export let state: FirstRunWelcomeState;
   export let onStateChange: (next: FirstRunWelcomeState) => void;
@@ -59,7 +60,8 @@
   let reducedMotion = typeof window === "undefined"
     ? true
     : window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let pointerStart: { x: number; time: number; id: number } | null = null;
+  let pointerStart: { x: number; y: number; id: number } | null = null;
+  let pointerLast: { x: number; y: number } | null = null;
   let wheelDistance = 0;
   let wheelTimer: ReturnType<typeof setTimeout> | undefined;
   let unlockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -210,9 +212,11 @@
   function handlePointerDown(event: PointerEvent) {
     if (event.button !== 0 || transitionLocked || isInteractivePointerTarget(event)) {
       pointerStart = null;
+      pointerLast = null;
       return;
     }
-    pointerStart = { x: event.clientX, time: performance.now(), id: event.pointerId };
+    pointerStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    pointerLast = { x: event.clientX, y: event.clientY };
     root.setPointerCapture?.(event.pointerId);
   }
 
@@ -223,17 +227,33 @@
       root.style.setProperty("--parallax-x", `${x * 8}px`);
       root.style.setProperty("--parallax-y", `${y * 6}px`);
     }
+
+    const start = pointerStart;
+    if (!start || start.id !== event.pointerId) return;
+    const current = { x: event.clientX, y: event.clientY };
+    pointerLast = current;
+    const swipe = classifyHorizontalSwipe(start, current);
+    if (!swipe) return;
+
+    pointerStart = null;
+    pointerLast = null;
+    if (root.hasPointerCapture?.(event.pointerId)) root.releasePointerCapture?.(event.pointerId);
+    navigate(swipe);
   }
 
   function handlePointerUp(event: PointerEvent) {
     const start = pointerStart;
     pointerStart = null;
+    const last = pointerLast ?? { x: event.clientX, y: event.clientY };
+    pointerLast = null;
     if (!start || start.id !== event.pointerId) return;
-    const distance = event.clientX - start.x;
-    const elapsed = Math.max(1, performance.now() - start.time);
-    if (Math.abs(distance) >= 64 || (Math.abs(distance) >= 28 && Math.abs(distance) / elapsed >= 0.45)) {
-      navigate(distance < 0 ? "forward" : "backward");
-    }
+    const swipe = classifyHorizontalSwipe(start, last);
+    if (swipe) navigate(swipe);
+  }
+
+  function handlePointerCancel() {
+    pointerStart = null;
+    pointerLast = null;
   }
 
   function handleWheel(event: WheelEvent) {
@@ -277,7 +297,7 @@
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}
-  onpointercancel={() => (pointerStart = null)}
+  onpointercancel={handlePointerCancel}
   onwheel={handleWheel}
 >
   <div class="progress" aria-hidden="true">
@@ -295,7 +315,7 @@
       <div id="welcome-language-heading" class="force-heading">
         <ForceText text={$t.firstRunWelcome.languageHeading} {reducedMotion} />
       </div>
-      <img class="app-icon" src={appIcon} alt="" aria-hidden="true" />
+      <img class="app-icon" src={appIcon} alt="" aria-hidden="true" draggable="false" />
       <p class="language-prompt">{$t.firstRunWelcome.languagePrompt}</p>
       <div class="language-options" role="group" aria-label={$t.firstRunWelcome.languageOptions}>
         {#each locales as item}
@@ -323,7 +343,7 @@
         <span aria-hidden="true">←</span>
       </button>
       <button bind:this={introductionIcon} class="introduction-icon" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
-        <img src={appIcon} alt="" aria-hidden="true" />
+        <img src={appIcon} alt="" aria-hidden="true" draggable="false" />
       </button>
       <div class="introduction-copy">
         <h1 id="welcome-introduction-heading">{$t.firstRunWelcome.introductionTitle}</h1>
@@ -334,9 +354,9 @@
   {:else if slide}
     <section class="product-slide" data-slide={slide.number} aria-labelledby={`welcome-slide-${slide.number}-heading`}>
       <div class="screenshots" aria-hidden="true">
-        <img class="main-screenshot" src={slide.main} alt="" />
+        <img class="main-screenshot" src={slide.main} alt="" draggable="false" />
         {#each slide.foreground as foreground, index}
-          <img class={`foreground foreground-${index + 1}`} src={foreground} alt="" />
+          <img class={`foreground foreground-${index + 1}`} src={foreground} alt="" draggable="false" />
         {/each}
       </div>
       <div class="copy-region" style={`--feature-mask:url(${slide.icon})`}>
@@ -602,6 +622,8 @@
     box-shadow: 0 32px 80px rgb(7 31 74 / 18%);
     transform: translate(var(--parallax-x), var(--parallax-y));
     transition: transform 180ms ease-out;
+    user-select: none;
+    -webkit-user-drag: none;
   }
 
   .foreground {
