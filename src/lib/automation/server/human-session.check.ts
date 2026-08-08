@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { forceQuitHumanSessionForTask, humanSessionFromRun } from "./human-session.ts";
+import {
+  forceQuitHumanSessionForTask,
+  humanAssistanceContractForTask,
+  humanSessionFromRun,
+} from "./human-session.ts";
 import {
   finalizeExactOwnedAutomationSession,
   ownAutomationSession,
@@ -24,6 +28,28 @@ assert.throws(
   () => humanSessionFromRun({ status: "completed", logTail: "" }, "demo-task"),
   /not waiting for human input/,
 );
+
+test("legacy waiting runs expose no inferred human assistance contract", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-legacy-assistance-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    createTaskRun(db, {
+      taskId: "yuanta-all-statements",
+      script: "run:yuanta-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "legacy.log"),
+      logTail: "manual-auth-required: enter a CAPTCHA; resume --session ses-legacy",
+    });
+    db.close();
+    assert.equal(humanAssistanceContractForTask("yuanta-all-statements", ledgerDir), null);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
 
 assert.throws(
   () => humanSessionFromRun({ status: "waiting_for_human", logTail: "paused" }, "demo-task"),
