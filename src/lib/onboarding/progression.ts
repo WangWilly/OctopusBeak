@@ -140,6 +140,14 @@ function overviewIsFreshForImport(
     && overviewImportedAt >= importFinishedAt;
 }
 
+export function onboardingTaskSucceeded(
+  task: Pick<OnboardingTask, "status"> | null,
+  importGateLocked: boolean,
+) {
+  return task?.status === "completed"
+    || (task?.status === "partial" && !importGateLocked);
+}
+
 export function resolveOnboardingStep(
   facts: OnboardingFacts,
   state: OnboardingState | null,
@@ -160,8 +168,7 @@ export function resolveOnboardingStep(
   if (!crawler || !freshCollection) return "collection";
   if (crawler.status === "waiting_for_human") return "assist";
   if (crawler.status === "failed") return "collection-failed";
-  const collectionComplete = crawler.status === "completed"
-    || (crawler.status === "partial" && !facts.automation.importGateLocked);
+  const collectionComplete = onboardingTaskSucceeded(crawler, facts.automation.importGateLocked);
   if (!collectionComplete) return "collection";
   if (!freshImport) return "import";
   if (importer?.status === "failed") return "import-failed";
