@@ -7,6 +7,7 @@ import {
   parseStatementRunSummary,
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
+import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
@@ -183,6 +184,7 @@ async function executeAutomationTaskProcess(
   let logTail = "";
   let detectedResumeFailure: string | null = null;
   let statementSummary: StatementRunSummary | null = null;
+  const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
   const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
     const recordOutputPersistenceError = (error: unknown) => {
@@ -209,6 +211,9 @@ async function executeAutomationTaskProcess(
       );
       statementSummary = parseStatementRunSummary(`${logTail}${output.logChunk}`)
         ?? statementSummary;
+      for (const prerequisiteId of parseExternalPrerequisiteSignals(`${logTail}${output.logChunk}`)) {
+        externalPrerequisiteIds.add(prerequisiteId);
+      }
       logTail = output.logTail;
       detectedResumeFailure = output.resumeFailure;
       try {
@@ -245,6 +250,7 @@ async function executeAutomationTaskProcess(
     resumeFailure: detectedResumeFailure ?? resumeFailureMessage(logTail),
     statementSummary,
     outputPersistenceWarnings,
+    externalPrerequisiteIds: [...externalPrerequisiteIds],
   };
 }
 

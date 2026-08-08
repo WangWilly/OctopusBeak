@@ -38,6 +38,19 @@ export type AutomationTaskHistoryRow = Pick<
   | "logPath"
 >;
 
+export type AutomationTaskPrerequisiteNoticeRecord = {
+  noticeId: string;
+  taskId: string;
+  prerequisiteId: string;
+  latestTaskRunId: string;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  latestErrorMessage: string | null;
+  resolvedAt: string | null;
+  resolvedByTaskRunId: string | null;
+  recordJson: string;
+};
+
 type CreateTaskRunInput = {
   taskId: string;
   script: string;
@@ -85,6 +98,139 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
 function taskRunRecordJson(run: AutomationTaskRun) {
   const { recordJson: _recordJson, ...record } = run;
   return JSON.stringify(record);
+}
+
+function rowToTaskPrerequisiteNotice(row: Record<string, unknown>): AutomationTaskPrerequisiteNoticeRecord {
+  return {
+    noticeId: String(row.notice_id),
+    taskId: String(row.task_id),
+    prerequisiteId: String(row.prerequisite_id),
+    latestTaskRunId: String(row.latest_task_run_id),
+    firstDetectedAt: String(row.first_detected_at),
+    lastDetectedAt: String(row.last_detected_at),
+    latestErrorMessage: nullableString(row.latest_error_message),
+    resolvedAt: nullableString(row.resolved_at),
+    resolvedByTaskRunId: nullableString(row.resolved_by_task_run_id),
+    recordJson: String(row.record_json),
+  };
+}
+
+type PrerequisiteNoticeHistory = {
+  detections: Array<{ taskRunId: string; detectedAt: string }>;
+  resolutions: Array<{ taskRunId: string; resolvedAt: string }>;
+};
+
+function noticeHistory(recordJson: string): PrerequisiteNoticeHistory {
+  try {
+    const value = JSON.parse(recordJson) as Partial<PrerequisiteNoticeHistory>;
+    return {
+      detections: Array.isArray(value.detections) ? value.detections : [],
+      resolutions: Array.isArray(value.resolutions) ? value.resolutions : [],
+    };
+  } catch {
+    return { detections: [], resolutions: [] };
+  }
+}
+
+function noticeRecordJson(
+  input: { taskId: string; prerequisiteId: string },
+  history: PrerequisiteNoticeHistory,
+) {
+  return JSON.stringify({ ...input, ...history });
+}
+
+export function upsertTaskPrerequisiteNotice(
+  db: LedgerDatabase,
+  input: {
+    taskId: string;
+    prerequisiteId: string;
+    taskRunId: string;
+    detectedAt: string;
+    errorMessage?: string | null;
+  },
+) {
+  const existing = db.prepare(`
+    SELECT record_json
+    FROM automation_task_prerequisite_notices
+    WHERE task_id = ? AND prerequisite_id = ?
+  `).get(input.taskId, input.prerequisiteId) as { record_json: string } | undefined;
+  const history = noticeHistory(existing?.record_json ?? "{}");
+  const lastDetection = history.detections.at(-1);
+  if (lastDetection?.taskRunId !== input.taskRunId) {
+    history.detections.push({ taskRunId: input.taskRunId, detectedAt: input.detectedAt });
+  }
+  const noticeId = `automation-prerequisite:${input.taskId}:${input.prerequisiteId}`;
+  db.prepare(`
+    INSERT INTO automation_task_prerequisite_notices (
+      notice_id, task_id, prerequisite_id, latest_task_run_id,
+      first_detected_at, last_detected_at, latest_error_message,
+      resolved_at, resolved_by_task_run_id, record_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    ON CONFLICT(task_id, prerequisite_id) DO UPDATE SET
+      latest_task_run_id = excluded.latest_task_run_id,
+      last_detected_at = excluded.last_detected_at,
+      latest_error_message = excluded.latest_error_message,
+      resolved_at = NULL,
+      resolved_by_task_run_id = NULL,
+      record_json = excluded.record_json
+  `).run(
+    noticeId,
+    input.taskId,
+    input.prerequisiteId,
+    input.taskRunId,
+    history.detections[0]?.detectedAt ?? input.detectedAt,
+    input.detectedAt,
+    input.errorMessage ?? null,
+    noticeRecordJson({ taskId: input.taskId, prerequisiteId: input.prerequisiteId }, history),
+  );
+}
+
+export function activeTaskPrerequisiteNotices(db: LedgerDatabase): AutomationTaskPrerequisiteNoticeRecord[] {
+  const rows = db.prepare(`
+    SELECT *
+    FROM automation_task_prerequisite_notices
+    WHERE resolved_at IS NULL
+    ORDER BY last_detected_at DESC
+  `).all() as Record<string, unknown>[];
+  return rows.map(rowToTaskPrerequisiteNotice);
+}
+
+export function allTaskPrerequisiteNotices(db: LedgerDatabase): AutomationTaskPrerequisiteNoticeRecord[] {
+  const rows = db.prepare(`
+    SELECT *
+    FROM automation_task_prerequisite_notices
+    ORDER BY last_detected_at DESC
+  `).all() as Record<string, unknown>[];
+  return rows.map(rowToTaskPrerequisiteNotice);
+}
+
+export function resolveTaskPrerequisiteNotices(
+  db: LedgerDatabase,
+  taskId: string,
+  resolvedByTaskRunId: string,
+  resolvedAt: string,
+) {
+  const rows = db.prepare(`
+    SELECT *
+    FROM automation_task_prerequisite_notices
+    WHERE task_id = ? AND resolved_at IS NULL
+  `).all(taskId) as Record<string, unknown>[];
+  const update = db.prepare(`
+    UPDATE automation_task_prerequisite_notices
+    SET resolved_at = ?, resolved_by_task_run_id = ?, record_json = ?
+    WHERE notice_id = ?
+  `);
+  for (const row of rows) {
+    const notice = rowToTaskPrerequisiteNotice(row);
+    const history = noticeHistory(notice.recordJson);
+    history.resolutions.push({ taskRunId: resolvedByTaskRunId, resolvedAt });
+    update.run(
+      resolvedAt,
+      resolvedByTaskRunId,
+      noticeRecordJson({ taskId: notice.taskId, prerequisiteId: notice.prerequisiteId }, history),
+      notice.noticeId,
+    );
+  }
 }
 
 export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {

@@ -7,6 +7,8 @@ import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import {
   activeTaskRuns,
+  activeTaskPrerequisiteNotices,
+  allTaskPrerequisiteNotices,
   createTaskRun,
   taskRunById,
   updateTaskRun,
@@ -20,9 +22,9 @@ import {
   type AutomationTaskRunFinalizationContext,
 } from "./task-run-finalization.ts";
 
-function createExecution(ledgerDir: string) {
+function createExecution(ledgerDir: string, taskId = "exchange-rates") {
   const db = openLedgerDatabase(ledgerDir);
-  const task = taskById("exchange-rates")!;
+  const task = taskById(taskId)!;
   const logPath = join(ledgerDir, "automation.log");
   const run = createTaskRun(db, {
     taskId: task.id,
@@ -54,6 +56,7 @@ function result(overrides: Partial<AutomationTaskProcessResult> = {}): Automatio
     resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
+    externalPrerequisiteIds: [],
     ...overrides,
   };
 }
@@ -79,6 +82,43 @@ test("live finalization persists a partial statement outcome through one transit
     assert.equal(persisted.errorMessage, null);
     assert.ok(readFileSync(persisted.logPath, "utf8").includes(statementRunSummaryLine(summary.results)));
     db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("external prerequisite notices are deduplicated and resolved by a successful rerun", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-prerequisite-"));
+  try {
+    const first = createExecution(ledgerDir, "yuanta-trade-statements");
+    await finalizeAutomationTaskRun(first.finalization, result({
+      exitCode: 1,
+      error: new Error("certificate component unavailable"),
+      externalPrerequisiteIds: ["yuanta-servisign"],
+    }));
+    assert.equal(activeTaskPrerequisiteNotices(first.db).length, 1);
+
+    const second = createExecution(ledgerDir, "yuanta-trade-statements");
+    await finalizeAutomationTaskRun(second.finalization, result({
+      exitCode: 1,
+      error: new Error("certificate component unavailable"),
+      externalPrerequisiteIds: ["yuanta-servisign"],
+    }));
+    const active = activeTaskPrerequisiteNotices(second.db);
+    assert.equal(active.length, 1);
+    assert.equal(active[0]?.latestTaskRunId, second.run.taskRunId);
+    assert.equal(active[0]?.latestErrorMessage, "certificate component unavailable");
+    assert.equal(allTaskPrerequisiteNotices(second.db).length, 1);
+
+    const successful = createExecution(ledgerDir, "yuanta-trade-statements");
+    await finalizeAutomationTaskRun(successful.finalization, result());
+    assert.deepEqual(activeTaskPrerequisiteNotices(successful.db), []);
+    const resolved = allTaskPrerequisiteNotices(successful.db)[0];
+    assert.equal(resolved?.resolvedByTaskRunId, successful.run.taskRunId);
+    assert.ok(resolved?.resolvedAt);
+    first.db.close();
+    second.db.close();
+    successful.db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
