@@ -19,6 +19,7 @@ import type {
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
+import type { VerificationInteractionMode } from "$lib/automation/human-assistance.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -42,6 +43,9 @@ export type AutomationActionResult =
 export type ViewerInspectResult = {
   editable: boolean;
   rect: { x: number; y: number; width: number; height: number } | null;
+  targetId?: string | null;
+  contractVersion?: number;
+  modes?: readonly VerificationInteractionMode[];
 };
 
 export type DataIssueDesktopService = {

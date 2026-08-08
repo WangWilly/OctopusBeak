@@ -16,11 +16,12 @@ import {
 import {
   captureSessionScreenshot,
   isClosedViewerSessionError,
-  inspectViewerPoint,
-  sendViewerInput,
+  inspectHumanVerificationPoint,
+  sendHumanVerificationInput,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   forceQuitHumanSessionForTask,
+  humanAssistanceContractForTask,
   humanSessionForTask,
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
@@ -127,11 +128,15 @@ export function registerOctopusBeakIpc({
   });
   ipcMain.handle("automation:viewerInspect", async (_event, taskId: string, point: unknown) => {
     const session = humanSessionForTask(taskId);
-    return inspectViewerPoint(session, point);
+    const contract = humanAssistanceContractForTask(taskId);
+    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    return inspectHumanVerificationPoint(session, point, contract);
   });
   ipcMain.handle("automation:viewerInput", async (_event, taskId: string, input: unknown) => {
     const session = humanSessionForTask(taskId);
-    await sendViewerInput(session, input);
+    const contract = humanAssistanceContractForTask(taskId);
+    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    await sendHumanVerificationInput(session, input, contract);
     return { ok: true as const };
   });
   ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
