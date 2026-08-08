@@ -13,8 +13,8 @@ import {
   updateHumanAssistanceContract,
 } from "./store.ts";
 import {
-  humanAssistanceContractSignal,
-  parseHumanAssistanceContractSignals,
+  createHumanAssistanceContractFrameParser,
+  humanAssistanceContractFrame,
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 
@@ -79,18 +79,22 @@ test("human assistance contract persists with a task run and is exposed to Assis
   }
 });
 
-test("workflow contract signals are structured and never carry verification text", () => {
-  const signal = humanAssistanceContractSignal({
+test("workflow contract frames are structured and never carry verification text", () => {
+  const frame = humanAssistanceContractFrame({
     ...contract,
     completion: { ...contract.completion, status: "entered" },
   });
-  assert.match(signal, /^human-assistance-contract:/);
-  assert.equal(signal.includes("captcha-answer"), false);
-  assert.deepEqual(parseHumanAssistanceContractSignals(`${signal}\n`), [{
+  const parsed: HumanAssistanceContractInput[] = [];
+  const parser = createHumanAssistanceContractFrameParser((value) => parsed.push(value));
+  parser.push(frame);
+  parser.flush();
+  assert.equal(frame.includes("captcha-answer"), false);
+  assert.deepEqual(parsed, [{
     ...contract,
     completion: { ...contract.completion, status: "entered" },
   }]);
-  assert.deepEqual(parseHumanAssistanceContractSignals("human-assistance-contract: {\"captchaAnswer\":\"raw-secret\"}\n"), []);
+  parser.push("{\"captchaAnswer\":\"raw-secret\"}\n");
+  assert.equal(parsed.length, 1);
 });
 
 test("updating a waiting contract increments its version without storing verification text", () => {

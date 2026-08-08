@@ -1,5 +1,7 @@
+import { writeSync } from "node:fs";
 import {
-  humanAssistanceContractSignal,
+  humanAssistanceContractFrame,
+  HUMAN_ASSISTANCE_HOST_FD_ENV,
   type HumanAssistanceCompletionInput,
   type HumanAssistanceContractInput,
   type HumanVerificationTarget,
@@ -21,8 +23,27 @@ export type WorkflowHumanAssistanceStage = {
   focus: HumanAssistanceFocus;
 };
 
+export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
+
+function publishHumanAssistanceContractToHost(contract: HumanAssistanceContractInput) {
+  const fd = Number(process.env[HUMAN_ASSISTANCE_HOST_FD_ENV]);
+  if (!Number.isInteger(fd) || fd < 0) {
+    throw new Error("Human assistance host API is unavailable for this workflow run.");
+  }
+  writeSync(fd, humanAssistanceContractFrame(contract), undefined, "utf8");
+}
+
+export function publishHumanAssistanceContract(
+  contract: HumanAssistanceContractInput,
+  publish: HumanAssistanceContractPublisher = publishHumanAssistanceContractToHost,
+) {
+  publish(contract);
+  return contract;
+}
+
 export async function emitHumanAssistanceStage(
   stage: WorkflowHumanAssistanceStage,
+  publish: HumanAssistanceContractPublisher = publishHumanAssistanceContractToHost,
 ): Promise<HumanAssistanceContractInput> {
   const targets: HumanVerificationTarget[] = [];
   for (const target of stage.targets) {
@@ -42,6 +63,5 @@ export async function emitHumanAssistanceStage(
     completion: stage.completion,
     focus: stage.focus,
   };
-  console.log(humanAssistanceContractSignal(contract));
-  return contract;
+  return publishHumanAssistanceContract(contract, publish);
 }
