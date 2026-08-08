@@ -182,3 +182,71 @@ The decision to retain an automation session for human assistance or relinquish 
 
 **Automation task run force-quit**:
 An operator-initiated action that ends a task run waiting for human input by relinquishing its exact automation session and finalizing the run as failed.
+
+**Human verification target**:
+A workflow-declared browser control or verification modal area that a person may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. Assist permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed human assistance.
+_Avoid_: Generic editable target, nearest input target
+
+**Verification completion**:
+The condition that permits an automation task to resume after human assistance. For an independent verification flow, completion requires confirmation from the workflow or host; for inline verification submitted together with login information, the available pre-submit condition is that the declared verification field is non-empty, while login success remains the final correctness check.
+_Avoid_: Input has value means verification succeeded
+
+**Verification focus view**:
+A zoomed Assist presentation centered on the declared human verification target while preserving the challenge instructions, image, and surrounding context needed to solve it. A person may pan or zoom the presentation to inspect the full challenge context, but viewport manipulation is not a browser operation and only declared targets remain actionable.
+_Avoid_: Full-page Assist, arbitrary zoom
+
+**Verification context region**:
+A workflow-declared visual region that must remain visible in the verification focus view so a person has the instructions, challenge, and surrounding evidence needed to complete a human verification target. The region may be visible without being actionable.
+_Avoid_: Whole-page context, inferred nearest region
+
+**Human assistance contract**:
+A structured, persisted description emitted by a workflow when an automation task waits for human assistance. It declares the actionable human verification targets, the verification context regions that must remain visible, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth; the workflow emits structured updates and Assist only reads and presents them. A single task run may publish versioned contract updates as the verification flow changes; the contract ends when the workflow succeeds, fails, or is force-quit. Assist consumes this contract rather than inferring interaction rules from screenshots, DOM proximity, or log text.
+_Avoid_: Screenshot-derived affordance, log-derived interaction contract
+
+**Human interaction stage**:
+A versioned phase of a human assistance contract with a finite allowlist of actionable targets. A stage may expose multiple explicitly declared controls within one verification modal, but controls outside the stage remain unavailable; completion transitions the task run to the next contract version or out of human assistance.
+_Avoid_: Full viewer stage, unrestricted page interaction
+
+**Verification interaction mode**:
+The operation explicitly permitted for a human verification target, such as click, type, or drag. The automation server rejects operations that the current target has not declared, even if the underlying browser control could technically receive them.
+_Avoid_: Generic viewer capability, inferred operation
+
+**Human verification retry**:
+The continuation of a resumed automation task run that discovers the human verification is incomplete or incorrect. The run returns to waiting for human assistance with refreshed challenge context and a new contract version, preserving the task's execution lineage instead of immediately becoming terminally failed. Retries are bounded by the workflow or external verification service; the app never retries indefinitely, and an exhausted or locked verification becomes an explicit task failure.
+_Avoid_: Restarting the whole workflow, treating an incorrect answer as an ordinary infrastructure failure
+
+**Human assistance contract resolution failure**:
+A state in which the current semantic target or verification context region cannot be resolved against the live browser session. Assist remains waiting with Resume disabled, does not fall back to unrestricted page interaction, and exits only after a contract update or an explicit force-quit.
+_Avoid_: Nearest-element fallback, silent target substitution
+
+**Human verification target accessibility**:
+The keyboard and pointer operation paths a declared human verification target makes available. Type targets receive focus, click targets expose equivalent keyboard activation where possible, and pointer-only drag targets require an explicit workflow declaration and user guidance.
+_Avoid_: Pointer-only by accident, keyboard bypass of target rules
+
+**Human assistance contract freshness**:
+The requirement that every human interaction carries the current task run's contract version. The automation server rejects operations from a stale stage after navigation, modal changes, or contract updates, and Assist must reload the current contract before presenting another actionable target.
+_Avoid_: Stale-coordinate interaction, client-only stage tracking
+
+**Human verification input privacy**:
+The boundary that keeps raw text entered into human verification targets out of the human assistance contract, task logs, and analytics. CAPTCHA, OTP, password, and other authentication material is forwarded only to the live CDP session; persisted records retain target, operation, outcome, and timing metadata without reconstructing the input.
+_Avoid_: Logged verification text, replayable input screenshot
+
+**Human verification screenshot privacy**:
+The rule that challenge screenshots and verification focus views exist only in the active Assist session's memory. They are cleared when Assist closes or the browser session ends, and are never persisted in task records, logs, analytics, or user-accessible exports.
+_Avoid_: Diagnostic screenshot archive, persisted challenge image
+
+**Legacy human assistance run**:
+An existing task run waiting for human input without a persisted human assistance contract. Assist does not infer its interaction rules from historical logs or expose an unrestricted viewer; it presents recovery guidance and requires force-quit followed by a new workflow run that can publish a contract.
+_Avoid_: Log-based compatibility mode, unrestricted legacy Assist
+
+**Human assistance contract API**:
+The shared host boundary through which a workflow creates or updates a human assistance contract. It owns persistence, task-run association, versioning, and fail-safe validation; provider workflows supply only their verification-specific targets, context regions, interaction modes, and completion rules.
+_Avoid_: Raw pause log, provider-specific persistence, UI-owned contract state
+
+**Provider verification adapter**:
+A provider-owned resolver and completion adapter that identifies the live verification controls, frames, challenge regions, allowed interaction modes, and provider-specific completion signals for a human assistance contract. The generic viewer does not infer these details from arbitrary page inputs.
+_Avoid_: Generic input scanner, nearest-control heuristic
+
+**Onboarding human verification gate**:
+The rule that onboarding progression is driven by the real automation task outcome, not by local Assist interaction state. Entered text or a completed UI interaction may make Resume available according to the contract, but onboarding remains in Assist until the workflow reports successful collection.
+_Avoid_: UI-interaction onboarding advance, input-nonempty milestone
