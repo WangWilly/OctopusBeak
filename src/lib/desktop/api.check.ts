@@ -21,6 +21,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:viewerScreenshot",
   "automation:viewerInspect",
   "automation:viewerInput",
+  "automation:viewerCompletionCheck",
   "automation:forceQuit",
   "dataIssues:list",
   "dataIssues:create",
