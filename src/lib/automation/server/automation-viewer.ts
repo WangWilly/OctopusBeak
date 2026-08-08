@@ -112,6 +112,14 @@ export function humanAssistanceCompletionSatisfied(
   return false;
 }
 
+export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
+export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
+  "#modalYCaptchaV2, #captchaModal, .captcha-modal";
+
+export function isNestedFrameElement(tagName: string) {
+  return tagName === "IFRAME" || tagName === "FRAME";
+}
+
 function operationMode(input: ViewerInput): VerificationInteractionMode {
   return input.type;
 }
@@ -260,14 +268,18 @@ async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<Insp
   }
 
   try {
-    const iframe = await element.evaluate((node) => {
-      if (node.tagName !== "IFRAME") return null;
+    const embeddedFrame = await element.evaluate((node) => {
       const rect = node.getBoundingClientRect();
-      return { x: rect.x, y: rect.y };
+      return { tagName: node.tagName, x: rect.x, y: rect.y };
     });
-    const childFrame = iframe ? await element.contentFrame() : null;
-    if (iframe && childFrame) {
-      return inspectFramePoint(childFrame, { x: point.x - iframe.x, y: point.y - iframe.y });
+    const childFrame = isNestedFrameElement(embeddedFrame.tagName)
+      ? await element.contentFrame()
+      : null;
+    if (isNestedFrameElement(embeddedFrame.tagName) && childFrame) {
+      return inspectFramePoint(childFrame, {
+        x: point.x - embeddedFrame.x,
+        y: point.y - embeddedFrame.y,
+      });
     }
 
     return inspectableFromElement(element);
@@ -311,7 +323,7 @@ export async function inspectHumanAssistanceCompletion(
 ) {
   if (contract.completion.mode !== "independent") return false;
   return withPausedPage(session, async (page) => {
-    const checkbox = page.locator("#chbYCaptchaV2").first();
+    const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR).first();
     const checkboxChecked = await checkbox.evaluate((node) => {
       if (node instanceof HTMLInputElement) return node.checked;
       return node.getAttribute("aria-checked") === "true"
@@ -319,7 +331,7 @@ export async function inspectHumanAssistanceCompletion(
         || node.classList.contains("is-checked")
         || node.parentElement?.getAttribute("aria-checked") === "true";
     }).catch(() => false);
-    const challengeVisible = await page.locator("#captchaModal, .captcha-modal").first()
+    const challengeVisible = await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first()
       .isVisible()
       .catch(() => false);
     const probe = { checkboxChecked, challengeVisible };

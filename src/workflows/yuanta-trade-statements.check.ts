@@ -6,6 +6,11 @@ import {
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
+  yuantaTradeCaptchaCheckbox,
+  yuantaTradeCaptchaImages,
+  yuantaTradeCaptchaModal,
+  YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
 } from "./yuanta-trade-statements.ts";
 
 function fakePage(reminderVisible: boolean | Error) {
@@ -106,6 +111,52 @@ test("removes focus from the YuanTa password field after filling credentials", a
     "fill:#loginid:user",
     "fill:#loginPWD:password",
     "blur:#loginPWD",
+  ]);
+});
+
+test("targets the visible YuanTa CAPTCHA checkbox control", () => {
+  const selectors: string[] = [];
+  const page = {
+    locator(selector: string) {
+      selectors.push(selector);
+      return {};
+    },
+  } as unknown as Page;
+
+  yuantaTradeCaptchaCheckbox(page);
+
+  assert.deepEqual(selectors, [".check-area"]);
+});
+
+test("targets the visible YuanTa challenge modal and image tiles", () => {
+  const calls: string[] = [];
+  const modal = {
+    locator(selector: string) {
+      calls.push(`modal:${selector}`);
+      return {};
+    },
+  };
+  const page = {
+    locator(selector: string) {
+      calls.push(`page:${selector}`);
+      return {
+        first() {
+          calls.push("first");
+          return modal;
+        },
+      };
+    },
+  } as unknown as Page;
+
+  assert.equal(YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR, "#modalYCaptchaV2, #captchaModal, .captcha-modal");
+  assert.equal(YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR, ".y-captcha-image:visible");
+  const challengeModal = yuantaTradeCaptchaModal(page);
+  yuantaTradeCaptchaImages(challengeModal);
+
+  assert.deepEqual(calls, [
+    "page:#modalYCaptchaV2, #captchaModal, .captcha-modal",
+    "first",
+    "modal:.y-captcha-image:visible",
   ]);
 });
 

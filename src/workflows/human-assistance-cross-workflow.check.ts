@@ -34,9 +34,9 @@ test("Yuanta Trade keeps checkbox and later challenge as separate declared stage
   const source = await readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8");
   assert.match(source, /yuanta-trade-captcha-checkbox/);
   assert.match(source, /yuanta-trade-captcha-challenge/);
-  assert.match(source, /#chbYCaptchaV2/);
-  assert.match(source, /#captchaModal, \.captcha-modal/);
-  assert.match(source, /\[data-captcha-control\]/);
-  assert.match(source, /completion: \{ mode: "independent", targetIds: \["captcha-checkbox"\] \}/);
+  assert.match(source, /\.check-area/);
+  assert.match(source, /#modalYCaptchaV2, #captchaModal, \.captcha-modal/);
+  assert.match(source, /\.y-captcha-image:visible/);
+  assert.match(source, /completion: \{ mode: "independent", targetIds: challengeTargets\.map/);
   assert.match(source, /maxChallengeRetries = 2/);
 });
