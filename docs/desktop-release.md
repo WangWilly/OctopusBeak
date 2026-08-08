@@ -2,7 +2,27 @@
 
 OctopusBeak desktop releases use Electron Forge.
 
-Current packaging target: macOS arm64. Windows packaging is not configured yet.
+Current automated release target: macOS arm64. The workflow produces a DMG and ZIP, signs and notarizes the app, verifies the bundle, uploads both installers with a SHA-256 checksum file, and publishes the GitHub Release only after the build succeeds. Windows x64 and Linux x64 are future targets and are not enabled yet.
+
+## Automated GitHub Release
+
+Use the `Release Electron` workflow from the `main` branch. The `new-release` operation runs the release preflight, then accepts a `patch`, `minor`, or `major` version increment. The workflow uses npm's default version commit and `vX.Y.Z` tag, pushes both to `main`, builds the signed macOS arm64 artifacts, creates a Draft GitHub Release with generated notes, uploads the installers and `SHA256SUMS.txt`, and publishes the Draft only after all checks pass.
+
+The `retry` operation accepts an existing `vX.Y.Z` tag. It validates that the tag is unchanged, matches the package version, and is reachable from `main`, then rebuilds that exact version without creating another commit or tag. A published Release cannot be retried; a Draft Release is reused and same-named assets are replaced.
+
+The workflow references the protected `release` Environment. Configure it with required reviewer approval and these secrets:
+
+```text
+MACOS_CERTIFICATE_BASE64
+MACOS_CERTIFICATE_PASSWORD
+APPLE_ID
+APPLE_APP_SPECIFIC_PASSWORD
+APPLE_TEAM_ID
+```
+
+The repository's `main` branch policy must allow this workflow's `GITHUB_TOKEN` to push the version commit and tag. If branch protection requires pull requests for every change, this direct-release workflow will stop at the push step without creating a remote version.
+
+The previous tag-triggered `release-macos.yml` workflow was retired so a release tag cannot start a second competing release process.
 
 Desktop app runtime state lives in:
 
