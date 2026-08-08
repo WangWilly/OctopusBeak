@@ -574,7 +574,7 @@ export async function authenticateYuantaBank(
             id: "captcha-input",
             label: "CAPTCHA input",
             semanticId: "yuanta-bank.login.captcha-input",
-            modes: ["type"],
+            modes: ["click", "type"],
             locator: loginFrame.locator("#gcode"),
           }],
           contextRegions: [{

@@ -316,7 +316,7 @@ async function signInEinvoice(
   await emitHumanAssistanceStage({
     stageId: "einvoice-login-captcha",
     title: "Enter the e-invoice CAPTCHA",
-    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "einvoice.login.captcha-input", modes: ["type"], locator: page.locator("#captcha") }],
+    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "einvoice.login.captcha-input", modes: ["click", "type"], locator: page.locator("#captcha") }],
     contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "einvoice.login.captcha-challenge" }],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
