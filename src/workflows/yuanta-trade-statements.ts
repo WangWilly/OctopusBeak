@@ -1182,12 +1182,18 @@ export default workflow("yuantaTradeStatements", {
         await pause(authSession);
 
         await submitLoginIfReady(authPage);
-        const challengeModal = authPage.locator("#captchaModal, .captcha-modal").first();
-        if (await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        const maxChallengeRetries = 2;
+        let challengeRetry = 0;
+        while (true) {
+          const challengeModal = authPage.locator("#captchaModal, .captcha-modal").first();
+          if (!(await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false))) break;
+          if (challengeRetry >= maxChallengeRetries) {
+            throw new Error("YuanTa Trade verification challenge did not complete after the allowed retries.");
+          }
           const challengeControl = challengeModal.locator("[data-captcha-control]").first();
           await emitHumanAssistanceStage({
             stageId: "yuanta-trade-captcha-challenge",
-            title: "Complete the YuanTa Trade verification challenge",
+            title: `Complete the YuanTa Trade verification challenge (attempt ${challengeRetry + 1})`,
             targets: [{
               id: "challenge-control",
               label: "Verification challenge control",
@@ -1205,6 +1211,7 @@ export default workflow("yuantaTradeStatements", {
             focus: { targetId: "challenge-control", contextRegionIds: ["challenge-modal"], initialZoom: 1.7 },
           });
           await pause(authSession);
+          challengeRetry += 1;
         }
         if (lastBankDialogMessage.includes("請勾選")) {
           throw new Error(
