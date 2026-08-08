@@ -38,6 +38,7 @@ export type VerificationContextRegion = {
   id: string;
   label: string;
   semanticId: string;
+  rect?: HumanVerificationRect | null;
 };
 
 export type HumanAssistanceCompletion = {

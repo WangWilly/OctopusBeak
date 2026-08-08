@@ -28,7 +28,7 @@ export function canResumeAssist(
   completion: HumanAssistanceCompletion | null | undefined,
 ) {
   if (!assistInteracted || floatingInputOpen || !completion) return false;
-  if (completion.mode === "inline") return true;
+  if (completion.mode === "inline") return completion.status === "entered";
   return completion.status === "verified";
 }
 
