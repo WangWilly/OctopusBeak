@@ -10,6 +10,7 @@ import {
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -411,6 +412,14 @@ async function signInHncb(
 ): Promise<void> {
   const { page, session } = ctx;
   await fillLoginForm(page, credentials);
+  await emitHumanAssistanceStage({
+    stageId: "hncb-login-captcha",
+    title: "Enter the HNCB CAPTCHA",
+    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "hncb.login.captcha-input", modes: ["click", "type"], locator: page.locator("#TrxCaptchaKey") }],
+    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "hncb.login.captcha-challenge" }],
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+  });
 
   console.log(
     "manual-auth-required: enter the HNCB CAPTCHA in the browser, then run `npx libretto resume --session " +

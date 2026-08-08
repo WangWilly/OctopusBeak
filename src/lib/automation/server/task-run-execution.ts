@@ -8,6 +8,10 @@ import {
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
 import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
+import {
+  createHumanAssistanceContractFrameParser,
+  HUMAN_ASSISTANCE_HOST_FD_ENV,
+} from "../human-assistance.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
@@ -33,6 +37,7 @@ import {
   activeTaskRuns,
   createTaskRun,
   taskRunById,
+  updateHumanAssistanceContract,
   updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
@@ -144,6 +149,13 @@ function createAutomationTaskRunExecution(
     command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
     command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
   }
+  const resumeFrom = options.resumeSession
+    ? activeTaskRuns(taskDb).find((candidate) =>
+      candidate.taskId === task.id
+      && candidate.status === "waiting_for_human"
+      && sessionFromRun(candidate) === options.resumeSession
+    )
+    : undefined;
   const run = createTaskRun(taskDb, {
     taskId: task.id,
     script: command.display,
@@ -153,6 +165,7 @@ function createAutomationTaskRunExecution(
     maxAttempts,
     startedAt,
     logPath,
+    humanAssistanceContract: resumeFrom?.humanAssistanceContract ?? null,
   });
   const owner = session ? {
     taskId: task.id,
@@ -162,14 +175,6 @@ function createAutomationTaskRunExecution(
   } : null;
   if (session) {
     appendLog(logPath, "automation-session: " + session + "\n");
-    const resumeFrom = options.resumeSession
-      ? activeTaskRuns(taskDb).find((candidate) =>
-        candidate.taskId === task.id
-        && candidate.taskRunId !== run.taskRunId
-        && candidate.status === "waiting_for_human"
-        && sessionFromRun(candidate) === options.resumeSession
-      )
-      : undefined;
     if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
       resumeSession: options.resumeSession,
       resumeFrom,
@@ -183,6 +188,7 @@ async function executeAutomationTaskProcess(
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
+  let lastHumanAssistanceContractJson: string | null = null;
   let statementSummary: StatementRunSummary | null = null;
   const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
@@ -204,6 +210,25 @@ async function executeAutomationTaskProcess(
       500,
       recordOutputPersistenceError,
     );
+    const onHumanAssistanceContract = (
+      latestHumanAssistanceContract: Parameters<typeof updateHumanAssistanceContract>[2],
+    ) => {
+      const contractJson = JSON.stringify(latestHumanAssistanceContract);
+      if (contractJson === lastHumanAssistanceContractJson) return;
+      try {
+        updateHumanAssistanceContract(
+          execution.taskDb,
+          execution.run.taskRunId,
+          latestHumanAssistanceContract,
+        );
+        lastHumanAssistanceContractJson = contractJson;
+      } catch (error) {
+        const warning = `human-assistance-contract-rejected: ${errorMessage(error)}`;
+        console.error(warning);
+        outputPersistenceWarnings.push(warning);
+      }
+    };
+    const hostContractParser = createHumanAssistanceContractFrameParser(onHumanAssistanceContract);
     const onOutput = (chunk: Buffer) => {
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
@@ -227,19 +252,25 @@ async function executeAutomationTaskProcess(
       }
     };
     const child = spawn(execution.command.command, execution.command.args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: execution.command.env,
+      stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
+      env: {
+        ...execution.command.env,
+        [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
+      },
     });
     activeTaskChildren.set(execution.task.id, child);
-    child.stdout.on("data", onOutput);
-    child.stderr.on("data", onOutput);
+    child.stdout?.on("data", onOutput);
+    child.stderr?.on("data", onOutput);
+    child.stdio[3]?.on("data", hostContractParser.push);
     child.on("error", (error) => {
       activeTaskChildren.delete(execution.task.id);
+      hostContractParser.flush();
       outputBuffer.flush();
       resolve({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
       activeTaskChildren.delete(execution.task.id);
+      hostContractParser.flush();
       outputBuffer.flush();
       resolve({ exitCode, signal, error: null });
     });

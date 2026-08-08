@@ -1,4 +1,9 @@
 import type { Browser, ElementHandle, Frame, Page } from "playwright";
+import type {
+  HumanAssistanceContract,
+  HumanVerificationRect,
+  VerificationInteractionMode,
+} from "../human-assistance.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
 
 export type ViewerInput =
@@ -18,6 +23,13 @@ export type InspectableTarget = {
 export type ViewerInspectResult = {
   editable: boolean;
   rect: { x: number; y: number; width: number; height: number } | null;
+  targetId?: string | null;
+  contractVersion?: number;
+  modes?: readonly VerificationInteractionMode[];
+};
+export type HumanAssistanceCompletionProbe = {
+  checkboxChecked: boolean;
+  challengeVisible: boolean;
 };
 type InspectableRect = { x: number; y: number; width: number; height: number };
 type InspectableTextTarget = InspectableTarget & { rect: InspectableRect };
@@ -74,20 +86,75 @@ export function selectInspectableTextTarget(
     point.y <= target.rect.y + target.rect.height
   ));
   if (containing) return containing;
+  return null;
+}
 
-  let nearest: { target: InspectableTextTarget; distance: number } | null = null;
-  for (const target of textTargets) {
-    const dx = point.x < target.rect.x
-      ? target.rect.x - point.x
-      : Math.max(0, point.x - (target.rect.x + target.rect.width));
-    const dy = point.y < target.rect.y
-      ? target.rect.y - point.y
-      : Math.max(0, point.y - (target.rect.y + target.rect.height));
-    if (dx > 220 || dy > 24) continue;
-    const distance = Math.hypot(dx, dy);
-    if (!nearest || distance < nearest.distance) nearest = { target, distance };
+export function viewerRectContainsPoint(rect: HumanVerificationRect, point: ViewerPoint) {
+  return point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height;
+}
+
+export function humanVerificationTargetAtPoint(
+  contract: HumanAssistanceContract,
+  point: ViewerPoint,
+) {
+  return contract.targets.find((target) => target.rect && viewerRectContainsPoint(target.rect, point)) ?? null;
+}
+
+export function humanAssistanceCompletionSatisfied(
+  semanticId: string,
+  probe: HumanAssistanceCompletionProbe,
+) {
+  if (semanticId === "yuanta-trade.login.captcha-checkbox") return probe.checkboxChecked;
+  if (semanticId === "yuanta-trade.login.challenge-control") return !probe.challengeVisible;
+  return false;
+}
+
+export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
+export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
+  "#modalYCaptchaV2, #captchaModal, .captcha-modal";
+
+export function isNestedFrameElement(tagName: string) {
+  return tagName === "IFRAME" || tagName === "FRAME";
+}
+
+function operationMode(input: ViewerInput): VerificationInteractionMode {
+  return input.type;
+}
+
+function rawRecord(raw: unknown) {
+  if (!raw || typeof raw !== "object") throw new Error(unsupportedInputError);
+  return raw as Record<string, unknown>;
+}
+
+export function normalizeHumanVerificationInput(
+  raw: unknown,
+  contract: HumanAssistanceContract,
+) {
+  const input = normalizeViewerInput(raw);
+  const record = rawRecord(raw);
+  if (record.contractVersion !== contract.version) {
+    throw new Error("Human assistance contract is stale. Reload the current verification stage.");
   }
-  return nearest?.target ?? null;
+  if (typeof record.targetId !== "string") {
+    throw new Error("Human verification target is required.");
+  }
+  const target = contract.targets.find((candidate) => candidate.id === record.targetId);
+  if (!target) throw new Error("Human verification target is not declared for this stage.");
+  if (!target.rect) throw new Error("Human verification target is not currently resolved.");
+  const mode = operationMode(input);
+  if (!target.modes.includes(mode)) {
+    throw new Error(`Human verification mode is not allowed for target ${target.id}.`);
+  }
+  if (input.type === "click" && !viewerRectContainsPoint(target.rect, input)) {
+    throw new Error("Viewer click is outside the declared human verification target.");
+  }
+  if (input.type === "drag" && !viewerRectContainsPoint(target.rect, input)) {
+    throw new Error("Viewer drag must start inside the declared human verification target.");
+  }
+  return input;
 }
 
 export function normalizeViewerInput(raw: unknown): ViewerInput {
@@ -192,36 +259,6 @@ async function inspectableFromElement(element: ElementHandle<HTMLElement>): Prom
   }
 }
 
-async function frameTextTargets(frame: Frame): Promise<InspectableTextTarget[]> {
-  let handles: ElementHandle<HTMLElement>[];
-  try {
-    handles = await frame.$$("input, textarea, [contenteditable='true'], [contenteditable='']") as ElementHandle<HTMLElement>[];
-  } catch {
-    return [];
-  }
-  const targets: InspectableTextTarget[] = [];
-  for (const handle of handles) {
-    try {
-      const target = await inspectableFromElement(handle);
-      if (target) targets.push(target);
-    } finally {
-      await handle.dispose();
-    }
-  }
-  return targets;
-}
-
-async function pageTextTargets(page: Page): Promise<InspectableTextTarget[]> {
-  const targets = await Promise.all(page.frames().map(async (frame) => {
-    try {
-      return await frameTextTargets(frame);
-    } catch {
-      return [];
-    }
-  }));
-  return targets.flat();
-}
-
 async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<InspectableTextTarget | null> {
   const handle = await frame.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), point);
   const element = handle.asElement() as ElementHandle<HTMLElement> | null;
@@ -231,14 +268,18 @@ async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<Insp
   }
 
   try {
-    const iframe = await element.evaluate((node) => {
-      if (node.tagName !== "IFRAME") return null;
+    const embeddedFrame = await element.evaluate((node) => {
       const rect = node.getBoundingClientRect();
-      return { x: rect.x, y: rect.y };
+      return { tagName: node.tagName, x: rect.x, y: rect.y };
     });
-    const childFrame = iframe ? await element.contentFrame() : null;
-    if (iframe && childFrame) {
-      return inspectFramePoint(childFrame, { x: point.x - iframe.x, y: point.y - iframe.y });
+    const childFrame = isNestedFrameElement(embeddedFrame.tagName)
+      ? await element.contentFrame()
+      : null;
+    if (isNestedFrameElement(embeddedFrame.tagName) && childFrame) {
+      return inspectFramePoint(childFrame, {
+        x: point.x - embeddedFrame.x,
+        y: point.y - embeddedFrame.y,
+      });
     }
 
     return inspectableFromElement(element);
@@ -252,13 +293,70 @@ export async function inspectViewerPoint(session: string, rawPoint: unknown): Pr
   return withPausedPage(session, async (page) => {
     const target = await inspectFramePoint(page.mainFrame(), point);
     if (target && isInspectableTextTarget(target)) return { editable: true, rect: target.rect };
-    const fallback = selectInspectableTextTarget(await pageTextTargets(page), point);
-    return fallback ? { editable: true, rect: fallback.rect } : { editable: false, rect: target?.rect ?? null };
+    return { editable: false, rect: target?.rect ?? null };
+  });
+}
+
+export async function inspectHumanVerificationPoint(
+  session: string,
+  rawPoint: unknown,
+  contract: HumanAssistanceContract,
+): Promise<ViewerInspectResult> {
+  const point = normalizeViewerPoint(rawPoint);
+  const target = humanVerificationTargetAtPoint(contract, point);
+  const inspected = await inspectViewerPoint(session, point);
+  const liveHit = Boolean(inspected.rect && viewerRectContainsPoint(inspected.rect, point));
+  const resolvedTarget = target && liveHit ? target : null;
+  const modes = resolvedTarget?.modes ?? [];
+  return {
+    editable: Boolean(resolvedTarget && modes.includes("type") && inspected.editable),
+    rect: resolvedTarget?.rect ?? null,
+    targetId: resolvedTarget?.id ?? null,
+    contractVersion: contract.version,
+    modes,
+  };
+}
+
+export async function inspectHumanAssistanceCompletion(
+  session: string,
+  contract: HumanAssistanceContract,
+) {
+  if (contract.completion.mode !== "independent") return false;
+  return withPausedPage(session, async (page) => {
+    const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR).first();
+    const checkboxChecked = await checkbox.evaluate((node) => {
+      if (node instanceof HTMLInputElement) return node.checked;
+      return node.getAttribute("aria-checked") === "true"
+        || node.classList.contains("checked")
+        || node.classList.contains("is-checked")
+        || node.parentElement?.getAttribute("aria-checked") === "true";
+    }).catch(() => false);
+    const challengeVisible = await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first()
+      .isVisible()
+      .catch(() => false);
+    const probe = { checkboxChecked, challengeVisible };
+    return contract.completion.targetIds.every((targetId) => {
+      const target = contract.targets.find((candidate) => candidate.id === targetId);
+      return target ? humanAssistanceCompletionSatisfied(target.semanticId, probe) : false;
+    });
   });
 }
 
 export async function sendViewerInput(session: string, rawInput: unknown) {
   const input = normalizeViewerInput(rawInput);
+  return sendNormalizedViewerInput(session, input);
+}
+
+export async function sendHumanVerificationInput(
+  session: string,
+  rawInput: unknown,
+  contract: HumanAssistanceContract,
+) {
+  const input = normalizeHumanVerificationInput(rawInput, contract);
+  return sendNormalizedViewerInput(session, input);
+}
+
+async function sendNormalizedViewerInput(session: string, input: ViewerInput) {
   await withPausedPage(session, async (page) => {
     if (input.type === "click") {
       await page.mouse.click(input.x, input.y);

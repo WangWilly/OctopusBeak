@@ -22,6 +22,7 @@ import {
   onboardingCanGoBack,
   onboardingCopyKey,
   onboardingStepNumber,
+  onboardingTaskSucceeded,
   resolveOnboardingStep,
   shouldNarrowOnboardingSources,
   targetForOnboardingStep,
@@ -61,6 +62,7 @@ const task = (
   progressText: "",
   statementFailures: [],
   humanSession: null,
+  humanAssistanceContract: null,
   isActive: false,
   ranToday: false,
   primaryAction: "Run",
@@ -619,10 +621,16 @@ test("failed viewer text input keeps the value retryable and Resume locked", () 
 });
 
 test("Assist Resume stays locked until a successful interaction settles", () => {
-  assert.equal(canResumeAssist(false, false), false);
-  assert.equal(canResumeAssist(false, true), false);
-  assert.equal(canResumeAssist(true, true), false);
-  assert.equal(canResumeAssist(true, false), true);
+  const inline = { mode: "inline" as const, targetIds: ["captcha-input"], status: "pending" as const };
+  const independent = { mode: "independent" as const, targetIds: ["captcha"], status: "pending" as const };
+  assert.equal(canResumeAssist(false, false, inline), false);
+  assert.equal(canResumeAssist(false, true, inline), false);
+  assert.equal(canResumeAssist(true, true, inline), false);
+  assert.equal(canResumeAssist(true, false, inline), false);
+  assert.equal(canResumeAssist(true, false, { ...inline, status: "entered" }), true);
+  assert.equal(canResumeAssist(true, false, independent), false);
+  assert.equal(canResumeAssist(true, false, { ...independent, status: "verified" }), true);
+  assert.equal(canResumeAssist(true, false, null), false);
 });
 
 test("Assist drag unlocks Resume only after successful viewer input", () => {
@@ -632,8 +640,9 @@ test("Assist drag unlocks Resume only after successful viewer input", () => {
   assert.equal(typeof settleAssistDrag, "function");
   if (!settleAssistDrag) return;
 
-  assert.equal(canResumeAssist(settleAssistDrag(false), false), false);
-  assert.equal(canResumeAssist(settleAssistDrag(true), false), true);
+  const completion = { mode: "independent" as const, targetIds: ["captcha"], status: "verified" as const };
+  assert.equal(canResumeAssist(settleAssistDrag(false), false, completion), false);
+  assert.equal(canResumeAssist(settleAssistDrag(true), false, completion), true);
   assert.equal(
     automationDashboard.match(/data-onboarding-action="resume-collection"/g)?.length,
     1,
@@ -649,7 +658,7 @@ test("Assist drag unlocks Resume only after successful viewer input", () => {
   );
   assert.match(
     automationDashboard,
-    /disabled=\{!canResumeAssist\(assistInteracted, Boolean\(floatingInput\)\)\}[\s\S]*?data-onboarding=\{[\s\S]*?canResumeAssist\(assistInteracted, Boolean\(floatingInput\)\)/,
+    /disabled=\{!canResumeAssist\(assistInteracted, Boolean\(floatingInput\), humanTask\.humanAssistanceContract\?\.completion\)\}[\s\S]*?data-onboarding=\{[\s\S]*?canResumeAssist\(assistInteracted, Boolean\(floatingInput\), humanTask\.humanAssistanceContract\?\.completion\)/,
   );
 });
 
@@ -1007,6 +1016,14 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
     staleCrawler: "collection",
     staleImporter: "import",
   });
+});
+
+test("onboarding collection advances only from task outcome, never Assist interaction", () => {
+  assert.equal(onboardingTaskSucceeded({ status: "waiting_for_human" }, false), false);
+  assert.equal(onboardingTaskSucceeded({ status: "failed" }, false), false);
+  assert.equal(onboardingTaskSucceeded({ status: "completed" }, true), true);
+  assert.equal(onboardingTaskSucceeded({ status: "partial" }, true), false);
+  assert.equal(onboardingTaskSucceeded({ status: "partial" }, false), true);
 });
 
 test("restart narrows sources only on an empty installation", () => {

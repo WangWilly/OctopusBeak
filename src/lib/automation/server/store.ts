@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
+import {
+  createHumanAssistanceContract,
+  parseHumanAssistanceContract,
+  type HumanAssistanceContract,
+  type HumanAssistanceContractInput,
+  type HumanAssistanceCompletionStatus,
+} from "../human-assistance.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -21,6 +28,7 @@ export type AutomationTaskRun = {
   logPath: string;
   logTail: string;
   recordJson: string;
+  humanAssistanceContract: HumanAssistanceContract | null;
 };
 
 export type AutomationTaskHistoryRow = Pick<
@@ -65,6 +73,7 @@ type CreateTaskRunInput = {
   errorMessage?: string | null;
   logPath: string;
   logTail?: string;
+  humanAssistanceContract?: HumanAssistanceContract | null;
 };
 
 function nullableString(value: unknown) {
@@ -92,6 +101,7 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
     logPath: String(row.log_path),
     logTail: String(row.log_tail),
     recordJson: String(row.record_json),
+    humanAssistanceContract: parseHumanAssistanceContract(String(row.record_json)),
   };
 }
 
@@ -235,7 +245,7 @@ export function resolveTaskPrerequisiteNotices(
 
 export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
   const taskRunId = randomUUID();
-  const record = { taskRunId, ...input };
+  const record = { taskRunId, ...input, humanAssistanceContract: input.humanAssistanceContract ?? null };
   db.prepare(`
     INSERT INTO automation_task_runs (
       task_run_id, task_id, script, kind, status, attempt, max_attempts,
@@ -266,7 +276,7 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
 export function updateTaskRun(
   db: LedgerDatabase,
   taskRunId: string,
-  update: Partial<Pick<AutomationTaskRun, "status" | "finishedAt" | "exitCode" | "signal" | "errorMessage" | "logTail">>,
+  update: Partial<Pick<AutomationTaskRun, "status" | "finishedAt" | "exitCode" | "signal" | "errorMessage" | "logTail" | "humanAssistanceContract">>,
 ) {
   const row = db.prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?").get(taskRunId) as
     | Record<string, unknown>
@@ -290,6 +300,40 @@ export function updateTaskRun(
     taskRunRecordJson(next),
     taskRunId,
   );
+}
+
+export function updateHumanAssistanceContract(
+  db: LedgerDatabase,
+  taskRunId: string,
+  input: HumanAssistanceContractInput,
+) {
+  const run = taskRunById(db, taskRunId);
+  if (!run) throw new Error(`Missing automation task run: ${taskRunId}`);
+  if (run.status !== "running" && run.status !== "waiting_for_human") {
+    throw new Error(`Automation task run is not active: ${taskRunId}`);
+  }
+  const version = (run.humanAssistanceContract?.version ?? 0) + 1;
+  const contract = createHumanAssistanceContract(input, version);
+  updateTaskRun(db, taskRunId, { humanAssistanceContract: contract });
+  return contract;
+}
+
+export function updateHumanAssistanceCompletion(
+  db: LedgerDatabase,
+  taskRunId: string,
+  status: HumanAssistanceCompletionStatus,
+) {
+  const run = taskRunById(db, taskRunId);
+  if (!run?.humanAssistanceContract) {
+    throw new Error(`Missing human assistance contract: ${taskRunId}`);
+  }
+  return updateHumanAssistanceContract(db, taskRunId, {
+    ...run.humanAssistanceContract,
+    completion: {
+      ...run.humanAssistanceContract.completion,
+      status,
+    },
+  });
 }
 
 export function taskRunById(db: LedgerDatabase, taskRunId: string) {

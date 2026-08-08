@@ -12,6 +12,7 @@ import {
   clickAndWaitForNavigation,
   hasAttachedLocator,
 } from "./browser-interaction.js";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -718,6 +719,16 @@ export default workflow("yuantaLoanStatements", {
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
       signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
+        const captchaFrame = authPage.frame({ name: "main" });
+        if (!captchaFrame) throw new Error("YuanTa login frame is unavailable for CAPTCHA assistance.");
+        await emitHumanAssistanceStage({
+          stageId: "yuanta-bank-login-captcha",
+          title: "Enter the YuanTa Bank CAPTCHA",
+          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
+          contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
+          completion: { mode: "inline", targetIds: ["captcha-input"] },
+          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.8 },
+        });
         console.log(
           "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
             authSession +
@@ -725,6 +736,9 @@ export default workflow("yuantaLoanStatements", {
         );
         await pause(authSession);
         const loginFrame = authPage.frame({ name: "main" });
+        if (!loginFrame || !(await loginFrame.locator("#gcode").inputValue()).trim()) {
+          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
+        }
         const loginButtonVisible =
           loginFrame &&
           (await loginFrame

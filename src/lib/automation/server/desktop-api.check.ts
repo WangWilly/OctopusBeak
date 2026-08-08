@@ -71,6 +71,36 @@ try {
   assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.primaryAction, "Configure");
   assert.equal(api.automationRunHistory(dir)[0]?.taskId, "fubon-all-statements");
   assert.throws(
+    () => api.assertHumanAssistanceCompletionCanResume(null),
+    /contract is missing/i,
+  );
+  assert.throws(
+    () => api.assertHumanAssistanceCompletionCanResume({
+      mode: "inline",
+      targetIds: ["captcha-input"],
+      status: "pending",
+    }),
+    /input is incomplete/i,
+  );
+  assert.throws(
+    () => api.assertHumanAssistanceCompletionCanResume({
+      mode: "independent",
+      targetIds: ["captcha-checkbox"],
+      status: "entered",
+    }),
+    /Run Check verification/i,
+  );
+  api.assertHumanAssistanceCompletionCanResume({
+    mode: "inline",
+    targetIds: ["captcha-input"],
+    status: "entered",
+  });
+  api.assertHumanAssistanceCompletionCanResume({
+    mode: "independent",
+    targetIds: ["captcha-checkbox"],
+    status: "verified",
+  });
+  assert.throws(
     () => api.assertAutomationTaskCanStart("fubon-all-statements", dir),
     /Select at least one Fubon/,
   );

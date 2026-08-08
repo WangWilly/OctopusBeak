@@ -6,8 +6,13 @@ import {
 import { resumeSessionFromLog } from "./automation-session-disposition.ts";
 import {
   latestTaskRuns,
+  updateHumanAssistanceCompletion,
   type AutomationTaskRun,
 } from "./store.ts";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContract,
+} from "../human-assistance.ts";
 import { taskById } from "./tasks.ts";
 
 export function humanSessionFromRun(
@@ -29,6 +34,39 @@ export function humanSessionForTask(taskId: string, ledgerDir = process.env.LEDG
   const db = openLedgerDatabase(ledgerDir, { readOnly: true });
   try {
     return humanSessionFromRun(latestTaskRuns(db)[taskId], taskId);
+  } finally {
+    db.close();
+  }
+}
+
+export function humanAssistanceContractForTask(
+  taskId: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): HumanAssistanceContract | null {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+
+  const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+  try {
+    return latestTaskRuns(db)[taskId]?.humanAssistanceContract ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+export function updateHumanAssistanceCompletionForTask(
+  taskId: string,
+  status: HumanAssistanceCompletionStatus,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): HumanAssistanceContract {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    const run = latestTaskRuns(db)[taskId];
+    if (run?.status !== "waiting_for_human") {
+      throw new Error(`Automation task is not waiting for human input: ${taskId}`);
+    }
+    return updateHumanAssistanceCompletion(db, run.taskRunId, status);
   } finally {
     db.close();
   }

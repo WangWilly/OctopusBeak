@@ -19,6 +19,8 @@ import type {
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
+import type { VerificationInteractionMode } from "$lib/automation/human-assistance.ts";
+import type { HumanAssistanceContract } from "$lib/automation/human-assistance.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -42,6 +44,14 @@ export type AutomationActionResult =
 export type ViewerInspectResult = {
   editable: boolean;
   rect: { x: number; y: number; width: number; height: number } | null;
+  targetId?: string | null;
+  contractVersion?: number;
+  modes?: readonly VerificationInteractionMode[];
+};
+
+export type ViewerInputResult = {
+  ok: true;
+  contract: HumanAssistanceContract | null;
 };
 
 export type DataIssueDesktopService = {
@@ -106,7 +116,8 @@ export type OctopusBeakApi = {
     openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
     viewerScreenshot(taskId: string): Promise<Uint8Array | null>;
     viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
-    viewerInput(taskId: string, input: unknown): Promise<{ ok: true }>;
+    viewerInput(taskId: string, input: unknown): Promise<ViewerInputResult>;
+    viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
   };
   dataIssues: {
@@ -141,6 +152,7 @@ export const octopusBeakApiChannels = [
   "automation:viewerScreenshot",
   "automation:viewerInspect",
   "automation:viewerInput",
+  "automation:viewerCompletionCheck",
   "automation:forceQuit",
   "dataIssues:list",
   "dataIssues:create",

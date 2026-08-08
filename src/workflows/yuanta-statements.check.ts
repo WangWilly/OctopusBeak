@@ -10,3 +10,5 @@ assert.match(
   source,
   /if \(page\.frame\(\{ name: "fmain" \}\) && currentCidFromFrameUrls\(page\)\) return;/,
 );
+assert.match(source, /await dismissYuantaBankNotice\(loginFrame\);/);
+assert.match(source, /popup\.locator\("#commonPopupLeftBtnImg"\)/);

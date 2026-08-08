@@ -21,6 +21,7 @@ const latestRuns: Record<string, AutomationTaskRun> = {
     logPath: "data/automation/logs/run-1.log",
     logTail: "ok",
     recordJson: "{}",
+    humanAssistanceContract: null,
   },
 };
 

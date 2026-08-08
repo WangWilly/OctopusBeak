@@ -15,13 +15,16 @@ import {
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   captureSessionScreenshot,
+  inspectHumanAssistanceCompletion,
   isClosedViewerSessionError,
-  inspectViewerPoint,
-  sendViewerInput,
+  inspectHumanVerificationPoint,
+  sendHumanVerificationInput,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   forceQuitHumanSessionForTask,
+  humanAssistanceContractForTask,
   humanSessionForTask,
+  updateHumanAssistanceCompletionForTask,
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
@@ -127,12 +130,34 @@ export function registerOctopusBeakIpc({
   });
   ipcMain.handle("automation:viewerInspect", async (_event, taskId: string, point: unknown) => {
     const session = humanSessionForTask(taskId);
-    return inspectViewerPoint(session, point);
+    const contract = humanAssistanceContractForTask(taskId);
+    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    return inspectHumanVerificationPoint(session, point, contract);
   });
   ipcMain.handle("automation:viewerInput", async (_event, taskId: string, input: unknown) => {
     const session = humanSessionForTask(taskId);
-    await sendViewerInput(session, input);
-    return { ok: true as const };
+    const contract = humanAssistanceContractForTask(taskId);
+    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    await sendHumanVerificationInput(session, input, contract);
+    const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const isTextInputOnCompletionTarget = record.type === "type"
+      && contract.completion.mode === "inline"
+      && typeof record.targetId === "string"
+      && contract.completion.targetIds.includes(record.targetId);
+    const updatedContract = isTextInputOnCompletionTarget
+      ? updateHumanAssistanceCompletionForTask(taskId, "entered")
+      : contract;
+    return { ok: true as const, contract: updatedContract };
+  });
+  ipcMain.handle("automation:viewerCompletionCheck", async (_event, taskId: string) => {
+    const session = humanSessionForTask(taskId);
+    const contract = humanAssistanceContractForTask(taskId);
+    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    const verified = await inspectHumanAssistanceCompletion(session, contract);
+    const updatedContract = verified
+      ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+      : contract;
+    return { verified, contract: updatedContract };
   });
   ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
     await forceQuitHumanSessionForTask(taskId);
