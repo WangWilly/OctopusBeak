@@ -60,8 +60,9 @@
   let actionError = "";
   let statementSelectionError = "";
   let dragStart: { x: number; y: number; pointerId: number } | null = null;
-  let floatingInput: { left: number; top: number; value: string } | null = null;
+  let floatingInput: { left: number; top: number; value: string; targetId: string; contractVersion: number } | null = null;
   let floatingInputEl: HTMLInputElement | null = null;
+  let viewerScale = 1;
   let viewerExpanded = false;
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
@@ -690,6 +691,7 @@
   function openHumanViewer(task: AutomationTaskRow) {
     humanTask = task;
     assistInteracted = false;
+    viewerScale = Math.max(1, Math.min(2.5, task.humanAssistanceContract?.focus.initialZoom ?? 1));
     viewerError = "";
     dragStart = null;
     void refreshViewerImage();
@@ -710,6 +712,7 @@
     viewerError = "";
     dragStart = null;
     floatingInput = null;
+    viewerScale = 1;
     viewerExpanded = false;
   }
 
@@ -824,12 +827,16 @@
   }
 
   async function submitViewerDrag(start: { x: number; y: number }, point: { x: number; y: number }) {
+    const inspected = await inspectViewerPoint(start);
+    if (!inspected?.targetId || inspected.contractVersion === undefined || !inspected.modes?.includes("drag")) return;
     const succeeded = await sendViewerInput({
       type: "drag",
       x: start.x,
       y: start.y,
       toX: point.x,
       toY: point.y,
+      targetId: inspected.targetId,
+      contractVersion: inspected.contractVersion,
     });
     if (settleAssistDrag(succeeded)) assistInteracted = true;
   }
@@ -843,14 +850,26 @@
 
   async function handleViewerClick(point: NonNullable<ReturnType<typeof pointerPoint>>) {
     floatingInput = null;
-    if (!await sendViewerInput({ type: "click", x: point.x, y: point.y })) return;
     const inspected = await inspectViewerPoint({ x: point.x, y: point.y });
-    if (!inspected) return;
-    if (!inspected.editable) {
+    if (!inspected?.targetId || inspected.contractVersion === undefined) return;
+    const modes = inspected.modes ?? [];
+    if (modes.includes("click") && !await sendViewerInput({
+      type: "click",
+      x: point.x,
+      y: point.y,
+      targetId: inspected.targetId,
+      contractVersion: inspected.contractVersion,
+    })) return;
+    if (!modes.includes("type")) {
       assistInteracted = true;
       return;
     }
-    floatingInput = { ...floatingInputAnchor(point), value: "" };
+    floatingInput = {
+      ...floatingInputAnchor(point),
+      value: "",
+      targetId: inspected.targetId,
+      contractVersion: inspected.contractVersion,
+    };
     await tick();
     floatingInputEl?.focus();
   }
@@ -864,7 +883,12 @@
     event.preventDefault();
     if (!floatingInput?.value) return;
     const input = floatingInput;
-    const succeeded = await sendViewerInput({ type: "type", text: input.value });
+    const succeeded = await sendViewerInput({
+      type: "type",
+      text: input.value,
+      targetId: input.targetId,
+      contractVersion: input.contractVersion,
+    });
     if (floatingInput !== input) return;
     const result = settleAssistTextSubmission(input, succeeded);
     floatingInput = result.floatingInput;
@@ -1496,6 +1520,11 @@
         <div class="viewer-title">
           <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>
           <p>{humanTask.humanSession ?? $t.automation.noSession}</p>
+          {#if humanTask.humanAssistanceContract}
+            <span class="viewer-contract-stage">
+              {humanTask.humanAssistanceContract.title} · v{humanTask.humanAssistanceContract.version}
+            </span>
+          {/if}
         </div>
         <div class="viewer-actions">
           <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
@@ -1518,6 +1547,7 @@
       </div>
       <div class="modal-body viewer-body">
         <div class="viewer-frame">
+          <div class="viewer-focus" style={`--viewer-scale: ${viewerScale};`}>
           <img
             class="viewer-image"
             tabindex="-1"
@@ -1574,6 +1604,7 @@
               </button>
             </form>
           {/if}
+          </div>
         </div>
         {#if viewerError}<p class="viewer-error">{viewerError}</p>{/if}
       </div>
@@ -2829,6 +2860,14 @@
     white-space: nowrap;
   }
 
+  .viewer-contract-stage {
+    width: fit-content;
+    max-width: 100%;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
   .viewer-actions {
     display: flex;
     flex-wrap: wrap;
@@ -2882,11 +2921,25 @@
     box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04);
   }
 
+  .viewer-focus {
+    position: relative;
+    width: 100%;
+    display: grid;
+    place-items: center;
+    transform: scale(var(--viewer-scale, 1));
+    transform-origin: center;
+    transition: transform 180ms ease;
+  }
+
   .human-viewer-modal.expanded .viewer-frame {
     width: 100%;
     height: 100%;
     border: 0;
     border-radius: 0;
+  }
+
+  .human-viewer-modal.expanded .viewer-focus {
+    height: 100%;
   }
 
   .viewer-image {

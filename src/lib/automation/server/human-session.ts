@@ -8,6 +8,7 @@ import {
   latestTaskRuns,
   type AutomationTaskRun,
 } from "./store.ts";
+import type { HumanAssistanceContract } from "../human-assistance.ts";
 import { taskById } from "./tasks.ts";
 
 export function humanSessionFromRun(
@@ -29,6 +30,20 @@ export function humanSessionForTask(taskId: string, ledgerDir = process.env.LEDG
   const db = openLedgerDatabase(ledgerDir, { readOnly: true });
   try {
     return humanSessionFromRun(latestTaskRuns(db)[taskId], taskId);
+  } finally {
+    db.close();
+  }
+}
+
+export function humanAssistanceContractForTask(
+  taskId: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): HumanAssistanceContract | null {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+
+  const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+  try {
+    return latestTaskRuns(db)[taskId]?.humanAssistanceContract ?? null;
   } finally {
     db.close();
   }

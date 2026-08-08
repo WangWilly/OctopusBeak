@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
+  humanVerificationTargetAtPoint,
   isInspectableTextTarget,
+  normalizeHumanVerificationInput,
   normalizeViewerInput,
   normalizeViewerPoint,
   selectInspectableTextTarget,
   selectAllShortcut,
   selectViewerPage,
+  viewerRectContainsPoint,
 } from "./automation-viewer.ts";
+import type { HumanAssistanceContract } from "../human-assistance.ts";
 
 assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
 assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
@@ -72,7 +76,7 @@ assert.deepEqual(
   },
 );
 
-assert.deepEqual(
+assert.equal(
   selectInspectableTextTarget([
     {
       tagName: "INPUT",
@@ -83,17 +87,10 @@ assert.deepEqual(
       rect: { x: 700, y: 386, width: 96, height: 28 },
     },
   ], { x: 810, y: 400 }),
-  {
-    tagName: "INPUT",
-    type: "text",
-    editable: false,
-    disabled: false,
-    readOnly: false,
-    rect: { x: 700, y: 386, width: 96, height: 28 },
-  },
+  null,
 );
 
-assert.deepEqual(
+assert.equal(
   selectInspectableTextTarget([
     {
       tagName: "INPUT",
@@ -104,14 +101,7 @@ assert.deepEqual(
       rect: { x: 700, y: 386, width: 96, height: 28 },
     },
   ], { x: 810, y: 426 }),
-  {
-    tagName: "INPUT",
-    type: "text",
-    editable: false,
-    disabled: false,
-    readOnly: false,
-    rect: { x: 700, y: 386, width: 96, height: 28 },
-  },
+  null,
 );
 
 assert.equal(
@@ -134,6 +124,73 @@ assert.throws(() => normalizeViewerInput({ type: "type", text: "" }));
 assert.throws(() => normalizeViewerInput({ type: "type", text: "x".repeat(129) }));
 assert.throws(() => normalizeViewerInput({ type: "press", key: "" }));
 assert.throws(() => normalizeViewerInput({ type: "press", key: "Meta+R" }));
+
+const humanContract: HumanAssistanceContract = {
+  schemaVersion: 1,
+  version: 3,
+  stageId: "captcha",
+  title: "Complete CAPTCHA",
+  targets: [{
+    id: "captcha-input",
+    label: "CAPTCHA input",
+    semanticId: "captcha.input",
+    modes: ["click", "type"],
+    rect: { x: 700, y: 386, width: 96, height: 96 },
+  }],
+  contextRegions: [],
+  completion: { mode: "inline", targetIds: ["captcha-input"] },
+  focus: { targetId: "captcha-input", contextRegionIds: [] },
+};
+
+assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 724, y: 400 }), true);
+assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 810, y: 400 }), false);
+assert.equal(
+  humanVerificationTargetAtPoint(humanContract, { x: 724, y: 400 })?.id,
+  "captcha-input",
+);
+assert.equal(humanVerificationTargetAtPoint(humanContract, { x: 810, y: 400 }), null);
+assert.deepEqual(
+  normalizeHumanVerificationInput({
+    type: "click",
+    x: 724,
+    y: 400,
+    targetId: "captcha-input",
+    contractVersion: 3,
+  }, humanContract),
+  { type: "click", x: 724, y: 400 },
+);
+assert.throws(
+  () => normalizeHumanVerificationInput({
+    type: "click",
+    x: 810,
+    y: 400,
+    targetId: "captcha-input",
+    contractVersion: 3,
+  }, humanContract),
+  /outside the declared human verification target/,
+);
+assert.throws(
+  () => normalizeHumanVerificationInput({
+    type: "drag",
+    x: 724,
+    y: 400,
+    toX: 800,
+    toY: 400,
+    targetId: "captcha-input",
+    contractVersion: 3,
+  }, humanContract),
+  /mode is not allowed/,
+);
+assert.throws(
+  () => normalizeHumanVerificationInput({
+    type: "click",
+    x: 724,
+    y: 400,
+    targetId: "captcha-input",
+    contractVersion: 2,
+  }, humanContract),
+  /contract is stale/,
+);
 
 assert.equal(selectViewerPage([
   { url: () => "https://first.example" },
