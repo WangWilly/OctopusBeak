@@ -767,7 +767,11 @@
   }
 
   async function resumeHumanViewer() {
-    if (!humanTask || !canResumeAssist(assistInteracted, Boolean(floatingInput))) return;
+    if (!humanTask || !canResumeAssist(
+      assistInteracted,
+      Boolean(floatingInput),
+      humanTask.humanAssistanceContract?.completion,
+    )) return;
     const task = humanTask;
     closeHumanViewer();
     try {
@@ -1533,8 +1537,8 @@
           <button
             class="button primary fixed-action"
             type="button"
-            disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput))}
-            data-onboarding={onboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput))
+            disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)}
+            data-onboarding={onboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)
               ? "automation-assist"
               : undefined}
             data-onboarding-action="resume-collection"
