@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
 const TRANSACTION_URL =
@@ -438,14 +439,22 @@ async function signInSinopac(
 ): Promise<void> {
   const { page, session } = ctx;
   await fillLoginForm(page, credentials);
+  const captcha = page
+    .locator('input[placeholder="驗證碼"], input[id$="sino_keyword3"]')
+    .first();
+  await emitHumanAssistanceStage({
+    stageId: "sinopac-login-captcha",
+    title: "Enter the SinoPac CAPTCHA",
+    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "sinopac.login.captcha-input", modes: ["type"], locator: captcha }],
+    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "sinopac.login.captcha-challenge" }],
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+  });
 
   console.log(sinopacManualAuthMessage(session));
   await pause(session);
   if (await isSignedIn(page)) return;
 
-  const captcha = page
-    .locator('input[placeholder="驗證碼"], input[id$="sino_keyword3"]')
-    .first();
   if (!(await captcha.inputValue()).trim()) {
     throw new Error(
       "SinoPac CAPTCHA is empty. Enter it in the browser before resuming.",

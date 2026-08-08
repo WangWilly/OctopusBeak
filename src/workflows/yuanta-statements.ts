@@ -11,6 +11,7 @@ import type { Dialog, Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -565,12 +566,34 @@ export async function authenticateYuantaBank(
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
       signIn: async ({ page: authPage, session }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
+        const loginFrame = await waitForFrame(authPage, "main");
+        await emitHumanAssistanceStage({
+          stageId: "yuanta-bank-login-captcha",
+          title: "Enter the YuanTa Bank CAPTCHA",
+          targets: [{
+            id: "captcha-input",
+            label: "CAPTCHA input",
+            semanticId: "yuanta-bank.login.captcha-input",
+            modes: ["type"],
+            locator: loginFrame.locator("#gcode"),
+          }],
+          contextRegions: [{
+            id: "captcha-challenge",
+            label: "CAPTCHA challenge and instructions",
+            semanticId: "yuanta-bank.login.captcha-challenge",
+          }],
+          completion: { mode: "inline", targetIds: ["captcha-input"] },
+          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.8 },
+        });
         console.log(
           "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
             session +
             "`.",
         );
         await pause(session);
+        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
+          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
+        }
         await submitLogin(authPage, signInCredentials as YuantaCredentials);
         replacedActiveSession = await waitForSignedInState(
           authPage,
