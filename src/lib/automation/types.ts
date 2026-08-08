@@ -1,6 +1,6 @@
-export type AutomationTaskKind = "crawler" | "sync" | "import";
-
 import type { HumanAssistanceContract } from "./human-assistance.ts";
+
+export type AutomationTaskKind = "crawler" | "sync" | "import";
 
 export type AutomationExternalPrerequisite = {
   id: string;

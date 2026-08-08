@@ -139,8 +139,12 @@ export function registerOctopusBeakIpc({
     const contract = humanAssistanceContractForTask(taskId);
     if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
     await sendHumanVerificationInput(session, input, contract);
-    const isTextInput = Boolean(input && typeof input === "object" && (input as Record<string, unknown>).type === "type");
-    const updatedContract = isTextInput && contract.completion.mode === "inline"
+    const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const isTextInputOnCompletionTarget = record.type === "type"
+      && contract.completion.mode === "inline"
+      && typeof record.targetId === "string"
+      && contract.completion.targetIds.includes(record.targetId);
+    const updatedContract = isTextInputOnCompletionTarget
       ? updateHumanAssistanceCompletionForTask(taskId, "entered")
       : contract;
     return { ok: true as const, contract: updatedContract };
