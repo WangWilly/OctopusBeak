@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
 const SEARCH_URL =
@@ -312,6 +313,14 @@ async function signInEinvoice(
     .locator("#password")
     .fill(requireCredential(credentials, "einvoice_password"));
   await page.locator("#captcha").focus();
+  await emitHumanAssistanceStage({
+    stageId: "einvoice-login-captcha",
+    title: "Enter the e-invoice CAPTCHA",
+    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "einvoice.login.captcha-input", modes: ["type"], locator: page.locator("#captcha") }],
+    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "einvoice.login.captcha-challenge" }],
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+  });
 
   console.log(
     "manual-auth-required: enter the e-invoice CAPTCHA in the browser, then run `npx libretto resume --session " +
