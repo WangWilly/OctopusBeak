@@ -7,7 +7,15 @@ export const HUMAN_VERIFICATION_INTERACTION_MODES = [
   "drag",
 ] as const;
 
+export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
+  "pending",
+  "entered",
+  "verified",
+  "failed",
+] as const;
+
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
+export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
 
 export type HumanVerificationRect = {
   x: number;
@@ -33,6 +41,11 @@ export type VerificationContextRegion = {
 export type HumanAssistanceCompletion = {
   mode: "independent" | "inline";
   targetIds: readonly string[];
+  status: HumanAssistanceCompletionStatus;
+};
+
+export type HumanAssistanceCompletionInput = Omit<HumanAssistanceCompletion, "status"> & {
+  status?: HumanAssistanceCompletionStatus;
 };
 
 export type HumanAssistanceFocus = {
@@ -46,14 +59,17 @@ export type HumanAssistanceContractInput = {
   title: string;
   targets: readonly HumanVerificationTarget[];
   contextRegions: readonly VerificationContextRegion[];
-  completion: HumanAssistanceCompletion;
+  completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
   schemaVersion: typeof HUMAN_ASSISTANCE_SCHEMA_VERSION;
   version: number;
+  completion: HumanAssistanceCompletion;
 };
+
+export const HUMAN_ASSISTANCE_CONTRACT_SIGNAL = "human-assistance-contract:";
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -104,6 +120,12 @@ export function createHumanAssistanceContract(
   if (input.completion.targetIds.length === 0) {
     throw new Error("Invalid human assistance contract: completion needs a target.");
   }
+  if (
+    input.completion.status !== undefined
+    && !HUMAN_ASSISTANCE_COMPLETION_STATUSES.includes(input.completion.status)
+  ) {
+    throw new Error(`Invalid human assistance contract: unknown completion status ${input.completion.status}.`);
+  }
   if (input.completion.targetIds.some((id) => !input.targets.some((target) => target.id === id))) {
     throw new Error("Invalid human assistance contract: completion references an unknown target.");
   }
@@ -127,6 +149,7 @@ export function createHumanAssistanceContract(
     completion: {
       mode: input.completion.mode,
       targetIds: [...input.completion.targetIds],
+      status: input.completion.status ?? "pending",
     },
     focus: {
       targetId: input.focus.targetId,
@@ -134,6 +157,26 @@ export function createHumanAssistanceContract(
       ...(input.focus.initialZoom === undefined ? {} : { initialZoom: input.focus.initialZoom }),
     },
   };
+}
+
+export function humanAssistanceContractSignal(input: HumanAssistanceContractInput): string {
+  createHumanAssistanceContract(input, 1);
+  return `${HUMAN_ASSISTANCE_CONTRACT_SIGNAL} ${JSON.stringify(input)}`;
+}
+
+export function parseHumanAssistanceContractSignals(output: string): HumanAssistanceContractInput[] {
+  const contracts: HumanAssistanceContractInput[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith(HUMAN_ASSISTANCE_CONTRACT_SIGNAL)) continue;
+    try {
+      const value = JSON.parse(line.slice(HUMAN_ASSISTANCE_CONTRACT_SIGNAL.length).trim()) as HumanAssistanceContractInput;
+      createHumanAssistanceContract(value, 1);
+      contracts.push(value);
+    } catch {
+      // Invalid workflow signals are ignored; the run remains fail-safe without a contract.
+    }
+  }
+  return contracts;
 }
 
 export function parseHumanAssistanceContract(recordJson: string): HumanAssistanceContract | null {

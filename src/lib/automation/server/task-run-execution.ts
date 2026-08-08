@@ -8,6 +8,9 @@ import {
   type StatementRunSummary,
 } from "../statement-run-summary.ts";
 import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
+import {
+  parseHumanAssistanceContractSignals,
+} from "../human-assistance.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
@@ -33,6 +36,7 @@ import {
   activeTaskRuns,
   createTaskRun,
   taskRunById,
+  updateHumanAssistanceContract,
   updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
@@ -144,6 +148,13 @@ function createAutomationTaskRunExecution(
     command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
     command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
   }
+  const resumeFrom = options.resumeSession
+    ? activeTaskRuns(taskDb).find((candidate) =>
+      candidate.taskId === task.id
+      && candidate.status === "waiting_for_human"
+      && sessionFromRun(candidate) === options.resumeSession
+    )
+    : undefined;
   const run = createTaskRun(taskDb, {
     taskId: task.id,
     script: command.display,
@@ -153,6 +164,7 @@ function createAutomationTaskRunExecution(
     maxAttempts,
     startedAt,
     logPath,
+    humanAssistanceContract: resumeFrom?.humanAssistanceContract ?? null,
   });
   const owner = session ? {
     taskId: task.id,
@@ -162,14 +174,6 @@ function createAutomationTaskRunExecution(
   } : null;
   if (session) {
     appendLog(logPath, "automation-session: " + session + "\n");
-    const resumeFrom = options.resumeSession
-      ? activeTaskRuns(taskDb).find((candidate) =>
-        candidate.taskId === task.id
-        && candidate.taskRunId !== run.taskRunId
-        && candidate.status === "waiting_for_human"
-        && sessionFromRun(candidate) === options.resumeSession
-      )
-      : undefined;
     if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
       resumeSession: options.resumeSession,
       resumeFrom,
@@ -183,6 +187,7 @@ async function executeAutomationTaskProcess(
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
+  let lastHumanAssistanceContractJson: string | null = null;
   let statementSummary: StatementRunSummary | null = null;
   const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
@@ -216,6 +221,24 @@ async function executeAutomationTaskProcess(
       }
       logTail = output.logTail;
       detectedResumeFailure = output.resumeFailure;
+      const latestHumanAssistanceContract = parseHumanAssistanceContractSignals(logTail).at(-1);
+      if (latestHumanAssistanceContract) {
+        const contractJson = JSON.stringify(latestHumanAssistanceContract);
+        if (contractJson !== lastHumanAssistanceContractJson) {
+          try {
+            updateHumanAssistanceContract(
+              execution.taskDb,
+              execution.run.taskRunId,
+              latestHumanAssistanceContract,
+            );
+            lastHumanAssistanceContractJson = contractJson;
+          } catch (error) {
+            const warning = `human-assistance-contract-rejected: ${errorMessage(error)}`;
+            console.error(warning);
+            outputPersistenceWarnings.push(warning);
+          }
+        }
+      }
       try {
         appendLog(execution.logPath, output.logChunk);
       } catch (error) {

@@ -9,9 +9,14 @@ import { AUTOMATION_TASKS } from "./tasks.ts";
 import {
   createTaskRun,
   taskRunById,
+  updateHumanAssistanceCompletion,
   updateHumanAssistanceContract,
 } from "./store.ts";
-import type { HumanAssistanceContractInput } from "../human-assistance.ts";
+import {
+  humanAssistanceContractSignal,
+  parseHumanAssistanceContractSignals,
+  type HumanAssistanceContractInput,
+} from "../human-assistance.ts";
 
 const contract: HumanAssistanceContractInput = {
   stageId: "yuanta-bank-captcha",
@@ -52,6 +57,7 @@ test("human assistance contract persists with a task run and is exposed to Assis
     db.close();
 
     assert.equal(first.version, 1);
+    assert.equal(first.completion.status, "pending");
     assert.deepEqual(persisted?.humanAssistanceContract, first);
 
     const pageModel = buildAutomationPageModel({
@@ -71,6 +77,19 @@ test("human assistance contract persists with a task run and is exposed to Assis
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
+});
+
+test("workflow contract signals are structured and never carry verification text", () => {
+  const signal = humanAssistanceContractSignal({
+    ...contract,
+    completion: { ...contract.completion, status: "entered" },
+  });
+  assert.match(signal, /^human-assistance-contract:/);
+  assert.equal(signal.includes("captcha-answer"), false);
+  assert.deepEqual(parseHumanAssistanceContractSignals(`${signal}\n`), [{
+    ...contract,
+    completion: { ...contract.completion, status: "entered" },
+  }]);
 });
 
 test("updating a waiting contract increments its version without storing verification text", () => {
@@ -100,12 +119,15 @@ test("updating a waiting contract increments its version without storing verific
       }],
     });
     const persisted = taskRunById(db, run.taskRunId);
-    db.close();
-
     assert.equal(first.version, 1);
     assert.equal(second.version, 2);
     assert.equal(persisted?.humanAssistanceContract?.stageId, "yuanta-bank-captcha-retry");
     assert.equal(JSON.stringify(persisted).includes("captcha-answer"), false);
+
+    const verified = updateHumanAssistanceCompletion(db, run.taskRunId, "verified");
+    assert.equal(verified.version, 3);
+    assert.equal(verified.completion.status, "verified");
+    db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }

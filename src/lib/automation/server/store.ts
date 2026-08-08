@@ -7,6 +7,7 @@ import {
   parseHumanAssistanceContract,
   type HumanAssistanceContract,
   type HumanAssistanceContractInput,
+  type HumanAssistanceCompletionStatus,
 } from "../human-assistance.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
@@ -315,6 +316,24 @@ export function updateHumanAssistanceContract(
   const contract = createHumanAssistanceContract(input, version);
   updateTaskRun(db, taskRunId, { humanAssistanceContract: contract });
   return contract;
+}
+
+export function updateHumanAssistanceCompletion(
+  db: LedgerDatabase,
+  taskRunId: string,
+  status: HumanAssistanceCompletionStatus,
+) {
+  const run = taskRunById(db, taskRunId);
+  if (!run?.humanAssistanceContract) {
+    throw new Error(`Missing human assistance contract: ${taskRunId}`);
+  }
+  return updateHumanAssistanceContract(db, taskRunId, {
+    ...run.humanAssistanceContract,
+    completion: {
+      ...run.humanAssistanceContract.completion,
+      status,
+    },
+  });
 }
 
 export function taskRunById(db: LedgerDatabase, taskRunId: string) {
