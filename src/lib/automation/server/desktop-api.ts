@@ -42,6 +42,7 @@ import {
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+import type { HumanAssistanceCompletion } from "../human-assistance.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 
@@ -207,6 +208,20 @@ export function automationRunHistory(ledgerDir = process.env.LEDGER_DIR ?? "data
   }
 }
 
+export function assertHumanAssistanceCompletionCanResume(
+  completion: HumanAssistanceCompletion | null | undefined,
+) {
+  if (!completion) {
+    throw new Error("Human assistance contract is missing; force quit this legacy run.");
+  }
+  if (completion.mode === "inline" && completion.status !== "entered") {
+    throw new Error("Human verification input is incomplete. Enter the verification input before Resume.");
+  }
+  if (completion.mode === "independent" && completion.status !== "verified") {
+    throw new Error("Human verification is incomplete. Run Check verification before Resume.");
+  }
+}
+
 export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
@@ -214,6 +229,7 @@ export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status !== "waiting_for_human") throw new Error("Task is not waiting for human input.");
+  assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
   const session = resumeSessionFromLog(row.logTail);
   if (!session) throw new Error("Missing Libretto resume session in latest log.");
   startAutomationResume(task.id, session, ledgerDir);
