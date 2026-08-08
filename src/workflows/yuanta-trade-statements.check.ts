@@ -4,6 +4,7 @@ import type { Page } from "playwright";
 import {
   dismissPasswordChangeReminderIfPresent,
   fillTradeLoginForm,
+  isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
 } from "./yuanta-trade-statements.ts";
 
@@ -63,6 +64,26 @@ test("ignores navigation races while checking the YuanTa password reminder", asy
   );
   await dismissPasswordChangeReminderIfPresent(navigating.page);
   assert.equal(navigating.clicks(), 0);
+});
+
+test("detects the YuanTa missing security component state", async () => {
+  const page = {
+    getByText(text: string, options: { exact: boolean }) {
+      assert.equal(text, "系統找不到安控元件");
+      assert.deepEqual(options, { exact: false });
+      return {
+        first() {
+          return {
+            async isVisible() {
+              return true;
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Page;
+
+  assert.equal(await isYuantaSecurityComponentMissing(page), true);
 });
 
 test("removes focus from the YuanTa password field after filling credentials", async () => {
