@@ -63,6 +63,7 @@
   let floatingInput: { left: number; top: number; value: string; targetId: string; contractVersion: number } | null = null;
   let floatingInputEl: HTMLInputElement | null = null;
   let viewerScale = 1;
+  let viewerImageSize = { width: 0, height: 0 };
   let viewerExpanded = false;
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
@@ -713,7 +714,22 @@
     dragStart = null;
     floatingInput = null;
     viewerScale = 1;
+    viewerImageSize = { width: 0, height: 0 };
     viewerExpanded = false;
+  }
+
+  function viewerFocusStyle() {
+    const target = humanTask?.humanAssistanceContract?.targets.find(
+      (candidate) => candidate.id === humanTask?.humanAssistanceContract?.focus.targetId,
+    );
+    const rect = target?.rect;
+    const originX = rect && viewerImageSize.width
+      ? ((rect.x + rect.width / 2) / viewerImageSize.width) * 100
+      : 50;
+    const originY = rect && viewerImageSize.height
+      ? ((rect.y + rect.height / 2) / viewerImageSize.height) * 100
+      : 50;
+    return `--viewer-scale: ${viewerScale}; --viewer-origin-x: ${originX}%; --viewer-origin-y: ${originY}%;`;
   }
 
   function backOnboardingAssist(event: Event) {
@@ -1551,7 +1567,7 @@
       </div>
       <div class="modal-body viewer-body">
         <div class="viewer-frame">
-          <div class="viewer-focus" style={`--viewer-scale: ${viewerScale};`}>
+          <div class="viewer-focus" style={viewerFocusStyle()}>
           <img
             class="viewer-image"
             tabindex="-1"
@@ -1563,7 +1579,11 @@
             src={viewerImageUrl}
             alt={$t.automation.pausedBrowser}
             draggable="false"
-            onload={() => (viewerError = "")}
+            onload={(event) => {
+              const image = event.currentTarget as HTMLImageElement;
+              viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
+              viewerError = "";
+            }}
             onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
             onpointerdown={handleViewerPointerDown}
             onpointerup={handleViewerPointerUp}
@@ -2931,7 +2951,7 @@
     display: grid;
     place-items: center;
     transform: scale(var(--viewer-scale, 1));
-    transform-origin: center;
+    transform-origin: var(--viewer-origin-x, 50%) var(--viewer-origin-y, 50%);
     transition: transform 180ms ease;
   }
 
