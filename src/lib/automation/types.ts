@@ -1,5 +1,7 @@
 export type AutomationTaskKind = "crawler" | "sync" | "import";
 
+import type { HumanAssistanceContract } from "./human-assistance.ts";
+
 export type AutomationExternalPrerequisite = {
   id: string;
   provider: string;
@@ -93,6 +95,7 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   progressText: string;
   statementFailures: readonly { typeId: string; error?: string }[];
   humanSession: string | null;
+  humanAssistanceContract: HumanAssistanceContract | null;
   isActive: boolean;
   ranToday: boolean;
   primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel" | "Configure";
