@@ -9,11 +9,19 @@ export const HUMAN_VERIFICATION_INTERACTION_MODES = [
 
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 
+export type HumanVerificationRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type HumanVerificationTarget = {
   id: string;
   label: string;
   semanticId: string;
   modes: readonly VerificationInteractionMode[];
+  rect?: HumanVerificationRect | null;
 };
 
 export type VerificationContextRegion = {
