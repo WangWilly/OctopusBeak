@@ -360,7 +360,7 @@ async function completeEmailOtpIfNeeded(
       await emitHumanAssistanceStage({
         stageId: "cathay-login-email-otp",
         title: "Enter the Cathay Email OTP",
-        targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["type"], locator: otpField }],
+        targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["click", "type"], locator: otpField }],
         contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
         completion: { mode: "inline", targetIds: ["otp-input"] },
         focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
@@ -394,7 +394,7 @@ async function completeEmailOtpIfNeeded(
   await emitHumanAssistanceStage({
     stageId: "cathay-login-email-otp",
     title: "Enter the Cathay Email OTP",
-    targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["type"], locator: otpField }],
+    targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["click", "type"], locator: otpField }],
     contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
     completion: { mode: "inline", targetIds: ["otp-input"] },
     focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },

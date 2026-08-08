@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
+  humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
   isInspectableTextTarget,
   normalizeHumanVerificationInput,
@@ -149,6 +150,34 @@ assert.equal(
   "captcha-input",
 );
 assert.equal(humanVerificationTargetAtPoint(humanContract, { x: 810, y: 400 }), null);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.captcha-checkbox", {
+    checkboxChecked: true,
+    challengeVisible: true,
+  }),
+  true,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
+    checkboxChecked: true,
+    challengeVisible: true,
+  }),
+  false,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
+    checkboxChecked: true,
+    challengeVisible: false,
+  }),
+  true,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("unknown.semantic-id", {
+    checkboxChecked: true,
+    challengeVisible: false,
+  }),
+  false,
+);
 assert.deepEqual(
   normalizeHumanVerificationInput({
     type: "click",

@@ -272,7 +272,7 @@ async function signInPost(
     await emitHumanAssistanceStage({
       stageId: "ipost-login-captcha",
       title: "Enter the iPost CAPTCHA",
-      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "ipost.login.captcha-input", modes: ["type"], locator: captchaInput }],
+      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "ipost.login.captcha-input", modes: ["click", "type"], locator: captchaInput }],
       contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "ipost.login.captcha-challenge" }],
       completion: { mode: "inline", targetIds: ["captcha-input"] },
       focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
