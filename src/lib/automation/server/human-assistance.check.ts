@@ -90,6 +90,7 @@ test("workflow contract signals are structured and never carry verification text
     ...contract,
     completion: { ...contract.completion, status: "entered" },
   }]);
+  assert.deepEqual(parseHumanAssistanceContractSignals("human-assistance-contract: {\"captchaAnswer\":\"raw-secret\"}\n"), []);
 });
 
 test("updating a waiting contract increments its version without storing verification text", () => {
