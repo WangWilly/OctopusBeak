@@ -10,6 +10,7 @@ import {
 import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
 import {
   createHumanAssistanceContractFrameParser,
+  HUMAN_ASSISTANCE_HOST_FD_ENV,
 } from "../human-assistance.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
@@ -254,7 +255,7 @@ async function executeAutomationTaskProcess(
       stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
       env: {
         ...execution.command.env,
-        OCTOPUSBEAK_HUMAN_ASSISTANCE_FD: "3",
+        [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
       },
     });
     activeTaskChildren.set(execution.task.id, child);

@@ -72,8 +72,6 @@ export type HumanAssistanceContract = HumanAssistanceContractInput & {
   completion: HumanAssistanceCompletion;
 };
 
-export const HUMAN_ASSISTANCE_CONTRACT_SIGNAL = "human-assistance-contract:";
-
 function nonEmpty(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`Invalid human assistance contract: ${field} must be non-empty.`);
@@ -162,11 +160,6 @@ export function createHumanAssistanceContract(
   };
 }
 
-export function humanAssistanceContractSignal(input: HumanAssistanceContractInput): string {
-  createHumanAssistanceContract(input, 1);
-  return `${HUMAN_ASSISTANCE_CONTRACT_SIGNAL} ${JSON.stringify(input)}`;
-}
-
 export function humanAssistanceContractFrame(input: HumanAssistanceContractInput): string {
   createHumanAssistanceContract(input, 1);
   return `${JSON.stringify(input)}\n`;
@@ -202,21 +195,6 @@ export function createHumanAssistanceContractFrameParser(
       if (contract) onContract(contract);
     },
   };
-}
-
-export function parseHumanAssistanceContractSignals(output: string): HumanAssistanceContractInput[] {
-  const contracts: HumanAssistanceContractInput[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (!line.startsWith(HUMAN_ASSISTANCE_CONTRACT_SIGNAL)) continue;
-    try {
-      const value = JSON.parse(line.slice(HUMAN_ASSISTANCE_CONTRACT_SIGNAL.length).trim()) as HumanAssistanceContractInput;
-      createHumanAssistanceContract(value, 1);
-      contracts.push(value);
-    } catch {
-      // Invalid workflow signals are ignored; the run remains fail-safe without a contract.
-    }
-  }
-  return contracts;
 }
 
 export function parseHumanAssistanceContract(recordJson: string): HumanAssistanceContract | null {
