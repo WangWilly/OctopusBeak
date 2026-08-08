@@ -57,6 +57,7 @@
   let viewerRequestId = 0;
   let viewerImageUrl = "";
   let viewerError = "";
+  let completionChecking = false;
   let actionError = "";
   let statementSelectionError = "";
   let dragStart: { x: number; y: number; pointerId: number } | null = null;
@@ -711,6 +712,7 @@
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
     viewerImageUrl = "";
     viewerError = "";
+    completionChecking = false;
     dragStart = null;
     floatingInput = null;
     viewerScale = 1;
@@ -719,15 +721,27 @@
   }
 
   function viewerFocusStyle() {
-    const target = humanTask?.humanAssistanceContract?.targets.find(
-      (candidate) => candidate.id === humanTask?.humanAssistanceContract?.focus.targetId,
+    const contract = humanTask?.humanAssistanceContract;
+    const target = contract?.targets.find(
+      (candidate) => candidate.id === contract.focus.targetId,
     );
-    const rect = target?.rect;
-    const originX = rect && viewerImageSize.width
-      ? ((rect.x + rect.width / 2) / viewerImageSize.width) * 100
+    const contextRects = contract?.contextRegions
+      .filter((region) => contract.focus.contextRegionIds.includes(region.id))
+      .flatMap((region) => region.rect ? [region.rect] : []) ?? [];
+    const rects = [target?.rect, ...contextRects].filter((rect): rect is NonNullable<typeof rect> => Boolean(rect));
+    const bounds = rects.length > 0
+      ? {
+        x: Math.min(...rects.map((rect) => rect.x)),
+        y: Math.min(...rects.map((rect) => rect.y)),
+        right: Math.max(...rects.map((rect) => rect.x + rect.width)),
+        bottom: Math.max(...rects.map((rect) => rect.y + rect.height)),
+      }
+      : null;
+    const originX = bounds && viewerImageSize.width
+      ? ((bounds.x + (bounds.right - bounds.x) / 2) / viewerImageSize.width) * 100
       : 50;
-    const originY = rect && viewerImageSize.height
-      ? ((rect.y + rect.height / 2) / viewerImageSize.height) * 100
+    const originY = bounds && viewerImageSize.height
+      ? ((bounds.y + (bounds.bottom - bounds.y) / 2) / viewerImageSize.height) * 100
       : 50;
     return `--viewer-scale: ${viewerScale}; --viewer-origin-x: ${originX}%; --viewer-origin-y: ${originY}%;`;
   }
@@ -748,13 +762,33 @@
   async function sendViewerInput(input: unknown) {
     if (!humanTask) return false;
     try {
-      await window.octopusBeak.automation.viewerInput(humanTask.id, input);
+      const result = await window.octopusBeak.automation.viewerInput(humanTask.id, input);
+      if (result.contract) {
+        humanTask = { ...humanTask, humanAssistanceContract: result.contract };
+      }
       viewerError = "";
       await refreshViewerImage();
       return true;
     } catch (error) {
       viewerError = error instanceof Error ? error.message : String(error);
       return false;
+    }
+  }
+
+  async function checkHumanViewerCompletion() {
+    if (!humanTask || humanTask.humanAssistanceContract?.completion.mode !== "independent") return;
+    completionChecking = true;
+    try {
+      const result = await window.octopusBeak.automation.viewerCompletionCheck(humanTask.id);
+      if (result.contract) {
+        humanTask = { ...humanTask, humanAssistanceContract: result.contract };
+      }
+      viewerError = result.verified ? "" : $t.automation.verificationIncomplete;
+      if (result.verified) await reload();
+    } catch (error) {
+      viewerError = error instanceof Error ? error.message : String(error);
+    } finally {
+      completionChecking = false;
     }
   }
 
@@ -1550,6 +1584,17 @@
           <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
             {$t.automation.forceQuit}
           </button>
+          {#if humanTask.humanAssistanceContract?.completion.mode === "independent"
+            && humanTask.humanAssistanceContract.completion.status !== "verified"}
+            <button
+              class="button secondary fixed-action"
+              type="button"
+              disabled={completionChecking}
+              onclick={checkHumanViewerCompletion}
+            >
+              {$t.automation.checkVerification}
+            </button>
+          {/if}
           <button
             class="button primary fixed-action"
             type="button"

@@ -626,7 +626,8 @@ test("Assist Resume stays locked until a successful interaction settles", () => 
   assert.equal(canResumeAssist(false, false, inline), false);
   assert.equal(canResumeAssist(false, true, inline), false);
   assert.equal(canResumeAssist(true, true, inline), false);
-  assert.equal(canResumeAssist(true, false, inline), true);
+  assert.equal(canResumeAssist(true, false, inline), false);
+  assert.equal(canResumeAssist(true, false, { ...inline, status: "entered" }), true);
   assert.equal(canResumeAssist(true, false, independent), false);
   assert.equal(canResumeAssist(true, false, { ...independent, status: "verified" }), true);
   assert.equal(canResumeAssist(true, false, null), false);
