@@ -99,6 +99,7 @@ export function buildAutomationPageModel(input: {
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       statementFailures,
       humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
+      humanAssistanceContract: run?.humanAssistanceContract ?? null,
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       primaryAction: action,

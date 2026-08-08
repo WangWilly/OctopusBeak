@@ -61,6 +61,7 @@ const task = (
   progressText: "",
   statementFailures: [],
   humanSession: null,
+  humanAssistanceContract: null,
   isActive: false,
   ranToday: false,
   primaryAction: "Run",
