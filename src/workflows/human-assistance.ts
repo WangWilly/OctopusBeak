@@ -14,11 +14,15 @@ export type WorkflowHumanAssistanceTarget = Omit<HumanVerificationTarget, "rect"
   locator: Pick<Locator, "boundingBox">;
 };
 
+export type WorkflowHumanAssistanceContextRegion = Omit<VerificationContextRegion, "rect"> & {
+  locator?: Pick<Locator, "boundingBox">;
+};
+
 export type WorkflowHumanAssistanceStage = {
   stageId: string;
   title: string;
   targets: readonly WorkflowHumanAssistanceTarget[];
-  contextRegions: readonly VerificationContextRegion[];
+  contextRegions: readonly WorkflowHumanAssistanceContextRegion[];
   completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
 };
@@ -55,11 +59,23 @@ export async function emitHumanAssistanceStage(
     targets.push({ ...descriptor, rect });
   }
 
+  const contextRegions: VerificationContextRegion[] = [];
+  for (const region of stage.contextRegions) {
+    const rect = region.locator
+      ? await region.locator.boundingBox().catch(() => null)
+      : null;
+    if (region.locator && (!rect || rect.width <= 0 || rect.height <= 0)) {
+      throw new Error(`Human assistance context cannot be resolved: ${region.semanticId}`);
+    }
+    const { locator: _locator, ...descriptor } = region;
+    contextRegions.push({ ...descriptor, ...(rect ? { rect } : {}) });
+  }
+
   const contract: HumanAssistanceContractInput = {
     stageId: stage.stageId,
     title: stage.title,
     targets,
-    contextRegions: stage.contextRegions,
+    contextRegions,
     completion: stage.completion,
     focus: stage.focus,
   };
