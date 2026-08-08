@@ -21,7 +21,7 @@ assert.equal(
 
 for (const workflow of [
   ".github/workflows/pr-tests.yml",
-  ".github/workflows/release-macos.yml",
+  ".github/workflows/release-electron.yml",
 ]) {
   assert.match(
     readFileSync(resolve(root, workflow), "utf8"),
