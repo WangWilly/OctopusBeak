@@ -403,6 +403,16 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
+export async function dismissYuantaBankNotice(frame: Frame): Promise<boolean> {
+  const popup = frame.locator("#commonPopup");
+  if (!(await popup.isVisible({ timeout: 2_000 }).catch(() => false))) return false;
+  const dismissButton = popup.locator("#commonPopupLeftBtnImg");
+  if (!(await dismissButton.isVisible({ timeout: 2_000 }).catch(() => false))) return false;
+  await dismissButton.click();
+  await popup.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+  return true;
+}
+
 async function fillLoginForm(
   page: Page,
   credentials: YuantaCredentials,
@@ -414,6 +424,7 @@ async function fillLoginForm(
   await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const loginFrame = await waitForFrame(page, "main");
+  await dismissYuantaBankNotice(loginFrame);
   const userIdField = loginFrame.locator("#custidMask");
   await userIdField.fill(userId);
   await maskUserId(loginFrame);

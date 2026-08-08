@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
+  isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
   isInspectableTextTarget,
@@ -11,12 +12,17 @@ import {
   selectAllShortcut,
   selectViewerPage,
   viewerRectContainsPoint,
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 
 assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
 assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
 assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
+assert.equal(isNestedFrameElement("IFRAME"), true);
+assert.equal(isNestedFrameElement("FRAME"), true);
+assert.equal(isNestedFrameElement("DIV"), false);
 
 assert.deepEqual(
   normalizeViewerInput({ type: "click", x: 10.2, y: 20.8 }),
@@ -177,6 +183,11 @@ assert.equal(
     challengeVisible: false,
   }),
   false,
+);
+assert.equal(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR, "#chbYCaptchaV2");
+assert.equal(
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  "#modalYCaptchaV2, #captchaModal, .captcha-modal",
 );
 assert.deepEqual(
   normalizeHumanVerificationInput({
