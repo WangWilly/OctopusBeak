@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DOMESTIC_STATEMENTS_URL =
@@ -356,6 +357,14 @@ async function completeEmailOtpIfNeeded(
 
   if (!(await emailVerificationLink.first().isVisible().catch(() => false))) {
     if (await otpField.isVisible().catch(() => false)) {
+      await emitHumanAssistanceStage({
+        stageId: "cathay-login-email-otp",
+        title: "Enter the Cathay Email OTP",
+        targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["type"], locator: otpField }],
+        contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
+        completion: { mode: "inline", targetIds: ["otp-input"] },
+        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+      });
       console.log(
         "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
           session +
@@ -382,6 +391,14 @@ async function completeEmailOtpIfNeeded(
 
   await otpField.waitFor({ state: "visible", timeout: 30_000 });
   await otpField.focus();
+  await emitHumanAssistanceStage({
+    stageId: "cathay-login-email-otp",
+    title: "Enter the Cathay Email OTP",
+    targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["type"], locator: otpField }],
+    contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
+    completion: { mode: "inline", targetIds: ["otp-input"] },
+    focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+  });
 
   console.log(
     "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +

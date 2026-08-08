@@ -12,6 +12,7 @@ import {
   fetchFormPostbackHtml,
   replaceDocumentHtml,
 } from "./form-postback.js";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -864,6 +865,15 @@ export default workflow("fubonLoanStatements", {
     });
 
     await fillLoanLoginForm(page, credentials);
+    const loginFrame = await waitForFrame(page, "txnFrame");
+    await emitHumanAssistanceStage({
+      stageId: "fubon-login-captcha",
+      title: "Enter the Fubon CAPTCHA",
+      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "fubon.login.captcha-input", modes: ["type"], locator: loginFrame.locator("#m1_userCaptcha") }],
+      contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "fubon.login.captcha-challenge" }],
+      completion: { mode: "inline", targetIds: ["captcha-input"] },
+      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+    });
 
     console.log(
       "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
@@ -872,7 +882,9 @@ export default workflow("fubonLoanStatements", {
     );
     await pause(session);
 
-    const loginFrame = await waitForFrame(page, "txnFrame");
+    if (!(await loginFrame.locator("#m1_userCaptcha").inputValue()).trim()) {
+      throw new Error("Fubon CAPTCHA is empty. Enter it in the browser before resuming.");
+    }
     await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
 
     if (
@@ -881,12 +893,23 @@ export default workflow("fubonLoanStatements", {
         .isVisible()
         .catch(() => false)
     ) {
+      await emitHumanAssistanceStage({
+        stageId: "fubon-login-otp",
+        title: "Enter the Fubon OTP",
+        targets: [{ id: "otp-input", label: "OTP input", semanticId: "fubon.login.otp-input", modes: ["type"], locator: loginFrame.locator("#m1_inputOTP") }],
+        contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
+        completion: { mode: "inline", targetIds: ["otp-input"] },
+        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+      });
       console.log(
         "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
           session +
           "`.",
       );
       await pause(session);
+      if (!(await loginFrame.locator("#m1_inputOTP").inputValue()).trim()) {
+        throw new Error("Fubon OTP is empty. Enter it in the browser before resuming.");
+      }
     }
 
     await waitForSignedInState(page);

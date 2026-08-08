@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -268,6 +269,14 @@ async function signInPost(
     await captchaInput.fill(captchaCode);
     await postIdLoginButton(page).click();
   } else {
+    await emitHumanAssistanceStage({
+      stageId: "ipost-login-captcha",
+      title: "Enter the iPost CAPTCHA",
+      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "ipost.login.captcha-input", modes: ["type"], locator: captchaInput }],
+      contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "ipost.login.captcha-challenge" }],
+      completion: { mode: "inline", targetIds: ["captcha-input"] },
+      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+    });
     console.log(postManualAuthMessage(session));
     await pause(session);
     if (await isSignedIn(page)) return;

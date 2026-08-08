@@ -9,6 +9,7 @@ import {
 import type { Page } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const TRADE_LOGIN_URL =
   "https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020";
@@ -1151,6 +1152,28 @@ export default workflow("yuantaTradeStatements", {
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
       signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
         await fillTradeLoginForm(authPage, signInCredentials as YuantaTradeCredentials);
+        const captchaCheckbox = authPage.locator("#chbYCaptchaV2");
+        if (!(await captchaCheckbox.isVisible({ timeout: 10_000 }).catch(() => false))) {
+          throw new Error("YuanTa Trade CAPTCHA checkbox could not be resolved.");
+        }
+        await emitHumanAssistanceStage({
+          stageId: "yuanta-trade-captcha-checkbox",
+          title: "Confirm the YuanTa Trade CAPTCHA checkbox",
+          targets: [{
+            id: "captcha-checkbox",
+            label: "CAPTCHA checkbox",
+            semanticId: "yuanta-trade.login.captcha-checkbox",
+            modes: ["click", "press"],
+            locator: captchaCheckbox,
+          }],
+          contextRegions: [{
+            id: "captcha-challenge",
+            label: "CAPTCHA challenge instructions",
+            semanticId: "yuanta-trade.login.captcha-challenge",
+          }],
+          completion: { mode: "inline", targetIds: ["captcha-checkbox"] },
+          focus: { targetId: "captcha-checkbox", contextRegionIds: ["captcha-challenge"], initialZoom: 1.5 },
+        });
         console.log(
           "manual-auth-required: solve YuanTa CAPTCHA/challenge in the browser, then run `npx libretto resume --session " +
             authSession +
@@ -1159,6 +1182,29 @@ export default workflow("yuantaTradeStatements", {
         await pause(authSession);
 
         await submitLoginIfReady(authPage);
+        const challengeModal = authPage.locator("#captchaModal, .captcha-modal").first();
+        if (await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
+          const challengeControl = challengeModal.locator("input, button, [role=button]").first();
+          await emitHumanAssistanceStage({
+            stageId: "yuanta-trade-captcha-challenge",
+            title: "Complete the YuanTa Trade verification challenge",
+            targets: [{
+              id: "challenge-control",
+              label: "Verification challenge control",
+              semanticId: "yuanta-trade.login.challenge-control",
+              modes: ["click", "type", "press", "drag"],
+              locator: challengeControl,
+            }],
+            contextRegions: [{
+              id: "challenge-modal",
+              label: "Verification modal and instructions",
+              semanticId: "yuanta-trade.login.challenge-modal",
+            }],
+            completion: { mode: "independent", targetIds: ["challenge-control"] },
+            focus: { targetId: "challenge-control", contextRegionIds: ["challenge-modal"], initialZoom: 1.7 },
+          });
+          await pause(authSession);
+        }
         if (lastBankDialogMessage.includes("請勾選")) {
           throw new Error(
             `YuanTa login rejected the customer confirmation checkbox: ${lastBankDialogMessage}`,
