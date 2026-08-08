@@ -1,0 +1,371 @@
+name: Release Electron
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Create a new version or retry an existing release tag
+        required: true
+        type: choice
+        options:
+          - new-release
+          - retry
+        default: new-release
+      bump:
+        description: Version increment for a new release; ignored when operation is retry
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      retry_tag:
+        description: Existing vX.Y.Z tag to retry; required when operation is retry
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: electron-release-main
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tested_sha: ${{ steps.source.outputs.tested_sha }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.operation == 'retry' && inputs.retry_tag || 'main' }}
+          fetch-depth: 0
+          lfs: true
+
+      - name: Validate release operation
+        env:
+          RELEASE_OPERATION: ${{ inputs.operation }}
+          BUMP_LEVEL: ${{ inputs.bump }}
+          RETRY_TAG: ${{ inputs.retry_tag }}
+          WORKFLOW_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags origin "+refs/heads/main:refs/remotes/origin/main"
+
+          if [[ "$WORKFLOW_REF" != "refs/heads/main" ]]; then
+            echo "Release workflow must be dispatched from main." >&2
+            exit 1
+          fi
+
+          case "$RELEASE_OPERATION" in
+            new-release)
+              case "$BUMP_LEVEL" in
+                patch|minor|major) ;;
+                *)
+                  echo "Unsupported version bump: $BUMP_LEVEL" >&2
+                  exit 1
+                  ;;
+              esac
+              if [[ -n "$RETRY_TAG" ]]; then
+                echo "retry_tag must be empty for a new release." >&2
+                exit 1
+              fi
+              ;;
+            retry)
+              if [[ ! "$RETRY_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "retry_tag must match vX.Y.Z." >&2
+                exit 1
+              fi
+              if ! git ls-remote --exit-code --tags origin "refs/tags/$RETRY_TAG" >/dev/null 2>&1; then
+                echo "Remote tag does not exist: $RETRY_TAG" >&2
+                exit 1
+              fi
+              if ! git merge-base --is-ancestor HEAD origin/main; then
+                echo "Retry tag must point to a commit reachable from origin/main." >&2
+                exit 1
+              fi
+
+              package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+              tag_version="${RETRY_TAG#v}"
+              if [[ "$package_version" != "$tag_version" ]]; then
+                echo "package.json version $package_version does not match $RETRY_TAG." >&2
+                exit 1
+              fi
+
+              if release_draft="$(gh release view "$RETRY_TAG" --json isDraft -q .isDraft 2>/dev/null)"; then
+                if [[ "$release_draft" != "true" ]]; then
+                  echo "Release is already published and cannot be retried: $RETRY_TAG" >&2
+                  exit 1
+                fi
+              fi
+              ;;
+            *)
+              echo "Unsupported release operation: $RELEASE_OPERATION" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Check package lock
+        run: npm run check:package-lock
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check pinned GitHub Actions
+        run: npm run check:actions-pinned
+
+      - name: Validate Welcome assets
+        run: npm run check:welcome-assets
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run tests
+        run: npm run test:ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check Electron runtime
+        run: node electron/runtime.check.cjs
+
+      - name: Run Electron runtime probes
+        run: |
+          npm run desktop:runtime-probe
+          npm run desktop:strip-types-probe
+
+      - name: Record tested source
+        id: source
+        run: echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build and publish macOS arm64
+    needs: preflight
+    runs-on: macos-15
+    environment:
+      name: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_OPERATION: ${{ inputs.operation }}
+      BUMP_LEVEL: ${{ inputs.bump }}
+      RETRY_TAG: ${{ inputs.retry_tag }}
+      TESTED_SHA: ${{ needs.preflight.outputs.tested_sha }}
+      OCTOPUSBEAK_NOTARY_PROFILE: OctopusBeakNotary
+    steps:
+      - name: Checkout tested release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.preflight.outputs.tested_sha }}
+          fetch-depth: 0
+          lfs: true
+
+      - name: Validate source has not changed
+        run: |
+          set -euo pipefail
+          git fetch --tags origin "+refs/heads/main:refs/remotes/origin/main"
+
+          if [[ "$RELEASE_OPERATION" == "new-release" ]]; then
+            remote_main="$(git rev-parse origin/main)"
+            if [[ "$remote_main" != "$TESTED_SHA" ]]; then
+              echo "main changed after preflight; run the release again." >&2
+              exit 1
+            fi
+          else
+            if ! git ls-remote --exit-code --tags origin "refs/tags/$RETRY_TAG" >/dev/null 2>&1; then
+              echo "Remote tag no longer exists: $RETRY_TAG" >&2
+              exit 1
+            fi
+            tag_sha="$(git rev-list -n 1 "$RETRY_TAG")"
+            if [[ "$tag_sha" != "$TESTED_SHA" ]]; then
+              echo "The retry tag changed after preflight: $RETRY_TAG" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "Release checkout is not clean." >&2
+            exit 1
+          fi
+
+      - name: Validate release secrets
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$MACOS_CERTIFICATE_BASE64" ]] || missing+=(MACOS_CERTIFICATE_BASE64)
+          [[ -n "$MACOS_CERTIFICATE_PASSWORD" ]] || missing+=(MACOS_CERTIFICATE_PASSWORD)
+          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Create new version or select retry tag
+        id: version
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE_OPERATION" == "new-release" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            npm version "$BUMP_LEVEL"
+            RELEASE_TAG="$(git describe --tags --exact-match HEAD)"
+
+            if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+              echo "Release tag already exists: $RELEASE_TAG" >&2
+              exit 1
+            fi
+
+            git push origin HEAD:main --follow-tags
+          else
+            RELEASE_TAG="$RETRY_TAG"
+            package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+            if [[ "$package_version" != "${RELEASE_TAG#v}" ]]; then
+              echo "package.json version does not match $RELEASE_TAG." >&2
+              exit 1
+            fi
+          fi
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Configure signing keychain
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/octopusbeak-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          echo "OCTOPUSBEAK_NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Configure notarization profile
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "$OCTOPUSBEAK_NOTARY_PROFILE" \
+            --keychain "$OCTOPUSBEAK_NOTARY_KEYCHAIN" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"
+
+      - name: Build signed and notarized app
+        run: npm run desktop:make:signed
+
+      - name: Verify signed app
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find out -type d -name '*.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then
+            echo "No app bundle found." >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+
+      - name: Collect installer artifacts
+        run: |
+          set -euo pipefail
+          assets=()
+          has_dmg=0
+          has_zip=0
+          while IFS= read -r asset; do
+            assets+=("$asset")
+            case "$asset" in
+              *.dmg) has_dmg=1 ;;
+              *.zip) has_zip=1 ;;
+            esac
+          done < <(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) | sort)
+
+          if (( ${#assets[@]} == 0 || has_dmg == 0 || has_zip == 0 )); then
+            echo "Expected both DMG and ZIP installer artifacts." >&2
+            exit 1
+          fi
+
+          printf '%s\n' "${assets[@]}"
+          (
+            cd out/make
+            find . -type f \( -name '*.dmg' -o -name '*.zip' \) -print | sort | while IFS= read -r asset; do
+              shasum -a 256 "$asset"
+            done
+          ) > SHA256SUMS.txt
+
+      - name: Create or reuse Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if release_draft="$(gh release view "$RELEASE_TAG" --json isDraft -q .isDraft 2>/dev/null)"; then
+            if [[ "$release_draft" != "true" ]]; then
+              echo "Release is already published and cannot be changed: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            echo "Reusing existing Draft Release $RELEASE_TAG."
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --title "OctopusBeak $RELEASE_TAG" \
+              --verify-tag
+          fi
+
+      - name: Upload installers and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          assets=()
+          while IFS= read -r asset; do
+            assets+=("$asset")
+          done < <(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) | sort)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" SHA256SUMS.txt --clobber
+
+      - name: Publish Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --draft=false --verify-tag
+          published="$(gh release view "$RELEASE_TAG" --json isDraft -q .isDraft)"
+          if [[ "$published" != "false" ]]; then
+            echo "Release did not publish: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          if [[ -n "${OCTOPUSBEAK_NOTARY_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$OCTOPUSBEAK_NOTARY_KEYCHAIN" || true
+          fi

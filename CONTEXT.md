@@ -4,6 +4,50 @@ This context covers guided first-run setup and the financial automation needed t
 
 ## Language
 
+### Desktop Release
+
+**Desktop application release**:
+A versioned, installable OctopusBeak desktop application distributed with the platform-specific installers needed by its supported operating systems. It is distinct from publishing a reusable project package.
+_Avoid_: package release, source release
+
+**Package publication**:
+Publishing a reusable project package for installation as a dependency. It is outside the desktop application release flow.
+_Avoid_: desktop release, installer release
+
+**Release source**:
+The protected source line whose selected version becomes the next desktop application release. Release version changes are written back to this source before packaging.
+_Avoid_: feature branch, build branch
+
+**Release target**:
+A supported operating-system and CPU-architecture combination for which the desktop application produces a distributable artifact.
+_Avoid_: package target, runtime platform
+
+**Installable artifact**:
+A distributable file produced for a release target and attached to the application release.
+_Avoid_: package, source archive
+
+**Immutable release version**:
+A version that, once created for release, is never rewritten or replaced as part of normal recovery. Failed packaging or publication is repaired by retrying that same version.
+_Avoid_: retry version, replacement version
+
+**Release recovery**:
+The operation that resumes packaging and GitHub Release publication for an existing immutable release version after a prior release run failed. It does not change the version or create another tag.
+_Avoid_: rerun bump, rollback release
+
+**Release preflight**:
+The required verification of source integrity, dependencies, code, and runtime behavior before a new release version may be created. A failed preflight produces no release version.
+_Avoid_: post-release check, installer smoke test
+
+**Staged release**:
+A release that temporarily holds generated notes and installable artifacts until the complete release target build succeeds. It is not formally published until the release gate passes.
+_Avoid_: unpublished version, source draft
+
+**Artifact integrity record**:
+A digest record published with installable artifacts so a recipient can verify that each downloaded file is complete and unchanged.
+_Avoid_: package integrity, source checksum
+
+### Product
+
 **Onboarding progression**:
 The guided sequence that helps a person configure a credential source, collect statements, import them, and confirm the resulting overview. It begins after the person opts in from First-run Welcome or restarts it from Settings; it may pause for human assistance and resume later.
 _Avoid_: First-run Welcome, welcome screens
