@@ -22,3 +22,6 @@ data/
 design-qa.md
 /prototypes/
 /qa/
+
+# Codebase knowledge graph artifacts.
+/.codebase-memory/
