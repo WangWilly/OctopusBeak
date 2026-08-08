@@ -415,7 +415,7 @@ async function signInHncb(
   await emitHumanAssistanceStage({
     stageId: "hncb-login-captcha",
     title: "Enter the HNCB CAPTCHA",
-    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "hncb.login.captcha-input", modes: ["type"], locator: page.locator("#TrxCaptchaKey") }],
+    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "hncb.login.captcha-input", modes: ["click", "type"], locator: page.locator("#TrxCaptchaKey") }],
     contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "hncb.login.captcha-challenge" }],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },

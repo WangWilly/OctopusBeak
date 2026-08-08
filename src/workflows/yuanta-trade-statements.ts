@@ -1171,7 +1171,7 @@ export default workflow("yuantaTradeStatements", {
             label: "CAPTCHA challenge instructions",
             semanticId: "yuanta-trade.login.captcha-challenge",
           }],
-          completion: { mode: "inline", targetIds: ["captcha-checkbox"] },
+          completion: { mode: "independent", targetIds: ["captcha-checkbox"] },
           focus: { targetId: "captcha-checkbox", contextRegionIds: ["captcha-challenge"], initialZoom: 1.5 },
         });
         console.log(
@@ -1184,7 +1184,7 @@ export default workflow("yuantaTradeStatements", {
         await submitLoginIfReady(authPage);
         const challengeModal = authPage.locator("#captchaModal, .captcha-modal").first();
         if (await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
-          const challengeControl = challengeModal.locator("input, button, [role=button]").first();
+          const challengeControl = challengeModal.locator("[data-captcha-control]").first();
           await emitHumanAssistanceStage({
             stageId: "yuanta-trade-captcha-challenge",
             title: "Complete the YuanTa Trade verification challenge",
@@ -1192,14 +1192,15 @@ export default workflow("yuantaTradeStatements", {
               id: "challenge-control",
               label: "Verification challenge control",
               semanticId: "yuanta-trade.login.challenge-control",
-              modes: ["click", "type", "press", "drag"],
+              modes: ["click", "type", "press"],
               locator: challengeControl,
             }],
             contextRegions: [{
-              id: "challenge-modal",
-              label: "Verification modal and instructions",
-              semanticId: "yuanta-trade.login.challenge-modal",
-            }],
+            id: "challenge-modal",
+            label: "Verification modal and instructions",
+            semanticId: "yuanta-trade.login.challenge-modal",
+            locator: challengeModal,
+          }],
             completion: { mode: "independent", targetIds: ["challenge-control"] },
             focus: { targetId: "challenge-control", contextRegionIds: ["challenge-modal"], initialZoom: 1.7 },
           });

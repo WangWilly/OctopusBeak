@@ -27,6 +27,10 @@ export type ViewerInspectResult = {
   contractVersion?: number;
   modes?: readonly VerificationInteractionMode[];
 };
+export type HumanAssistanceCompletionProbe = {
+  checkboxChecked: boolean;
+  challengeVisible: boolean;
+};
 type InspectableRect = { x: number; y: number; width: number; height: number };
 type InspectableTextTarget = InspectableTarget & { rect: InspectableRect };
 
@@ -97,6 +101,15 @@ export function humanVerificationTargetAtPoint(
   point: ViewerPoint,
 ) {
   return contract.targets.find((target) => target.rect && viewerRectContainsPoint(target.rect, point)) ?? null;
+}
+
+export function humanAssistanceCompletionSatisfied(
+  semanticId: string,
+  probe: HumanAssistanceCompletionProbe,
+) {
+  if (semanticId === "yuanta-trade.login.captcha-checkbox") return probe.checkboxChecked;
+  if (semanticId === "yuanta-trade.login.challenge-control") return !probe.challengeVisible;
+  return false;
 }
 
 function operationMode(input: ViewerInput): VerificationInteractionMode {
@@ -280,13 +293,41 @@ export async function inspectHumanVerificationPoint(
   const point = normalizeViewerPoint(rawPoint);
   const target = humanVerificationTargetAtPoint(contract, point);
   const inspected = await inspectViewerPoint(session, point);
+  const liveHit = Boolean(inspected.rect && viewerRectContainsPoint(inspected.rect, point));
+  const resolvedTarget = target && liveHit ? target : null;
+  const modes = resolvedTarget?.modes ?? [];
   return {
-    editable: Boolean(target?.modes.includes("type")),
-    rect: target?.rect ?? inspected.rect,
-    targetId: target?.id ?? null,
+    editable: Boolean(resolvedTarget && modes.includes("type") && inspected.editable),
+    rect: resolvedTarget?.rect ?? null,
+    targetId: resolvedTarget?.id ?? null,
     contractVersion: contract.version,
-    modes: target?.modes ?? [],
+    modes,
   };
+}
+
+export async function inspectHumanAssistanceCompletion(
+  session: string,
+  contract: HumanAssistanceContract,
+) {
+  if (contract.completion.mode !== "independent") return false;
+  return withPausedPage(session, async (page) => {
+    const checkbox = page.locator("#chbYCaptchaV2").first();
+    const checkboxChecked = await checkbox.evaluate((node) => {
+      if (node instanceof HTMLInputElement) return node.checked;
+      return node.getAttribute("aria-checked") === "true"
+        || node.classList.contains("checked")
+        || node.classList.contains("is-checked")
+        || node.parentElement?.getAttribute("aria-checked") === "true";
+    }).catch(() => false);
+    const challengeVisible = await page.locator("#captchaModal, .captcha-modal").first()
+      .isVisible()
+      .catch(() => false);
+    const probe = { checkboxChecked, challengeVisible };
+    return contract.completion.targetIds.every((targetId) => {
+      const target = contract.targets.find((candidate) => candidate.id === targetId);
+      return target ? humanAssistanceCompletionSatisfied(target.semanticId, probe) : false;
+    });
+  });
 }
 
 export async function sendViewerInput(session: string, rawInput: unknown) {

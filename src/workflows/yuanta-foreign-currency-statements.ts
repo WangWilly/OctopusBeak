@@ -899,7 +899,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
         await emitHumanAssistanceStage({
           stageId: "yuanta-bank-login-captcha",
           title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["type"], locator: captchaFrame.locator("#gcode") }],
+          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
           contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
           completion: { mode: "inline", targetIds: ["captcha-input"] },
           focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.8 },
