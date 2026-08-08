@@ -103,6 +103,7 @@ export type OctopusBeakApi = {
     resume(taskId: string): Promise<{ resumed: string }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
+    openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
     viewerScreenshot(taskId: string): Promise<Uint8Array | null>;
     viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
     viewerInput(taskId: string, input: unknown): Promise<{ ok: true }>;
@@ -136,6 +137,7 @@ export const octopusBeakApiChannels = [
   "automation:resume",
   "automation:cancel",
   "automation:runHistory",
+  "automation:openExternalPrerequisite",
   "automation:viewerScreenshot",
   "automation:viewerInspect",
   "automation:viewerInput",

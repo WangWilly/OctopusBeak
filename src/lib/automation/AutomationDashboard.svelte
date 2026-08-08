@@ -21,7 +21,12 @@
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
-  import type { AutomationPageModel, AutomationTaskHistoryRow, AutomationTaskRow } from "./types.ts";
+  import type {
+    AutomationPageModel,
+    AutomationTaskHistoryRow,
+    AutomationTaskPrerequisiteNotice,
+    AutomationTaskRow,
+  } from "./types.ts";
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
@@ -100,6 +105,19 @@
       tasks: automation.tasks.filter((task) => task.kind === "sync"),
     },
   ];
+  $: prerequisiteNoticeGroups = [...automation.externalPrerequisiteNotices.reduce(
+    (groups, notice) => {
+      const notices = groups.get(notice.prerequisiteId) ?? [];
+      notices.push(notice);
+      groups.set(notice.prerequisiteId, notices);
+      return groups;
+    },
+    new Map<string, AutomationTaskPrerequisiteNotice[]>(),
+  )].map(([prerequisiteId, notices]) => ({
+    prerequisiteId,
+    prerequisite: notices[0].prerequisite,
+    notices,
+  }));
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: statementSelectionDirty = credentialGroups.some((group) =>
@@ -453,6 +471,15 @@
       if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
       else await window.octopusBeak.automation.run(task.id);
       await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function openExternalPrerequisite(prerequisiteId: string) {
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.openExternalPrerequisite(prerequisiteId);
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -964,6 +991,57 @@
         </div>
       {/if}
     </section>
+
+    {#if prerequisiteNoticeGroups.length}
+      <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
+        <div class="prerequisite-notices-head">
+          <div>
+            <p class="section-eyebrow">{$t.automation.prerequisiteNoticesTitle}</p>
+            <h2 id="prerequisite-notices-title">{$t.automation.prerequisiteNoticesTitle}</h2>
+            <p>{$t.automation.prerequisiteNoticeDescription}</p>
+          </div>
+        </div>
+        <div class="prerequisite-notice-list">
+          {#each prerequisiteNoticeGroups as group (group.prerequisiteId)}
+            <article class="prerequisite-notice" role="alert">
+              <div class="prerequisite-notice-copy">
+                <span class="prerequisite-provider">{group.prerequisite.provider}</span>
+                <h3>{group.prerequisite.component}</h3>
+                <p>{group.prerequisite.instructions[$locale]}</p>
+              </div>
+              <div class="prerequisite-notice-actions">
+                <button class="button secondary" type="button" onclick={() => void openExternalPrerequisite(group.prerequisiteId)}>
+                  {$t.automation.prerequisiteDownload}
+                </button>
+              </div>
+              <div class="prerequisite-affected-tasks">
+                <strong>{$t.automation.prerequisiteAffectedTasks}</strong>
+                {#each group.notices as notice (notice.noticeId)}
+                  {@const task = automation.tasks.find((candidate) => candidate.id === notice.taskId)}
+                  <div class="prerequisite-task-row">
+                    <span>{task ? taskLabel(task, $t) : notice.taskId}</span>
+                    {#if task}
+                      <button class="button primary task-control" type="button" onclick={() => void runTask(task)}>
+                        {$t.automation.prerequisiteRunAgain}
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              <details class="prerequisite-technical-details">
+                <summary>{$t.automation.prerequisiteTechnicalDetails}</summary>
+                {#each group.notices as notice (notice.noticeId)}
+                  <div class="prerequisite-technical-item">
+                    <span class="mono">{notice.prerequisiteId} · {notice.latestTaskRunId}</span>
+                    {#if notice.latestErrorMessage}<pre class="mono">{notice.latestErrorMessage}</pre>{/if}
+                  </div>
+                {/each}
+              </details>
+            </article>
+          {/each}
+        </div>
+      </section>
+    {/if}
 
     <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
       {#each taskStages as stage, stageIndex}
@@ -1550,6 +1628,106 @@
     grid-template-columns: minmax(0, 1fr) auto;
     border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
     background: color-mix(in oklch, var(--accent-soft) 24%, var(--surface));
+  }
+
+  .prerequisite-notices {
+    display: grid;
+    gap: 18px;
+    padding: 24px 30px;
+    border-color: color-mix(in oklch, var(--warn) 34%, var(--border));
+    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
+  }
+
+  .prerequisite-notices-head h2,
+  .prerequisite-notices-head p {
+    margin: 0;
+  }
+
+  .prerequisite-notices-head {
+    display: grid;
+    gap: 5px;
+  }
+
+  .prerequisite-notices-head p:last-child {
+    color: var(--muted);
+  }
+
+  .section-eyebrow,
+  .prerequisite-provider {
+    color: var(--warn);
+    font-size: 12px;
+    font-weight: 780;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .prerequisite-notice-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .prerequisite-notice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px 22px;
+    padding: 18px;
+    border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--border));
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .prerequisite-notice-copy {
+    display: grid;
+    gap: 5px;
+  }
+
+  .prerequisite-notice-copy h3,
+  .prerequisite-notice-copy p {
+    margin: 0;
+  }
+
+  .prerequisite-notice-copy p {
+    color: var(--muted);
+  }
+
+  .prerequisite-notice-actions {
+    align-self: start;
+  }
+
+  .prerequisite-affected-tasks {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+  }
+
+  .prerequisite-task-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .prerequisite-task-row .task-control {
+    min-width: 104px;
+  }
+
+  .prerequisite-technical-details {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .prerequisite-technical-item {
+    display: grid;
+    gap: 5px;
+    margin-top: 8px;
+  }
+
+  .prerequisite-technical-item pre {
+    margin: 0;
+    white-space: pre-wrap;
   }
 
   .sync-hero-copy {

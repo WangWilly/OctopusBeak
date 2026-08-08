@@ -145,6 +145,22 @@ _Avoid_: Supported bank, available integration
 **Statement run summary**:
 A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome.
 
+**External prerequisite**:
+A locally installed or user-controlled dependency outside the app that must be available before an automation task can authenticate or collect data, such as a security component, browser extension, or certificate component.
+_Avoid_: Credential, workflow error, generic setup
+
+**External prerequisite recovery**:
+The user-assisted sequence that restores an unavailable external prerequisite and then makes the affected automation task ready to run again.
+_Avoid_: Manual login, automatic retry
+
+**External prerequisite recovery notice**:
+A persistent in-app notice attached to a failed automation task run when an external prerequisite can be restored; the affected task supplies the official download link, and the notice directs the person to run the task again after recovery. One notice exists per task and prerequisite, is updated rather than duplicated on repeated failures, and clears only after a successful retry.
+_Avoid_: Toast, generic failure alert, OS notification
+
+**External prerequisite signal**:
+A structured workflow result that identifies a recoverable external prerequisite instead of requiring the automation server to infer it from an error string.
+_Avoid_: Error-text classification, generic failure
+
 **Automation session finalization**:
 The act of relinquishing an owned automation session after a run, including graceful close, daemon teardown when needed, and removal of the session's ownership record.
 _Avoid_: Session close (which names only the graceful close operation).

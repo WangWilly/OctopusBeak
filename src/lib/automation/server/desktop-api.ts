@@ -1,6 +1,7 @@
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_CREDENTIAL_KEYS,
+  AUTOMATION_TASKS,
   enabledAutomationTasks,
   enabledCsvImportDependencyIds,
   taskById,
@@ -33,14 +34,26 @@ import {
 } from "./runner.ts";
 import {
   importGateStatus,
+  activeTaskPrerequisiteNotices,
   latestTaskRuns,
   recentTaskRuns,
   todayTaskRunIds,
 } from "./store.ts";
+import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
+
+function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
+  return activeTaskPrerequisiteNotices(db).flatMap((notice) => {
+    const prerequisite = taskById(notice.taskId)?.externalPrerequisites?.find(
+      (candidate) => candidate.id === notice.prerequisiteId,
+    );
+    if (!prerequisite || !isValidExternalPrerequisiteMetadata(prerequisite)) return [];
+    return [{ ...notice, prerequisite }];
+  });
+}
 
 function currentCredentialStatus() {
   const settings = readAutomationSettings();
@@ -85,6 +98,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
         credentials: currentCredentialStatus(),
         importGate,
         setupRequiredGroupIds: new Set(credentialGroups.filter((group) => group.statementSetupRequired).map((group) => group.id)),
+        externalPrerequisiteNotices: pagePrerequisiteNotices(db),
         active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
         businessDate: range.businessDate,
       }),
@@ -93,6 +107,14 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
   } finally {
     db.close();
   }
+}
+
+export function externalPrerequisiteById(prerequisiteId: string) {
+  for (const task of AUTOMATION_TASKS) {
+    const prerequisite = task.externalPrerequisites?.find((candidate) => candidate.id === prerequisiteId);
+    if (prerequisite && isValidExternalPrerequisiteMetadata(prerequisite)) return prerequisite;
+  }
+  return null;
 }
 
 function missingCredentialKeys(taskId: string, status = currentCredentialStatus()) {
