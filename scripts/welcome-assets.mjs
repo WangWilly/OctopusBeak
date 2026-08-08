@@ -542,11 +542,11 @@ export async function validateWelcomeAssets() {
     invalidAssets.push("PR tests do not run Welcome asset validation");
   }
   const releaseWorkflow = await readFile(
-    resolve(REPO_ROOT, ".github/workflows/release-macos.yml"),
+    resolve(REPO_ROOT, ".github/workflows/release-electron.yml"),
     "utf8",
   );
   if (!checkoutHasLfs(releaseWorkflow)) {
-    invalidAssets.push("macOS release checkout does not enable lfs: true");
+    invalidAssets.push("Electron release checkout does not enable lfs: true");
   }
   const validationIndex = releaseWorkflow.indexOf(
     "npm run check:welcome-assets",
@@ -558,7 +558,7 @@ export async function validateWelcomeAssets() {
     validationIndex > packageIndex
   ) {
     invalidAssets.push(
-      "macOS release must validate Welcome assets before packaging",
+      "Electron release must validate Welcome assets before packaging",
     );
   }
 
