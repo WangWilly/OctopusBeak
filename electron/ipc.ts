@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, shell } from "electron";
 import {
   createDataIssueIpcHandlers,
 } from "../src/lib/desktop/api.ts";
@@ -10,6 +10,7 @@ import {
   automationRunMany,
   automationRunHistory,
   automationSaveCredentials,
+  externalPrerequisiteById,
   loadAutomationDesktopModel,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
@@ -109,6 +110,12 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));
   ipcMain.handle("automation:cancel", (_event, taskId: string) => automationCancel(taskId));
   ipcMain.handle("automation:runHistory", () => automationRunHistory());
+  ipcMain.handle("automation:openExternalPrerequisite", async (_event, prerequisiteId: string) => {
+    const prerequisite = externalPrerequisiteById(prerequisiteId);
+    if (!prerequisite) throw new Error("Unknown or unsafe external prerequisite.");
+    await shell.openExternal(prerequisite.downloadUrl);
+    return { ok: true as const };
+  });
   ipcMain.handle("automation:viewerScreenshot", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
     try {

@@ -1,5 +1,17 @@
 export type AutomationTaskKind = "crawler" | "sync" | "import";
 
+export type AutomationExternalPrerequisite = {
+  id: string;
+  provider: string;
+  component: string;
+  downloadUrl: string;
+  allowedHosts: readonly string[];
+  instructions: {
+    en: string;
+    "zh-TW": string;
+  };
+};
+
 export type AutomationTaskStatus =
   | "queued"
   | "running"
@@ -19,6 +31,7 @@ export type AutomationTaskSummary = {
   credentialGroupId?: string;
   credentialKeys: readonly string[];
   dependencies: readonly string[];
+  externalPrerequisites?: readonly AutomationExternalPrerequisite[];
 };
 
 export type AutomationCredentialGroup = {
@@ -54,6 +67,19 @@ type ImportGate = {
   warnings: readonly ImportWarning[];
 };
 
+export type AutomationTaskPrerequisiteNotice = {
+  noticeId: string;
+  taskId: string;
+  prerequisiteId: string;
+  latestTaskRunId: string;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  latestErrorMessage: string | null;
+  resolvedAt: string | null;
+  resolvedByTaskRunId: string | null;
+  prerequisite: AutomationExternalPrerequisite;
+};
+
 export type AutomationTaskRow = AutomationTaskSummary & {
   status: AutomationTaskStatus;
   attempt: number;
@@ -80,5 +106,6 @@ export type AutomationPageModel = {
   parallelRunnableTaskIds: string[];
   credentials: Record<string, boolean>;
   importGate: ImportGate;
+  externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
 };

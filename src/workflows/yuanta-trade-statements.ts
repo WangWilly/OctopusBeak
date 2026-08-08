@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
 
 const TRADE_LOGIN_URL =
   "https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020";
@@ -617,15 +618,10 @@ async function completeCertificateIfPresent(
     }
 
     if (await isYuantaSecurityComponentMissing(page)) {
-      console.log(
-        "manual-auth-required: install or update the YuanTa security component from the visible browser page, then run `npx libretto resume --session " +
-          session +
-          "`. The workflow will refresh the page and continue automatically.",
+      console.log(externalPrerequisiteSignal("yuanta-servisign"));
+      throw new Error(
+        "The YuanTa security component is unavailable. Install or update it, then run the task again.",
       );
-      await pause(session);
-      await page.locator("#btnRefresh").click();
-      await settleAfterNavigation(page);
-      continue;
     }
 
     if (await selectFileButton.isVisible().catch(() => false)) {
@@ -637,8 +633,9 @@ async function completeCertificateIfPresent(
 
   if (!(await selectFileButton.isVisible().catch(() => false))) {
     if (await isYuantaSecurityComponentMissing(page)) {
+      console.log(externalPrerequisiteSignal("yuanta-servisign"));
       throw new Error(
-        "The YuanTa security component is unavailable. Install or update it, then resume the workflow.",
+        "The YuanTa security component is unavailable. Install or update it, then run the task again.",
       );
     }
     throw new Error("Timed out waiting for the YuanTa certificate form.");

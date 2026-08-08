@@ -783,6 +783,26 @@ function addAutomationTaskRunsStartedAtIndex(db: LedgerDatabase) {
   `);
 }
 
+function createAutomationTaskPrerequisiteNotices(db: LedgerDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS automation_task_prerequisite_notices (
+      notice_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      prerequisite_id TEXT NOT NULL,
+      latest_task_run_id TEXT NOT NULL,
+      first_detected_at TEXT NOT NULL,
+      last_detected_at TEXT NOT NULL,
+      latest_error_message TEXT,
+      resolved_at TEXT,
+      resolved_by_task_run_id TEXT,
+      record_json TEXT NOT NULL,
+      UNIQUE (task_id, prerequisite_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_prerequisite_notices_active
+      ON automation_task_prerequisite_notices(task_id, resolved_at, last_detected_at);
+  `);
+}
+
 function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   for (const table of TYPED_STATEMENT_TABLES) {
     if (
@@ -2037,6 +2057,11 @@ const migrations: LedgerMigration[] = [
     version: 27,
     name: "positive_source_import_observation_count",
     up: constrainSourceImportObservationCount,
+  },
+  {
+    version: 28,
+    name: "automation_task_prerequisite_notices",
+    up: createAutomationTaskPrerequisiteNotices,
   },
 ];
 

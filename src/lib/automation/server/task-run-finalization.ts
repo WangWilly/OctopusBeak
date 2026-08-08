@@ -1,4 +1,5 @@
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import {
   statementRunSummaryLine,
   type StatementRunSummary,
@@ -29,7 +30,9 @@ export {
 export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
   activeTaskRuns,
+  resolveTaskPrerequisiteNotices,
   taskRunById,
+  upsertTaskPrerequisiteNotice,
   updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
@@ -63,6 +66,7 @@ export type AutomationTaskProcessResult = {
   resumeFailure: string | null;
   statementSummary: StatementRunSummary | null;
   outputPersistenceWarnings: string[];
+  externalPrerequisiteIds: string[];
 };
 
 export function shouldRetainAutomationSession(status: AutomationTaskStatus) {
@@ -353,6 +357,34 @@ export async function finalizeAutomationTaskRun(
   });
   if (!transition.skipped && sessionDisposition === "retain") {
     scheduleAutomationTaskRunTimeout(context);
+  }
+  if (!transition.skipped) {
+    const task = taskById(context.taskId);
+    const prerequisites = new Map(
+      (task?.externalPrerequisites ?? [])
+        .filter(isValidExternalPrerequisiteMetadata)
+        .map((prerequisite) => [prerequisite.id, prerequisite]),
+    );
+    if (transition.status === "completed") {
+      resolveTaskPrerequisiteNotices(
+        context.taskDb,
+        context.taskId,
+        context.taskRunId,
+        new Date().toISOString(),
+      );
+    } else if (transition.status === "failed" || transition.status === "partial") {
+      const detectedAt = new Date().toISOString();
+      for (const prerequisiteId of result.externalPrerequisiteIds) {
+        if (!prerequisites.has(prerequisiteId)) continue;
+        upsertTaskPrerequisiteNotice(context.taskDb, {
+          taskId: context.taskId,
+          prerequisiteId,
+          taskRunId: context.taskRunId,
+          detectedAt,
+          errorMessage: taskError,
+        });
+      }
+    }
   }
   return { status: transition.status };
 }

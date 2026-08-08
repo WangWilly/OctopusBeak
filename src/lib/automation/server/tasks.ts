@@ -1,7 +1,24 @@
-import type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
+import type {
+  AutomationCredentialGroup,
+  AutomationExternalPrerequisite,
+  AutomationTaskKind,
+  AutomationTaskSummary,
+} from "../types.ts";
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 
 export type { AutomationCredentialGroup, AutomationTaskKind, AutomationTaskSummary } from "../types.ts";
+
+export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
+  id: "yuanta-servisign",
+  provider: "Yuanta",
+  component: "YuanTa security component",
+  downloadUrl: "https://global.yuanta.com.tw/NexusPVM/webimage/servisign/YuanTaCGCryptServiSignSetup.pkg",
+  allowedHosts: ["global.yuanta.com.tw"],
+  instructions: {
+    en: "Download and install the official YuanTa security component. After installation, return here and press Run again.",
+    "zh-TW": "下載並安裝元大官方安全元件。安裝完成後回到這裡，按「重新執行」再試一次。",
+  },
+};
 
 export type AutomationTask = AutomationTaskSummary & {
   command: readonly string[];
@@ -164,6 +181,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     credentialGroupId: "yuanta-trade",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[3].credentialKeys,
     dependencies: [],
+    externalPrerequisites: [YUANTA_SERVISIGN_PREREQUISITE],
     maxAttempts: 1,
   },
   {

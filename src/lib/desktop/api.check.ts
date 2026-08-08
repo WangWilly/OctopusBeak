@@ -17,6 +17,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:resume",
   "automation:cancel",
   "automation:runHistory",
+  "automation:openExternalPrerequisite",
   "automation:viewerScreenshot",
   "automation:viewerInspect",
   "automation:viewerInput",

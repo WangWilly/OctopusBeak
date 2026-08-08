@@ -1,7 +1,11 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import type { AutomationTaskStatus } from "../types.ts";
-import type { AutomationPageModel, AutomationTaskRow } from "../types.ts";
+import type {
+  AutomationPageModel,
+  AutomationTaskPrerequisiteNotice,
+  AutomationTaskRow,
+} from "../types.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 
@@ -56,6 +60,7 @@ export function buildAutomationPageModel(input: {
   credentials: Record<string, boolean>;
   importGate: AutomationPageModel["importGate"];
   setupRequiredGroupIds?: ReadonlySet<string>;
+  externalPrerequisiteNotices?: readonly AutomationTaskPrerequisiteNotice[];
   active: boolean;
   businessDate: string;
 }): AutomationPageModel {
@@ -81,6 +86,7 @@ export function buildAutomationPageModel(input: {
       credentialGroupId: task.credentialGroupId,
       credentialKeys: task.credentialKeys,
       dependencies: task.dependencies,
+      externalPrerequisites: task.externalPrerequisites,
       status,
       attempt,
       maxAttempts,
@@ -114,6 +120,7 @@ export function buildAutomationPageModel(input: {
       .map((task) => task.id),
     credentials: input.credentials,
     importGate: input.importGate,
+    externalPrerequisiteNotices: [...(input.externalPrerequisiteNotices ?? [])],
     tasks,
   };
 }

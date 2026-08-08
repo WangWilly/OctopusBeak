@@ -465,6 +465,24 @@ export const automationTaskRuns = sqliteTable("automation_task_runs", {
   recordJson: text("record_json").notNull(),
 });
 
+export const automationTaskPrerequisiteNotices = sqliteTable("automation_task_prerequisite_notices", {
+  noticeId: text("notice_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  prerequisiteId: text("prerequisite_id").notNull(),
+  latestTaskRunId: text("latest_task_run_id").notNull(),
+  firstDetectedAt: text("first_detected_at").notNull(),
+  lastDetectedAt: text("last_detected_at").notNull(),
+  latestErrorMessage: text("latest_error_message"),
+  resolvedAt: text("resolved_at"),
+  resolvedByTaskRunId: text("resolved_by_task_run_id"),
+  recordJson: text("record_json").notNull(),
+}, (table) => [
+  uniqueIndex("uq_automation_prerequisite_notices_task_prerequisite")
+    .on(table.taskId, table.prerequisiteId),
+  index("idx_automation_prerequisite_notices_active")
+    .on(table.taskId, table.resolvedAt, table.lastDetectedAt),
+]);
+
 export const exchangeRates = sqliteTable("exchange_rates", {
   rateDate: text("rate_date").notNull(),
   currency: text("currency").notNull(),

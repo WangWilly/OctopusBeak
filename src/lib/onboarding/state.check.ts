@@ -119,6 +119,7 @@ const automation = (
     parallelRunnableTaskIds: [],
     credentials: { USER: true, PASSWORD: true },
     importGate: { locked: true, missingTaskIds: [selectedTask.id], warnings: [] },
+    externalPrerequisiteNotices: [],
     tasks: [selectedTask, importTask],
   },
   credentialGroups: [fubonGroup, esunGroup],
