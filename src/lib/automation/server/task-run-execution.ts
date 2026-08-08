@@ -9,7 +9,7 @@ import {
 } from "../statement-run-summary.ts";
 import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
 import {
-  parseHumanAssistanceContractSignals,
+  createHumanAssistanceContractFrameParser,
 } from "../human-assistance.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
@@ -209,6 +209,25 @@ async function executeAutomationTaskProcess(
       500,
       recordOutputPersistenceError,
     );
+    const onHumanAssistanceContract = (
+      latestHumanAssistanceContract: Parameters<typeof updateHumanAssistanceContract>[2],
+    ) => {
+      const contractJson = JSON.stringify(latestHumanAssistanceContract);
+      if (contractJson === lastHumanAssistanceContractJson) return;
+      try {
+        updateHumanAssistanceContract(
+          execution.taskDb,
+          execution.run.taskRunId,
+          latestHumanAssistanceContract,
+        );
+        lastHumanAssistanceContractJson = contractJson;
+      } catch (error) {
+        const warning = `human-assistance-contract-rejected: ${errorMessage(error)}`;
+        console.error(warning);
+        outputPersistenceWarnings.push(warning);
+      }
+    };
+    const hostContractParser = createHumanAssistanceContractFrameParser(onHumanAssistanceContract);
     const onOutput = (chunk: Buffer) => {
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
@@ -221,24 +240,6 @@ async function executeAutomationTaskProcess(
       }
       logTail = output.logTail;
       detectedResumeFailure = output.resumeFailure;
-      const latestHumanAssistanceContract = parseHumanAssistanceContractSignals(logTail).at(-1);
-      if (latestHumanAssistanceContract) {
-        const contractJson = JSON.stringify(latestHumanAssistanceContract);
-        if (contractJson !== lastHumanAssistanceContractJson) {
-          try {
-            updateHumanAssistanceContract(
-              execution.taskDb,
-              execution.run.taskRunId,
-              latestHumanAssistanceContract,
-            );
-            lastHumanAssistanceContractJson = contractJson;
-          } catch (error) {
-            const warning = `human-assistance-contract-rejected: ${errorMessage(error)}`;
-            console.error(warning);
-            outputPersistenceWarnings.push(warning);
-          }
-        }
-      }
       try {
         appendLog(execution.logPath, output.logChunk);
       } catch (error) {
@@ -250,19 +251,25 @@ async function executeAutomationTaskProcess(
       }
     };
     const child = spawn(execution.command.command, execution.command.args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: execution.command.env,
+      stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
+      env: {
+        ...execution.command.env,
+        OCTOPUSBEAK_HUMAN_ASSISTANCE_FD: "3",
+      },
     });
     activeTaskChildren.set(execution.task.id, child);
-    child.stdout.on("data", onOutput);
-    child.stderr.on("data", onOutput);
+    child.stdout?.on("data", onOutput);
+    child.stderr?.on("data", onOutput);
+    child.stdio[3]?.on("data", hostContractParser.push);
     child.on("error", (error) => {
       activeTaskChildren.delete(execution.task.id);
+      hostContractParser.flush();
       outputBuffer.flush();
       resolve({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
       activeTaskChildren.delete(execution.task.id);
+      hostContractParser.flush();
       outputBuffer.flush();
       resolve({ exitCode, signal, error: null });
     });

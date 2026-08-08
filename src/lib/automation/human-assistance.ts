@@ -14,6 +14,8 @@ export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
   "failed",
 ] as const;
 
+export const HUMAN_ASSISTANCE_HOST_FD_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_FD";
+
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
 
@@ -162,6 +164,43 @@ export function createHumanAssistanceContract(
 export function humanAssistanceContractSignal(input: HumanAssistanceContractInput): string {
   createHumanAssistanceContract(input, 1);
   return `${HUMAN_ASSISTANCE_CONTRACT_SIGNAL} ${JSON.stringify(input)}`;
+}
+
+export function humanAssistanceContractFrame(input: HumanAssistanceContractInput): string {
+  createHumanAssistanceContract(input, 1);
+  return `${JSON.stringify(input)}\n`;
+}
+
+export function parseHumanAssistanceContractFrame(frame: string): HumanAssistanceContractInput | null {
+  try {
+    const value = JSON.parse(frame) as HumanAssistanceContractInput;
+    createHumanAssistanceContract(value, 1);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+export function createHumanAssistanceContractFrameParser(
+  onContract: (contract: HumanAssistanceContractInput) => void,
+) {
+  let pending = "";
+  return {
+    push(chunk: string | Uint8Array) {
+      pending += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const contract = parseHumanAssistanceContractFrame(line);
+        if (contract) onContract(contract);
+      }
+    },
+    flush() {
+      const contract = parseHumanAssistanceContractFrame(pending);
+      pending = "";
+      if (contract) onContract(contract);
+    },
+  };
 }
 
 export function parseHumanAssistanceContractSignals(output: string): HumanAssistanceContractInput[] {
