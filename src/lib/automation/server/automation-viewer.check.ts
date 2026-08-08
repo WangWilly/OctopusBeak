@@ -138,7 +138,7 @@ const humanContract: HumanAssistanceContract = {
     rect: { x: 700, y: 386, width: 96, height: 96 },
   }],
   contextRegions: [],
-  completion: { mode: "inline", targetIds: ["captcha-input"] },
+  completion: { mode: "inline", targetIds: ["captcha-input"], status: "pending" },
   focus: { targetId: "captcha-input", contextRegionIds: [] },
 };
 

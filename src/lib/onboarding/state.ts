@@ -1,4 +1,5 @@
 import type { AutomationTaskRow } from "../automation/types.ts";
+import type { HumanAssistanceCompletion } from "../automation/human-assistance.ts";
 import type { OnboardingStep } from "./progression.ts";
 
 export const ONBOARDING_STORAGE_KEY = "octopusbeak-onboarding-v2";
@@ -21,8 +22,14 @@ export function settleAssistTextSubmission<T>(input: T, succeeded: boolean) {
   };
 }
 
-export function canResumeAssist(assistInteracted: boolean, floatingInputOpen: boolean) {
-  return assistInteracted && !floatingInputOpen;
+export function canResumeAssist(
+  assistInteracted: boolean,
+  floatingInputOpen: boolean,
+  completion: HumanAssistanceCompletion | null | undefined,
+) {
+  if (!assistInteracted || floatingInputOpen || !completion) return false;
+  if (completion.mode === "inline") return true;
+  return completion.status === "verified";
 }
 
 export function canSubmitCredentials(onboarding: boolean, ready: boolean) {
