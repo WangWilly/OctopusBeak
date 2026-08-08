@@ -531,6 +531,16 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
+const YUANTA_SECURITY_COMPONENT_MESSAGE = "系統找不到安控元件";
+
+export async function isYuantaSecurityComponentMissing(page: Page): Promise<boolean> {
+  return page
+    .getByText(YUANTA_SECURITY_COMPONENT_MESSAGE, { exact: false })
+    .first()
+    .isVisible({ timeout: 1_000 })
+    .catch(() => false);
+}
+
 export async function dismissPasswordChangeReminderIfPresent(
   page: Page,
 ): Promise<void> {
@@ -606,6 +616,18 @@ async function completeCertificateIfPresent(
       return;
     }
 
+    if (await isYuantaSecurityComponentMissing(page)) {
+      console.log(
+        "manual-auth-required: install or update the YuanTa security component from the visible browser page, then run `npx libretto resume --session " +
+          session +
+          "`. The workflow will refresh the page and continue automatically.",
+      );
+      await pause(session);
+      await page.locator("#btnRefresh").click();
+      await settleAfterNavigation(page);
+      continue;
+    }
+
     if (await selectFileButton.isVisible().catch(() => false)) {
       break;
     }
@@ -614,6 +636,11 @@ async function completeCertificateIfPresent(
   }
 
   if (!(await selectFileButton.isVisible().catch(() => false))) {
+    if (await isYuantaSecurityComponentMissing(page)) {
+      throw new Error(
+        "The YuanTa security component is unavailable. Install or update it, then resume the workflow.",
+      );
+    }
     throw new Error("Timed out waiting for the YuanTa certificate form.");
   }
 
