@@ -36,5 +36,7 @@ test("Yuanta Trade keeps checkbox and later challenge as separate declared stage
   assert.match(source, /yuanta-trade-captcha-challenge/);
   assert.match(source, /#chbYCaptchaV2/);
   assert.match(source, /#captchaModal, \.captcha-modal/);
+  assert.match(source, /\[data-captcha-control\]/);
+  assert.match(source, /completion: \{ mode: "independent", targetIds: \["captcha-checkbox"\] \}/);
+  assert.match(source, /maxChallengeRetries = 2/);
 });
-
