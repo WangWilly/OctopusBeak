@@ -22,6 +22,7 @@ import {
   onboardingCanGoBack,
   onboardingCopyKey,
   onboardingStepNumber,
+  onboardingTaskSucceeded,
   resolveOnboardingStep,
   shouldNarrowOnboardingSources,
   targetForOnboardingStep,
@@ -1014,6 +1015,14 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
     staleCrawler: "collection",
     staleImporter: "import",
   });
+});
+
+test("onboarding collection advances only from task outcome, never Assist interaction", () => {
+  assert.equal(onboardingTaskSucceeded({ status: "waiting_for_human" }, false), false);
+  assert.equal(onboardingTaskSucceeded({ status: "failed" }, false), false);
+  assert.equal(onboardingTaskSucceeded({ status: "completed" }, true), true);
+  assert.equal(onboardingTaskSucceeded({ status: "partial" }, true), false);
+  assert.equal(onboardingTaskSucceeded({ status: "partial" }, false), true);
 });
 
 test("restart narrows sources only on an empty installation", () => {
