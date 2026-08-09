@@ -902,7 +902,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
           targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
           contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
           completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.8 },
+          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
         });
         console.log(
           "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +

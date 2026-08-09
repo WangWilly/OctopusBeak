@@ -363,7 +363,7 @@ async function completeEmailOtpIfNeeded(
         targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["click", "type"], locator: otpField }],
         contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
         completion: { mode: "inline", targetIds: ["otp-input"] },
-        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
       });
       console.log(
         "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
@@ -372,6 +372,9 @@ async function completeEmailOtpIfNeeded(
       );
       await pause(session);
       if (await otpField.isVisible().catch(() => false)) {
+        if (!(await otpField.inputValue()).trim()) {
+          throw new Error("Cathay Email OTP is empty. Enter it in the browser before resuming.");
+        }
         await page.locator("#btnConfirm").click();
       }
       return;
@@ -397,7 +400,7 @@ async function completeEmailOtpIfNeeded(
     targets: [{ id: "otp-input", label: "Email OTP input", semanticId: "cathay.login.email-otp-input", modes: ["click", "type"], locator: otpField }],
     contextRegions: [{ id: "otp-challenge", label: "Email OTP instructions", semanticId: "cathay.login.email-otp-challenge" }],
     completion: { mode: "inline", targetIds: ["otp-input"] },
-    focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+    focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
   });
 
   console.log(
@@ -408,6 +411,9 @@ async function completeEmailOtpIfNeeded(
   await pause(session);
 
   if (await otpField.isVisible().catch(() => false)) {
+    if (!(await otpField.inputValue()).trim()) {
+      throw new Error("Cathay Email OTP is empty. Enter it in the browser before resuming.");
+    }
     await page.locator("#btnConfirm").click();
   }
 }

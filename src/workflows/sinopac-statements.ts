@@ -448,7 +448,7 @@ async function signInSinopac(
     targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "sinopac.login.captcha-input", modes: ["click", "type"], locator: captcha }],
     contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "sinopac.login.captcha-challenge" }],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
   });
 
   console.log(sinopacManualAuthMessage(session));
