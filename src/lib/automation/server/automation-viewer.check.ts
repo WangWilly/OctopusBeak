@@ -13,10 +13,12 @@ import {
   selectAllShortcut,
   selectViewerPage,
   shouldAutoResumeYuantaTradeCaptcha,
+  shouldCheckYuantaTradeCompletion,
   VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 
@@ -222,6 +224,18 @@ assert.equal(
   true,
 );
 assert.equal(
+  shouldCheckYuantaTradeCompletion("click", "yuanta-trade.login.challenge-control"),
+  false,
+);
+assert.equal(
+  shouldCheckYuantaTradeCompletion("click", "yuanta-trade.login.challenge-submit"),
+  true,
+);
+assert.equal(
+  shouldCheckYuantaTradeCompletion("type", "yuanta-trade.login.challenge-submit"),
+  false,
+);
+assert.equal(
   humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
     checkboxChecked: true,
     challengeVisible: true,
@@ -298,6 +312,10 @@ assert.equal(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR, "#chbYCaptchaV2");
 assert.equal(
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   "#modalYCaptchaV2, #captchaModal, .captcha-modal",
+);
+assert.equal(
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
 );
 assert.deepEqual(
   normalizeHumanVerificationInput({
