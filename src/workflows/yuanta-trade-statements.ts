@@ -22,6 +22,8 @@ export const YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR =
   "#modalYCaptchaV2, #captchaModal, .captcha-modal";
 export const YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR =
   ".y-captcha-image:visible";
+export const YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR =
+  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]';
 
 export function yuantaTradeCaptchaModal(page: Page) {
   return page.locator(YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR).first();
@@ -29,6 +31,10 @@ export function yuantaTradeCaptchaModal(page: Page) {
 
 export function yuantaTradeCaptchaImages(modal: Locator) {
   return modal.locator(YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR);
+}
+
+export function yuantaTradeCaptchaSubmit(modal: Locator) {
+  return modal.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
 }
 
 type YuantaTradeCredentials = {
@@ -1189,7 +1195,7 @@ export default workflow("yuantaTradeStatements", {
             semanticId: "yuanta-trade.login.captcha-challenge",
           }],
           completion: { mode: "independent", targetIds: ["captcha-checkbox"] },
-          focus: { targetId: "captcha-checkbox", contextRegionIds: ["captcha-challenge"], initialZoom: 1.5 },
+          focus: { targetId: "captcha-checkbox", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
         });
         console.log(
           "manual-auth-required: solve YuanTa CAPTCHA/challenge in the browser, then run `npx libretto resume --session " +
@@ -1198,12 +1204,15 @@ export default workflow("yuantaTradeStatements", {
         );
         await pause(authSession);
 
-        await submitLoginIfReady(authPage);
         const maxChallengeRetries = 2;
         let challengeRetry = 0;
         while (true) {
           const challengeModal = yuantaTradeCaptchaModal(authPage);
-          if (!(await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false))) break;
+          const challengeVisible = await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false);
+          if (!challengeVisible) {
+            await submitLoginIfReady(authPage);
+            break;
+          }
           if (challengeRetry >= maxChallengeRetries) {
             throw new Error("YuanTa Trade verification challenge did not complete after the allowed retries.");
           }
@@ -1212,6 +1221,8 @@ export default workflow("yuantaTradeStatements", {
           if (challengeImageCount === 0) {
             throw new Error("YuanTa Trade CAPTCHA challenge images could not be resolved.");
           }
+          const challengeSubmit = yuantaTradeCaptchaSubmit(challengeModal);
+          const challengeSubmitVisible = await challengeSubmit.isVisible({ timeout: 3_000 }).catch(() => false);
           const challengeTargets = Array.from({ length: challengeImageCount }, (_, index) => ({
             id: `challenge-image-${index + 1}`,
             label: `Verification challenge image ${index + 1}`,
@@ -1219,18 +1230,27 @@ export default workflow("yuantaTradeStatements", {
             modes: ["click"] as const,
             locator: challengeImages.nth(index),
           }));
+          if (challengeSubmitVisible) {
+            challengeTargets.push({
+              id: "challenge-submit",
+              label: "Verify challenge",
+              semanticId: "yuanta-trade.login.challenge-submit",
+              modes: ["click"] as const,
+              locator: challengeSubmit,
+            });
+          }
           await emitHumanAssistanceStage({
             stageId: "yuanta-trade-captcha-challenge",
             title: `Complete the YuanTa Trade verification challenge (attempt ${challengeRetry + 1})`,
             targets: challengeTargets,
             contextRegions: [{
-            id: "challenge-modal",
-            label: "Verification modal and instructions",
-            semanticId: "yuanta-trade.login.challenge-modal",
-            locator: challengeModal,
-          }],
+              id: "challenge-modal",
+              label: "Verification modal and instructions",
+              semanticId: "yuanta-trade.login.challenge-modal",
+              locator: challengeModal,
+            }],
             completion: { mode: "independent", targetIds: challengeTargets.map((target) => target.id) },
-            focus: { targetId: challengeTargets[0]!.id, contextRegionIds: ["challenge-modal"], initialZoom: 1.7 },
+            focus: { targetId: challengeTargets[0]!.id, contextRegionIds: ["challenge-modal"], initialZoom: 1 },
           });
           await pause(authSession);
           challengeRetry += 1;
