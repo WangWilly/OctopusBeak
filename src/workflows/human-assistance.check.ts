@@ -21,7 +21,7 @@ test("workflow assistance stages publish resolved target geometry without input 
         locator: { boundingBox: async () => ({ x: 0, y: 0, width: 200, height: 80 }) },
       }],
       completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.6 },
+      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
     }, (value) => frames.push(JSON.stringify(value)));
   assert.deepEqual(contract.targets[0]?.rect, { x: 10, y: 20, width: 100, height: 24 });
   assert.deepEqual(contract.contextRegions[0]?.rect, { x: 0, y: 0, width: 200, height: 80 });

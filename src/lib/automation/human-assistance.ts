@@ -15,6 +15,7 @@ export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
 ] as const;
 
 export const HUMAN_ASSISTANCE_HOST_FD_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_FD";
+export const HUMAN_ASSISTANCE_HOST_PATH_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_PATH";
 
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];

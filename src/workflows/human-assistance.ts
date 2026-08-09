@@ -1,7 +1,8 @@
-import { writeSync } from "node:fs";
+import { appendFileSync, writeSync } from "node:fs";
 import {
   humanAssistanceContractFrame,
   HUMAN_ASSISTANCE_HOST_FD_ENV,
+  HUMAN_ASSISTANCE_HOST_PATH_ENV,
   type HumanAssistanceCompletionInput,
   type HumanAssistanceContractInput,
   type HumanVerificationTarget,
@@ -30,6 +31,12 @@ export type WorkflowHumanAssistanceStage = {
 export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
 
 function publishHumanAssistanceContractToHost(contract: HumanAssistanceContractInput) {
+  const path = process.env[HUMAN_ASSISTANCE_HOST_PATH_ENV]?.trim();
+  if (path) {
+    appendFileSync(path, humanAssistanceContractFrame(contract), "utf8");
+    return;
+  }
+
   const fd = Number(process.env[HUMAN_ASSISTANCE_HOST_FD_ENV]);
   if (!Number.isInteger(fd) || fd < 0) {
     throw new Error("Human assistance host API is unavailable for this workflow run.");
