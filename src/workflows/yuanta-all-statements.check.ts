@@ -50,11 +50,27 @@ assert.doesNotMatch(
 );
 assert.match(authSource, /page\.on\("dialog", acceptBankDialog\)/);
 assert.match(authSource, /finally \{\s*page\.off\("dialog", acceptBankDialog\);\s*\}/);
+const authSignInSource = authSource.slice(
+  authSource.indexOf('signIn: async ({ page: authPage'),
+  authSource.indexOf('page.off("dialog", acceptBankDialog);'),
+);
+assert.match(
+  authSignInSource,
+  /const loginFrame = await waitForFrame\(authPage, "main"\);\s*await dismissYuantaBankNotice\(loginFrame, 5_000\);[\s\S]*?await emitHumanAssistanceStage/,
+);
 for (const componentSource of componentSources) {
   assert.match(componentSource, /page\.on\("dialog", acceptBankDialog\)/);
   assert.match(
     componentSource,
     /librettoAuthenticate\([\s\S]*?\.finally\(\(\) => page\.off\("dialog", acceptBankDialog\)\)/,
+  );
+  const componentSignInSource = componentSource.slice(
+    componentSource.indexOf('signIn: async ({ page: authPage'),
+    componentSource.indexOf('page.off("dialog", acceptBankDialog);'),
+  );
+  assert.match(
+    componentSignInSource,
+    /const captchaFrame = await waitForFrame\(authPage, "main"\);\s*await dismissYuantaBankNotice\(captchaFrame, 5_000\);[\s\S]*?await emitHumanAssistanceStage/,
   );
 }
 

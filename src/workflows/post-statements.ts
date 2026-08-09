@@ -241,6 +241,20 @@ export function postManualAuthMessage(session: string): string {
   return `manual-auth-required: enter the iPost CAPTCHA in the browser, then run \`npx libretto resume --session ${session}\`.`;
 }
 
+export async function dismissPostNoticeIfPresent(page: Page): Promise<boolean> {
+  const closeButton = page.getByRole("button", {
+    name: "關閉",
+    exact: true,
+  }).first();
+  if (!(await closeButton.isVisible({ timeout: 2_000 }).catch(() => false))) {
+    return false;
+  }
+
+  await closeButton.click({ force: true });
+  await page.waitForTimeout(250);
+  return true;
+}
+
 async function isSignedIn(page: Page): Promise<boolean> {
   return await page
     .locator(postDetailLinkSelector(true))
@@ -259,9 +273,11 @@ async function signInPost(
 
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded" });
   await page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 });
+  await dismissPostNoticeIfPresent(page);
   await page.locator("#cifID").fill(cifId);
   await page.locator("#userID_1_Input").fill(userCode);
   await page.locator("#userPWD_1_Input").fill(password);
+  await dismissPostNoticeIfPresent(page);
   const captchaInput = page.locator('input[name="captcha"]').first();
   await captchaInput.focus();
 

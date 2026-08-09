@@ -1,11 +1,45 @@
 import assert from "node:assert/strict";
 import {
+  dismissPostNoticeIfPresent,
   postDetailLinkSelector,
   postLoginFieldValues,
   postManualAuthMessage,
   postRowsToStatementRows,
   postStatementRowsToCsv,
 } from "./post-statements.ts";
+
+function fakeNoticePage(visible: boolean) {
+  let clicks = 0;
+  const page = {
+    getByRole(role: string, options: { name: string; exact: boolean }) {
+      assert.equal(role, "button");
+      assert.deepEqual(options, { name: "關閉", exact: true });
+      return {
+        first() {
+          return this;
+        },
+        async isVisible() {
+          return visible;
+        },
+        async click() {
+          clicks += 1;
+        },
+      };
+    },
+    async waitForTimeout() {},
+  };
+  return { page, clicks: () => clicks };
+}
+
+{
+  const present = fakeNoticePage(true);
+  assert.equal(await dismissPostNoticeIfPresent(present.page as never), true);
+  assert.equal(present.clicks(), 1);
+
+  const absent = fakeNoticePage(false);
+  assert.equal(await dismissPostNoticeIfPresent(absent.page as never), false);
+  assert.equal(absent.clicks(), 0);
+}
 
 assert.equal(
   postManualAuthMessage("ses-1p4q"),
