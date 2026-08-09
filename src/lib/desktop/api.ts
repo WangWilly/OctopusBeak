@@ -52,6 +52,7 @@ export type ViewerInspectResult = {
 export type ViewerInputResult = {
   ok: true;
   contract: HumanAssistanceContract | null;
+  resumed: boolean;
 };
 
 export type DataIssueDesktopService = {

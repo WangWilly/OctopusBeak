@@ -20,6 +20,8 @@ import {
   inspectHumanVerificationPoint,
   refreshYuantaTradeChallengeSubmitTarget,
   sendHumanVerificationInput,
+  shouldAutoResumeYuantaTradeCaptcha,
+  waitForHumanAssistanceCompletion,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   forceQuitHumanSessionForTask,
@@ -146,14 +148,26 @@ export function registerOctopusBeakIpc({
       ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
       : contract;
     const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const clickedTarget = typeof record.targetId === "string"
+      ? refreshedContract.targets.find((target) => target.id === record.targetId)
+      : undefined;
+    const shouldCheckYuantaCompletion = record.type === "click"
+      && clickedTarget?.semanticId === "yuanta-trade.login.captcha-checkbox";
+    const verified = shouldCheckYuantaCompletion
+      && await waitForHumanAssistanceCompletion(session, refreshedContract);
     const isTextInputOnCompletionTarget = record.type === "type"
       && refreshedContract.completion.mode === "inline"
       && typeof record.targetId === "string"
       && refreshedContract.completion.targetIds.includes(record.targetId);
-    const updatedContract = isTextInputOnCompletionTarget
+    const updatedContract = verified
+      ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+      : isTextInputOnCompletionTarget
       ? updateHumanAssistanceCompletionForTask(taskId, "entered")
       : refreshedContract;
-    return { ok: true as const, contract: updatedContract };
+    const resumed = typeof record.targetId === "string"
+      && shouldAutoResumeYuantaTradeCaptcha(updatedContract, record.targetId, verified);
+    if (resumed) automationResume(taskId);
+    return { ok: true as const, contract: updatedContract, resumed };
   });
   ipcMain.handle("automation:viewerCompletionCheck", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
