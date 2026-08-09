@@ -9,8 +9,10 @@ import {
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
+  yuantaTradeCaptchaSubmit,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
 
 function fakePage(reminderVisible: boolean | Error) {
@@ -133,7 +135,12 @@ test("targets the visible YuanTa challenge modal and image tiles", () => {
   const modal = {
     locator(selector: string) {
       calls.push(`modal:${selector}`);
-      return {};
+      return {
+        first() {
+          calls.push(`first:${selector}`);
+          return {};
+        },
+      };
     },
   };
   const page = {
@@ -152,12 +159,19 @@ test("targets the visible YuanTa challenge modal and image tiles", () => {
   assert.equal(YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR, ".y-captcha-image:visible");
   const challengeModal = yuantaTradeCaptchaModal(page);
   yuantaTradeCaptchaImages(challengeModal);
+  yuantaTradeCaptchaSubmit(challengeModal);
 
   assert.deepEqual(calls, [
     "page:#modalYCaptchaV2, #captchaModal, .captcha-modal",
     "first",
     "modal:.y-captcha-image:visible",
+    'modal:button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
+    'first:button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
   ]);
+  assert.equal(
+    YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+    'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
+  );
 });
 
 const completeHoldingPage = {
