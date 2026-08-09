@@ -4,6 +4,7 @@ import {
   isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
+  focusPointForViewerRect,
   inspectableFromElement,
   isInspectableTextTarget,
   normalizeHumanVerificationInput,
@@ -202,6 +203,10 @@ const humanContract: HumanAssistanceContract = {
 
 assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 724, y: 400 }), true);
 assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 810, y: 400 }), false);
+assert.deepEqual(
+  focusPointForViewerRect(humanContract.targets[0]!.rect!),
+  { x: 748, y: 434 },
+);
 assert.equal(
   humanVerificationTargetAtPoint(humanContract, { x: 724, y: 400 })?.id,
   "captcha-input",
