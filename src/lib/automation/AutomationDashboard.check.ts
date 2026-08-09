@@ -67,6 +67,8 @@ assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
 const resumeHumanViewerSource = source.slice(source.indexOf("async function resumeHumanViewer"), source.indexOf("function pointerPoint"));
 assert.match(resumeHumanViewerSource, /automation\.resume\(task\.id\)/);
 assert.doesNotMatch(resumeHumanViewerSource, /runTask\(task\)/);
+const viewerPointerUpSource = source.slice(source.indexOf("function handleViewerPointerUp"), source.indexOf("async function submitViewerDrag"));
+assert.match(viewerPointerUpSource, /if \(moved <= 8\) \{[\s\S]*?void handleViewerClick\(point\);/);
 assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
