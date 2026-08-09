@@ -15,6 +15,7 @@ import {
   previousOnboardingCredentialState,
   readOnboardingState,
   settleAssistTextSubmission,
+  shouldGuideAssistViewer,
   writeOnboardingState,
 } from "./state.ts";
 import {
@@ -430,7 +431,7 @@ assert.match(
 );
 assert.match(
   i18n,
-  /chooseVerificationCopy: \{ title: "點選驗證欄位", body: "直接點選銀行畫面中的驗證碼或 OTP 輸入欄位。" \}/,
+  /chooseVerificationCopy: \{ title: "點選驗證控制項", body: "直接點選銀行畫面中的 CAPTCHA、驗證碼或 OTP 控制項。" \}/,
 );
 assert.match(
   i18n,
@@ -640,6 +641,21 @@ test("Assist Resume stays locked until a successful interaction settles", () => 
   assert.equal(canResumeAssist(true, false, independent), false);
   assert.equal(canResumeAssist(true, false, { ...independent, status: "verified" }), true);
   assert.equal(canResumeAssist(true, false, null), false);
+});
+
+test("independent verification keeps the Assist viewer guided until it is verified", () => {
+  const independent = { mode: "independent" as const, targetIds: ["captcha"], status: "pending" as const };
+  assert.equal(shouldGuideAssistViewer(false, false, independent), true);
+  assert.equal(shouldGuideAssistViewer(true, false, independent), true);
+  assert.equal(shouldGuideAssistViewer(true, false, { ...independent, status: "verified" }), false);
+  assert.match(
+    automationDashboard,
+    /data-onboarding=\{onboardingStep === "assist" && humanTask && guideAssistViewer/,
+  );
+  assert.match(
+    automationDashboard,
+    /onboardingStep === "assist" && canResumeAssist\(\s*assistInteracted,\s*Boolean\(floatingInput\),\s*humanTask\.humanAssistanceContract\?\.completion,\s*\)\s*\?\s*\$t\.onboarding\.resumeCollection\s*:\s*\$t\.automation\.resume/,
+  );
 });
 
 test("Assist drag unlocks Resume only after successful viewer input", () => {
