@@ -21,6 +21,7 @@ import {
   refreshYuantaTradeChallengeSubmitTarget,
   sendHumanVerificationInput,
   shouldAutoResumeYuantaTradeCaptcha,
+  shouldCheckYuantaTradeCompletion,
   waitForHumanAssistanceCompletion,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
@@ -151,8 +152,10 @@ export function registerOctopusBeakIpc({
     const clickedTarget = typeof record.targetId === "string"
       ? refreshedContract.targets.find((target) => target.id === record.targetId)
       : undefined;
-    const shouldCheckYuantaCompletion = record.type === "click"
-      && clickedTarget?.semanticId === "yuanta-trade.login.captcha-checkbox";
+    const shouldCheckYuantaCompletion = shouldCheckYuantaTradeCompletion(
+      record.type,
+      clickedTarget?.semanticId,
+    );
     const verified = shouldCheckYuantaCompletion
       && await waitForHumanAssistanceCompletion(session, refreshedContract);
     const isTextInputOnCompletionTarget = record.type === "type"
