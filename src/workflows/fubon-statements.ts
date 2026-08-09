@@ -721,7 +721,7 @@ export async function signInFubon(
     targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "fubon.login.captcha-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_userCaptcha") }],
     contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "fubon.login.captcha-challenge" }],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
   });
 
   console.log(
@@ -748,7 +748,7 @@ export async function signInFubon(
       targets: [{ id: "otp-input", label: "OTP input", semanticId: "fubon.login.otp-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_inputOTP") }],
       contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
       completion: { mode: "inline", targetIds: ["otp-input"] },
-      focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.6 },
+      focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
     });
     console.log(
       "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
