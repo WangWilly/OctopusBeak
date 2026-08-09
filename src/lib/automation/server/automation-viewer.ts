@@ -3,6 +3,7 @@ import type {
   HumanAssistanceContract,
   HumanAssistanceContractInput,
   HumanVerificationRect,
+  HumanVerificationTarget,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
@@ -96,6 +97,13 @@ export function viewerRectContainsPoint(rect: HumanVerificationRect, point: View
     point.x <= rect.x + rect.width &&
     point.y >= rect.y &&
     point.y <= rect.y + rect.height;
+}
+
+export function focusPointForViewerRect(rect: HumanVerificationRect) {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2,
+  };
 }
 
 export function humanVerificationTargetAtPoint(
@@ -470,10 +478,36 @@ export async function sendHumanVerificationInput(
   contract: HumanAssistanceContract,
 ) {
   const input = normalizeHumanVerificationInput(rawInput, contract);
-  return sendNormalizedViewerInput(session, input);
+  const targetId = rawRecord(rawInput).targetId as string;
+  const target = contract.targets.find((candidate) => candidate.id === targetId);
+  if (!target) throw new Error("Human verification target is not declared for this stage.");
+  return sendNormalizedViewerInput(session, input, target);
 }
 
-async function sendNormalizedViewerInput(session: string, input: ViewerInput) {
+async function focusHumanVerificationTarget(page: Page, target: HumanVerificationTarget) {
+  if (!target.rect) throw new Error("Human verification target is not currently resolved.");
+  const focused = await page.evaluate((point) => {
+    const element = document.elementsFromPoint(point.x, point.y)
+      .map((candidate) => candidate instanceof HTMLElement
+        ? candidate.closest(
+          'input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
+        )
+        : null)
+      .find((candidate) => candidate instanceof HTMLElement);
+    if (!(element instanceof HTMLElement)) return false;
+    element.focus({ preventScroll: true });
+    return document.activeElement === element;
+  }, focusPointForViewerRect(target.rect));
+  if (!focused) {
+    throw new Error("Human verification target could not be focused. Reload the current verification stage.");
+  }
+}
+
+async function sendNormalizedViewerInput(
+  session: string,
+  input: ViewerInput,
+  target?: HumanVerificationTarget,
+) {
   await withPausedPage(session, async (page) => {
     if (input.type === "click") {
       await page.mouse.click(input.x, input.y);
@@ -483,9 +517,11 @@ async function sendNormalizedViewerInput(session: string, input: ViewerInput) {
       await page.mouse.move(input.toX, input.toY);
       await page.mouse.up();
     } else if (input.type === "type") {
+      if (target) await focusHumanVerificationTarget(page, target);
       await page.keyboard.press(selectAllShortcut());
       await page.keyboard.type(input.text);
     } else {
+      if (target) await focusHumanVerificationTarget(page, target);
       await page.keyboard.press(input.key);
     }
   });
