@@ -720,7 +720,7 @@
     viewerExpanded = false;
   }
 
-  function viewerFocusStyle() {
+  function viewerFocusStyle(imageSize = viewerImageSize) {
     const contract = humanTask?.humanAssistanceContract;
     const target = contract?.targets.find(
       (candidate) => candidate.id === contract.focus.targetId,
@@ -737,11 +737,11 @@
         bottom: Math.max(...rects.map((rect) => rect.y + rect.height)),
       }
       : null;
-    const originX = bounds && viewerImageSize.width
-      ? ((bounds.x + (bounds.right - bounds.x) / 2) / viewerImageSize.width) * 100
+    const originX = bounds && imageSize.width
+      ? ((bounds.x + (bounds.right - bounds.x) / 2) / imageSize.width) * 100
       : 50;
-    const originY = bounds && viewerImageSize.height
-      ? ((bounds.y + (bounds.bottom - bounds.y) / 2) / viewerImageSize.height) * 100
+    const originY = bounds && imageSize.height
+      ? ((bounds.y + (bounds.bottom - bounds.y) / 2) / imageSize.height) * 100
       : 50;
     return `--viewer-scale: ${viewerScale}; --viewer-origin-x: ${originX}%; --viewer-origin-y: ${originY}%;`;
   }
@@ -833,18 +833,45 @@
     }
   }
 
-  function pointerPoint(event: PointerEvent) {
-    const image = event.currentTarget as HTMLImageElement;
-    const rect = image.getBoundingClientRect();
-    if (!image.naturalWidth || !image.naturalHeight || !rect.width || !rect.height) return null;
-    const frameRect = image.parentElement?.getBoundingClientRect() ?? rect;
+  function viewerImageFromEvent(event: { currentTarget: EventTarget | null }) {
+    if (event.currentTarget instanceof HTMLImageElement) return event.currentTarget;
+    return event.currentTarget instanceof HTMLElement
+      ? event.currentTarget.querySelector<HTMLImageElement>(".viewer-image")
+      : null;
+  }
+
+  function pointerPoint(event: Pick<PointerEvent, "clientX" | "clientY"> & { currentTarget: EventTarget | null }) {
+    const image = viewerImageFromEvent(event);
+    if (!image) return null;
+    const frame = image.closest(".viewer-frame") as HTMLElement | null;
+    const focus = image.closest(".viewer-focus") as HTMLElement | null;
+    const frameRect = frame?.getBoundingClientRect() ?? image.getBoundingClientRect();
+    const imageWidth = image.clientWidth;
+    const imageHeight = image.clientHeight;
+    if (!image.naturalWidth || !image.naturalHeight || !imageWidth || !imageHeight) return null;
+
+    const focusStyle = focus ? getComputedStyle(focus) : null;
+    const transform = focusStyle?.transform.match(/^matrix\(([^)]+)\)$/)?.[1]
+      .split(",")
+      .map(Number);
+    const scaleX = transform?.[0] && Number.isFinite(transform[0]) ? transform[0] : 1;
+    const scaleY = transform?.[3] && Number.isFinite(transform[3]) ? transform[3] : 1;
+    const transformOrigin = (focusStyle?.transformOrigin ?? "0px 0px")
+      .split(" ")
+      .map((value) => Number.parseFloat(value));
+    const originX = Number.isFinite(transformOrigin[0]) ? transformOrigin[0] : 0;
+    const originY = Number.isFinite(transformOrigin[1]) ? transformOrigin[1] : 0;
+    const imageLeft = frameRect.left + (frameRect.width - imageWidth) / 2;
+    const imageTop = frameRect.top + (frameRect.height - imageHeight) / 2;
+    const localX = (event.clientX - imageLeft - originX * (1 - scaleX)) / scaleX;
+    const localY = (event.clientY - imageTop - originY * (1 - scaleY)) / scaleY;
     return {
-      x: (event.clientX - rect.left) * (image.naturalWidth / rect.width),
-      y: (event.clientY - rect.top) * (image.naturalHeight / rect.height),
-      left: event.clientX - frameRect.left,
-      top: event.clientY - frameRect.top,
-      frameWidth: frameRect.width,
-      frameHeight: frameRect.height,
+      x: localX * (image.naturalWidth / imageWidth),
+      y: localY * (image.naturalHeight / imageHeight),
+      left: localX,
+      top: localY,
+      frameWidth: imageWidth,
+      frameHeight: imageHeight,
     };
   }
 
@@ -872,12 +899,9 @@
     if (!point) return;
 
     const moved = Math.hypot(point.x - start.x, point.y - start.y);
-    if (moved <= 8) {
-      void handleViewerClick(point);
-    } else {
-      floatingInput = null;
-      void submitViewerDrag(start, point);
-    }
+    if (moved <= 8) return;
+    floatingInput = null;
+    void submitViewerDrag(start, point);
   }
 
   async function submitViewerDrag(start: { x: number; y: number }, point: { x: number; y: number }) {
@@ -926,6 +950,25 @@
     };
     await tick();
     floatingInputEl?.focus();
+  }
+
+  function handleViewerClickEvent(event: MouseEvent) {
+    const point = pointerPoint(event as unknown as PointerEvent);
+    if (point) void handleViewerClick(point);
+  }
+
+  function handleViewerKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    const image = viewerImageFromEvent(event);
+    if (!image) return;
+    const rect = image.getBoundingClientRect();
+    const point = pointerPoint({
+      currentTarget: image,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    } as unknown as PointerEvent);
+    if (point) void handleViewerClick(point);
   }
 
   function updateFloatingInput(event: Event) {
@@ -1612,28 +1655,36 @@
       </div>
       <div class="modal-body viewer-body">
         <div class="viewer-frame">
-          <div class="viewer-focus" style={viewerFocusStyle()}>
-          <img
-            class="viewer-image"
-            tabindex="-1"
-            aria-label={$t.onboarding.verificationViewerAria}
-            data-onboarding={onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted
-              ? "automation-assist"
-              : undefined}
-            data-onboarding-action="choose-verification-control"
-            src={viewerImageUrl}
-            alt={$t.automation.pausedBrowser}
-            draggable="false"
-            onload={(event) => {
-              const image = event.currentTarget as HTMLImageElement;
-              viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
-              viewerError = "";
-            }}
-            onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
-            onpointerdown={handleViewerPointerDown}
-            onpointerup={handleViewerPointerUp}
-            onpointercancel={handleViewerPointerCancel}
-          />
+          <div class="viewer-focus" style={viewerFocusStyle(viewerImageSize)}>
+            <button
+              class="viewer-image-button"
+              type="button"
+              aria-label={$t.onboarding.verificationViewerAria}
+              onclick={handleViewerClickEvent}
+              onkeydown={handleViewerKeydown}
+              onpointerdown={handleViewerPointerDown}
+              onpointerup={handleViewerPointerUp}
+              onpointercancel={handleViewerPointerCancel}
+            >
+              <img
+                class="viewer-image"
+                data-onboarding={onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted
+                  ? "automation-assist"
+                  : undefined}
+                data-onboarding-action="choose-verification-control"
+                src={viewerImageUrl}
+                alt={$t.automation.pausedBrowser}
+                draggable="false"
+                tabindex="-1"
+                aria-label={$t.onboarding.verificationViewerAria}
+                onload={(event) => {
+                  const image = event.currentTarget as HTMLImageElement;
+                  viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
+                  viewerError = "";
+                }}
+                onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
+              />
+            </button>
           {#if onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted}
             <div class="verification-viewer-tooltip" role="tooltip">
               {$t.onboarding.clickVerificationField}
@@ -3009,6 +3060,24 @@
 
   .human-viewer-modal.expanded .viewer-focus {
     height: 100%;
+  }
+
+  .viewer-image-button {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: crosshair;
+  }
+
+  .viewer-image-button:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
   }
 
   .viewer-image {

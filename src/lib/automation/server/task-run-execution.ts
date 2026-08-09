@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
@@ -11,6 +12,7 @@ import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
 import {
   createHumanAssistanceContractFrameParser,
   HUMAN_ASSISTANCE_HOST_FD_ENV,
+  HUMAN_ASSISTANCE_HOST_PATH_ENV,
 } from "../human-assistance.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
@@ -192,6 +194,11 @@ async function executeAutomationTaskProcess(
   let statementSummary: StatementRunSummary | null = null;
   const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
+  const humanAssistancePath = execution.session
+    ? join("data", "automation", "human-assistance", `${execution.session}.jsonl`)
+    : `${execution.logPath}.human-assistance`;
+  let humanAssistanceReadOffset = 0;
+  let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
   const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
     const recordOutputPersistenceError = (error: unknown) => {
       const line = `automation-output-write-failed: ${errorMessage(error)}`;
@@ -229,6 +236,21 @@ async function executeAutomationTaskProcess(
       }
     };
     const hostContractParser = createHumanAssistanceContractFrameParser(onHumanAssistanceContract);
+    const readHumanAssistanceFile = () => {
+      try {
+        const content = readFileSync(humanAssistancePath);
+        if (content.length <= humanAssistanceReadOffset) return;
+        hostContractParser.push(content.subarray(humanAssistanceReadOffset));
+        humanAssistanceReadOffset = content.length;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.error(`human-assistance-contract-read-failed: ${errorMessage(error)}`);
+        }
+      }
+    };
+    humanAssistanceReadTimer = setInterval(readHumanAssistanceFile, 50);
+    mkdirSync(dirname(humanAssistancePath), { recursive: true });
+    rmSync(humanAssistancePath, { force: true });
     const onOutput = (chunk: Buffer) => {
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
@@ -256,6 +278,7 @@ async function executeAutomationTaskProcess(
       env: {
         ...execution.command.env,
         [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
+        [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
       },
     });
     activeTaskChildren.set(execution.task.id, child);
@@ -264,14 +287,20 @@ async function executeAutomationTaskProcess(
     child.stdio[3]?.on("data", hostContractParser.push);
     child.on("error", (error) => {
       activeTaskChildren.delete(execution.task.id);
+      if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
+      readHumanAssistanceFile();
       hostContractParser.flush();
       outputBuffer.flush();
+      rmSync(humanAssistancePath, { force: true });
       resolve({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
       activeTaskChildren.delete(execution.task.id);
+      if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
+      readHumanAssistanceFile();
       hostContractParser.flush();
       outputBuffer.flush();
+      rmSync(humanAssistancePath, { force: true });
       resolve({ exitCode, signal, error: null });
     });
   });

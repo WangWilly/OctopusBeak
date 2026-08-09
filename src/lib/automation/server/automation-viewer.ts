@@ -1,6 +1,7 @@
 import type { Browser, ElementHandle, Frame, Page } from "playwright";
 import type {
   HumanAssistanceContract,
+  HumanAssistanceContractInput,
   HumanVerificationRect,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
@@ -30,6 +31,7 @@ export type ViewerInspectResult = {
 export type HumanAssistanceCompletionProbe = {
   checkboxChecked: boolean;
   challengeVisible: boolean;
+  challengeSubmitVisible: boolean;
 };
 type InspectableRect = { x: number; y: number; width: number; height: number };
 type InspectableTextTarget = InspectableTarget & { rect: InspectableRect };
@@ -107,8 +109,13 @@ export function humanAssistanceCompletionSatisfied(
   semanticId: string,
   probe: HumanAssistanceCompletionProbe,
 ) {
-  if (semanticId === "yuanta-trade.login.captcha-checkbox") return probe.checkboxChecked;
-  if (semanticId === "yuanta-trade.login.challenge-control") return !probe.challengeVisible;
+  if (semanticId === "yuanta-trade.login.captcha-checkbox") {
+    return probe.checkboxChecked || probe.challengeVisible;
+  }
+  if (semanticId === "yuanta-trade.login.challenge-control") {
+    return !probe.challengeVisible;
+  }
+  if (semanticId === "yuanta-trade.login.challenge-submit") return !probe.challengeVisible;
   return false;
 }
 
@@ -306,7 +313,12 @@ export async function inspectHumanVerificationPoint(
   const target = humanVerificationTargetAtPoint(contract, point);
   const inspected = await inspectViewerPoint(session, point);
   const liveHit = Boolean(inspected.rect && viewerRectContainsPoint(inspected.rect, point));
-  const resolvedTarget = target && liveHit ? target : null;
+  const contractOnlyControl = Boolean(
+    target
+    && target.modes.length > 0
+    && target.modes.every((mode) => mode === "click" || mode === "press"),
+  );
+  const resolvedTarget = target && (liveHit || contractOnlyControl) ? target : null;
   const modes = resolvedTarget?.modes ?? [];
   return {
     editable: Boolean(resolvedTarget && modes.includes("type") && inspected.editable),
@@ -334,12 +346,57 @@ export async function inspectHumanAssistanceCompletion(
     const challengeVisible = await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first()
       .isVisible()
       .catch(() => false);
-    const probe = { checkboxChecked, challengeVisible };
+    const challengeSubmitVisible = await page.locator("#btnConfirm").first()
+      .isVisible()
+      .catch(() => false);
+    const probe = { checkboxChecked, challengeVisible, challengeSubmitVisible };
     return contract.completion.targetIds.every((targetId) => {
       const target = contract.targets.find((candidate) => candidate.id === targetId);
       return target ? humanAssistanceCompletionSatisfied(target.semanticId, probe) : false;
     });
   });
+}
+
+export async function refreshYuantaTradeChallengeSubmitTarget(
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<HumanAssistanceContractInput | null> {
+  const isChallengeStage = contract.targets.some(
+    (target) => target.semanticId === "yuanta-trade.login.challenge-control",
+  );
+  const alreadyDeclared = contract.targets.some((target) => target.id === "challenge-submit");
+  if (!isChallengeStage || alreadyDeclared) return null;
+
+  const submitRect = await withPausedPage(session, async (page) => {
+    const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
+    if (!await challenge.isVisible().catch(() => false)) return null;
+    const submit = page.locator("#btnConfirm").first();
+    if (!await submit.isVisible().catch(() => false)) return null;
+    return await submit.boundingBox().catch(() => null);
+  });
+  if (!submitRect || submitRect.width <= 0 || submitRect.height <= 0) return null;
+
+  return {
+    stageId: contract.stageId,
+    title: contract.title,
+    targets: [
+      ...contract.targets,
+      {
+        id: "challenge-submit",
+        label: "Verify challenge",
+        semanticId: "yuanta-trade.login.challenge-submit",
+        modes: ["click"],
+        rect: submitRect,
+      },
+    ],
+    contextRegions: contract.contextRegions,
+    completion: {
+      ...contract.completion,
+      targetIds: [...contract.completion.targetIds, "challenge-submit"],
+      status: "pending",
+    },
+    focus: contract.focus,
+  };
 }
 
 export async function sendViewerInput(session: string, rawInput: unknown) {
