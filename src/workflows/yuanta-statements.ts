@@ -408,9 +408,19 @@ export async function dismissYuantaBankNotice(
   visibilityTimeoutMs = 2_000,
 ): Promise<boolean> {
   const popup = frame.locator("#commonPopup");
-  if (!(await popup.isVisible({ timeout: visibilityTimeoutMs }).catch(() => false))) return false;
+  const popupVisible = await popup
+    .waitFor({ state: "visible", timeout: visibilityTimeoutMs })
+    .then(() => true)
+    .catch(() => false);
+  if (!popupVisible) return false;
+
   const dismissButton = popup.locator("#commonPopupLeftBtnImg");
-  if (!(await dismissButton.isVisible({ timeout: visibilityTimeoutMs }).catch(() => false))) return false;
+  const dismissButtonVisible = await dismissButton
+    .waitFor({ state: "visible", timeout: visibilityTimeoutMs })
+    .then(() => true)
+    .catch(() => false);
+  if (!dismissButtonVisible) return false;
+
   await dismissButton.click();
   await popup.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
   return true;
