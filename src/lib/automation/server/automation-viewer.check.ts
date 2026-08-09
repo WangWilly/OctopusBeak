@@ -4,6 +4,7 @@ import {
   isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
+  inspectableFromElement,
   isInspectableTextTarget,
   normalizeHumanVerificationInput,
   normalizeViewerInput,
@@ -61,6 +62,45 @@ assert.equal(isInspectableTextTarget({ tagName: "TEXTAREA", type: "", editable: 
 assert.equal(isInspectableTextTarget({ tagName: "DIV", type: "", editable: true, disabled: false, readOnly: false }), true);
 assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "checkbox", editable: false, disabled: false, readOnly: false }), false);
 assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: true, readOnly: false }), false);
+
+const inspectableElementCalls: string[] = [];
+const inspectableElement = {
+  async evaluate() {
+    inspectableElementCalls.push("evaluate");
+    return {
+      tagName: "INPUT",
+      type: "text",
+      editable: false,
+      disabled: false,
+      readOnly: false,
+      visible: true,
+      rect: { x: 700, y: 386, width: 96, height: 28 },
+    };
+  },
+};
+assert.deepEqual(
+  await inspectableFromElement(inspectableElement as never),
+  {
+    tagName: "INPUT",
+    type: "text",
+    editable: false,
+    disabled: false,
+    readOnly: false,
+    rect: { x: 700, y: 386, width: 96, height: 28 },
+  },
+);
+assert.deepEqual(
+  await inspectableFromElement(inspectableElement as never, { x: 10, y: 20 }),
+  {
+    tagName: "INPUT",
+    type: "text",
+    editable: false,
+    disabled: false,
+    readOnly: false,
+    rect: { x: 710, y: 406, width: 96, height: 28 },
+  },
+);
+assert.deepEqual(inspectableElementCalls, ["evaluate", "evaluate"]);
 
 assert.deepEqual(
   selectInspectableTextTarget([

@@ -891,15 +891,18 @@
 
   function handleViewerPointerUp(event: PointerEvent) {
     if (!dragStart || dragStart.pointerId !== event.pointerId) return;
-    const image = event.currentTarget as HTMLImageElement;
+    const target = event.currentTarget as HTMLElement;
     const point = pointerPoint(event);
     const start = dragStart;
     dragStart = null;
-    if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
     if (!point) return;
 
     const moved = Math.hypot(point.x - start.x, point.y - start.y);
-    if (moved <= 8) return;
+    if (moved <= 8) {
+      void handleViewerClick(point);
+      return;
+    }
     floatingInput = null;
     void submitViewerDrag(start, point);
   }
@@ -921,9 +924,9 @@
 
   function handleViewerPointerCancel(event: PointerEvent) {
     if (dragStart?.pointerId !== event.pointerId) return;
-    const image = event.currentTarget as HTMLImageElement;
+    const target = event.currentTarget as HTMLElement;
     dragStart = null;
-    if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
   }
 
   async function handleViewerClick(point: NonNullable<ReturnType<typeof pointerPoint>>) {
@@ -950,11 +953,6 @@
     };
     await tick();
     floatingInputEl?.focus();
-  }
-
-  function handleViewerClickEvent(event: MouseEvent) {
-    const point = pointerPoint(event as unknown as PointerEvent);
-    if (point) void handleViewerClick(point);
   }
 
   function handleViewerKeydown(event: KeyboardEvent) {
@@ -1660,7 +1658,6 @@
               class="viewer-image-button"
               type="button"
               aria-label={$t.onboarding.verificationViewerAria}
-              onclick={handleViewerClickEvent}
               onkeydown={handleViewerKeydown}
               onpointerdown={handleViewerPointerDown}
               onpointerup={handleViewerPointerUp}

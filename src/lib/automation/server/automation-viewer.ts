@@ -235,14 +235,16 @@ export function captureSessionScreenshot(session: string) {
   ));
 }
 
-async function inspectableFromElement(element: ElementHandle<HTMLElement>): Promise<InspectableTextTarget | null> {
+export async function inspectableFromElement(
+  element: ElementHandle<HTMLElement>,
+  offset: ViewerPoint = { x: 0, y: 0 },
+): Promise<InspectableTextTarget | null> {
   try {
-    const box = await element.boundingBox();
-    if (!box?.width || !box.height) return null;
     const target = await element.evaluate((node) => {
       const style = getComputedStyle(node);
       const input = node instanceof HTMLInputElement ? node : null;
       const textarea = node instanceof HTMLTextAreaElement ? node : null;
+      const rect = node.getBoundingClientRect();
       return {
         tagName: node.tagName,
         type: input?.type ?? "",
@@ -250,23 +252,33 @@ async function inspectableFromElement(element: ElementHandle<HTMLElement>): Prom
         disabled: Boolean(input?.disabled ?? textarea?.disabled),
         readOnly: Boolean(input?.readOnly ?? textarea?.readOnly),
         visible: style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
     });
-    if (!target.visible) return null;
+    if (!target.visible || !target.rect.width || !target.rect.height) return null;
     return {
       tagName: target.tagName,
       type: target.type,
       editable: target.editable,
       disabled: target.disabled,
       readOnly: target.readOnly,
-      rect: { x: box.x, y: box.y, width: box.width, height: box.height },
+      rect: {
+        x: target.rect.x + offset.x,
+        y: target.rect.y + offset.y,
+        width: target.rect.width,
+        height: target.rect.height,
+      },
     };
   } catch {
     return null;
   }
 }
 
-async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<InspectableTextTarget | null> {
+async function inspectFramePoint(
+  frame: Frame,
+  point: ViewerPoint,
+  offset: ViewerPoint = { x: 0, y: 0 },
+): Promise<InspectableTextTarget | null> {
   const handle = await frame.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), point);
   const element = handle.asElement() as ElementHandle<HTMLElement> | null;
   if (!element) {
@@ -286,10 +298,13 @@ async function inspectFramePoint(frame: Frame, point: ViewerPoint): Promise<Insp
       return inspectFramePoint(childFrame, {
         x: point.x - embeddedFrame.x,
         y: point.y - embeddedFrame.y,
+      }, {
+        x: offset.x + embeddedFrame.x,
+        y: offset.y + embeddedFrame.y,
       });
     }
 
-    return inspectableFromElement(element);
+    return inspectableFromElement(element, offset);
   } finally {
     await handle.dispose();
   }
