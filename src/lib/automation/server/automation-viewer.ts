@@ -132,9 +132,20 @@ export function shouldAutoResumeYuantaTradeCaptcha(
   ));
 }
 
+export function shouldCheckYuantaTradeCompletion(
+  inputType: unknown,
+  semanticId: unknown,
+) {
+  if (inputType !== "click") return false;
+  return semanticId === "yuanta-trade.login.captcha-checkbox"
+    || semanticId === "yuanta-trade.login.challenge-submit";
+}
+
 export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
   "#modalYCaptchaV2, #captchaModal, .captcha-modal";
+export const YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR =
+  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]';
 
 export const VIEWER_SCREENSHOT_OPTIONS = {
   type: "jpeg",
@@ -371,6 +382,7 @@ export async function inspectHumanAssistanceCompletion(
   if (contract.completion.mode !== "independent") return false;
   return withPausedPage(session, async (page) => {
     const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR).first();
+    const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
     const checkboxChecked = await checkbox.evaluate((node) => {
       if (node instanceof HTMLInputElement) return node.checked;
       return node.getAttribute("aria-checked") === "true"
@@ -378,10 +390,10 @@ export async function inspectHumanAssistanceCompletion(
         || node.classList.contains("is-checked")
         || node.parentElement?.getAttribute("aria-checked") === "true";
     }).catch(() => false);
-    const challengeVisible = await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first()
+    const challengeVisible = await challenge
       .isVisible()
       .catch(() => false);
-    const challengeSubmitVisible = await page.locator("#btnConfirm").first()
+    const challengeSubmitVisible = await challenge.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first()
       .isVisible()
       .catch(() => false);
     const probe = { checkboxChecked, challengeVisible, challengeSubmitVisible };
@@ -418,7 +430,7 @@ export async function refreshYuantaTradeChallengeSubmitTarget(
   const submitRect = await withPausedPage(session, async (page) => {
     const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
     if (!await challenge.isVisible().catch(() => false)) return null;
-    const submit = page.locator("#btnConfirm").first();
+    const submit = challenge.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
     if (!await submit.isVisible().catch(() => false)) return null;
     return await submit.boundingBox().catch(() => null);
   });
