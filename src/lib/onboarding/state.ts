@@ -32,6 +32,16 @@ export function canResumeAssist(
   return completion.status === "verified";
 }
 
+export function shouldGuideAssistViewer(
+  assistInteracted: boolean,
+  floatingInputOpen: boolean,
+  completion: HumanAssistanceCompletion | null | undefined,
+) {
+  if (floatingInputOpen || !completion) return false;
+  if (completion.mode === "independent") return completion.status !== "verified";
+  return !assistInteracted && completion.status !== "entered";
+}
+
 export function canSubmitCredentials(onboarding: boolean, ready: boolean) {
   return !onboarding || ready;
 }
