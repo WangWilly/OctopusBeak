@@ -403,11 +403,14 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
-export async function dismissYuantaBankNotice(frame: Frame): Promise<boolean> {
+export async function dismissYuantaBankNotice(
+  frame: Frame,
+  visibilityTimeoutMs = 2_000,
+): Promise<boolean> {
   const popup = frame.locator("#commonPopup");
-  if (!(await popup.isVisible({ timeout: 2_000 }).catch(() => false))) return false;
+  if (!(await popup.isVisible({ timeout: visibilityTimeoutMs }).catch(() => false))) return false;
   const dismissButton = popup.locator("#commonPopupLeftBtnImg");
-  if (!(await dismissButton.isVisible({ timeout: 2_000 }).catch(() => false))) return false;
+  if (!(await dismissButton.isVisible({ timeout: visibilityTimeoutMs }).catch(() => false))) return false;
   await dismissButton.click();
   await popup.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
   return true;
@@ -578,6 +581,7 @@ export async function authenticateYuantaBank(
       signIn: async ({ page: authPage, session }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
         const loginFrame = await waitForFrame(authPage, "main");
+        await dismissYuantaBankNotice(loginFrame, 5_000);
         await emitHumanAssistanceStage({
           stageId: "yuanta-bank-login-captcha",
           title: "Enter the YuanTa Bank CAPTCHA",

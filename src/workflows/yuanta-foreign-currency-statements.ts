@@ -12,6 +12,7 @@ import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { dismissYuantaBankNotice } from "./yuanta-statements.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const big5Decoder = new TextDecoder("big5");
@@ -895,6 +896,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
       signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
         const captchaFrame = await waitForFrame(authPage, "main");
+        await dismissYuantaBankNotice(captchaFrame, 5_000);
         await emitHumanAssistanceStage({
           stageId: "yuanta-bank-login-captcha",
           title: "Enter the YuanTa Bank CAPTCHA",
