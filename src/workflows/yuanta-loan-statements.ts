@@ -719,8 +719,7 @@ export default workflow("yuantaLoanStatements", {
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
       signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-        const captchaFrame = authPage.frame({ name: "main" });
-        if (!captchaFrame) throw new Error("YuanTa login frame is unavailable for CAPTCHA assistance.");
+        const captchaFrame = await waitForFrame(authPage, "main");
         await emitHumanAssistanceStage({
           stageId: "yuanta-bank-login-captcha",
           title: "Enter the YuanTa Bank CAPTCHA",
