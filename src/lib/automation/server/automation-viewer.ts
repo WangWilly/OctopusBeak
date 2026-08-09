@@ -119,6 +119,19 @@ export function humanAssistanceCompletionSatisfied(
   return false;
 }
 
+export function shouldAutoResumeYuantaTradeCaptcha(
+  contract: HumanAssistanceContract,
+  targetId: unknown,
+  verified: boolean,
+) {
+  if (!verified || contract.stageId !== "yuanta-trade-captcha-checkbox") return false;
+  if (contract.completion.mode !== "independent") return false;
+  return contract.targets.some((target) => (
+    target.id === targetId
+    && target.semanticId === "yuanta-trade.login.captcha-checkbox"
+  ));
+}
+
 export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
   "#modalYCaptchaV2, #captchaModal, .captcha-modal";
@@ -377,6 +390,19 @@ export async function inspectHumanAssistanceCompletion(
       return target ? humanAssistanceCompletionSatisfied(target.semanticId, probe) : false;
     });
   });
+}
+
+export async function waitForHumanAssistanceCompletion(
+  session: string,
+  contract: HumanAssistanceContract,
+  attempts = 12,
+  intervalMs = 100,
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await inspectHumanAssistanceCompletion(session, contract)) return true;
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
 }
 
 export async function refreshYuantaTradeChallengeSubmitTarget(
