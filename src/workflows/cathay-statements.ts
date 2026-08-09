@@ -55,6 +55,44 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: CathayCredentials;
 };
 
+type LocatorBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function sameLocatorBox(left: LocatorBox | null, right: LocatorBox | null) {
+  if (!left || !right) return left === right;
+  return ["x", "y", "width", "height"].every((key) =>
+    Math.abs(left[key as keyof LocatorBox] - right[key as keyof LocatorBox]) < 0.5,
+  );
+}
+
+export async function waitForStableLocatorBox(
+  page: Page,
+  locator: Locator,
+  timeoutMs = 5_000,
+): Promise<LocatorBox | null> {
+  const deadline = Date.now() + timeoutMs;
+  let previous: LocatorBox | null = null;
+  let stableSamples = 0;
+
+  while (Date.now() < deadline) {
+    const box = await locator.boundingBox().catch(() => null);
+    if (box && sameLocatorBox(previous, box)) {
+      stableSamples += 1;
+      if (stableSamples >= 2) return box;
+    } else {
+      stableSamples = 0;
+    }
+    previous = box;
+    await page.waitForTimeout(250);
+  }
+
+  return previous;
+}
+
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
 export type CathayStatementDownload = {
@@ -357,6 +395,9 @@ async function completeEmailOtpIfNeeded(
 
   if (!(await emailVerificationLink.first().isVisible().catch(() => false))) {
     if (await otpField.isVisible().catch(() => false)) {
+      await otpField.scrollIntoViewIfNeeded();
+      await otpField.focus();
+      await waitForStableLocatorBox(page, otpField);
       await emitHumanAssistanceStage({
         stageId: "cathay-login-email-otp",
         title: "Enter the Cathay Email OTP",
@@ -393,7 +434,9 @@ async function completeEmailOtpIfNeeded(
   }
 
   await otpField.waitFor({ state: "visible", timeout: 30_000 });
+  await otpField.scrollIntoViewIfNeeded();
   await otpField.focus();
+  await waitForStableLocatorBox(page, otpField);
   await emitHumanAssistanceStage({
     stageId: "cathay-login-email-otp",
     title: "Enter the Cathay Email OTP",

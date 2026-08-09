@@ -6,11 +6,17 @@ const source = await readFile(
   new URL("./cathay-all-statements.ts", import.meta.url),
   "utf8",
 );
+const authSource = await readFile(
+  new URL("./cathay-statements.ts", import.meta.url),
+  "utf8",
+);
 
 assert.match(
   source,
   /statementTypes: z\.array\(statementTypeSchema\)\.min\(1\)\.optional\(\)/,
 );
+assert.match(authSource, /export async function waitForStableLocatorBox\([\s\S]*?locator\.boundingBox\(\)/);
+assert.equal(authSource.match(/await waitForStableLocatorBox\(page, otpField\);/g)?.length, 2);
 
 const server = await createServer({
   configFile: false,
