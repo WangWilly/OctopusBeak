@@ -1078,11 +1078,6 @@
                   title={taskLabel(task, $t)}
                   data-onboarding-task={task.id}
                   data-onboarding-group={task.credentialGroupId}
-                  data-onboarding={onboardingStep === "assist"
-                    && !humanTask
-                    && task.credentialGroupId === onboardingSelectedCredentialGroupId
-                    ? "automation-assist"
-                    : undefined}
                   data-onboarding-action={task.status === "waiting_for_human" ? "open-assist" : "logs"}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
                   onpointerleave={hideTaskTooltip}
@@ -1282,7 +1277,16 @@
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
                     {#if task.status === "waiting_for_human" && task.humanSession}
-                      <button class="button secondary task-control" type="button" onclick={() => openHumanViewer(task)}>
+                      <button
+                        class="button secondary task-control"
+                        type="button"
+                        data-onboarding={onboardingStep === "assist" && !humanTask
+                          && task.credentialGroupId === onboardingSelectedCredentialGroupId
+                          ? "automation-assist"
+                          : undefined}
+                        data-onboarding-action="open-assist"
+                        onclick={() => openHumanViewer(task)}
+                      >
                         {$t.automation.assist}
                       </button>
                     {/if}
