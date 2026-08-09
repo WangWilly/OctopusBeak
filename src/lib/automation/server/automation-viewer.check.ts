@@ -12,11 +12,19 @@ import {
   selectInspectableTextTarget,
   selectAllShortcut,
   selectViewerPage,
+  VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
+
+assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
+  type: "jpeg",
+  quality: 72,
+  animations: "disabled",
+  scale: "css",
+});
 
 assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
 assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);

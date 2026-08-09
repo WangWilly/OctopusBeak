@@ -123,6 +123,13 @@ export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
   "#modalYCaptchaV2, #captchaModal, .captcha-modal";
 
+export const VIEWER_SCREENSHOT_OPTIONS = {
+  type: "jpeg",
+  quality: 72,
+  animations: "disabled",
+  scale: "css",
+} as const;
+
 export function isNestedFrameElement(tagName: string) {
   return tagName === "IFRAME" || tagName === "FRAME";
 }
@@ -231,7 +238,7 @@ async function withPausedPage<T>(session: string, action: (page: Page) => Promis
 
 export function captureSessionScreenshot(session: string) {
   return withPausedPage(session, (page) => (
-    page.screenshot({ type: "jpeg", quality: 72, animations: "disabled" })
+    page.screenshot(VIEWER_SCREENSHOT_OPTIONS)
   ));
 }
 
