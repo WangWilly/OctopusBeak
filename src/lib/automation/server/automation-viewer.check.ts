@@ -12,6 +12,7 @@ import {
   selectInspectableTextTarget,
   selectAllShortcut,
   selectViewerPage,
+  shouldAutoResumeYuantaTradeCaptcha,
   VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
@@ -258,6 +259,39 @@ assert.equal(
     challengeVisible: false,
     challengeSubmitVisible: false,
   }),
+  false,
+);
+assert.equal(
+  shouldAutoResumeYuantaTradeCaptcha({
+    ...humanContract,
+    stageId: "yuanta-trade-captcha-checkbox",
+    completion: { mode: "independent", targetIds: ["captcha-input"], status: "verified" },
+    targets: [{
+      ...humanContract.targets[0]!,
+      semanticId: "yuanta-trade.login.captcha-checkbox",
+      modes: ["click"],
+    }],
+  }, "captcha-input", true),
+  true,
+);
+assert.equal(
+  shouldAutoResumeYuantaTradeCaptcha({
+    ...humanContract,
+    stageId: "yuanta-trade-captcha-checkbox",
+    completion: { mode: "independent", targetIds: ["captcha-input"], status: "pending" },
+    targets: [{
+      ...humanContract.targets[0]!,
+      semanticId: "yuanta-trade.login.captcha-checkbox",
+      modes: ["click"],
+    }],
+  }, "captcha-input", false),
+  false,
+);
+assert.equal(
+  shouldAutoResumeYuantaTradeCaptcha({
+    ...humanContract,
+    completion: { mode: "independent", targetIds: ["captcha-input"], status: "verified" },
+  }, "captcha-input", true),
   false,
 );
 assert.equal(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR, "#chbYCaptchaV2");

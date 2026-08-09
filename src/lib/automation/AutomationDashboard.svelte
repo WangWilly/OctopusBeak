@@ -767,6 +767,11 @@
         humanTask = { ...humanTask, humanAssistanceContract: result.contract };
       }
       viewerError = "";
+      if (result.resumed) {
+        closeHumanViewer();
+        await reload();
+        return true;
+      }
       await refreshViewerImage();
       return true;
     } catch (error) {
