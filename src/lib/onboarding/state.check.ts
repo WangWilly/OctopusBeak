@@ -385,6 +385,15 @@ assert.match(automationDashboard, /class="viewer-frame"[\s\S]*?data-onboarding-a
 assert.match(automationDashboard, /class="viewer-floating-input"[\s\S]*?data-onboarding-action="enter-verification"/);
 assert.match(automationDashboard, /resumeHumanViewer[\s\S]*?data-onboarding-action="resume-collection"/);
 assert.match(automationDashboard, /humanTask[\s\S]*?assistInteracted/);
+assert.match(
+  automationDashboard,
+  /class="button secondary task-control"[\s\S]*?data-onboarding=\{onboardingStep === "assist" && !humanTask[\s\S]*?"automation-assist"[\s\S]*?data-onboarding-action="open-assist"/,
+);
+const activeTaskJumpSource = automationDashboard.slice(
+  automationDashboard.indexOf('class="active-task-jump"'),
+  automationDashboard.indexOf("</button>", automationDashboard.indexOf('class="active-task-jump"')),
+);
+assert.doesNotMatch(activeTaskJumpSource, /data-onboarding=/);
 assert.match(onboardingCoach, /\.human-viewer-modal \.viewer-floating-input/);
 assert.match(onboardingCoach, /if \(copyKey === "assist"\)[\s\S]*?targetAction/);
 assert.match(onboardingCoach, /\$: key = visible \? onboardingCopyKey\(step\) : null;/);
