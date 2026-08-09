@@ -12,6 +12,7 @@
     previousOnboardingCredentialState,
     settleAssistDrag,
     settleAssistTextSubmission,
+    shouldGuideAssistViewer,
   } from "$lib/onboarding/state.ts";
   import {
     buildCredentialSetupPlan,
@@ -84,6 +85,11 @@
       : $t.common.ready;
   $: sideSub = $t.common.businessDay(automation.businessDate);
   $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
+  $: guideAssistViewer = shouldGuideAssistViewer(
+    assistInteracted,
+    Boolean(floatingInput),
+    humanTask?.humanAssistanceContract?.completion,
+  );
   $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
     task.isActive || task.status === "waiting_for_human" || task.status === "failed"
@@ -1655,7 +1661,13 @@
             data-onboarding-action="resume-collection"
             onclick={resumeHumanViewer}
           >
-            {onboardingStep === "assist" ? $t.onboarding.resumeCollection : $t.automation.resume}
+            {onboardingStep === "assist" && canResumeAssist(
+              assistInteracted,
+              Boolean(floatingInput),
+              humanTask.humanAssistanceContract?.completion,
+            )
+              ? $t.onboarding.resumeCollection
+              : $t.automation.resume}
           </button>
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHumanViewer}>x</button>
         </div>
@@ -1674,7 +1686,7 @@
             >
               <img
                 class="viewer-image"
-                data-onboarding={onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted
+                data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
                   ? "automation-assist"
                   : undefined}
                 data-onboarding-action="choose-verification-control"
@@ -1691,7 +1703,7 @@
                 onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
               />
             </button>
-          {#if onboardingStep === "assist" && humanTask && !floatingInput && !assistInteracted}
+          {#if onboardingStep === "assist" && humanTask && guideAssistViewer}
             <div class="verification-viewer-tooltip" role="tooltip">
               {$t.onboarding.clickVerificationField}
             </div>
