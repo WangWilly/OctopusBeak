@@ -10,6 +10,7 @@ import type { Dialog, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { dismissYuantaBankNotice } from "./yuanta-statements.js";
 
 const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_LOGOUT_URL = "https://ebank.yuantabank.com.tw/nib/tx/logout";
@@ -1719,6 +1720,7 @@ export default workflow("yuantaFundStatements", {
       signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
         await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
         const captchaFrame = await waitForFrame(authPage, "main");
+        await dismissYuantaBankNotice(captchaFrame, 5_000);
         await emitHumanAssistanceStage({
           stageId: "yuanta-bank-login-captcha",
           title: "Enter the YuanTa Bank CAPTCHA",
