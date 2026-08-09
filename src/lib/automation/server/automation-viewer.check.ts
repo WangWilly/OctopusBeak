@@ -160,6 +160,15 @@ assert.equal(
   humanAssistanceCompletionSatisfied("yuanta-trade.login.captcha-checkbox", {
     checkboxChecked: true,
     challengeVisible: true,
+    challengeSubmitVisible: false,
+  }),
+  true,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.captcha-checkbox", {
+    checkboxChecked: false,
+    challengeVisible: true,
+    challengeSubmitVisible: false,
   }),
   true,
 );
@@ -167,6 +176,15 @@ assert.equal(
   humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
     checkboxChecked: true,
     challengeVisible: true,
+    challengeSubmitVisible: false,
+  }),
+  false,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
+    checkboxChecked: true,
+    challengeVisible: true,
+    challengeSubmitVisible: true,
   }),
   false,
 );
@@ -174,6 +192,15 @@ assert.equal(
   humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
     checkboxChecked: true,
     challengeVisible: false,
+    challengeSubmitVisible: false,
+  }),
+  true,
+);
+assert.equal(
+  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-submit", {
+    checkboxChecked: true,
+    challengeVisible: false,
+    challengeSubmitVisible: false,
   }),
   true,
 );
@@ -181,6 +208,7 @@ assert.equal(
   humanAssistanceCompletionSatisfied("unknown.semantic-id", {
     checkboxChecked: true,
     challengeVisible: false,
+    challengeSubmitVisible: false,
   }),
   false,
 );

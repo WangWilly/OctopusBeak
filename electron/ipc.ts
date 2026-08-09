@@ -18,12 +18,14 @@ import {
   inspectHumanAssistanceCompletion,
   isClosedViewerSessionError,
   inspectHumanVerificationPoint,
+  refreshYuantaTradeChallengeSubmitTarget,
   sendHumanVerificationInput,
 } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   forceQuitHumanSessionForTask,
   humanAssistanceContractForTask,
   humanSessionForTask,
+  updateHumanAssistanceContractForTask,
   updateHumanAssistanceCompletionForTask,
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
@@ -139,24 +141,32 @@ export function registerOctopusBeakIpc({
     const contract = humanAssistanceContractForTask(taskId);
     if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
     await sendHumanVerificationInput(session, input, contract);
+    const refreshedContractInput = await refreshYuantaTradeChallengeSubmitTarget(session, contract);
+    const refreshedContract = refreshedContractInput
+      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+      : contract;
     const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const isTextInputOnCompletionTarget = record.type === "type"
-      && contract.completion.mode === "inline"
+      && refreshedContract.completion.mode === "inline"
       && typeof record.targetId === "string"
-      && contract.completion.targetIds.includes(record.targetId);
+      && refreshedContract.completion.targetIds.includes(record.targetId);
     const updatedContract = isTextInputOnCompletionTarget
       ? updateHumanAssistanceCompletionForTask(taskId, "entered")
-      : contract;
+      : refreshedContract;
     return { ok: true as const, contract: updatedContract };
   });
   ipcMain.handle("automation:viewerCompletionCheck", async (_event, taskId: string) => {
     const session = humanSessionForTask(taskId);
     const contract = humanAssistanceContractForTask(taskId);
     if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
-    const verified = await inspectHumanAssistanceCompletion(session, contract);
+    const refreshedContractInput = await refreshYuantaTradeChallengeSubmitTarget(session, contract);
+    const refreshedContract = refreshedContractInput
+      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+      : contract;
+    const verified = await inspectHumanAssistanceCompletion(session, refreshedContract);
     const updatedContract = verified
       ? updateHumanAssistanceCompletionForTask(taskId, "verified")
-      : contract;
+      : refreshedContract;
     return { verified, contract: updatedContract };
   });
   ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {

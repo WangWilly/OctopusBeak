@@ -11,6 +11,7 @@ import {
   ownedAutomationSessionForTask,
   refreshAutomationSession,
   relinquishAutomationSessionForTask,
+  resumeSessionFromLog,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
 import { createTaskRun, taskRunById } from "./store.ts";
@@ -60,6 +61,13 @@ test("session owner resolution reads the bounded log prefix before the tail", ()
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
+});
+
+test("resume session parsing accepts Libretto resume output", () => {
+  assert.equal(
+    resumeSessionFromLog('Resume requested for session "ses-resume-output".'),
+    "ses-resume-output",
+  );
 });
 
 test("resume handoff finalizes the old run and claims the new session atomically", async () => {

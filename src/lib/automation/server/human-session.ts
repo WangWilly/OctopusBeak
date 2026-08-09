@@ -6,12 +6,14 @@ import {
 import { resumeSessionFromLog } from "./automation-session-disposition.ts";
 import {
   latestTaskRuns,
+  updateHumanAssistanceContract,
   updateHumanAssistanceCompletion,
   type AutomationTaskRun,
 } from "./store.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContract,
+  HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import { taskById } from "./tasks.ts";
 
@@ -67,6 +69,25 @@ export function updateHumanAssistanceCompletionForTask(
       throw new Error(`Automation task is not waiting for human input: ${taskId}`);
     }
     return updateHumanAssistanceCompletion(db, run.taskRunId, status);
+  } finally {
+    db.close();
+  }
+}
+
+export function updateHumanAssistanceContractForTask(
+  taskId: string,
+  input: HumanAssistanceContractInput,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): HumanAssistanceContract {
+  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    const run = latestTaskRuns(db)[taskId];
+    if (run?.status !== "waiting_for_human") {
+      throw new Error(`Automation task is not waiting for human input: ${taskId}`);
+    }
+    return updateHumanAssistanceContract(db, run.taskRunId, input);
   } finally {
     db.close();
   }

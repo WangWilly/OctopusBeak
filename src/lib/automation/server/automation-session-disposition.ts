@@ -75,7 +75,10 @@ export function automationSessionFromLog(output: string) {
 }
 
 export function resumeSessionFromLog(output: string) {
-  return output.match(/libretto resume --session\s+([\w-]+)/i)?.[1] ?? null;
+  const match = output.match(
+    /libretto resume --session\s+([\w-]+)|Resume requested for session\s+["']?([\w-]+)/i,
+  );
+  return match?.[1] ?? match?.[2] ?? null;
 }
 
 export function sessionFromRun(run: AutomationTaskRun) {
