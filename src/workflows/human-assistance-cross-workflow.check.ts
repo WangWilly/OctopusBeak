@@ -30,6 +30,39 @@ test("all modelable human-assisted workflows publish a contract-backed stage", a
   }
 });
 
+test("provider verification focus keeps the challenge readable", async () => {
+  const sources = await Promise.all(providerWorkflows.map(async (file) => [
+    file,
+    await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
+  ] as const));
+  const violations: string[] = [];
+  for (const [file, source] of sources) {
+    const zooms = [...source.matchAll(/initialZoom:\s*([0-9]+(?:\.[0-9]+)?)/g)]
+      .map((match) => Number(match[1]));
+    if (zooms.length === 0) violations.push(`${file}: missing focus zoom`);
+    if (zooms.some((zoom) => zoom > 1.25)) {
+      violations.push(`${file}: ${zooms.join(", ")}`);
+    }
+  }
+  assert.deepEqual(violations, [], "provider verification focus must keep the challenge readable");
+});
+
+test("inline verification stages re-check the declared field before continuing", async () => {
+  const sources = await Promise.all(providerWorkflows.map(async (file) => [
+    file,
+    await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
+  ] as const));
+  const missingInputChecks = sources
+    .filter(([, source]) => source.includes('completion: { mode: "inline"'))
+    .filter(([, source]) => !source.includes("inputValue()).trim()"))
+    .map(([file]) => file);
+  assert.deepEqual(
+    missingInputChecks,
+    [],
+    "inline verification must confirm the declared field is non-empty after Assist Resume",
+  );
+});
+
 test("Yuanta Trade keeps checkbox and later challenge as separate declared stages", async () => {
   const source = await readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8");
   assert.match(source, /yuanta-trade-captcha-checkbox/);

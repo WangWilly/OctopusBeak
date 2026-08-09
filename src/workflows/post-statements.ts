@@ -275,7 +275,7 @@ async function signInPost(
       targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "ipost.login.captcha-input", modes: ["click", "type"], locator: captchaInput }],
       contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "ipost.login.captcha-challenge" }],
       completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.7 },
+      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
     });
     console.log(postManualAuthMessage(session));
     await pause(session);
