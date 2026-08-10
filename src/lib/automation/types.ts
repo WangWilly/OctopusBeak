@@ -5,10 +5,13 @@ export type AutomationLocalizedText = {
   "zh-TW": string;
 };
 
+export type AutomationCredentialRedaction = "none" | "partial" | "full";
+
 export type AutomationCredentialField = {
   key: string;
   label: AutomationLocalizedText;
   input: "text" | "password" | "certificate-file";
+  redaction: AutomationCredentialRedaction;
 };
 
 export type AutomationSetupGuideLink = {
