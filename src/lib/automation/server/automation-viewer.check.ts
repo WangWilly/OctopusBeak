@@ -4,6 +4,7 @@ import {
   isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
+  focusHumanVerificationTarget,
   focusPointForViewerRect,
   inspectableFromElement,
   isInspectableTextTarget,
@@ -206,6 +207,31 @@ assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 810, 
 assert.deepEqual(
   focusPointForViewerRect(humanContract.targets[0]!.rect!),
   { x: 748, y: 434 },
+);
+const focusCalls: Array<[number, number]> = [];
+await focusHumanVerificationTarget({
+  evaluate: async () => false,
+  mouse: {
+    click: async (x: number, y: number) => {
+      focusCalls.push([x, y]);
+    },
+  },
+} as never, humanContract.targets[0]!);
+assert.deepEqual(focusCalls, [[748, 434]]);
+await focusHumanVerificationTarget({
+  evaluate: async () => true,
+  mouse: {
+    click: async () => {
+      throw new Error("Top-level DOM focus must not issue a pointer click.");
+    },
+  },
+} as never, humanContract.targets[0]!);
+await assert.rejects(
+  () => focusHumanVerificationTarget({ evaluate: async () => false, mouse: { click: async () => {} } } as never, {
+    ...humanContract.targets[0]!,
+    modes: ["type"],
+  }),
+  /does not permit pointer focus/,
 );
 assert.equal(
   humanVerificationTargetAtPoint(humanContract, { x: 724, y: 400 })?.id,

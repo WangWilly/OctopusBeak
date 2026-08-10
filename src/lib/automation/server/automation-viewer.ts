@@ -50,6 +50,11 @@ const allowedPressKeys = new Set([
   "ArrowRight",
 ]);
 const textInputTypes = new Set(["", "email", "number", "password", "search", "tel", "text", "url"]);
+const editableTargetSelector = [
+  "input:not([disabled]):not([readonly])",
+  "textarea:not([disabled]):not([readonly])",
+  '[contenteditable="true"]',
+].join(", ");
 
 export function isClosedViewerSessionError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -484,10 +489,11 @@ export async function sendHumanVerificationInput(
   return sendNormalizedViewerInput(session, input, target);
 }
 
-async function focusHumanVerificationTarget(page: Page, target: HumanVerificationTarget) {
+export async function focusHumanVerificationTarget(page: Page, target: HumanVerificationTarget) {
   if (!target.rect) throw new Error("Human verification target is not currently resolved.");
-  const focused = await page.evaluate((point) => {
-    const element = document.elementsFromPoint(point.x, point.y)
+  const point = focusPointForViewerRect(target.rect);
+  const focused = await page.evaluate((focusPoint) => {
+    const element = document.elementsFromPoint(focusPoint.x, focusPoint.y)
       .map((candidate) => candidate instanceof HTMLElement
         ? candidate.closest(
           'input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
@@ -497,9 +503,66 @@ async function focusHumanVerificationTarget(page: Page, target: HumanVerificatio
     if (!(element instanceof HTMLElement)) return false;
     element.focus({ preventScroll: true });
     return document.activeElement === element;
-  }, focusPointForViewerRect(target.rect));
-  if (!focused) {
-    throw new Error("Human verification target could not be focused. Reload the current verification stage.");
+  }, point);
+  if (focused) return;
+  if (!target.modes.includes("click")) {
+    throw new Error("Human verification target does not permit pointer focus.");
+  }
+  await page.mouse.click(point.x, point.y);
+}
+
+async function editableElementAtViewerPoint(
+  frame: Frame,
+  point: ViewerPoint,
+): Promise<ElementHandle<HTMLElement> | null> {
+  const handle = await frame.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), point);
+  const element = handle.asElement() as ElementHandle<HTMLElement> | null;
+  if (!element) {
+    await handle.dispose();
+    return null;
+  }
+
+  try {
+    const embeddedFrame = await element.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { tagName: node.tagName, x: rect.x, y: rect.y };
+    });
+    const childFrame = isNestedFrameElement(embeddedFrame.tagName)
+      ? await element.contentFrame()
+      : null;
+    if (isNestedFrameElement(embeddedFrame.tagName) && childFrame) {
+      return editableElementAtViewerPoint(childFrame, {
+        x: point.x - embeddedFrame.x,
+        y: point.y - embeddedFrame.y,
+      });
+    }
+
+    const editableHandle = await frame.evaluateHandle(({ x, y, selector }) => (
+      document.elementsFromPoint(x, y)
+        .map((node) => node instanceof HTMLElement ? node.closest(selector) : null)
+        .find((node): node is HTMLElement => node instanceof HTMLElement) ?? null
+    ), { ...point, selector: editableTargetSelector });
+    const editable = editableHandle.asElement() as ElementHandle<HTMLElement> | null;
+    if (!editable) await editableHandle.dispose();
+    return editable;
+  } finally {
+    await handle.dispose();
+  }
+}
+
+async function fillHumanVerificationTarget(
+  page: Page,
+  target: HumanVerificationTarget,
+  text: string,
+): Promise<boolean> {
+  if (!target.rect) throw new Error("Human verification target is not currently resolved.");
+  const element = await editableElementAtViewerPoint(page.mainFrame(), focusPointForViewerRect(target.rect));
+  if (!element) return false;
+  try {
+    await element.fill(text);
+    return true;
+  } finally {
+    await element.dispose();
   }
 }
 
@@ -517,7 +580,12 @@ async function sendNormalizedViewerInput(
       await page.mouse.move(input.toX, input.toY);
       await page.mouse.up();
     } else if (input.type === "type") {
-      if (target) await focusHumanVerificationTarget(page, target);
+      if (target) {
+        if (!await fillHumanVerificationTarget(page, target, input.text)) {
+          throw new Error("Human verification target moved. Reload the current verification stage.");
+        }
+        return;
+      }
       await page.keyboard.press(selectAllShortcut());
       await page.keyboard.type(input.text);
     } else {
