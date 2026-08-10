@@ -159,6 +159,7 @@ export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
   "#modalYCaptchaV2, #captchaModal, .captcha-modal";
 export const YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR =
   'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]';
+export const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 
 export const VIEWER_SCREENSHOT_OPTIONS = {
   type: "jpeg",
@@ -386,6 +387,46 @@ export async function inspectHumanVerificationPoint(
     contractVersion: contract.version,
     modes,
   };
+}
+
+export function refreshTargetRect(
+  contract: HumanAssistanceContract,
+  semanticId: string,
+  rect: HumanVerificationRect,
+): HumanAssistanceContractInput | null {
+  const target = contract.targets.find((candidate) => candidate.semanticId === semanticId);
+  if (!target?.rect) return null;
+  const unchanged = target.rect.x === rect.x
+    && target.rect.y === rect.y
+    && target.rect.width === rect.width
+    && target.rect.height === rect.height;
+  if (unchanged) return null;
+  return {
+    stageId: contract.stageId,
+    title: contract.title,
+    targets: contract.targets.map((candidate) => (
+      candidate.semanticId === semanticId ? { ...candidate, rect } : candidate
+    )),
+    contextRegions: contract.contextRegions,
+    completion: contract.completion,
+    focus: contract.focus,
+  };
+}
+
+export async function refreshCathayEmailOtpTarget(
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<HumanAssistanceContractInput | null> {
+  if (!contract.targets.some((target) => target.semanticId === "cathay.login.email-otp-input")) {
+    return null;
+  }
+  const rect = await withPausedPage(session, async (page) => {
+    const otp = page.locator(CATHAY_EMAIL_OTP_SELECTOR).first();
+    if (!await otp.isVisible().catch(() => false)) return null;
+    return await otp.boundingBox().catch(() => null);
+  });
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return refreshTargetRect(contract, "cathay.login.email-otp-input", rect);
 }
 
 export async function inspectHumanAssistanceCompletion(

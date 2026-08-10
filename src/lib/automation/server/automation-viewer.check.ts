@@ -11,6 +11,7 @@ import {
   normalizeHumanVerificationInput,
   normalizeViewerInput,
   normalizeViewerPoint,
+  refreshTargetRect,
   selectInspectableTextTarget,
   selectAllShortcut,
   selectViewerPage,
@@ -207,6 +208,21 @@ assert.equal(viewerRectContainsPoint(humanContract.targets[0]!.rect!, { x: 810, 
 assert.deepEqual(
   focusPointForViewerRect(humanContract.targets[0]!.rect!),
   { x: 748, y: 434 },
+);
+assert.deepEqual(
+  refreshTargetRect(humanContract, "captcha.input", { x: 700, y: 439, width: 96, height: 96 }),
+  {
+    stageId: "captcha",
+    title: "Complete CAPTCHA",
+    targets: [{ ...humanContract.targets[0]!, rect: { x: 700, y: 439, width: 96, height: 96 } }],
+    contextRegions: [],
+    completion: humanContract.completion,
+    focus: humanContract.focus,
+  },
+);
+assert.equal(
+  refreshTargetRect(humanContract, "captcha.input", humanContract.targets[0]!.rect!),
+  null,
 );
 const focusCalls: Array<[number, number]> = [];
 await focusHumanVerificationTarget({

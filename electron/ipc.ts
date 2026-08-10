@@ -18,6 +18,7 @@ import {
   inspectHumanAssistanceCompletion,
   isClosedViewerSessionError,
   inspectHumanVerificationPoint,
+  refreshCathayEmailOtpTarget,
   refreshYuantaTradeChallengeSubmitTarget,
   sendHumanVerificationInput,
   shouldAutoResumeYuantaTradeCaptcha,
@@ -137,7 +138,11 @@ export function registerOctopusBeakIpc({
     const session = humanSessionForTask(taskId);
     const contract = humanAssistanceContractForTask(taskId);
     if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
-    return inspectHumanVerificationPoint(session, point, contract);
+    const refreshedContractInput = await refreshCathayEmailOtpTarget(session, contract);
+    const refreshedContract = refreshedContractInput
+      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+      : contract;
+    return inspectHumanVerificationPoint(session, point, refreshedContract);
   });
   ipcMain.handle("automation:viewerInput", async (_event, taskId: string, input: unknown) => {
     const session = humanSessionForTask(taskId);
