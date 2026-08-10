@@ -123,7 +123,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     searchAliases: ["Yuanta Trade", "Yuanta Securities", "元大證券"],
     credentialFields: [
       field("LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
-      field("LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
+      field("LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD", "Yuanta Securities password", "元大證券登入密碼", "password"),
       field("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH", "Certificate file", "憑證檔案", "certificate-file"),
       field("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD", "Certificate password", "憑證密碼", "password"),
     ],

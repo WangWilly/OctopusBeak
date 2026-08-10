@@ -10,6 +10,7 @@ const enabledKey = `${credentialPrefix}ENABLED`;
 const userIdKey = `${credentialPrefix}USER_ID`;
 const accountKey = `${credentialPrefix}ACCOUNT`;
 const passwordKey = `${credentialPrefix}PASSWORD`;
+const certificatePathKey = "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH";
 let resetCredentialCodec: (() => void) | null = null;
 
 try {
@@ -33,6 +34,7 @@ try {
     [userIdKey]: "user",
     [accountKey]: "acct",
     [passwordKey]: "pw",
+    [certificatePathKey]: join(dir, "certificate.txt"),
   }, null, 2));
 
   const configFiles = await import("./config-files.ts");
@@ -70,6 +72,18 @@ try {
   assert.deepEqual(fubonGroup?.selectedStatementTypeIds, []);
   assert.equal(fubonGroup?.statementSetupRequired, true);
   assert.equal(model.automation.credentials[passwordKey], true);
+  const yuantaSecuritiesGroup = model.credentialGroups.find((group) => group.id === "yuanta-trade");
+  assert.equal(yuantaSecuritiesGroup?.invalidCredentialFileReasons?.[certificatePathKey], "invalid-extension");
+  assert.equal(yuantaSecuritiesGroup?.invalidCredentialFileKeys.includes(certificatePathKey), true);
+  const credentialsWithMissingCertificate = JSON.parse(readFileSync("credentials.json", "utf8"));
+  credentialsWithMissingCertificate[certificatePathKey] = join(dir, "missing.PFX");
+  writeFileSync("credentials.json", JSON.stringify(credentialsWithMissingCertificate, null, 2));
+  const missingCertificateModel = api.loadAutomationDesktopModel(dir);
+  assert.equal(
+    missingCertificateModel.credentialGroups.find((group) => group.id === "yuanta-trade")
+      ?.invalidCredentialFileReasons?.[certificatePathKey],
+    "missing-or-unreadable",
+  );
   assert.equal(model.automation.credentials.MAX_SUB_ACCOUNT, true);
   assert.equal(Object.hasOwn(model.automation, "runHistory"), false);
   assert.equal(model.automation.tasks.find((task) => task.id === "fubon-all-statements")?.ranToday, true);
@@ -111,6 +125,27 @@ try {
   assert.throws(
     () => api.automationSaveCredentials({ LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "" }),
     /Select at least one Fubon/,
+  );
+  assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeInvalidSave);
+  assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeInvalidSave);
+
+  assert.deepEqual(
+    api.automationSaveCredentials({ [certificatePathKey]: "relative.PFX" }),
+    {
+      saved: false,
+      error: "invalid-certificate-file",
+      credentialKey: certificatePathKey,
+      reason: "missing-or-unreadable",
+    },
+  );
+  assert.deepEqual(
+    api.automationSaveCredentials({ [certificatePathKey]: join(dir, "certificate.txt") }),
+    {
+      saved: false,
+      error: "invalid-certificate-file",
+      credentialKey: certificatePathKey,
+      reason: "invalid-extension",
+    },
   );
   assert.equal(readFileSync("settings.json", "utf8"), settingsBeforeInvalidSave);
   assert.equal(readFileSync("credentials.json", "utf8"), credentialsBeforeInvalidSave);

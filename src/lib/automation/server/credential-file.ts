@@ -14,9 +14,10 @@ export function certificateFilename(filePath: string) {
 export function validateCertificateFilePath(filePath: string): CertificateFileValidation {
   const normalized = filePath.trim();
   const extension = extname(normalized).slice(1).toLowerCase();
-  if (!isAbsolute(normalized) || !CERTIFICATE_FILE_EXTENSIONS.includes(extension as "pfx" | "p12")) {
+  if (!CERTIFICATE_FILE_EXTENSIONS.includes(extension as "pfx" | "p12")) {
     return { valid: false, reason: "invalid-extension" };
   }
+  if (!isAbsolute(normalized)) return { valid: false, reason: "missing-or-unreadable" };
   try {
     const metadata = statSync(normalized);
     accessSync(normalized, constants.R_OK);

@@ -68,6 +68,7 @@ function currentCredentialState() {
   const status = credentialStatusFromValues(credentials, AUTOMATION_CREDENTIAL_KEYS);
   const fileNames: Record<string, string> = {};
   const invalidFileKeys: string[] = [];
+  const invalidFileReasons: Record<string, "invalid-extension" | "missing-or-unreadable"> = {};
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
     const settingValue = typeof settings[key] === "string" ? settings[key].trim() : "";
     const storedValue = credentials[key]?.trim()
@@ -78,13 +79,16 @@ function currentCredentialState() {
       if (storedValue) fileNames[key] = certificateFilename(storedValue);
       const validation = storedValue ? validateCertificateFilePath(storedValue) : null;
       status[key] = validation?.valid === true;
-      if (storedValue && validation?.valid === false) invalidFileKeys.push(key);
+      if (storedValue && validation?.valid === false) {
+        invalidFileKeys.push(key);
+        invalidFileReasons[key] = validation.reason;
+      }
       continue;
     }
     status[key] = Boolean(storedValue);
   }
   for (const key of optionalCredentialKeys) status[key] = true;
-  return { status, fileNames, invalidFileKeys };
+  return { status, fileNames, invalidFileKeys, invalidFileReasons };
 }
 
 export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger"): AutomationDesktopModel {
@@ -113,6 +117,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
         statementSetupRequired: selection.needsSetup,
         storedCredentialFileNames: credentialState.fileNames,
         invalidCredentialFileKeys: credentialState.invalidFileKeys,
+        invalidCredentialFileReasons: credentialState.invalidFileReasons,
       };
     });
     return {
@@ -211,7 +216,14 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   for (const key of certificateFileCredentialKeys) {
     if (!Object.hasOwn(updates, key)) continue;
     const validation = validateCertificateFilePath(updates[key] ?? "");
-    if (!validation.valid) throw new Error(`Invalid certificate file: ${validation.reason}`);
+    if (!validation.valid) {
+      return {
+        saved: false as const,
+        error: "invalid-certificate-file" as const,
+        credentialKey: key,
+        reason: validation.reason,
+      };
+    }
     updates[key] = validation.path;
   }
   const split = splitAutomationUpdates(updates);

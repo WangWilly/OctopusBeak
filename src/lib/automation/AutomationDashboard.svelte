@@ -2,7 +2,7 @@
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
-  import type { CredentialGroupDto } from "$lib/desktop/api.ts";
+  import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     canResumeAssist,
@@ -306,6 +306,16 @@
     return localizedText(group.displayName);
   }
 
+  function certificateFileValidationMessage(
+    reason: CertificateFileValidationReason,
+    storedFile: boolean,
+  ) {
+    if (reason === "invalid-extension") return $t.automation.invalidCertificateExtension;
+    return storedFile
+      ? $t.automation.missingCertificateFile
+      : $t.automation.unreadableCertificateFile;
+  }
+
   function resetCredentialChanges() {
     credentialDrafts = {};
     credentialFileDraftNames = {};
@@ -432,9 +442,7 @@
       if ("error" in result) {
         credentialFileErrors = {
           ...credentialFileErrors,
-          [key]: result.error === "invalid-extension"
-            ? $t.automation.invalidCertificateExtension
-            : $t.automation.unreadableCertificateFile,
+          [key]: certificateFileValidationMessage(result.error, false),
         };
         return;
       }
@@ -720,7 +728,14 @@
     try {
       actionError = "";
       const savedGroupId = plan.selectedCredentialGroupId;
-      await window.octopusBeak.automation.saveCredentials(plan.updates);
+      const result = await window.octopusBeak.automation.saveCredentials(plan.updates);
+      if (!result.saved) {
+        credentialFileErrors = {
+          ...credentialFileErrors,
+          [result.credentialKey]: certificateFileValidationMessage(result.reason, false),
+        };
+        return;
+      }
       resetCredentialChanges();
       await reload();
       if (onboardingSourceSelection && savedGroupId) {
@@ -739,8 +754,8 @@
       } else {
         credentialsOpen = false;
       }
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+    } catch {
+      actionError = $t.automation.saveCredentialsFailed;
     }
   }
 
@@ -1426,6 +1441,8 @@
                 {@const key = credentialField.key}
                 {#if credentialField.input === "certificate-file"}
                   {@const selectedFileName = credentialFileDraftNames[key] ?? selectedCredentialGroup.storedCredentialFileNames[key]}
+                  {@const storedFileError = selectedCredentialGroup.invalidCredentialFileReasons?.[key]
+                    ?? (selectedCredentialGroup.invalidCredentialFileKeys.includes(key) ? "missing-or-unreadable" : undefined)}
                   <div class="credential-field certificate-file-field">
                     <span>{localizedText(credentialField.label)}</span>
                     <div class:dirty={Boolean(credentialDrafts[key])} class="certificate-file-control">
@@ -1443,8 +1460,8 @@
                         onclick={() => void selectCertificateFile(key)}
                       >{selectedFileName ? $t.automation.chooseAnotherCertificateFile : $t.automation.chooseCertificateFile}</button>
                     </div>
-                    {#if !credentialDrafts[key] && selectedCredentialGroup.invalidCredentialFileKeys.includes(key)}
-                      <p class="credential-error file-error">{$t.automation.missingCertificateFile}</p>
+                    {#if !credentialDrafts[key] && storedFileError}
+                      <p class="credential-error file-error">{certificateFileValidationMessage(storedFileError, true)}</p>
                     {/if}
                     {#if credentialFileErrors[key]}
                       <p class="credential-error file-error" aria-live="polite">{credentialFileErrors[key]}</p>
