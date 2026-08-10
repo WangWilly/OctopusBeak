@@ -83,6 +83,10 @@ for (const key of onlineBankingCodeKeys) {
 const yuantaSecuritiesFields = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "yuanta-trade")?.credentialFields ?? [];
 assert.equal(yuantaSecuritiesFields.some((field) => field.key.endsWith("_ACCOUNT")), false);
 assert.equal(fieldsByKey.get("LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD")?.input, "password");
+assert.deepEqual(fieldsByKey.get("LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD")?.label, {
+  en: "Yuanta Securities password",
+  "zh-TW": "元大證券登入密碼",
+});
 assert.equal(fieldsByKey.get("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH")?.input, "certificate-file");
 assert.equal(fieldsByKey.get("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD")?.input, "password");
 assert.equal(fieldsByKey.get("MAX_SUB_ACCOUNT")?.redaction, "none");

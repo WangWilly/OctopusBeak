@@ -144,7 +144,7 @@ assert.match(source, /selectedStatementTypeIds/);
 assert.match(source, /task\.primaryAction === "Configure"/);
 assert.match(source, /task\.status === "partial"/);
 assert.match(source, /automation\.importGate\.warnings/);
-assert.match(source, /import type \{ CredentialGroupDto \} from "\$lib\/desktop\/api\.ts"/);
+assert.match(source, /import type \{ CertificateFileValidationReason, CredentialGroupDto \} from "\$lib\/desktop\/api\.ts"/);
 assert.match(source, /function toggleStatementType\(groupId: string, typeId: string\)/);
 assert.match(source, /function selectAllStatementTypes\(group: CredentialGroupDto\)/);
 assert.match(source, /document\.getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/);
@@ -156,6 +156,13 @@ assert.match(source, /\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: r
 assert.match(source, /@media \(max-width: 820px\)[\s\S]*?\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: 1fr/);
 
 const saveCredentialsSource = source.slice(source.indexOf("async function saveCredentials"), source.indexOf("async function refreshViewerImage"));
+assert.match(saveCredentialsSource, /const result = await window\.octopusBeak\.automation\.saveCredentials\(plan\.updates\)/);
+assert.match(
+  saveCredentialsSource,
+  /if \(!result\.saved\) \{[\s\S]*?credentialFileErrors =[\s\S]*?certificateFileValidationMessage\(result\.reason, false\),[\s\S]*?return;/,
+);
+assert.match(saveCredentialsSource, /catch \{[\s\S]*?actionError = \$t\.automation\.saveCredentialsFailed/);
+assert.doesNotMatch(saveCredentialsSource, /error instanceof Error \? error\.message/);
 assert.match(
   saveCredentialsSource,
   /if \(invalid\) \{[\s\S]*?credentialSearch = "";[\s\S]*?selectedCredentialGroupId = invalid\.id;[\s\S]*?await tick\(\);[\s\S]*?getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/,
@@ -215,6 +222,12 @@ assert.doesNotMatch(statementFieldsetSource, /\{#if statementSelectionError\}/);
 assert.match(saveCredentialsSource, /invalidDisplayGroup \? credentialGroupName\(invalidDisplayGroup\) : invalid\.label/);
 assert.match(source, /selectedCredentialGroup\.credentialFields as credentialField/);
 assert.match(source, /selectCertificateFile\(key\)/);
+assert.match(source, /invalidCredentialFileReasons\?\.\[key\]/);
+assert.match(source, /certificateFileValidationMessage\(storedFileError, true\)/);
+assert.match(
+  source,
+  /if \(reason === "invalid-extension"\) return \$t\.automation\.invalidCertificateExtension;/,
+);
 assert.match(source, /class="setup-guide"/);
 assert.match(source, /openSetupGuideLink\(selectedCredentialGroup\.id, guideLink\.id\)/);
 assert.doesNotMatch(
