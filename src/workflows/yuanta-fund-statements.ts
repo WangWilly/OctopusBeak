@@ -1735,8 +1735,8 @@ export default workflow("yuantaFundStatements", {
             "`.",
         );
         await pause(authSession);
-        const loginFrame = authPage.frame({ name: "main" });
-        if (!loginFrame || !(await loginFrame.locator("#gcode").inputValue()).trim()) {
+        const loginFrame = await waitForFrame(authPage, "main");
+        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
           throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
         }
         const loginButtonVisible =
