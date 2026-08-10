@@ -1,5 +1,35 @@
 export type AutomationTaskKind = "crawler" | "sync" | "import";
 
+export type AutomationLocalizedText = {
+  en: string;
+  "zh-TW": string;
+};
+
+export type AutomationCredentialField = {
+  key: string;
+  label: AutomationLocalizedText;
+  input: "text" | "password" | "certificate-file";
+};
+
+export type AutomationSetupGuideLink = {
+  id: string;
+  label: AutomationLocalizedText;
+  url: string;
+  englishUrl?: string;
+  allowedHosts: readonly string[];
+};
+
+export type AutomationSetupGuide = {
+  summary: AutomationLocalizedText;
+  requirements: readonly AutomationLocalizedText[];
+  steps: readonly AutomationLocalizedText[];
+  links: readonly AutomationSetupGuideLink[];
+  extra?: {
+    title: AutomationLocalizedText;
+    steps: readonly AutomationLocalizedText[];
+  };
+};
+
 export type AutomationExternalPrerequisite = {
   id: string;
   provider: string;
@@ -37,8 +67,12 @@ export type AutomationTaskSummary = {
 export type AutomationCredentialGroup = {
   id: string;
   label: string;
+  displayName: AutomationLocalizedText;
+  searchAliases: readonly string[];
   enabledKey: string;
   credentialKeys: readonly string[];
+  credentialFields: readonly AutomationCredentialField[];
+  setupGuide: AutomationSetupGuide;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];
 };

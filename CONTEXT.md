@@ -15,6 +15,14 @@ _Avoid_: Welcome screens, onboarding intro
 **Credential setup**:
 The act of enabling a credential source, entering its credentials, and choosing the statement types required before collection.
 
+**Sign-in details**:
+The user-facing name for the identifiers, passwords, and related values a person supplies so a supported source can authenticate. They remain on the person's device; the Traditional Chinese UI calls them 「登入資料」, while certificate files remain certificates rather than sign-in details.
+_Avoid_: Credentials, 憑證
+
+**Sign-in identifier**:
+A provider-specific, non-password value used to identify a person during authentication. Its user-facing name is defined by the supported source; current Taiwan bank and securities sources may identify it as a Taiwan ID number or online banking code, while future sources must not inherit that meaning automatically.
+_Avoid_: Generic user ID, credential, authentication secret
+
 **Statement selection**:
 The set of statement types chosen for an enabled credential source to collect.
 
@@ -65,6 +73,10 @@ _Avoid_: Local-only product, anonymous financial data
 **Authentication secret**:
 A login password, one-time code, session token, cookie, API key, credential answer, or equivalent material that can authenticate as the person. It is never exposed to a model or agent tool, even when other financial data is locally observable.
 _Avoid_: Financial account identifier, account data
+
+**Authentication certificate file**:
+A user-owned certificate file selected for a supported source's authentication flow. The application retains a reference to the original file without copying it, presents only its filename in ordinary UI, and treats its password separately as an authentication secret.
+_Avoid_: Sign-in detail, copied certificate, uploaded certificate
 
 **Financial context pack**:
 A broad, local view of the trusted financial overview supplied so an agent can understand the person's overall situation. The agent may use authorized tools to inspect any additional non-secret financial detail relevant to a new analytical angle; authentication secrets remain excluded.
@@ -141,6 +153,14 @@ _Avoid_: macOS user, all personal-finance users
 **Supported source**:
 A financial institution or service whose data-collection and import path has been verified for the current Beta. A planned or previously working integration is not a supported source.
 _Avoid_: Supported bank, available integration
+
+**Supported source name**:
+The formal user-facing name of a supported source. In the Traditional Chinese UI, a distinct localized name is followed by its English name in parentheses; brand names without a distinct translation remain unchanged.
+_Avoid_: Workflow label, provider code, integration ID
+
+**Source setup guide**:
+An always-expanded, source-specific section in credential setup that explains what sign-in details to prepare, the setup steps, and allowlisted official service links. Its copy and links ship with the application instead of loading remotely; detailed certificate-component or API instructions appear here as additional guidance rather than field-level hints.
+_Avoid_: Field hint, remote help content, generic learn-more link
 
 **Statement run summary**:
 A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome.

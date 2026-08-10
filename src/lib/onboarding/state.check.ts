@@ -71,13 +71,27 @@ const task = (
 const fubonGroup: CredentialGroupDto = {
   id: "fubon",
   label: "Fubon",
+  displayName: { en: "Taipei Fubon Bank", "zh-TW": "台北富邦銀行（Taipei Fubon Bank）" },
+  searchAliases: ["Fubon", "富邦"],
   enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
   credentialKeys: ["USER", "PASSWORD"],
+  credentialFields: [
+    { key: "USER", label: { en: "Taiwan ID number", "zh-TW": "台灣身分證字號" }, input: "text" },
+    { key: "PASSWORD", label: { en: "Online banking password", "zh-TW": "網路銀行密碼" }, input: "password" },
+  ],
+  setupGuide: {
+    summary: { en: "Prepare sign-in details.", "zh-TW": "準備登入資料。" },
+    requirements: [],
+    steps: [],
+    links: [],
+  },
   statementTypes: [{ id: "deposit" }],
   statementSelectionKey: "FUBON_TYPES",
   enabled: true,
   selectedStatementTypeIds: ["deposit"],
   statementSetupRequired: false,
+  storedCredentialFileNames: {},
+  invalidCredentialFileKeys: [],
 };
 
 const esunGroup: CredentialGroupDto = {

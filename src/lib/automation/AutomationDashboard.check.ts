@@ -210,7 +210,11 @@ assert.match(statementFieldsetSource, /aria-invalid=\{statementSelectionError/);
 assert.match(statementFieldsetSource, /id=\{`\$\{selectedCredentialGroup\.id\}-statement-error`\}/);
 assert.match(statementFieldsetSource, /aria-live="polite"/);
 assert.doesNotMatch(statementFieldsetSource, /\{#if statementSelectionError\}/);
-assert.match(saveCredentialsSource, /statementSelectionError = \$t\.automation\.selectOneStatementType\(invalid\.label\)/);
+assert.match(saveCredentialsSource, /invalidDisplayGroup \? credentialGroupName\(invalidDisplayGroup\) : invalid\.label/);
+assert.match(source, /selectedCredentialGroup\.credentialFields as credentialField/);
+assert.match(source, /selectCertificateFile\(key\)/);
+assert.match(source, /class="setup-guide"/);
+assert.match(source, /openSetupGuideLink\(selectedCredentialGroup\.id, guideLink\.id\)/);
 assert.doesNotMatch(
   saveCredentialsSource.slice(saveCredentialsSource.indexOf("if (invalid)"), saveCredentialsSource.indexOf("const updates")),
   /actionError = \$t\.automation\.selectOneStatementType/,
