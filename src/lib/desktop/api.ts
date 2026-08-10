@@ -19,8 +19,10 @@ import type {
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
-import type { VerificationInteractionMode } from "$lib/automation/human-assistance.ts";
-import type { HumanAssistanceContract } from "$lib/automation/human-assistance.ts";
+import type {
+  HumanAssistanceContract,
+  VerificationInteractionMode,
+} from "$lib/automation/human-assistance.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;

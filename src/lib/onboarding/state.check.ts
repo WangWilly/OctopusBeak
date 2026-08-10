@@ -747,8 +747,14 @@ test("interactive onboarding fields receive focus as soon as their target change
 test("verification screenshot exposes a clear keyboard focus path", () => {
   assert.match(
     automationDashboard,
-    /class="viewer-image"[\s\S]*?tabindex="-1"[\s\S]*?aria-label=\{\$t\.onboarding\.verificationViewerAria\}/,
+    /class="viewer-image-button"[\s\S]*?aria-label=\{\$t\.onboarding\.verificationViewerAria\}/,
   );
+  const viewerImageSource = automationDashboard.slice(
+    automationDashboard.indexOf('class="viewer-image"'),
+    automationDashboard.indexOf('class="viewer-expand-action"'),
+  );
+  assert.match(viewerImageSource, /alt=\{\$t\.automation\.pausedBrowser\}/);
+  assert.doesNotMatch(viewerImageSource, /aria-label=\{\$t\.onboarding\.verificationViewerAria\}/);
   assert.match(automationDashboard, /\.viewer-image:focus-visible/);
   assert.match(onboardingCoach, /activateOnboardingTarget\(target\)/);
   assert.match(
