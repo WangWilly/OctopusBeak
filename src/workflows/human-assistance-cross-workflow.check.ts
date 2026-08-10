@@ -64,12 +64,16 @@ test("inline verification stages re-check the declared field before continuing",
 });
 
 test("Yuanta Trade keeps checkbox and later challenge as separate declared stages", async () => {
-  const source = await readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8");
+  const [source, captchaSelectors] = await Promise.all([
+    readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/automation/yuanta-trade-captcha.ts", import.meta.url), "utf8"),
+  ]);
   assert.match(source, /yuanta-trade-captcha-checkbox/);
   assert.match(source, /yuanta-trade-captcha-challenge/);
   assert.match(source, /\.check-area/);
-  assert.match(source, /#modalYCaptchaV2, #captchaModal, \.captcha-modal/);
-  assert.match(source, /\.y-captcha-image:visible/);
+  assert.match(source, /from "\.\.\/lib\/automation\/yuanta-trade-captcha\.ts"/);
+  assert.match(captchaSelectors, /#modalYCaptchaV2, #captchaModal, \.captcha-modal/);
+  assert.match(captchaSelectors, /\.y-captcha-image:visible/);
   assert.match(source, /completion: \{ mode: "independent", targetIds: challengeTargets\.map/);
   assert.match(source, /maxChallengeRetries = 2/);
 });
