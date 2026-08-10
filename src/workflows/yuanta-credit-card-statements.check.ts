@@ -6,6 +6,9 @@ registerHooks({
     if (specifier === "./browser-interaction.js") {
       return nextResolve("./browser-interaction.ts", context);
     }
+    if (specifier === "./yuanta-statements.js") {
+      return nextResolve("./yuanta-statements.ts", context);
+    }
     return nextResolve(specifier, context);
   },
 });
