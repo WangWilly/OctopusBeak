@@ -72,6 +72,10 @@ for (const componentSource of componentSources) {
     componentSignInSource,
     /const captchaFrame = await waitForFrame\(authPage, "main"\);\s*await dismissYuantaBankNotice\(captchaFrame, 5_000\);[\s\S]*?await emitHumanAssistanceStage/,
   );
+  assert.match(
+    componentSignInSource,
+    /await pause\(authSession\);\s*const loginFrame = await waitForFrame\(authPage, "main"\);\s*if \(!\(await loginFrame\.locator\("#gcode"\)\.inputValue\(\)\)\.trim\(\)\)/,
+  );
 }
 
 const server = await createServer({

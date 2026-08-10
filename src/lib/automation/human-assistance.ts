@@ -180,9 +180,10 @@ export function createHumanAssistanceContractFrameParser(
   onContract: (contract: HumanAssistanceContractInput) => void,
 ) {
   let pending = "";
+  const decoder = new TextDecoder();
   return {
     push(chunk: string | Uint8Array) {
-      pending += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      pending += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? "";
       for (const line of lines) {
@@ -191,6 +192,7 @@ export function createHumanAssistanceContractFrameParser(
       }
     },
     flush() {
+      pending += decoder.decode();
       const contract = parseHumanAssistanceContractFrame(pending);
       pending = "";
       if (contract) onContract(contract);
