@@ -91,21 +91,6 @@ export function isInspectableTextTarget(target: InspectableTarget) {
   return target.tagName === "INPUT" && textInputTypes.has(target.type.toLowerCase());
 }
 
-export function selectInspectableTextTarget(
-  targets: InspectableTextTarget[],
-  point: ViewerPoint,
-) {
-  const textTargets = targets.filter(isInspectableTextTarget);
-  const containing = textTargets.find((target) => (
-    point.x >= target.rect.x &&
-    point.x <= target.rect.x + target.rect.width &&
-    point.y >= target.rect.y &&
-    point.y <= target.rect.y + target.rect.height
-  ));
-  if (containing) return containing;
-  return null;
-}
-
 export function viewerRectContainsPoint(rect: HumanVerificationRect, point: ViewerPoint) {
   return point.x >= rect.x &&
     point.x <= rect.x + rect.width &&
