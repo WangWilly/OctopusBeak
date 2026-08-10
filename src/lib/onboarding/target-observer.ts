@@ -26,9 +26,13 @@ export function activateOnboardingTarget(target: HTMLElement) {
     return;
   }
   if (action === "enter-credentials") {
-    if (target instanceof HTMLInputElement && target.value.trim()) {
-      target.dispatchEvent(new CustomEvent("onboardingadvance", { bubbles: true }));
+    if (target instanceof HTMLInputElement) {
+      if (target.value.trim()) {
+        target.dispatchEvent(new CustomEvent("onboardingadvance", { bubbles: true }));
+      }
+      return;
     }
+    if (target instanceof HTMLButtonElement) target.click();
     return;
   }
   if (action !== "choose-verification-control" && action !== "select-source") target.click();
