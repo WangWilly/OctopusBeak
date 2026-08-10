@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dismissYuantaBankNotice } from "./yuanta-statements.ts";
+import { registerHooks } from "node:module";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "./browser-interaction.js") {
+      return nextResolve("./browser-interaction.ts", context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const { dismissYuantaBankNotice } = await import("./yuanta-statements.ts");
 
 class DelayedVisibilityLocator {
   private readonly visibleAt: number;
