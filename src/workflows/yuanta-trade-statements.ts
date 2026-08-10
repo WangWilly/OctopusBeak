@@ -9,7 +9,18 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
+import {
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+} from "../lib/automation/yuanta-trade-captcha.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+
+export {
+  YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+};
 
 const TRADE_LOGIN_URL =
   "https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020";
@@ -17,13 +28,6 @@ const TRADE_LOGIN_URL =
 export function yuantaTradeCaptchaCheckbox(page: Page) {
   return page.locator(".check-area");
 }
-
-export const YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR =
-  "#modalYCaptchaV2, #captchaModal, .captcha-modal";
-export const YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR =
-  ".y-captcha-image:visible";
-export const YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR =
-  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]';
 
 export function yuantaTradeCaptchaModal(page: Page) {
   return page.locator(YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR).first();

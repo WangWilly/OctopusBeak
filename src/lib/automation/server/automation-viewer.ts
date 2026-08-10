@@ -6,7 +6,16 @@ import type {
   HumanVerificationTarget,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
+import {
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+} from "../yuanta-trade-captcha.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
+
+export {
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+};
 
 export type ViewerInput =
   | { type: "click"; x: number; y: number }
@@ -155,10 +164,6 @@ export function shouldCheckYuantaTradeCompletion(
 }
 
 export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
-export const YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR =
-  "#modalYCaptchaV2, #captchaModal, .captcha-modal";
-export const YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR =
-  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]';
 export const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 
 export const VIEWER_SCREENSHOT_OPTIONS = {

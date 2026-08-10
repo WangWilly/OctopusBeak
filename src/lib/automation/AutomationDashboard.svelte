@@ -1694,7 +1694,6 @@
                 alt={$t.automation.pausedBrowser}
                 draggable="false"
                 tabindex="-1"
-                aria-label={$t.onboarding.verificationViewerAria}
                 onload={(event) => {
                   const image = event.currentTarget as HTMLImageElement;
                   viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };

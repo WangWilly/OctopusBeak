@@ -24,6 +24,10 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
+import {
+  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as sharedChallengeSelector,
+  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR as sharedSubmitSelector,
+} from "../yuanta-trade-captcha.ts";
 
 assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
   type: "jpeg",
@@ -38,6 +42,8 @@ assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")),
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
+assert.equal(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR, sharedChallengeSelector);
+assert.equal(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR, sharedSubmitSelector);
 
 assert.deepEqual(
   normalizeViewerInput({ type: "click", x: 10.2, y: 20.8 }),
