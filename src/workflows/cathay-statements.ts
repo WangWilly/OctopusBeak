@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
+import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
-const BANK_ENTRY_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
 
@@ -82,7 +82,7 @@ export async function waitForStableLocatorBox(
     const box = await locator.boundingBox().catch(() => null);
     if (box && sameLocatorBox(previous, box)) {
       stableSamples += 1;
-      if (stableSamples >= 2) return box;
+      if (stableSamples >= 8) return box;
     } else {
       stableSamples = 0;
     }
@@ -365,7 +365,7 @@ async function fillLoginForm(
   const account = requireCredential(credentials, "cathay_account");
   const password = requireCredential(credentials, "cathay_password");
 
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
+  await navigateToCathayLoginForm(page);
   await dismissStartupAnnouncements(page);
 
   await page.locator("#CustID").fill(userId);
