@@ -194,9 +194,12 @@ async function executeAutomationTaskProcess(
   let statementSummary: StatementRunSummary | null = null;
   const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
-  const humanAssistancePath = execution.session
-    ? join("data", "automation", "human-assistance", `${execution.session}.jsonl`)
-    : `${execution.logPath}.human-assistance`;
+  const humanAssistancePath = join(
+    "data",
+    "automation",
+    "human-assistance",
+    `${execution.session ?? execution.run.taskRunId}.jsonl`,
+  );
   let humanAssistanceReadOffset = 0;
   let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
   const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
@@ -248,9 +251,9 @@ async function executeAutomationTaskProcess(
         }
       }
     };
-    humanAssistanceReadTimer = setInterval(readHumanAssistanceFile, 50);
     mkdirSync(dirname(humanAssistancePath), { recursive: true });
     rmSync(humanAssistancePath, { force: true });
+    humanAssistanceReadTimer = setInterval(readHumanAssistanceFile, 50);
     const onOutput = (chunk: Buffer) => {
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
