@@ -71,6 +71,8 @@
   let taskTooltipPosition = { left: 0, top: 0 };
   let groupEnabled: Record<string, boolean> = {};
   let credentialDrafts: Record<string, string> = {};
+  let credentialFileDraftNames: Record<string, string> = {};
+  let credentialFileErrors: Record<string, string> = {};
   let statementSelectionDrafts: Record<string, string[]> = {};
   let statementSelectionConfirmed = false;
   let onboardingCredentialTargetKey: string | null = null;
@@ -155,9 +157,16 @@
     automation.tasks,
   );
   $: revealOnboardingTask(onboardingDisclosure);
-  $: visibleCredentialGroups = credentialGroups.filter((group) =>
-    group.label.toLowerCase().includes(credentialSearch.trim().toLowerCase()),
-  );
+  $: visibleCredentialGroups = credentialGroups.filter((group) => {
+    const term = credentialSearch.trim().toLowerCase();
+    if (!term) return true;
+    return [
+      group.label,
+      group.displayName.en,
+      group.displayName["zh-TW"],
+      ...group.searchAliases,
+    ].join(" ").toLowerCase().includes(term);
+  });
   $: selectedCredentialGroup =
     visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId)
     ?? (!onboardingSourceSelection ? visibleCredentialGroups[0] : undefined);
@@ -295,19 +304,18 @@
     return task.status !== "needs_setup" && task.credentialKeys.every((key) => automation.credentials[key]);
   }
 
-  function credentialLabel(key: string, dictionary: Translation) {
-    const words = dictionary.automation.credentialWords as Record<string, string>;
-    return key
-      .replace(/^LIBRETTO_CLOUD_/, "")
-      .replace(/_/g, " ")
-      .toLowerCase()
-      .split(" ")
-      .map((word) => words[word] ?? word)
-      .join(" ");
+  function localizedText(value: { en: string; "zh-TW": string }) {
+    return value[$locale];
+  }
+
+  function credentialGroupName(group: CredentialGroupDto) {
+    return localizedText(group.displayName);
   }
 
   function resetCredentialChanges() {
     credentialDrafts = {};
+    credentialFileDraftNames = {};
+    credentialFileErrors = {};
     onboardingCredentialTargetKey = null;
     statementSelectionConfirmed = false;
     statementSelectionError = "";
@@ -397,6 +405,34 @@
       ...credentialDrafts,
       [key]: (event.currentTarget as HTMLInputElement).value,
     };
+  }
+
+  async function selectCertificateFile(key: string) {
+    try {
+      actionError = "";
+      credentialFileErrors = { ...credentialFileErrors, [key]: "" };
+      const result = await window.octopusBeak.automation.selectCertificateFile($locale);
+      if (result.cancelled) return;
+      if ("error" in result) {
+        credentialFileErrors = {
+          ...credentialFileErrors,
+          [key]: result.error === "invalid-extension"
+            ? $t.automation.invalidCertificateExtension
+            : $t.automation.unreadableCertificateFile,
+        };
+        return;
+      }
+      credentialDrafts = { ...credentialDrafts, [key]: result.path };
+      credentialFileDraftNames = { ...credentialFileDraftNames, [key]: result.filename };
+      if (onboardingSourceSelection && key === onboardingCredentialTargetKey) {
+        await advanceOnboardingCredential();
+      }
+    } catch (error) {
+      credentialFileErrors = {
+        ...credentialFileErrors,
+        [key]: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   function handleOnboardingCredentialKeydown(key: string, event: KeyboardEvent) {
@@ -489,6 +525,15 @@
     try {
       actionError = "";
       await window.octopusBeak.automation.openExternalPrerequisite(prerequisiteId);
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function openSetupGuideLink(groupId: string, linkId: string) {
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.openSetupGuideLink(groupId, linkId, $locale);
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -638,7 +683,10 @@
       credentialSearch = "";
       selectedCredentialGroupId = invalid.id;
       actionError = "";
-      statementSelectionError = $t.automation.selectOneStatementType(invalid.label);
+      const invalidDisplayGroup = credentialGroups.find((group) => group.id === invalid.id);
+      statementSelectionError = $t.automation.selectOneStatementType(
+        invalidDisplayGroup ? credentialGroupName(invalidDisplayGroup) : invalid.label,
+      );
       await tick();
       document.getElementById(`${invalid.id}-statement-selection`)?.focus();
       return;
@@ -1457,7 +1505,7 @@
                 data-onboarding-group={group.id}
                 onclick={() => selectCredentialGroup(group.id)}
               >
-                <strong>{group.label}</strong>
+                <strong>{credentialGroupName(group)}</strong>
                 <span>{credentialGroupStatuses[group.id]}</span>
               </button>
             {/each}
@@ -1466,7 +1514,7 @@
         {#if selectedCredentialGroup}
           <section class="credential-body" aria-labelledby={`${selectedCredentialGroup.id}-credentials-title`}>
             <div class="credential-section-head">
-              <h3 id={`${selectedCredentialGroup.id}-credentials-title`}>{selectedCredentialGroup.label}</h3>
+              <h3 id={`${selectedCredentialGroup.id}-credentials-title`}>{credentialGroupName(selectedCredentialGroup)}</h3>
               <button
                 class="switch credential-switch"
                 class:dirty={(groupEnabled[selectedCredentialGroup.id] !== false) !== selectedCredentialGroup.enabled}
@@ -1483,25 +1531,54 @@
               </button>
             </div>
             <div class="credential-grid">
-              {#each selectedCredentialGroup.credentialKeys as key}
-                <label class="credential-field">
-                  <span>{credentialLabel(key, $t)}</span>
-                  <input
-                    id={`credential-input-${key}`}
-                    name={key}
-                    type={key.includes("PASSWORD") || key.includes("SECRET") || key.includes("KEY") ? "password" : "text"}
-                    value={credentialDrafts[key] ?? ""}
-                    class:dirty={Boolean(credentialDrafts[key]?.trim())}
-                    data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
-                      ? "automation-credentials"
-                      : undefined}
-                    data-onboarding-action="enter-credentials"
-                    oninput={(event) => updateCredentialDraft(key, event)}
-                    onkeydown={(event) => handleOnboardingCredentialKeydown(key, event)}
-                    placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
-                    autocomplete="off"
-                  />
-                </label>
+              {#each selectedCredentialGroup.credentialFields as credentialField}
+                {@const key = credentialField.key}
+                {#if credentialField.input === "certificate-file"}
+                  {@const selectedFileName = credentialFileDraftNames[key] ?? selectedCredentialGroup.storedCredentialFileNames[key]}
+                  <div class="credential-field certificate-file-field">
+                    <span>{localizedText(credentialField.label)}</span>
+                    <div class:dirty={Boolean(credentialDrafts[key])} class="certificate-file-control">
+                      {#if selectedFileName}
+                        <p>{$t.automation.selectedCertificateFile(selectedFileName)}</p>
+                      {/if}
+                      <button
+                        id={`credential-input-${key}`}
+                        class="button secondary"
+                        type="button"
+                        data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
+                          ? "automation-credentials"
+                          : undefined}
+                        data-onboarding-action="enter-credentials"
+                        onclick={() => void selectCertificateFile(key)}
+                      >{selectedFileName ? $t.automation.chooseAnotherCertificateFile : $t.automation.chooseCertificateFile}</button>
+                    </div>
+                    {#if !credentialDrafts[key] && selectedCredentialGroup.invalidCredentialFileKeys.includes(key)}
+                      <p class="credential-error file-error">{$t.automation.missingCertificateFile}</p>
+                    {/if}
+                    {#if credentialFileErrors[key]}
+                      <p class="credential-error file-error" aria-live="polite">{credentialFileErrors[key]}</p>
+                    {/if}
+                  </div>
+                {:else}
+                  <label class="credential-field">
+                    <span>{localizedText(credentialField.label)}</span>
+                    <input
+                      id={`credential-input-${key}`}
+                      name={key}
+                      type={credentialField.input}
+                      value={credentialDrafts[key] ?? ""}
+                      class:dirty={Boolean(credentialDrafts[key]?.trim())}
+                      data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
+                        ? "automation-credentials"
+                        : undefined}
+                      data-onboarding-action="enter-credentials"
+                      oninput={(event) => updateCredentialDraft(key, event)}
+                      onkeydown={(event) => handleOnboardingCredentialKeydown(key, event)}
+                      placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
+                      autocomplete="off"
+                    />
+                  </label>
+                {/if}
               {/each}
             </div>
             {#if selectedCredentialGroup.statementTypes?.length}
@@ -1520,7 +1597,7 @@
                 <legend>{$t.automation.statementsToCollect}</legend>
                 <div class="statement-selection-head">
                   <p id={`${selectedCredentialGroup.id}-statement-help`}>
-                    {$t.automation.statementSelectionHelp(selectedCredentialGroup.label)}
+                    {$t.automation.statementSelectionHelp(credentialGroupName(selectedCredentialGroup))}
                   </p>
                   <button type="button" class="text-action" onclick={() => selectAllStatementTypes(selectedCredentialGroup)}>
                     {$t.automation.selectAllStatements}
@@ -1547,6 +1624,39 @@
                 >{statementSelectionError}</p>
               </fieldset>
             {/if}
+            <section class="setup-guide" aria-labelledby={`${selectedCredentialGroup.id}-setup-guide-title`}>
+              <h4 id={`${selectedCredentialGroup.id}-setup-guide-title`}>{$t.automation.setupGuide}</h4>
+              <p>{localizedText(selectedCredentialGroup.setupGuide.summary)}</p>
+              <h5>{$t.automation.whatYouNeed}</h5>
+              <ul>
+                {#each selectedCredentialGroup.setupGuide.requirements as requirement}
+                  <li>{localizedText(requirement)}</li>
+                {/each}
+              </ul>
+              <h5>{$t.automation.setupSteps}</h5>
+              <ol>
+                {#each selectedCredentialGroup.setupGuide.steps as step}
+                  <li>{localizedText(step)}</li>
+                {/each}
+              </ol>
+              <div class="setup-guide-links" aria-label={$t.automation.officialServices}>
+                {#each selectedCredentialGroup.setupGuide.links as guideLink}
+                  <button class="button secondary" type="button" onclick={() => void openSetupGuideLink(selectedCredentialGroup.id, guideLink.id)}>
+                    {localizedText(guideLink.label)}
+                  </button>
+                {/each}
+              </div>
+              {#if selectedCredentialGroup.setupGuide.extra}
+                <div class="setup-guide-extra">
+                  <h5>{localizedText(selectedCredentialGroup.setupGuide.extra.title)}</h5>
+                  <ol>
+                    {#each selectedCredentialGroup.setupGuide.extra.steps as step}
+                      <li>{localizedText(step)}</li>
+                    {/each}
+                  </ol>
+                </div>
+              {/if}
+            </section>
             {#if actionError}<p class="credential-error" aria-live="polite">{actionError}</p>{/if}
           </section>
         {/if}
@@ -2812,6 +2922,7 @@
   }
 
   .credential-field {
+    min-width: 0;
     display: grid;
     gap: var(--space-2);
   }
@@ -2842,6 +2953,45 @@
   .credential-field input.dirty {
     border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
     background: var(--accent-soft);
+  }
+
+  .certificate-file-control {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .certificate-file-control.dirty {
+    border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
+    background: var(--accent-soft);
+  }
+
+  .certificate-file-control p {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--fg);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .certificate-file-control .button {
+    min-height: 34px;
+    flex: 0 0 auto;
+  }
+
+  .file-error {
+    margin-top: 0;
   }
 
   .statement-selection {
@@ -2944,6 +3094,65 @@
 
   .statement-selection-error:empty {
     margin: 0;
+  }
+
+  .setup-guide {
+    margin-top: var(--space-6);
+    padding: var(--space-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+  }
+
+  .setup-guide h4,
+  .setup-guide h5,
+  .setup-guide p,
+  .setup-guide ul,
+  .setup-guide ol {
+    margin-top: 0;
+  }
+
+  .setup-guide h4 {
+    margin-bottom: var(--space-2);
+    font-size: 16px;
+  }
+
+  .setup-guide h5 {
+    margin-bottom: var(--space-2);
+    font-size: 13px;
+  }
+
+  .setup-guide p,
+  .setup-guide li {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .setup-guide ul,
+  .setup-guide ol {
+    margin-bottom: var(--space-4);
+    padding-left: 20px;
+  }
+
+  .setup-guide-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .setup-guide-links .button {
+    min-height: 36px;
+  }
+
+  .setup-guide-extra {
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border);
+  }
+
+  .setup-guide-extra ol {
+    margin-bottom: 0;
   }
 
   .human-viewer-modal {

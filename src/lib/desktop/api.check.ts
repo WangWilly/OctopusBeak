@@ -12,6 +12,8 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "spending:updateTransactionOverride",
   "automation:load",
   "automation:saveCredentials",
+  "automation:selectCertificateFile",
+  "automation:openSetupGuideLink",
   "automation:run",
   "automation:runMany",
   "automation:resume",

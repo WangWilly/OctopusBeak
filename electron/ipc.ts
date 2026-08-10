@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, shell } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
 import {
   createDataIssueIpcHandlers,
 } from "../src/lib/desktop/api.ts";
@@ -10,9 +10,14 @@ import {
   automationRunMany,
   automationRunHistory,
   automationSaveCredentials,
+  automationSetupGuideLink,
   externalPrerequisiteById,
   loadAutomationDesktopModel,
 } from "../src/lib/automation/server/desktop-api.ts";
+import {
+  CERTIFICATE_FILE_EXTENSIONS,
+  validateCertificateFilePath,
+} from "../src/lib/automation/server/credential-file.ts";
 import {
   captureSessionScreenshot,
   inspectHumanAssistanceCompletion,
@@ -114,6 +119,32 @@ export function registerOctopusBeakIpc({
     "automation:saveCredentials",
     (_event, updates: Record<string, string>) => automationSaveCredentials(updates),
   );
+  ipcMain.handle("automation:selectCertificateFile", async (event, locale: "en" | "zh-TW") => {
+    const chinese = locale === "zh-TW";
+    const options: OpenDialogOptions = {
+      title: chinese ? "選擇憑證檔案" : "Choose certificate file",
+      properties: ["openFile"],
+      filters: [{ name: chinese ? "憑證檔案" : "Certificate files", extensions: [...CERTIFICATE_FILE_EXTENSIONS] }],
+    };
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return { cancelled: true as const };
+    const validation = validateCertificateFilePath(result.filePaths[0]);
+    if (!validation.valid) return { cancelled: false as const, error: validation.reason };
+    return {
+      cancelled: false as const,
+      path: validation.path,
+      filename: validation.filename,
+    };
+  });
+  ipcMain.handle("automation:openSetupGuideLink", async (_event, groupId: string, linkId: string, locale: "en" | "zh-TW") => {
+    const guideLink = automationSetupGuideLink(groupId, linkId, locale);
+    if (!guideLink) throw new Error("Unknown or unsafe setup guide link.");
+    await shell.openExternal(guideLink.url);
+    return { ok: true as const };
+  });
   ipcMain.handle("automation:run", (_event, taskId: string) => automationRun(taskId));
   ipcMain.handle("automation:runMany", (_event, taskIds: string[]) => automationRunMany(taskIds));
   ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));

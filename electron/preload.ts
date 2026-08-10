@@ -34,6 +34,8 @@ const api: OctopusBeakApi = {
   automation: {
     load: () => ipcRenderer.invoke("automation:load"),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
+    selectCertificateFile: (locale) => ipcRenderer.invoke("automation:selectCertificateFile", locale),
+    openSetupGuideLink: (groupId, linkId, locale) => ipcRenderer.invoke("automation:openSetupGuideLink", groupId, linkId, locale),
     run: (taskId) => ipcRenderer.invoke("automation:run", taskId),
     runMany: (taskIds) => ipcRenderer.invoke("automation:runMany", taskIds),
     resume: (taskId) => ipcRenderer.invoke("automation:resume", taskId),

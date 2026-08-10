@@ -28,7 +28,14 @@ export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
   selectedStatementTypeIds: readonly string[];
   statementSetupRequired: boolean;
+  storedCredentialFileNames: Readonly<Record<string, string>>;
+  invalidCredentialFileKeys: readonly string[];
 };
+
+export type CertificateFileSelectionResult =
+  | { cancelled: true }
+  | { cancelled: false; path: string; filename: string }
+  | { cancelled: false; error: "invalid-extension" | "missing-or-unreadable" };
 
 export type AutomationDesktopModel = {
   automation: AutomationPageModel;
@@ -111,6 +118,8 @@ export type OctopusBeakApi = {
   automation: {
     load(): Promise<AutomationDesktopModel>;
     saveCredentials(updates: Record<string, string>): Promise<{ saved: true }>;
+    selectCertificateFile(locale: "en" | "zh-TW"): Promise<CertificateFileSelectionResult>;
+    openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string }>;
     runMany(taskIds: string[]): Promise<{ started: string[] }>;
     resume(taskId: string): Promise<{ resumed: string }>;
@@ -146,6 +155,8 @@ export const octopusBeakApiChannels = [
   "spending:updateTransactionOverride",
   "automation:load",
   "automation:saveCredentials",
+  "automation:selectCertificateFile",
+  "automation:openSetupGuideLink",
   "automation:run",
   "automation:runMany",
   "automation:resume",
