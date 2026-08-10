@@ -79,8 +79,18 @@ const fubonGroup: CredentialGroupDto = {
   enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
   credentialKeys: ["USER", "PASSWORD"],
   credentialFields: [
-    { key: "USER", label: { en: "Taiwan ID number", "zh-TW": "台灣身分證字號" }, input: "text" },
-    { key: "PASSWORD", label: { en: "Online banking password", "zh-TW": "網路銀行密碼" }, input: "password" },
+    {
+      key: "USER",
+      label: { en: "Taiwan ID number", "zh-TW": "台灣身分證字號" },
+      input: "text",
+      redaction: "partial",
+    },
+    {
+      key: "PASSWORD",
+      label: { en: "Online banking password", "zh-TW": "網路銀行密碼" },
+      input: "password",
+      redaction: "none",
+    },
   ],
   setupGuide: {
     summary: { en: "Prepare sign-in details.", "zh-TW": "準備登入資料。" },
