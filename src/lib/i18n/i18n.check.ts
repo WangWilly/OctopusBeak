@@ -10,6 +10,18 @@ assert.equal(localeLabels.en, "English");
 assert.equal(localeLabels["zh-TW"], "繁體中文");
 assert.equal(translations.en.settings.title, "Settings");
 assert.equal(translations["zh-TW"].settings.title, "設定");
+assert.equal(
+  translations.en.automation.discardCredentialChanges,
+  "Discard unsaved changes to sign-in details?",
+);
+assert.equal(
+  translations.en.automation.saveCredentialsFailed,
+  "Sign-in details couldn’t be saved. Try again.",
+);
+assert.equal(
+  translations["zh-TW"].automation.saveCredentialsFailed,
+  "無法儲存登入資料，請再試一次。",
+);
 assert.equal(translations.en.settings.displaySize, "Display size");
 assert.equal(translations["zh-TW"].settings.displaySize, "顯示大小");
 assert.equal(translations.en.settings.languageDescription, "Choose the language used by OctopusBeak.");

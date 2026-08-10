@@ -31,6 +31,14 @@ test("certificate files must be readable absolute .pfx or .p12 files", () => {
     });
     assert.deepEqual(validateCertificateFilePath("relative.pfx"), {
       valid: false,
+      reason: "missing-or-unreadable",
+    });
+    assert.deepEqual(validateCertificateFilePath("relative.P12"), {
+      valid: false,
+      reason: "missing-or-unreadable",
+    });
+    assert.deepEqual(validateCertificateFilePath("relative.txt"), {
+      valid: false,
       reason: "invalid-extension",
     });
   } finally {

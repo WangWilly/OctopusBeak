@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { displayScaleZoomFactor, octopusBeakApiChannels } from "./api.ts";
+import {
+  displayScaleZoomFactor,
+  octopusBeakApiChannels,
+  type AutomationCredentialSaveResult,
+} from "./api.ts";
 
 assert.deepEqual([...octopusBeakApiChannels], [
   "settings:load",
@@ -54,6 +58,14 @@ const displayApi: OctopusBeakApi["display"] = {
   },
 };
 displayApi.setScale(100);
+
+const invalidCertificateSave: AutomationCredentialSaveResult = {
+  saved: false,
+  error: "invalid-certificate-file",
+  credentialKey: "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
+  reason: "invalid-extension",
+};
+assert.equal(invalidCertificateSave.saved, false);
 
 assert.equal(displayScaleZoomFactor(75), 0.75);
 assert.equal(displayScaleZoomFactor(100), 1);
