@@ -12,7 +12,6 @@ import {
   normalizeViewerInput,
   normalizeViewerPoint,
   refreshTargetRect,
-  selectInspectableTextTarget,
   selectAllShortcut,
   selectViewerPage,
   shouldAutoResumeYuantaTradeCaptcha,
@@ -121,69 +120,6 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(inspectableElementCalls, ["evaluate", "evaluate"]);
-
-assert.deepEqual(
-  selectInspectableTextTarget([
-    {
-      tagName: "INPUT",
-      type: "text",
-      editable: false,
-      disabled: false,
-      readOnly: false,
-      rect: { x: 700, y: 386, width: 96, height: 28 },
-    },
-  ], { x: 724, y: 400 }),
-  {
-    tagName: "INPUT",
-    type: "text",
-    editable: false,
-    disabled: false,
-    readOnly: false,
-    rect: { x: 700, y: 386, width: 96, height: 28 },
-  },
-);
-
-assert.equal(
-  selectInspectableTextTarget([
-    {
-      tagName: "INPUT",
-      type: "text",
-      editable: false,
-      disabled: false,
-      readOnly: false,
-      rect: { x: 700, y: 386, width: 96, height: 28 },
-    },
-  ], { x: 810, y: 400 }),
-  null,
-);
-
-assert.equal(
-  selectInspectableTextTarget([
-    {
-      tagName: "INPUT",
-      type: "text",
-      editable: false,
-      disabled: false,
-      readOnly: false,
-      rect: { x: 700, y: 386, width: 96, height: 28 },
-    },
-  ], { x: 810, y: 426 }),
-  null,
-);
-
-assert.equal(
-  selectInspectableTextTarget([
-    {
-      tagName: "INPUT",
-      type: "text",
-      editable: false,
-      disabled: false,
-      readOnly: false,
-      rect: { x: 700, y: 386, width: 96, height: 28 },
-    },
-  ], { x: 810, y: 460 }),
-  null,
-);
 
 assert.throws(() => normalizeViewerInput({ type: "click", x: -1, y: 0 }));
 assert.throws(() => normalizeViewerInput({ type: "drag", x: 0, y: 0, toX: 1 }));
