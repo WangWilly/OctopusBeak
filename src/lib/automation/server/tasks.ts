@@ -1,5 +1,6 @@
 import type {
   AutomationCredentialGroup,
+  AutomationCredentialRedaction,
   AutomationExternalPrerequisite,
   AutomationTaskKind,
   AutomationTaskSummary,
@@ -46,7 +47,8 @@ const field = (
   en: string,
   zh: string,
   input: "text" | "password" | "certificate-file" = "text",
-) => ({ key, label: localized(en, zh), input });
+  redaction: AutomationCredentialRedaction = "none",
+) => ({ key, label: localized(en, zh), input, redaction });
 
 const link = (
   id: string,
@@ -72,8 +74,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Taipei Fubon Bank", "台北富邦銀行（Taipei Fubon Bank）"),
     searchAliases: ["Fubon", "富邦", "台北富邦"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_FUBON_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_FUBON_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_FUBON_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_FUBON_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_FUBON_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -88,8 +90,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("E.SUN Bank", "玉山銀行（E.SUN Bank）"),
     searchAliases: ["ESun", "E.SUN", "玉山"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_ESUN_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_ESUN_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_ESUN_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_ESUN_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_ESUN_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -104,8 +106,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Yuanta Bank", "元大銀行（Yuanta Bank）"),
     searchAliases: ["Yuanta", "元大銀行"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_YUANTA_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_YUANTA_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_YUANTA_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_YUANTA_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_YUANTA_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -120,7 +122,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Yuanta Securities", "元大證券（Yuanta Securities）"),
     searchAliases: ["Yuanta Trade", "Yuanta Securities", "元大證券"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID", "Taiwan ID number", "台灣身分證字號"),
+      field("LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
       field("LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
       field("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH", "Certificate file", "憑證檔案", "certificate-file"),
       field("LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD", "Certificate password", "憑證密碼", "password"),
@@ -141,8 +143,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Cathay United Bank", "國泰世華銀行（Cathay United Bank）"),
     searchAliases: ["Cathay", "國泰", "國泰世華"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_CATHAY_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_CATHAY_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_CATHAY_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_CATHAY_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_CATHAY_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -157,8 +159,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Hua Nan Bank", "華南銀行（Hua Nan Bank）"),
     searchAliases: ["HNCB", "Hua Nan", "華南"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_HNCB_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_HNCB_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_HNCB_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_HNCB_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_HNCB_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -173,8 +175,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("CTBC Bank", "中國信託銀行（CTBC Bank）"),
     searchAliases: ["CTBC", "中國信託", "中信"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_CTBC_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_CTBC_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_CTBC_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_CTBC_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_CTBC_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -189,8 +191,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Chunghwa Post", "中華郵政（Chunghwa Post）"),
     searchAliases: ["Post Office", "iPost", "郵局", "中華郵政"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_POST_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_POST_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_POST_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_POST_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_POST_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -205,8 +207,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("Bank SinoPac", "永豐銀行（Bank SinoPac）"),
     searchAliases: ["SinoPac", "MMA", "永豐"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_SINOPAC_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_SINOPAC_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_SINOPAC_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_SINOPAC_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_SINOPAC_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {
@@ -221,8 +223,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     displayName: localized("LINE Bank", "LINE Bank"),
     searchAliases: ["LINE Bank", "連線銀行"],
     credentialFields: [
-      field("LIBRETTO_CLOUD_LINEBANK_USER_ID", "Taiwan ID number", "台灣身分證字號"),
-      field("LIBRETTO_CLOUD_LINEBANK_ACCOUNT", "Online banking code", "網路銀行代碼"),
+      field("LIBRETTO_CLOUD_LINEBANK_USER_ID", "Taiwan ID number", "台灣身分證字號", "text", "partial"),
+      field("LIBRETTO_CLOUD_LINEBANK_ACCOUNT", "Online banking code", "網路銀行代碼", "password", "full"),
       field("LIBRETTO_CLOUD_LINEBANK_PASSWORD", "Online banking password", "網路銀行密碼", "password"),
     ],
     setupGuide: {

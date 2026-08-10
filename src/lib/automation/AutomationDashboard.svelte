@@ -18,12 +18,14 @@
     buildCredentialSetupPlan,
     firstInvalidCredentialGroup,
   } from "$lib/automation/credential-setup.ts";
+  import { credentialInputValue } from "$lib/automation/credential-redaction.ts";
   import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
+    AutomationCredentialRedaction,
     AutomationTaskHistoryRow,
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
@@ -73,6 +75,7 @@
   let credentialDrafts: Record<string, string> = {};
   let credentialFileDraftNames: Record<string, string> = {};
   let credentialFileErrors: Record<string, string> = {};
+  let focusedCredentialKey: string | null = null;
   let statementSelectionDrafts: Record<string, string[]> = {};
   let statementSelectionConfirmed = false;
   let onboardingCredentialTargetKey: string | null = null;
@@ -316,6 +319,7 @@
     credentialDrafts = {};
     credentialFileDraftNames = {};
     credentialFileErrors = {};
+    focusedCredentialKey = null;
     onboardingCredentialTargetKey = null;
     statementSelectionConfirmed = false;
     statementSelectionError = "";
@@ -405,6 +409,27 @@
       ...credentialDrafts,
       [key]: (event.currentTarget as HTMLInputElement).value,
     };
+  }
+
+  function focusCredentialInput(
+    key: string,
+    redaction: AutomationCredentialRedaction,
+    event: FocusEvent,
+  ) {
+    focusedCredentialKey = key;
+    const input = event.currentTarget as HTMLInputElement;
+    input.value = credentialInputValue(credentialDrafts[key] ?? "", redaction, true);
+  }
+
+  function blurCredentialInput(
+    key: string,
+    redaction: AutomationCredentialRedaction,
+    event: FocusEvent,
+  ) {
+    if (focusedCredentialKey !== key) return;
+    focusedCredentialKey = null;
+    const input = event.currentTarget as HTMLInputElement;
+    input.value = credentialInputValue(credentialDrafts[key] ?? "", redaction, false);
   }
 
   async function selectCertificateFile(key: string) {
@@ -1566,12 +1591,18 @@
                       id={`credential-input-${key}`}
                       name={key}
                       type={credentialField.input}
-                      value={credentialDrafts[key] ?? ""}
+                      value={credentialInputValue(
+                        credentialDrafts[key] ?? "",
+                        credentialField.redaction,
+                        focusedCredentialKey === key,
+                      )}
                       class:dirty={Boolean(credentialDrafts[key]?.trim())}
                       data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
                         ? "automation-credentials"
                         : undefined}
                       data-onboarding-action="enter-credentials"
+                      onfocus={(event) => focusCredentialInput(key, credentialField.redaction, event)}
+                      onblur={(event) => blurCredentialInput(key, credentialField.redaction, event)}
                       oninput={(event) => updateCredentialDraft(key, event)}
                       onkeydown={(event) => handleOnboardingCredentialKeydown(key, event)}
                       placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}

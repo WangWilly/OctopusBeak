@@ -221,3 +221,19 @@ assert.doesNotMatch(
   saveCredentialsSource.slice(saveCredentialsSource.indexOf("if (invalid)"), saveCredentialsSource.indexOf("const updates")),
   /actionError = \$t\.automation\.selectOneStatementType/,
 );
+
+assert.match(source, /import \{ credentialInputValue \} from "\$lib\/automation\/credential-redaction\.ts"/);
+assert.match(source, /let focusedCredentialKey: string \| null = null/);
+const credentialFocusSource = source.slice(
+  source.indexOf("function focusCredentialInput"),
+  source.indexOf("async function selectCertificateFile"),
+);
+assert.match(credentialFocusSource, /focusedCredentialKey = key/);
+assert.match(credentialFocusSource, /credentialInputValue\(credentialDrafts\[key\] \?\? "", redaction, true\)/);
+assert.match(credentialFocusSource, /credentialInputValue\(credentialDrafts\[key\] \?\? "", redaction, false\)/);
+assert.match(source, /value=\{credentialInputValue\([\s]*credentialDrafts\[key\] \?\? "",[\s]*credentialField\.redaction,[\s]*focusedCredentialKey === key,[\s]*\)\}/);
+assert.match(source, /onfocus=\{\(event\) => focusCredentialInput\(key, credentialField\.redaction, event\)\}/);
+assert.match(source, /onblur=\{\(event\) => blurCredentialInput\(key, credentialField\.redaction, event\)\}/);
+assert.match(source, /\[key\]: \(event\.currentTarget as HTMLInputElement\)\.value/);
+assert.match(saveCredentialsSource, /credentialDrafts,/);
+assert.doesNotMatch(saveCredentialsSource, /credentialInputValue/);
