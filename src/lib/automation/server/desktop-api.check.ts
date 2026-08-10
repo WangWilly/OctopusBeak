@@ -60,6 +60,11 @@ try {
   }
 
   const model = api.loadAutomationDesktopModel(dir);
+  assert.equal(
+    api.automationSetupGuideLink("maicoin", "api-guide", "en")?.url,
+    "https://campaign.maicoin.com/en/api",
+  );
+  assert.equal(api.automationSetupGuideLink("maicoin", "missing", "en"), null);
   const fubonGroup = model.credentialGroups.find((group) => group.id === "fubon");
   assert.equal(fubonGroup?.enabled, true);
   assert.deepEqual(fubonGroup?.selectedStatementTypeIds, []);

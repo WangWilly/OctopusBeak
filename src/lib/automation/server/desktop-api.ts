@@ -40,11 +40,18 @@ import {
   todayTaskRunIds,
 } from "./store.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
+import {
+  certificateFilename,
+  validateCertificateFilePath,
+} from "./credential-file.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
 import type { HumanAssistanceCompletion } from "../human-assistance.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
+const certificateFileCredentialKeys = new Set([
+  "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
+]);
 
 function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
   return activeTaskPrerequisiteNotices(db).flatMap((notice) => {
@@ -56,20 +63,35 @@ function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
   });
 }
 
-function currentCredentialStatus() {
+function currentCredentialState() {
   const settings = readAutomationSettings();
   const credentials = readAutomationCredentialsFile();
   const status = credentialStatusFromValues(credentials, AUTOMATION_CREDENTIAL_KEYS);
+  const fileNames: Record<string, string> = {};
+  const invalidFileKeys: string[] = [];
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
-    status[key] = status[key] || Boolean(settings[key]) || Boolean(process.env[key]?.trim());
+    const settingValue = typeof settings[key] === "string" ? settings[key].trim() : "";
+    const storedValue = credentials[key]?.trim()
+      || settingValue
+      || process.env[key]?.trim()
+      || "";
+    if (certificateFileCredentialKeys.has(key)) {
+      if (storedValue) fileNames[key] = certificateFilename(storedValue);
+      const validation = storedValue ? validateCertificateFilePath(storedValue) : null;
+      status[key] = validation?.valid === true;
+      if (storedValue && validation?.valid === false) invalidFileKeys.push(key);
+      continue;
+    }
+    status[key] = Boolean(storedValue);
   }
   for (const key of optionalCredentialKeys) status[key] = true;
-  return status;
+  return { status, fileNames, invalidFileKeys };
 }
 
 export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger"): AutomationDesktopModel {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
+  const credentialState = currentCredentialState();
   const db = openLedgerDatabase(ledgerDir);
   try {
     const activeTaskIds = activeAutomationTaskIds();
@@ -85,7 +107,14 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
       const selection = isStatementSelectionGroup(group)
         ? selectStatementTypes(group, selectionSettings, "display")
         : { selectedIds: [], needsSetup: false };
-      return { ...group, enabled, selectedStatementTypeIds: selection.selectedIds, statementSetupRequired: selection.needsSetup };
+      return {
+        ...group,
+        enabled,
+        selectedStatementTypeIds: selection.selectedIds,
+        statementSetupRequired: selection.needsSetup,
+        storedCredentialFileNames: credentialState.fileNames,
+        invalidCredentialFileKeys: credentialState.invalidFileKeys,
+      };
     });
     return {
       automation: buildAutomationPageModel({
@@ -96,7 +125,7 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
           endUtc: range.endUtc,
         }),
         activeTaskIds,
-        credentials: currentCredentialStatus(),
+        credentials: credentialState.status,
         importGate,
         setupRequiredGroupIds: new Set(credentialGroups.filter((group) => group.statementSetupRequired).map((group) => group.id)),
         externalPrerequisiteNotices: pagePrerequisiteNotices(db),
@@ -118,7 +147,27 @@ export function externalPrerequisiteById(prerequisiteId: string) {
   return null;
 }
 
-function missingCredentialKeys(taskId: string, status = currentCredentialStatus()) {
+export function automationSetupGuideLink(
+  groupId: string,
+  linkId: string,
+  locale: "en" | "zh-TW" = "zh-TW",
+) {
+  const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === groupId);
+  const guideLink = group?.setupGuide.links.find((candidate) => candidate.id === linkId);
+  if (!guideLink) return null;
+  const selectedUrl = locale === "en" && guideLink.englishUrl
+    ? guideLink.englishUrl
+    : guideLink.url;
+  try {
+    const url = new URL(selectedUrl);
+    if (url.protocol !== "https:" || !guideLink.allowedHosts.includes(url.hostname)) return null;
+  } catch {
+    return null;
+  }
+  return { ...guideLink, url: selectedUrl };
+}
+
+function missingCredentialKeys(taskId: string, status = currentCredentialState().status) {
   const task = taskById(taskId);
   if (!task) return [];
   return task.credentialKeys.filter((key) => !optionalCredentialKeys.has(key) && !status[key]);
@@ -160,6 +209,12 @@ export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process
 }
 
 export function automationSaveCredentials(updates: Record<string, string>) {
+  for (const key of certificateFileCredentialKeys) {
+    if (!Object.hasOwn(updates, key)) continue;
+    const validation = validateCertificateFilePath(updates[key] ?? "");
+    if (!validation.valid) throw new Error(`Invalid certificate file: ${validation.reason}`);
+    updates[key] = validation.path;
+  }
   const split = splitAutomationUpdates(updates);
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
