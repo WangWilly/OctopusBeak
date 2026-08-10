@@ -93,6 +93,18 @@ test("workflow contract frames are structured and never carry verification text"
     ...contract,
     completion: { ...contract.completion, status: "entered" },
   }]);
+  const unicodeContract = { ...contract, title: "完成驗證" };
+  const unicodeFrame = humanAssistanceContractFrame(unicodeContract);
+  const bytes = new TextEncoder().encode(unicodeFrame);
+  const firstChineseByte = new TextEncoder().encode(
+    unicodeFrame.slice(0, unicodeFrame.indexOf("完")),
+  ).length;
+  const streamed: HumanAssistanceContractInput[] = [];
+  const streamedParser = createHumanAssistanceContractFrameParser((value) => streamed.push(value));
+  streamedParser.push(bytes.subarray(0, firstChineseByte + 1));
+  streamedParser.push(bytes.subarray(firstChineseByte + 1));
+  streamedParser.flush();
+  assert.deepEqual(streamed, [unicodeContract]);
   parser.push("{\"captchaAnswer\":\"raw-secret\"}\n");
   assert.equal(parsed.length, 1);
 });
