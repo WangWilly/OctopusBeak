@@ -94,6 +94,10 @@ _Avoid_: Canonical transaction, imported projection
 A processing execution that reads source records and produces or reconciles canonical projections. Reprocessing the same source records creates another import run, not another source capture.
 _Avoid_: Source capture, financial event
 
+**Balance observation**:
+A time-bound balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It preserves effective and collection times plus provenance; a value derived from a transaction's balance-after field remains marked as derived and is not presented as a real-time provider balance.
+_Avoid_: Current account field, transaction amount, assumed live balance
+
 **Local-first AI financial assistant**:
 An assistant that lets a person use a locally available language model to explore their trusted financial overview, learn from it, and assess trends and risks with traceable external information. Product and technical boundaries—including privacy, model providers, advice, and external-information handling—are defined by an implementation-ready specification before build work begins.
 _Avoid_: Cloud financial advisor, autonomous investment manager
