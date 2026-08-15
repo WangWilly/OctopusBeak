@@ -187,16 +187,36 @@ An append-only, provenance-bearing merge, split, or supersede decision that corr
 _Avoid_: ID rewrite, destructive deduplication, silent rule-upgrade remapping
 
 **Transaction amount**:
-The required non-negative monetary magnitude of a financial transaction paired with a required currency. A currency inferred from an account or collection workflow remains explicitly marked with its provenance; a source record without a usable amount or currency is not promoted to a financial transaction.
+The required non-negative monetary magnitude actually booked to the financial account, paired with its required currency and an account-relative transaction direction. A currency inferred from an account or collection workflow remains explicitly marked with its provenance; a source record without a usable booked amount or currency is not promoted to a financial transaction.
 _Avoid_: Signed cash flow, currency-free number
 
+**Transaction currency**:
+The required denomination of the account-booked transaction amount, established in order from an explicit source-row value, a currency-specific Source Capture scope, or a versioned fixed-currency Integration contract. A financial account's default currency is not transaction evidence, and a Source Record without traceable currency evidence remains outside the complete financial-transaction projection.
+_Avoid_: Account default currency, display currency, unsupported currency guess
+
+**Exact monetary value**:
+A lossless decimal magnitude paired with an explicitly identified denomination; canonical amounts and rates never use binary floating point, while source formatting remains in the immutable Source Record and display rounding never changes the underlying value. Fiat denominations use ISO 4217, and any non-ISO denomination belongs to a distinct controlled scheme rather than masquerading as an ISO currency.
+_Avoid_: Floating-point money, universal cents integer, formatted source text as calculation input
+
+**Original transaction amount**:
+An optional non-negative amount and currency in which a merchant, counterparty, or source originally denominated a financial transaction before conversion into the account-booked transaction amount. It preserves the source denomination but never replaces the amount used to reconcile the financial account.
+_Avoid_: Canonical transaction amount, display-currency conversion
+
+**Transaction conversion**:
+Optional provenance-bearing conversion evidence connecting an original transaction amount to its account-booked transaction amount, with explicit base and quote currencies and a separate conversion date when known. A source-reported rate and a rate implied by the two amounts remain distinct; their consistency follows a versioned rounding rule, conflicts do not change the booked amount, and neither a discrepancy nor a missing fact is silently explained as a fee or filled from a later market rate.
+_Avoid_: Bare exchange rate, current market conversion, inferred foreign fee
+
 **Transaction direction**:
-The required account-relative movement classification `inflow`, `outflow`, or `unknown`. Signed values used by reports are derived from transaction amount and direction rather than stored with an implicit provider-specific sign convention.
-_Avoid_: Amount sign, debit-or-credit column
+The required classification `inflow` or `outflow` describing money crossing the boundary of the financial account: deposits, refunds, and liability payments enter an account, while withdrawals, card purchases, and loan disbursements leave it. Every Supported Source Integration defines and tests one unambiguous versioned mapping from its signs and debit/credit fields; a conflicting or indeterminate Source Record is retained as a projection data issue rather than promoted to a financial transaction.
+_Avoid_: Amount sign, debit-or-credit column, unknown canonical direction, balance effect, net-worth effect
 
 **Transaction effective date**:
-The required local calendar date selected deterministically for ordering, period queries, and reporting, paired with a required basis of `transaction`, `authorized`, `posted`, `accounting`, or `inferred`. Source-provided authorized, occurrence, posting, and accounting dates remain separate optional observations; absent times or time zones are never fabricated.
+The required local calendar date selected deterministically for ordering, period queries, and reporting, paired with a required basis of `occurred`, `authorized`, `posted`, `accounting`, or `inferred`. It selects the first available basis in that order after source fields have been mapped to their semantic roles; the underlying date observations remain separate, and a UTC storage anchor defaulted from a date-only value never claims that its local-midnight time was source reported.
 _Avoid_: Import date, assumed midnight timestamp, only source date
+
+**Transaction date observation**:
+A provenance-bearing occurrence, authorization, posting, or accounting date/time for a financial transaction, retaining its source-local calendar value, precision, and time origin. Current Integrations normalize otherwise unzoned values with `Asia/Taipei`; a date-only value may use local midnight as a UTC storage anchor only when marked with `date` precision and `defaulted_local_midnight`, so the anchor is never presented as a source-reported event time.
+_Avoid_: Exact timestamp for every date, system-timezone conversion, billing-statement date
 
 **Transaction posting status**:
 The required settlement classification `pending`, `posted`, or `unknown` for a financial transaction. Missing source status remains unknown; source removal is projection lifecycle, and billing, payment, refund, or reversal semantics are not posting statuses.
@@ -215,8 +235,8 @@ A source-sync assertion that a previously projected transaction is no longer pre
 _Avoid_: Refund, reversal, deleted source record
 
 **Credit card billing statement**:
-An evidence-gated, settled billing-cycle summary for a credit-card financial account, created only when the source explicitly identifies a settled statement or supplies enough billing-cycle facts to establish one. Its totals, payment due date, minimum payment, and transaction membership remain optional unless the source establishes them.
-_Avoid_: Unbilled transaction list, transaction export, source capture
+An evidence-gated, settled billing-cycle summary for a credit-card financial account, created only when the source explicitly identifies a settled statement or supplies enough billing-cycle facts to establish one. Its period, issue and due dates, totals, minimum payment, and transaction membership belong to the Statement rather than becoming transaction date observations; a billed status may exist without Statement membership, and an unbilled list never establishes a Statement.
+_Avoid_: Unbilled transaction list, transaction date, transaction export, source capture
 
 **Statement document**:
 A provider-issued statement file, such as an official PDF, retained as a source record rather than treated as a canonical billing statement by its file form alone.
