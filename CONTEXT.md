@@ -94,6 +94,18 @@ _Avoid_: Canonical transaction, imported projection
 A processing execution that reads source records and produces or reconciles canonical projections. Reprocessing the same source records creates another import run, not another source capture.
 _Avoid_: Source capture, financial event
 
+**Canonical entity lineage**:
+The required relationship from a canonical entity to the source records that support it. Direct source facts may inherit this relationship without duplicating provenance for every field.
+_Avoid_: Import timestamp, source filename only
+
+**Field provenance**:
+The evidence and transformation metadata required for an inferred, normalized, conflicting, or user-asserted canonical field, including its field path, value origin, supporting evidence, and applicable rule version. Confidence is recorded only when the derivation can support it.
+_Avoid_: Entity lineage only, fabricated probability
+
+**Canonical value origin**:
+The classification `source_fact`, `parser_inference`, `normalized_projection`, or `user_assertion` that states how a canonical value was established. A user assertion coexists with source evidence and never rewrites an immutable source record.
+_Avoid_: Verified boolean, importer name
+
 **Balance observation**:
 A time-bound balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It preserves effective and collection times plus provenance; a value derived from a transaction's balance-after field remains marked as derived and is not presented as a real-time provider balance.
 _Avoid_: Current account field, transaction amount, assumed live balance
