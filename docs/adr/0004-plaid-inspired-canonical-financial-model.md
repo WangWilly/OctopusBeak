@@ -156,15 +156,15 @@ All account types share one Financial Transaction entity. Credit-card transactio
 | --- | --- | --- |
 | `financial_transaction_id` | required | Stable local ID |
 | Financial Account | required | Establishes account-relative meaning |
-| amount | required | Non-negative magnitude |
-| currency | required | Inference is allowed only with field provenance |
-| direction | required | `inflow`, `outflow`, or `unknown` from the account perspective |
+| amount | required | Exact non-negative magnitude booked to the Financial Account |
+| currency | required | Explicit denomination; inference is allowed only from traceable source or Integration evidence |
+| direction | required | `inflow` or `outflow` across the Financial Account boundary; ambiguous source rows are not promoted |
 | `effective_on` | required | Local calendar date selected deterministically |
-| `effective_on_basis` | required | `transaction`, `authorized`, `posted`, `accounting`, or `inferred` |
+| `effective_on_basis` | required | `occurred`, `authorized`, `posted`, `accounting`, or `inferred` |
 | `posting_status` | required | `pending`, `posted`, or `unknown` |
 | canonical entity lineage | required | One or more supporting Source Records |
 | description and raw description | optional | Raw source text is distinct from enrichment |
-| occurred, authorized, posted, and accounting date/time observations | optional | Kept separately; absent time or zone is not fabricated |
+| occurred, authorized, posted, and accounting date/time observations | optional | Kept separately with precision, time origin, source timezone, and UTC normalization semantics |
 | provider transaction ID | deferred | Not required by current Taiwan sources |
 | merchant, counterparty, and category enrichment | optional | Never treated as source fact without evidence |
 
@@ -172,7 +172,7 @@ Signed report values are derived from amount and direction; the canonical model 
 
 `posting_status` is independent of billing, payment, refund, reversal, and projection state. Missing source status is `unknown`; downloading a row does not prove it is posted.
 
-A Financial Transaction belonging to a `credit / credit_card` account may have one Credit Card Transaction Detail component. The component has no independent ID or lifecycle. Its optional fields include Card Instrument, `unbilled | billed | unknown` billing status, Credit Card Billing Statement membership, original amount and currency, FX date, installment detail, and source payment status. Filename-derived billed/unbilled values are `parser_inference`.
+A Financial Transaction belonging to a `credit / credit_card` account may have one Credit Card Transaction Detail component. The component has no independent ID or lifecycle. Its optional fields include Card Instrument, `unbilled | billed | unknown` billing status, Credit Card Billing Statement membership, original amount and currency, provenance-bearing conversion evidence, installment detail, and source payment status. Filename-derived billed/unbilled values are `parser_inference`.
 
 An optional Transaction Relation links two transactions without merging or deleting them. Initial types are `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, and `installment_of`. A relation requires explicit source evidence or a deterministic versioned rule with provenance. Ambiguous matching creates no relation.
 
@@ -186,7 +186,7 @@ A Credit Card Billing Statement is an evidence-gated, settled billing-cycle summ
 | --- | --- |
 | local ID, Financial Account, lineage, evidence sufficient to establish a settled cycle | source statement ID, period start/end, issue date, due date, statement currency, statement balance, minimum payment, totals, transaction membership |
 
-A deposit transaction query, CSV export, filename, Source Capture, and unbilled credit-card list are not Statements. A provider-issued PDF or equivalent file is a Statement Document retained as a Source Record; file form alone does not create a canonical Credit Card Billing Statement.
+A deposit transaction query, CSV export, filename, Source Capture, and unbilled credit-card list are not Statements. Statement period, issue, and due dates belong to the Credit Card Billing Statement rather than becoming transaction date observations; a billed status may exist without Statement membership. A provider-issued PDF or equivalent file is a Statement Document retained as a Source Record; file form alone does not create a canonical Credit Card Billing Statement.
 
 ### Security and Holding Observation
 
