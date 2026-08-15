@@ -106,6 +106,14 @@ _Avoid_: Source transaction row, import record, statement line
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
 
+**Credit card billing statement**:
+An evidence-gated, settled billing-cycle summary for a credit-card financial account, created only when the source explicitly identifies a settled statement or supplies enough billing-cycle facts to establish one. Its totals, payment due date, minimum payment, and transaction membership remain optional unless the source establishes them.
+_Avoid_: Unbilled transaction list, transaction export, source capture
+
+**Statement document**:
+A provider-issued statement file, such as an official PDF, retained as a source record rather than treated as a canonical billing statement by its file form alone.
+_Avoid_: Credit card billing statement, CSV transaction export
+
 **Local-first AI financial assistant**:
 An assistant that lets a person use a locally available language model to explore their trusted financial overview, learn from it, and assess trends and risks with traceable external information. Product and technical boundaries—including privacy, model providers, advice, and external-information handling—are defined by an implementation-ready specification before build work begins.
 _Avoid_: Cloud financial advisor, autonomous investment manager
