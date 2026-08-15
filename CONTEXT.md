@@ -74,6 +74,14 @@ The set of statement types chosen for an enabled credential source to collect.
 A reviewable, traceable view that unifies a person's imported cash, deposits, liabilities, investments, foreign currency, crypto assets, income, spending, and statement activity across supported sources. Analysis must preserve the distinction between verified data, known gaps, and user-supplied assumptions.
 _Avoid_: Dashboard, portfolio view, financial summary
 
+**Financial account**:
+A persistent deposit or credit-card relationship represented in the trusted financial overview across source captures. When source evidence cannot reliably distinguish or join accounts, its identity remains provisional rather than being treated as verified.
+_Avoid_: Source account row, account-number hash, individual card
+
+**Card instrument**:
+A physical or virtual primary or supplementary card associated with a financial account. A different card number or mask does not by itself establish a separate financial account.
+_Avoid_: Credit-card account, financial account
+
 **Local-first AI financial assistant**:
 An assistant that lets a person use a locally available language model to explore their trusted financial overview, learn from it, and assess trends and risks with traceable external information. Product and technical boundaries—including privacy, model providers, advice, and external-information handling—are defined by an implementation-ready specification before build work begins.
 _Avoid_: Cloud financial advisor, autonomous investment manager
