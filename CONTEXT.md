@@ -142,6 +142,10 @@ _Avoid_: Import run, canonical financial account
 An immutable raw file, row, or object contained by a source capture and retained as evidence for canonical projections.
 _Avoid_: Canonical transaction, imported projection
 
+**Source assertion lifecycle**:
+The append-only, provenance-bearing history `observed`, `revised`, `withdrawn`, and `restored` describing what a source asserts about a canonical projection. Absence from a later capture is not withdrawal; only an explicit source tombstone or a comparable capture with a declared complete scope may withdraw the assertion, and withdrawal preserves the evidence and does not imply refund, reversal, cancellation, or deletion of the underlying financial transaction.
+_Avoid_: Economic transaction status, missing-row deletion, source record mutation
+
 **Import run**:
 A processing execution that reads source records and produces or reconciles canonical projections. Reprocessing the same source records creates another import run, not another source capture.
 _Avoid_: Source capture, financial event
@@ -163,8 +167,24 @@ A time-bound balance measurement associated with a financial account and typed a
 _Avoid_: Current account field, transaction amount, assumed live balance
 
 **Financial transaction**:
-A canonical projection of a monetary event associated with a financial account, identified by a stable internal identifier and traced to one or more source records. Provider identifiers and pending-to-posted linkage are optional; uncertain matches remain provisional and potentially duplicated rather than being merged as fact.
+A canonical projection of a monetary event associated with a financial account, identified by an opaque stable local identifier and traced to one or more source records. Matching source records may share that identity only when explicit source evidence or a deterministic versioned rule establishes equivalence; weak or ambiguous matches remain separate and potentially duplicated because avoiding a false merge takes precedence over suppressing a possible duplicate.
 _Avoid_: Source transaction row, import record, statement line
+
+**Transaction occurrence matching**:
+The provenance-bearing reconciliation of repeated source-record occurrences to stable financial-transaction identities within comparable source-capture scopes. It treats matching signatures as multisets, preserves every identical occurrence, and continues an identity only when a versioned rule can pair it uniquely; a content hash or occurrence ordinal is matching evidence rather than a permanent transaction identifier.
+_Avoid_: Set deduplication, content-hash identity, silent ambiguous merge
+
+**Cross-source transaction reconciliation**:
+The evidence-backed assignment of transaction occurrences from different supported sources or source connections to one financial-transaction identity after they have been reconciled to the same financial account. Shared provider identifiers, validated versioned rules, or explicit user assertions may establish equivalence; amount, nearby dates, or description similarity alone create only a match candidate and never an automatic merge.
+_Avoid_: Cross-account merge, fuzzy auto-merge, transfer deduplication
+
+**Transaction revision**:
+An append-only canonical version created when strong source linkage establishes that changed evidence describes the same financial transaction. It preserves the stable financial-transaction identity, the prior revisions, supporting source records, and rule provenance; without strong linkage the changed record creates a separate transaction, while pending-to-posted remains a relation between two transactions rather than an ordinary revision.
+_Avoid_: In-place transaction overwrite, guessed correction, pending-to-posted mutation
+
+**Transaction identity correction**:
+An append-only, provenance-bearing merge, split, or supersede decision that corrects which source occurrences represent the same financial event without silently changing an existing transaction identifier's meaning. Historical identities and revisions remain resolvable; current identities change only through the recorded correction, and ambiguous evidence remains conflicted rather than being reassigned.
+_Avoid_: ID rewrite, destructive deduplication, silent rule-upgrade remapping
 
 **Transaction amount**:
 The required non-negative monetary magnitude of a financial transaction paired with a required currency. A currency inferred from an account or collection workflow remains explicitly marked with its provenance; a source record without a usable amount or currency is not promoted to a financial transaction.
