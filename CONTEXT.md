@@ -110,6 +110,14 @@ _Avoid_: Account-per-currency, workflow currency folder, inferred currency subac
 A physical or virtual primary or supplementary card associated with a financial account. A different card number or mask does not by itself establish a separate financial account.
 _Avoid_: Credit-card account, financial account
 
+**Source connection**:
+An optional, persistent operational relationship through which a person authorizes or configures collection from a supported source; it may expose multiple financial accounts, and the same financial account may be observed through multiple connections. Connection failure, replacement, disconnection, or deletion does not close a financial account, manual captures require no connection, and authentication secrets remain outside the canonical model.
+_Avoid_: Financial account, automation task run, credential secret
+
+**Source sync state**:
+Opaque continuation and health state scoped to a source connection, product stream, and optional financial account when required by the provider. A cursor is operational state rather than financial evidence and is advanced only according to the source protocol's complete-update rules.
+_Avoid_: Financial transaction ID, source capture, global connection cursor
+
 **Source capture**:
 An immutable evidence envelope produced by one source-side collection event for a declared scope and observation time. Its mapping and granularity in collection workflows remain revisable during the planned workflow refactor.
 _Avoid_: Import run, canonical financial account
