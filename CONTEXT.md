@@ -98,6 +98,14 @@ _Avoid_: Source capture, financial event
 A time-bound balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It preserves effective and collection times plus provenance; a value derived from a transaction's balance-after field remains marked as derived and is not presented as a real-time provider balance.
 _Avoid_: Current account field, transaction amount, assumed live balance
 
+**Financial transaction**:
+A canonical projection of a monetary event associated with a financial account, identified by a stable internal identifier and traced to one or more source records. Provider identifiers and pending-to-posted linkage are optional; uncertain matches remain provisional and potentially duplicated rather than being merged as fact.
+_Avoid_: Source transaction row, import record, statement line
+
+**Transaction removal**:
+A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
+_Avoid_: Refund, reversal, deleted source record
+
 **Local-first AI financial assistant**:
 An assistant that lets a person use a locally available language model to explore their trusted financial overview, learn from it, and assess trends and risks with traceable external information. Product and technical boundaries—including privacy, model providers, advice, and external-information handling—are defined by an implementation-ready specification before build work begins.
 _Avoid_: Cloud financial advisor, autonomous investment manager
