@@ -178,6 +178,14 @@ _Avoid_: Amount sign, debit-or-credit column
 The required local calendar date selected deterministically for ordering, period queries, and reporting, paired with a required basis of `transaction`, `authorized`, `posted`, `accounting`, or `inferred`. Source-provided authorized, occurrence, posting, and accounting dates remain separate optional observations; absent times or time zones are never fabricated.
 _Avoid_: Import date, assumed midnight timestamp, only source date
 
+**Transaction posting status**:
+The required settlement classification `pending`, `posted`, or `unknown` for a financial transaction. Missing source status remains unknown; source removal is projection lifecycle, and billing, payment, refund, or reversal semantics are not posting statuses.
+_Avoid_: Billing status, transaction kind, source removal
+
+**Credit card transaction detail**:
+An optional, non-independent extension of a financial transaction belonging to a `credit` / `credit_card` financial account. It holds evidence-supported credit-card specifics such as Card Instrument, `unbilled | billed | unknown` billing status, Billing Statement membership, original-currency and FX data, installment detail, and source payment status without acquiring a separate identity or lifecycle.
+_Avoid_: Credit card transaction entity, statement line, financial transaction
+
 **Transaction removal**:
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
