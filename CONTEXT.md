@@ -102,6 +102,14 @@ _Avoid_: Current account field, transaction amount, assumed live balance
 A canonical projection of a monetary event associated with a financial account, identified by a stable internal identifier and traced to one or more source records. Provider identifiers and pending-to-posted linkage are optional; uncertain matches remain provisional and potentially duplicated rather than being merged as fact.
 _Avoid_: Source transaction row, import record, statement line
 
+**Transaction amount**:
+The required non-negative monetary magnitude of a financial transaction paired with a required currency. A currency inferred from an account or collection workflow remains explicitly marked with its provenance; a source record without a usable amount or currency is not promoted to a financial transaction.
+_Avoid_: Signed cash flow, currency-free number
+
+**Transaction direction**:
+The required account-relative movement classification `inflow`, `outflow`, or `unknown`. Signed values used by reports are derived from transaction amount and direction rather than stored with an implicit provider-specific sign convention.
+_Avoid_: Amount sign, debit-or-credit column
+
 **Transaction removal**:
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
