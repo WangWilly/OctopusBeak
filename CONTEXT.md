@@ -75,8 +75,16 @@ A reviewable, traceable view that unifies a person's imported cash, deposits, li
 _Avoid_: Dashboard, portfolio view, financial summary
 
 **Financial account**:
-A persistent, independently identifiable contractual, ledger, or asset-holding relationship between a person and a financial institution or service provider, used to organize its transactions, balances, liabilities, positions, statements, and product terms. It persists across source connections, captures, import runs, files, card instruments, and currencies; when source evidence cannot reliably distinguish or join accounts, its identity remains provisional.
+A persistent, independently identifiable contractual, ledger, or asset-holding relationship between a person and an Institution, used to organize its transactions, balances, liabilities, positions, statements, and product terms. It persists across source connections, captures, import runs, files, card instruments, and currencies; when source evidence cannot reliably distinguish or join accounts, its identity remains provisional.
 _Avoid_: Source account row, account-number hash, individual card
+
+**Institution**:
+The canonical identity of the real-world provider that maintains a financial account, such as a bank, broker, card issuer, fund platform, or crypto service. Its provider type is a technical taxonomy rather than a regulatory determination; portal IDs, Plaid institution IDs, workflow codes, brands, and other external identifiers may map many-to-one to a confirmed or provisional Institution.
+_Avoid_: Supported source, corporate-group brand, workflow provider code
+
+**Institution source coverage**:
+The many-to-many mapping that records which Institutions and products a supported source can collect or import. Coverage does not make a supported-source identifier the canonical identity of an Institution.
+_Avoid_: Source connection, Institution identity, account ownership
 
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, `other`, or `unknown`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. An optional subtype refines the product only when evidence supports it, such as `credit` with subtype `credit_card`.
@@ -295,8 +303,8 @@ A person in Taiwan who manages at least three bank, credit-card, or investment a
 _Avoid_: macOS user, all personal-finance users
 
 **Supported source**:
-A financial institution or service whose data-collection and import path has been verified for the current Beta. A planned or previously working integration is not a supported source.
-_Avoid_: Supported bank, available integration
+A collection and import integration whose declared Institution and product coverage has been verified for the current Beta. A planned, previously working, or merely registered integration is not a supported source.
+_Avoid_: Institution, supported bank, available integration
 
 **Supported source name**:
 The formal user-facing name of a supported source. In the Traditional Chinese UI, a distinct localized name is followed by its English name in parentheses; brand names without a distinct translation remain unchanged.
