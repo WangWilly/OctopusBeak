@@ -78,6 +78,10 @@ _Avoid_: Dashboard, portfolio view, financial summary
 A persistent deposit or credit-card relationship represented in the trusted financial overview across source captures. When source evidence cannot reliably distinguish or join accounts, its identity remains provisional rather than being treated as verified.
 _Avoid_: Source account row, account-number hash, individual card
 
+**Multi-currency financial account**:
+A financial account whose transactions and balance observations may carry different currencies without being split into one canonical account per currency. An optional default currency never overrides the required currency of a transaction amount or balance observation; a currency subaccount is introduced only when the source explicitly establishes its identity.
+_Avoid_: Account-per-currency, workflow currency folder, inferred currency subaccount
+
 **Card instrument**:
 A physical or virtual primary or supplementary card associated with a financial account. A different card number or mask does not by itself establish a separate financial account.
 _Avoid_: Credit-card account, financial account
