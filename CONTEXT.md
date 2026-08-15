@@ -75,8 +75,12 @@ A reviewable, traceable view that unifies a person's imported cash, deposits, li
 _Avoid_: Dashboard, portfolio view, financial summary
 
 **Financial account**:
-A persistent deposit or credit-card relationship represented in the trusted financial overview across source captures. When source evidence cannot reliably distinguish or join accounts, its identity remains provisional rather than being treated as verified.
+A persistent, independently identifiable contractual, ledger, or asset-holding relationship between a person and a financial institution or service provider, used to organize its transactions, balances, liabilities, positions, statements, and product terms. It persists across source connections, captures, import runs, files, card instruments, and currencies; when source evidence cannot reliably distinguish or join accounts, its identity remains provisional.
 _Avoid_: Source account row, account-number hash, individual card
+
+**Financial account type**:
+The required top-level classification `depository`, `credit`, `loan`, `investment`, `other`, or `unknown`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. An optional subtype refines the product only when evidence supports it, such as `credit` with subtype `credit_card`.
+_Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
 
 **Multi-currency financial account**:
 A financial account whose transactions and balance observations may carry different currencies without being split into one canonical account per currency. An optional default currency never overrides the required currency of a transaction amount or balance observation; a currency subaccount is introduced only when the source explicitly establishes its identity.
