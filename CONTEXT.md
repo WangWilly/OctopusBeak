@@ -84,15 +84,23 @@ _Avoid_: Product-specific table name, workflow label, unsupported inferred subty
 
 **Crypto financial account**:
 An `investment` financial account with evidence-supported subtype `crypto_exchange` or `non_custodial_wallet`. Provider wallet labels create separate financial accounts only when the source establishes independent ledger, balance, transaction-scope, or wallet identity.
-_Avoid_: Cryptocurrency position, token, UI wallet label
+_Avoid_: Crypto holding observation, token, UI wallet label
 
-**Crypto position**:
-A quantity or value of an individual cryptocurrency held within a crypto financial account. BTC, ETH, and similar assets are positions rather than separate financial accounts, and a crypto account may contain both asset and liability positions.
-_Avoid_: Crypto financial account, wallet, transaction
+**Holding observation**:
+A source-reported, point-in-time quantity, cost, or valuation of a Security held in an investment financial account. Holding observations are retained as evidence checkpoints, while the current holding is a projection from the latest valid observation and transaction history remains a separate event record.
+_Avoid_: Investment transaction, mutable current holding, liability balance
+
+**Crypto holding observation**:
+A holding observation that references a Security classified as `cryptocurrency` within a crypto financial account. BTC, ETH, and similar assets are Securities held by the account rather than separate financial accounts; borrowing is not represented as a negative or liability holding.
+_Avoid_: Crypto financial account, wallet, crypto loan
 
 **Security**:
 The Plaid-aligned canonical reference for an asset held in an investment financial account, classified by a security type such as equity, ETF, mutual fund, fixed income, derivative, cash, cryptocurrency, loan, or other. Classifying a cryptocurrency as a Security is a technical data-taxonomy choice and does not by itself assert that the asset is legally a security in Taiwan.
 _Avoid_: Financial account, holding, legal securities determination
+
+**Investment-account liability**:
+An independently identifiable borrowing associated with investing is represented as a separate `credit` or `loan` financial account. Margin debt that the source reports only as part of an investment account, without independent account identity, remains a `margin_loan` balance observation on that investment account rather than becoming a liability holding or invented account.
+_Avoid_: Liability holding, inferred loan account, negative Security
 
 **Multi-currency financial account**:
 A financial account whose transactions and balance observations may carry different currencies without being split into one canonical account per currency. An optional default currency never overrides the required currency of a transaction amount or balance observation; a currency subaccount is introduced only when the source explicitly establishes its identity.
