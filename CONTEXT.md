@@ -110,6 +110,10 @@ _Avoid_: Signed cash flow, currency-free number
 The required account-relative movement classification `inflow`, `outflow`, or `unknown`. Signed values used by reports are derived from transaction amount and direction rather than stored with an implicit provider-specific sign convention.
 _Avoid_: Amount sign, debit-or-credit column
 
+**Transaction effective date**:
+The required local calendar date selected deterministically for ordering, period queries, and reporting, paired with a required basis of `transaction`, `authorized`, `posted`, `accounting`, or `inferred`. Source-provided authorized, occurrence, posting, and accounting dates remain separate optional observations; absent times or time zones are never fabricated.
+_Avoid_: Import date, assumed midnight timestamp, only source date
+
 **Transaction removal**:
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
