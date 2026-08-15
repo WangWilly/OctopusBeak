@@ -82,6 +82,14 @@ _Avoid_: Source account row, account-number hash, individual card
 The required top-level classification `depository`, `credit`, `loan`, `investment`, `other`, or `unknown`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. An optional subtype refines the product only when evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
 
+**Crypto financial account**:
+An `investment` financial account with evidence-supported subtype `crypto_exchange` or `non_custodial_wallet`. Provider wallet labels create separate financial accounts only when the source establishes independent ledger, balance, transaction-scope, or wallet identity.
+_Avoid_: Cryptocurrency position, token, UI wallet label
+
+**Crypto position**:
+A quantity or value of an individual cryptocurrency held within a crypto financial account. BTC, ETH, and similar assets are positions rather than separate financial accounts, and a crypto account may contain both asset and liability positions.
+_Avoid_: Crypto financial account, wallet, transaction
+
 **Multi-currency financial account**:
 A financial account whose transactions and balance observations may carry different currencies without being split into one canonical account per currency. An optional default currency never overrides the required currency of a transaction amount or balance observation; a currency subaccount is introduced only when the source explicitly establishes its identity.
 _Avoid_: Account-per-currency, workflow currency folder, inferred currency subaccount
