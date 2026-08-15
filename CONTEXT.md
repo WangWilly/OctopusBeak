@@ -90,6 +90,14 @@ _Avoid_: Source connection, Institution identity, account ownership
 The required top-level classification `depository`, `credit`, `loan`, `investment`, `other`, or `unknown`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. An optional subtype refines the product only when evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
 
+**Account identifier**:
+A source-backed piece of evidence used to reconcile a financial account, currently limited to kinds such as `account_number_hash`, `account_mask`, and `source_account_label`, with its source record, observation time, and value origin. Ingestion IDs and hashes such as source-file, statement-row, and content hashes are not account identifiers; provider-specific account IDs are deferred until an actual provider integration requires them.
+_Avoid_: Financial account ID, source file ID, content hash
+
+**Account identity status**:
+The required reconciliation state `provisional`, `confirmed`, or `conflicted` for a financial account. A mask, label, or inferred account remains provisional; matching Institution-scoped account-number evidence or explicit user confirmation may confirm it, while mutually exclusive evidence makes it conflicted without rewriting the source records.
+_Avoid_: Data-quality score, account lifecycle status, verified fields
+
 **Crypto financial account**:
 An `investment` financial account with evidence-supported subtype `crypto_exchange` or `non_custodial_wallet`. Provider wallet labels create separate financial accounts only when the source establishes independent ledger, balance, transaction-scope, or wallet identity.
 _Avoid_: Crypto holding observation, token, UI wallet label
