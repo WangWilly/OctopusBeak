@@ -939,39 +939,57 @@
       : null;
   }
 
+  type ViewerImageGeometry = {
+    imageRect: Pick<DOMRect, "left" | "top" | "width" | "height">;
+    clientWidth: number;
+    clientHeight: number;
+    naturalWidth: number;
+    naturalHeight: number;
+  };
+
+  function viewerPointFromTransformedImage(
+    event: Pick<PointerEvent, "clientX" | "clientY">,
+    geometry: ViewerImageGeometry,
+  ) {
+    if (
+      !geometry.naturalWidth
+      || !geometry.naturalHeight
+      || !geometry.clientWidth
+      || !geometry.clientHeight
+      || !geometry.imageRect.width
+      || !geometry.imageRect.height
+    ) return null;
+
+    const scaleX = geometry.imageRect.width / geometry.clientWidth;
+    const scaleY = geometry.imageRect.height / geometry.clientHeight;
+    if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return null;
+
+    const localX = (event.clientX - geometry.imageRect.left) / scaleX;
+    const localY = (event.clientY - geometry.imageRect.top) / scaleY;
+    return {
+      x: localX * (geometry.naturalWidth / geometry.clientWidth),
+      y: localY * (geometry.naturalHeight / geometry.clientHeight),
+      left: localX,
+      top: localY,
+      frameWidth: geometry.clientWidth,
+      frameHeight: geometry.clientHeight,
+    };
+  }
+
   function pointerPoint(event: Pick<PointerEvent, "clientX" | "clientY"> & { currentTarget: EventTarget | null }) {
     const image = viewerImageFromEvent(event);
     if (!image) return null;
-    const frame = image.closest(".viewer-frame") as HTMLElement | null;
-    const focus = image.closest(".viewer-focus") as HTMLElement | null;
-    const frameRect = frame?.getBoundingClientRect() ?? image.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
     const imageWidth = image.clientWidth;
     const imageHeight = image.clientHeight;
     if (!image.naturalWidth || !image.naturalHeight || !imageWidth || !imageHeight) return null;
-
-    const focusStyle = focus ? getComputedStyle(focus) : null;
-    const transform = focusStyle?.transform.match(/^matrix\(([^)]+)\)$/)?.[1]
-      .split(",")
-      .map(Number);
-    const scaleX = transform?.[0] && Number.isFinite(transform[0]) ? transform[0] : 1;
-    const scaleY = transform?.[3] && Number.isFinite(transform[3]) ? transform[3] : 1;
-    const transformOrigin = (focusStyle?.transformOrigin ?? "0px 0px")
-      .split(" ")
-      .map((value) => Number.parseFloat(value));
-    const originX = Number.isFinite(transformOrigin[0]) ? transformOrigin[0] : 0;
-    const originY = Number.isFinite(transformOrigin[1]) ? transformOrigin[1] : 0;
-    const imageLeft = frameRect.left + (frameRect.width - imageWidth) / 2;
-    const imageTop = frameRect.top + (frameRect.height - imageHeight) / 2;
-    const localX = (event.clientX - imageLeft - originX * (1 - scaleX)) / scaleX;
-    const localY = (event.clientY - imageTop - originY * (1 - scaleY)) / scaleY;
-    return {
-      x: localX * (image.naturalWidth / imageWidth),
-      y: localY * (image.naturalHeight / imageHeight),
-      left: localX,
-      top: localY,
-      frameWidth: imageWidth,
-      frameHeight: imageHeight,
-    };
+    return viewerPointFromTransformedImage(event, {
+      imageRect,
+      clientWidth: imageWidth,
+      clientHeight: imageHeight,
+      naturalWidth: image.naturalWidth,
+      naturalHeight: image.naturalHeight,
+    });
   }
 
   function floatingInputAnchor(point: NonNullable<ReturnType<typeof pointerPoint>>) {
