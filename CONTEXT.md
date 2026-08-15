@@ -90,6 +90,10 @@ _Avoid_: Cryptocurrency position, token, UI wallet label
 A quantity or value of an individual cryptocurrency held within a crypto financial account. BTC, ETH, and similar assets are positions rather than separate financial accounts, and a crypto account may contain both asset and liability positions.
 _Avoid_: Crypto financial account, wallet, transaction
 
+**Security**:
+The Plaid-aligned canonical reference for an asset held in an investment financial account, classified by a security type such as equity, ETF, mutual fund, fixed income, derivative, cash, cryptocurrency, loan, or other. Classifying a cryptocurrency as a Security is a technical data-taxonomy choice and does not by itself assert that the asset is legally a security in Taiwan.
+_Avoid_: Financial account, holding, legal securities determination
+
 **Multi-currency financial account**:
 A financial account whose transactions and balance observations may carry different currencies without being split into one canonical account per currency. An optional default currency never overrides the required currency of a transaction amount or balance observation; a currency subaccount is introduced only when the source explicitly establishes its identity.
 _Avoid_: Account-per-currency, workflow currency folder, inferred currency subaccount
