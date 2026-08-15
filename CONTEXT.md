@@ -75,7 +75,7 @@ A reviewable, traceable view that unifies a person's imported cash, deposits, li
 _Avoid_: Dashboard, portfolio view, financial summary
 
 **Financial account**:
-A persistent, independently identifiable contractual, ledger, or asset-holding relationship between a person and an Institution, used to organize its transactions, balances, liabilities, positions, statements, and product terms. It persists across source connections, captures, import runs, files, card instruments, and currencies; when source evidence cannot reliably distinguish or join accounts, its identity remains provisional.
+A persistent, independently identifiable contractual, ledger, or asset-holding relationship between a person and an Institution, used to organize its transactions, balances, liabilities, holdings, statements, and product terms. It persists across source connections, captures, import runs, files, card instruments, and currencies; when source evidence cannot reliably distinguish or join accounts, its identity remains provisional.
 _Avoid_: Source account row, account-number hash, individual card
 
 **Institution**:
