@@ -186,6 +186,10 @@ _Avoid_: Billing status, transaction kind, source removal
 An optional, non-independent extension of a financial transaction belonging to a `credit` / `credit_card` financial account. It holds evidence-supported credit-card specifics such as Card Instrument, `unbilled | billed | unknown` billing status, Billing Statement membership, original-currency and FX data, installment detail, and source payment status without acquiring a separate identity or lifecycle.
 _Avoid_: Credit card transaction entity, statement line, financial transaction
 
+**Transaction relation**:
+An optional, provenance-bearing directed relationship between two financial transactions, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`. It is created only from explicit source evidence or a deterministic versioned rule, never merges or deletes either transaction, and is not inferred from source removal alone.
+_Avoid_: Transaction identity merge, source removal, ambiguous match
+
 **Transaction removal**:
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
