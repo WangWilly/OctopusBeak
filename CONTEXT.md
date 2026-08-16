@@ -219,20 +219,48 @@ A provenance-bearing occurrence, authorization, posting, or accounting date/time
 _Avoid_: Exact timestamp for every date, system-timezone conversion, billing-statement date
 
 **Transaction posting status**:
-The required settlement classification `pending`, `posted`, or `unknown` for a financial transaction. Missing source status remains unknown; source removal is projection lifecycle, and billing, payment, refund, or reversal semantics are not posting statuses.
-_Avoid_: Billing status, transaction kind, source removal
+The required account-ledger booking classification `pending`, `posted`, or `unknown`: pending evidence describes authorization, an expected entry, or a reserved amount not yet booked; posted evidence establishes that the Institution recorded the entry in its account ledger; and unknown is an exceptional fail-safe for indeterminate source semantics. Each Supported Source Integration defines and tests a versioned mapping per Source Record kind; billing, payment-network settlement, payment, refund, reversal, and source-removal semantics stay separate, and Taiwan `unbilled` card activity may already be posted.
+_Avoid_: Billing status, unbilled-as-pending, payment-network settlement, transaction kind, source removal
 
 **Credit card transaction detail**:
 An optional, non-independent extension of a financial transaction belonging to a `credit` / `credit_card` financial account. It holds evidence-supported credit-card specifics such as Card Instrument, `unbilled | billed | unknown` billing status, Billing Statement membership, original-currency and FX data, installment detail, and source payment status without acquiring a separate identity or lifecycle.
 _Avoid_: Credit card transaction entity, statement line, financial transaction
 
 **Transaction relation**:
-An optional, provenance-bearing directed relationship between two financial transactions, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`. It is created only from explicit source evidence or a deterministic versioned rule, never merges or deletes either transaction, and is not inferred from source removal alone.
+An optional, provenance-bearing relationship between two Financial Transactions, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`, created only from explicit source evidence, an explicit user assertion, or a validated uniquely deterministic rule. Relations never merge or delete transactions, have no global one-to-one constraint, and do not invent amount allocations or unsupported aggregate events.
 _Avoid_: Transaction identity merge, source removal, ambiguous match
+
+**Transaction match candidate**:
+A provenance-bearing, non-canonical proposal that Financial Transactions may be related, retaining its proposed kind, participants, supporting and contradicting evidence, and producing rule version. Similar amount, direction, date, or description may create a candidate, but it never affects identity or financial computation; confirmation creates a separate Transaction Relation while preserving the candidate and decision history.
+_Avoid_: Transaction relation, fuzzy automatic relation, implicit transfer exclusion, candidate-driven financial calculation
+
+**Pending-to-posted transaction relation**:
+A directed `pending_to_posted` Transaction Relation from a separate pending Financial Transaction to its posted Financial Transaction when explicit source linkage or a validated, versioned source-specific rule establishes the pairing. Each transaction retains its identity and evidence, an unmatched pending transaction remains independent, and similarity alone creates only a match candidate rather than a revision, merge, or reason to delete the pending transaction.
+_Avoid_: Pending-to-posted mutation, transaction revision, fuzzy confirmed relation, pending deletion
+
+**Transaction refund relation**:
+A `refund_of` Transaction Relation from a separately booked return of value to an earlier Financial Transaction that remains an economic event. A refund may be partial, and multiple refunds may refer to the same original transaction; similar descriptions, opposite directions, equal amounts, or nearby dates alone create only a match candidate.
+_Avoid_: Reversal, cancellation, original-transaction deletion, fuzzy confirmed relation
+
+**Transaction reversal relation**:
+A `reversal_of` Transaction Relation from a separately booked compensating transaction to the Financial Transaction whose economic effect it corrects or voids. It is distinct from a refund because the original event is being undone rather than followed by a later return of value; source wording or amount-and-date similarity alone creates only a match candidate.
+_Avoid_: Refund, cancellation, source withdrawal, fuzzy confirmed relation
+
+**Transfer-counterpart transaction relation**:
+A semantically symmetric `transfer_counterpart` Transaction Relation connecting the separate account-side Financial Transactions of one movement between Financial Accounts, never merging them or treating physical endpoint ordering as money direction. A pair involving a `credit / credit_card` account is interpreted as a credit-card payment from account types and transaction directions rather than a separate relation type; a source-reported payment with no observed other side remains a source fact.
+_Avoid_: Cross-account transaction merge, transfer deduplication, credit-card-payment relation type, inferred missing counterpart
+
+**Installment transaction relation**:
+A directed `installment_of` Transaction Relation from a Financial Transaction representing an installment to an evidence-backed original Financial Transaction. A source-reported installment sequence or plan detail without an observed original transaction remains Credit Card Transaction Detail rather than causing OctopusBeak to invent the missing transaction or relation.
+_Avoid_: Inferred original transaction, installment-plan entity without evidence, relation from sequence text alone
 
 **Transaction removal**:
 A source-sync assertion that a previously projected transaction is no longer present in that source's current result. It is not evidence by itself of a refund, reversal, or cancellation of the underlying monetary event.
 _Avoid_: Refund, reversal, deleted source record
+
+**Transaction cancellation**:
+An explicitly source-reported outcome that a pending authorization or other unposted transaction will not proceed to posting. In the first canonical model it remains a provenance-bearing source fact rather than a posting status or Transaction Relation; disappearance, withdrawal, or a missing posted counterpart never establishes cancellation, while a separately booked compensating movement is evaluated as a refund or reversal.
+_Avoid_: Source withdrawal, cancelled posting status, inferred cancellation, refund, reversal
 
 **Credit card billing statement**:
 An evidence-gated, settled billing-cycle summary for a credit-card financial account, created only when the source explicitly identifies a settled statement or supplies enough billing-cycle facts to establish one. Its period, issue and due dates, totals, minimum payment, and transaction membership belong to the Statement rather than becoming transaction date observations; a billed status may exist without Statement membership, and an unbilled list never establishes a Statement.
