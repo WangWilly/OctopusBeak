@@ -91,8 +91,16 @@ The required top-level classification `depository`, `credit`, `loan`, `investmen
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
 
 **Account identifier**:
-A contract-defined stable source key used with integration namespace, source connection, and identity epoch to establish a Financial Account. Masks, labels, content hashes, and user input are not sufficient identity keys; an integration without a stable key fails admission rather than creating a provisional account.
+A contract-defined stable source key used with integration namespace, source connection, and identity epoch to establish a Financial Account. It may be a provider account identifier or a contract constant only when the integration proves that the connection scope contains exactly one account of that kind; masks, labels, content hashes, card keys, and user input are not sufficient identity keys, and an integration without a stable account scope fails admission rather than creating a provisional account.
 _Avoid_: Cross-source reconciliation key, display label, content hash
+
+**Credit-card financial account**:
+A `credit` Financial Account representing one issuer-managed primary-cardholder credit and billing portfolio within a source connection, under which multiple primary, supplementary, virtual, replacement, or renewed Card Instruments may generate transactions and statements. A card number, mask, product name, or billing cycle never establishes a separate account by itself; the integration must provide an account-level key or prove a single-primary-portfolio connection scope before it may use a fixed contract key.
+_Avoid_: Individual card, masked PAN account, issuer-wide merge across connections
+
+**Primary-cardholder portfolio scope**:
+A source contract guarantee that one source connection and credit-card product stream exposes exactly one primary cardholder's issuer-managed credit and billing portfolio, allowing a fixed account key within that connection while retaining all cards as subordinate instruments. A login, a list of cards, shared dates, or the authenticated person's identity does not establish this guarantee unless the provider page semantics and integration fixtures verify the primary-account scope; supplementary-only or mixed-primary scopes fail admission.
+_Avoid_: Logged-in-user assumption, all-cards-at-bank merge, card-list account inference
 
 **Account lifecycle fact**:
 A source-supported activation, suspension, closure, or comparable operational state of a Financial Account that requires a contract-established effective time because it changes synchronization and historical financial scope. Absence from a Capture or a state lacking its effective time cannot establish a lifecycle revision and instead fails admission when the contract requires that fact.
@@ -149,6 +157,26 @@ _Avoid_: Mutable canonical field, source record, cross-origin overwrite
 **Canonical admission boundary**:
 The integration contract and sync preflight must resolve and validate every required candidate before it can become a Canonical Assertion; an indeterminate, unsupported, or mutually incompatible candidate cancels the attempted Source Capture, emits an operational error, and does not proceed into canonical storage or projection. Required canonical classifications never use `unknown`, while an unsupported optional fact is omitted rather than represented by an unknown assertion.
 _Avoid_: Persisted conflict candidate, last-write-wins, silent fallback
+
+**Canonical reset cutover**:
+A version-triggered, one-time breaking replacement that automatically starts a new empty canonical financial store instead of migrating or reading any legacy financial, Source Capture, Source Record, assertion, projection, override, classification, import-run, or automation-run history. Startup completes the cutover only after it has atomically quarantined legacy data, copied Preserved Operational Configuration, and created and validated the empty store; failure leaves legacy files unchanged and refuses to open a partial store rather than falling back to the legacy model. The completed cutover creates new Source Connections, Identity Epochs, Captures, and canonical facts only through integration contracts that satisfy the current model. Legacy ledger and download files never participate in canonical reads, fallback, replay, or recollection; their physical retention or destruction follows Legacy Data Quarantine.
+_Avoid_: Legacy migration, compatibility backfill, dual read, legacy fallback, partial history carry-forward
+
+**Preserved operational configuration**:
+The non-financial local state carried across a Canonical Reset Cutover: Sign-in Details, enabled-integration configuration, Statement Selections, and user-interface preferences that neither assert a financial fact nor identify a canonical Financial Account. Preserving it authorizes future collection but never preserves Source Connection identity, Source Sync State, Captures, provenance, user financial classifications, or other financial history.
+_Avoid_: Migrated financial state, preserved canonical identity, retained sync cursor
+
+**Legacy data quarantine**:
+The temporary, read-disabled retention of the pre-cutover ledger and downloads outside every application lookup, import, replay, fallback, and recovery path. It provides no user-facing restore mode. The release after the Canonical Reset Cutover automatically destroys the quarantine only when a durable local marker proves that the cutover completed, the canonical store opened successfully, at least one contract-compliant recollection completed, and no canonical application path ever read the quarantined files; otherwise it leaves the quarantine unchanged for a later release. Quarantine never makes legacy data part of the supported model.
+_Avoid_: Legacy fallback, migration input, application-readable archive, indefinite compatibility storage
+
+**Canonical recollection readiness gate**:
+The release prerequisite that every enabled integration configuration preserved by a Canonical Reset Cutover, and every integration the release continues to advertise as supported, has a versioned, fixture-tested contract that resolves all required identity, classification, status, and effective-time semantics of the current canonical model. One unready supported integration blocks the breaking-change release; the gate evaluates new collection behavior only and never requires legacy data migration or parity.
+_Avoid_: Post-reset disabled surprise, partial integration rollout, legacy migration readiness, best-effort contract
+
+**Post-reset recollection**:
+The normal per-integration synchronization that repopulates an empty canonical store after a Canonical Reset Cutover. It begins only after the local cutover commits, follows the existing authorization, scheduling, OTP, retry, and error-notification behavior of each enabled integration, and never participates in cutover success or reads quarantined downloads. Until valid new Captures arrive, affected financial views show an explicit empty or awaiting-collection state rather than legacy values.
+_Avoid_: Cutover-time remote dependency, legacy replay, placeholder financial value, all-integrations transaction
 
 **Source assertion**:
 A Canonical Assertion for a fact explicitly supported by a Source Record, preserving the source evidence and its own lifecycle independently of parser interpretations or user corrections.
