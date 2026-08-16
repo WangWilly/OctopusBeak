@@ -1,6 +1,8 @@
 # Conservative transaction identity and revision semantics
 
-Status: accepted
+Status: superseded by ADR 0008
+
+[ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) replaces this ADR's provisional, cross-source, user-confirmed, candidate, and Identity Correction model with strict source-scoped identity and purge-and-recollect. Its source revision and withdrawal concepts survive only under ADR 0008's total integration-contract admission rules.
 
 ## Context
 

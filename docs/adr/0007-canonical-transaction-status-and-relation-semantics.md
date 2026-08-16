@@ -2,7 +2,7 @@
 
 Status: accepted
 
-OctopusBeak classifies transaction posting by account-ledger booking, keeps economic relations separate from source and projection lifecycle, and records uncertain pairings as inert candidates. This avoids importing Plaid-only identity guarantees while preserving Taiwan authorization, presentment, billing, refund, reversal, and transfer evidence without false merges.
+OctopusBeak classifies transaction posting by account-ledger booking and keeps economic relations separate from source and projection lifecycle. [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) amends this decision by requiring total `pending | posted` mappings, rejecting unresolved required semantics, forbidding user-confirmed financial relations, and removing canonical match candidates.
 
 ## Context
 
@@ -14,13 +14,12 @@ The semantic comparison is documented in [Transaction posting semantics across P
 
 ### Posting status follows account-ledger booking
 
-Every Financial Transaction has `posting_status = pending | posted | unknown`:
+Every Financial Transaction has `posting_status = pending | posted`:
 
 - `pending`: source evidence describes an authorization, immediate-card record, expected entry, or reserved amount that the Institution has not yet booked to the account ledger;
-- `posted`: source evidence or a verified, versioned Supported Source Integration contract establishes that the Institution recorded the entry in the account ledger; and
-- `unknown`: an exceptional fail-safe when the source semantics remain indeterminate.
+- `posted`: source evidence or a verified, versioned Supported Source Integration contract establishes that the Institution recorded the entry in the account ledger.
 
-Each Integration defines and tests its status mapping per Source Record kind. A Taiwan credit-card transaction may be posted after merchant presentment while remaining unbilled until the statement cut-off, so `unbilled | billed | unknown` remains independent Credit Card Transaction Detail. Payment-network settlement, cancellation, refund, reversal, payment kind, and source-assertion lifecycle are also separate from posting status.
+Each Integration defines and tests a total status mapping per Source Record kind. A missing, indeterminate, or unsupported source status cancels the attempted Source Capture rather than producing `unknown`. A Taiwan credit-card transaction may be posted after merchant presentment while remaining unbilled until the statement cut-off, so optional `unbilled | billed` remains independent Credit Card Transaction Detail. Payment-network settlement, cancellation, refund, reversal, payment kind, and source-assertion lifecycle are also separate from posting status.
 
 Pending and posted records retain separate Financial Transaction identities. Confirmed continuity is a directed `pending_to_posted` Transaction Relation from pending to posted, never a Transaction Revision, merge, or deletion. An unmatched pending transaction remains independent.
 
@@ -38,24 +37,22 @@ Initial Transaction Relation semantics are:
 
 Cross-account transfers retain both transactions. A counterpart involving a `credit / credit_card` account is interpreted as a credit-card payment from account types and transaction directions rather than a separate relation type; a source-reported payment with no observed other side remains source fact without a counterpart relation.
 
-A confirmed Transaction Relation requires explicit source linkage, an explicit user assertion, or a validated, versioned rule that determines the pairing uniquely. Source wording, opposite direction, equal or summing amounts, nearby dates, and description similarity alone never confirm a relation.
+A Transaction Relation requires explicit source linkage or a validated, versioned integration contract that determines the pairing uniquely within one source-scoped identity. Source wording, opposite direction, equal or summing amounts, nearby dates, description similarity, and user input never confirm a relation.
 
 Every relation connects two transactions, but there is no global one-to-one cardinality constraint. Evidence may establish split postings, partial or repeated refunds, compound corrections, or multi-entry transfers through multiple pairwise relations; relations do not invent amount allocations or an aggregate financial event absent from the source.
 
 `transfer_counterpart` is semantically symmetric even if physical storage orders endpoint IDs to prevent duplicate edges. All other initial relation types have the direction stated above.
 
-### Candidates have no financial effect
+### Unconfirmed relations are absent
 
-A Transaction Match Candidate retains a proposed relation kind, participating transactions, supporting and contradicting evidence, and producing rule version. It never changes identity, deduplicates transactions, excludes transfers from spending, or affects any other financial computation.
-
-Confirmation creates a separate Transaction Relation and preserves the candidate and decision history. Candidate scoring and review UI remain deferred.
+An optional relation that cannot be established uniquely is omitted rather than represented by an `unknown`, conflict, or Transaction Match Candidate. If an Integration attempts to emit mutually incompatible required mappings, sync admission cancels the attempted Source Capture; users cannot confirm financial relations in the first version.
 
 ## Consequences
 
-- Taiwan Integrations need acceptance fixtures for each Source Record kind's posting-status mapping and for indeterminate cases.
+- Taiwan Integrations need acceptance fixtures proving a total posting-status mapping for every admitted Source Record kind; an unhandled case cancels the attempted Capture.
 - Credit-card authorization, merchant presentment, and statement billing remain separately queryable.
-- Financial calculations may trust confirmed relations while displaying candidates as uncertainty without silently changing totals.
-- The physical schema, candidate ranking, review interaction, and migration sequence remain implementation-handoff decisions rather than part of this ADR.
+- Financial calculations may trust admitted relations without interpreting candidates or user financial corrections.
+- The physical schema and migration sequence remain implementation-handoff decisions rather than part of this ADR.
 
 ## Rejected alternatives
 
@@ -63,4 +60,4 @@ Confirmation creates a separate Transaction Relation and preserves the candidate
 - Treat `unbilled` as pending: Taiwan banks use unbilled for merchant-presented activity awaiting the statement boundary.
 - Add cancelled, refunded, reversed, or paid to posting status: these are source facts, economic relations, or payment semantics rather than ledger-booking states.
 - Merge pending and posted records or opposite transfer sides: this destroys distinct source evidence and assumes provider identity guarantees current sources do not have.
-- Promote fuzzy matches directly to relations: false relationships would silently alter identity and financial computation.
+- Store fuzzy or uncertain matches as candidates: ADR 0008 requires integrations to omit unsupported optional relations and reject unresolved required mappings before canonical persistence.
