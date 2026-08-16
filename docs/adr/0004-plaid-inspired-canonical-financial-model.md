@@ -170,11 +170,11 @@ All account types share one Financial Transaction entity. Credit-card transactio
 
 Signed report values are derived from amount and direction; the canonical model does not copy Plaid's provider-specific positive-outflow sign convention.
 
-`posting_status` is independent of billing, payment, refund, reversal, and projection state. Missing source status is `unknown`; downloading a row does not prove it is posted.
+`posting_status` is independent of billing, payment, refund, reversal, and projection state. [ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md) defines it by account-ledger booking, requires a verified Integration mapping, and keeps `unknown` as the exceptional fail-safe; downloading a row does not prove it is posted.
 
 A Financial Transaction belonging to a `credit / credit_card` account may have one Credit Card Transaction Detail component. The component has no independent ID or lifecycle. Its optional fields include Card Instrument, `unbilled | billed | unknown` billing status, Credit Card Billing Statement membership, original amount and currency, provenance-bearing conversion evidence, installment detail, and source payment status. Filename-derived billed/unbilled values are `parser_inference`.
 
-An optional Transaction Relation links two transactions without merging or deleting them. Initial types are `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, and `installment_of`. A relation requires explicit source evidence or a deterministic versioned rule with provenance. Ambiguous matching creates no relation.
+An optional Transaction Relation links two transactions without merging or deleting them. Initial types are `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, and `installment_of`; [ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md) fixes their direction, cardinality, confirmation evidence, and separation from inert Transaction Match Candidates.
 
 Source removal is projection lifecycle, not economic evidence of refund, reversal, or cancellation. When a provider protocol supplies added, modified, or removed patches, its cursor and mutation semantics remain in Source Sync State and projection processing rather than being copied into transaction status.
 
