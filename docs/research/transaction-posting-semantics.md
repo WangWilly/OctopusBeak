@@ -39,4 +39,4 @@ Sources:
 - Payment-network settlement is a separate lifecycle and must not define account-transaction posting status.
 - Taiwan `unbilled` and `billed` describe statement-cycle membership. A merchant-presented transaction may be posted while still unbilled.
 - Each Supported Source Integration must verify and version the semantics of the page, endpoint, or report it collects. A filename, successful download, posting-date-shaped column, or appearance in a list is not sufficient by itself.
-- The current Taiwan-source inventory usually lacks row-level status. `unknown` therefore remains a valid exceptional fail-safe, while a verified Integration contract may map a whole Source Record kind deterministically.
+- A Supported Source Integration must map every admitted record kind deterministically to `pending` or `posted`, including a verified whole-record-kind mapping when no row-level status exists. A source kind whose semantics cannot support that total contract is rejected rather than represented by canonical `unknown`.

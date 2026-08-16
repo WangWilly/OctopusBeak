@@ -2,6 +2,8 @@
 
 Status: accepted
 
+[ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) amends this model's identity, source-evidence retention, admission, temporal requirements, `unknown`, candidate, and user-correction semantics. Where this ADR describes provisional or cross-source identity, raw replayable records, optional Balance/Holding effective time, canonical conflicts, or financial match candidates, ADR 0008 governs.
+
 ## Context
 
 OctopusBeak currently preserves source-specific rows for bank deposits, foreign-currency deposits, credit cards, loans, funds, brokerage, and crypto data. Those rows have useful ingestion lineage but do not form one stable domain model. In particular, current sources do not consistently provide provider account, transaction, or statement identifiers; query periods do not establish statement coverage; a transaction-row running balance is not an independent live balance; and workflow, filename, parser, and product labels include inference that must not be presented as source fact.
@@ -15,7 +17,7 @@ Plaid is a model reference only. This decision does not plan or require a Plaid 
 
 ## Decision
 
-OctopusBeak adopts a logical canonical model centered on stable local Financial Accounts and immutable source evidence. Canonical projections remain traceable to Source Records, distinguish source facts from inference, and preserve uncertainty instead of forcing identity matches or provider semantics that the source cannot support.
+OctopusBeak adopts a logical canonical model centered on source-scoped Financial Accounts and immutable compact source evidence. Canonical projections remain traceable to Source Records and distinguish source facts from inference; unresolved required semantics fail strict admission instead of becoming canonical uncertainty.
 
 This ADR fixes domain entities, relations, field requirements, and terminology. It does not prescribe physical tables, workflow boundaries, migration sequencing, or whether a relation is stored as a table, structured column, or graph edge. The planned workflow refactor may revise those implementation choices without changing the semantic boundaries below.
 
@@ -66,13 +68,13 @@ flowchart TD
 
 An Institution is the canonical identity of the real-world provider that maintains a Financial Account. A Supported Source is a verified collection and import integration. Their coverage mapping is many-to-many: one Institution may have separate deposit, credit-card, loan, fund, or brokerage sources, while a future aggregator source may cover multiple Institutions.
 
-A Source Connection is an optional, user-specific operational relationship with a Supported Source. It may expose multiple Financial Accounts, and the same Financial Account may later be observed through another connection. Connection failure, replacement, or deletion does not close the account. Manual captures do not require a Source Connection.
+A Source Connection is a user-specific operational relationship with a Supported Source and namespaces the source-scoped Financial Accounts it exposes. Accounts from another connection never share canonical identity; connection failure, replacement, or deletion does not by itself establish account closure.
 
 Plaid institution IDs, portal IDs, workflow codes, bank codes, and brands are external identifiers rather than canonical Institution identity. The Institution taxonomy is technical and does not declare that every fund or crypto provider has a particular Taiwan regulatory status.
 
 | Entity | Required | Optional or conditional |
 | --- | --- | --- |
-| Institution | local ID, canonical name, provider type, identity status | jurisdiction, parent group, external identifiers, display metadata |
+| Institution | contract-established local ID, canonical name, provider type | jurisdiction, parent group, external identifiers, display metadata |
 | Supported Source | local ID, name, verified coverage and support state | collector/parser versions, capability metadata |
 | Institution source coverage | Institution, Supported Source, covered product | evidence and verification time |
 | Source Connection | local ID, Supported Source, connection status | Institution hints, connected/last-successful time, consent metadata, configuration reference |
@@ -82,19 +84,19 @@ Authentication secrets never enter this model. A sync cursor is operational stat
 
 ### Source evidence and processing
 
-A Source Capture is the immutable evidence envelope for one source-side collection event at a declared observation time and scope. Its exact workflow mapping and granularity remain revisable. A Source Record is an immutable file, row, or object inside that capture. An Import Run is a processing execution that reads Source Records and creates or reconciles projections; reprocessing evidence creates another Import Run, not another Source Capture.
+A Source Capture is the immutable metadata envelope for one independently observed source event that passed its versioned contract and sync admission checks. A Source Record is an immutable compact evidence projection inside exactly one Capture; the first version retains no raw replayable file, response, or page. An Import Run atomically reads Source Records and creates projections; reprocessing creates another run, not another Capture.
 
 | Entity | Required | Optional or conditional |
 | --- | --- | --- |
-| Source Capture | local ID, Supported Source, collection time, declared scope | Source Connection, source-effective time, completeness/finality assertions |
-| Source Record | local ID, Source Capture, record kind, immutable payload or content reference, content integrity value, source coordinates | provider metadata |
+| Source Capture | local ID, Supported Source, Source Connection, observation time, declared scope, completeness, contract version | operational request metadata |
+| Source Record | local ID, Source Capture, record kind, compact contract-defined values and source identity, provenance | optional provider metadata retained by the compact contract |
 | Import Run | local ID, processing status, start time, parser/rule version | completion time, error summary |
 
-Every canonical entity has entity-level lineage to its supporting Source Records. Direct `source_fact` fields may inherit that lineage. A field that is inferred, normalized, conflicting, or user asserted has field-level provenance with field path, value origin, evidence, and applicable rule version. The allowed value origins are `source_fact`, `parser_inference`, `normalized_projection`, and `user_assertion`. User assertions coexist with immutable evidence and never rewrite it.
+Every canonical entity has entity-level lineage to its supporting Source Records. Direct `source_fact` fields may inherit that lineage. An inferred, normalized, or user-governed field has field-level provenance with field path, value origin, evidence, and applicable rule version. User assertions coexist with immutable evidence, never rewrite it, and are limited by ADR 0008 to display names, categories, tags, and notes.
 
 ### Financial Account and identity
 
-A Financial Account is the stable local representation of an independently identifiable contractual, ledger, or asset-holding relationship with an Institution. It persists across connections, captures, imports, files, card instruments, and currencies.
+A Financial Account is the stable source-scoped representation established within one integration namespace, Source Connection, contract-defined stable key, and Identity Epoch. It persists across Captures and Import Runs in that scope but is never merged with an Account from another integration or connection.
 
 The required account types are:
 
@@ -103,16 +105,14 @@ The required account types are:
 - `loan`
 - `investment`
 - `other`
-- `unknown`
 
 Current product paths support `depository`, `credit`, `loan`, and `investment`. Subtype is optional and evidence-gated. A credit-card account is `credit / credit_card`; a crypto exchange or self-custody wallet is `investment / crypto_exchange` or `investment / non_custodial_wallet` when its account boundary is supported by source evidence.
 
 | Field | Requirement | Rule |
 | --- | --- | --- |
 | `financial_account_id` | required | Stable local ID; never a source row ID or account-number hash |
-| Institution | required | May be provisional when provider identity is unresolved |
+| Institution | required | Integration contract must resolve it uniquely before admission |
 | `account_type` | required | One of the canonical top-level types |
-| `identity_status` | required | `provisional`, `confirmed`, or `conflicted` |
 | canonical entity lineage | required | Links account identity to supporting Source Records |
 | `account_subtype` | optional | Never inferred solely from workflow name |
 | display name | optional | Source-backed or user asserted |
@@ -120,9 +120,7 @@ Current product paths support `depository`, `credit`, `loan`, and `investment`. 
 
 A Financial Account may contain multiple currencies. Currency-specific files do not prove separate currency subaccounts. A separate currency subaccount is created only when the source establishes independent identity.
 
-Account identity evidence is represented by multiple Account Identifiers rather than one global `account_number` field. Initial kinds are `account_number_hash`, `account_mask`, and `source_account_label`. Each identifier records its Financial Account, kind, value, supporting Source Record, observation time, and value origin. Source-file IDs, statement-row IDs, content hashes, and filename-derived ingestion keys are not Account Identifiers. Provider account IDs are deferred until an actual provider integration requires them.
-
-An account stays `provisional` when only masks, labels, or inferred identifiers exist; Institution-scoped account-number evidence or explicit user confirmation may make it `confirmed`; mutually exclusive evidence makes it `conflicted`. Conflict stops silent reconciliation but does not rewrite or delete either source record.
+An Account Identifier is the stable source key that the Integration contract scopes by namespace, Source Connection, and Identity Epoch. Masks, labels, source-file IDs, row IDs, content hashes, filename-derived keys, and user input cannot establish identity; an Integration without a unique stable key cancels the attempted Capture.
 
 ### Card Instrument
 
@@ -142,7 +140,7 @@ A Balance Observation is a typed, time-bound measurement associated with a Finan
 | balance kind | required |
 | non-negative or signed amount according to the defined balance kind, plus currency | required |
 | collection time | required |
-| source-effective time | optional when the source does not provide it |
+| contract-defined effective time | required |
 | canonical entity lineage | required |
 | derivation metadata | required when derived |
 
@@ -161,7 +159,7 @@ All account types share one Financial Transaction entity. Credit-card transactio
 | direction | required | `inflow` or `outflow` across the Financial Account boundary; ambiguous source rows are not promoted |
 | `effective_on` | required | Local calendar date selected deterministically |
 | `effective_on_basis` | required | `occurred`, `authorized`, `posted`, `accounting`, or `inferred` |
-| `posting_status` | required | `pending`, `posted`, or `unknown` |
+| `posting_status` | required | `pending` or `posted`; unresolved source semantics cancel the attempted Capture |
 | canonical entity lineage | required | One or more supporting Source Records |
 | description and raw description | optional | Raw source text is distinct from enrichment |
 | occurred, authorized, posted, and accounting date/time observations | optional | Kept separately with precision, time origin, source timezone, and UTC normalization semantics |
@@ -170,11 +168,11 @@ All account types share one Financial Transaction entity. Credit-card transactio
 
 Signed report values are derived from amount and direction; the canonical model does not copy Plaid's provider-specific positive-outflow sign convention.
 
-`posting_status` is independent of billing, payment, refund, reversal, and projection state. [ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md) defines it by account-ledger booking, requires a verified Integration mapping, and keeps `unknown` as the exceptional fail-safe; downloading a row does not prove it is posted.
+`posting_status` is independent of billing, payment, refund, reversal, and projection state. [ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md) defines it by account-ledger booking, while ADR 0008 requires a total verified Integration mapping and cancels an attempted Capture whose required status cannot be resolved.
 
-A Financial Transaction belonging to a `credit / credit_card` account may have one Credit Card Transaction Detail component. The component has no independent ID or lifecycle. Its optional fields include Card Instrument, `unbilled | billed | unknown` billing status, Credit Card Billing Statement membership, original amount and currency, provenance-bearing conversion evidence, installment detail, and source payment status. Filename-derived billed/unbilled values are `parser_inference`.
+A Financial Transaction belonging to a `credit / credit_card` account may have one Credit Card Transaction Detail component. The component has no independent ID or lifecycle. Its optional fields include Card Instrument, optional `unbilled | billed` billing status, Credit Card Billing Statement membership, original amount and currency, provenance-bearing conversion evidence, installment detail, and source payment status. An unsupported optional fact is absent rather than `unknown`.
 
-An optional Transaction Relation links two transactions without merging or deleting them. Initial types are `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, and `installment_of`; [ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md) fixes their direction, cardinality, confirmation evidence, and separation from inert Transaction Match Candidates.
+An optional Transaction Relation links two transactions without merging or deleting them. Initial types are `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, and `installment_of`; ADR 0007 fixes their direction and cardinality, while ADR 0008 requires contract-established source-scoped evidence and stores no match candidates.
 
 Source removal is projection lifecycle, not economic evidence of refund, reversal, or cancellation. When a provider protocol supplies added, modified, or removed patches, its cursor and mutation semantics remain in Source Sync State and projection processing rather than being copied into transaction status.
 
@@ -186,7 +184,7 @@ A Credit Card Billing Statement is an evidence-gated, settled billing-cycle summ
 | --- | --- |
 | local ID, Financial Account, lineage, evidence sufficient to establish a settled cycle | source statement ID, period start/end, issue date, due date, statement currency, statement balance, minimum payment, totals, transaction membership |
 
-A deposit transaction query, CSV export, filename, Source Capture, and unbilled credit-card list are not Statements. Statement period, issue, and due dates belong to the Credit Card Billing Statement rather than becoming transaction date observations; a billed status may exist without Statement membership. A provider-issued PDF or equivalent file is a Statement Document retained as a Source Record; file form alone does not create a canonical Credit Card Billing Statement.
+A deposit transaction query, CSV export, filename, Source Capture, and unbilled credit-card list are not Statements. Statement period, issue, and due dates belong to the Credit Card Billing Statement rather than becoming transaction date observations; a billed status may exist without Statement membership. The first version retains only the Integration's compact Statement evidence rather than a replayable provider-issued document, and file form alone never establishes a canonical Statement.
 
 ### Security and Holding Observation
 
@@ -196,8 +194,8 @@ A Holding Observation is a source-reported evidence checkpoint for a Security he
 
 | Entity | Required | Optional or conditional |
 | --- | --- | --- |
-| Security | local ID, security type, identity status, lineage | provider identifiers, name, ticker, currency, display metadata |
-| Holding Observation | local ID, Financial Account, Security, observation time, lineage | quantity, cost basis, price, valuation, valuation time and currency |
+| Security | contract-established source-scoped identity, security type, lineage | provider identifiers, name, ticker, currency, display metadata |
+| Holding Observation | local ID, Financial Account, Security, contract-defined effective time, observation time, lineage, and at least one usable quantity or valuation | cost basis, price, valuation currency |
 
 A Holding Observation requires at least one usable quantity or valuation. The current holding is a projection from the latest valid observation; OctopusBeak does not synthesize daily snapshots when the source provides no observation.
 
@@ -208,15 +206,15 @@ BTC, ETH, and similar assets are Securities referenced by crypto Holding Observa
 | Classification | Concepts |
 | --- | --- |
 | Plaid-aligned | Institution as a provider reference; Account type/subtype hierarchy; Account-linked Transactions; Security; Holding; `depository`, `credit`, `loan`, and `investment`; `credit / credit_card`; `investment / crypto_exchange` and `non_custodial_wallet` |
-| Taiwan-adjusted | Stable local Financial Account identity; multiple evidence-backed Account Identifiers; multi-currency account boundary; non-negative Transaction amount plus explicit direction; multiple transaction dates plus effective-date basis; typed Balance Observations; Holding observations retained as checkpoints |
-| OctopusBeak-added | Supported Source coverage; Source Connection separated from Account; Source Capture, Source Record, and Import Run; entity- and field-level provenance; account identity status; Card Instrument; Credit Card Transaction Detail; generic Transaction Relation |
+| Taiwan-adjusted | Source-scoped Financial Account identity; contract-defined stable Account Identifier; multi-currency account boundary; non-negative Transaction amount plus explicit direction; multiple transaction dates plus effective-date basis; typed Balance Observations; Holding observations retained as checkpoints |
+| OctopusBeak-added | Supported Source coverage; Source Connection as identity namespace; Source Capture, compact Source Record, and atomic Import Run; origin-specific assertion lineage; Identity Epoch; Source Authority Routing; Contract Purge; Card Instrument; Credit Card Transaction Detail; generic Transaction Relation |
 | Excluded from canonical model | Workflow and filename labels as identities; source-row and content hashes as account IDs; mutable current balances; account-per-currency inference; card-per-account inference; generic Statement inferred from an export; separate CreditCardTransaction entity; liability Holding; authentication secrets |
 | Deferred until evidence requires it | Provider account/transaction IDs; provider cursor/webhook storage beyond generic Source Sync State; exact Taiwan account-subtype vocabulary; universal transaction-kind taxonomy; automatic merchant/category enrichment; physical schema and migration plan |
 
 ## Consequences
 
 - Canonical projections require more explicit relations and provenance than the current typed source tables.
-- Account reconciliation is deliberately conservative; provisional duplicates are preferable to silently combining unrelated accounts.
+- Accounts and Transactions remain source-scoped; Source Authority Routing prevents duplicate projection inputs without cross-source identity reconciliation.
 - Product queries derive current account, balance, and holding views from evidence-backed observations rather than assuming the latest imported row is authoritative.
 - Credit-card, investment, loan, and deposit sources share core account and transaction vocabulary while retaining type-specific components.
 - Workflow and schema refactors must preserve immutable evidence, value origin, and the separation between collection, processing, and financial facts.
