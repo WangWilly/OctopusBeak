@@ -2,7 +2,7 @@
 
 Status: implementation-ready planning specification
 
-This specification resolves GitHub issue 124. It translates ADRs 0004–0010 and the root glossary into a first-version physical storage and query boundary. It specifies table responsibilities, mandatory constraints, transaction boundaries, and verification criteria; exact SQL names may change during implementation only when the same guarantees remain mechanically enforceable.
+This specification resolves GitHub issue 124. It translates ADRs 0004–0010 and the root glossary into a first-version physical storage and query boundary. It specifies table responsibilities, mandatory constraints, transaction boundaries, and verification criteria; exact SQL names may change during implementation only when the same guarantees remain mechanically enforceable. The typed enrichment extensions to this storage boundary are defined by [Transaction taxonomy and enrichment specification](./transaction-taxonomy-and-enrichment.md) and ADR 0011.
 
 ## 1. Storage boundary
 
@@ -216,6 +216,7 @@ Typed assertion target/value extensions
 - Enforce exactly one target family per Assertion with constraints and admission tests.
 - User-governed fields are registered and migration-controlled. Text, category, tag, and note values use typed representations; arbitrary field names or JSON values are forbidden.
 - User Assertions cannot target financial amounts, currencies, directions, dates, posting status, balances, holdings, Statement totals, identity, or membership.
+- Transaction Kind, Personal Category, Category Allocation, Counterparty Participation/display, and Transaction Tag use the typed registries, value tables, origin matrix, applicability rules, and current projection contract in the transaction taxonomy and enrichment specification; they do not use arbitrary field names or generic JSON values.
 
 Canonical storage has no required-value `unknown`, conflict status, candidate set, manual financial selector, or Identity Correction. Missing, unsupported, or mutually incompatible required values cancel the attempted Capture before canonical commit.
 
@@ -254,6 +255,7 @@ Failed or partial runs leave the previous complete result unchanged and write on
 - Typed, query-oriented rows for current Financial Accounts, Transactions, Statements, balances, holdings, relations, and user-governed fields.
 - Every selected value references its authority route and canonical revision or Assertion.
 - Projection rows contain no independent financial authority and are fully rebuildable.
+- Current transaction enrichment returns the selected typed Kind and categorization, all Counterparty Participations, display label with origin, active Tags, classification coverage, and report-eligibility coverage without creating another assertion or event system.
 
 Do not materialize daily historical snapshots in the first version. Historical queries resolve immutable revisions, lifecycle transitions, and routes using both explicit financial-time and knowledge-time cutoffs.
 
