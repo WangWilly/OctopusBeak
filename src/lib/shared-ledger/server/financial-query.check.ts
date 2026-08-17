@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createFinancialQuery,
+  type HistoricalFinancialProjection,
+  type HistoricalFinancialQueryResult,
+  type LineageFinancialProjection,
+  type LineageFinancialQueryResult,
   type FinancialQueryBoundary,
 } from "./financial-query.ts";
+import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const loaders = [
@@ -29,25 +35,64 @@ for (const [product, path] of loaders) {
 
 const boundary: FinancialQueryBoundary = createFinancialQuery();
 assert.equal(typeof boundary.current, "function");
+assert.equal(typeof boundary.overviewExchangeRates, "function");
 assert.equal(typeof boundary.historical, "function");
 assert.equal(typeof boundary.lineage, "function");
-const historical = await boundary.historical({
+const boundarySource = readFileSync(join(here, "financial-query.ts"), "utf8");
+assert.doesNotMatch(boundarySource, /projection:\s*unknown/);
+assert.doesNotMatch(boundarySource, /lineage:\s*unknown/);
+for (const [reader, forbidden] of [
+  ["readCurrentAssets", /exchange_rates|loadSpendingQueryData/],
+  ["readCurrentLiabilities", /exchange_rates|loadSpendingQueryData/],
+  ["readCurrentOverview", /fundBuyTransactions|fundRedemptionTransactions|brokerageTradeTransactions|loadSpendingQueryData/],
+] as const) {
+  const start = boundarySource.indexOf(`private async ${reader}`);
+  const end = boundarySource.indexOf("\n  private ", start + 1);
+  assert.ok(start >= 0, `${reader} must be a private product reader`);
+  assert.doesNotMatch(boundarySource.slice(start, end < 0 ? undefined : end), forbidden);
+}
+
+type Assert<T extends true> = T;
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type _HistoricalProjectionHasNoLegacyPayload = Assert<Equal<HistoricalFinancialProjection<never>["projection"], never>>;
+type _LineageProjectionHasNoLegacyPayload = Assert<Equal<LineageFinancialProjection<never>["lineage"][number], never>>;
+const historicalContract: HistoricalFinancialQueryResult<never> = await boundary.historical({
   kind: "historical",
   product: "overview",
-  financialCutoff: "2026-01-01",
+  cutoff: { kind: "both", financialAt: "2026-01-01", knowledgeAt: "2026-01-02" },
 });
-assert.deepEqual(historical, {
+assert.deepEqual(historicalContract, {
   status: "unsupported",
   kind: "historical",
   reason: "legacy-adapter-does-not-support-historical-queries",
 });
-const lineage = await boundary.lineage({
+const lineageContract: LineageFinancialQueryResult<never> = await boundary.lineage({
   kind: "lineage",
   product: "overview",
-  subject: { type: "account", id: "example" },
+  subject: { kind: "account", id: "example" },
 });
-assert.deepEqual(lineage, {
+assert.deepEqual(lineageContract, {
   status: "unsupported",
   kind: "lineage",
   reason: "legacy-adapter-does-not-support-lineage-queries",
 });
+
+const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "financial-query-boundary-"));
+try {
+  seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
+  const productQuery = createFinancialQuery(ledgerDir);
+  const assets = await productQuery.current({ kind: "current", product: "assets" });
+  assert.deepEqual(assets.ledger.creditCardStatementLines, []);
+  assert.deepEqual(assets.ledger.creditCardSnapshots, []);
+  assert.deepEqual(assets.ledger.loanTransactions, []);
+  const overview = await productQuery.current({ kind: "current", product: "overview" });
+  assert.deepEqual(overview.ledger.fundBuyTransactions, []);
+  assert.deepEqual(overview.ledger.brokerageTradeTransactions, []);
+  const liabilities = await productQuery.current({ kind: "current", product: "liabilities" });
+  assert.deepEqual(liabilities.ledger.maicoinStatementRows, []);
+  const spending = productQuery.current({ kind: "current", product: "spending" });
+  assert.equal(spending.product, "spending");
+} finally {
+  await rm(ledgerDir, { recursive: true, force: true });
+}
