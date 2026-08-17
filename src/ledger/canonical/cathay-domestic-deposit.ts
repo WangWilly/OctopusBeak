@@ -8,7 +8,14 @@ export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 1;
+export const CANONICAL_SCHEMA_VERSION = 2;
+export const CATHAY_POSTING_MAPPING = {
+  contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  postingStatus: "posted",
+  origin: "provider_booked_history",
+  basis: "query-status-success-with-accounting-date",
+  ruleVersion: "cathay/domestic-deposit/v1",
+} as const;
 
 export const CATHAY_DOMESTIC_DEPOSIT_PROVENANCE = {
   validatedAt: "2026-08-17",
@@ -18,7 +25,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_PROVENANCE = {
   note: "Human-assisted validation covered response shape only; no live values are retained.",
 } as const;
 
-export const CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE = `{"success":true,"returnCode":"0000","content":{"datas":[{"queryStatus":"Success","accountNumber":"SYNTHETIC-ACCOUNT-001","count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":[{"sequenceNumber":1,"txnDateTime":"2026-07-01T09:00:00","accountDate":"2026-07-01","description":"Synthetic deposit","expendAmt":null,"incomeAmt":12500,"balance":12500},{"sequenceNumber":2,"txnDateTime":"2026-07-02T10:15:30","accountDate":"2026-07-02","description":"Synthetic transfer","expendAmt":300,"incomeAmt":null,"balance":12200},{"sequenceNumber":3,"txnDateTime":"2026-07-03T11:45:00","accountDate":"2026-07-03","description":"Synthetic credit","expendAmt":null,"incomeAmt":800,"balance":13000}]}]}}`;
+export const CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE = `{"success":true,"returnCode":"0000","content":{"datas":[{"queryStatus":"Success","accountNumber":"SYNTHETIC-ACCOUNT-001","count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":[{"sequenceNumber":1,"txnDateTime":"2026-07-01T09:00:00","accountDate":"2026-07-01","description":"Synthetic Cathay deposit description","expendAmt":null,"incomeAmt":12500,"balance":12500},{"sequenceNumber":2,"txnDateTime":"2026-07-02T10:15:30","accountDate":"2026-07-02","description":"Synthetic Cathay transfer description","expendAmt":300,"incomeAmt":null,"balance":12200},{"sequenceNumber":3,"txnDateTime":"2026-07-03T11:45:00","accountDate":"2026-07-03","description":"Synthetic Cathay credit description","expendAmt":null,"incomeAmt":800,"balance":13000}]}]}}`;
 
 export type CathayDomesticDepositCaptureInput = {
   rawResponse: string;
@@ -201,18 +208,43 @@ function localDateTimeToUtcMicros(value: string): number {
   if (!Number.isSafeInteger(milliseconds)) throw new Error("Cathay local date-time is outside the supported instant range.");
   return milliseconds * 1000;
 }
+function localDateToUtcMicros(value: string): number {
+  return localDateTimeToUtcMicros(`${value}T00:00:00`);
+}
 
 type ValidatedCathayRow = {
   sequence: string;
   accountDate: string;
   transactionDateTime: string;
+  description: string | null;
+  accountingUtcInstantUtcUs: number;
   utcInstantUtcUs: number;
   amount: ExactDecimal;
   direction: "inflow" | "outflow";
   balance: ExactDecimal;
   payload: string;
 };
-type ValidatedCathayCapture = { accountNo: string; startDate: string; endDate: string; rows: ValidatedCathayRow[] };
+type ValidatedCathayCapture = {
+  accountNo: string;
+  startDate: string;
+  endDate: string;
+  posting: typeof CATHAY_POSTING_MAPPING;
+  rows: ValidatedCathayRow[];
+};
+
+function cathayPostingMapping(
+  statement: { [key: string]: LosslessJsonValue },
+  details: LosslessJsonValue[],
+): typeof CATHAY_POSTING_MAPPING {
+  if (requiredString(statement, "queryStatus") !== "Success") throw new Error("Cathay queryStatus was not Success; posting status is not mappable.");
+  for (const detailValue of details) {
+    const detail = asObject(detailValue, "Cathay transfer detail");
+    if ("status" in detail || "pending" in detail || "postingStatus" in detail) {
+      throw new Error("Cathay posting mapping requires the booked-history response without pending status fields.");
+    }
+  }
+  return CATHAY_POSTING_MAPPING;
+}
 
 function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCathayCapture {
   if (!input.sourceConnectionId.trim() || !input.identityEpoch.trim()) throw new Error("Source Connection and Identity Epoch are required.");
@@ -234,7 +266,6 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
   const datas = asArray(content.datas, "Cathay response datas");
   if (datas.length !== 1) throw new Error("Cathay response must contain exactly one transfer result.");
   const statement = asObject(datas[0]!, "Cathay transfer result");
-  if (requiredString(statement, "queryStatus") !== "Success") throw new Error("Cathay queryStatus was not Success.");
   const accountNo = requiredString(statement, "accountNumber");
   if (accountNo !== input.accountNo) throw new Error("Cathay account scope does not match the response.");
   if (requiredString(statement, "startDate") !== startDate || requiredString(statement, "endDate") !== endDate) throw new Error("Cathay response date scope does not match the requested scope.");
@@ -242,6 +273,7 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
   if (count.scale !== 0 || count.coefficient < 0n) throw new Error("Cathay count must be a non-negative integer.");
   const details = asArray(statement.details, "Cathay transfer details");
   if (count.coefficient !== BigInt(details.length)) throw new Error("Cathay response count does not match details.");
+  const posting = cathayPostingMapping(statement, details);
 
   const sequences = new Set<string>();
   const rows = details.map((detailValue, index) => {
@@ -260,19 +292,29 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
     const balance = parseExactDecimalLexeme(balanceLexeme);
     const accountDate = requireDate(requiredString(detail, "accountDate"), "accountDate");
     const transactionDateTime = requireDateTime(requiredString(detail, "txnDateTime"), "txnDateTime");
+    const descriptionValue = detail.description;
+    if (descriptionValue !== undefined && descriptionValue !== null && typeof descriptionValue !== "string") {
+      throw new Error("Cathay description must be a string or absent.");
+    }
+    if (typeof descriptionValue === "string" && descriptionValue.length > 512) throw new Error("Cathay description exceeds the supported compact length.");
+    const description = typeof descriptionValue === "string" && descriptionValue.length > 0 ? descriptionValue : null;
     const direction = incomeLexeme === null ? "outflow" : "inflow";
+    const payload: Record<string, string> = { sequenceNumber: sequenceLexeme, accountDate, txnDateTime: transactionDateTime, amount: amountLexeme, amountDirection: direction, balance: balanceLexeme };
+    if (description !== null) payload.description = description;
     return {
       sequence: sequenceLexeme,
       accountDate,
       transactionDateTime,
+      description,
+      accountingUtcInstantUtcUs: localDateToUtcMicros(accountDate),
       utcInstantUtcUs: localDateTimeToUtcMicros(transactionDateTime),
       amount,
       direction,
       balance,
-      payload: JSON.stringify({ sequenceNumber: sequenceLexeme, accountDate, txnDateTime: transactionDateTime, amount: amountLexeme, amountDirection: direction, balance: balanceLexeme }),
+      payload: JSON.stringify(payload),
     } satisfies ValidatedCathayRow;
   });
-  return { accountNo, startDate, endDate, rows };
+  return { accountNo, startDate, endDate, posting, rows };
 }
 
 type CanonicalId = Buffer;
@@ -304,7 +346,8 @@ CREATE TABLE IF NOT EXISTS canonical_commits (
   commit_id BLOB PRIMARY KEY CHECK(length(commit_id) = 16),
   commit_sequence INTEGER NOT NULL UNIQUE,
   recorded_at_utc_us INTEGER NOT NULL,
-  authority_route TEXT NOT NULL
+  authority_route TEXT NOT NULL,
+  commit_kind TEXT NOT NULL CHECK(commit_kind = 'source_capture')
 );
 CREATE TABLE IF NOT EXISTS source_authority_routes (
   authority_route TEXT PRIMARY KEY, integration_namespace TEXT NOT NULL, stream TEXT NOT NULL, contract_version TEXT NOT NULL,
@@ -329,7 +372,8 @@ CREATE TABLE IF NOT EXISTS source_captures (
 );
 CREATE TABLE IF NOT EXISTS source_records (
   source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), sequence_lexeme TEXT NOT NULL, payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), sequence_lexeme TEXT NOT NULL, description TEXT,
+  payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)
 );
 CREATE TABLE IF NOT EXISTS financial_accounts (
   account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
@@ -347,9 +391,20 @@ CREATE TABLE IF NOT EXISTS transaction_revisions (
   commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), revision_number INTEGER NOT NULL,
   amount_coefficient TEXT NOT NULL, amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0), currency TEXT NOT NULL,
   direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')), posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
+  posting_origin TEXT NOT NULL CHECK(posting_origin = 'provider_booked_history'), posting_basis TEXT NOT NULL CHECK(posting_basis = 'query-status-success-with-accounting-date'),
+  posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1'), description TEXT,
   effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
   time_precision TEXT NOT NULL CHECK(time_precision = 'second'), time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+  effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting'), effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1'),
   utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
+);
+CREATE TABLE IF NOT EXISTS transaction_time_observations (
+  observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), role TEXT NOT NULL CHECK(role IN ('accounting','occurred')),
+  local_value TEXT NOT NULL, time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'), time_precision TEXT NOT NULL CHECK(time_precision IN ('date','second')),
+  time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'), utc_instant_utc_us INTEGER NOT NULL,
+  UNIQUE(revision_id, role)
 );
 CREATE TABLE IF NOT EXISTS source_assertions (
   assertion_id BLOB PRIMARY KEY CHECK(length(assertion_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
@@ -369,16 +424,62 @@ CREATE TABLE IF NOT EXISTS current_transactions (
   transaction_id BLOB PRIMARY KEY REFERENCES financial_transactions(transaction_id), revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
   commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
 );
+CREATE TABLE IF NOT EXISTS current_projection_state (
+  generation INTEGER PRIMARY KEY CHECK(generation = 1), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_revisions_financial_time ON transaction_revisions(effective_on, utc_instant_utc_us, transaction_id, commit_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_revisions_knowledge_time ON transaction_revisions(commit_id, transaction_id, revision_number);
+CREATE INDEX IF NOT EXISTS idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id);
+CREATE INDEX IF NOT EXISTS idx_current_transactions_revision ON current_transactions(revision_id, commit_id, transaction_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_revisions_lineage ON transaction_revisions(transaction_id, revision_number, revision_id);
+CREATE INDEX IF NOT EXISTS idx_source_assertions_revision ON source_assertions(revision_id, transaction_id, assertion_id);
+CREATE INDEX IF NOT EXISTS idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);
+CREATE INDEX IF NOT EXISTS idx_source_records_capture ON source_records(capture_id, sequence_lexeme, source_record_id);
+CREATE INDEX IF NOT EXISTS idx_time_observations_revision ON transaction_time_observations(revision_id, role, observation_id);
 `;
 
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+function migrateV1ToV2(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("ALTER TABLE canonical_commits ADD COLUMN commit_kind TEXT NOT NULL DEFAULT 'source_capture' CHECK(commit_kind = 'source_capture')");
+    db.exec("ALTER TABLE source_records ADD COLUMN description TEXT");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_origin TEXT NOT NULL DEFAULT 'provider_booked_history' CHECK(posting_origin = 'provider_booked_history')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_basis TEXT NOT NULL DEFAULT 'query-status-success-with-accounting-date' CHECK(posting_basis = 'query-status-success-with-accounting-date')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN description TEXT");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_basis TEXT NOT NULL DEFAULT 'accounting' CHECK(effective_time_basis = 'accounting')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')");
+    db.exec(SCHEMA);
+    const revisions = db.prepare("SELECT revision_id, transaction_id, source_record_id, commit_id, capture_id, effective_on, transaction_date_time_local, utc_instant_utc_us FROM transaction_revisions").all() as Array<Record<string, unknown>>;
+    const insertObservation = db.prepare(`INSERT INTO transaction_time_observations(
+      observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const revision of revisions) {
+      insertObservation.run(uuidV7(), blob(revision.transaction_id), blob(revision.revision_id), blob(revision.source_record_id), blob(revision.commit_id), "accounting", String(revision.effective_on), CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", localDateToUtcMicros(String(revision.effective_on)));
+      insertObservation.run(uuidV7(), blob(revision.transaction_id), blob(revision.revision_id), blob(revision.source_record_id), blob(revision.commit_id), "occurred", String(revision.transaction_date_time_local), CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", Number(revision.utc_instant_utc_us));
+    }
+    const latestCommit = db.prepare("SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1").get() as Record<string, unknown> | undefined;
+    if (latestCommit) db.prepare("INSERT OR REPLACE INTO current_projection_state(generation, commit_id) VALUES (1, ?)").run(blob(latestCommit.commit_id));
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, Date.now() * 1000);
+    db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 function applySchemaMigration(db: DatabaseSync): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
   const version = Number(row.user_version ?? 0);
   if (version > CANONICAL_SCHEMA_VERSION) throw new Error(`Canonical SQLite schema ${version} is newer than supported ${CANONICAL_SCHEMA_VERSION}.`);
   if (version === 0 && tableExists(db, "canonical_commits")) throw new Error("Unversioned canonical SQLite schema is not compatible; refusing ad-hoc migration.");
+  if (version === 1) {
+    migrateV1ToV2(db);
+    return;
+  }
   if (version === CANONICAL_SCHEMA_VERSION) {
     if (!tableExists(db, "schema_migrations")) throw new Error("Canonical SQLite schema version metadata is missing.");
     const migration = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(CANONICAL_SCHEMA_VERSION);
@@ -397,6 +498,27 @@ function applySchemaMigration(db: DatabaseSync): void {
   }
 }
 
+function validateReadOnlyDatabase(db: DatabaseSync): void {
+  const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
+  if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
+  const integrity = String((db.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown }).integrity_check ?? "");
+  if (integrity !== "ok") throw new Error(`Canonical SQLite integrity check failed: ${integrity}`);
+  const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
+  if (foreignKeys.length > 0) throw new Error("Canonical SQLite foreign-key integrity check failed.");
+  const commitCount = Number((db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count?: number }).count ?? 0);
+  const currentCount = Number((db.prepare("SELECT COUNT(*) AS count FROM current_transactions").get() as { count?: number }).count ?? 0);
+  const stateRows = db.prepare("SELECT generation, commit_id FROM current_projection_state").all() as Array<Record<string, unknown>>;
+  if (commitCount > 0 && stateRows.length !== 1) throw new Error("Canonical current projection generation is missing or ambiguous.");
+  if (stateRows.length === 1) {
+    if (Number(stateRows[0]!.generation) !== 1 || !db.prepare("SELECT 1 FROM canonical_commits WHERE commit_id = ?").get(blob(stateRows[0]!.commit_id))) throw new Error("Canonical current projection generation references no commit.");
+  }
+  const projectionRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM current_transactions current_row
+    JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id
+    JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
+    WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.commit_id`).get() as { count?: number }).count ?? 0);
+  if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
+}
+
 export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: boolean } = {}): DatabaseSync {
   const path = canonicalSqlitePath(ledgerDir);
   if (options.readOnly && !existsSync(path)) throw new Error(`Missing canonical SQLite: ${path}`);
@@ -405,10 +527,11 @@ export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: b
   try {
     db.exec("PRAGMA foreign_keys = ON");
     db.exec("PRAGMA busy_timeout = 30000");
-    if (!options.readOnly) { db.exec("PRAGMA journal_mode = WAL"); applySchemaMigration(db); }
+    if (!options.readOnly) { db.exec("PRAGMA journal_mode = WAL"); db.exec("PRAGMA synchronous = FULL"); applySchemaMigration(db); }
     else {
       const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
       if (Number(row.user_version ?? 0) !== CANONICAL_SCHEMA_VERSION) throw new Error("Canonical SQLite schema is missing or unsupported for read-only access.");
+      validateReadOnlyDatabase(db);
     }
     return db;
   } catch (error) { db.close(); throw error; }
@@ -417,7 +540,8 @@ export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: b
 export type CanonicalAmount = { coefficient: string; scale: number };
 export type CanonicalTransaction = {
   id: string; accountId: string; accountNo: string; sourceSequence: string; amount: CanonicalAmount; currency: "TWD";
-  direction: "inflow" | "outflow"; postingStatus: "posted"; effectiveOn: string; transactionDateTimeLocal: string;
+  direction: "inflow" | "outflow"; postingStatus: "posted"; postingOrigin: "provider_booked_history"; postingBasis: "query-status-success-with-accounting-date"; postingRuleVersion: "cathay/domestic-deposit/v1";
+  displayLabel: string | null; effectiveOn: string; effectiveTimeBasis: "accounting"; effectiveTimeRuleVersion: "cathay/domestic-deposit/v1"; transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE; timePrecision: "second"; timeOrigin: "source_reported";
   utcInstantUtcUs: number; revisionId: string; commitSequence: number;
 };
@@ -430,7 +554,7 @@ export type CathayCanonicalLineageEntry = {
   transaction: { id: string; accountId: string; sourceSequence: string };
   revision: CanonicalTransactionRevision;
   assertion: { id: string; revisionId: string; commitSequence: number };
-  sourceRecord: { id: string; captureId: string; sequence: string; payload: string };
+  sourceRecord: { id: string; captureId: string; sequence: string; description: string | null; payload: string };
   capture: { id: string; observedAt: string; scopeStart: string; scopeEnd: string; authorityRoute: string };
   provenance: Array<{ sourceRecordId: string; captureId: string }>;
 };
@@ -448,9 +572,13 @@ function dbRow<T extends Record<string, unknown>>(value: unknown): T { return va
 function sameRevision(row: Record<string, unknown>, detail: ValidatedCathayRow): boolean {
   return row.amount_coefficient === detail.amount.coefficient.toString()
     && row.amount_scale === detail.amount.scale && row.direction === detail.direction
+    && row.posting_status === CATHAY_POSTING_MAPPING.postingStatus && row.posting_origin === CATHAY_POSTING_MAPPING.origin
+    && row.posting_basis === CATHAY_POSTING_MAPPING.basis && row.posting_rule_version === CATHAY_POSTING_MAPPING.ruleVersion
+    && row.description === detail.description
     && row.effective_on === detail.accountDate && row.transaction_date_time_local === detail.transactionDateTime
     && row.time_zone === CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE && row.time_precision === "second"
-    && row.time_origin === "source_reported" && Number(row.utc_instant_utc_us) === detail.utcInstantUtcUs;
+    && row.time_origin === "source_reported" && row.effective_time_basis === "accounting"
+    && row.effective_time_rule_version === CATHAY_POSTING_MAPPING.ruleVersion && Number(row.utc_instant_utc_us) === detail.utcInstantUtcUs;
 }
 function recordedAtUtcUs(value: string): number {
   const milliseconds = Date.parse(value);
@@ -467,7 +595,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
     const commitId = uuidV7();
     const maxSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0);
     const commitSequence = maxSequence + 1;
-    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route) VALUES (?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(input.observedAt), CATHAY_DOMESTIC_DEPOSIT_AUTHORITY);
+    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(input.observedAt), CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, "source_capture");
     db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, "v1", commitId);
     const connectionExisting = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
     const sourceConnectionId = connectionExisting ? blob(dbRow<{ source_connection_id: unknown }>(connectionExisting).source_connection_id) : uuidV7();
@@ -487,7 +615,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
     const transactionResults: CathayCommitTransactionResult[] = [];
     for (const detail of validated.rows) {
       const sourceRecordId = uuidV7();
-      db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, payload_json) VALUES (?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, detail.sequence, detail.payload);
+      db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, detail.sequence, detail.description, detail.payload);
       const transactionExisting = db.prepare("SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?").get(accountId, detail.sequence);
       const transactionId = transactionExisting ? blob(dbRow<{ transaction_id: unknown }>(transactionExisting).transaction_id) : uuidV7();
       if (!transactionExisting) db.prepare("INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)").run(transactionId, accountId, detail.sequence, commitId);
@@ -500,12 +628,19 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
         const revisionNumber = latestRow ? Number(latestRow.revision_number) + 1 : 1;
         db.prepare(`INSERT INTO transaction_revisions(
           revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency,
-          direction, posting_status, effective_on, transaction_date_time_local, time_zone, time_precision, time_origin, utc_instant_utc_us
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, effective_on, transaction_date_time_local,
+          time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
           revisionId, transactionId, sourceRecordId, captureId, commitId, revisionNumber, detail.amount.coefficient.toString(), detail.amount.scale,
-          input.currency, detail.direction, "posted", detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
-          "second", "source_reported", detail.utcInstantUtcUs,
+          input.currency, detail.direction, validated.posting.postingStatus, validated.posting.origin, validated.posting.basis, validated.posting.ruleVersion,
+          detail.description, detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
+          "second", "source_reported", "accounting", validated.posting.ruleVersion, detail.utcInstantUtcUs,
         );
+        const insertObservation = db.prepare(`INSERT INTO transaction_time_observations(
+          observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        insertObservation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "accounting", detail.accountDate, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", detail.accountingUtcInstantUtcUs);
+        insertObservation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "occurred", detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", detail.utcInstantUtcUs);
         const assertionId = uuidV7();
         db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, sourceRecordId, commitId);
         db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, commitId);
@@ -519,6 +654,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
     db.prepare(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET scope_start = excluded.scope_start,
       scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, input.syncState.cursor, captureId, commitId);
+    db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
     return { captureId: idToString(captureId), commitSequence, accountId: idToString(accountId), transactions: transactionResults };
@@ -560,7 +696,9 @@ function amountFromRow(row: Record<string, unknown>, prefix = ""): CanonicalAmou
 function transactionFromRow(row: Record<string, unknown>): CanonicalTransaction {
   return {
     id: idToString(row.transaction_id), accountId: idToString(row.account_id), accountNo: String(row.account_no), sourceSequence: String(row.source_sequence),
-    amount: amountFromRow(row), currency: "TWD", direction: row.direction as "inflow" | "outflow", postingStatus: "posted", effectiveOn: String(row.effective_on),
+    amount: amountFromRow(row), currency: "TWD", direction: row.direction as "inflow" | "outflow", postingStatus: row.posting_status as "posted",
+    postingOrigin: row.posting_origin as "provider_booked_history", postingBasis: row.posting_basis as "query-status-success-with-accounting-date", postingRuleVersion: row.posting_rule_version as "cathay/domestic-deposit/v1",
+    displayLabel: typeof row.description === "string" ? row.description : null, effectiveOn: String(row.effective_on), effectiveTimeBasis: row.effective_time_basis as "accounting", effectiveTimeRuleVersion: row.effective_time_rule_version as "cathay/domestic-deposit/v1",
     transactionDateTimeLocal: String(row.transaction_date_time_local), timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, timePrecision: "second", timeOrigin: "source_reported",
     utcInstantUtcUs: Number(row.utc_instant_utc_us), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence),
   };
@@ -579,7 +717,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     try {
       const accounts = (db.prepare("SELECT account_id AS id, account_no AS accountNo, currency, account_type AS accountType FROM financial_accounts ORDER BY account_no").all() as Record<string, unknown>[]).map((row) => ({ id: idToString(row.id), accountNo: String(row.accountNo), currency: "TWD" as const, accountType: "depository" as const }));
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.effective_on, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM current_transactions current_row
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.commit_id
@@ -595,7 +734,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.effective_on, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
         WHERE r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
@@ -611,8 +751,9 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       const revisionRows = db.prepare(`SELECT t.transaction_id, t.account_id, t.source_sequence, a.account_no, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.effective_on, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
-        r.utc_instant_utc_us, r.revision_id, c.commit_sequence, r.source_record_id, r.capture_id, sr.sequence_lexeme, sr.payload_json,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
+        r.utc_instant_utc_us, r.revision_id, c.commit_sequence, r.source_record_id, r.capture_id, sr.sequence_lexeme, sr.description, sr.payload_json,
         sc.observed_at, sc.scope_start, sc.scope_end, sc.authority_route, sa.assertion_id FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
         JOIN source_records sr ON sr.source_record_id = r.source_record_id JOIN source_captures sc ON sc.capture_id = r.capture_id
@@ -626,7 +767,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           transaction: { id: idToString(row.transaction_id), accountId: idToString(row.account_id), sourceSequence: String(row.source_sequence) },
           revision,
           assertion: { id: idToString(row.assertion_id), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence) },
-          sourceRecord: { id: idToString(row.source_record_id), captureId: idToString(row.capture_id), sequence: String(row.sequence_lexeme), payload: String(row.payload_json) },
+          sourceRecord: { id: idToString(row.source_record_id), captureId: idToString(row.capture_id), sequence: String(row.sequence_lexeme), description: typeof row.description === "string" ? row.description : null, payload: String(row.payload_json) },
           capture: { id: idToString(row.capture_id), observedAt: String(row.observed_at), scopeStart: String(row.scope_start), scopeEnd: String(row.scope_end), authorityRoute: String(row.authority_route) },
           provenance: provenance.map((item) => ({ sourceRecordId: idToString(item.sourceRecordId), captureId: idToString(item.captureId) })),
         } satisfies CathayCanonicalLineageEntry;
