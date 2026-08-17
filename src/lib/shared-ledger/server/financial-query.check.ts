@@ -35,9 +35,9 @@ for (const [product, path] of loaders) {
 
 const boundary: FinancialQueryBoundary = createFinancialQuery();
 assert.equal(typeof boundary.current, "function");
-assert.equal(typeof boundary.overviewExchangeRates, "function");
 assert.equal(typeof boundary.historical, "function");
 assert.equal(typeof boundary.lineage, "function");
+assert.equal("overviewExchangeRates" in boundary, false);
 const boundarySource = readFileSync(join(here, "financial-query.ts"), "utf8");
 assert.doesNotMatch(boundarySource, /projection:\s*unknown/);
 assert.doesNotMatch(boundarySource, /lineage:\s*unknown/);
@@ -77,6 +77,26 @@ assert.deepEqual(lineageContract, {
   kind: "lineage",
   reason: "legacy-adapter-does-not-support-lineage-queries",
 });
+
+const latestExchangeRates = await boundary.current({
+  kind: "current",
+  product: "overview",
+  selection: "latest",
+  currencies: ["USD"],
+});
+assert.equal(latestExchangeRates.product, "overview");
+assert.equal(latestExchangeRates.selection, "latest");
+
+const historicalExchangeRates = await boundary.current({
+  kind: "current",
+  product: "overview",
+  selection: "history",
+  currencies: ["USD"],
+  firstDate: "2026-01-01",
+  lastDate: "2026-01-31",
+});
+assert.equal(historicalExchangeRates.product, "overview");
+assert.equal(historicalExchangeRates.selection, "history");
 
 const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "financial-query-boundary-"));
 try {
