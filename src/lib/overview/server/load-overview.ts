@@ -1,10 +1,8 @@
-import { DEFAULT_LEDGER_DIR, openLedgerDrizzle } from "../../../ledger/db/client.ts";
-import * as schema from "../../../ledger/db/schema.ts";
+import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import type { OverviewPageDto } from "../types.ts";
 import {
   buildAccountOverview,
   buildRawPositions,
-  emptyLedgerQueryData,
   type LedgerQueryData,
 } from "../../shared-ledger/server/accounts.ts";
 import { buildSummaryMetrics } from "../../shared-ledger/server/summary.ts";
@@ -12,115 +10,26 @@ import { requiredExchangeRateCurrencies } from "../../../ledger/exchange-rates.t
 import { buildDailyHistory } from "./daily-history.ts";
 import { buildOverviewSankeyGraph } from "./overview-sankey.ts";
 import {
-  appendUnavailableAccounts,
-  applyLedgerVisibility,
-  loadActiveLedgerSupport,
-  loadUnavailableAccountIssues,
-} from "../../data-issues/server/ledger-visibility.ts";
+  createFinancialQuery,
+  type ExchangeRateQueryRow,
+} from "../../shared-ledger/server/financial-query.ts";
 
 export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<OverviewPageDto> {
-  const { db, sqlite } = openLedgerDrizzle(ledgerDir);
-  try {
-    const [
-      sourceFiles,
-      sourceRowLineage,
-      accountTransactions,
-      foreignCurrencyTransactions,
-      creditCardStatementLines,
-      creditCardCaptures,
-      creditCardCaptureEntries,
-      creditCardSnapshots,
-      loanTransactions,
-      fundHoldings,
-      brokerageHoldings,
-      maicoinAccountSnapshots,
-      maicoinStatementRows,
-    ] = await Promise.all([
-      db.select().from(schema.sourceFileImports).all(),
-      db.select().from(schema.sourceRowLineage).all(),
-      db.select().from(schema.accountTransactions).all(),
-      db.select().from(schema.foreignCurrencyTransactions).all(),
-      db.select().from(schema.creditCardStatementLines).all(),
-      db.select().from(schema.creditCardCaptures).all(),
-      db.select().from(schema.creditCardCaptureEntries).all(),
-      db.select().from(schema.creditCardSnapshots).all(),
-      db.select().from(schema.loanTransactions).all(),
-      db.select().from(schema.fundHoldings).all(),
-      db.select().from(schema.brokerageHoldings).all(),
-      db.select().from(schema.maicoinAccountSnapshots).all(),
-      db.select().from(schema.maicoinStatementRows).all(),
-    ]);
-
-    const data: LedgerQueryData = {
-      ...emptyLedgerQueryData(),
-      sourceFiles,
-      sourceRowLineage,
-      accountTransactions,
-      foreignCurrencyTransactions,
-      creditCardStatementLines,
-      creditCardCaptures,
-      creditCardCaptureEntries,
-      creditCardSnapshots,
-      loanTransactions,
-      fundHoldings,
-      brokerageHoldings,
-      maicoinAccountSnapshots,
-      maicoinStatementRows,
-    };
-    const support = loadActiveLedgerSupport(sqlite);
-    const visibleData = applyLedgerVisibility(data, support);
-    const accounts = appendUnavailableAccounts(
-      buildAccountOverview(visibleData),
-      loadUnavailableAccountIssues(sqlite, data, support),
-    );
+  const { ledger: visibleData, unavailableAccounts, exchangeRates } = await createFinancialQuery(ledgerDir)
+    .current({ kind: "current", product: "overview" });
+  const accounts = [...buildAccountOverview(visibleData), ...unavailableAccounts];
     const sankeyPositions = buildRawPositions(visibleData);
     const sankeyCurrencies = [...new Set(sankeyPositions.map((position) => position.currency).filter((currency) => currency !== "TWD"))];
-    const sankeyPlaceholders = sankeyCurrencies.map(() => "?").join(", ");
-    const sankeyExchangeRates: OverviewPageDto["sankeyExchangeRates"] =
-      (sankeyCurrencies.length === 0
-        ? []
-        : sqlite.prepare(`
-            SELECT rate.rate_date AS rateDate, rate.currency, rate.twd_per_unit AS twdPerUnit
-            FROM exchange_rates AS rate
-            WHERE rate.currency IN (${sankeyPlaceholders})
-              AND rate.rate_date = (
-                SELECT MAX(rate_date)
-                FROM exchange_rates AS current_rate
-                WHERE current_rate.currency = rate.currency
-              )
-            ORDER BY rate.currency
-          `).all(...sankeyCurrencies) as OverviewPageDto["sankeyExchangeRates"])
-        .map((rate) => ({ ...rate }));
+    const sankeyExchangeRates = latestExchangeRates(exchangeRates, sankeyCurrencies);
     const sankeyRates = new Map(sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
     const sankey = buildOverviewSankeyGraph(sankeyPositions, sankeyRates);
     const dailyHistory = buildDailyHistory(visibleData);
     const firstDate = dailyHistory[0]?.date;
     const lastDate = dailyHistory.at(-1)?.date;
     const currencies = requiredExchangeRateCurrencies(dailyHistory);
-    const placeholders = currencies.map(() => "?").join(", ");
-    const exchangeRates: OverviewPageDto["exchangeRates"] =
-      !firstDate || !lastDate || currencies.length === 0
-        ? []
-        : (sqlite.prepare(`
-            SELECT
-              rate_date AS rateDate,
-              currency,
-              twd_per_unit AS twdPerUnit
-            FROM exchange_rates AS rate
-            WHERE currency IN (${placeholders})
-              AND rate_date <= ?
-              AND (
-                rate_date >= ?
-                OR rate_date = (
-                  SELECT MAX(rate_date)
-                  FROM exchange_rates AS prior
-                  WHERE prior.currency = rate.currency
-                    AND prior.rate_date < ?
-                )
-              )
-            ORDER BY currency, rate_date
-          `).all(...currencies, lastDate, firstDate, firstDate) as OverviewPageDto["exchangeRates"])
-            .map((rate) => ({ ...rate }));
+    const historyExchangeRates = !firstDate || !lastDate || currencies.length === 0
+      ? []
+      : historicalExchangeRates(exchangeRates, currencies, firstDate, lastDate);
 
     return {
       importedAt: latestImportedAt(visibleData),
@@ -133,15 +42,12 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
         (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,
         null,
       ),
-      exchangeRates,
-      latestExchangeRateDate: exchangeRates.reduce<string | null>(
+      exchangeRates: historyExchangeRates,
+      latestExchangeRateDate: historyExchangeRates.reduce<string | null>(
         (latest, rate) => !latest || rate.rateDate > latest ? rate.rateDate : latest,
         null,
       ),
     };
-  } finally {
-    sqlite.close();
-  }
 }
 
 function latestImportedAt(data: LedgerQueryData) {
@@ -150,4 +56,45 @@ function latestImportedAt(data: LedgerQueryData) {
     ...data.creditCardSnapshots.map((snapshot) => snapshot.capturedAt),
     ...data.maicoinAccountSnapshots.map((snapshot) => snapshot.capturedAt),
   ].sort().at(-1) ?? null;
+}
+
+function latestExchangeRates(
+  rows: ExchangeRateQueryRow[],
+  currencies: string[],
+): OverviewPageDto["sankeyExchangeRates"] {
+  const selected = new Set(currencies);
+  const latest = new Map<string, ExchangeRateQueryRow>();
+  for (const row of rows) {
+    if (!selected.has(row.currency)) continue;
+    const previous = latest.get(row.currency);
+    if (!previous || row.rateDate > previous.rateDate) latest.set(row.currency, row);
+  }
+  return [...latest.values()]
+    .sort((left, right) => left.currency.localeCompare(right.currency))
+    .map((row) => ({ ...row }));
+}
+
+function historicalExchangeRates(
+  rows: ExchangeRateQueryRow[],
+  currencies: string[],
+  firstDate: string,
+  lastDate: string,
+): OverviewPageDto["exchangeRates"] {
+  const selected = new Set(currencies);
+  const byCurrency = new Map<string, ExchangeRateQueryRow[]>();
+  for (const row of rows) {
+    if (!selected.has(row.currency) || row.rateDate > lastDate) continue;
+    const current = byCurrency.get(row.currency) ?? [];
+    current.push(row);
+    byCurrency.set(row.currency, current);
+  }
+  return [...byCurrency.entries()]
+    .flatMap(([currency, currencyRows]) => {
+      const prior = currencyRows
+        .filter((row) => row.rateDate < firstDate)
+        .sort((left, right) => right.rateDate.localeCompare(left.rateDate))[0];
+      return currencyRows.filter((row) => row.rateDate >= firstDate).concat(prior ? [prior] : []);
+    })
+    .sort((left, right) => left.currency.localeCompare(right.currency) || left.rateDate.localeCompare(right.rateDate))
+    .map((row) => ({ ...row }));
 }
