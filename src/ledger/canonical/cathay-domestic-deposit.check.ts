@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import {
   CANONICAL_SCHEMA_VERSION,
+  CATHAY_POSTING_MAPPING,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_PROVENANCE,
   commitCathayDomesticDeposit,
+  canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
   parseExactDecimalLexeme,
@@ -56,6 +59,7 @@ try {
     assert.equal((commitRow.commit_id as Uint8Array).byteLength, 16);
     assert.equal(typeof commitRow.recorded_at_utc_us, "number");
     assert.equal(Number.isInteger(commitRow.recorded_at_utc_us), true);
+    assert.equal(db.prepare("SELECT commit_kind FROM canonical_commits").get()?.commit_kind, "source_capture");
     const captureRow = db.prepare("SELECT capture_id, commit_id FROM source_captures").get() as Record<string, unknown>;
     assert.equal(captureRow.capture_id instanceof Uint8Array, true);
     assert.equal(captureRow.commit_id instanceof Uint8Array, true);
@@ -63,6 +67,15 @@ try {
     assert.equal(revisionColumns.some((column) => column.name === "balance_coefficient"), false);
     assert.equal(revisionColumns.some((column) => column.name === "balance_scale"), false);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM current_transactions WHERE commit_id IS NOT NULL").get()?.count, 3);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM transaction_time_observations").get()?.count, 6);
+    assert.deepEqual((db.prepare("SELECT role, local_value, time_precision, time_origin FROM transaction_time_observations ORDER BY role, local_value LIMIT 2").all() as Array<Record<string, unknown>>).map((row) => ({ ...row })), [
+      { role: "accounting", local_value: "2026-07-01", time_precision: "date", time_origin: "source_reported" },
+      { role: "accounting", local_value: "2026-07-02", time_precision: "date", time_origin: "source_reported" },
+    ]);
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name?: string }>).map((row) => row.name);
+    for (const index of ["idx_transaction_revisions_financial_time", "idx_transaction_revisions_knowledge_time", "idx_current_transactions_revision", "idx_transaction_revisions_lineage", "idx_assertion_provenance_record"]) {
+      assert.equal(indexes.includes(index), true, index);
+    }
   } finally {
     db.close();
   }
@@ -72,6 +85,11 @@ try {
   assert.equal(current.transactions.length, 3);
   assert.equal(current.transactions[0]?.currency, "TWD");
   assert.equal(current.transactions[0]?.postingStatus, "posted");
+  assert.equal(current.transactions[0]?.postingOrigin, CATHAY_POSTING_MAPPING.origin);
+  assert.equal(current.transactions[0]?.postingBasis, CATHAY_POSTING_MAPPING.basis);
+  assert.equal(current.transactions[0]?.postingRuleVersion, CATHAY_POSTING_MAPPING.ruleVersion);
+  assert.equal(current.transactions[0]?.displayLabel, "Synthetic Cathay deposit description");
+  assert.equal(current.transactions[0]?.effectiveTimeBasis, "accounting");
   assert.equal(current.transactions[0]?.timeZone, "Asia/Taipei");
   assert.equal(current.transactions[0]?.timePrecision, "second");
   assert.equal(current.transactions[0]?.timeOrigin, "source_reported");
@@ -101,6 +119,7 @@ try {
   assert.equal(lineage.entries[0]?.assertion.revisionId, lineage.entries[0]?.revision.id);
   assert.equal(lineage.entries[0]?.sourceRecord.captureId, lineage.entries[0]?.capture.id);
   assert.equal(lineage.entries[0]?.capture.authorityRoute, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.authorityRoute);
+  assert.equal(lineage.entries[0]?.sourceRecord.description, "Synthetic Cathay deposit description");
 
   const repeated = await commitCathayDomesticDeposit(ledgerDir, {
     ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
@@ -160,6 +179,7 @@ try {
   try {
     assert.equal(emptyDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 1);
     assert.equal(emptyDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get()?.count, 1);
+    assert.equal(emptyDb.prepare("SELECT COUNT(*) AS count FROM current_projection_state").get()?.count, 1);
     for (const table of ["source_records", "financial_transactions", "transaction_revisions", "source_assertions", "current_transactions"]) {
       assert.equal(emptyDb.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count, 0, table);
     }
@@ -188,6 +208,16 @@ try {
   assert.throws(() => openCanonicalDatabase(newerSchemaDir), /newer than supported/);
 } finally { await rm(newerSchemaDir, { recursive: true, force: true }); }
 
+const corruptDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-corrupt-"));
+try {
+  await commitCathayDomesticDeposit(corruptDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+  const corruptDb = new DatabaseSync(canonicalSqlitePath(corruptDir));
+  corruptDb.exec("PRAGMA foreign_keys = OFF");
+  corruptDb.prepare("UPDATE current_transactions SET commit_id = ?").run(Buffer.alloc(16, 7));
+  corruptDb.close();
+  assert.throws(() => openCanonicalDatabase(corruptDir, { readOnly: true }), /foreign-key integrity/);
+} finally { await rm(corruptDir, { recursive: true, force: true }); }
+
 for (const [label, capture] of [
   ["wrong currency", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, currency: "USD" }],
   ["legacy return code", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"returnCode":"0000"', '"returnCode":"000"') }],
@@ -201,6 +231,9 @@ for (const [label, capture] of [
   ["scope mismatch", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, scope: { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope, endDate: "2026-08-16" } }],
   ["invalid authority", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, authorityRoute: "cathay/domestic-deposit/other" }],
   ["non-exact amount", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"incomeAmt":12500', '"incomeAmt":1.25e4') }],
+  ["unsupported posting fields", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', '"status":"pending","description":"Synthetic Cathay deposit description"') }],
+  ["invalid description type", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', '"description":123') }],
+  ["oversized description", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', `"description":"${"x".repeat(513)}"`) }],
 ] as const) {
   const rejectedDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-reject-"));
   try {
