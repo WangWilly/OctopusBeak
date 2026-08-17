@@ -30,6 +30,148 @@ assert.match(workflowSource, /fetchTransferDetailsRaw/);
 assert.match(workflowSource, /response\.text\(\)/);
 assert.match(workflowSource, /fetchTransferDetailsRaw[\s\S]*JSON\.parse/);
 
+// These fixtures intentionally model the two on-disk shapes that preceded the
+// current schema. Keeping one populated row and its full foreign-key lineage
+// makes migration tests catch accidental target-shape creation and data loss.
+const LEGACY_V1_SCHEMA = `
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc_us INTEGER NOT NULL);
+CREATE TABLE canonical_commits (
+  commit_id BLOB PRIMARY KEY CHECK(length(commit_id) = 16), commit_sequence INTEGER NOT NULL UNIQUE,
+  recorded_at_utc_us INTEGER NOT NULL, authority_route TEXT NOT NULL
+);
+CREATE TABLE source_authority_routes (
+  authority_route TEXT PRIMARY KEY, integration_namespace TEXT NOT NULL, stream TEXT NOT NULL,
+  contract_version TEXT NOT NULL, created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE TABLE source_connections (
+  source_connection_id BLOB PRIMARY KEY CHECK(length(source_connection_id) = 16), integration_namespace TEXT NOT NULL,
+  source_connection_key TEXT NOT NULL, created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(integration_namespace, source_connection_key)
+);
+CREATE TABLE identity_epochs (
+  identity_epoch_id BLOB PRIMARY KEY CHECK(length(identity_epoch_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  epoch_key TEXT NOT NULL, created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(source_connection_id, epoch_key)
+);
+CREATE TABLE source_captures (
+  capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+  stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
+  completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE TABLE source_records (
+  source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), sequence_lexeme TEXT NOT NULL, payload_json TEXT NOT NULL,
+  UNIQUE(capture_id, sequence_lexeme)
+);
+CREATE TABLE financial_accounts (
+  account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), stream TEXT NOT NULL, account_no TEXT NOT NULL,
+  account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')), currency TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), UNIQUE(source_connection_id, identity_epoch_id, stream, account_no)
+);
+CREATE TABLE financial_transactions (
+  transaction_id BLOB PRIMARY KEY CHECK(length(transaction_id) = 16), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  source_sequence TEXT NOT NULL, created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), UNIQUE(account_id, source_sequence)
+);
+CREATE TABLE transaction_revisions (
+  revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), revision_number INTEGER NOT NULL,
+  amount_coefficient TEXT NOT NULL, amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0), currency TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')), posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
+  effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
+  time_precision TEXT NOT NULL CHECK(time_precision = 'second'), time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+  utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
+);
+CREATE TABLE source_assertions (
+  assertion_id BLOB PRIMARY KEY CHECK(length(assertion_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), UNIQUE(transaction_id, revision_id)
+);
+CREATE TABLE assertion_provenance (
+  assertion_id BLOB NOT NULL REFERENCES source_assertions(assertion_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), PRIMARY KEY(assertion_id, source_record_id)
+);
+CREATE TABLE source_sync_states (
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT NOT NULL,
+  last_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(source_connection_id, account_id, stream)
+);
+CREATE TABLE current_transactions (
+  transaction_id BLOB PRIMARY KEY REFERENCES financial_transactions(transaction_id), revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+`;
+
+const legacyId = (value: number): Buffer => Buffer.alloc(16, value);
+
+function seedLegacyDatabase(directory: string, version: 1 | 2): void {
+  const db = new DatabaseSync(canonicalSqlitePath(directory));
+  db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+  db.exec(LEGACY_V1_SCHEMA);
+  const commitId = legacyId(1);
+  const route = "cathay/domestic-deposit/v1";
+  const connectionId = legacyId(2);
+  const epochId = legacyId(3);
+  const captureId = legacyId(4);
+  const recordId = legacyId(5);
+  const accountId = legacyId(6);
+  const transactionId = legacyId(7);
+  const revisionId = legacyId(8);
+  const assertionId = legacyId(9);
+  const observedAt = "2026-07-01T00:00:00Z";
+  db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (1, ?)").run(1782864000000000);
+  db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route) VALUES (?, ?, ?, ?)").run(commitId, 1, 1782864000000000, route);
+  db.prepare("INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(route, "cathay", "domestic-deposit", "v1", commitId);
+  db.prepare("INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, ?, ?, ?)").run(connectionId, "cathay", "synthetic-legacy-connection", commitId);
+  db.prepare("INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES (?, ?, ?, ?)").run(epochId, connectionId, "synthetic-legacy-epoch", commitId);
+  db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, connectionId, epochId, route, "domestic-deposit", "SYNTHETIC-LEGACY-001", observedAt, "2026-07-01", "2026-07-01", "complete-range", commitId);
+  db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, payload_json) VALUES (?, ?, ?, ?, ?)").run(recordId, captureId, commitId, "1", '{"synthetic":true}');
+  db.prepare("INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(accountId, connectionId, epochId, "domestic-deposit", "SYNTHETIC-LEGACY-001", "depository", "TWD", commitId);
+  db.prepare("INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)").run(transactionId, accountId, "1", commitId);
+  db.prepare("INSERT INTO transaction_revisions(revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency, direction, posting_status, effective_on, transaction_date_time_local, time_zone, time_precision, time_origin, utc_instant_utc_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(revisionId, transactionId, recordId, captureId, commitId, 1, "12500", 0, "TWD", "inflow", "posted", "2026-07-01", "2026-07-01T09:00:00", "Asia/Taipei", "second", "source_reported", 1782867600000000);
+  db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, recordId, commitId);
+  db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, commit_id) VALUES (?, ?, ?)").run(assertionId, recordId, commitId);
+  db.prepare("INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(connectionId, accountId, "domestic-deposit", "2026-07-01", "2026-07-01", "legacy-cursor", captureId, commitId);
+  db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?)").run(transactionId, revisionId, commitId);
+  if (version === 2) {
+    db.exec("ALTER TABLE canonical_commits ADD COLUMN commit_kind TEXT NOT NULL DEFAULT 'source_capture' CHECK(commit_kind = 'source_capture')");
+    db.exec("ALTER TABLE source_records ADD COLUMN description TEXT");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_origin TEXT NOT NULL DEFAULT 'provider_booked_history' CHECK(posting_origin = 'provider_booked_history')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_basis TEXT NOT NULL DEFAULT 'query-status-success-with-accounting-date' CHECK(posting_basis = 'query-status-success-with-accounting-date')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN posting_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN description TEXT");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_basis TEXT NOT NULL DEFAULT 'accounting' CHECK(effective_time_basis = 'accounting')");
+    db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')");
+    db.exec(`CREATE TABLE transaction_time_observations (
+      observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), role TEXT NOT NULL CHECK(role IN ('accounting','occurred')),
+      local_value TEXT NOT NULL, time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'), time_precision TEXT NOT NULL CHECK(time_precision IN ('date','second')),
+      time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'), utc_instant_utc_us INTEGER NOT NULL, UNIQUE(revision_id, role)
+    )`);
+    db.exec("CREATE TABLE current_projection_state (generation INTEGER PRIMARY KEY CHECK(generation = 1), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id))");
+    db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)").run(commitId);
+    db.prepare("INSERT INTO transaction_time_observations(observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(10), transactionId, revisionId, recordId, commitId, "accounting", "2026-07-01", "Asia/Taipei", "date", "source_reported", 1782835200000000);
+    db.prepare("INSERT INTO transaction_time_observations(observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(11), transactionId, revisionId, recordId, commitId, "occurred", "2026-07-01T09:00:00", "Asia/Taipei", "second", "source_reported", 1782867600000000);
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (2, ?)").run(1782864000000001);
+  }
+  db.exec(`PRAGMA user_version = ${version}`);
+  db.close();
+}
+
+function restoreLegacySyncState(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE source_sync_states (
+    source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+    stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT NOT NULL,
+    last_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+    PRIMARY KEY(source_connection_id, account_id, stream)
+  )`);
+  db.prepare("INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(2), legacyId(6), "domestic-deposit", "2026-07-01", "2026-07-01", "legacy-cursor", legacyId(4), legacyId(1));
+}
+
 const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-"));
 try {
   const first = await commitCathayDomesticDeposit(ledgerDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
@@ -243,6 +385,84 @@ try {
   schemaDb.close();
   assert.throws(() => openCanonicalDatabase(newerSchemaDir), /newer than supported/);
 } finally { await rm(newerSchemaDir, { recursive: true, force: true }); }
+
+for (const version of [1, 2] as const) {
+  const migrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", `cathay-canonical-migration-v${version}-`));
+  try {
+    seedLegacyDatabase(migrationDir, version);
+    const migrated = openCanonicalDatabase(migrationDir);
+    try {
+      assert.equal(Number(migrated.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION, `v${version} final version`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 3, `v${version} migration history`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1, `v${version} source row`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 1, `v${version} revision`);
+      assert.equal(migrated.prepare("SELECT completeness_basis FROM source_captures").get()?.completeness_basis, "success-status-scope-count-details", `v${version} completeness`);
+      assert.equal(migrated.prepare("SELECT cursor FROM source_sync_states").get()?.cursor, "legacy-cursor", `v${version} cursor preservation`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM transaction_time_observations").get()?.count, 2, `v${version} time lineage`);
+    } finally { migrated.close(); }
+
+    const reopened = openCanonicalDatabase(migrationDir);
+    try {
+      assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1, `v${version} repeated reopen`);
+    } finally { reopened.close(); }
+    const migratedQuery = createCathayCanonicalFinancialQuery(migrationDir);
+    assert.equal((await migratedQuery.current({ kind: "current" })).transactions.length, 1, `v${version} current query`);
+    assert.equal((await migratedQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: "1" } })).transactions.length, 1, `v${version} historical query`);
+    const migratedLineage = await migratedQuery.lineage({ kind: "lineage", subject: { kind: "transaction", id: "07070707-0707-0707-0707-070707070707" } });
+    assert.equal(migratedLineage.entries.length, 1, `v${version} lineage query`);
+  } finally { await rm(migrationDir, { recursive: true, force: true }); }
+}
+
+// A v1 migration must commit its exact v2 shape before v2->v3 begins. A
+// deliberately broken sync relation forces the second migration to roll back;
+// the v2 metadata and columns must remain, and a repaired relation must retry.
+const v1RollbackDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v1-rollback-"));
+try {
+  seedLegacyDatabase(v1RollbackDir, 1);
+  const brokenV1 = new DatabaseSync(canonicalSqlitePath(v1RollbackDir));
+  brokenV1.exec("DROP TABLE source_sync_states");
+  brokenV1.exec("CREATE VIEW source_sync_states AS SELECT 1 AS unusable");
+  brokenV1.close();
+  assert.throws(() => openCanonicalDatabase(v1RollbackDir), /source_sync_states/);
+  const afterV1Failure = new DatabaseSync(canonicalSqlitePath(v1RollbackDir));
+  try {
+    assert.equal(Number(afterV1Failure.prepare("PRAGMA user_version").get()?.user_version), 2);
+    assert.equal(afterV1Failure.prepare("SELECT 1 FROM schema_migrations WHERE version = 2").get()?.["1"], 1);
+    const v2CaptureColumns = afterV1Failure.prepare("PRAGMA table_info(source_captures)").all() as Array<{ name?: string }>;
+    assert.equal(v2CaptureColumns.some((column) => column.name === "completeness_basis"), false);
+    afterV1Failure.exec("DROP VIEW source_sync_states");
+    restoreLegacySyncState(afterV1Failure);
+  } finally { afterV1Failure.close(); }
+  const retriedV1 = openCanonicalDatabase(v1RollbackDir);
+  try {
+    assert.equal(Number(retriedV1.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
+    assert.equal(retriedV1.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 1);
+  } finally { retriedV1.close(); }
+} finally { await rm(v1RollbackDir, { recursive: true, force: true }); }
+
+// The same atomicity guarantee applies when starting from an already committed
+// v2 database: a failed v2->v3 attempt leaves v2 intact and retryable.
+const v2RollbackDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v2-rollback-"));
+try {
+  seedLegacyDatabase(v2RollbackDir, 2);
+  const brokenV2 = new DatabaseSync(canonicalSqlitePath(v2RollbackDir));
+  brokenV2.exec("DROP TABLE source_sync_states");
+  brokenV2.close();
+  assert.throws(() => openCanonicalDatabase(v2RollbackDir), /source_sync_states/);
+  const afterV2Failure = new DatabaseSync(canonicalSqlitePath(v2RollbackDir));
+  try {
+    assert.equal(Number(afterV2Failure.prepare("PRAGMA user_version").get()?.user_version), 2);
+    assert.equal(afterV2Failure.prepare("SELECT 1 FROM schema_migrations WHERE version = 2").get()?.["1"], 1);
+    const v2CaptureColumns = afterV2Failure.prepare("PRAGMA table_info(source_captures)").all() as Array<{ name?: string }>;
+    assert.equal(v2CaptureColumns.some((column) => column.name === "completeness_basis"), false);
+    restoreLegacySyncState(afterV2Failure);
+  } finally { afterV2Failure.close(); }
+  const retriedV2 = openCanonicalDatabase(v2RollbackDir);
+  try {
+    assert.equal(Number(retriedV2.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
+    assert.equal(retriedV2.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1);
+  } finally { retriedV2.close(); }
+} finally { await rm(v2RollbackDir, { recursive: true, force: true }); }
 
 const corruptDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-corrupt-"));
 try {

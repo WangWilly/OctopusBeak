@@ -458,6 +458,19 @@ CREATE INDEX IF NOT EXISTS idx_source_records_capture ON source_records(capture_
 CREATE INDEX IF NOT EXISTS idx_time_observations_revision ON transaction_time_observations(revision_id, role, observation_id);
 `;
 
+// Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
+// Keeping this target schema separate prevents an older database from being created at a
+// partially upgraded shape before its migration transaction reaches the next version.
+const SCHEMA_V2 = SCHEMA
+  .replace(
+    "completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),\n  completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)",
+    "completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)",
+  )
+  .replace("stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT,", "stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT NOT NULL,");
+if (SCHEMA_V2.includes("completeness_basis") || SCHEMA_V2.includes("completeness_rule_version") || !SCHEMA_V2.includes("cursor TEXT NOT NULL")) {
+  throw new Error("Canonical schema v2 target definition is inconsistent with its migration contract.");
+}
+
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -472,7 +485,7 @@ function migrateV1ToV2(db: DatabaseSync): void {
     db.exec("ALTER TABLE transaction_revisions ADD COLUMN description TEXT");
     db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_basis TEXT NOT NULL DEFAULT 'accounting' CHECK(effective_time_basis = 'accounting')");
     db.exec("ALTER TABLE transaction_revisions ADD COLUMN effective_time_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')");
-    db.exec(SCHEMA);
+    db.exec(SCHEMA_V2);
     const revisions = db.prepare("SELECT revision_id, transaction_id, source_record_id, commit_id, capture_id, effective_on, transaction_date_time_local, utc_instant_utc_us FROM transaction_revisions").all() as Array<Record<string, unknown>>;
     const insertObservation = db.prepare(`INSERT INTO transaction_time_observations(
       observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us
@@ -506,7 +519,7 @@ function migrateV2ToV3(db: DatabaseSync): void {
     db.exec(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
       SELECT source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id FROM source_sync_states_v2`);
     db.exec("DROP TABLE source_sync_states_v2");
-    db.exec(SCHEMA);
+    db.exec(SCHEMA_V2);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(3, currentUtcMicros());
     db.exec("PRAGMA user_version = 3");
     db.exec("COMMIT");
