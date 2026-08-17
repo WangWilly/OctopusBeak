@@ -22,34 +22,41 @@ import type { AccountRowDto } from "../types.ts";
 
 /** Products that may consume the financial query boundary. */
 export type FinancialProduct = "assets" | "overview" | "spending" | "liabilities";
+export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 
-export type CurrentFinancialQueryRequest = {
+export type CurrentFinancialQueryRequest<Product extends FinancialProduct = FinancialProduct> = {
   kind: "current";
-  product: FinancialProduct;
+  product: Product;
 };
+
+export type HistoricalCutoff =
+  | { kind: "financial-time"; at: string }
+  | { kind: "knowledge-time"; at: string }
+  | { kind: "both"; financialAt: string; knowledgeAt: string };
 
 export type HistoricalFinancialQueryRequest = {
   kind: "historical";
   product: FinancialProduct;
-  financialCutoff?: string;
-  knowledgeCutoff?: string;
+  cutoff: HistoricalCutoff;
 };
 
-export type LineageFinancialQueryRequest = {
+export type LineageSubject<SubjectKind extends string = string> = {
+  kind: SubjectKind;
+  id: string;
+};
+
+export type LineageFinancialQueryRequest<SubjectKind extends string = string> = {
   kind: "lineage";
   product: FinancialProduct;
-  subject: {
-    type: string;
-    id: string;
-  };
+  subject: LineageSubject<SubjectKind>;
 };
 
-export type UnsupportedFinancialQueryResult = {
+export type UnsupportedFinancialQueryResult<Kind extends "historical" | "lineage"> = {
   status: "unsupported";
-  kind: "historical" | "lineage";
-  reason:
-    | "legacy-adapter-does-not-support-historical-queries"
-    | "legacy-adapter-does-not-support-lineage-queries";
+  kind: Kind;
+  reason: Kind extends "historical"
+    ? "legacy-adapter-does-not-support-historical-queries"
+    : "legacy-adapter-does-not-support-lineage-queries";
 };
 
 export type ExchangeRateQueryRow = {
@@ -58,10 +65,26 @@ export type ExchangeRateQueryRow = {
   twdPerUnit: number;
 };
 
+export type OverviewExchangeRateQueryRequest =
+  | {
+    kind: "current";
+    product: "overview";
+    selection: "latest";
+    currencies: string[];
+  }
+  | {
+    kind: "current";
+    product: "overview";
+    selection: "history";
+    currencies: string[];
+    firstDate: string;
+    lastDate: string;
+  };
+
 export type LegacySpendingInvoiceRow = {
   invoice_key: string;
   invoice_id: string;
-  issued_at: unknown;
+  issued_at: number | string | null;
   invoice_amount: number | null;
   seller_business_account_number: string | null;
   seller_name: string | null;
@@ -106,16 +129,14 @@ export type LegacySpendingQueryData = {
   overrides: LegacySpendingOverrideRow[];
 };
 
-export type CurrentFinancialQueryResult = {
+export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   status: "ok";
   kind: "current";
-  product: FinancialProduct;
+  product: Product;
   /** Legacy rows after the established active-lineage visibility rules. */
   ledger: LedgerQueryData;
   unavailableAccountIssues: UnavailableAccountIssue[];
   unavailableAccounts: AccountRowDto[];
-  exchangeRates: ExchangeRateQueryRow[];
-  spending: LegacySpendingQueryData;
 };
 
 export type CurrentSpendingQueryResult = {
@@ -125,45 +146,50 @@ export type CurrentSpendingQueryResult = {
   spending: LegacySpendingQueryData;
 };
 
-export type HistoricalFinancialProjection = {
+export type CurrentFinancialQueryResult<Product extends FinancialProduct = FinancialProduct> =
+  Product extends "spending"
+    ? CurrentSpendingQueryResult
+    : Product extends LedgerFinancialProduct
+      ? CurrentLedgerQueryResult<Product>
+      : never;
+
+export type HistoricalFinancialProjection<Projection = never> = {
   status: "ok";
   kind: "historical";
   product: FinancialProduct;
-  financialCutoff: string | null;
-  knowledgeCutoff: string | null;
-  /** Canonical implementations will provide a typed projection here. */
-  projection: unknown;
+  cutoff: HistoricalCutoff;
+  projection: Projection;
 };
 
-export type HistoricalFinancialQueryResult =
-  | HistoricalFinancialProjection
-  | UnsupportedFinancialQueryResult;
+export type HistoricalFinancialQueryResult<Projection = never> =
+  | HistoricalFinancialProjection<Projection>
+  | UnsupportedFinancialQueryResult<"historical">;
 
-export type LineageFinancialProjection = {
+export type LineageFinancialProjection<Entry = never, SubjectKind extends string = string> = {
   status: "ok";
   kind: "lineage";
   product: FinancialProduct;
-  subject: LineageFinancialQueryRequest["subject"];
-  /** Canonical implementations will provide typed assertion lineage here. */
-  lineage: unknown;
+  subject: LineageSubject<SubjectKind>;
+  lineage: readonly Entry[];
 };
 
-export type LineageFinancialQueryResult =
-  | LineageFinancialProjection
-  | UnsupportedFinancialQueryResult;
+export type LineageFinancialQueryResult<Entry = never, SubjectKind extends string = string> =
+  | LineageFinancialProjection<Entry, SubjectKind>
+  | UnsupportedFinancialQueryResult<"lineage">;
 
 export interface FinancialQueryBoundary {
-  current(request: CurrentFinancialQueryRequest & { product: "spending" }): CurrentSpendingQueryResult;
-  current(request: CurrentFinancialQueryRequest): Promise<CurrentFinancialQueryResult>;
-  /** Synchronous current seam retained for the existing synchronous spending API. */
-  currentSpending(request: CurrentFinancialQueryRequest): CurrentSpendingQueryResult;
-  historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult>;
-  lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult>;
+  current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current<Product extends LedgerFinancialProduct>(
+    request: CurrentFinancialQueryRequest<Product>,
+  ): Promise<CurrentLedgerQueryResult<Product>>;
+  overviewExchangeRates(request: OverviewExchangeRateQueryRequest): Promise<ExchangeRateQueryRow[]>;
+  historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>>;
+  lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>>;
 }
 
 /**
  * Creates the product read boundary. The default implementation is deliberately
- * a legacy adapter; it preserves the current ledger behavior while leaving the
+ * a legacy adapter; it preserves current ledger behavior while leaving the
  * Current/Historical/Lineage contract seam ready for a canonical store.
  */
 export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQueryBoundary {
@@ -177,30 +203,93 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
     this.ledgerDir = ledgerDir;
   }
 
-  current(request: CurrentFinancialQueryRequest & { product: "spending" }): CurrentSpendingQueryResult;
-  current(request: CurrentFinancialQueryRequest): Promise<CurrentFinancialQueryResult>;
+  current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current<Product extends LedgerFinancialProduct>(
+    request: CurrentFinancialQueryRequest<Product>,
+  ): Promise<CurrentLedgerQueryResult<Product>>;
   current(
     request: CurrentFinancialQueryRequest,
-  ): Promise<CurrentFinancialQueryResult> | CurrentSpendingQueryResult {
-    if (request.product === "spending") return this.currentSpending(request);
-    return this.currentAsync(request);
+  ): CurrentSpendingQueryResult | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct>> {
+    if (request.product === "spending") return this.readCurrentSpending();
+    if (request.product === "assets") return this.readCurrentAssets();
+    if (request.product === "overview") return this.readCurrentOverview();
+    return this.readCurrentLiabilities();
   }
 
-  private async currentAsync(request: CurrentFinancialQueryRequest): Promise<CurrentFinancialQueryResult> {
+  async overviewExchangeRates(request: OverviewExchangeRateQueryRequest): Promise<ExchangeRateQueryRow[]> {
+    if (request.currencies.length === 0) return [];
+    const sqlite = openLedgerDatabase(this.ledgerDir);
+    try {
+      const placeholders = request.currencies.map(() => "?").join(", ");
+      if (request.selection === "latest") {
+        return (sqlite.prepare(`
+          SELECT rate.rate_date AS rateDate, rate.currency, rate.twd_per_unit AS twdPerUnit
+          FROM exchange_rates AS rate
+          WHERE rate.currency IN (${placeholders})
+            AND rate.rate_date = (
+              SELECT MAX(rate_date)
+              FROM exchange_rates AS current_rate
+              WHERE current_rate.currency = rate.currency
+            )
+          ORDER BY rate.currency
+        `).all(...request.currencies) as ExchangeRateQueryRow[]).map((rate) => ({ ...rate }));
+      }
+      return (sqlite.prepare(`
+        SELECT
+          rate_date AS rateDate,
+          currency,
+          twd_per_unit AS twdPerUnit
+        FROM exchange_rates AS rate
+        WHERE currency IN (${placeholders})
+          AND rate_date <= ?
+          AND (
+            rate_date >= ?
+            OR rate_date = (
+              SELECT MAX(rate_date)
+              FROM exchange_rates AS prior
+              WHERE prior.currency = rate.currency
+                AND prior.rate_date < ?
+            )
+          )
+        ORDER BY currency, rate_date
+      `).all(...request.currencies, request.lastDate, request.firstDate, request.firstDate) as ExchangeRateQueryRow[])
+        .map((rate) => ({ ...rate }));
+    } finally {
+      sqlite.close();
+    }
+  }
+
+  async historical(
+    _request: HistoricalFinancialQueryRequest,
+  ): Promise<HistoricalFinancialQueryResult<never>> {
+    return {
+      status: "unsupported",
+      kind: "historical",
+      reason: "legacy-adapter-does-not-support-historical-queries",
+    };
+  }
+
+  async lineage(
+    _request: LineageFinancialQueryRequest,
+  ): Promise<LineageFinancialQueryResult<never>> {
+    return {
+      status: "unsupported",
+      kind: "lineage",
+      reason: "legacy-adapter-does-not-support-lineage-queries",
+    };
+  }
+
+  private async readCurrentAssets(): Promise<CurrentLedgerQueryResult<"assets">> {
     const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
     try {
-      const rawData: LedgerQueryData = {
+      const data: LedgerQueryData = {
         ...emptyLedgerQueryData(),
-        importRuns: await db.select().from(schema.importRuns).all(),
         sourceFiles: await db.select().from(schema.sourceFileImports).all(),
         sourceRowLineage: await db.select().from(schema.sourceRowLineage).all(),
         accountTransactions: await db.select().from(schema.accountTransactions).all(),
         foreignCurrencyTransactions: await db.select().from(schema.foreignCurrencyTransactions).all(),
-        creditCardStatementLines: await db.select().from(schema.creditCardStatementLines).all(),
         creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
         creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
-        creditCardSnapshots: await db.select().from(schema.creditCardSnapshots).all(),
-        loanTransactions: await db.select().from(schema.loanTransactions).all(),
         fundHoldings: await db.select().from(schema.fundHoldings).all(),
         fundBuyTransactions: await db.select().from(schema.fundBuyTransactions).all(),
         fundRedemptionTransactions: await db.select().from(schema.fundRedemptionTransactions).all(),
@@ -211,32 +300,57 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
         maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
         maicoinStatementRows: await db.select().from(schema.maicoinStatementRows).all(),
       };
-      const productData = ledgerDataForProduct(rawData, request.product);
-      const support = loadActiveLedgerSupport(sqlite);
-      const unavailableAccountIssues = loadUnavailableAccountIssues(sqlite, productData, support);
-      return {
-        status: "ok",
-        kind: "current",
-        product: request.product,
-        ledger: applyLedgerVisibility(productData, support),
-        unavailableAccountIssues,
-        unavailableAccounts: unavailableAccountIssues.map(unavailableAccountFromIssue),
-        exchangeRates: (await db.select().from(schema.exchangeRates).all()).map((rate) => ({
-          rateDate: rate.rateDate,
-          currency: rate.currency,
-          twdPerUnit: rate.twdPerUnit,
-        })),
-        spending: loadSpendingQueryData(sqlite),
-      };
+      return currentLedgerResult(sqlite, "assets", data);
     } finally {
       sqlite.close();
     }
   }
 
-  currentSpending(request: CurrentFinancialQueryRequest): CurrentSpendingQueryResult {
-    if (request.product !== "spending") {
-      throw new Error(`Synchronous current query is only available for spending: ${request.product}`);
+  private async readCurrentOverview(): Promise<CurrentLedgerQueryResult<"overview">> {
+    const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
+    try {
+      const data: LedgerQueryData = {
+        ...emptyLedgerQueryData(),
+        sourceFiles: await db.select().from(schema.sourceFileImports).all(),
+        sourceRowLineage: await db.select().from(schema.sourceRowLineage).all(),
+        accountTransactions: await db.select().from(schema.accountTransactions).all(),
+        foreignCurrencyTransactions: await db.select().from(schema.foreignCurrencyTransactions).all(),
+        creditCardStatementLines: await db.select().from(schema.creditCardStatementLines).all(),
+        creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
+        creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
+        creditCardSnapshots: await db.select().from(schema.creditCardSnapshots).all(),
+        loanTransactions: await db.select().from(schema.loanTransactions).all(),
+        fundHoldings: await db.select().from(schema.fundHoldings).all(),
+        brokerageHoldings: await db.select().from(schema.brokerageHoldings).all(),
+        maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
+        maicoinStatementRows: await db.select().from(schema.maicoinStatementRows).all(),
+      };
+      return currentLedgerResult(sqlite, "overview", data);
+    } finally {
+      sqlite.close();
     }
+  }
+
+  private async readCurrentLiabilities(): Promise<CurrentLedgerQueryResult<"liabilities">> {
+    const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
+    try {
+      const data: LedgerQueryData = {
+        ...emptyLedgerQueryData(),
+        sourceFiles: await db.select().from(schema.sourceFileImports).all(),
+        creditCardStatementLines: await db.select().from(schema.creditCardStatementLines).all(),
+        creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
+        creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
+        creditCardSnapshots: await db.select().from(schema.creditCardSnapshots).all(),
+        loanTransactions: await db.select().from(schema.loanTransactions).all(),
+        maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
+      };
+      return currentLedgerResult(sqlite, "liabilities", data);
+    } finally {
+      sqlite.close();
+    }
+  }
+
+  private readCurrentSpending(): CurrentSpendingQueryResult {
     const sqlite = openLedgerDatabase(this.ledgerDir);
     try {
       return {
@@ -249,59 +363,23 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
       sqlite.close();
     }
   }
-
-  async historical(
-    _request: HistoricalFinancialQueryRequest,
-  ): Promise<HistoricalFinancialQueryResult> {
-    return {
-      status: "unsupported",
-      kind: "historical",
-      reason: "legacy-adapter-does-not-support-historical-queries",
-    };
-  }
-
-  async lineage(_request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult> {
-    return {
-      status: "unsupported",
-      kind: "lineage",
-      reason: "legacy-adapter-does-not-support-lineage-queries",
-    };
-  }
 }
 
-function ledgerDataForProduct(data: LedgerQueryData, product: FinancialProduct): LedgerQueryData {
-  const scoped = emptyLedgerQueryData();
-  scoped.sourceFiles = data.sourceFiles;
-  scoped.sourceRowLineage = data.sourceRowLineage;
-  if (product === "assets" || product === "overview") {
-    scoped.accountTransactions = data.accountTransactions;
-    scoped.foreignCurrencyTransactions = data.foreignCurrencyTransactions;
-  }
-  if (product === "overview" || product === "liabilities") {
-    scoped.creditCardStatementLines = data.creditCardStatementLines;
-    scoped.creditCardSnapshots = data.creditCardSnapshots;
-    scoped.loanTransactions = data.loanTransactions;
-  }
-  if (product === "assets" || product === "overview" || product === "liabilities") {
-    scoped.creditCardCaptures = data.creditCardCaptures;
-    scoped.creditCardCaptureEntries = data.creditCardCaptureEntries;
-    scoped.maicoinAccountSnapshots = data.maicoinAccountSnapshots;
-  }
-  if (product === "assets" || product === "overview") {
-    scoped.maicoinStatementRows = data.maicoinStatementRows;
-  }
-  if (product === "assets" || product === "overview") {
-    scoped.fundHoldings = data.fundHoldings;
-    scoped.brokerageHoldings = data.brokerageHoldings;
-  }
-  if (product === "assets") {
-    scoped.fundBuyTransactions = data.fundBuyTransactions;
-    scoped.fundRedemptionTransactions = data.fundRedemptionTransactions;
-    scoped.fundCashDividends = data.fundCashDividends;
-    scoped.fundConversionTransactions = data.fundConversionTransactions;
-    scoped.brokerageTradeTransactions = data.brokerageTradeTransactions;
-  }
-  return scoped;
+function currentLedgerResult<Product extends LedgerFinancialProduct>(
+  sqlite: ReturnType<typeof openLedgerDrizzle>["sqlite"],
+  product: Product,
+  data: LedgerQueryData,
+): CurrentLedgerQueryResult<Product> {
+  const support = loadActiveLedgerSupport(sqlite);
+  const unavailableAccountIssues = loadUnavailableAccountIssues(sqlite, data, support);
+  return {
+    status: "ok",
+    kind: "current",
+    product,
+    ledger: applyLedgerVisibility(data, support),
+    unavailableAccountIssues,
+    unavailableAccounts: unavailableAccountIssues.map(unavailableAccountFromIssue),
+  };
 }
 
 function loadSpendingQueryData(db: ReturnType<typeof openLedgerDrizzle>["sqlite"]): LegacySpendingQueryData {
