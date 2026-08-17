@@ -223,16 +223,20 @@ The normal per-integration synchronization that repopulates an empty canonical s
 _Avoid_: Cutover-time remote dependency, legacy replay, placeholder financial value, all-integrations transaction
 
 **Source assertion**:
-A Canonical Assertion for a fact explicitly supported by a Source Record, preserving the source evidence and its own lifecycle independently of parser interpretations or user corrections.
+A Canonical Assertion for a fact explicitly supported by a Source Record, including a contract-versioned translation or conservative parent mapping only when it preserves the source field's declared semantics without adding an OctopusBeak inference. The original source value and crosswalk version remain in provenance, and its lifecycle stays independent of parser interpretations or user corrections.
 _Avoid_: Derived assertion, user assertion, imported projection
 
 **Derived assertion**:
-A Canonical Assertion produced by a parser, normalization, enrichment, or reconciliation rule from retained evidence, with its producer and rule version. A newer derivation may supersede an older one in the same claim lineage without claiming that the source evidence changed.
+A Canonical Assertion produced when a parser, normalization, enrichment, or reconciliation rule adds an OctopusBeak interpretation not explicitly claimed by the source, such as inferring personal purpose from MCC, merchant name, free text, invoice items, or combined fields. It retains its producer and rule version; a newer derivation may supersede an older one in the same claim lineage without claiming that the source evidence changed.
 _Avoid_: Source fact, user correction, unversioned inference
 
 **Derived assertion lifecycle**:
 The append-only result of an atomic, successful, complete-scope Import Run for one producer, subject, field, and rule lineage: a changed supported value supersedes the prior Derived Assertion, an explicitly unsupported optional fact withdraws it, and an unchanged value only gains run provenance. Failed or partial runs change no assertions or projections, and one producer never supersedes another producer's lineage.
 _Avoid_: Missing-output withdrawal, partial commit, cross-producer overwrite
+
+**Derived enrichment admission**:
+The producer-version-specific gate that emits exactly one optional Transaction Kind, Personal Category, or Counterparty enrichment Assertion only when its versioned and fixture-tested mapping or calibrated confidence threshold supports a unique result. Scores may remain lineage metadata but are never canonical values or comparable authority across producers; a low score, tie, unsupported result, or missing output emits no Assertion, and Automatic Enrichment Authority Routing never ranks candidates at runtime.
+_Avoid_: Global confidence scale, low-confidence canonical value, candidate persistence, score-based producer priority
 
 **User assertion**:
 A Canonical Assertion recording a person's explicit correction or choice for a user-governed field, including actor, decision time, and optional rationale. It may take precedence in the current projection or be withdrawn so projection falls back to the next valid assertion, but never rewrites or supersedes Source or Derived Assertions.
@@ -266,6 +270,10 @@ _Avoid_: Assertion withdrawal, query-hidden archive, forensic erasure guarantee,
 A versioned, immutable contract-defined assignment of exactly one authoritative integration, connection, product stream, and producer to each projection input scope at one Canonical Knowledge Point, preventing duplicate financial facts without merging source-scoped identities. Missing or overlapping routes fail admission or projection rebuild rather than invoking runtime priority; route changes create new knowledge and Historical Financial Projections retain the route valid at their cutoff. Another source may serve a different stream, but no fuzzy or user-selected reconciliation moves facts between identities.
 _Avoid_: Cross-source deduplication, identity merge, last-write-wins
 
+**Automatic enrichment authority route**:
+A versioned projection assignment of exactly one Source or Derived producer for an optional Transaction Kind, Personal Category, Counterparty participation, or display field in a declared subject scope. It is consulted only when no active User Assertion is permitted and present for that field; missing output yields absence, while overlapping authoritative producers fail admission or projection rebuild rather than being ranked by recency or confidence.
+_Avoid_: Latest enrichment wins, confidence auction, cross-producer supersession, user financial authority
+
 **Account display group**:
 A user-governed presentation grouping that may place multiple source-scoped Financial Accounts together without changing identity, relocating facts, deduplicating transactions, or authorizing their values for aggregation. It may be renamed or removed independently of all source evidence.
 _Avoid_: Canonical account, reconciliation group, calculation authority
@@ -289,6 +297,10 @@ _Avoid_: Rolling financial TTL, disconnect-as-delete, projection compaction, exp
 **Canonical schema evolution**:
 A monotonic, forward-only versioning policy in which semantics-preserving structural changes migrate transactionally before the canonical writer and query boundary open, while projection-only rule changes rebuild and atomically switch a shadow projection generation without rewriting canonical history. A model change that requires identity, effective-time, or evidence facts the retained data cannot prove must purge and recollect the affected contract or identity epoch, or perform a Canonical Reset when the incompatibility is global; migrations never invent missing facts, downgrade schemas, or let an older application write a newer database.
 _Avoid_: Best-effort backfill, invented evidence, in-place projection rewrite, schema downgrade
+
+**Taxonomy package**:
+The repository-authored, fixture-tested bundle that immutably defines one version of Transaction Kind, Personal Category, or Counterparty Role codes, parentage, semantics, applicability, localization keys, and producer compatibility. CI rejects cycles, missing parents or labels, duplicate codes, illegal applicability, mutation or deletion of published definitions, and invalid producer output; one source generates runtime types, validators, localization references, and transactional canonical seed migrations. Packages ship only inside an immutable Desktop Release, never as a remote hot update, and installing a version makes its codes available without reclassifying old Assertions.
+_Avoid_: Runtime-editable enum, remote taxonomy update, duplicated hand-written registries, automatic historical rewrite
 
 **Canonical entity lineage**:
 The required relationship from a canonical entity to the source records that support it. Direct source facts may inherit this relationship without duplicating provenance for every field.
@@ -329,6 +341,82 @@ _Avoid_: New observation, duplicate import, parser reinterpretation
 **Financial transaction**:
 A source-scoped canonical projection of a monetary event associated with a Financial Account, identified within one integration namespace, connection, product stream, stable source key, and identity epoch and traced to its Source Records. Occurrences from another integration or connection never share its identity; an integration unable to determine the key uniquely fails admission rather than creating a candidate or duplicate merge.
 _Avoid_: Cross-source transaction, import record, statement line
+
+**Transaction kind**:
+A stable, hierarchical machine classification of what financial operation one Financial Transaction represents, independent of its account-relative direction, posting status, personal purpose, Counterparty, and Transaction Relations. The first-version registry contains the parents `purchase`, `transfer`, `payment`, `cash`, `income`, `fee`, `interest`, `tax`, `refund`, `reversal`, `adjustment`, `loan`, and `investment`, with registered children for internal/external and investment transfers; bill, credit-card, and loan payments; cash deposit/withdrawal; employment, business, pension, benefit, rental, reward, dividend, and investment-distribution income; bank, card, loan, and investment fees; earned/charged interest; payment/refund/withholding tax; loan disbursement; investment buy/sell/short/cover/reinvestment trades; and supported corporate actions. An Assertion uses the most specific contract-proven code, may stop at a valid parent such as `transfer`, and retains its taxonomy version; child codes must aggregate safely to their parent, localized labels never establish identity, and changing an existing code's meaning requires a new taxonomy version. Transaction Kind is optional enrichment unless an integration contract declares it necessary to interpret a particular record kind, such as an investment trade whose buy or sell semantics govern quantity and cash effects; an absent optional kind is not stored as `unknown` or `other`, while an unresolved required kind cancels the attempted Capture. `transfer.internal` may exist from source proof about one transaction without another observed transaction; a `transfer_counterpart` Relation additionally requires both canonical endpoints and contract-proven linkage. Refund and reversal Kinds may likewise stand alone, while their Relations require proof of the original transaction.
+_Avoid_: Personal category, merchant type, transaction direction, posting status, relation
+
+**Personal category**:
+A product-managed, typed, versioned classification of the personal-finance purpose assigned to a Financial Transaction or invoice item. The first version publishes only the top-level codes `food_and_groceries`, `dining`, `alcohol_and_tobacco`, `clothing_and_footwear`, `housing_and_utilities`, `household_goods_and_services`, `healthcare`, `transportation`, `travel`, `information_and_communication`, `recreation_sports_and_culture`, `education`, `personal_and_family_care`, `insurance`, `taxes_and_government`, `gifts_and_donations`, and `work_and_business`; income, transfer, payment, and fee semantics remain Transaction Kinds. Detailed children are added only when a non-overlapping definition, actual use case, contract fixtures, and safe parent aggregation exist, never as speculative placeholders. Each target has at most one current category; absence is presented as unclassified without storing an `uncategorized`, `general`, or `other` value, while a transaction spanning several purposes uses a complete Category Allocation rather than unordered multiple categories. Source and Derived Assertions may propose registered categories, an active User Assertion takes display and analytical precedence without overwriting them, and clearing it falls back to the currently routed automatic producer. First-version users cannot create, rename, move, or delete taxonomy nodes; personal organization uses Transaction Tags. Every Assertion retains taxonomy ID, version, and exact code; code meaning and parentage are immutable, additive children do not rewrite ancestors, deprecated codes remain historically readable but unavailable for new Assertions, and reclassification requires a new evidence-backed Source or Derived Assertion rather than migration by label or old category. Personal Category is independent of Transaction Kind and Counterparty: the same merchant may serve several purposes, and the same purpose may contain purchases, fees, refunds, or other kinds.
+_Avoid_: Transaction kind, merchant identity, source description, tag
+
+**Category applicability**:
+A versioned compatibility rule permitting Personal Category only for `purchase`, general or bill/loan `payment`, `fee`, charged `interest`, payment/refund `tax`, `refund`, `reversal`, and explicitly registered descendants. Transfer, cash movement, income, earned interest, credit-card payment, loan disbursement, investment, and adjustment Kinds reject Source, Derived, or User Categorization; an absent Kind cannot be replaced by Category, though one complete producer may admit a compatible Kind and Category together. Tags remain available for non-category organization.
+_Avoid_: Category-as-kind, categorized cash withdrawal, categorized card payment, user financial reinterpretation
+
+**Category allocation**:
+An immutable, atomically versioned analytical distribution of one Financial Transaction's exact booked amount across two or more Personal Categories. Every component has a non-negative exact amount and the set may participate in aggregation only when its amounts reconcile completely in the booked currency, or through explicit conversion evidence, to the unchanged Transaction amount. Invoice-item categories may derive an allocation only after the invoice-to-transaction identity and complete amount reconciliation are established; otherwise item classifications remain separate enrichment.
+_Avoid_: Multiple category labels, transaction amount correction, partial allocation, guessed remainder
+
+**Current categorization**:
+The mutually exclusive current analytical treatment of one Financial Transaction as one Personal Category, one complete Category Allocation, or absence. An active complete User Categorization takes precedence over the one Source or Derived result selected by Automatic Enrichment Authority Routing; switching between single and allocated modes supersedes the prior mode atomically, and clearing the user lineage returns to the currently routed automatic result. A failed or partial Import Run preserves the prior automatic categorization, while a successful complete-scope run that proves prior reconciliation unsupported withdraws the whole allocation and never retains a partial component or guesses a single category from it.
+_Avoid_: Simultaneous single and allocated category, partial split, run-failure withdrawal, implicit category fallback
+
+**Relation-backed categorization**:
+A versioned Derived Categorization for a refund or reversal that inherits an original transaction's Current Categorization only when a valid `refund_of` or `reversal_of` Relation makes the inheritance safe. A full reversal or a partial refund of a single-category original may inherit, while a partial refund of an allocated original requires its own complete evidence-backed or User Allocation and never receives a proportional guess. Changes to the original categorization or Relation cause a successful complete-scope producer to supersede or withdraw the inherited result; failed runs preserve the prior result, and a refund's own User Categorization remains authoritative.
+_Avoid_: Source category copy, fuzzy refund match, proportional allocation guess, orphaned inherited category
+
+**Unclassified presentation bucket**:
+The query-time sum of transactions that satisfy a report's independent financial inclusion rules but have no Current Categorization at the requested Canonical Knowledge Point. It is never a taxonomy code or Assertion target, remains unavailable for user selection, participates in report totals and classification-coverage metrics, and receives the whole transaction amount when no complete Category Allocation exists.
+_Avoid_: `other` category, persisted unknown, dropped amount, partial-allocation remainder
+
+**Financial report inclusion**:
+A versioned query policy that determines whether and how a Financial Transaction participates in a financial total from account type, direction, Transaction Kind, relations, posting status, Statement facts, and other admitted financial semantics before consulting Personal Category. Category, Tags, Counterparty display, alias, and notes may organize an included amount but never admit, exclude, or change it; if a report requires an absent optional Kind, the query returns an explicit eligibility coverage gap and affected amount rather than silently counting, dropping, or persisting an `unknown` status.
+_Avoid_: Category-controlled cash flow, tag exclusion, silent incomplete total, user financial override
+
+**Classification coverage**:
+A query result describing how much of a financially included result set has a Current Categorization and how much falls into the Unclassified Presentation Bucket at the requested Canonical Knowledge Point. It is computed from Assertions selected by the query rather than persisted as transaction status, so changing a knowledge cutoff, report scope, or successful enrichment result reproduces the corresponding coverage without rewriting financial facts.
+_Avoid_: Categorization status row, `unknown` category, cached authority
+
+**Report eligibility coverage**:
+A query result identifying the count and amount of otherwise relevant Financial Transactions for which a report's versioned inclusion policy lacks a required admitted semantic, such as an optional Transaction Kind that the source did not provide. It reports that the financial total cannot yet be claimed complete; it never resolves the gap by guessing, silently excluding the amount, or storing a conflict or unknown status on the transaction.
+_Avoid_: Silent report omission, guessed kind, persisted eligibility status, partial truth presented as complete
+
+**Current transaction enrichment**:
+A rebuildable query projection that returns the route-selected Transaction Kind, mutually exclusive Current Categorization, all typed Counterparty Participations, selected display label and its origin, and active Transaction Tags at one Canonical Knowledge Point. Every selected value retains its exact taxonomy version, Assertion origin, and provenance; the projection creates no second history because its authority remains the underlying Canonical Financial Commits and Assertion Transitions.
+_Avoid_: Mutable enrichment source of truth, duplicated event log, UI-side precedence, untyped enrichment payload
+
+**Enrichment knowledge time**:
+The Canonical Knowledge Point at which a Transaction Kind, Personal Category, Category Allocation, Counterparty display, alias, or Tag Assertion became known, changed, or was withdrawn. These descriptive and organizational facts inherit the Financial Transaction's financial date for period membership but never receive a separately backdated financial `effective_at`; current-knowledge reports may reorganize old transactions, while a knowledge cutoff reproduces what the product displayed at that earlier point.
+_Avoid_: Backdated user category, enrichment effective date, category-changing transaction time
+
+**User categorization scope**:
+The explicit set of Financial Transactions, invoice items, or complete Category Allocations selected by a person for one category operation. A single or bulk action creates a User Assertion for every named target but never becomes a merchant-name, Counterparty, or future-transaction rule; reusable automatic user rules require a separate versioned producer and precedence specification outside the first version.
+_Avoid_: Always categorize merchant, implicit future rule, fuzzy bulk scope, alias-based categorization
+
+**Counterparty**:
+An optional evidence-backed party participating in a Financial Transaction, typed by its role such as merchant, marketplace, payment platform, financial institution, income source, government, or person. A transaction may retain several typed Counterparty Participations, while Current Projection chooses one reproducible display Counterparty from Transaction Kind and contract-defined role precedence without deleting or authorizing the others. A Counterparty Reference may be reused across transactions only when its source or enrichment producer supplies a stable entity key within that producer namespace; an explicitly provided and contract-validated registered identifier such as a Taiwan seller business number may identify the reference only inside that scheme and producer scope. Different producers never merge references by name, and without a stable key the transaction retains only a transaction-scoped display Assertion. First-version reference descriptions are limited to display and legal names; mutable web profiles, logos, contact details, geolocation, opening hours, inferred corporate groups, and unused source fields are not promoted or retained speculatively. Display normalization may be superseded without changing Financial Transaction identity, while similar names, company groups, user guesses, and a matching Institution label never establish shared identity. A Merchant is one Counterparty role rather than a universal transaction field; transfers, cash activity, and other transactions may have no merchant.
+_Avoid_: Personal category, raw transaction description, canonical Institution identity, guaranteed merchant
+
+**Counterparty participation**:
+An immutable, provenance-bearing association between one Financial Transaction and one transaction-scoped or producer-scoped Counterparty in exactly one registered role, retaining its observed name, optional Counterparty Reference, and optional typed source classification scheme/code. Several participations may coexist, such as marketplace, underlying merchant, and payment platform; an unsupported role is absent rather than stored as `other`, and selecting one participation for display never merges identities or changes financial semantics.
+_Avoid_: Single merchant field, display-name identity, institution merge, personal category
+
+**Merchant classification**:
+An optional source- or producer-scoped scheme and code, such as an evidence-backed ISO 18245 merchant category code, describing a merchant's business activity rather than the purpose of one purchase. It may support a versioned Derived Personal Category but never becomes that category directly, and unsupported addresses, store metadata, websites, logos, or external company information are absent from the first-version canonical projection.
+_Avoid_: Personal category, merchant identity, transaction kind, guessed business profile
+
+**Counterparty display override**:
+A User Assertion that changes only presentation, either for one Financial Transaction or as a shared alias on an existing producer-scoped Counterparty Reference. Transaction-specific text takes precedence over a reference alias and the routed Source or Derived display, while a reference alias is unavailable without a stable producer key; neither scope changes the selected participation, role, identity, Personal Category, Transaction Kind, or similarly named Counterparties.
+_Avoid_: Merchant merge, fuzzy bulk rename, identity correction, category override
+
+**Transaction display label**:
+The current user-facing title selected in order from a transaction-specific User override, the selected Counterparty's User alias, its routed Source or Derived display name, and finally the Financial Transaction's source description. The query returns the selected origin and keeps `display_counterparty` absent when it falls back to transaction text, so a readable label never fabricates Merchant identity or authorizes grouping by similar strings.
+_Avoid_: Description-as-merchant, display-name identity, fuzzy merchant grouping, hidden label origin
+
+**Transaction tag**:
+A reusable user-owned entity applied independently of Transaction Kind, Personal Category, and Counterparty to organize Financial Transactions for a person's own context, such as reimbursable, travel, or renovation. Its stable local ID is separate from a renameable display label whose normalized current form is unique in the user scope; each transaction association has its own User Assertion lifecycle, removal withdraws only that association, and ordinary tag deletion archives the entity while preserving history unless a separate user-data deletion applies. Source and Derived producers cannot create or apply Tags, and a Tag carries no financial calculation, identity, authority, or source meaning.
+_Avoid_: Personal category, source classification, financial fact, transaction relation
 
 **Transaction occurrence matching**:
 The contract-defined reconciliation of repeated Source Record occurrences to one stable Financial Transaction identity within the same integration namespace, connection, product stream, and identity epoch. The mapping must be unique and versioned; a content hash or occurrence ordinal is evidence rather than a permanent key, and ambiguity cancels the attempted Capture.
