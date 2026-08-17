@@ -6,6 +6,12 @@ import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_STREAM,
+  commitCathayDomesticDeposit,
+} from "../ledger/canonical/cathay-domestic-deposit.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -110,6 +116,31 @@ export type CathayStatementDownload = {
   rowCount: number;
 };
 
+export type CathayDomesticStatementsClient = {
+  fetchDomesticAccounts(session: CathaySession, filters: string[]): Promise<CathayAccount[]>;
+  fetchTransferDetailsRaw(
+    session: CathaySession,
+    accountNo: string,
+    dateRange: CathayDateRange,
+  ): Promise<string>;
+};
+
+export type CathayDomesticWorkflowOptions = {
+  /** Application-owned canonical store path; defaults to the existing LEDGER_DIR convention. */
+  canonicalLedgerDir?: string;
+  /** Sanitized operational source scope, never a credential or user identity. */
+  sourceConnectionId?: string;
+  identityEpoch?: string;
+  scope?: { startDate: string; endDate: string; complete?: boolean };
+  syncState?: { cursor: string };
+  observedAt?: string;
+  writeStatementFiles?: (
+    account: CathayAccount,
+    dateRange: CathayDateRange,
+    statement: CathayTransferResult,
+  ) => Promise<CathayStatementDownload>;
+};
+
 export type CathaySession = {
   jwtToken: string;
   customerId: string;
@@ -125,7 +156,7 @@ type CathayApiResponse<T> = {
   returnDesc?: string;
 };
 
-type CathayAccount = {
+export type CathayAccount = {
   currency?: string;
   accountNo: string;
   branchName?: string;
@@ -152,7 +183,7 @@ type CathayTransferDetail = {
   memo?: string;
 };
 
-type CathayTransferResult = {
+export type CathayTransferResult = {
   queryStatus?: string;
   accountNumber?: string;
   count?: number;
@@ -685,12 +716,7 @@ export class CathayApiClient {
     dateRange: z.infer<typeof dateRangeSchema>,
   ): Promise<CathayTransferResult> {
     const raw = await this.fetchTransferDetailsRaw(session, accountNo, dateRange);
-    const response = JSON.parse(raw) as CathayApiResponse<CathayTransferResult>;
-    const result = response.content?.datas?.[0];
-    if (!result) {
-      throw new Error(`Cathay returned no statement data for ${maskAccountLabel(accountNo)}.`);
-    }
-    return result;
+    return parseCathayTransferResponse(raw, accountNo);
   }
 
   /** Preserve the provider response lexemes for canonical admission before JSON numeric coercion. */
@@ -760,6 +786,15 @@ export class CathayApiClient {
 
     return raw;
   }
+}
+
+function parseCathayTransferResponse(raw: string, accountNo: string): CathayTransferResult {
+  const response = JSON.parse(raw) as CathayApiResponse<CathayTransferResult>;
+  const result = response.content?.datas?.[0];
+  if (!result) {
+    throw new Error(`Cathay returned no statement data for ${maskAccountLabel(accountNo)}.`);
+  }
+  return result;
 }
 
 export async function createCathaySession(page: Page): Promise<CathaySession> {
@@ -833,24 +868,56 @@ export async function downloadCathayStatements(
   dateRange: CathayDateRange,
   accountFilters: string[],
   cathaySession?: CathaySession,
+  options: CathayDomesticWorkflowOptions = {},
+  client: CathayDomesticStatementsClient = new CathayApiClient(page),
 ): Promise<CathayStatementDownload[]> {
-  const apiClient = new CathayApiClient(page);
-  const session = cathaySession ?? (await apiClient.createSession());
-  const accounts = await apiClient.fetchDomesticAccounts(
+  const session = cathaySession ?? (await new CathayApiClient(page).createSession());
+  const accounts = await client.fetchDomesticAccounts(
     session,
     accountFilters,
   );
 
   await openDomesticStatementsPage(page);
 
+  const canonicalLedgerDir = options.canonicalLedgerDir
+    ?? process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR
+    ?? process.env.LEDGER_DIR
+    ?? DEFAULT_LEDGER_DIR;
+  const sourceConnectionId = options.sourceConnectionId
+    ?? process.env.CATHAY_SOURCE_CONNECTION_REF
+    ?? "cathay-default-source";
+  const identityEpoch = options.identityEpoch
+    ?? process.env.CATHAY_IDENTITY_EPOCH
+    ?? "cathay-domestic-deposit-v1";
+  const bounds = dateRangeBounds(dateRange);
+  const scope = {
+    startDate: options.scope?.startDate ?? bounds.startDate,
+    endDate: options.scope?.endDate ?? bounds.endDate,
+    complete: options.scope?.complete ?? true,
+  };
+  const writeFiles = options.writeStatementFiles ?? writeStatementFiles;
+  const observedAt = options.observedAt ?? new Date().toISOString();
   const downloads: CathayStatementDownload[] = [];
   for (const account of accounts) {
-    const statement = await apiClient.fetchTransferDetails(
+    const rawResponse = await client.fetchTransferDetailsRaw(
       session,
       account.accountNo,
       dateRange,
     );
-    downloads.push(await writeStatementFiles(account, dateRange, statement));
+    const statement = parseCathayTransferResponse(rawResponse, account.accountNo);
+    commitCathayDomesticDeposit(canonicalLedgerDir, {
+      rawResponse,
+      sourceConnectionId,
+      identityEpoch,
+      accountNo: account.accountNo,
+      currency: account.currency ?? "TWD",
+      authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+      stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+      scope,
+      syncState: options.syncState ?? { cursor: scope.endDate },
+      observedAt,
+    });
+    downloads.push(await writeFiles(account, dateRange, statement));
   }
 
   return downloads;

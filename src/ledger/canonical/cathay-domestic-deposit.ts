@@ -17,7 +17,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_PROVENANCE = {
   note: "Human-assisted validation covered response shape only; no live values are retained.",
 } as const;
 
-export const CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE = `{"success":true,"returnCode":"000","content":{"datas":[{"queryStatus":"Success","accountNumber":"SYNTHETIC-ACCOUNT-001","count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":[{"sequenceNumber":1,"txnDateTime":"2026-07-01T09:00:00","accountDate":"2026-07-01","description":"Synthetic deposit","expendAmt":null,"incomeAmt":12500,"balance":12500},{"sequenceNumber":2,"txnDateTime":"2026-07-02T10:15:30","accountDate":"2026-07-02","description":"Synthetic transfer","expendAmt":300,"incomeAmt":null,"balance":12200},{"sequenceNumber":3,"txnDateTime":"2026-07-03T11:45:00","accountDate":"2026-07-03","description":"Synthetic credit","expendAmt":null,"incomeAmt":800,"balance":13000}]}]}}`;
+export const CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE = `{"success":true,"returnCode":"0000","content":{"datas":[{"queryStatus":"Success","accountNumber":"SYNTHETIC-ACCOUNT-001","count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":[{"sequenceNumber":1,"txnDateTime":"2026-07-01T09:00:00","accountDate":"2026-07-01","description":"Synthetic deposit","expendAmt":null,"incomeAmt":12500,"balance":12500},{"sequenceNumber":2,"txnDateTime":"2026-07-02T10:15:30","accountDate":"2026-07-02","description":"Synthetic transfer","expendAmt":300,"incomeAmt":null,"balance":12200},{"sequenceNumber":3,"txnDateTime":"2026-07-03T11:45:00","accountDate":"2026-07-03","description":"Synthetic credit","expendAmt":null,"incomeAmt":800,"balance":13000}]}]}}`;
 
 export type CathayDomesticDepositCaptureInput = {
   rawResponse: string;
@@ -32,6 +32,9 @@ export type CathayDomesticDepositCaptureInput = {
     endDate: string;
     complete: boolean;
   };
+  syncState: {
+    cursor: string;
+  };
   observedAt: string;
 };
 
@@ -44,6 +47,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
   authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
   scope: { startDate: "2025-08-17", endDate: "2026-08-17", complete: true },
+  syncState: { cursor: "2026-08-17" },
   observedAt: "2026-08-17T12:00:00+08:00",
 };
 
@@ -269,6 +273,7 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
   if (input.authorityRoute !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) throw new Error("Invalid authority route.");
   if (input.stream !== CATHAY_DOMESTIC_DEPOSIT_STREAM) throw new Error("Invalid Cathay product stream.");
   if (!input.scope.complete) throw new Error("Cathay transfer scope must be complete.");
+  if (!input.syncState.cursor.trim()) throw new Error("Cathay sync state cursor is required.");
   const startDate = requireDate(input.scope.startDate, "scope.startDate");
   const endDate = requireDate(input.scope.endDate, "scope.endDate");
   if (startDate > endDate) throw new Error("Cathay scope startDate must not be after endDate.");
@@ -276,7 +281,7 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
 
   const root = asObject(new LosslessJsonParser(input.rawResponse).parse(), "Cathay response");
   if (root.success !== true) throw new Error("Cathay response was not successful.");
-  if (root.returnCode !== "000") throw new Error("Cathay response returnCode was not 000.");
+  if (root.returnCode !== "0000") throw new Error("Cathay response returnCode was not 0000.");
   const content = asObject(root.content, "Cathay response content");
   const statement = asObject(asArray(content.datas, "Cathay response datas")[0], "Cathay transfer result");
   if (requiredString(statement, "queryStatus") !== "Success") throw new Error("Cathay queryStatus was not Success.");
@@ -450,6 +455,7 @@ CREATE TABLE IF NOT EXISTS source_sync_states (
   stream TEXT NOT NULL,
   scope_start TEXT NOT NULL,
   scope_end TEXT NOT NULL,
+  cursor TEXT NOT NULL,
   last_capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
   commit_sequence INTEGER NOT NULL REFERENCES canonical_commits(commit_sequence),
   PRIMARY KEY(source_connection_id, account_id, stream)
@@ -474,6 +480,10 @@ export function openCanonicalDatabase(
   if (!options.readOnly) {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec(SCHEMA);
+    const syncColumns = db.prepare("PRAGMA table_info(source_sync_states)").all() as Array<{ name?: string }>;
+    if (!syncColumns.some((column) => column.name === "cursor")) {
+      db.exec("ALTER TABLE source_sync_states ADD COLUMN cursor TEXT NOT NULL DEFAULT ''");
+    }
   }
   return db;
 }
@@ -695,12 +705,12 @@ export function commitCathayDomesticDeposit(
       });
     }
     db.prepare(
-      `INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, last_capture_id, commit_sequence)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_sequence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET
          scope_start = excluded.scope_start, scope_end = excluded.scope_end,
-         last_capture_id = excluded.last_capture_id, commit_sequence = excluded.commit_sequence`,
-    ).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, captureId, commitSequence);
+         cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_sequence = excluded.commit_sequence`,
+    ).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, input.syncState.cursor, captureId, commitSequence);
     db.exec("COMMIT");
     inTransaction = false;
     return { captureId, commitSequence, accountId, transactions: transactionResults };
