@@ -24,10 +24,36 @@ import type { AccountRowDto } from "../types.ts";
 export type FinancialProduct = "assets" | "overview" | "spending" | "liabilities";
 export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 
-export type CurrentFinancialQueryRequest<Product extends FinancialProduct = FinancialProduct> = {
+export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
-  product: Product;
+  product: "overview";
 };
+
+export type CurrentOverviewExchangeRateQueryRequest =
+  | {
+    kind: "current";
+    product: "overview";
+    selection: "latest";
+    currencies: string[];
+  }
+  | {
+    kind: "current";
+    product: "overview";
+    selection: "history";
+    currencies: string[];
+    firstDate: string;
+    lastDate: string;
+  };
+
+type CurrentRequestByProduct = {
+  assets: { kind: "current"; product: "assets" };
+  overview: CurrentOverviewLedgerQueryRequest | CurrentOverviewExchangeRateQueryRequest;
+  spending: { kind: "current"; product: "spending" };
+  liabilities: { kind: "current"; product: "liabilities" };
+};
+
+export type CurrentFinancialQueryRequest<Product extends FinancialProduct = FinancialProduct> =
+  CurrentRequestByProduct[Product];
 
 export type HistoricalCutoff =
   | { kind: "financial-time"; at: string }
@@ -64,22 +90,6 @@ export type ExchangeRateQueryRow = {
   currency: string;
   twdPerUnit: number;
 };
-
-export type OverviewExchangeRateQueryRequest =
-  | {
-    kind: "current";
-    product: "overview";
-    selection: "latest";
-    currencies: string[];
-  }
-  | {
-    kind: "current";
-    product: "overview";
-    selection: "history";
-    currencies: string[];
-    firstDate: string;
-    lastDate: string;
-  };
 
 export type LegacySpendingInvoiceRow = {
   invoice_key: string;
@@ -146,10 +156,20 @@ export type CurrentSpendingQueryResult = {
   spending: LegacySpendingQueryData;
 };
 
+export type CurrentOverviewExchangeRateQueryResult = {
+  status: "ok";
+  kind: "current";
+  product: "overview";
+  selection: "latest" | "history";
+  exchangeRates: ExchangeRateQueryRow[];
+};
+
 export type CurrentFinancialQueryResult<Product extends FinancialProduct = FinancialProduct> =
   Product extends "spending"
     ? CurrentSpendingQueryResult
-    : Product extends LedgerFinancialProduct
+    : Product extends "overview"
+      ? CurrentLedgerQueryResult<"overview"> | CurrentOverviewExchangeRateQueryResult
+      : Product extends LedgerFinancialProduct
       ? CurrentLedgerQueryResult<Product>
       : never;
 
@@ -179,10 +199,11 @@ export type LineageFinancialQueryResult<Entry = never, SubjectKind extends strin
 
 export interface FinancialQueryBoundary {
   current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentLedgerQueryResult<"overview">>;
+  current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
   current<Product extends LedgerFinancialProduct>(
-    request: CurrentFinancialQueryRequest<Product>,
+    request: CurrentFinancialQueryRequest<Product> & { product: Exclude<Product, "overview"> },
   ): Promise<CurrentLedgerQueryResult<Product>>;
-  overviewExchangeRates(request: OverviewExchangeRateQueryRequest): Promise<ExchangeRateQueryRow[]>;
   historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>>;
   lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>>;
 }
@@ -204,25 +225,41 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
   }
 
   current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentLedgerQueryResult<"overview">>;
+  current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
   current<Product extends LedgerFinancialProduct>(
     request: CurrentFinancialQueryRequest<Product>,
   ): Promise<CurrentLedgerQueryResult<Product>>;
   current(
     request: CurrentFinancialQueryRequest,
-  ): CurrentSpendingQueryResult | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct>> {
+  ): CurrentSpendingQueryResult
+    | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct> | CurrentOverviewExchangeRateQueryResult> {
     if (request.product === "spending") return this.readCurrentSpending();
+    if (request.product === "overview" && "selection" in request) {
+      return this.readCurrentOverviewExchangeRates(request);
+    }
     if (request.product === "assets") return this.readCurrentAssets();
     if (request.product === "overview") return this.readCurrentOverview();
     return this.readCurrentLiabilities();
   }
 
-  async overviewExchangeRates(request: OverviewExchangeRateQueryRequest): Promise<ExchangeRateQueryRow[]> {
-    if (request.currencies.length === 0) return [];
+  private async readCurrentOverviewExchangeRates(
+    request: CurrentOverviewExchangeRateQueryRequest,
+  ): Promise<CurrentOverviewExchangeRateQueryResult> {
+    if (request.currencies.length === 0) {
+      return {
+        status: "ok",
+        kind: "current",
+        product: "overview",
+        selection: request.selection,
+        exchangeRates: [],
+      };
+    }
     const sqlite = openLedgerDatabase(this.ledgerDir);
     try {
       const placeholders = request.currencies.map(() => "?").join(", ");
       if (request.selection === "latest") {
-        return (sqlite.prepare(`
+        const exchangeRates = (sqlite.prepare(`
           SELECT rate.rate_date AS rateDate, rate.currency, rate.twd_per_unit AS twdPerUnit
           FROM exchange_rates AS rate
           WHERE rate.currency IN (${placeholders})
@@ -233,8 +270,9 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
             )
           ORDER BY rate.currency
         `).all(...request.currencies) as ExchangeRateQueryRow[]).map((rate) => ({ ...rate }));
+        return { status: "ok", kind: "current", product: "overview", selection: "latest", exchangeRates };
       }
-      return (sqlite.prepare(`
+      const exchangeRates = (sqlite.prepare(`
         SELECT
           rate_date AS rateDate,
           currency,
@@ -254,6 +292,7 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
         ORDER BY currency, rate_date
       `).all(...request.currencies, request.lastDate, request.firstDate, request.firstDate) as ExchangeRateQueryRow[])
         .map((rate) => ({ ...rate }));
+      return { status: "ok", kind: "current", product: "overview", selection: "history", exchangeRates };
     } finally {
       sqlite.close();
     }
