@@ -20,7 +20,7 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
   const sankeyCurrencies = [...new Set(
     sankeyPositions.map((position) => position.currency).filter((currency) => currency !== "TWD"),
   )];
-  const sankeyExchangeRates = await query.overviewExchangeRates({
+  const { exchangeRates: sankeyExchangeRates } = await query.current({
     kind: "current",
     product: "overview",
     selection: "latest",
@@ -34,14 +34,14 @@ export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<Over
   const currencies = requiredExchangeRateCurrencies(dailyHistory);
   const historyExchangeRates = !firstDate || !lastDate || currencies.length === 0
     ? []
-    : await query.overviewExchangeRates({
+    : (await query.current({
       kind: "current",
       product: "overview",
       selection: "history",
       currencies,
       firstDate,
       lastDate,
-    });
+      })).exchangeRates;
 
   return {
     importedAt: latestImportedAt(visibleData),
