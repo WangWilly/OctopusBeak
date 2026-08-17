@@ -905,7 +905,7 @@ export async function downloadCathayStatements(
       dateRange,
     );
     const statement = parseCathayTransferResponse(rawResponse, account.accountNo);
-    commitCathayDomesticDeposit(canonicalLedgerDir, {
+    await commitCathayDomesticDeposit(canonicalLedgerDir, {
       rawResponse,
       sourceConnectionId,
       identityEpoch,
