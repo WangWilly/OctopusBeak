@@ -70,6 +70,10 @@ _Avoid_: Generic user ID, credential, authentication secret
 **Statement selection**:
 The set of statement types chosen for an enabled credential source to collect.
 
+**Collection scope version**:
+A sanitized version of the enabled product streams, Statement Selections, identity scope, query coverage, completeness semantics, and other non-secret Integration configuration that determines what one Source Capture means. A collection attempt records and revalidates this version before admission; authentication-secret rotation and purely presentational or scheduling changes do not create financial knowledge or change it.
+_Avoid_: Credential version, UI settings version, Capture contract version, secret fingerprint
+
 **Trusted financial overview**:
 A reviewable, traceable view that unifies a person's imported cash, deposits, liabilities, investments, foreign currency, crypto assets, income, spending, and statement activity across supported sources. Analysis must preserve the distinction between verified data, known gaps, and user-supplied assumptions.
 _Avoid_: Dashboard, portfolio view, financial summary
@@ -77,6 +81,14 @@ _Avoid_: Dashboard, portfolio view, financial summary
 **Financial account**:
 A persistent account identity established by one integration namespace, source connection, contract-defined stable account key, and identity epoch, used to organize that source scope's transactions, balances, liabilities, holdings, statements, and product terms. It persists across Captures and Import Runs within that scope but is never merged with an account from another integration or connection, even when both may represent the same real-world account.
 _Avoid_: Cross-source account, display group, individual card
+
+**Canonical local identifier**:
+An opaque durable reference assigned independently of account numbers, card keys, provider identifiers, content hashes, display values, and other business fields. It names an already admitted canonical object but does not prove uniqueness or identity continuity, which remain enforced by the object's contract-defined source scope and stable-key constraints.
+_Avoid_: Business-key identifier, deterministic content hash, identity evidence, display ID
+
+**Canonical identity invariant**:
+A contract-established source scope, stable key meaning, and identified subject property whose change means the prior identity contract was wrong or a new Identity Epoch has begun, rather than an ordinary field revision. Optional subtype, display metadata, lifecycle state, and financial measurements are not identity invariants merely because they appeared when the entity was first admitted.
+_Avoid_: Mutable entity field, optional classification, display label, current financial state
 
 **Institution**:
 The contract-established provider reference that maintains a Financial Account, such as a bank, broker, card issuer, fund platform, or crypto service. Its provider type is a technical taxonomy rather than a regulatory determination; an integration must map external provider identifiers uniquely before admission rather than creating provisional or conflicted Institution identity.
@@ -139,24 +151,56 @@ A persistent operational relationship through which a person authorizes or confi
 _Avoid_: Financial account, automation task run, credential secret
 
 **Source sync state**:
-Opaque continuation and health state scoped to a source connection, product stream, and optional financial account when required by the provider. A cursor is operational state rather than financial evidence and is advanced only according to the source protocol's complete-update rules.
+Opaque committed continuation and health state scoped to a source connection, product stream, and optional financial account when required by the provider. A cursor is operational state rather than financial evidence and advances in the same Canonical Financial Commit as the complete accepted Capture it covers; an integration whose source contract has no continuation state leaves it absent rather than inventing a collection-time watermark.
 _Avoid_: Financial transaction ID, source capture, global connection cursor
 
+**Sync attempt checkpoint**:
+Disposable transport progress for resuming an incomplete collection attempt, such as a downloaded page or temporary continuation token. It never advances committed Source Sync State, establishes a Source Capture, enters historical queries, or authorizes partial financial facts, and may be discarded when the attempt succeeds, fails, or expires.
+_Avoid_: Committed cursor, partial Capture, financial evidence, canonical checkpoint
+
 **Source capture**:
-An immutable metadata envelope produced only after one source-side collection event passes its integration contract and sync admission checks, recording declared scope, observation time, completeness, contract version, and zero or more compact Source Records. An unsupported or indeterminate required value cancels the entire attempted capture and emits an operational error; retries or reprocessing of an accepted capture are operational runs rather than new captures.
+An immutable metadata envelope produced only after one source-side collection event passes its integration contract and sync admission checks, recording observation time, contract version, one or more typed Capture Scopes, and zero or more compact Source Records. An unsupported or indeterminate required value cancels the entire attempted capture and emits an operational error; retries or reprocessing of an accepted capture are operational runs rather than new captures.
 _Avoid_: Import run, canonical financial account
 
+**Capture scope**:
+A typed, queryable declaration of the source subject, product stream, optional financial-time range, and contract-proven completeness covered by one Source Capture. Only the integration contract may establish complete-snapshot, complete-range, or incremental semantics; an empty result or absent next page does not establish completeness by itself. Absence may withdraw prior source support only within comparable scopes whose completeness is proven, while integration-specific supplementary metadata may remain in the compact Source Record payload but cannot authorize withdrawal.
+_Avoid_: Best-effort completeness, payload-only scope, empty-result withdrawal, transport page
+
 **Source record**:
-An immutable, compact evidence projection emitted by an integration within exactly one Source Capture, retaining the source identifiers, financial values, and provenance required for canonical mapping rather than a replayable file, response, or page. Repeated collection of an identical source claim may add provenance without duplicating its Canonical Assertion, while a newly discovered backfilled claim remains new knowledge even when its effective time is in the past.
+An immutable, compact evidence projection emitted by an integration within exactly one Source Capture, consisting of a common identity and provenance envelope plus a contract-versioned record-kind payload containing only the source identifiers and financial values required for canonical mapping. It is not a replayable file, response, or page; product calculations consume typed canonical facts rather than its integration-specific payload. Repeated collection of an identical source claim may add provenance without duplicating its Canonical Assertion, while a newly discovered backfilled claim remains new knowledge even when its effective time is in the past.
 _Avoid_: Canonical transaction, imported projection
 
 **Canonical assertion**:
-An append-only, provenance-bearing claim that a source, derivation, or person supports a value, identity, relationship, or lifecycle fact about a canonical subject. Assertions from different origin streams may coexist only after integration admission has produced a valid contract-defined value; current projections use declared precedence, and supersession occurs only within a continuous same-origin claim lineage.
+An append-only, provenance-bearing claim that a source, derivation, or person supports exactly one explicitly typed canonical revision, relation, observation, identity, or governed field. Assertions from different origin streams may coexist only after integration admission has produced a valid contract-defined value; current projections use declared precedence, and supersession occurs only within a continuous same-origin claim lineage.
 _Avoid_: Mutable canonical field, source record, cross-origin overwrite
+
+**Assertion lifecycle transition**:
+An append-only, knowledge-time event that observes, supersedes, withdraws, or restores support within one continuous, origin-specific Assertion lineage without mutating its prior Assertions or typed financial revisions. Repeated evidence for an unchanged claim adds provenance rather than another value revision; transitions never represent transaction cancellation, refund, reversal, deletion, or a cross-origin overwrite.
+_Avoid_: Mutable assertion status, financial event, duplicate unchanged assertion, conflict resolution
 
 **Canonical admission boundary**:
 The integration contract and sync preflight must resolve and validate every required candidate before it can become a Canonical Assertion; an indeterminate, unsupported, or mutually incompatible candidate cancels the attempted Source Capture, emits an operational error, and does not proceed into canonical storage or projection. Required canonical classifications never use `unknown`, while an unsupported optional fact is omitted rather than represented by an unknown assertion.
 _Avoid_: Persisted conflict candidate, last-write-wins, silent fallback
+
+**Canonical financial commit**:
+The indivisible visibility boundary that admits one complete Source Capture and makes its Source Records, canonical identities and facts, Assertion lineage, and affected current projections durable together. A failed admission, processing run, or Contract Purge exposes none of its partial financial effects; Sign-in Details, Integration configuration, and non-financial preferences are operational state outside this boundary.
+_Avoid_: Partial Capture commit, eventually consistent projection, cross-store financial write
+
+**Canonical knowledge point**:
+The single recorded knowledge position shared by every fact, Assertion transition, provenance link, and projection change in one Canonical Financial Commit. Knowledge points have a strict local order independent of wall-clock ties or reversal; backfilled financial facts retain the later knowledge point at which they were admitted rather than being backdated to their effective time.
+_Avoid_: Per-row import time, financial effective time, wall-clock-only ordering, backdated knowledge
+
+**Current financial projection**:
+The deterministic, disposable selection of the presently authoritative canonical revisions, Observations, Statements, and user-governed fields under declared Assertion precedence and Source Authority Routing. It becomes visible in the same Canonical Financial Commit as the facts that change it, contains no independent financial authority, and can be rebuilt completely from the immutable write model. A projection-rule change builds and validates one complete replacement while the prior projection remains readable, then switches atomically so consumers never observe a mixed generation.
+_Avoid_: Mutable source of truth, runtime consumer interpretation, eventually consistent read model
+
+**Historical financial projection**:
+A query-time reconstruction from immutable canonical facts and Assertion lifecycle using an explicit financial-time cutoff, knowledge-time cutoff, or both. Backfilled facts participate according to their effective time but remain absent from knowledge-time views before their `recorded_at`; precomputed daily snapshots never replace this dual-time history.
+_Avoid_: Current projection snapshot, import-time history, backdated knowledge
+
+**Canonical query boundary**:
+The exclusive read boundary through which product consumers request a Current Financial Projection, a cutoff-qualified Historical Financial Projection, or Lineage Inspection. Consumers never select Assertion precedence, Source Authority Routing, latest Observations, lifecycle effects, or integration-specific Source Record payloads independently, and missing canonical data never falls back to legacy or product-specific financial rows.
+_Avoid_: Direct write-model query, consumer-specific precedence, source-payload calculation, product fallback
 
 **Canonical reset cutover**:
 A version-triggered, one-time breaking replacement that automatically starts a new empty canonical financial store instead of migrating or reading any legacy financial, Source Capture, Source Record, assertion, projection, override, classification, import-run, or automation-run history. Startup completes the cutover only after it has atomically quarantined legacy data, copied Preserved Operational Configuration, and created and validated the empty store; failure leaves legacy files unchanged and refuses to open a partial store rather than falling back to the legacy model. The completed cutover creates new Source Connections, Identity Epochs, Captures, and canonical facts only through integration contracts that satisfy the current model. Legacy ledger and download files never participate in canonical reads, fallback, replay, or recollection; their physical retention or destruction follows Legacy Data Quarantine.
@@ -195,7 +239,7 @@ A Canonical Assertion recording a person's explicit correction or choice for a u
 _Avoid_: Source correction, destructive override, silent preference
 
 **User-governed field**:
-A descriptive or organizational field such as display name, category, tag, or note for which the first version permits a User Assertion to control the current projection. Source financial amounts, dates, lifecycle states, balances, holdings, and Statement totals are not user-governed; suspected errors may be annotated but do not enter financial calculations as corrected facts.
+A registered, typed descriptive or organizational field such as display name, category, tag, or note for which the first version permits a User Assertion to control the current projection. The field set is defined by the product contract rather than arbitrary user keys or JSON values. Source financial amounts, currencies, directions, dates, lifecycle states, balances, holdings, Statement totals, and membership are not user-governed; suspected errors may be annotated but do not enter financial calculations as corrected facts.
 _Avoid_: Source financial fact, statement selection, silent calculation override
 
 **Entity field assertion**:
@@ -211,11 +255,15 @@ A contract-declared fence within which stable source keys share one uniqueness s
 _Avoid_: Contract version, source revision, cross-epoch match
 
 **Contract purge**:
-The atomic hard deletion of all Captures and dependent Records, Assertions, revisions, relationships, and projections in an affected integration namespace, source connection, product stream, contract version, or identity epoch after an admitted contract is proven wrong. It is an exceptional replacement for correction lineage in the first version: only non-financial operational audit metadata remains, the old contract and epoch are disabled, and recovery requires recollection under a new version or epoch.
+The atomic hard deletion of a prevalidated ownership closure containing all Captures and dependent Records, identities, Assertions, revisions, relationships, sync state, and projections in an affected integration namespace, source connection, product stream, contract version, or identity epoch after an admitted contract is proven wrong. The closure must not cross into another source scope or shared operational configuration; any unexpected external reference aborts the purge. It is an exceptional replacement for correction lineage in the first version: only scope, reason, counts, fingerprint, and other non-financial operational audit metadata remain, the old contract and epoch are disabled, and recovery requires recollection under a new version or epoch.
 _Avoid_: Assertion withdrawal, partial row deletion, cross-source cascade
 
+**Canonical deletion completion**:
+The point at which a committed Contract Purge, Canonical Reset cleanup, or separately specified user deletion makes the removed financial data unreachable from every application query, projection, lineage, and recovery path. A resumable local storage scrub may follow to clear database and journal remnants, but the product does not claim forensic erasure from operating-system snapshots, external backups, or storage-device internals.
+_Avoid_: Assertion withdrawal, query-hidden archive, forensic erasure guarantee, backup deletion
+
 **Source authority routing**:
-A contract-defined assignment of one authoritative integration, connection, and product stream to each projection input, preventing duplicate financial facts without merging source-scoped identities. Another source may serve a different stream, but no fuzzy or user-selected reconciliation moves facts between identities.
+A versioned, immutable contract-defined assignment of exactly one authoritative integration, connection, product stream, and producer to each projection input scope at one Canonical Knowledge Point, preventing duplicate financial facts without merging source-scoped identities. Missing or overlapping routes fail admission or projection rebuild rather than invoking runtime priority; route changes create new knowledge and Historical Financial Projections retain the route valid at their cutoff. Another source may serve a different stream, but no fuzzy or user-selected reconciliation moves facts between identities.
 _Avoid_: Cross-source deduplication, identity merge, last-write-wins
 
 **Account display group**:
@@ -227,12 +275,20 @@ The append-only, provenance-bearing history `observed`, `revised`, `withdrawn`, 
 _Avoid_: Economic transaction status, incomplete-scope absence, user withdrawal, contract purge
 
 **Import run**:
-A processing execution that reads Source Records and atomically produces or reconciles canonical projections under identified parser and rule versions. Initial required mapping failure cancels its attempted Source Capture; reprocessing an accepted Capture creates another run whose failed or partial output leaves existing Assertions unchanged, while a successful complete output may supersede or withdraw Derived Assertions but never creates source evidence, Source Assertions, or Observations.
+A processing execution that reads Source Records and evaluates one declared complete subject, field, producer, and rule-lineage scope under identified parser and rule versions. It becomes visible only when the entire output succeeds and atomically updates its Derived Assertions and Current Financial Projection; failed or partial output leaves the prior complete result unchanged and produces only operational failure audit. Initial required mapping failure cancels its attempted Source Capture, while reprocessing an accepted Capture never creates source evidence, Source Assertions, or Observations.
 _Avoid_: Source capture, financial event
 
 **Evidence replay boundary**:
 The first version can re-evaluate derivation and normalization only from fields retained in compact Source Records; it does not preserve raw artifacts or promise to replay extraction from historical files, responses, or pages. An extraction-contract change that needs discarded source content requires a new source collection and cannot retroactively reinterpret the old capture.
 _Avoid_: Raw archive, artifact blob, full extraction reproducibility
+
+**Canonical retention**:
+Accepted Captures, compact Records, identities, revisions, Assertions, transitions, provenance, Statements, and Measurement History have no time-based expiration and remain available for Historical Financial Projection, Lineage Inspection, and deterministic rebuild until an explicit Contract Purge, Canonical Reset, or separately specified user data-deletion action removes them. Disconnection, configuration change, Assertion withdrawal, or loss of current authority never implies deletion; only operational checkpoints, staging data, logs, and retired projections may have bounded retention.
+_Avoid_: Rolling financial TTL, disconnect-as-delete, projection compaction, expired lineage
+
+**Canonical schema evolution**:
+A monotonic, forward-only versioning policy in which semantics-preserving structural changes migrate transactionally before the canonical writer and query boundary open, while projection-only rule changes rebuild and atomically switch a shadow projection generation without rewriting canonical history. A model change that requires identity, effective-time, or evidence facts the retained data cannot prove must purge and recollect the affected contract or identity epoch, or perform a Canonical Reset when the incompatibility is global; migrations never invent missing facts, downgrade schemas, or let an older application write a newer database.
+_Avoid_: Best-effort backfill, invented evidence, in-place projection rewrite, schema downgrade
 
 **Canonical entity lineage**:
 The required relationship from a canonical entity to the source records that support it. Direct source facts may inherit this relationship without duplicating provenance for every field.
@@ -247,7 +303,7 @@ The classification `source_fact`, `parser_inference`, `normalized_projection`, o
 _Avoid_: Verified boolean, importer name
 
 **Balance observation**:
-A balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It requires provenance plus contract-established effective, observation, and recording times so it can support historical valuation; a value derived from a transaction's balance-after field remains marked as derived and is not presented as a real-time provider balance.
+A balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It requires provenance plus contract-established effective, observation, and recording times so it can support historical valuation. A source-reported transaction `balance_after` may support a derived post-transaction ledger observation only when the contract establishes its effective ledger point or ordering; it is never presented as a real-time provider balance, and incomplete transaction history never synthesizes an account balance.
 _Avoid_: Current account field, transaction amount, assumed live balance
 
 **Measurement history**:
@@ -261,6 +317,10 @@ _Avoid_: Observation time, recording time, parser guess
 **Canonical temporal requirement**:
 Each fact type declares effective time as required or not applicable rather than exposing a universally nullable field: Transactions, Statements, Balance and Holding Observations, and Account lifecycle facts require their contract-defined financial date or time, while purely descriptive names, labels, and notes use mandatory recording time without financial effective time. Missing required temporal evidence cancels the attempted Source Capture, and recording or observation time never fills it.
 _Avoid_: Universal nullable effective-at, descriptive-field effective date, inferred timestamp
+
+**Canonical financial revision**:
+An immutable, internally complete version of a financial fact whose required values are admitted and superseded as one coherent unit, while its Assertion lineage records origin, producer, supporting evidence, and knowledge time without turning each required financial field into an independently drifting claim. Transactions, Statements, and corrected Observations retain their specialized revision rules; independently governed descriptive fields continue to use field-level Assertions.
+_Avoid_: Mutable financial row, generic field-value bag, partial financial revision, duplicated assertion payload
 
 **Observation revision**:
 An append-only correction lineage used only when an integration's verified source contract establishes that later evidence corrects the same source-side measurement. A new collection, a matching effective time, or reprocessing the same Source Capture is not by itself a revision; parser reinterpretation instead produces a versioned Derived Assertion.
@@ -291,7 +351,7 @@ The required denomination of the account-booked transaction amount, established 
 _Avoid_: Account default currency, display currency, unsupported currency guess
 
 **Exact monetary value**:
-A lossless decimal magnitude paired with an explicitly identified denomination; canonical amounts and rates never use binary floating point, while source formatting remains in the immutable Source Record and display rounding never changes the underlying value. Fiat denominations use ISO 4217, and any non-ISO denomination belongs to a distinct controlled scheme rather than masquerading as an ISO currency.
+A lossless, normalized decimal magnitude paired with an explicitly identified denomination; numerically equal values have one canonical equality representation regardless of source padding or display precision. Canonical amounts and rates never use binary floating point, while source formatting remains in the immutable Source Record and display rounding never changes the underlying value. Fiat denominations use ISO 4217, and any non-ISO denomination belongs to a distinct controlled scheme rather than masquerading as an ISO currency.
 _Avoid_: Floating-point money, universal cents integer, formatted source text as calculation input
 
 **Original transaction amount**:
@@ -323,7 +383,7 @@ An optional, non-independent extension of a financial transaction belonging to a
 _Avoid_: Credit card transaction entity, statement line, financial transaction
 
 **Transaction relation**:
-An optional, provenance-bearing relationship between two source-scoped Financial Transactions, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`, created only from explicit source evidence or a validated uniquely deterministic integration contract. Users cannot establish financial relations; unsupported optional relations are absent, and admitted relations never merge or delete transactions, impose a global one-to-one constraint, or invent amount allocations.
+An optional, provenance-bearing, immutable typed relationship between two non-identical Financial Transactions within one contract-provable Source Connection and Identity Epoch, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`. Its endpoints and type are created only from explicit source evidence or a validated uniquely deterministic integration contract and never change in place; withdrawal and restoration affect its Assertion support. Users cannot establish financial relations; unsupported optional relations are absent, and admitted relations never merge or delete transactions, impose a global one-to-one constraint, or invent amount allocations.
 _Avoid_: Transaction identity merge, user financial assertion, ambiguous match
 
 **Pending-to-posted transaction relation**:
@@ -359,7 +419,7 @@ An evidence-gated, settled billing-cycle summary for a credit-card financial acc
 _Avoid_: Unbilled transaction list, transaction date, transaction export, source capture
 
 **Statement revision**:
-An append-only correction lineage created only when an integration's verified contract proves that the source reissued or corrected the same Statement through stable identity, revision, or replacement semantics. A different billing cycle creates a new Statement, and the first version does not allow a User Assertion to choose between ambiguous Statement candidates.
+An append-only correction lineage created only when an integration's verified contract proves that the source reissued or corrected the same Statement through stable identity, revision, or replacement semantics. Each revision immutably owns its source-reported totals, dates, and membership pinned to the specific Transaction Revisions used by that statement version, so later transaction changes cannot rewrite old billing history. A different billing cycle creates a new Statement, and the first version does not allow a User Assertion to choose between ambiguous Statement candidates.
 _Avoid_: New billing cycle, same-period guess, user-selected source revision
 
 **Statement document**:
