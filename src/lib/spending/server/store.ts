@@ -11,49 +11,14 @@ import type {
 } from "../model.ts";
 import { buildSpendingModel, SPENDING_REASONS } from "../model.ts";
 import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
+import {
+  createFinancialQuery,
+  type LegacySpendingAccountRow,
+  type LegacySpendingCardPaymentRow,
+  type LegacySpendingOverrideRow,
+} from "../../shared-ledger/server/financial-query.ts";
 
 export { activeImportSql };
-
-type SpendingRow = {
-  invoice_key: string;
-  invoice_id: string;
-  issued_at: unknown;
-  invoice_amount: number | null;
-  seller_business_account_number: string | null;
-  seller_name: string | null;
-  seller_addr: string | null;
-  item_key: string | null;
-  item_sequence_number: number | null;
-  item_quantity: number | null;
-  item_unit_price: number | null;
-  item_paid_amount: number | null;
-  item_product_name: string | null;
-  category: SpendingCategory | null;
-};
-
-type AccountRow = {
-  statement_row_id: string;
-  bank: string;
-  account_number: string | null;
-  currency: string;
-  date: string;
-  transaction_time: string | null;
-  description: string | null;
-  note: string | null;
-  withdrawal_amount: number | null;
-  deposit_amount: number | null;
-};
-
-type CardPaymentRow = { date: string; twd_amount: number };
-
-type OverrideRow = {
-  statement_row_id: string;
-  state: SpendingState;
-  category: SpendingCategory | null;
-  automatic_state: SpendingState;
-  automatic_reason: SpendingReason | null;
-  updated_at: string;
-};
 
 const SPENDING_STATES = new Set<SpendingState>(["included", "excluded", "pending"]);
 const SPENDING_REASON_SET = new Set<SpendingReason>(SPENDING_REASONS);
@@ -77,56 +42,15 @@ export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
   { selectedMonth, selectedCategory }: SpendingLoadInput = {},
 ): SpendingModel {
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const rows = db.prepare(`
-      SELECT
-        personal_invoices.invoice_key,
-        personal_invoices.invoice_id,
-        personal_invoices.issued_at,
-        personal_invoices.amount AS invoice_amount,
-        personal_invoices.seller_business_account_number,
-        personal_invoices.seller_name,
-        personal_invoices.seller_addr,
-        items.item_key,
-        items.item_sequence_number,
-        items.item_quantity,
-        items.item_unit_price,
-        items.item_paid_amount,
-        items.item_product_name,
-        items.category
-      FROM personal_invoices
-      LEFT JOIN personal_invoice_items AS items
-        ON items.invoice_key = personal_invoices.invoice_key
-        AND ${activeImportSql("personal_invoice_items", "items")}
-      WHERE personal_invoices.status = ?
-        AND ${activeImportSql("personal_invoices")}
-      ORDER BY personal_invoices.issued_at, personal_invoices.invoice_key,
-        items.item_sequence_number, items.item_key
-    `).all("confirmed") as SpendingRow[];
-    const accountRows = db.prepare(`
-      SELECT statement_row_id, bank, account_number, currency,
-        COALESCE(transaction_date, accounting_date) AS date,
-        transaction_time, description, note, withdrawal_amount, deposit_amount
-      FROM account_transactions
-      WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
-        AND COALESCE(transaction_date, accounting_date) IS NOT NULL
-        AND ${activeImportSql("account_transactions")}
-      ORDER BY date, statement_row_id
-    `).all() as AccountRow[];
-    const cardPaymentRows = db.prepare(`
-      SELECT COALESCE(consume_date, posting_date) AS date, twd_amount
-      FROM credit_card_statement_lines
-      WHERE twd_amount < 0
-        AND COALESCE(consume_date, posting_date) IS NOT NULL
-        AND ${activeImportSql("credit_card_statement_lines")}
-    `).all() as CardPaymentRow[];
-    const overrideRows = db.prepare(`
-      SELECT statement_row_id, state, category, automatic_state,
-        automatic_reason, updated_at
-      FROM spending_transaction_overrides
-    `).all() as OverrideRow[];
-
+  const { spending } = createFinancialQuery(ledgerDir).current({
+    kind: "current",
+    product: "spending",
+  });
+  {
+    const rows = spending.invoices;
+    const accountRows = spending.accountTransactions;
+    const cardPaymentRows = spending.cardPayments;
+    const overrideRows = spending.overrides;
     const invoices: SpendingInvoiceDto[] = [];
     const invoicesByKey = new Map<string, SpendingInvoiceDto>();
     for (const row of rows) {
@@ -163,7 +87,7 @@ export function loadSpending(
         });
       }
     }
-    const accountTransaction = (row: AccountRow, amount: number): SpendingAccountTransactionInput => ({
+    const accountTransaction = (row: LegacySpendingAccountRow, amount: number): SpendingAccountTransactionInput => ({
       statementRowId: row.statement_row_id,
       bank: row.bank,
       accountNumber: row.account_number,
@@ -180,11 +104,11 @@ export function loadSpending(
     const counterpartDeposits = accountRows
       .filter((row) => Number(row.deposit_amount) > 0)
       .map((row) => accountTransaction(row, Number(row.deposit_amount)));
-    const cardPayments: SpendingCardPaymentInput[] = cardPaymentRows.map((row) => ({
+    const cardPayments: SpendingCardPaymentInput[] = cardPaymentRows.map((row: LegacySpendingCardPaymentRow) => ({
       date: row.date,
       amount: Math.abs(Number(row.twd_amount)),
     }));
-    const overrides: SpendingOverrideDto[] = overrideRows.map((row) => ({
+    const overrides: SpendingOverrideDto[] = overrideRows.map((row: LegacySpendingOverrideRow) => ({
       statementRowId: row.statement_row_id,
       state: row.state,
       category: row.category,
@@ -201,8 +125,6 @@ export function loadSpending(
       selectedMonth,
       selectedCategory,
     });
-  } finally {
-    db.close();
   }
 }
 
