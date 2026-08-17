@@ -8,12 +8,17 @@ export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 2;
+export const CANONICAL_SCHEMA_VERSION = 3;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
   origin: "provider_booked_history",
   basis: "query-status-success-with-accounting-date",
+  ruleVersion: "cathay/domestic-deposit/v1",
+} as const;
+export const CATHAY_COMPLETENESS_PROOF = {
+  kind: "complete-range",
+  basis: "success-status-scope-count-details",
   ruleVersion: "cathay/domestic-deposit/v1",
 } as const;
 
@@ -35,8 +40,8 @@ export type CathayDomesticDepositCaptureInput = {
   currency: string;
   authorityRoute: string;
   stream: string;
-  scope: { startDate: string; endDate: string; complete: boolean };
-  syncState: { cursor: string };
+  scope: { startDate: string; endDate: string; complete?: boolean };
+  syncState: { cursor?: string | null };
   observedAt: string;
 };
 
@@ -48,8 +53,8 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
   currency: "TWD",
   authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  scope: { startDate: "2025-08-17", endDate: "2026-08-17", complete: true },
-  syncState: { cursor: "2026-08-17" },
+  scope: { startDate: "2025-08-17", endDate: "2026-08-17" },
+  syncState: { cursor: null },
   observedAt: "2026-08-17T12:00:00+08:00",
 };
 
@@ -203,10 +208,26 @@ function requireDateTime(value: string, label: string): string {
   if (Number.isNaN(calendarShape.getTime()) || calendarShape.toISOString().slice(0, 19) !== value) throw new Error(`${label} must be a valid local date-time.`);
   return value;
 }
+function parseRfc3339UtcMicros(value: string, label: string): number {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/);
+  if (!match) throw new Error(`${label} must be RFC3339 with an explicit UTC designator or numeric offset.`);
+  const civil = `${match[1]}T${match[2]}`;
+  if ((match[3]?.length ?? 0) > 6) throw new Error(`${label} exceeds integer microsecond precision.`);
+  const calendarShape = new Date(`${civil}Z`);
+  if (Number.isNaN(calendarShape.getTime()) || calendarShape.toISOString().slice(0, 19) !== civil) throw new Error(`${label} must be a valid RFC3339 timestamp.`);
+  if (match[4] !== "Z") {
+    const [hours, minutes] = match[4].slice(1).split(":").map(Number);
+    if (hours > 23 || minutes > 59) throw new Error(`${label} has an invalid numeric offset.`);
+  }
+  const epochMilliseconds = Date.parse(`${civil}${match[4]}`);
+  if (!Number.isSafeInteger(epochMilliseconds)) throw new Error(`${label} is outside the supported instant range.`);
+  const fractionMicros = BigInt((match[3] ?? "").slice(0, 6).padEnd(6, "0"));
+  const micros = BigInt(epochMilliseconds) * 1000n + fractionMicros;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER) || micros < BigInt(Number.MIN_SAFE_INTEGER)) throw new Error(`${label} microseconds exceed the safe SQLite binding range.`);
+  return Number(micros);
+}
 function localDateTimeToUtcMicros(value: string): number {
-  const milliseconds = new Date(`${value}+08:00`).getTime();
-  if (!Number.isSafeInteger(milliseconds)) throw new Error("Cathay local date-time is outside the supported instant range.");
-  return milliseconds * 1000;
+  return parseRfc3339UtcMicros(`${value}+08:00`, "Cathay local date-time");
 }
 function localDateToUtcMicros(value: string): number {
   return localDateTimeToUtcMicros(`${value}T00:00:00`);
@@ -229,6 +250,7 @@ type ValidatedCathayCapture = {
   startDate: string;
   endDate: string;
   posting: typeof CATHAY_POSTING_MAPPING;
+  completeness: typeof CATHAY_COMPLETENESS_PROOF;
   rows: ValidatedCathayRow[];
 };
 
@@ -251,13 +273,10 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
   if (input.currency !== "TWD") throw new Error("Cathay domestic deposit currency must be TWD.");
   if (input.authorityRoute !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) throw new Error("Invalid authority route.");
   if (input.stream !== CATHAY_DOMESTIC_DEPOSIT_STREAM) throw new Error("Invalid Cathay product stream.");
-  if (!input.scope.complete) throw new Error("Cathay transfer scope must be complete.");
-  if (!input.syncState.cursor.trim()) throw new Error("Cathay sync state cursor is required.");
   const startDate = requireDate(input.scope.startDate, "scope.startDate");
   const endDate = requireDate(input.scope.endDate, "scope.endDate");
   if (startDate > endDate) throw new Error("Cathay scope startDate must not be after endDate.");
-  const observedAtMs = Date.parse(input.observedAt);
-  if (!Number.isSafeInteger(observedAtMs)) throw new Error("Invalid observation time.");
+  parseRfc3339UtcMicros(input.observedAt, "Capture observedAt");
 
   const root = asObject(new LosslessJsonParser(input.rawResponse).parse(), "Cathay response");
   if (root.success !== true) throw new Error("Cathay response was not successful.");
@@ -314,7 +333,7 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
       payload: JSON.stringify(payload),
     } satisfies ValidatedCathayRow;
   });
-  return { accountNo, startDate, endDate, posting, rows };
+  return { accountNo, startDate, endDate, posting, completeness: CATHAY_COMPLETENESS_PROOF, rows };
 }
 
 type CanonicalId = Buffer;
@@ -368,7 +387,8 @@ CREATE TABLE IF NOT EXISTS source_captures (
   capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
   identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
   stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
-  completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+  completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),
+  completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
 );
 CREATE TABLE IF NOT EXISTS source_records (
   source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
@@ -416,7 +436,7 @@ CREATE TABLE IF NOT EXISTS assertion_provenance (
 );
 CREATE TABLE IF NOT EXISTS source_sync_states (
   source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT NOT NULL,
+  stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT,
   last_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   PRIMARY KEY(source_connection_id, account_id, stream)
 );
@@ -463,8 +483,32 @@ function migrateV1ToV2(db: DatabaseSync): void {
     }
     const latestCommit = db.prepare("SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     if (latestCommit) db.prepare("INSERT OR REPLACE INTO current_projection_state(generation, commit_id) VALUES (1, ?)").run(blob(latestCommit.commit_id));
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, Date.now() * 1000);
-    db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(2, currentUtcMicros());
+    db.exec("PRAGMA user_version = 2");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+function migrateV2ToV3(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("ALTER TABLE source_captures ADD COLUMN completeness_basis TEXT NOT NULL DEFAULT 'success-status-scope-count-details' CHECK(completeness_basis = 'success-status-scope-count-details')");
+    db.exec("ALTER TABLE source_captures ADD COLUMN completeness_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1')");
+    db.exec("ALTER TABLE source_sync_states RENAME TO source_sync_states_v2");
+    db.exec(`CREATE TABLE source_sync_states (
+      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT,
+      last_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(source_connection_id, account_id, stream)
+    )`);
+    db.exec(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
+      SELECT source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id FROM source_sync_states_v2`);
+    db.exec("DROP TABLE source_sync_states_v2");
+    db.exec(SCHEMA);
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(3, currentUtcMicros());
+    db.exec("PRAGMA user_version = 3");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -478,6 +522,11 @@ function applySchemaMigration(db: DatabaseSync): void {
   if (version === 0 && tableExists(db, "canonical_commits")) throw new Error("Unversioned canonical SQLite schema is not compatible; refusing ad-hoc migration.");
   if (version === 1) {
     migrateV1ToV2(db);
+    migrateV2ToV3(db);
+    return;
+  }
+  if (version === 2) {
+    migrateV2ToV3(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -489,7 +538,7 @@ function applySchemaMigration(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA);
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, Date.now() * 1000);
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -581,12 +630,22 @@ function sameRevision(row: Record<string, unknown>, detail: ValidatedCathayRow):
     && row.effective_time_rule_version === CATHAY_POSTING_MAPPING.ruleVersion && Number(row.utc_instant_utc_us) === detail.utcInstantUtcUs;
 }
 function recordedAtUtcUs(value: string): number {
-  const milliseconds = Date.parse(value);
-  if (!Number.isSafeInteger(milliseconds)) throw new Error("Invalid observation time.");
-  return milliseconds * 1000;
+  return parseRfc3339UtcMicros(value, "Canonical admission clock");
 }
 
-function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesticDepositCaptureInput, validated: ValidatedCathayCapture): CathayCanonicalCommitResult {
+function currentUtcMicros(): number {
+  return parseRfc3339UtcMicros(new Date().toISOString(), "Canonical migration clock");
+}
+
+export type CanonicalAdmissionClock = () => string;
+export type CathayCanonicalCommitOptions = { clock?: CanonicalAdmissionClock };
+
+function commitCathayDomesticDepositOnce(
+  ledgerDir: string,
+  input: CathayDomesticDepositCaptureInput,
+  validated: ValidatedCathayCapture,
+  admissionClock: CanonicalAdmissionClock,
+): CathayCanonicalCommitResult {
   const db = openCanonicalDatabase(ledgerDir);
   let inTransaction = false;
   try {
@@ -595,7 +654,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
     const commitId = uuidV7();
     const maxSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0);
     const commitSequence = maxSequence + 1;
-    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(input.observedAt), CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, "source_capture");
+    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(admissionClock()), CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, "source_capture");
     db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, "v1", commitId);
     const connectionExisting = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
     const sourceConnectionId = connectionExisting ? blob(dbRow<{ source_connection_id: unknown }>(connectionExisting).source_connection_id) : uuidV7();
@@ -610,7 +669,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
       if (account.currency !== input.currency || account.account_type !== "depository") throw new Error("Cathay account identity has conflicting required classification.");
     } else db.prepare("INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(accountId, sourceConnectionId, identityEpochId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.accountNo, "depository", input.currency, commitId);
     const captureId = uuidV7();
-    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, validated.accountNo, input.observedAt, validated.startDate, validated.endDate, "complete-range", commitId);
+    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, validated.accountNo, input.observedAt, validated.startDate, validated.endDate, validated.completeness.kind, validated.completeness.basis, validated.completeness.ruleVersion, commitId);
 
     const transactionResults: CathayCommitTransactionResult[] = [];
     for (const detail of validated.rows) {
@@ -653,7 +712,7 @@ function commitCathayDomesticDepositOnce(ledgerDir: string, input: CathayDomesti
     }
     db.prepare(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET scope_start = excluded.scope_start,
-      scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, input.syncState.cursor, captureId, commitId);
+      scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, input.syncState.cursor ?? null, captureId, commitId);
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
@@ -687,9 +746,14 @@ async function withCanonicalWriter<T>(ledgerDir: string, operation: () => T): Pr
   }
 }
 
-export function commitCathayDomesticDeposit(ledgerDir: string, input: CathayDomesticDepositCaptureInput): Promise<CathayCanonicalCommitResult> {
+export function commitCathayDomesticDeposit(
+  ledgerDir: string,
+  input: CathayDomesticDepositCaptureInput,
+  options: CathayCanonicalCommitOptions = {},
+): Promise<CathayCanonicalCommitResult> {
   const validated = validateCapture(input);
-  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositOnce(ledgerDir, input, validated));
+  const admissionClock = options.clock ?? (() => new Date().toISOString());
+  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositOnce(ledgerDir, input, validated, admissionClock));
 }
 
 function amountFromRow(row: Record<string, unknown>, prefix = ""): CanonicalAmount { return { coefficient: String(row[`${prefix}amount_coefficient`]), scale: Number(row[`${prefix}amount_scale`]) }; }

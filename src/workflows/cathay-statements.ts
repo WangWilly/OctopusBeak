@@ -131,8 +131,8 @@ export type CathayDomesticWorkflowOptions = {
   /** Sanitized operational source scope, never a credential or user identity. */
   sourceConnectionId?: string;
   identityEpoch?: string;
-  scope?: { startDate: string; endDate: string; complete?: boolean };
-  syncState?: { cursor: string };
+  scope?: { startDate: string; endDate: string };
+  syncState?: { cursor?: string | null };
   observedAt?: string;
   writeStatementFiles?: (
     account: CathayAccount,
@@ -893,7 +893,6 @@ export async function downloadCathayStatements(
   const scope = {
     startDate: options.scope?.startDate ?? bounds.startDate,
     endDate: options.scope?.endDate ?? bounds.endDate,
-    complete: options.scope?.complete ?? true,
   };
   const writeFiles = options.writeStatementFiles ?? writeStatementFiles;
   const observedAt = options.observedAt ?? new Date().toISOString();
@@ -914,7 +913,7 @@ export async function downloadCathayStatements(
       authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
       stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
       scope,
-      syncState: options.syncState ?? { cursor: scope.endDate },
+      syncState: options.syncState ?? { cursor: null },
       observedAt,
     });
     downloads.push(await writeFiles(account, dateRange, statement));

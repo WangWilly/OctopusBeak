@@ -67,6 +67,12 @@ try {
     assert.equal(revisionColumns.some((column) => column.name === "balance_coefficient"), false);
     assert.equal(revisionColumns.some((column) => column.name === "balance_scale"), false);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM current_transactions WHERE commit_id IS NOT NULL").get()?.count, 3);
+    assert.equal(db.prepare("SELECT cursor FROM source_sync_states").get()?.cursor, null);
+    assert.deepEqual({ ...(db.prepare("SELECT completeness, completeness_basis, completeness_rule_version FROM source_captures").get() as Record<string, unknown>) }, {
+      completeness: "complete-range",
+      completeness_basis: "success-status-scope-count-details",
+      completeness_rule_version: "cathay/domestic-deposit/v1",
+    });
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM transaction_time_observations").get()?.count, 6);
     assert.deepEqual((db.prepare("SELECT role, local_value, time_precision, time_origin FROM transaction_time_observations ORDER BY role, local_value LIMIT 2").all() as Array<Record<string, unknown>>).map((row) => ({ ...row })), [
       { role: "accounting", local_value: "2026-07-01", time_precision: "date", time_origin: "source_reported" },
@@ -186,6 +192,36 @@ try {
   } finally { emptyDb.close(); }
 } finally { await rm(emptyDir, { recursive: true, force: true }); }
 
+const completenessDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-completeness-"));
+try {
+  const result = await commitCathayDomesticDeposit(completenessDir, {
+    ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    scope: { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope, complete: false },
+  });
+  assert.equal(result.transactions.length, 3);
+  const completenessDb = openCanonicalDatabase(completenessDir, { readOnly: true });
+  try {
+    assert.equal(completenessDb.prepare("SELECT completeness FROM source_captures").get()?.completeness, "complete-range");
+  } finally { completenessDb.close(); }
+} finally { await rm(completenessDir, { recursive: true, force: true }); }
+
+const backfillDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-backfill-"));
+try {
+  const backfill = await commitCathayDomesticDeposit(backfillDir, {
+    ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    observedAt: "2020-01-01T00:00:00Z",
+  }, { clock: () => "2026-08-20T12:00:00.123456Z" });
+  const backfillDb = openCanonicalDatabase(backfillDir, { readOnly: true });
+  try {
+    const knowledge = backfillDb.prepare("SELECT recorded_at_utc_us FROM canonical_commits").get()?.recorded_at_utc_us as number;
+    assert.equal(knowledge > new Date("2020-01-01T00:00:00Z").getTime() * 1000, true);
+    assert.equal(backfillDb.prepare("SELECT recorded_at_utc_us FROM canonical_commits").get()?.recorded_at_utc_us, 1787227200123456);
+  } finally { backfillDb.close(); }
+  const backfillQuery = createCathayCanonicalFinancialQuery(backfillDir);
+  assert.equal((await backfillQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: "0" } })).transactions.length, 0);
+  assert.equal((await backfillQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(backfill.commitSequence) } })).transactions.length, 3);
+} finally { await rm(backfillDir, { recursive: true, force: true }); }
+
 const contendedDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-writer-"));
 try {
   await Promise.all([
@@ -234,6 +270,8 @@ for (const [label, capture] of [
   ["unsupported posting fields", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', '"status":"pending","description":"Synthetic Cathay deposit description"') }],
   ["invalid description type", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', '"description":123') }],
   ["oversized description", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"description":"Synthetic Cathay deposit description"', `"description":"${"x".repeat(513)}"`) }],
+  ["timezone-less observedAt", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, observedAt: "2026-08-17T12:00:00" }],
+  ["unsafe timestamp microseconds", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, observedAt: "3000-08-17T12:00:00Z" }],
 ] as const) {
   const rejectedDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-reject-"));
   try {
