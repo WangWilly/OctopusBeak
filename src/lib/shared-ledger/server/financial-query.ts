@@ -19,6 +19,21 @@ import {
   type UnavailableAccountIssue,
 } from "./accounts.ts";
 import type { AccountRowDto } from "../types.ts";
+import {
+  createCathayCanonicalFinancialQuery as createCathayCanonicalQuery,
+  type CathayCanonicalFinancialQuery,
+} from "../../../ledger/canonical/cathay-domestic-deposit.ts";
+
+export type {
+  CanonicalAmount,
+  CathayCanonicalCommitResult,
+  CathayCanonicalCurrentQueryRequest,
+  CathayCanonicalCurrentQueryResult,
+  CathayCanonicalHistoricalQueryRequest,
+  CathayCanonicalHistoricalQueryResult,
+  CathayCanonicalLineageQueryRequest,
+  CathayCanonicalLineageQueryResult,
+} from "../../../ledger/canonical/cathay-domestic-deposit.ts";
 
 /** Products that may consume the financial query boundary. */
 export type FinancialProduct = "assets" | "overview" | "spending" | "liabilities";
@@ -215,6 +230,15 @@ export interface FinancialQueryBoundary {
  */
 export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQueryBoundary {
   return new LegacyFinancialQueryAdapter(ledgerDir);
+}
+
+/** Canonical adapter factory kept alongside the phase-1 legacy boundary. */
+export type CanonicalFinancialQueryBoundary = CathayCanonicalFinancialQuery;
+
+export function createCathayCanonicalFinancialQuery(
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): CanonicalFinancialQueryBoundary {
+  return createCathayCanonicalQuery(ledgerDir);
 }
 
 class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
