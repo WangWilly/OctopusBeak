@@ -591,8 +591,12 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-class CathayApiClient {
-  constructor(private page: Page) {}
+export class CathayApiClient {
+  private readonly page: Page;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
 
   async createSession(): Promise<CathaySession> {
     const result = (await this.page.evaluate(async () => {
@@ -680,8 +684,23 @@ class CathayApiClient {
     accountNo: string,
     dateRange: z.infer<typeof dateRangeSchema>,
   ): Promise<CathayTransferResult> {
+    const raw = await this.fetchTransferDetailsRaw(session, accountNo, dateRange);
+    const response = JSON.parse(raw) as CathayApiResponse<CathayTransferResult>;
+    const result = response.content?.datas?.[0];
+    if (!result) {
+      throw new Error(`Cathay returned no statement data for ${maskAccountLabel(accountNo)}.`);
+    }
+    return result;
+  }
+
+  /** Preserve the provider response lexemes for canonical admission before JSON numeric coercion. */
+  async fetchTransferDetailsRaw(
+    session: CathaySession,
+    accountNo: string,
+    dateRange: z.infer<typeof dateRangeSchema>,
+  ): Promise<string> {
     const bounds = dateRangeBounds(dateRange);
-    const response = await this.apiPost<CathayTransferResult>(
+    return await this.apiPostRaw(
       "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
       session,
       {
@@ -698,11 +717,6 @@ class CathayApiClient {
         },
       },
     );
-    const result = response.content?.datas?.[0];
-    if (!result) {
-      throw new Error(`Cathay returned no statement data for ${maskAccountLabel(accountNo)}.`);
-    }
-    return result;
   }
 
   private async apiPost<T>(
@@ -710,7 +724,16 @@ class CathayApiClient {
     session: Pick<CathaySession, "jwtToken">,
     body: unknown,
   ): Promise<CathayApiResponse<T>> {
-    const result = (await this.page.evaluate(
+    const raw = await this.apiPostRaw(path, session, body);
+    return JSON.parse(raw) as CathayApiResponse<T>;
+  }
+
+  private async apiPostRaw(
+    path: string,
+    session: Pick<CathaySession, "jwtToken">,
+    body: unknown,
+  ): Promise<string> {
+    const raw = await this.page.evaluate(
       async ({ path, token, body }) => {
         const response = await fetch(path, {
           method: "POST",
@@ -723,10 +746,11 @@ class CathayApiClient {
           body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error(`${response.status} for ${path}`);
-        return await response.json();
+        return await response.text();
       },
       { path, token: session.jwtToken, body },
-    )) as CathayApiResponse<T>;
+    );
+    const result = JSON.parse(raw) as CathayApiResponse<unknown>;
 
     if (!result.success) {
       throw new Error(
@@ -734,7 +758,7 @@ class CathayApiClient {
       );
     }
 
-    return result;
+    return raw;
   }
 }
 
