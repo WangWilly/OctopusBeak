@@ -682,7 +682,7 @@ try {
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events WHERE event_kind = 'withdrawn'").get()?.count, 2);
   } finally { db.close(); }
 
-  const user = await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: "User label" });
+  const user = await commitCathayUserAssertion(derivedDir, { transactionId, target: { kind: "transaction", id: transactionId, field: "display_name" }, field: "display_name", value: "User label" });
   const userCurrent = (await query.current({ kind: "current" })).transactions[0]!;
   assert.equal(userCurrent.displayLabel, "User label");
   assert.equal(userCurrent.displayLabelOrigin, "user");
@@ -719,6 +719,40 @@ try {
   const sharedAuthorityLineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } });
   assert.equal(sharedAuthorityLineage.entries[0]?.derivedAssertions.some((assertion) => assertion.value === "Shared authority label"), true);
 
+  const malformedTargetBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const malformedTargetSnapshot = {
+    commits: malformedTargetBefore.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+    userAssertions: malformedTargetBefore.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'user'").get()?.count,
+    transitions: malformedTargetBefore.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count,
+    provenance: malformedTargetBefore.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count,
+    current: malformedTargetBefore.prepare("SELECT value_text, origin, user_assertion_id, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
+    projection: malformedTargetBefore.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+  };
+  malformedTargetBefore.close();
+  const otherTransactionId = source.transactions[1]!.transactionId;
+  for (const [label, target] of [
+    ["string target", "balance"],
+    ["array target", []],
+    ["null target", null],
+    ["missing kind", { id: transactionId, field: "display_name" }],
+    ["forbidden kind", { kind: "balance", id: transactionId, field: "display_name" }],
+    ["missing id", { kind: "transaction", field: "display_name" }],
+    ["conflicting transaction target", { kind: "transaction", id: otherTransactionId, field: "display_name" }],
+  ] as const) {
+    await assert.rejects(() => commitCathayUserAssertion(derivedDir, { transactionId, target, field: "display_name", value: "forbidden", userId: "malformed-target-user" } as never), /target|transaction|subject|conflict/i, label);
+    const malformedTargetAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
+    try {
+      assert.deepEqual({
+        commits: malformedTargetAfter.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+        userAssertions: malformedTargetAfter.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'user'").get()?.count,
+        transitions: malformedTargetAfter.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count,
+        provenance: malformedTargetAfter.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count,
+        current: malformedTargetAfter.prepare("SELECT value_text, origin, user_assertion_id, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
+        projection: malformedTargetAfter.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+      }, malformedTargetSnapshot, label);
+    } finally { malformedTargetAfter.close(); }
+  }
+
   const emptyScopeBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
   const emptyScopeSnapshot = {
     commits: emptyScopeBefore.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
@@ -742,7 +776,7 @@ try {
       projection: diagnosticDb.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
     }, emptyScopeSnapshot);
   } finally { diagnosticDb.close(); }
-  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { target: { kind: "balance", field: "note", id: transactionId }, value: "forbidden" }), /transaction targets only/);
+  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { target: { kind: "balance", field: "note", id: transactionId }, value: "forbidden" }), /valid transaction target/);
   await assert.rejects(() => commitCathayUserAssertion(derivedDir, { transactionId, field: "amount", value: "999" } as never), /only display_name or note/);
 } finally { await rm(derivedDir, { recursive: true, force: true }); }
 

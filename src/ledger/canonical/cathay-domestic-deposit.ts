@@ -1890,11 +1890,24 @@ export async function runCathayDerivedImportRun(ledgerDir: string, input: Cathay
 }
 
 export async function commitCathayUserAssertion(ledgerDir: string, input: CathayUserAssertionInput, options: CathayCanonicalCommitOptions = {}): Promise<CathayUserAssertionResult> {
-  if (typeof input.target === "object" && input.target !== null && input.target.kind !== undefined && input.target.kind !== "transaction") throw new Error("User Assertions support transaction targets only.");
-  const rawField = typeof input.field === "string" ? input.field : typeof input.target === "object" ? input.target.field : undefined;
+  const hasTarget = Object.prototype.hasOwnProperty.call(input, "target");
+  type RuntimeTransactionTarget = { kind?: unknown; field?: unknown; id?: unknown };
+  const targetObject = typeof input.target === "object" && input.target !== null && !Array.isArray(input.target)
+    ? input.target as RuntimeTransactionTarget : undefined;
+  if (hasTarget) {
+    if (!targetObject || targetObject.kind !== "transaction" || typeof targetObject.id !== "string") throw new Error("User Assertions require a valid transaction target object.");
+    const targetId = idFromString(targetObject.id);
+    if (input.transactionId !== undefined && Buffer.compare(targetId, idFromString(input.transactionId)) !== 0) throw new Error("User Assertion target and transactionId conflict.");
+    if (input.subject !== undefined && (input.subject.kind !== "transaction" || Buffer.compare(targetId, idFromString(input.subject.id)) !== 0)) throw new Error("User Assertion target and subject conflict.");
+    if (targetObject.field !== undefined && typeof targetObject.field !== "string") throw new Error("User Assertion target field must be a string.");
+  }
+  const targetField = targetObject?.field;
+  const normalizeField = (value: unknown) => value === "displayName" || value === "displayLabel" ? "display_name" : value;
+  if (targetField !== undefined && input.field !== undefined && normalizeField(targetField) !== normalizeField(input.field)) throw new Error("User Assertion target and field conflict.");
+  const rawField = typeof input.field === "string" ? input.field : typeof targetField === "string" ? targetField : undefined;
   const field = rawField === "displayName" || rawField === "displayLabel" ? "display_name" : rawField;
   if (field !== "display_name" && field !== "note") throw new Error("User Assertions may target only display_name or note.");
-  const transactionIdText = input.transactionId ?? input.subject?.id ?? (typeof input.target === "object" ? input.target.id : undefined);
+  const transactionIdText = input.transactionId ?? input.subject?.id ?? (typeof targetObject?.id === "string" ? targetObject.id : undefined);
   if (!transactionIdText) throw new Error("User Assertion requires a transaction subject.");
   if (input.subject && input.subject.kind !== "transaction") throw new Error("User Assertions support transaction subjects only.");
   const transactionId = idFromString(transactionIdText);
