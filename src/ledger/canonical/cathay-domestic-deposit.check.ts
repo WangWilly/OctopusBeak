@@ -385,6 +385,42 @@ try {
   } finally {
     repeatDb.close();
   }
+  // Force the repeated observation's source-record id to sort before the
+  // immutable revision source-record id. The compatibility view must expose
+  // revision origin, not MIN(provenance.source_record_id).
+  const sourceIdentityRepair = new DatabaseSync(canonicalSqlitePath(ledgerDir));
+  sourceIdentityRepair.exec("PRAGMA foreign_keys = OFF");
+  const identityRows = sourceIdentityRepair.prepare(`SELECT sr.source_record_id
+    FROM source_records sr JOIN source_captures sc ON sc.capture_id = sr.capture_id
+    JOIN canonical_commits c ON c.commit_id = sc.commit_id
+    WHERE sr.sequence_lexeme = '1' ORDER BY c.commit_sequence`).all() as Array<{ source_record_id?: Uint8Array }>;
+  assert.equal(identityRows.length, 2);
+  const firstObservedRecord = identityRows[0]!.source_record_id!;
+  const repeatedObservedRecord = identityRows[1]!.source_record_id!;
+  const immutableRevisionRecord = sourceIdentityRepair.prepare(`SELECT source_record_id FROM transaction_revisions
+    WHERE transaction_id = ?`).get(Buffer.from(first.transactions[0]!.transactionId.replaceAll("-", ""), "hex"))?.source_record_id as Uint8Array;
+  assert.deepEqual(Buffer.from(immutableRevisionRecord), Buffer.from(firstObservedRecord));
+  const lowOccurrence = Buffer.alloc(16, 1);
+  const highRevision = Buffer.alloc(16, 254);
+  for (const table of ["source_records", "transaction_revisions", "transaction_time_observations", "assertion_provenance", "source_record_scopes"]) {
+    sourceIdentityRepair.prepare(`UPDATE ${table} SET source_record_id = ? WHERE source_record_id = ?`).run(highRevision, firstObservedRecord);
+    sourceIdentityRepair.prepare(`UPDATE ${table} SET source_record_id = ? WHERE source_record_id = ?`).run(lowOccurrence, repeatedObservedRecord);
+  }
+  sourceIdentityRepair.close();
+  const sourceIdentityAfter = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  try {
+    const sourceAssertion = sourceIdentityAfter.prepare("SELECT source_record_id FROM source_assertions WHERE transaction_id = ?").get(Buffer.from(first.transactions[0]!.transactionId.replaceAll("-", ""), "hex")) as { source_record_id?: Uint8Array };
+    assert.deepEqual(Buffer.from(sourceAssertion.source_record_id!), highRevision);
+    const sourceLineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: first.transactions[0]!.transactionId } });
+    const sourceEntry = sourceLineage.entries[0]!;
+    assert.deepEqual(Buffer.from(sourceEntry.sourceRecord.id.replaceAll("-", ""), "hex"), highRevision);
+    assert.equal(sourceEntry.provenance.length, 2);
+    const sourceIdText = (id: Uint8Array): string => {
+      const hex = Buffer.from(id).toString("hex");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    };
+    assert.deepEqual(sourceEntry.provenance.map((item) => item.sourceRecordId).sort(), [lowOccurrence, highRevision].map(sourceIdText).sort());
+  } finally { sourceIdentityAfter.close(); }
   const boundaryQuery = createBoundaryCanonicalQuery(ledgerDir);
   assert.equal((await boundaryQuery.current({ kind: "current" })).commitSequence, repeated.commitSequence);
 
@@ -707,6 +743,17 @@ try {
   const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", fields: ["display_name" as const], scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
   assert.equal(producerDiagnostic.status, "diagnostic");
   const withdrawn = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
+  const unsupportedRetryBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const unsupportedRetryTransitions = unsupportedRetryBefore.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count;
+  const unsupportedRetryProvenance = unsupportedRetryBefore.prepare("SELECT COUNT(*) AS count FROM assertion_provenance WHERE run_id IS NOT NULL").get()?.count;
+  unsupportedRetryBefore.close();
+  const unsupportedRetry = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
+  assert.equal(unsupportedRetry.commitSequence > withdrawn.commitSequence, true);
+  const unsupportedRetryAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try {
+    assert.equal(unsupportedRetryAfter.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count, unsupportedRetryTransitions);
+    assert.equal(unsupportedRetryAfter.prepare("SELECT COUNT(*) AS count FROM assertion_provenance WHERE run_id IS NOT NULL").get()?.count, Number(unsupportedRetryProvenance) + 2);
+  } finally { unsupportedRetryAfter.close(); }
   const historicalLineageBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
   const historicalLineageSnapshot = {
     commits: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
@@ -746,10 +793,12 @@ try {
   const derivedKinds = lineage.entries.flatMap((entry) => entry.derivedAssertions.map((assertion) => assertion.state));
   assert.equal(derivedKinds.includes("withdrawn"), true);
   assert.equal(lineage.entries[0]?.derivedAssertions.some((assertion) => assertion.value === "Changed label"), true);
+  assert.equal(lineage.entries[0]?.derivedAssertions.find((assertion) => assertion.value === "Derived note")?.provenance.length, 3);
   const db = openCanonicalDatabase(derivedDir, { readOnly: true });
   try {
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, 4);
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count, 4);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, 5);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count, 8);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance provenance JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = provenance.coordinate_id WHERE coordinate.output_state = 'unsupported'").get()?.count, 4);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events WHERE event_kind = 'withdrawn'").get()?.count, 2);
   } finally { db.close(); }
 
