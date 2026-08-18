@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -353,5 +354,109 @@ for (const [label, corruptField] of [
     corrupt.close();
     assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /switch|knowledge|provenance|projection/i);
     await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /switch|knowledge|provenance|projection/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// The provenance chain is a recovery boundary, not merely an append-only
+// convention. Each tamper case disables the normal trigger and must still be
+// rejected by the read-only startup verifier and rebuild gate.
+for (const [label, corrupt] of [
+  ["deleted history", (db: DatabaseSync) => {
+    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete");
+    db.exec("DELETE FROM projection_generation_provenance WHERE ordinal = 4");
+  }],
+  ["wrong digest", (db: DatabaseSync) => {
+    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("UPDATE projection_generation_provenance SET event_digest = randomblob(32) WHERE ordinal = 4");
+  }],
+  ["wrong ordinal", (db: DatabaseSync) => {
+    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("UPDATE projection_generation_provenance SET ordinal = 99 WHERE ordinal = 4");
+  }],
+  ["wrong previous event", (db: DatabaseSync) => {
+    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("UPDATE projection_generation_provenance SET previous_event_id = randomblob(16) WHERE ordinal = 4");
+  }],
+  ["wrong event source", (db: DatabaseSync) => {
+    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("UPDATE projection_generation_provenance SET event_source = 'migration' WHERE ordinal = 4");
+  }],
+  ["wrong commit kind", (db: DatabaseSync) => {
+    db.exec("UPDATE canonical_commits SET commit_kind = 'source_capture' WHERE commit_kind = 'derived_import'");
+  }],
+] as Array<[string, (db: DatabaseSync) => void]>) {
+  const { dir } = await makeFieldLedger(`cathay-canonical-v7-red-chain-${label.replaceAll(" ", "-")}-`);
+  try {
+    const corruptDb = new DatabaseSync(canonicalSqlitePath(dir));
+    corrupt(corruptDb);
+    corruptDb.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /chain|provenance|knowledge|digest|commit|source/i, label);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /chain|provenance|knowledge|digest|commit|source/i, label);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// A valid semantic duplicate from a different source must not hide a missing
+// or relocated event. The digest is recomputed here so this exercises the
+// full-history/source verifier rather than only the digest check.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-chain-semantic-duplicate-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const last = corrupt.prepare(`SELECT event_id, commit_id, ordinal FROM projection_generation_provenance
+      WHERE generation_id = 1 ORDER BY ordinal DESC LIMIT 1`).get() as { event_id: Uint8Array; commit_id: Uint8Array; ordinal: number };
+    const ordinal = Number(last.ordinal) + 1;
+    const previous = Buffer.from(last.event_id);
+    const commitId = Buffer.from(last.commit_id);
+    const duplicateId = Buffer.alloc(16, 0x55);
+    const digest = createHash("sha256").update(`canonical-projection-provenance/v1|1|${ordinal}|knowledge|migration|${commitId.toString("hex")}|${previous.toString("hex")}`, "utf8").digest();
+    corrupt.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, ordinal, previous_event_id, event_kind, event_source, commit_id, event_digest)
+      VALUES (?, 1, ?, ?, 'knowledge', 'migration', ?, ?)`).run(duplicateId, ordinal, previous, commitId, digest);
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /chain|provenance|knowledge|source/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /chain|provenance|knowledge|source/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// Moving a correctly shaped event to another generation must invalidate both
+// chains, even when foreign keys and the active pointer remain valid.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-chain-relocation-");
+  try {
+    await rebuildCathayCanonicalProjection(dir);
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    corrupt.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    corrupt.exec("UPDATE projection_generation_provenance SET generation_id = 2 WHERE generation_id = 1 AND ordinal = 4");
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /chain|provenance|knowledge|generation/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /chain|provenance|knowledge|generation/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// A pre-chain v7 relation is upgraded in-place and its deterministic chain is
+// committed atomically before the writer-open validation gate runs.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-chain-migration-");
+  try {
+    const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    legacy.exec(`PRAGMA foreign_keys = OFF;
+      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update;
+      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete;
+      ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy;
+      CREATE TABLE projection_generation_provenance(
+        event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), generation_id INTEGER NOT NULL,
+        event_kind TEXT NOT NULL, event_source TEXT NOT NULL, commit_id BLOB NOT NULL
+      );
+      INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
+        SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
+      DROP TABLE projection_generation_provenance_legacy;
+      PRAGMA user_version = 7;`);
+    legacy.close();
+    const writer = openCanonicalDatabase(dir);
+    writer.close();
+    const migrated = openCanonicalDatabase(dir, { readOnly: true });
+    try {
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM projection_generation_provenance WHERE ordinal IS NULL OR event_digest IS NULL").get()?.count, 0);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM projection_generation_provenance WHERE previous_event_id IS NULL").get()?.count, 1);
+    } finally { migrated.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
