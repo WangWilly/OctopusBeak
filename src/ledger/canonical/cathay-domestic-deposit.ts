@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,7 +8,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 3;
+export const CANONICAL_SCHEMA_VERSION = 4;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -43,6 +43,36 @@ export type CathayDomesticDepositCaptureInput = {
   scope: { startDate: string; endDate: string; complete?: boolean };
   syncState: { cursor?: string | null };
   observedAt: string;
+  absenceAuthority?: CathayAbsenceAuthority;
+};
+
+export type CathayAbsenceAuthority = "comparable-complete-range" | "tombstone";
+export type CathayTransportCheckpoint = {
+  kind: "transport-progress";
+  ordinal: number;
+  token: string | null;
+};
+export type CathayStagedCapturePage = {
+  accountNo: string;
+  currency: "TWD";
+  scope: { startDate: string; endDate: string };
+  pageOrdinal: number;
+  requestPageToken: string | null;
+  nextPageToken: string | null;
+  rawResponse: string;
+  contractFingerprint: string;
+  preflightFingerprint: string;
+  absenceAuthority?: CathayAbsenceAuthority;
+  transportCheckpoint?: CathayTransportCheckpoint;
+};
+export type CathayDomesticDepositSyncInput = {
+  sourceConnectionId: string;
+  identityEpoch: string;
+  authorityRoute: string;
+  stream: string;
+  syncState: { cursor?: string | null };
+  observedAt: string;
+  pages: CathayStagedCapturePage[];
 };
 
 export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput = {
@@ -253,6 +283,32 @@ type ValidatedCathayCapture = {
   completeness: typeof CATHAY_COMPLETENESS_PROOF;
   rows: ValidatedCathayRow[];
 };
+type ValidatedCathayScope = {
+  accountNo: string;
+  currency: "TWD";
+  startDate: string;
+  endDate: string;
+  absenceAuthority?: CathayAbsenceAuthority;
+  contractFingerprint: string;
+  preflightFingerprint: string;
+  pages: Array<{
+    pageOrdinal: number;
+    terminal: boolean;
+    rowCount: number;
+    responseDigest: string;
+    rows: ValidatedCathayRow[];
+  }>;
+  rows: ValidatedCathayRow[];
+};
+type ValidatedCathaySync = {
+  sourceConnectionId: string;
+  identityEpoch: string;
+  authorityRoute: string;
+  stream: string;
+  syncState: { cursor?: string | null };
+  observedAt: string;
+  scopes: ValidatedCathayScope[];
+};
 
 function cathayPostingMapping(
   statement: { [key: string]: LosslessJsonValue },
@@ -334,6 +390,81 @@ function validateCapture(input: CathayDomesticDepositCaptureInput): ValidatedCat
     } satisfies ValidatedCathayRow;
   });
   return { accountNo, startDate, endDate, posting, completeness: CATHAY_COMPLETENESS_PROOF, rows };
+}
+
+function responseDigest(rawResponse: string): string {
+  return createHash("sha256").update(rawResponse, "utf8").digest("hex");
+}
+
+function validateSyncInput(input: CathayDomesticDepositSyncInput): ValidatedCathaySync {
+  if (!input.sourceConnectionId.trim() || !input.identityEpoch.trim()) throw new Error("Source Connection and Identity Epoch are required.");
+  if (input.authorityRoute !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY || input.stream !== CATHAY_DOMESTIC_DEPOSIT_STREAM) throw new Error("Invalid Cathay sync authority route or stream.");
+  if (input.syncState.cursor !== undefined && input.syncState.cursor !== null) throw new Error("Cathay domestic deposit has no continuation cursor.");
+  parseRfc3339UtcMicros(input.observedAt, "Capture observedAt");
+  if (input.pages.length === 0) throw new Error("Cathay sync requires at least one staged page.");
+
+  const grouped = new Map<string, CathayStagedCapturePage[]>();
+  for (const page of input.pages) {
+    if (!page.accountNo.trim() || page.currency !== "TWD") throw new Error("Cathay staged page has an invalid account identity or currency.");
+    if (!Number.isInteger(page.pageOrdinal) || page.pageOrdinal < 0) throw new Error("Cathay page ordinal must be a non-negative integer.");
+    if (!page.contractFingerprint.trim() || !page.preflightFingerprint.trim()) throw new Error("Cathay page contract and preflight fingerprints are required.");
+    if (page.contractFingerprint !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) throw new Error("Cathay page contract fingerprint is unsupported.");
+    const pages = grouped.get(page.accountNo) ?? [];
+    pages.push(page);
+    grouped.set(page.accountNo, pages);
+  }
+  const scopes: ValidatedCathayScope[] = [];
+  let contractFingerprint: string | undefined;
+  let preflightFingerprint: string | undefined;
+  for (const [accountNo, pagesForAccount] of grouped) {
+    const pages = [...pagesForAccount].sort((left, right) => left.pageOrdinal - right.pageOrdinal);
+    if (new Set(pages.map((page) => page.pageOrdinal)).size !== pages.length) throw new Error("Cathay staged pages contain duplicate ordinals.");
+    const first = pages[0]!;
+    const startDate = requireDate(first.scope.startDate, "Cathay scope.startDate");
+    const endDate = requireDate(first.scope.endDate, "Cathay scope.endDate");
+    if (startDate > endDate) throw new Error("Cathay scope startDate must not be after endDate.");
+    const pageRows: ValidatedCathayScope["pages"] = [];
+    const rows: ValidatedCathayRow[] = [];
+    const sequences = new Set<string>();
+    let expectedRequestToken: string | null = null;
+    let absenceAuthority = first.absenceAuthority;
+    for (const [index, page] of pages.entries()) {
+      if (page.pageOrdinal !== index) throw new Error("Cathay staged pages must have contiguous ordinals starting at zero.");
+      if (page.scope.startDate !== startDate || page.scope.endDate !== endDate) throw new Error("Cathay page scope drifted within one account.");
+      if (page.contractFingerprint !== first.contractFingerprint || page.preflightFingerprint !== first.preflightFingerprint) throw new Error("Cathay page contract or preflight fingerprint drifted.");
+      if (page.absenceAuthority !== absenceAuthority) throw new Error("Cathay page absence authority drifted.");
+      const requestPageToken = page.requestPageToken ?? null;
+      if (requestPageToken !== expectedRequestToken) throw new Error("Cathay page continuation token is not contiguous.");
+      const validated = validateCapture({
+        rawResponse: page.rawResponse,
+        sourceConnectionId: input.sourceConnectionId,
+        identityEpoch: input.identityEpoch,
+        accountNo,
+        currency: page.currency,
+        authorityRoute: input.authorityRoute,
+        stream: input.stream,
+        scope: { startDate, endDate },
+        syncState: { cursor: null },
+        observedAt: input.observedAt,
+      });
+      const nextPageToken = page.nextPageToken ?? null;
+      const terminal = nextPageToken === null;
+      if (!terminal && index === pages.length - 1) throw new Error("Cathay staged pages end before the terminal page.");
+      if (terminal && index !== pages.length - 1) throw new Error("Cathay staged pages contain a missing continuation page.");
+      for (const row of validated.rows) {
+        if (sequences.has(row.sequence)) throw new Error("Cathay source sequence was duplicated across pages.");
+        sequences.add(row.sequence);
+        rows.push(row);
+      }
+      pageRows.push({ pageOrdinal: page.pageOrdinal, terminal, rowCount: validated.rows.length, responseDigest: responseDigest(page.rawResponse), rows: validated.rows });
+      expectedRequestToken = nextPageToken;
+      contractFingerprint ??= page.contractFingerprint;
+      preflightFingerprint ??= page.preflightFingerprint;
+      if (contractFingerprint !== page.contractFingerprint || preflightFingerprint !== page.preflightFingerprint) throw new Error("Cathay sync contract or preflight fingerprint drifted across scopes.");
+    }
+    scopes.push({ accountNo, currency: "TWD", startDate, endDate, absenceAuthority, contractFingerprint: first.contractFingerprint, preflightFingerprint: first.preflightFingerprint, pages: pageRows, rows });
+  }
+  return { sourceConnectionId: input.sourceConnectionId, identityEpoch: input.identityEpoch, authorityRoute: input.authorityRoute, stream: input.stream, syncState: { cursor: null }, observedAt: input.observedAt, scopes };
 }
 
 type CanonicalId = Buffer;
@@ -458,6 +589,40 @@ CREATE INDEX IF NOT EXISTS idx_source_records_capture ON source_records(capture_
 CREATE INDEX IF NOT EXISTS idx_time_observations_revision ON transaction_time_observations(revision_id, role, observation_id);
 `;
 
+const SCHEMA_V4_APPEND = `
+CREATE TABLE IF NOT EXISTS capture_scopes (
+  scope_id BLOB PRIMARY KEY CHECK(length(scope_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id), account_no TEXT NOT NULL, stream TEXT NOT NULL,
+  scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, completeness TEXT NOT NULL CHECK(completeness = 'complete-range'),
+  completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),
+  completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'),
+  absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'tombstone')),
+  contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL, page_count INTEGER NOT NULL CHECK(page_count > 0),
+  terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(capture_id, account_id, scope_start, scope_end)
+);
+CREATE TABLE IF NOT EXISTS capture_scope_pages (
+  scope_page_id BLOB PRIMARY KEY CHECK(length(scope_page_id) = 16), scope_id BLOB NOT NULL REFERENCES capture_scopes(scope_id),
+  page_ordinal INTEGER NOT NULL CHECK(page_ordinal >= 0), terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)), row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  response_digest TEXT NOT NULL, proof_kind TEXT NOT NULL CHECK(proof_kind = 'success-status-scope-count-details'),
+  contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL, commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(scope_id, page_ordinal)
+);
+CREATE TABLE IF NOT EXISTS assertion_lifecycle_events (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), assertion_id BLOB NOT NULL REFERENCES source_assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id), revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), scope_id BLOB REFERENCES capture_scopes(scope_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), event_kind TEXT NOT NULL CHECK(event_kind IN ('observed', 'superseded', 'withdrawn', 'restored'))
+);
+CREATE INDEX IF NOT EXISTS idx_capture_scopes_account_time ON capture_scopes(source_connection_id, identity_epoch_id, account_id, scope_start, scope_end, commit_id);
+CREATE INDEX IF NOT EXISTS idx_capture_scope_pages_proof ON capture_scope_pages(scope_id, page_ordinal, commit_id);
+CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_assertion_knowledge ON assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id);
+CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_transaction_knowledge ON assertion_lifecycle_events(transaction_id, commit_id, event_kind, event_id);
+CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_scope ON assertion_lifecycle_events(scope_id, commit_id, assertion_id);
+`;
+const SCHEMA_V4 = `${SCHEMA}${SCHEMA_V4_APPEND}`;
+
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
 // Keeping this target schema separate prevents an older database from being created at a
 // partially upgraded shape before its migration transaction reaches the next version.
@@ -528,6 +693,18 @@ function migrateV2ToV3(db: DatabaseSync): void {
     throw error;
   }
 }
+function migrateV3ToV4(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(SCHEMA_V4_APPEND);
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(4, currentUtcMicros());
+    db.exec("PRAGMA user_version = 4");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
 function applySchemaMigration(db: DatabaseSync): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
   const version = Number(row.user_version ?? 0);
@@ -536,10 +713,16 @@ function applySchemaMigration(db: DatabaseSync): void {
   if (version === 1) {
     migrateV1ToV2(db);
     migrateV2ToV3(db);
+    migrateV3ToV4(db);
     return;
   }
   if (version === 2) {
     migrateV2ToV3(db);
+    migrateV3ToV4(db);
+    return;
+  }
+  if (version === 3) {
+    migrateV3ToV4(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -550,7 +733,7 @@ function applySchemaMigration(db: DatabaseSync): void {
   }
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.exec(SCHEMA);
+    db.exec(SCHEMA_V4);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -561,6 +744,9 @@ function applySchemaMigration(db: DatabaseSync): void {
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
+  for (const table of ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events"]) {
+    if (!tableExists(db, table)) throw new Error(`Canonical schema v4 table ${table} is missing.`);
+  }
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
   const integrity = String((db.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown }).integrity_check ?? "");
@@ -600,9 +786,13 @@ export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: b
 }
 
 export type CanonicalAmount = { coefficient: string; scale: number };
+export type CanonicalAssertionSupportState = "supported" | "withdrawn";
+export type CanonicalEconomicStatus = "normal" | "canceled" | "refund" | "reversal";
+export type CanonicalAdministrativeState = "active" | "deleted" | "purged";
 export type CanonicalTransaction = {
   id: string; accountId: string; accountNo: string; sourceSequence: string; amount: CanonicalAmount; currency: "TWD";
   direction: "inflow" | "outflow"; postingStatus: "posted"; postingOrigin: "provider_booked_history"; postingBasis: "query-status-success-with-accounting-date"; postingRuleVersion: "cathay/domestic-deposit/v1";
+  assertionSupportState: CanonicalAssertionSupportState; economicStatus: CanonicalEconomicStatus; administrativeState: CanonicalAdministrativeState;
   displayLabel: string | null; effectiveOn: string; effectiveTimeBasis: "accounting"; effectiveTimeRuleVersion: "cathay/domestic-deposit/v1"; transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE; timePrecision: "second"; timeOrigin: "source_reported";
   utcInstantUtcUs: number; revisionId: string; commitSequence: number;
@@ -612,6 +802,12 @@ export type CathayCanonicalCurrentQueryResult = { status: "ok"; kind: "current";
 export type CathayCanonicalHistoricalQueryRequest = { kind: "historical"; cutoff: { kind: "both"; financialAt: string; knowledgeAt: string } };
 export type CathayCanonicalHistoricalQueryResult = { status: "ok"; kind: "historical"; cutoff: CathayCanonicalHistoricalQueryRequest["cutoff"]; transactions: CanonicalTransaction[] };
 export type CathayCanonicalLineageQueryRequest = { kind: "lineage"; subject: { kind: "transaction"; id: string } };
+export type CathayCanonicalLifecycleEvent = {
+  id: string;
+  kind: "observed" | "superseded" | "withdrawn" | "restored";
+  commitSequence: number;
+  scopeProof: { id: string; completeness: "complete-range"; absenceAuthority: CathayAbsenceAuthority | null; contractFingerprint: string; pageCount: number } | null;
+};
 export type CathayCanonicalLineageEntry = {
   transaction: { id: string; accountId: string; sourceSequence: string };
   revision: CanonicalTransactionRevision;
@@ -619,6 +815,7 @@ export type CathayCanonicalLineageEntry = {
   sourceRecord: { id: string; captureId: string; sequence: string; description: string | null; payload: string };
   capture: { id: string; observedAt: string; scopeStart: string; scopeEnd: string; authorityRoute: string };
   provenance: Array<{ sourceRecordId: string; captureId: string }>;
+  lifecycleEvents: CathayCanonicalLifecycleEvent[];
 };
 export type CathayCanonicalLineageQueryResult = { status: "ok"; kind: "lineage"; subject: CathayCanonicalLineageQueryRequest["subject"]; entries: CathayCanonicalLineageEntry[] };
 export type CanonicalTransactionRevision = CanonicalTransaction & { transactionId: string };
@@ -628,7 +825,8 @@ export interface CathayCanonicalFinancialQuery {
   lineage(request: CathayCanonicalLineageQueryRequest): Promise<CathayCanonicalLineageQueryResult>;
 }
 export type CathayCommitTransactionResult = { transactionId: string; revisionId: string; sourceSequence: string; direction: "inflow" | "outflow"; amount: CanonicalAmount; revisionCreated: boolean };
-export type CathayCanonicalCommitResult = { captureId: string; commitSequence: number; accountId: string; transactions: CathayCommitTransactionResult[] };
+export type CathayCanonicalCommitScopeResult = { scopeId: string; accountId: string; accountNo: string; transactions: CathayCommitTransactionResult[] };
+export type CathayCanonicalCommitResult = { captureId: string; commitSequence: number; accountId: string; transactions: CathayCommitTransactionResult[]; scopes: CathayCanonicalCommitScopeResult[] };
 
 function dbRow<T extends Record<string, unknown>>(value: unknown): T { return value as T; }
 function sameRevision(row: Record<string, unknown>, detail: ValidatedCathayRow): boolean {
@@ -653,10 +851,22 @@ function currentUtcMicros(): number {
 export type CanonicalAdmissionClock = () => string;
 export type CathayCanonicalCommitOptions = { clock?: CanonicalAdmissionClock };
 
-function commitCathayDomesticDepositOnce(
+type LifecycleEventKind = CathayCanonicalLifecycleEvent["kind"];
+function insertLifecycleEvent(
+  db: DatabaseSync,
+  values: { assertionId: CanonicalId; transactionId: CanonicalId; revisionId: CanonicalId; captureId: CanonicalId; scopeId: CanonicalId | null; commitId: CanonicalId; kind: LifecycleEventKind },
+): void {
+  db.prepare("INSERT INTO assertion_lifecycle_events(event_id, assertion_id, transaction_id, revision_id, capture_id, scope_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(uuidV7(), values.assertionId, values.transactionId, values.revisionId, values.captureId, values.scopeId, values.commitId, values.kind);
+}
+function latestLifecycleEvent(db: DatabaseSync, assertionId: CanonicalId): LifecycleEventKind | null {
+  const row = db.prepare(`SELECT e.event_kind FROM assertion_lifecycle_events e JOIN canonical_commits c ON c.commit_id = e.commit_id
+    WHERE e.assertion_id = ? ORDER BY c.commit_sequence DESC, e.event_id DESC LIMIT 1`).get(assertionId) as { event_kind?: string } | undefined;
+  return row?.event_kind as LifecycleEventKind | null;
+}
+
+function commitCathayDomesticDepositSyncOnce(
   ledgerDir: string,
-  input: CathayDomesticDepositCaptureInput,
-  validated: ValidatedCathayCapture,
+  input: ValidatedCathaySync,
   admissionClock: CanonicalAdmissionClock,
 ): CathayCanonicalCommitResult {
   const db = openCanonicalDatabase(ledgerDir);
@@ -667,69 +877,110 @@ function commitCathayDomesticDepositOnce(
     const commitId = uuidV7();
     const maxSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0);
     const commitSequence = maxSequence + 1;
-    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(admissionClock()), CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, "source_capture");
-    db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, "v1", commitId);
+    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(admissionClock()), input.authorityRoute, "source_capture");
+    db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(input.authorityRoute, CATHAY_INTEGRATION_NAMESPACE, input.stream, "v1", commitId);
     const connectionExisting = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
     const sourceConnectionId = connectionExisting ? blob(dbRow<{ source_connection_id: unknown }>(connectionExisting).source_connection_id) : uuidV7();
     if (!connectionExisting) db.prepare("INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, ?, ?, ?)").run(sourceConnectionId, CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId, commitId);
     const epochExisting = db.prepare("SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?").get(sourceConnectionId, input.identityEpoch);
     const identityEpochId = epochExisting ? blob(dbRow<{ identity_epoch_id: unknown }>(epochExisting).identity_epoch_id) : uuidV7();
     if (!epochExisting) db.prepare("INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES (?, ?, ?, ?)").run(identityEpochId, sourceConnectionId, input.identityEpoch, commitId);
-    const accountExisting = db.prepare("SELECT account_id, currency, account_type FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND account_no = ?").get(sourceConnectionId, identityEpochId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.accountNo);
-    const accountId = accountExisting ? blob(dbRow<{ account_id: unknown }>(accountExisting).account_id) : uuidV7();
-    if (accountExisting) {
-      const account = dbRow<{ currency: string; account_type: string }>(accountExisting);
-      if (account.currency !== input.currency || account.account_type !== "depository") throw new Error("Cathay account identity has conflicting required classification.");
-    } else db.prepare("INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(accountId, sourceConnectionId, identityEpochId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.accountNo, "depository", input.currency, commitId);
-    const captureId = uuidV7();
-    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, validated.accountNo, input.observedAt, validated.startDate, validated.endDate, validated.completeness.kind, validated.completeness.basis, validated.completeness.ruleVersion, commitId);
-
-    const transactionResults: CathayCommitTransactionResult[] = [];
-    for (const detail of validated.rows) {
-      const sourceRecordId = uuidV7();
-      db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, detail.sequence, detail.description, detail.payload);
-      const transactionExisting = db.prepare("SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?").get(accountId, detail.sequence);
-      const transactionId = transactionExisting ? blob(dbRow<{ transaction_id: unknown }>(transactionExisting).transaction_id) : uuidV7();
-      if (!transactionExisting) db.prepare("INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)").run(transactionId, accountId, detail.sequence, commitId);
-      const latest = db.prepare("SELECT * FROM transaction_revisions WHERE transaction_id = ? ORDER BY revision_number DESC LIMIT 1").get(transactionId);
-      const latestRow = latest ? dbRow<Record<string, unknown>>(latest) : undefined;
-      const revisionCreated = !latestRow || !sameRevision(latestRow, detail);
-      let revisionId = latestRow ? blob(latestRow.revision_id) : uuidV7();
-      if (revisionCreated) {
-        revisionId = uuidV7();
-        const revisionNumber = latestRow ? Number(latestRow.revision_number) + 1 : 1;
-        db.prepare(`INSERT INTO transaction_revisions(
-          revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency,
-          direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, effective_on, transaction_date_time_local,
-          time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-          revisionId, transactionId, sourceRecordId, captureId, commitId, revisionNumber, detail.amount.coefficient.toString(), detail.amount.scale,
-          input.currency, detail.direction, validated.posting.postingStatus, validated.posting.origin, validated.posting.basis, validated.posting.ruleVersion,
-          detail.description, detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
-          "second", "source_reported", "accounting", validated.posting.ruleVersion, detail.utcInstantUtcUs,
-        );
-        const insertObservation = db.prepare(`INSERT INTO transaction_time_observations(
-          observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        insertObservation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "accounting", detail.accountDate, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", detail.accountingUtcInstantUtcUs);
-        insertObservation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "occurred", detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", detail.utcInstantUtcUs);
-        const assertionId = uuidV7();
-        db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, sourceRecordId, commitId);
-        db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, commitId);
-      }
-      const assertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE transaction_id = ? AND revision_id = ?").get(transactionId, revisionId);
-      if (!assertion) throw new Error("Canonical assertion was not created.");
-      const assertionId = blob(dbRow<{ assertion_id: unknown }>(assertion).assertion_id);
-      db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, commit_id) VALUES (?, ?, ?)").run(assertionId, sourceRecordId, commitId);
-      transactionResults.push({ transactionId: idToString(transactionId), revisionId: idToString(revisionId), sourceSequence: detail.sequence, direction: detail.direction, amount: { coefficient: detail.amount.coefficient.toString(), scale: detail.amount.scale }, revisionCreated });
+    const accountIds = new Map<string, CanonicalId>();
+    for (const scope of input.scopes) {
+      const existing = db.prepare("SELECT account_id, currency, account_type FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND account_no = ?").get(sourceConnectionId, identityEpochId, input.stream, scope.accountNo);
+      const accountId = existing ? blob(dbRow<{ account_id: unknown }>(existing).account_id) : uuidV7();
+      if (existing) {
+        const row = dbRow<{ currency: string; account_type: string }>(existing);
+        if (row.currency !== scope.currency || row.account_type !== "depository") throw new Error("Cathay account identity has conflicting required classification.");
+      } else db.prepare("INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(accountId, sourceConnectionId, identityEpochId, input.stream, scope.accountNo, "depository", scope.currency, commitId);
+      accountIds.set(scope.accountNo, accountId);
     }
-    db.prepare(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET scope_start = excluded.scope_start,
-      scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, CATHAY_DOMESTIC_DEPOSIT_STREAM, validated.startDate, validated.endDate, input.syncState.cursor ?? null, captureId, commitId);
+    const captureId = uuidV7();
+    const captureStart = [...input.scopes].map((scope) => scope.startDate).sort()[0]!;
+    const captureEnd = [...input.scopes].map((scope) => scope.endDate).sort().at(-1)!;
+    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, input.scopes.length === 1 ? input.scopes[0]!.accountNo : "multi-scope", input.observedAt, captureStart, captureEnd, CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, commitId);
+    const allTransactions: CathayCommitTransactionResult[] = [];
+    const scopeResults: CathayCanonicalCommitScopeResult[] = [];
+    for (const scope of input.scopes) {
+      const accountId = accountIds.get(scope.accountNo)!;
+      const scopeId = uuidV7();
+      db.prepare("INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(scopeId, captureId, sourceConnectionId, identityEpochId, accountId, scope.accountNo, input.stream, scope.startDate, scope.endDate, CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, scope.absenceAuthority ?? null, scope.contractFingerprint, scope.preflightFingerprint, scope.pages.length, 1, commitId);
+      for (const page of scope.pages) db.prepare("INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(uuidV7(), scopeId, page.pageOrdinal, page.terminal ? 1 : 0, page.rowCount, page.responseDigest, CATHAY_COMPLETENESS_PROOF.basis, scope.contractFingerprint, scope.preflightFingerprint, commitId);
+      const seenSequences = new Set(scope.rows.map((row) => row.sequence));
+      const scopeTransactions: CathayCommitTransactionResult[] = [];
+      for (const detail of scope.rows) {
+        const sourceRecordId = uuidV7();
+        const sourceRecordSequence = input.scopes.length === 1 ? detail.sequence : `${scope.accountNo}:${detail.sequence}`;
+        db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, sourceRecordSequence, detail.description, detail.payload);
+        const existingTransaction = db.prepare("SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?").get(accountId, detail.sequence);
+        const transactionId = existingTransaction ? blob(dbRow<{ transaction_id: unknown }>(existingTransaction).transaction_id) : uuidV7();
+        if (!existingTransaction) db.prepare("INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)").run(transactionId, accountId, detail.sequence, commitId);
+        const latest = db.prepare("SELECT * FROM transaction_revisions WHERE transaction_id = ? ORDER BY revision_number DESC LIMIT 1").get(transactionId);
+        const latestRow = latest ? dbRow<Record<string, unknown>>(latest) : undefined;
+        const revisionCreated = !latestRow || !sameRevision(latestRow, detail);
+        let revisionId = latestRow ? blob(latestRow.revision_id) : uuidV7();
+        let assertionId: CanonicalId;
+        if (revisionCreated) {
+          if (latestRow) {
+            const oldAssertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE revision_id = ?").get(blob(latestRow.revision_id));
+            if (oldAssertion) insertLifecycleEvent(db, { assertionId: blob(dbRow<{ assertion_id: unknown }>(oldAssertion).assertion_id), transactionId, revisionId: blob(latestRow.revision_id), captureId, scopeId, commitId, kind: "superseded" });
+          }
+          revisionId = uuidV7();
+          const revisionNumber = latestRow ? Number(latestRow.revision_number) + 1 : 1;
+          db.prepare(`INSERT INTO transaction_revisions(
+            revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency,
+            direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, effective_on, transaction_date_time_local,
+            time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            revisionId, transactionId, sourceRecordId, captureId, commitId, revisionNumber, detail.amount.coefficient.toString(), detail.amount.scale,
+            scope.currency, detail.direction, CATHAY_POSTING_MAPPING.postingStatus, CATHAY_POSTING_MAPPING.origin, CATHAY_POSTING_MAPPING.basis, CATHAY_POSTING_MAPPING.ruleVersion,
+            detail.description, detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", "accounting", CATHAY_POSTING_MAPPING.ruleVersion, detail.utcInstantUtcUs,
+          );
+          const observation = db.prepare("INSERT INTO transaction_time_observations(observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          observation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "accounting", detail.accountDate, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", detail.accountingUtcInstantUtcUs);
+          observation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "occurred", detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", detail.utcInstantUtcUs);
+          assertionId = uuidV7();
+          db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, sourceRecordId, commitId);
+          insertLifecycleEvent(db, { assertionId, transactionId, revisionId, captureId, scopeId, commitId, kind: "observed" });
+          db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, commitId);
+        } else {
+          const assertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE transaction_id = ? AND revision_id = ?").get(transactionId, revisionId);
+          if (!assertion) throw new Error("Canonical assertion was not created.");
+          assertionId = blob(dbRow<{ assertion_id: unknown }>(assertion).assertion_id);
+          const wasWithdrawn = latestLifecycleEvent(db, assertionId) === "withdrawn";
+          insertLifecycleEvent(db, { assertionId, transactionId, revisionId, captureId, scopeId, commitId, kind: wasWithdrawn ? "restored" : "observed" });
+          if (wasWithdrawn) {
+            const revisionCommit = blob(dbRow<{ commit_id: unknown }>(db.prepare("SELECT commit_id FROM transaction_revisions WHERE revision_id = ?").get(revisionId)).commit_id);
+            db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, revisionCommit);
+          }
+        }
+        db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, commit_id) VALUES (?, ?, ?)").run(assertionId, sourceRecordId, commitId);
+        const result = { transactionId: idToString(transactionId), revisionId: idToString(revisionId), sourceSequence: detail.sequence, direction: detail.direction, amount: { coefficient: detail.amount.coefficient.toString(), scale: detail.amount.scale }, revisionCreated } satisfies CathayCommitTransactionResult;
+        scopeTransactions.push(result);
+        allTransactions.push(result);
+      }
+      if (scope.absenceAuthority) {
+        const prior = db.prepare(`SELECT sa.assertion_id, sa.transaction_id, sa.revision_id, t.source_sequence FROM source_assertions sa
+          JOIN financial_transactions t ON t.transaction_id = sa.transaction_id JOIN transaction_revisions r ON r.revision_id = sa.revision_id
+          JOIN current_transactions current_row ON current_row.transaction_id = t.transaction_id AND current_row.revision_id = r.revision_id
+          WHERE t.account_id = ? AND r.effective_on BETWEEN ? AND ?`).all(accountId, scope.startDate, scope.endDate) as Array<Record<string, unknown>>;
+        for (const row of prior) {
+          if (seenSequences.has(String(row.source_sequence))) continue;
+          const assertionId = blob(row.assertion_id);
+          if (latestLifecycleEvent(db, assertionId) === "withdrawn") continue;
+          insertLifecycleEvent(db, { assertionId, transactionId: blob(row.transaction_id), revisionId: blob(row.revision_id), captureId, scopeId, commitId, kind: "withdrawn" });
+          db.prepare("DELETE FROM current_transactions WHERE transaction_id = ? AND revision_id = ?").run(blob(row.transaction_id), blob(row.revision_id));
+        }
+      }
+      db.prepare(`INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET scope_start = excluded.scope_start,
+        scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, input.stream, scope.startDate, scope.endDate, input.syncState.cursor ?? null, captureId, commitId);
+      scopeResults.push({ scopeId: idToString(scopeId), accountId: idToString(accountId), accountNo: scope.accountNo, transactions: scopeTransactions });
+    }
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
-    return { captureId: idToString(captureId), commitSequence, accountId: idToString(accountId), transactions: transactionResults };
+    return { captureId: idToString(captureId), commitSequence, accountId: idToString(accountIds.get(input.scopes[0]!.accountNo)!), transactions: allTransactions, scopes: scopeResults };
   } catch (error) {
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
@@ -766,7 +1017,37 @@ export function commitCathayDomesticDeposit(
 ): Promise<CathayCanonicalCommitResult> {
   const validated = validateCapture(input);
   const admissionClock = options.clock ?? (() => new Date().toISOString());
-  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositOnce(ledgerDir, input, validated, admissionClock));
+  const sync = validateSyncInput({
+    sourceConnectionId: input.sourceConnectionId,
+    identityEpoch: input.identityEpoch,
+    authorityRoute: input.authorityRoute,
+    stream: input.stream,
+    syncState: input.syncState,
+    observedAt: input.observedAt,
+    pages: [{
+      accountNo: validated.accountNo,
+      currency: input.currency as "TWD",
+      scope: { startDate: validated.startDate, endDate: validated.endDate },
+      pageOrdinal: 0,
+      requestPageToken: null,
+      nextPageToken: null,
+      rawResponse: input.rawResponse,
+      contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+      preflightFingerprint: "cathay/domestic-deposit/v1",
+      absenceAuthority: input.absenceAuthority,
+    }],
+  });
+  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, sync, admissionClock));
+}
+
+export function commitCathayDomesticDepositSync(
+  ledgerDir: string,
+  input: CathayDomesticDepositSyncInput,
+  options: CathayCanonicalCommitOptions = {},
+): Promise<CathayCanonicalCommitResult> {
+  const validated = validateSyncInput(input);
+  const admissionClock = options.clock ?? (() => new Date().toISOString());
+  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, validated, admissionClock));
 }
 
 function amountFromRow(row: Record<string, unknown>, prefix = ""): CanonicalAmount { return { coefficient: String(row[`${prefix}amount_coefficient`]), scale: Number(row[`${prefix}amount_scale`]) }; }
@@ -775,6 +1056,7 @@ function transactionFromRow(row: Record<string, unknown>): CanonicalTransaction 
     id: idToString(row.transaction_id), accountId: idToString(row.account_id), accountNo: String(row.account_no), sourceSequence: String(row.source_sequence),
     amount: amountFromRow(row), currency: "TWD", direction: row.direction as "inflow" | "outflow", postingStatus: row.posting_status as "posted",
     postingOrigin: row.posting_origin as "provider_booked_history", postingBasis: row.posting_basis as "query-status-success-with-accounting-date", postingRuleVersion: row.posting_rule_version as "cathay/domestic-deposit/v1",
+    assertionSupportState: row.assertion_support_state === "withdrawn" ? "withdrawn" : "supported", economicStatus: row.economic_status as CanonicalEconomicStatus ?? "normal", administrativeState: row.administrative_state as CanonicalAdministrativeState ?? "active",
     displayLabel: typeof row.description === "string" ? row.description : null, effectiveOn: String(row.effective_on), effectiveTimeBasis: row.effective_time_basis as "accounting", effectiveTimeRuleVersion: row.effective_time_rule_version as "cathay/domestic-deposit/v1",
     transactionDateTimeLocal: String(row.transaction_date_time_local), timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, timePrecision: "second", timeOrigin: "source_reported",
     utcInstantUtcUs: Number(row.utc_instant_utc_us), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence),
@@ -813,12 +1095,18 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
-        r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
+        r.utc_instant_utc_us, r.revision_id, c.commit_sequence,
+        COALESCE((SELECT CASE WHEN lifecycle.event_kind = 'withdrawn' THEN 'withdrawn' ELSE 'supported' END FROM assertion_lifecycle_events lifecycle
+          JOIN canonical_commits lifecycle_commit ON lifecycle_commit.commit_id = lifecycle.commit_id
+          WHERE lifecycle.assertion_id = sa.assertion_id AND lifecycle_commit.commit_sequence <= ?
+          ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC LIMIT 1), 'supported') AS assertion_support_state
+        FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
+        JOIN source_assertions sa ON sa.revision_id = r.revision_id
         WHERE r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
-        ) ORDER BY a.account_no, t.source_sequence`).all(request.cutoff.financialAt, knowledgeAt, request.cutoff.financialAt, knowledgeAt) as Record<string, unknown>[];
+        ) ORDER BY a.account_no, t.source_sequence`).all(knowledgeAt, request.cutoff.financialAt, knowledgeAt, request.cutoff.financialAt, knowledgeAt) as Record<string, unknown>[];
       return { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map(transactionFromRow) };
     } finally { db.close(); }
   }
@@ -839,6 +1127,9 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         const assertionId = blob(row.assertion_id);
         const provenance = db.prepare(`SELECT p.source_record_id AS sourceRecordId, sr.capture_id AS captureId FROM assertion_provenance p
           JOIN source_records sr ON sr.source_record_id = p.source_record_id WHERE p.assertion_id = ? ORDER BY p.source_record_id`).all(assertionId) as Record<string, unknown>[];
+        const lifecycleEvents = db.prepare(`SELECT e.event_id, e.event_kind, c.commit_sequence, cs.scope_id, cs.completeness, cs.absence_authority, cs.contract_fingerprint, cs.page_count
+          FROM assertion_lifecycle_events e JOIN canonical_commits c ON c.commit_id = e.commit_id
+          LEFT JOIN capture_scopes cs ON cs.scope_id = e.scope_id WHERE e.assertion_id = ? ORDER BY c.commit_sequence, e.event_id`).all(assertionId) as Record<string, unknown>[];
         const revision = transactionRevisionFromRow(row);
         return {
           transaction: { id: idToString(row.transaction_id), accountId: idToString(row.account_id), sourceSequence: String(row.source_sequence) },
@@ -847,6 +1138,10 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           sourceRecord: { id: idToString(row.source_record_id), captureId: idToString(row.capture_id), sequence: String(row.sequence_lexeme), description: typeof row.description === "string" ? row.description : null, payload: String(row.payload_json) },
           capture: { id: idToString(row.capture_id), observedAt: String(row.observed_at), scopeStart: String(row.scope_start), scopeEnd: String(row.scope_end), authorityRoute: String(row.authority_route) },
           provenance: provenance.map((item) => ({ sourceRecordId: idToString(item.sourceRecordId), captureId: idToString(item.captureId) })),
+          lifecycleEvents: lifecycleEvents.map((event) => ({
+            id: idToString(event.event_id), kind: event.event_kind as CathayCanonicalLifecycleEvent["kind"], commitSequence: Number(event.commit_sequence),
+            scopeProof: event.scope_id ? { id: idToString(event.scope_id), completeness: "complete-range" as const, absenceAuthority: (event.absence_authority as CathayAbsenceAuthority | null) ?? null, contractFingerprint: String(event.contract_fingerprint), pageCount: Number(event.page_count) } : null,
+          })),
         } satisfies CathayCanonicalLineageEntry;
       });
       return { status: "ok", kind: "lineage", subject: request.subject, entries };

@@ -72,6 +72,34 @@ try {
   });
   assert.equal(lineage.entries.length, 1);
 
+  const multiDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-multi-"));
+  try {
+    const secondAccount = "SYNTHETIC-ACCOUNT-002";
+    const secondRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace("SYNTHETIC-ACCOUNT-001", secondAccount);
+    const multiClient: CathayDomesticStatementsClient = {
+      fetchDomesticAccounts: async () => [
+        { accountNo: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, currency: "TWD", branchName: "Synthetic branch 1" },
+        { accountNo: secondAccount, currency: "TWD", branchName: "Synthetic branch 2" },
+      ],
+      fetchTransferDetailsRaw: async (_session, accountNo) => accountNo === secondAccount ? secondRaw : CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse,
+    };
+    const multiOutput = await downloadCathayStatements(page, "one_year", [], session, {
+      ...options,
+      canonicalLedgerDir: multiDir,
+      writeStatementFiles: async (account, _range, statement) => ({
+        accountId: account.accountNo, account: account.accountNo, queryPeriods: [], branchName: account.branchName ?? "", baseName: "multi", csvFilename: "multi.csv", csvPath: "multi.csv", csvBytes: 0, jsonFilename: "multi.json", jsonPath: "multi.json", jsonBytes: 0, rowCount: statement.details?.length ?? 0,
+      }),
+    }, multiClient);
+    assert.equal(multiOutput.length, 2);
+    const multiDb = openCanonicalDatabase(multiDir, { readOnly: true });
+    try {
+      assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, 1);
+      assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 1);
+      assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM capture_scopes").get()?.count, 2);
+      assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get()?.count, 2);
+    } finally { multiDb.close(); }
+  } finally { await rm(multiDir, { recursive: true, force: true }); }
+
   const failingDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-fail-"));
   try {
     let legacyWriterCalls = 0;
@@ -101,6 +129,36 @@ try {
   } finally {
     await rm(failingDir, { recursive: true, force: true });
   }
+
+  const failingMultiDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-fail-multi-"));
+  try {
+    let multiWriterCalls = 0;
+    const secondAccount = "SYNTHETIC-ACCOUNT-002";
+    const failingMultiClient: CathayDomesticStatementsClient = {
+      fetchDomesticAccounts: async () => [
+        { accountNo: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, currency: "TWD" },
+        { accountNo: secondAccount, currency: "TWD" },
+      ],
+      fetchTransferDetailsRaw: async (_session, accountNo) => accountNo === secondAccount
+        ? CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace('"returnCode":"0000"', '"returnCode":"000"')
+        : CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse,
+    };
+    await assert.rejects(
+      () => downloadCathayStatements(page, "one_year", [], session, {
+        ...options,
+        canonicalLedgerDir: failingMultiDir,
+        writeStatementFiles: async (...args) => { multiWriterCalls += 1; return options.writeStatementFiles!(...args); },
+      }, failingMultiClient),
+      /returnCode was not 0000/,
+    );
+    assert.equal(multiWriterCalls, 0);
+    const db = openCanonicalDatabase(failingMultiDir);
+    try {
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get()?.count, 0);
+    } finally { db.close(); }
+  } finally { await rm(failingMultiDir, { recursive: true, force: true }); }
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
