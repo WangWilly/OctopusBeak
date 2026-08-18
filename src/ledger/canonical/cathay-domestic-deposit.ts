@@ -2109,21 +2109,22 @@ function selectedCurrentField(db: DatabaseSync, transactionId: unknown, field: C
   return { value: String(row.value_text), origin: row.origin, commitSequence: Number(row.commit_sequence) };
 }
 
-function selectedHistoricalField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number): { value: string; origin: "derived" | "user"; commitSequence: number } | undefined {
-  const user = db.prepare(`SELECT a.value_text, c.commit_sequence FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
+type HistoricalAssertionOrigin = "derived" | "user";
+type SelectedHistoricalField = { value: string; origin: HistoricalAssertionOrigin; commitSequence: number };
+
+function selectHistoricalFieldByOrigin(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number, origin: HistoricalAssertionOrigin): SelectedHistoricalField | undefined {
+  const row = db.prepare(`SELECT a.value_text, c.commit_sequence FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
     JOIN canonical_commits c ON c.commit_id = e.commit_id
-    WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = 'user' AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
+    WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
       AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
         WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ? AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
-    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
-  if (user) return { value: String(user.value_text), origin: "user", commitSequence: Number(user.commit_sequence) };
-  const derived = db.prepare(`SELECT a.value_text, c.commit_sequence FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
-    JOIN canonical_commits c ON c.commit_id = e.commit_id
-    WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = 'derived' AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
-      AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
-        WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ? AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
-    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
-  return derived ? { value: String(derived.value_text), origin: "derived", commitSequence: Number(derived.commit_sequence) } : undefined;
+    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, origin, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
+  return row ? { value: String(row.value_text), origin, commitSequence: Number(row.commit_sequence) } : undefined;
+}
+
+function selectedHistoricalField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number): SelectedHistoricalField | undefined {
+  return selectHistoricalFieldByOrigin(db, transactionId, field, knowledgeAt, "user")
+    ?? selectHistoricalFieldByOrigin(db, transactionId, field, knowledgeAt, "derived");
 }
 
 function addSelectedFields(db: DatabaseSync, row: Record<string, unknown>, knowledgeAt?: number): Record<string, unknown> {

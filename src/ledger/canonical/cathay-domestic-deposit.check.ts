@@ -807,6 +807,9 @@ try {
   assert.equal(userCurrent.displayLabel, "User label");
   assert.equal(userCurrent.displayLabelOrigin, "user");
   assert.equal(userCurrent.displayLabelCommitSequence, user.commitSequence);
+  const historicalUser = await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(user.commitSequence) } });
+  assert.equal(historicalUser.transactions[0]?.displayLabel, "User label");
+  assert.equal(historicalUser.transactions[0]?.displayLabelOrigin, "user");
   await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: null });
   assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
   const authorityDb = openCanonicalDatabase(derivedDir, { readOnly: true });
