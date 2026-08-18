@@ -8,7 +8,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 4;
+export const CANONICAL_SCHEMA_VERSION = 5;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -46,7 +46,7 @@ export type CathayDomesticDepositCaptureInput = {
   absenceAuthority?: CathayAbsenceAuthority;
 };
 
-export type CathayAbsenceAuthority = "comparable-complete-range" | "tombstone";
+export type CathayAbsenceAuthority = "comparable-complete-range";
 export type CathayTransportCheckpoint = {
   kind: "transport-progress";
   ordinal: number;
@@ -428,7 +428,9 @@ function validateSyncInput(input: CathayDomesticDepositSyncInput): ValidatedCath
     const sequences = new Set<string>();
     let expectedRequestToken: string | null = null;
     let absenceAuthority = first.absenceAuthority;
+    if ((first.absenceAuthority as string | undefined) === "tombstone") throw new Error("Cathay tombstone authority is unsupported without a source-validated tombstone record.");
     for (const [index, page] of pages.entries()) {
+      if ((page.absenceAuthority as string | undefined) === "tombstone") throw new Error("Cathay tombstone authority is unsupported without a source-validated tombstone record.");
       if (page.pageOrdinal !== index) throw new Error("Cathay staged pages must have contiguous ordinals starting at zero.");
       if (page.scope.startDate !== startDate || page.scope.endDate !== endDate) throw new Error("Cathay page scope drifted within one account.");
       if (page.contractFingerprint !== first.contractFingerprint || page.preflightFingerprint !== first.preflightFingerprint) throw new Error("Cathay page contract or preflight fingerprint drifted.");
@@ -517,14 +519,14 @@ CREATE TABLE IF NOT EXISTS identity_epochs (
 CREATE TABLE IF NOT EXISTS source_captures (
   capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
   identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
-  stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
+  stream TEXT NOT NULL, account_no TEXT, observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
   completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),
   completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
 );
 CREATE TABLE IF NOT EXISTS source_records (
   source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
   commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), sequence_lexeme TEXT NOT NULL, description TEXT,
-  payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)
+  payload_json TEXT NOT NULL, UNIQUE(source_record_id, capture_id)
 );
 CREATE TABLE IF NOT EXISTS financial_accounts (
   account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
@@ -544,6 +546,9 @@ CREATE TABLE IF NOT EXISTS transaction_revisions (
   direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')), posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
   posting_origin TEXT NOT NULL CHECK(posting_origin = 'provider_booked_history'), posting_basis TEXT NOT NULL CHECK(posting_basis = 'query-status-success-with-accounting-date'),
   posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1'), description TEXT,
+  economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
+  administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
+  semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1'),
   effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
   time_precision TEXT NOT NULL CHECK(time_precision = 'second'), time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
   effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting'), effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1'),
@@ -573,7 +578,9 @@ CREATE TABLE IF NOT EXISTS source_sync_states (
 );
 CREATE TABLE IF NOT EXISTS current_transactions (
   transaction_id BLOB PRIMARY KEY REFERENCES financial_transactions(transaction_id), revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
-  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
 );
 CREATE TABLE IF NOT EXISTS current_projection_state (
   generation INTEGER PRIMARY KEY CHECK(generation = 1), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
@@ -621,12 +628,44 @@ CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_assertion_knowledge ON assert
 CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_transaction_knowledge ON assertion_lifecycle_events(transaction_id, commit_id, event_kind, event_id);
 CREATE INDEX IF NOT EXISTS idx_assertion_lifecycle_scope ON assertion_lifecycle_events(scope_id, commit_id, assertion_id);
 `;
-const SCHEMA_V4 = `${SCHEMA}${SCHEMA_V4_APPEND}`;
+const SCHEMA_V4_BASE = SCHEMA
+  .replace("stream TEXT NOT NULL, account_no TEXT, observed_at TEXT NOT NULL", "stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL")
+  .replace("payload_json TEXT NOT NULL, UNIQUE(source_record_id, capture_id)", "payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)")
+  .replace("  economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),\n  administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),\n  semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1'),\n", "")
+  .replace("  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);", "  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);");
+const SCHEMA_V4 = `${SCHEMA_V4_BASE}${SCHEMA_V4_APPEND}`;
+const SCHEMA_V5_APPEND = `
+CREATE TABLE IF NOT EXISTS source_record_scopes (
+  source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16),
+  scope_id BLOB NOT NULL CHECK(length(scope_id) = 16),
+  capture_id BLOB NOT NULL CHECK(length(capture_id) = 16) REFERENCES source_captures(capture_id),
+  account_id BLOB NOT NULL CHECK(length(account_id) = 16) REFERENCES financial_accounts(account_id),
+  sequence_lexeme TEXT NOT NULL, commit_id BLOB NOT NULL CHECK(length(commit_id) = 16) REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(source_record_id, capture_id) REFERENCES source_records(source_record_id, capture_id),
+  FOREIGN KEY(scope_id, capture_id) REFERENCES capture_scopes(scope_id, capture_id),
+  FOREIGN KEY(scope_id, account_id) REFERENCES capture_scopes(scope_id, account_id),
+  UNIQUE(scope_id, sequence_lexeme)
+);
+CREATE INDEX IF NOT EXISTS idx_source_record_scopes_scope_sequence ON source_record_scopes(scope_id, sequence_lexeme, source_record_id);
+CREATE INDEX IF NOT EXISTS idx_source_record_scopes_account_capture ON source_record_scopes(account_id, capture_id, source_record_id);
+`;
+const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
+  .replace("stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL", "stream TEXT NOT NULL, account_no TEXT, observed_at TEXT NOT NULL")
+  .replace("payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)", "payload_json TEXT NOT NULL, UNIQUE(source_record_id, capture_id)")
+  .replace("  posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1'), description TEXT,\n", "  posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1'), description TEXT,\n  economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),\n  administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),\n  semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1'),\n")
+  .replace("  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);\nCREATE TABLE IF NOT EXISTS current_projection_state", "  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);\nCREATE TABLE IF NOT EXISTS current_projection_state")
+  .replace("  scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, completeness TEXT NOT NULL CHECK(completeness = 'complete-range'),", "  scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, scope_kind TEXT NOT NULL CHECK(scope_kind = 'bounded-range'), completeness TEXT NOT NULL CHECK(completeness = 'complete-range'),")
+  .replace("UNIQUE(capture_id, account_id, scope_start, scope_end)", "UNIQUE(scope_id, capture_id), UNIQUE(scope_id, account_id), UNIQUE(capture_id, account_id, scope_start, scope_end)")
+  .replace("absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'tombstone'))", "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range'))");
 
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
 // Keeping this target schema separate prevents an older database from being created at a
 // partially upgraded shape before its migration transaction reaches the next version.
 const SCHEMA_V2 = SCHEMA
+  .replace("stream TEXT NOT NULL, account_no TEXT, observed_at TEXT NOT NULL", "stream TEXT NOT NULL, account_no TEXT NOT NULL, observed_at TEXT NOT NULL")
+  .replace("payload_json TEXT NOT NULL, UNIQUE(source_record_id, capture_id)", "payload_json TEXT NOT NULL, UNIQUE(capture_id, sequence_lexeme)")
+  .replace("  economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),\n  administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),\n  semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1'),\n", "")
+  .replace("  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),\n  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);", "  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)\n);")
   .replace(
     "completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),\n  completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)",
     "completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)",
@@ -638,6 +677,9 @@ if (SCHEMA_V2.includes("completeness_basis") || SCHEMA_V2.includes("completeness
 
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+function columnExists(db: DatabaseSync, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).some((row) => row.name === column);
 }
 function migrateV1ToV2(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
@@ -697,11 +739,89 @@ function migrateV3ToV4(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA_V4_APPEND);
+    db.exec(`INSERT INTO capture_scopes(
+      scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end,
+      completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id
+    )
+      SELECT randomblob(16), sc.capture_id, sc.source_connection_id, sc.identity_epoch_id, account_row.account_id, account_row.account_no, sc.stream,
+        sc.scope_start, sc.scope_end, sc.completeness, sc.completeness_basis, sc.completeness_rule_version, NULL,
+        sc.authority_route, 'legacy-migration-v4', 1, 1, sc.commit_id
+      FROM source_captures sc
+      JOIN financial_accounts account_row ON account_row.source_connection_id = sc.source_connection_id
+        AND account_row.identity_epoch_id = sc.identity_epoch_id AND account_row.stream = sc.stream AND account_row.account_no = sc.account_no
+      WHERE NOT EXISTS (SELECT 1 FROM capture_scopes existing WHERE existing.capture_id = sc.capture_id)`);
+    db.exec(`INSERT INTO capture_scope_pages(
+      scope_page_id, scope_id, page_ordinal, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, commit_id
+    )
+      SELECT randomblob(16), cs.scope_id, 0, 1,
+        (SELECT COUNT(*) FROM source_records sr WHERE sr.capture_id = cs.capture_id), 'legacy-migration-v4', cs.completeness_basis,
+        cs.contract_fingerprint, cs.preflight_fingerprint, cs.commit_id
+      FROM capture_scopes cs LEFT JOIN capture_scope_pages existing_page ON existing_page.scope_id = cs.scope_id
+      WHERE existing_page.scope_id IS NULL`);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(4, currentUtcMicros());
     db.exec("PRAGMA user_version = 4");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
+    throw error;
+  }
+}
+function migrateV4ToV5(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`CREATE TEMP TABLE source_record_scope_migration AS
+      SELECT DISTINCT sr.source_record_id, sr.capture_id, sr.commit_id, sr.sequence_lexeme AS old_sequence,
+        sr.description, sr.payload_json, cs.scope_id, cs.account_id, cs.account_no,
+        CASE WHEN sr.sequence_lexeme LIKE cs.account_no || ':%'
+          THEN substr(sr.sequence_lexeme, length(cs.account_no) + 2) ELSE sr.sequence_lexeme END AS provider_sequence
+      FROM source_records sr
+      JOIN transaction_revisions revision ON revision.source_record_id = sr.source_record_id
+      JOIN financial_transactions transaction_row ON transaction_row.transaction_id = revision.transaction_id
+      JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
+      JOIN capture_scopes cs ON cs.capture_id = sr.capture_id AND cs.account_id = account_row.account_id`);
+    const recordCount = Number((db.prepare("SELECT COUNT(*) AS count FROM source_records").get() as { count?: number }).count ?? 0);
+    const mappedCount = Number((db.prepare("SELECT COUNT(*) AS count FROM source_record_scope_migration").get() as { count?: number }).count ?? 0);
+    if (recordCount !== mappedCount) throw new Error("v4 source records could not be deterministically mapped to capture scopes.");
+    const ambiguous = Number((db.prepare("SELECT COUNT(*) AS count FROM (SELECT source_record_id FROM source_record_scope_migration GROUP BY source_record_id HAVING COUNT(*) <> 1)").get() as { count?: number }).count ?? 0);
+    if (ambiguous !== 0) throw new Error("v4 source records have ambiguous capture scope identity.");
+
+    db.exec(`CREATE TABLE source_captures_v5 (
+      capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+      stream TEXT NOT NULL, account_no TEXT, observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
+      completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),
+      completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+    )`);
+    db.exec(`INSERT INTO source_captures_v5(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
+      SELECT capture_id, source_connection_id, identity_epoch_id, authority_route, stream,
+        CASE WHEN account_no = 'multi-scope' THEN NULL ELSE account_no END, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id
+      FROM source_captures`);
+    db.exec(`CREATE TABLE source_records_v5 (
+      source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), sequence_lexeme TEXT NOT NULL, description TEXT, payload_json TEXT NOT NULL,
+      UNIQUE(source_record_id, capture_id)
+    )`);
+    db.exec("INSERT INTO source_records_v5(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) SELECT source_record_id, capture_id, commit_id, provider_sequence, description, payload_json FROM source_record_scope_migration");
+    db.exec("DROP TABLE source_records; DROP TABLE source_captures; ALTER TABLE source_captures_v5 RENAME TO source_captures; ALTER TABLE source_records_v5 RENAME TO source_records");
+    if (!columnExists(db, "capture_scopes", "scope_kind")) db.exec("ALTER TABLE capture_scopes ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'bounded-range' CHECK(scope_kind = 'bounded-range')");
+    if (!columnExists(db, "transaction_revisions", "economic_status")) db.exec("ALTER TABLE transaction_revisions ADD COLUMN economic_status TEXT NOT NULL DEFAULT 'normal' CHECK(economic_status IN ('normal','canceled','refund','reversal'))");
+    if (!columnExists(db, "transaction_revisions", "administrative_state")) db.exec("ALTER TABLE transaction_revisions ADD COLUMN administrative_state TEXT NOT NULL DEFAULT 'active' CHECK(administrative_state IN ('active','deleted','purged'))");
+    if (!columnExists(db, "transaction_revisions", "semantic_rule_version")) db.exec("ALTER TABLE transaction_revisions ADD COLUMN semantic_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')");
+    if (!columnExists(db, "current_transactions", "projection_commit_id")) db.exec("ALTER TABLE current_transactions ADD COLUMN projection_commit_id BLOB REFERENCES canonical_commits(commit_id)");
+    if (!columnExists(db, "current_transactions", "revision_commit_id")) db.exec("ALTER TABLE current_transactions ADD COLUMN revision_commit_id BLOB REFERENCES canonical_commits(commit_id)");
+    db.exec("UPDATE current_transactions SET projection_commit_id = commit_id");
+    db.exec("UPDATE current_transactions SET revision_commit_id = (SELECT revision.commit_id FROM transaction_revisions revision WHERE revision.revision_id = current_transactions.revision_id)");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_capture ON capture_scopes(scope_id, capture_id); CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_account ON capture_scopes(scope_id, account_id)");
+    db.exec(SCHEMA_V5_APPEND);
+    db.exec("INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) SELECT source_record_id, scope_id, capture_id, account_id, provider_sequence, commit_id FROM source_record_scope_migration");
+    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(5, currentUtcMicros());
+    db.exec("PRAGMA user_version = 5");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
 }
@@ -714,15 +834,22 @@ function applySchemaMigration(db: DatabaseSync): void {
     migrateV1ToV2(db);
     migrateV2ToV3(db);
     migrateV3ToV4(db);
+    migrateV4ToV5(db);
     return;
   }
   if (version === 2) {
     migrateV2ToV3(db);
     migrateV3ToV4(db);
+    migrateV4ToV5(db);
     return;
   }
   if (version === 3) {
     migrateV3ToV4(db);
+    migrateV4ToV5(db);
+    return;
+  }
+  if (version === 4) {
+    migrateV4ToV5(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -733,7 +860,7 @@ function applySchemaMigration(db: DatabaseSync): void {
   }
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.exec(SCHEMA_V4);
+    db.exec(SCHEMA_V5);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -763,7 +890,8 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   const projectionRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM current_transactions current_row
     JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id
     JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
-    WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.commit_id`).get() as { count?: number }).count ?? 0);
+    WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.revision_commit_id
+      AND current_row.commit_id = current_row.projection_commit_id`).get() as { count?: number }).count ?? 0);
   if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
 }
 
@@ -792,7 +920,7 @@ export type CanonicalAdministrativeState = "active" | "deleted" | "purged";
 export type CanonicalTransaction = {
   id: string; accountId: string; accountNo: string; sourceSequence: string; amount: CanonicalAmount; currency: "TWD";
   direction: "inflow" | "outflow"; postingStatus: "posted"; postingOrigin: "provider_booked_history"; postingBasis: "query-status-success-with-accounting-date"; postingRuleVersion: "cathay/domestic-deposit/v1";
-  assertionSupportState: CanonicalAssertionSupportState; economicStatus: CanonicalEconomicStatus; administrativeState: CanonicalAdministrativeState;
+  assertionSupportState: CanonicalAssertionSupportState; economicStatus: CanonicalEconomicStatus; administrativeState: CanonicalAdministrativeState; semanticRuleVersion: "cathay/domestic-deposit/v1";
   displayLabel: string | null; effectiveOn: string; effectiveTimeBasis: "accounting"; effectiveTimeRuleVersion: "cathay/domestic-deposit/v1"; transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE; timePrecision: "second"; timeOrigin: "source_reported";
   utcInstantUtcUs: number; revisionId: string; commitSequence: number;
@@ -812,7 +940,7 @@ export type CathayCanonicalLineageEntry = {
   transaction: { id: string; accountId: string; sourceSequence: string };
   revision: CanonicalTransactionRevision;
   assertion: { id: string; revisionId: string; commitSequence: number };
-  sourceRecord: { id: string; captureId: string; sequence: string; description: string | null; payload: string };
+  sourceRecord: { id: string; captureId: string; sequence: string; description: string | null; payload: string; scopeProof: { id: string; accountId: string; accountNo: string; stream: string; scopeStart: string; scopeEnd: string; completeness: "complete-range"; contractFingerprint: string; preflightFingerprint: string } };
   capture: { id: string; observedAt: string; scopeStart: string; scopeEnd: string; authorityRoute: string };
   provenance: Array<{ sourceRecordId: string; captureId: string }>;
   lifecycleEvents: CathayCanonicalLifecycleEvent[];
@@ -826,7 +954,7 @@ export interface CathayCanonicalFinancialQuery {
 }
 export type CathayCommitTransactionResult = { transactionId: string; revisionId: string; sourceSequence: string; direction: "inflow" | "outflow"; amount: CanonicalAmount; revisionCreated: boolean };
 export type CathayCanonicalCommitScopeResult = { scopeId: string; accountId: string; accountNo: string; transactions: CathayCommitTransactionResult[] };
-export type CathayCanonicalCommitResult = { captureId: string; commitSequence: number; accountId: string; transactions: CathayCommitTransactionResult[]; scopes: CathayCanonicalCommitScopeResult[] };
+export type CathayCanonicalCommitResult = { captureId: string; commitSequence: number; accountIds: string[]; transactions: CathayCommitTransactionResult[]; scopes: CathayCanonicalCommitScopeResult[] };
 
 function dbRow<T extends Record<string, unknown>>(value: unknown): T { return value as T; }
 function sameRevision(row: Record<string, unknown>, detail: ValidatedCathayRow): boolean {
@@ -898,20 +1026,20 @@ function commitCathayDomesticDepositSyncOnce(
     const captureId = uuidV7();
     const captureStart = [...input.scopes].map((scope) => scope.startDate).sort()[0]!;
     const captureEnd = [...input.scopes].map((scope) => scope.endDate).sort().at(-1)!;
-    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, input.scopes.length === 1 ? input.scopes[0]!.accountNo : "multi-scope", input.observedAt, captureStart, captureEnd, CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, commitId);
+    db.prepare("INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(captureId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, input.scopes.length === 1 ? input.scopes[0]!.accountNo : null, input.observedAt, captureStart, captureEnd, CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, commitId);
     const allTransactions: CathayCommitTransactionResult[] = [];
     const scopeResults: CathayCanonicalCommitScopeResult[] = [];
     for (const scope of input.scopes) {
       const accountId = accountIds.get(scope.accountNo)!;
       const scopeId = uuidV7();
-      db.prepare("INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(scopeId, captureId, sourceConnectionId, identityEpochId, accountId, scope.accountNo, input.stream, scope.startDate, scope.endDate, CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, scope.absenceAuthority ?? null, scope.contractFingerprint, scope.preflightFingerprint, scope.pages.length, 1, commitId);
+      db.prepare("INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(scopeId, captureId, sourceConnectionId, identityEpochId, accountId, scope.accountNo, input.stream, scope.startDate, scope.endDate, "bounded-range", CATHAY_COMPLETENESS_PROOF.kind, CATHAY_COMPLETENESS_PROOF.basis, CATHAY_COMPLETENESS_PROOF.ruleVersion, scope.absenceAuthority ?? null, scope.contractFingerprint, scope.preflightFingerprint, scope.pages.length, 1, commitId);
       for (const page of scope.pages) db.prepare("INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(uuidV7(), scopeId, page.pageOrdinal, page.terminal ? 1 : 0, page.rowCount, page.responseDigest, CATHAY_COMPLETENESS_PROOF.basis, scope.contractFingerprint, scope.preflightFingerprint, commitId);
       const seenSequences = new Set(scope.rows.map((row) => row.sequence));
       const scopeTransactions: CathayCommitTransactionResult[] = [];
       for (const detail of scope.rows) {
         const sourceRecordId = uuidV7();
-        const sourceRecordSequence = input.scopes.length === 1 ? detail.sequence : `${scope.accountNo}:${detail.sequence}`;
-        db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, sourceRecordSequence, detail.description, detail.payload);
+        db.prepare("INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, captureId, commitId, detail.sequence, detail.description, detail.payload);
+        db.prepare("INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) VALUES (?, ?, ?, ?, ?, ?)").run(sourceRecordId, scopeId, captureId, accountId, detail.sequence, commitId);
         const existingTransaction = db.prepare("SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?").get(accountId, detail.sequence);
         const transactionId = existingTransaction ? blob(dbRow<{ transaction_id: unknown }>(existingTransaction).transaction_id) : uuidV7();
         if (!existingTransaction) db.prepare("INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)").run(transactionId, accountId, detail.sequence, commitId);
@@ -928,13 +1056,13 @@ function commitCathayDomesticDepositSyncOnce(
           revisionId = uuidV7();
           const revisionNumber = latestRow ? Number(latestRow.revision_number) + 1 : 1;
           db.prepare(`INSERT INTO transaction_revisions(
-            revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency,
-            direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, effective_on, transaction_date_time_local,
+          revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency,
+            direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, economic_status, administrative_state, semantic_rule_version, effective_on, transaction_date_time_local,
             time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
             revisionId, transactionId, sourceRecordId, captureId, commitId, revisionNumber, detail.amount.coefficient.toString(), detail.amount.scale,
             scope.currency, detail.direction, CATHAY_POSTING_MAPPING.postingStatus, CATHAY_POSTING_MAPPING.origin, CATHAY_POSTING_MAPPING.basis, CATHAY_POSTING_MAPPING.ruleVersion,
-            detail.description, detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", "accounting", CATHAY_POSTING_MAPPING.ruleVersion, detail.utcInstantUtcUs,
+            detail.description, "normal", "active", CATHAY_POSTING_MAPPING.ruleVersion, detail.accountDate, detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", "accounting", CATHAY_POSTING_MAPPING.ruleVersion, detail.utcInstantUtcUs,
           );
           const observation = db.prepare("INSERT INTO transaction_time_observations(observation_id, transaction_id, revision_id, source_record_id, commit_id, role, local_value, time_zone, time_precision, time_origin, utc_instant_utc_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
           observation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "accounting", detail.accountDate, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", detail.accountingUtcInstantUtcUs);
@@ -942,7 +1070,7 @@ function commitCathayDomesticDepositSyncOnce(
           assertionId = uuidV7();
           db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, sourceRecordId, commitId);
           insertLifecycleEvent(db, { assertionId, transactionId, revisionId, captureId, scopeId, commitId, kind: "observed" });
-          db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, commitId);
+          db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id, projection_commit_id = excluded.projection_commit_id, revision_commit_id = excluded.revision_commit_id").run(transactionId, revisionId, commitId, commitId, commitId);
         } else {
           const assertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE transaction_id = ? AND revision_id = ?").get(transactionId, revisionId);
           if (!assertion) throw new Error("Canonical assertion was not created.");
@@ -951,7 +1079,7 @@ function commitCathayDomesticDepositSyncOnce(
           insertLifecycleEvent(db, { assertionId, transactionId, revisionId, captureId, scopeId, commitId, kind: wasWithdrawn ? "restored" : "observed" });
           if (wasWithdrawn) {
             const revisionCommit = blob(dbRow<{ commit_id: unknown }>(db.prepare("SELECT commit_id FROM transaction_revisions WHERE revision_id = ?").get(revisionId)).commit_id);
-            db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id) VALUES (?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id").run(transactionId, revisionId, revisionCommit);
+            db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id, projection_commit_id = excluded.projection_commit_id, revision_commit_id = excluded.revision_commit_id").run(transactionId, revisionId, commitId, commitId, revisionCommit);
           }
         }
         db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, commit_id) VALUES (?, ?, ?)").run(assertionId, sourceRecordId, commitId);
@@ -963,7 +1091,20 @@ function commitCathayDomesticDepositSyncOnce(
         const prior = db.prepare(`SELECT sa.assertion_id, sa.transaction_id, sa.revision_id, t.source_sequence FROM source_assertions sa
           JOIN financial_transactions t ON t.transaction_id = sa.transaction_id JOIN transaction_revisions r ON r.revision_id = sa.revision_id
           JOIN current_transactions current_row ON current_row.transaction_id = t.transaction_id AND current_row.revision_id = r.revision_id
-          WHERE t.account_id = ? AND r.effective_on BETWEEN ? AND ?`).all(accountId, scope.startDate, scope.endDate) as Array<Record<string, unknown>>;
+          JOIN assertion_provenance provenance ON provenance.assertion_id = sa.assertion_id
+          JOIN source_records prior_record ON prior_record.source_record_id = provenance.source_record_id
+          JOIN source_record_scopes prior_record_scope ON prior_record_scope.source_record_id = prior_record.source_record_id
+          JOIN capture_scopes prior_scope ON prior_scope.scope_id = prior_record_scope.scope_id
+          JOIN source_captures prior_capture ON prior_capture.capture_id = prior_scope.capture_id
+          WHERE t.account_id = ? AND r.effective_on BETWEEN ? AND ?
+            AND prior_scope.source_connection_id = ? AND prior_scope.identity_epoch_id = ? AND prior_scope.account_id = ?
+            AND prior_scope.stream = ? AND prior_scope.scope_kind = 'bounded-range'
+            AND prior_scope.completeness = 'complete-range' AND prior_scope.completeness_rule_version = ?
+            AND prior_scope.contract_fingerprint = ? AND prior_scope.preflight_fingerprint = ?
+            AND prior_capture.authority_route = ? AND prior_capture.stream = ?`).all(
+          accountId, scope.startDate, scope.endDate, sourceConnectionId, identityEpochId, accountId, input.stream,
+          CATHAY_COMPLETENESS_PROOF.ruleVersion, scope.contractFingerprint, scope.preflightFingerprint, input.authorityRoute, input.stream,
+        ) as Array<Record<string, unknown>>;
         for (const row of prior) {
           if (seenSequences.has(String(row.source_sequence))) continue;
           const assertionId = blob(row.assertion_id);
@@ -980,7 +1121,7 @@ function commitCathayDomesticDepositSyncOnce(
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
-    return { captureId: idToString(captureId), commitSequence, accountId: idToString(accountIds.get(input.scopes[0]!.accountNo)!), transactions: allTransactions, scopes: scopeResults };
+    return { captureId: idToString(captureId), commitSequence, accountIds: [...accountIds.values()].map(idToString), transactions: allTransactions, scopes: scopeResults };
   } catch (error) {
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
@@ -1056,7 +1197,7 @@ function transactionFromRow(row: Record<string, unknown>): CanonicalTransaction 
     id: idToString(row.transaction_id), accountId: idToString(row.account_id), accountNo: String(row.account_no), sourceSequence: String(row.source_sequence),
     amount: amountFromRow(row), currency: "TWD", direction: row.direction as "inflow" | "outflow", postingStatus: row.posting_status as "posted",
     postingOrigin: row.posting_origin as "provider_booked_history", postingBasis: row.posting_basis as "query-status-success-with-accounting-date", postingRuleVersion: row.posting_rule_version as "cathay/domestic-deposit/v1",
-    assertionSupportState: row.assertion_support_state === "withdrawn" ? "withdrawn" : "supported", economicStatus: row.economic_status as CanonicalEconomicStatus ?? "normal", administrativeState: row.administrative_state as CanonicalAdministrativeState ?? "active",
+    assertionSupportState: row.assertion_support_state === "withdrawn" ? "withdrawn" : "supported", economicStatus: row.economic_status as CanonicalEconomicStatus, administrativeState: row.administrative_state as CanonicalAdministrativeState, semanticRuleVersion: row.semantic_rule_version as "cathay/domestic-deposit/v1",
     displayLabel: typeof row.description === "string" ? row.description : null, effectiveOn: String(row.effective_on), effectiveTimeBasis: row.effective_time_basis as "accounting", effectiveTimeRuleVersion: row.effective_time_rule_version as "cathay/domestic-deposit/v1",
     transactionDateTimeLocal: String(row.transaction_date_time_local), timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, timePrecision: "second", timeOrigin: "source_reported",
     utcInstantUtcUs: Number(row.utc_instant_utc_us), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence),
@@ -1076,11 +1217,11 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     try {
       const accounts = (db.prepare("SELECT account_id AS id, account_no AS accountNo, currency, account_type AS accountType FROM financial_accounts ORDER BY account_no").all() as Record<string, unknown>[]).map((row) => ({ id: idToString(row.id), accountNo: String(row.accountNo), currency: "TWD" as const, accountType: "depository" as const }));
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM current_transactions current_row
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
-        JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.commit_id
+        JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.projection_commit_id
         ORDER BY a.account_no, t.source_sequence`).all() as Record<string, unknown>[];
       return { status: "ok", kind: "current", accounts, transactions: rows.map(transactionFromRow), commitSequence: rows.reduce((max, row) => Math.max(max, Number(row.commit_sequence)), 0) };
     } finally { db.close(); }
@@ -1093,7 +1234,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence,
         COALESCE((SELECT CASE WHEN lifecycle.event_kind = 'withdrawn' THEN 'withdrawn' ELSE 'supported' END FROM assertion_lifecycle_events lifecycle
@@ -1116,12 +1257,15 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       const revisionRows = db.prepare(`SELECT t.transaction_id, t.account_id, t.source_sequence, a.account_no, r.amount_coefficient, r.amount_scale, r.currency,
-        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.effective_on, r.effective_time_basis,
+        r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence, r.source_record_id, r.capture_id, sr.sequence_lexeme, sr.description, sr.payload_json,
+        source_scope.scope_id, source_scope.account_id AS scope_account_id, source_scope.account_no AS scope_account_no, source_scope.stream AS scope_stream,
+        source_scope.scope_start AS scope_scope_start, source_scope.scope_end AS scope_scope_end, source_scope.contract_fingerprint AS scope_contract_fingerprint, source_scope.preflight_fingerprint AS scope_preflight_fingerprint,
         sc.observed_at, sc.scope_start, sc.scope_end, sc.authority_route, sa.assertion_id FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
-        JOIN source_records sr ON sr.source_record_id = r.source_record_id JOIN source_captures sc ON sc.capture_id = r.capture_id
+        JOIN source_records sr ON sr.source_record_id = r.source_record_id JOIN source_record_scopes record_scope ON record_scope.source_record_id = sr.source_record_id
+        JOIN capture_scopes source_scope ON source_scope.scope_id = record_scope.scope_id JOIN source_captures sc ON sc.capture_id = r.capture_id
         JOIN source_assertions sa ON sa.revision_id = r.revision_id WHERE t.transaction_id = ? ORDER BY r.revision_number`).all(transactionId) as Record<string, unknown>[];
       const entries = revisionRows.map((row) => {
         const assertionId = blob(row.assertion_id);
@@ -1135,7 +1279,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           transaction: { id: idToString(row.transaction_id), accountId: idToString(row.account_id), sourceSequence: String(row.source_sequence) },
           revision,
           assertion: { id: idToString(row.assertion_id), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence) },
-          sourceRecord: { id: idToString(row.source_record_id), captureId: idToString(row.capture_id), sequence: String(row.sequence_lexeme), description: typeof row.description === "string" ? row.description : null, payload: String(row.payload_json) },
+          sourceRecord: { id: idToString(row.source_record_id), captureId: idToString(row.capture_id), sequence: String(row.sequence_lexeme), description: typeof row.description === "string" ? row.description : null, payload: String(row.payload_json), scopeProof: { id: idToString(row.scope_id), accountId: idToString(row.scope_account_id), accountNo: String(row.scope_account_no), stream: String(row.scope_stream), scopeStart: String(row.scope_scope_start), scopeEnd: String(row.scope_scope_end), completeness: "complete-range" as const, contractFingerprint: String(row.scope_contract_fingerprint), preflightFingerprint: String(row.scope_preflight_fingerprint) } },
           capture: { id: idToString(row.capture_id), observedAt: String(row.observed_at), scopeStart: String(row.scope_start), scopeEnd: String(row.scope_end), authorityRoute: String(row.authority_route) },
           provenance: provenance.map((item) => ({ sourceRecordId: idToString(item.sourceRecordId), captureId: idToString(item.captureId) })),
           lifecycleEvents: lifecycleEvents.map((event) => ({
