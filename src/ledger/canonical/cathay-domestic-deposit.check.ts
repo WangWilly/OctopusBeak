@@ -5,17 +5,44 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import {
   CANONICAL_SCHEMA_VERSION,
+  CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_STREAM,
   CATHAY_POSTING_MAPPING,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_PROVENANCE,
   commitCathayDomesticDeposit,
+  commitCathayDomesticDepositSync,
   canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
   parseExactDecimalLexeme,
+  type CathayStagedCapturePage,
 } from "./cathay-domestic-deposit.ts";
 import { createCathayCanonicalFinancialQuery as createBoundaryCanonicalQuery } from "../../lib/shared-ledger/server/financial-query.ts";
+
+const syncPage = (accountNo = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, rawResponse = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse): CathayStagedCapturePage => ({
+  accountNo,
+  currency: "TWD" as const,
+  scope: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope,
+  pageOrdinal: 0,
+  requestPageToken: null,
+  nextPageToken: null,
+  rawResponse,
+  contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  preflightFingerprint: "synthetic-preflight-v1",
+  absenceAuthority: "comparable-complete-range" as const,
+});
+
+const syncInput = (pages = [syncPage()]) => ({
+  sourceConnectionId: "synthetic-sync-connection",
+  identityEpoch: "synthetic-sync-epoch",
+  authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+  observedAt: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.observedAt,
+  syncState: { cursor: null },
+  pages,
+});
 
 assert.deepEqual(parseExactDecimalLexeme("123.4500"), {
   coefficient: 1234500n,
@@ -300,6 +327,107 @@ try {
   await rm(ledgerDir, { recursive: true, force: true });
 }
 
+const multiScopeDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-sync-scopes-"));
+try {
+  const secondAccount = "SYNTHETIC-ACCOUNT-002";
+  const secondRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace("SYNTHETIC-ACCOUNT-001", secondAccount);
+  const firstCommit = await commitCathayDomesticDepositSync(multiScopeDir, syncInput([
+    syncPage(),
+    syncPage(secondAccount, secondRaw),
+  ]));
+  assert.equal(firstCommit.scopes.length, 2);
+  assert.equal(firstCommit.commitSequence, 1);
+  const multiDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
+  try {
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, 1);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 1);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM capture_scopes").get()?.count, 2);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM capture_scope_pages").get()?.count, 2);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get()?.count, 2);
+    assert.equal(multiDb.prepare("SELECT COUNT(DISTINCT commit_id) AS count FROM source_sync_states").get()?.count, 1);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states WHERE cursor IS NOT NULL").get()?.count, 0);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get()?.count, 6);
+    assert.equal(multiDb.prepare("SELECT 1 FROM sqlite_master WHERE name = 'transport_checkpoints'").get(), undefined);
+  } finally { multiDb.close(); }
+
+  const repeated = await commitCathayDomesticDepositSync(multiScopeDir, {
+    ...syncInput([syncPage(), syncPage(secondAccount, secondRaw)]),
+    observedAt: "2026-08-18T00:00:00+08:00",
+  });
+  assert.equal(repeated.commitSequence, 2);
+  const repeatedDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
+  try {
+    assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 2);
+    assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 12);
+    assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get()?.count, 6);
+    assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 6);
+    assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count, 12);
+  } finally { repeatedDb.close(); }
+} finally { await rm(multiScopeDir, { recursive: true, force: true }); }
+
+for (const [label, pages, expected] of [
+  ["duplicate page ordinal", [{ ...syncPage(), pageOrdinal: 0 }, { ...syncPage(), pageOrdinal: 0 }] as const, /duplicate ordinals/],
+  ["missing terminal page", [{ ...syncPage(), nextPageToken: "synthetic-next-token" }] as const, /end before the terminal/],
+  ["contract fingerprint drift", [{ ...syncPage() }, { ...syncPage("SYNTHETIC-ACCOUNT-002", CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace("SYNTHETIC-ACCOUNT-001", "SYNTHETIC-ACCOUNT-002")), contractFingerprint: "synthetic-drift" }] as const, /unsupported|contract or preflight fingerprint drifted across scopes/],
+] as const) {
+  const rejectedSyncDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-sync-reject-"));
+  try {
+    assert.throws(() => commitCathayDomesticDepositSync(rejectedSyncDir, syncInput([...pages])), expected, label);
+    const rejectedSyncDb = openCanonicalDatabase(rejectedSyncDir);
+    try {
+      assert.equal(rejectedSyncDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, 0, label);
+      assert.equal(rejectedSyncDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 0, label);
+    } finally { rejectedSyncDb.close(); }
+  } finally { await rm(rejectedSyncDir, { recursive: true, force: true }); }
+}
+
+const lifecycleDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-lifecycle-"));
+try {
+  const first = await commitCathayDomesticDepositSync(lifecycleDir, syncInput());
+  const emptyRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace(/"count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":\[[\s\S]*?\]\}/, '"count":0,"startDate":"2025-08-17","endDate":"2026-08-17","details":[]}');
+  const withdrawn = await commitCathayDomesticDepositSync(lifecycleDir, {
+    ...syncInput([syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, emptyRaw)]),
+    observedAt: "2026-08-18T00:00:00+08:00",
+  });
+  const withdrawnQuery = createCathayCanonicalFinancialQuery(lifecycleDir);
+  assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 0);
+  const historicalWithdrawn = await withdrawnQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(withdrawn.commitSequence) } });
+  assert.equal(historicalWithdrawn.transactions.length, 3);
+  assert.equal(historicalWithdrawn.transactions[0]?.assertionSupportState, "withdrawn");
+  const restored = await commitCathayDomesticDepositSync(lifecycleDir, {
+    ...syncInput(),
+    observedAt: "2026-08-19T00:00:00+08:00",
+  });
+  assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 3);
+  assert.equal((await withdrawnQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(restored.commitSequence) } })).transactions[0]?.assertionSupportState, "supported");
+  const restoredLineage = await withdrawnQuery.lineage({ kind: "lineage", subject: { kind: "transaction", id: first.transactions[0]!.transactionId } });
+  const lifecycleKinds = restoredLineage.entries.flatMap((entry) => entry.lifecycleEvents.map((event) => event.kind));
+  assert.equal(lifecycleKinds.includes("withdrawn"), true);
+  assert.equal(lifecycleKinds.includes("restored"), true);
+  assert.equal(lifecycleKinds.includes("observed"), true);
+  assert.equal(restoredLineage.entries[0]?.revision.economicStatus, "normal");
+  assert.equal(restoredLineage.entries[0]?.revision.administrativeState, "active");
+
+  const incompleteRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace('"count":3', '"count":2');
+  assert.throws(() => commitCathayDomesticDepositSync(lifecycleDir, {
+    ...syncInput([syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, incompleteRaw)]),
+    observedAt: "2026-08-20T00:00:00+08:00",
+  }), /count does not match/);
+  assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 3);
+
+  const changedRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace('"incomeAmt":12500', '"incomeAmt":13000').replace('"balance":12500', '"balance":13000');
+  const changed = await commitCathayDomesticDepositSync(lifecycleDir, {
+    ...syncInput([syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, changedRaw)]),
+    observedAt: "2026-08-21T00:00:00+08:00",
+  });
+  assert.equal(changed.transactions.some((transaction) => transaction.revisionCreated), true);
+  const changedDb = openCanonicalDatabase(lifecycleDir, { readOnly: true });
+  try {
+    assert.equal(changedDb.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 4);
+    assert.equal(changedDb.prepare("SELECT COUNT(*) AS count FROM assertion_lifecycle_events WHERE event_kind = 'superseded'").get()?.count, 1);
+  } finally { changedDb.close(); }
+} finally { await rm(lifecycleDir, { recursive: true, force: true }); }
+
 const blockStart = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.indexOf('{"queryStatus"');
 const blockEnd = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.lastIndexOf("}]}}") + 1;
 const singleResultBlock = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.slice(blockStart, blockEnd);
@@ -393,7 +521,7 @@ for (const version of [1, 2] as const) {
     const migrated = openCanonicalDatabase(migrationDir);
     try {
       assert.equal(Number(migrated.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION, `v${version} final version`);
-      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 3, `v${version} migration history`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 4, `v${version} migration history`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1, `v${version} source row`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 1, `v${version} revision`);
       assert.equal(migrated.prepare("SELECT completeness_basis FROM source_captures").get()?.completeness_basis, "success-status-scope-count-details", `v${version} completeness`);
@@ -463,6 +591,38 @@ try {
     assert.equal(retriedV2.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1);
   } finally { retriedV2.close(); }
 } finally { await rm(v2RollbackDir, { recursive: true, force: true }); }
+
+const v3MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v3-"));
+try {
+  await commitCathayDomesticDeposit(v3MigrationDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+  const v3Seed = new DatabaseSync(canonicalSqlitePath(v3MigrationDir));
+  v3Seed.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;");
+  v3Seed.exec("DELETE FROM schema_migrations WHERE version = 4; PRAGMA user_version = 3;");
+  v3Seed.close();
+  const migratedV3 = openCanonicalDatabase(v3MigrationDir);
+  try {
+    assert.equal(Number(migratedV3.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
+    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 3);
+    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 1);
+    assert.equal(migratedV3.prepare("SELECT 1 FROM sqlite_master WHERE name = 'capture_scopes'").get()?.["1"], 1);
+  } finally { migratedV3.close(); }
+  const v3RollbackDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v3-rollback-"));
+  try {
+    await commitCathayDomesticDeposit(v3RollbackDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
+    downgrade.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version = 4; PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;");
+    downgrade.close();
+    assert.throws(() => openCanonicalDatabase(v3RollbackDir), /capture_scopes|views may not be indexed/);
+    const afterFailure = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
+    try {
+      assert.equal(Number(afterFailure.prepare("PRAGMA user_version").get()?.user_version), 3);
+      assert.equal(afterFailure.prepare("SELECT 1 FROM schema_migrations WHERE version = 4").get(), undefined);
+      afterFailure.exec("DROP VIEW capture_scopes");
+    } finally { afterFailure.close(); }
+    const retried = openCanonicalDatabase(v3RollbackDir);
+    try { assert.equal(Number(retried.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION); } finally { retried.close(); }
+  } finally { await rm(v3RollbackDir, { recursive: true, force: true }); }
+} finally { await rm(v3MigrationDir, { recursive: true, force: true }); }
 
 const corruptDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-corrupt-"));
 try {

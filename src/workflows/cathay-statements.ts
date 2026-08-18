@@ -10,7 +10,8 @@ import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  commitCathayDomesticDeposit,
+  commitCathayDomesticDepositSync,
+  type CathayStagedCapturePage,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
 
 const DOMESTIC_STATEMENTS_URL =
@@ -896,7 +897,8 @@ export async function downloadCathayStatements(
   };
   const writeFiles = options.writeStatementFiles ?? writeStatementFiles;
   const observedAt = options.observedAt ?? new Date().toISOString();
-  const downloads: CathayStatementDownload[] = [];
+  const stagedPages: CathayStagedCapturePage[] = [];
+  const stagedStatements: Array<{ account: CathayAccount; statement: CathayTransferResult }> = [];
   for (const account of accounts) {
     const rawResponse = await client.fetchTransferDetailsRaw(
       session,
@@ -904,20 +906,33 @@ export async function downloadCathayStatements(
       dateRange,
     );
     const statement = parseCathayTransferResponse(rawResponse, account.accountNo);
-    await commitCathayDomesticDeposit(canonicalLedgerDir, {
-      rawResponse,
-      sourceConnectionId,
-      identityEpoch,
+    stagedStatements.push({ account, statement });
+    stagedPages.push({
       accountNo: account.accountNo,
-      currency: account.currency ?? "TWD",
-      authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-      stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+      currency: (account.currency ?? "TWD") as "TWD",
       scope,
-      syncState: options.syncState ?? { cursor: null },
-      observedAt,
+      pageOrdinal: 0,
+      requestPageToken: null,
+      nextPageToken: null,
+      rawResponse,
+      contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+      preflightFingerprint: "cathay/domestic-deposit/collection-v1",
+      absenceAuthority: "comparable-complete-range",
     });
-    downloads.push(await writeFiles(account, dateRange, statement));
   }
+
+  if (stagedPages.length === 0) return [];
+  await commitCathayDomesticDepositSync(canonicalLedgerDir, {
+    sourceConnectionId,
+    identityEpoch,
+    authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+    stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+    syncState: options.syncState ?? { cursor: null },
+    observedAt,
+    pages: stagedPages,
+  });
+  const downloads: CathayStatementDownload[] = [];
+  for (const { account, statement } of stagedStatements) downloads.push(await writeFiles(account, dateRange, statement));
 
   return downloads;
 }
