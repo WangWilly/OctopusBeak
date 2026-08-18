@@ -2187,6 +2187,16 @@ function validateProjectionGenerationProvenance(db: DatabaseSync, generationId: 
   }
 }
 
+/** A building/validated-unswitched generation is only legal inside the one
+ * BEGIN IMMEDIATE rebuild transaction. Once committed, it is recovery
+ * corruption; never retire or delete it implicitly. */
+function rejectStrayProjectionGenerations(db: DatabaseSync): void {
+  const rows = db.prepare(`SELECT generation_id, status FROM projection_generations
+    WHERE status = 'building' OR (status = 'validated' AND switched_commit_id IS NULL)
+    ORDER BY generation_id`).all() as Array<{ generation_id?: number; status?: string }>;
+  if (rows.length > 0) throw new Error(`Canonical v7 recovery found a persisted ${rows[0]!.status} generation ${rows[0]!.generation_id}.`);
+}
+
 /** Validate the one switch boundary used by both writer and read-only startup.
  * This is intentionally a row-level gate: SQLite FKs can prove that a pointer
  * names a row, but cannot prove that the row is the sole active generation or
@@ -2234,6 +2244,7 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
 function ensureV7ProjectionSchema(db: DatabaseSync): void {
   db.exec(SCHEMA_V7_APPEND);
   backfillProjectionProvenance(db);
+  rejectStrayProjectionGenerations(db);
   const generationId = validateActiveProjectionBoundary(db);
   const mixedRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
     WHERE rows.generation_id = ? AND (rows.revision_id NOT IN (SELECT revision_id FROM transaction_revisions)
@@ -2436,6 +2447,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.revision_commit_id
       AND current_row.commit_id = current_row.projection_commit_id`).get() as { count?: number }).count ?? 0);
   if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
+  rejectStrayProjectionGenerations(db);
   const validatedActiveGenerationId = validateActiveProjectionBoundary(db);
   const activePointer = db.prepare("SELECT generation_id, switched_commit_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number; switched_commit_id?: unknown } | undefined;
   if (!activePointer) throw new Error("Canonical v7 active projection pointer is missing.");
@@ -2725,6 +2737,7 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
   try {
     db.exec("BEGIN IMMEDIATE");
     inTransaction = true;
+    rejectStrayProjectionGenerations(db);
     const latest = db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number };
     const currentKnowledgePoint = Number(latest.max_sequence ?? 0);
     const cutoff = options.cutoff?.commitSequence ?? currentKnowledgePoint;

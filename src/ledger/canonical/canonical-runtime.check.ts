@@ -460,3 +460,37 @@ for (const [label, corrupt] of [
     } finally { migrated.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+
+// A committed candidate without a switch is never a recoverable active
+// generation. It must block both read-only startup and a subsequent rebuild;
+// the writer must not silently retire or delete it.
+for (const [status, phaseCount] of [["building", 1], ["validated", 2]] as const) {
+  const { dir } = await makeFieldLedger(`cathay-canonical-v7-red-stray-${status}-`);
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const maxSequence = Number((corrupt.prepare("SELECT MAX(commit_sequence) AS sequence FROM canonical_commits").get() as { sequence?: number }).sequence ?? 0);
+    const commitId = Buffer.alloc(16, status === "building" ? 0x71 : 0x72);
+    corrupt.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')").run(commitId, maxSequence + 1, 0);
+    corrupt.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id, validated_commit_id)
+      VALUES (2, ?, ?, 'canonical/projection/v1', ?, ?)`)
+      .run(status, maxSequence, commitId, phaseCount === 2 ? commitId : null);
+    const createdId = Buffer.alloc(16, status === "building" ? 0x81 : 0x82);
+    const createdDigest = createHash("sha256").update(`canonical-projection-provenance/v1|2|1|created|rebuild|${commitId.toString("hex")}|`, "utf8").digest();
+    corrupt.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, ordinal, previous_event_id, event_kind, event_source, commit_id, event_digest)
+      VALUES (?, 2, 1, NULL, 'created', 'rebuild', ?, ?)`).run(createdId, commitId, createdDigest);
+    if (phaseCount === 2) {
+      const validatedId = Buffer.alloc(16, 0x83);
+      const validatedDigest = createHash("sha256").update(`canonical-projection-provenance/v1|2|2|validated|rebuild|${commitId.toString("hex")}|${createdId.toString("hex")}`, "utf8").digest();
+      corrupt.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, ordinal, previous_event_id, event_kind, event_source, commit_id, event_digest)
+        VALUES (?, 2, 1 + 1, ?, 'validated', 'rebuild', ?, ?)`).run(validatedId, createdId, commitId, validatedDigest);
+    }
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /building|validated|recovery|generation/i, status);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /building|validated|recovery|generation/i, status);
+    const unchanged = new DatabaseSync(canonicalSqlitePath(dir), { readOnly: true });
+    try {
+      assert.equal(unchanged.prepare("SELECT COUNT(*) AS count FROM projection_generations WHERE generation_id > 1").get()?.count, 1);
+      assert.equal(unchanged.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get()?.generation_id, 1);
+    } finally { unchanged.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
