@@ -771,15 +771,27 @@ function migrateV4ToV5(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(`CREATE TEMP TABLE source_record_scope_migration AS
-      SELECT DISTINCT sr.source_record_id, sr.capture_id, sr.commit_id, sr.sequence_lexeme AS old_sequence,
-        sr.description, sr.payload_json, cs.scope_id, cs.account_id, cs.account_no,
-        CASE WHEN sr.sequence_lexeme LIKE cs.account_no || ':%'
-          THEN substr(sr.sequence_lexeme, length(cs.account_no) + 2) ELSE sr.sequence_lexeme END AS provider_sequence
-      FROM source_records sr
-      JOIN transaction_revisions revision ON revision.source_record_id = sr.source_record_id
-      JOIN financial_transactions transaction_row ON transaction_row.transaction_id = revision.transaction_id
-      JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
-      JOIN capture_scopes cs ON cs.capture_id = sr.capture_id AND cs.account_id = account_row.account_id`);
+      WITH source_record_accounts AS (
+        SELECT sr.source_record_id, sr.capture_id, sr.commit_id, sr.sequence_lexeme, sr.description, sr.payload_json, account_row.account_id
+        FROM source_records sr
+        JOIN transaction_revisions revision ON revision.source_record_id = sr.source_record_id
+        JOIN financial_transactions transaction_row ON transaction_row.transaction_id = revision.transaction_id
+        JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
+        UNION
+        SELECT sr.source_record_id, sr.capture_id, sr.commit_id, sr.sequence_lexeme, sr.description, sr.payload_json, account_row.account_id
+        FROM source_records sr
+        JOIN assertion_provenance provenance ON provenance.source_record_id = sr.source_record_id
+        JOIN source_assertions assertion ON assertion.assertion_id = provenance.assertion_id
+        JOIN financial_transactions transaction_row ON transaction_row.transaction_id = assertion.transaction_id
+        JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
+      )
+      SELECT DISTINCT source_record_accounts.source_record_id, source_record_accounts.capture_id, source_record_accounts.commit_id,
+        source_record_accounts.sequence_lexeme AS old_sequence, source_record_accounts.description, source_record_accounts.payload_json,
+        cs.scope_id, cs.account_id, cs.account_no,
+        CASE WHEN source_record_accounts.sequence_lexeme LIKE cs.account_no || ':%'
+          THEN substr(source_record_accounts.sequence_lexeme, length(cs.account_no) + 2) ELSE source_record_accounts.sequence_lexeme END AS provider_sequence
+      FROM source_record_accounts
+      JOIN capture_scopes cs ON cs.capture_id = source_record_accounts.capture_id AND cs.account_id = source_record_accounts.account_id`);
     const recordCount = Number((db.prepare("SELECT COUNT(*) AS count FROM source_records").get() as { count?: number }).count ?? 0);
     const mappedCount = Number((db.prepare("SELECT COUNT(*) AS count FROM source_record_scope_migration").get() as { count?: number }).count ?? 0);
     if (recordCount !== mappedCount) throw new Error("v4 source records could not be deterministically mapped to capture scopes.");
