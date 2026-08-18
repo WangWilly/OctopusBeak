@@ -203,6 +203,7 @@ const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canon
 try {
   const first = await commitCathayDomesticDeposit(ledgerDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
   assert.equal(first.transactions.length, 3);
+  assert.equal(first.accountIds.length, 1);
   assert.equal(first.transactions[0]?.direction, "inflow");
   assert.deepEqual(first.transactions[0]?.amount, { coefficient: "12500", scale: 0 });
 
@@ -295,6 +296,8 @@ try {
   assert.equal(lineage.entries[0]?.sourceRecord.captureId, lineage.entries[0]?.capture.id);
   assert.equal(lineage.entries[0]?.capture.authorityRoute, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.authorityRoute);
   assert.equal(lineage.entries[0]?.sourceRecord.description, "Synthetic Cathay deposit description");
+  assert.equal(lineage.entries[0]?.sourceRecord.scopeProof.accountNo, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo);
+  assert.equal(lineage.entries[0]?.sourceRecord.scopeProof.completeness, "complete-range");
 
   const repeated = await commitCathayDomesticDeposit(ledgerDir, {
     ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
@@ -336,6 +339,7 @@ try {
     syncPage(secondAccount, secondRaw),
   ]));
   assert.equal(firstCommit.scopes.length, 2);
+  assert.equal(firstCommit.accountIds.length, 2);
   assert.equal(firstCommit.commitSequence, 1);
   const multiDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
   try {
@@ -343,6 +347,10 @@ try {
     assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()?.count, 1);
     assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM capture_scopes").get()?.count, 2);
     assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM capture_scope_pages").get()?.count, 2);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_record_scopes").get()?.count, 6);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_record_scopes WHERE sequence_lexeme IN ('1', '2', '3')").get()?.count, 6);
+    assert.equal(multiDb.prepare("SELECT account_no FROM source_captures").get()?.account_no, null);
+    assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_records WHERE sequence_lexeme LIKE '%:%'").get()?.count, 0);
     assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get()?.count, 2);
     assert.equal(multiDb.prepare("SELECT COUNT(DISTINCT commit_id) AS count FROM source_sync_states").get()?.count, 1);
     assert.equal(multiDb.prepare("SELECT COUNT(*) AS count FROM source_sync_states WHERE cursor IS NOT NULL").get()?.count, 0);
@@ -364,6 +372,50 @@ try {
     assert.equal(repeatedDb.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count, 12);
   } finally { repeatedDb.close(); }
 } finally { await rm(multiScopeDir, { recursive: true, force: true }); }
+
+const populatedV4ScopeMigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v4-scopes-"));
+try {
+  const secondAccount = "SYNTHETIC-ACCOUNT-002";
+  const secondRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace("SYNTHETIC-ACCOUNT-001", secondAccount);
+  await commitCathayDomesticDepositSync(populatedV4ScopeMigrationDir, syncInput([syncPage(), syncPage(secondAccount, secondRaw)]));
+  const v4Seed = openCanonicalDatabase(populatedV4ScopeMigrationDir);
+  v4Seed.exec("UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;");
+  v4Seed.close();
+  const migratedV4Writer = openCanonicalDatabase(populatedV4ScopeMigrationDir);
+  migratedV4Writer.close();
+  const migratedV4 = openCanonicalDatabase(populatedV4ScopeMigrationDir, { readOnly: true });
+  try {
+    assert.equal(Number(migratedV4.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
+    assert.equal(migratedV4.prepare("SELECT COUNT(*) AS count FROM source_records WHERE sequence_lexeme LIKE '%:%'").get()?.count, 0);
+    assert.equal(migratedV4.prepare("SELECT COUNT(*) AS count FROM source_record_scopes").get()?.count, 6);
+    assert.equal(migratedV4.prepare("SELECT COUNT(DISTINCT sequence_lexeme) AS count FROM source_records").get()?.count, 3);
+  } finally { migratedV4.close(); }
+} finally { await rm(populatedV4ScopeMigrationDir, { recursive: true, force: true }); }
+
+const tombstoneDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-tombstone-") );
+try {
+  assert.throws(() => commitCathayDomesticDepositSync(tombstoneDir, syncInput([{
+    ...syncPage(),
+    absenceAuthority: "tombstone" as never,
+  }])), /tombstone.*unsupported|tombstone.*validated/i);
+  const tombstoneDb = openCanonicalDatabase(tombstoneDir);
+  try { assert.equal(tombstoneDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, 0); } finally { tombstoneDb.close(); }
+} finally { await rm(tombstoneDir, { recursive: true, force: true }); }
+
+const incomparableDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-incomparable-") );
+try {
+  await commitCathayDomesticDepositSync(incomparableDir, syncInput());
+  const emptyRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace(/"count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":\[[\s\S]*?\]\}/, '"count":0,"startDate":"2025-08-17","endDate":"2026-08-17","details":[]}');
+  await commitCathayDomesticDepositSync(incomparableDir, {
+    ...syncInput([{
+      ...syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, emptyRaw),
+      preflightFingerprint: "synthetic-non-comparable-preflight-v2",
+    }]),
+    observedAt: "2026-08-19T00:00:00+08:00",
+  });
+  const incomparableQuery = createCathayCanonicalFinancialQuery(incomparableDir);
+  assert.equal((await incomparableQuery.current({ kind: "current" })).transactions.length, 3);
+} finally { await rm(incomparableDir, { recursive: true, force: true }); }
 
 for (const [label, pages, expected] of [
   ["duplicate page ordinal", [{ ...syncPage(), pageOrdinal: 0 }, { ...syncPage(), pageOrdinal: 0 }] as const, /duplicate ordinals/],
@@ -399,6 +451,14 @@ try {
     observedAt: "2026-08-19T00:00:00+08:00",
   });
   assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 3);
+  const restoredProjectionDb = openCanonicalDatabase(lifecycleDir, { readOnly: true });
+  try {
+    const projection = restoredProjectionDb.prepare("SELECT commit_id, projection_commit_id, revision_commit_id FROM current_transactions LIMIT 1").get() as Record<string, unknown>;
+    const projectionState = restoredProjectionDb.prepare("SELECT commit_id FROM current_projection_state WHERE generation = 1").get() as Record<string, unknown>;
+    assert.deepEqual(Buffer.from(projection.commit_id as Uint8Array), Buffer.from(projection.projection_commit_id as Uint8Array));
+    assert.deepEqual(Buffer.from(projection.commit_id as Uint8Array), Buffer.from(projectionState.commit_id as Uint8Array));
+    assert.notDeepEqual(Buffer.from(projection.revision_commit_id as Uint8Array), Buffer.from(projection.projection_commit_id as Uint8Array));
+  } finally { restoredProjectionDb.close(); }
   assert.equal((await withdrawnQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(restored.commitSequence) } })).transactions[0]?.assertionSupportState, "supported");
   const restoredLineage = await withdrawnQuery.lineage({ kind: "lineage", subject: { kind: "transaction", id: first.transactions[0]!.transactionId } });
   const lifecycleKinds = restoredLineage.entries.flatMap((entry) => entry.lifecycleEvents.map((event) => event.kind));
@@ -427,6 +487,37 @@ try {
     assert.equal(changedDb.prepare("SELECT COUNT(*) AS count FROM assertion_lifecycle_events WHERE event_kind = 'superseded'").get()?.count, 1);
   } finally { changedDb.close(); }
 } finally { await rm(lifecycleDir, { recursive: true, force: true }); }
+
+const semanticDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-semantics-") );
+try {
+  const seeded = await commitCathayDomesticDepositSync(semanticDir, syncInput());
+  const semanticDb = openCanonicalDatabase(semanticDir);
+  semanticDb.prepare("UPDATE transaction_revisions SET economic_status = 'refund', administrative_state = 'deleted', semantic_rule_version = ? WHERE revision_number = 1").run(CATHAY_DOMESTIC_DEPOSIT_AUTHORITY);
+  semanticDb.close();
+  const semanticQuery = createCathayCanonicalFinancialQuery(semanticDir);
+  const currentSemantic = (await semanticQuery.current({ kind: "current" })).transactions[0]!;
+  assert.equal(currentSemantic.economicStatus, "refund");
+  assert.equal(currentSemantic.administrativeState, "deleted");
+  assert.equal(currentSemantic.assertionSupportState, "supported");
+  const semanticLineage = await semanticQuery.lineage({ kind: "lineage", subject: { kind: "transaction", id: seeded.transactions[0]!.transactionId } });
+  assert.equal(semanticLineage.entries[0]?.revision.economicStatus, "refund");
+  assert.equal(semanticLineage.entries[0]?.revision.administrativeState, "deleted");
+  const emptyRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace(/"count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":\[[\s\S]*?\]\}/, '"count":0,"startDate":"2025-08-17","endDate":"2026-08-17","details":[]}');
+  const withdrawnSemantic = await commitCathayDomesticDepositSync(semanticDir, {
+    ...syncInput([syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, emptyRaw)]),
+    observedAt: "2026-08-19T00:00:00+08:00",
+  });
+  const withdrawnSemanticRow = (await semanticQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(withdrawnSemantic.commitSequence) } })).transactions[0]!;
+  assert.equal(withdrawnSemanticRow.assertionSupportState, "withdrawn");
+  assert.equal(withdrawnSemanticRow.economicStatus, "refund");
+  assert.equal(withdrawnSemanticRow.administrativeState, "deleted");
+  await commitCathayDomesticDepositSync(semanticDir, { ...syncInput(), observedAt: "2026-08-20T00:00:00+08:00" });
+  const restoredSemantic = (await semanticQuery.current({ kind: "current" })).transactions[0]!;
+  assert.equal(restoredSemantic.assertionSupportState, "supported");
+  assert.equal(restoredSemantic.economicStatus, "refund");
+  assert.equal(restoredSemantic.administrativeState, "deleted");
+  assert.equal(seeded.transactions.length, 3);
+} finally { await rm(semanticDir, { recursive: true, force: true }); }
 
 const blockStart = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.indexOf('{"queryStatus"');
 const blockEnd = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.lastIndexOf("}]}}") + 1;
@@ -521,7 +612,7 @@ for (const version of [1, 2] as const) {
     const migrated = openCanonicalDatabase(migrationDir);
     try {
       assert.equal(Number(migrated.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION, `v${version} final version`);
-      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 4, `v${version} migration history`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 5, `v${version} migration history`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1, `v${version} source row`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 1, `v${version} revision`);
       assert.equal(migrated.prepare("SELECT completeness_basis FROM source_captures").get()?.completeness_basis, "success-status-scope-count-details", `v${version} completeness`);
@@ -596,21 +687,21 @@ const v3MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-
 try {
   await commitCathayDomesticDeposit(v3MigrationDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
   const v3Seed = new DatabaseSync(canonicalSqlitePath(v3MigrationDir));
-  v3Seed.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;");
-  v3Seed.exec("DELETE FROM schema_migrations WHERE version = 4; PRAGMA user_version = 3;");
+  v3Seed.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;");
+  v3Seed.exec("DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3;");
   v3Seed.close();
   const migratedV3 = openCanonicalDatabase(v3MigrationDir);
   try {
     assert.equal(Number(migratedV3.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
     assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 3);
-    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 1);
+    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 2);
     assert.equal(migratedV3.prepare("SELECT 1 FROM sqlite_master WHERE name = 'capture_scopes'").get()?.["1"], 1);
   } finally { migratedV3.close(); }
   const v3RollbackDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v3-rollback-"));
   try {
     await commitCathayDomesticDeposit(v3RollbackDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
     const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
-    downgrade.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version = 4; PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;");
+    downgrade.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;");
     downgrade.close();
     assert.throws(() => openCanonicalDatabase(v3RollbackDir), /capture_scopes|views may not be indexed/);
     const afterFailure = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
