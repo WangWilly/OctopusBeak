@@ -618,6 +618,37 @@ try {
   const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
   assert.equal(producerDiagnostic.status, "diagnostic");
   const withdrawn = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
+  const historicalLineageBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const historicalLineageSnapshot = {
+    commits: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+    runs: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count,
+    assertions: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count,
+    provenance: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count,
+    lifecycle: historicalLineageBefore.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events").get()?.count,
+    current: historicalLineageBefore.prepare("SELECT value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
+    projection: historicalLineageBefore.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+  };
+  historicalLineageBefore.close();
+  for (const mismatch of [
+    { ruleLineage: "synthetic-rule-v2" },
+    { producerId: "other-producer" },
+    { origin: "other-origin" },
+  ] as const) {
+    const historicalLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ...mismatch, scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Historical mismatch label" }] });
+    assert.equal(historicalLineageDiagnostic.status, "diagnostic");
+    const historicalLineageAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
+    try {
+      assert.deepEqual({
+        commits: historicalLineageAfter.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+        runs: historicalLineageAfter.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count,
+        assertions: historicalLineageAfter.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count,
+        provenance: historicalLineageAfter.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count,
+        lifecycle: historicalLineageAfter.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events").get()?.count,
+        current: historicalLineageAfter.prepare("SELECT value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
+        projection: historicalLineageAfter.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+      }, historicalLineageSnapshot);
+    } finally { historicalLineageAfter.close(); }
+  }
   const query = createCathayCanonicalFinancialQuery(derivedDir);
   assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
   const historicalChanged = await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(changed.commitSequence) } });
