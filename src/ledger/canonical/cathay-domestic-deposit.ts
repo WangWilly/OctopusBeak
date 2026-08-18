@@ -1594,8 +1594,12 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
       const existingCurrent = db.prepare(`SELECT f.origin, f.derived_assertion_id, f.user_assertion_id FROM current_transaction_fields f WHERE f.transaction_id = ? AND f.field_name = ?`).get(transactionId, coordinate.field) as Record<string, unknown> | undefined;
       const conflicting = db.prepare(`SELECT da.assertion_id, da.producer_id, da.origin, da.rule_lineage FROM derived_assertions da
         JOIN derived_assertion_lifecycle_events e ON e.assertion_id = da.assertion_id
-        WHERE da.transaction_id = ? AND da.field_name = ? AND (da.producer_id <> ? OR da.origin <> ?)
-        AND e.event_kind NOT IN ('withdrawn','superseded') LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin) as Record<string, unknown> | undefined;
+        JOIN canonical_commits c ON c.commit_id = e.commit_id
+        WHERE da.transaction_id = ? AND da.field_name = ? AND (da.producer_id <> ? OR da.origin <> ? OR da.rule_lineage <> ?)
+        AND e.event_kind NOT IN ('withdrawn','superseded')
+        AND NOT EXISTS (SELECT 1 FROM derived_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+          WHERE newer.assertion_id = e.assertion_id AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
+        LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin, input.ruleLineage) as Record<string, unknown> | undefined;
       if (conflicting) throw new Error("A different derived producer or origin cannot supersede the current lineage.");
       const latest = db.prepare(`SELECT da.* FROM derived_assertions da JOIN canonical_commits c ON c.commit_id = da.commit_id
         WHERE da.transaction_id = ? AND da.field_name = ? AND da.producer_id = ? AND da.origin = ? AND da.rule_lineage = ?
@@ -1661,6 +1665,7 @@ export async function runCathayDerivedImportRun(ledgerDir: string, input: Cathay
 }
 
 export async function commitCathayUserAssertion(ledgerDir: string, input: CathayUserAssertionInput, options: CathayCanonicalCommitOptions = {}): Promise<CathayUserAssertionResult> {
+  if (typeof input.target === "object" && input.target !== null && input.target.kind !== undefined && input.target.kind !== "transaction") throw new Error("User Assertions support transaction targets only.");
   const rawField = typeof input.field === "string" ? input.field : typeof input.target === "object" ? input.target.field : undefined;
   const field = rawField === "displayName" || rawField === "displayLabel" ? "display_name" : rawField;
   if (field !== "display_name" && field !== "note") throw new Error("User Assertions may target only display_name or note.");
