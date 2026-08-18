@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CANONICAL_SCHEMA_VERSION,
   canonicalSqlitePath,
   commitCathayDomesticDeposit,
@@ -225,5 +226,98 @@ for (const [label, corruptField] of [
     corrupt.close();
     assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /field|assertion|projection|origin|generation/i, label);
     await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /field|assertion|projection|origin|generation/i, label);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  const { dir, otherTransactionId } = await makeFieldLedger("cathay-canonical-v7-red-lifecycle-coordinate-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    corrupt.exec("DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_insert; DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_update");
+    corrupt.prepare(`UPDATE assertion_transitions SET transaction_id = ? WHERE assertion_id = (
+      SELECT user_assertion_id FROM projection_generation_transaction_fields WHERE origin = 'user' LIMIT 1
+    )`).run(Buffer.from(otherTransactionId.replaceAll("-", ""), "hex"));
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /lifecycle|coordinate|assertion|transaction/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /lifecycle|coordinate|assertion|transaction/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-field-moved-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    corrupt.exec("DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_insert; DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_update");
+    const commitId = (corrupt.prepare("SELECT commit_id FROM canonical_commits ORDER BY commit_sequence LIMIT 1").get() as { commit_id: Uint8Array }).commit_id;
+    corrupt.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id, validated_commit_id, switched_commit_id)
+      VALUES (2, 'retired', 3, 'canonical/projection/v1', ?, ?, ?)`).run(Buffer.from(commitId), Buffer.from(commitId), Buffer.from(commitId));
+    corrupt.exec("UPDATE projection_generation_transaction_fields SET generation_id = 2 WHERE origin = 'user'");
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /field|complete|projection/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /field|complete|projection/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  const dir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-red-old-revision-"));
+  try {
+    const first = await commitCathayDomesticDeposit(dir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    await commitCathayDomesticDeposit(dir, { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, rawResponse: CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace('"incomeAmt":12500', '"incomeAmt":13000').replace('"balance":12500', '"balance":13000'), observedAt: "2026-08-18T00:00:00+08:00" });
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const target = corrupt.prepare(`SELECT transaction_id, revision_id FROM current_transactions
+      WHERE transaction_id IN (SELECT transaction_id FROM transaction_revisions WHERE revision_number = 2) LIMIT 1`).get() as { transaction_id: Uint8Array; revision_id: Uint8Array };
+    const oldRevision = corrupt.prepare("SELECT revision_id, commit_id FROM transaction_revisions WHERE transaction_id = ? ORDER BY revision_number LIMIT 1").get(Buffer.from(target.transaction_id)) as { revision_id: Uint8Array; commit_id: Uint8Array };
+    corrupt.prepare(`UPDATE projection_generation_transactions SET revision_id = ?, revision_commit_id = ?
+      WHERE generation_id = (SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1) AND transaction_id = ?`).run(Buffer.from(oldRevision.revision_id), Buffer.from(oldRevision.commit_id), Buffer.from(target.transaction_id));
+    corrupt.close();
+    assert.equal(first.transactions.length, 3);
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /revision|projection|identity|complete/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /revision|projection|identity|complete/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-too-new-commit-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const maxSequence = Number((corrupt.prepare("SELECT MAX(commit_sequence) AS sequence FROM canonical_commits").get() as { sequence?: number }).sequence ?? 0);
+    const tooNew = Buffer.alloc(16, 0x66);
+    corrupt.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'user/local', 'user_assertion')").run(tooNew, maxSequence + 1, 0);
+    corrupt.prepare("UPDATE projection_generation_transactions SET projection_commit_id = ? WHERE transaction_id = (SELECT transaction_id FROM projection_generation_transactions LIMIT 1)").run(tooNew);
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /commit|projection|cutoff/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /commit|projection|cutoff/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  const dir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-valid-unchanged-fields-"));
+  try {
+    const source = await commitCathayDomesticDeposit(dir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const transactionId = source.transactions[0]!.transactionId;
+    const derivedInput = {
+      sourceConnectionId: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.sourceConnectionId,
+      identityEpoch: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.identityEpoch,
+      authorityRoute: "cathay/domestic-deposit/v1",
+      stream: "domestic-deposit",
+      producerId: "valid-combination-enricher",
+      ruleLineage: "valid-combination-rule",
+      complete: true as const,
+      status: "complete" as const,
+      subjectIds: [transactionId],
+      fields: ["note" as const],
+      scope: [{ transactionId, field: "note" as const, state: "supported" as const, value: "Stable note" }],
+    };
+    const derived = await commitCathayDerivedImportRun(dir, derivedInput);
+    const user = await commitCathayUserAssertion(dir, { transactionId, field: "display_name", value: "Stable user label" });
+    await commitCathayDerivedImportRun(dir, derivedInput);
+    const query = createCathayCanonicalFinancialQuery(dir);
+    const current = (await query.current({ kind: "current" })).transactions[0]!;
+    assert.equal(current.displayLabel, "Stable user label");
+    assert.equal(current.note, "Stable note");
+    assert.equal(current.displayLabelCommitSequence, user.commitSequence);
+    assert.equal(current.noteCommitSequence, derived.commitSequence);
+    const readable = openCanonicalDatabase(dir, { readOnly: true });
+    try { assert.equal(readable.prepare("SELECT COUNT(*) AS count FROM projection_generation_transaction_fields WHERE origin = 'derived'").get()?.count, 1); } finally { readable.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
