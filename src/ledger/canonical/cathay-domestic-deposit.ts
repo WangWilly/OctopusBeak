@@ -2117,13 +2117,11 @@ function validateSelectedAssertionProvenance(db: DatabaseSync, generationId: num
       SELECT 1 FROM assertion_provenance provenance
       JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
       WHERE provenance.assertion_id = assertion.assertion_id
+        AND assertion.origin = 'user'
+        AND assertion.transaction_id = field.transaction_id AND assertion.field_name = field.field_name
         AND provenance.source_record_id IS NULL AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
         AND provenance_commit.commit_sequence <= ?
         AND provenance_commit.commit_kind = 'user_assertion' AND provenance_commit.authority_route = 'user/local'
-        AND (provenance.commit_id = assertion.created_commit_id OR EXISTS (
-          SELECT 1 FROM assertion_transitions transition
-          WHERE transition.assertion_id = assertion.assertion_id AND transition.user_id IS NOT NULL AND transition.commit_id = provenance.commit_id
-        ))
     )`).get(generationId, cutoff) as { count?: number }).count ?? 0);
   const invalidDerivedFields = Number((db.prepare(`SELECT COUNT(*) AS count
     FROM projection_generation_transaction_fields field
@@ -2202,12 +2200,56 @@ function validateGenerationLifecycleCoordinates(db: DatabaseSync, generationId: 
   if (invalidProvenance !== 0) throw new Error("Canonical v7 selected assertion provenance coordinates are invalid.");
 }
 
+function isValidUserAssertionProvenanceEvidence(db: DatabaseSync, assertionId: CanonicalId, commitId: CanonicalId): boolean {
+  return Boolean(db.prepare(`SELECT 1
+    FROM assertion_provenance provenance
+    JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id AND assertion.origin = 'user'
+    JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
+    JOIN canonical_commits created_commit ON created_commit.commit_id = assertion.created_commit_id
+    WHERE provenance.assertion_id = ? AND provenance.commit_id = ?
+      AND provenance.source_record_id IS NULL AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
+      AND provenance_commit.commit_kind = 'user_assertion' AND provenance_commit.authority_route = 'user/local'
+      AND created_commit.commit_sequence <= provenance_commit.commit_sequence
+      AND (
+        assertion.created_commit_id = provenance.commit_id
+        OR EXISTS (SELECT 1 FROM assertion_transitions transition
+          WHERE transition.assertion_id = assertion.assertion_id AND transition.transaction_id = assertion.transaction_id
+            AND transition.field_name = assertion.field_name AND transition.user_id = assertion.producer_id
+            AND transition.commit_id = provenance.commit_id)
+        OR EXISTS (SELECT 1 FROM assertion_transitions observed
+          JOIN canonical_commits observed_commit ON observed_commit.commit_id = observed.commit_id
+          WHERE observed.assertion_id = assertion.assertion_id AND observed.transaction_id = assertion.transaction_id
+            AND observed.field_name = assertion.field_name AND observed.user_id = assertion.producer_id
+            AND observed.event_kind = 'observed' AND observed_commit.commit_sequence <= provenance_commit.commit_sequence)
+      )
+      AND (
+        EXISTS (SELECT 1 FROM assertion_transitions transition
+          WHERE transition.assertion_id = assertion.assertion_id AND transition.commit_id = provenance.commit_id)
+        OR COALESCE((SELECT latest.event_kind FROM assertion_transitions latest
+          JOIN canonical_commits latest_commit ON latest_commit.commit_id = latest.commit_id
+          WHERE latest.assertion_id = assertion.assertion_id AND latest_commit.commit_sequence <= provenance_commit.commit_sequence
+          ORDER BY latest_commit.commit_sequence DESC, latest.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'
+      )
+      AND NOT EXISTS (SELECT 1 FROM assertions newer
+        JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.created_commit_id
+        WHERE newer.origin = 'user' AND newer.transaction_id = assertion.transaction_id
+          AND newer.field_name = assertion.field_name AND newer.producer_id = assertion.producer_id
+          AND newer_commit.commit_sequence <= provenance_commit.commit_sequence
+          AND newer_commit.commit_sequence > created_commit.commit_sequence)
+    LIMIT 1`).get(assertionId, commitId));
+}
+
 function canonicalCommitHasEvidence(db: DatabaseSync, commitKind: string, commitId: CanonicalId): boolean {
   if (commitKind === "source_capture") return Boolean(db.prepare("SELECT 1 FROM source_captures WHERE commit_id = ? LIMIT 1").get(commitId));
   if (commitKind === "derived_import") return Boolean(db.prepare("SELECT 1 FROM derived_import_runs WHERE commit_id = ? LIMIT 1").get(commitId));
-  if (commitKind === "user_assertion") return Boolean(db.prepare(`SELECT 1 FROM assertions
+  if (commitKind === "user_assertion") {
+    if (db.prepare(`SELECT 1 FROM assertions
       WHERE origin = 'user' AND created_commit_id = ?
-      UNION ALL SELECT 1 FROM assertion_transitions WHERE user_id IS NOT NULL AND commit_id = ? LIMIT 1`).get(commitId, commitId));
+      UNION ALL SELECT 1 FROM assertion_transitions WHERE user_id IS NOT NULL AND commit_id = ? LIMIT 1`).get(commitId, commitId)) return true;
+    const provenanceRows = db.prepare(`SELECT assertion_id FROM assertion_provenance
+      WHERE commit_id = ? AND source_record_id IS NULL AND run_id IS NULL AND coordinate_id IS NULL`).all(commitId) as Array<{ assertion_id?: unknown }>;
+    return provenanceRows.some((row) => isValidUserAssertionProvenanceEvidence(db, blob(row.assertion_id), commitId));
+  }
   return false;
 }
 
@@ -2224,12 +2266,14 @@ function validateUserAssertionProvenanceAuthority(db: DatabaseSync): void {
       OR provenance_commit.authority_route <> 'user/local'
       OR EXISTS (SELECT 1 FROM source_captures capture WHERE capture.commit_id = provenance.commit_id)
       OR EXISTS (SELECT 1 FROM derived_import_runs run WHERE run.commit_id = provenance.commit_id)
-      OR NOT EXISTS (SELECT 1 FROM assertions created
-        WHERE created.assertion_id = assertion.assertion_id AND created.origin = 'user' AND created.created_commit_id = provenance.commit_id)
-      AND NOT EXISTS (SELECT 1 FROM assertion_transitions transition
-        WHERE transition.assertion_id = assertion.assertion_id AND transition.user_id IS NOT NULL AND transition.commit_id = provenance.commit_id)
     )`).get() as { count?: number }).count ?? 0);
   if (invalid !== 0) throw new Error("Canonical user assertion provenance authority is invalid.");
+  const provenanceRows = db.prepare(`SELECT provenance.assertion_id, provenance.commit_id
+    FROM assertion_provenance provenance JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+    WHERE assertion.origin = 'user'`).all() as Array<{ assertion_id?: unknown; commit_id?: unknown }>;
+  if (provenanceRows.some((row) => !isValidUserAssertionProvenanceEvidence(db, blob(row.assertion_id), blob(row.commit_id)))) {
+    throw new Error("Canonical user assertion provenance evidence is incomplete.");
+  }
 }
 
 const CANONICAL_EMPTY_STORE_TABLES = [
