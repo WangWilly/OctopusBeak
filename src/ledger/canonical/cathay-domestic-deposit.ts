@@ -12,6 +12,7 @@ import {
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
+export const CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION = "v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CATHAY_DERIVED_ORIGIN = "derived/cathay/domestic-deposit/v1" as const;
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
@@ -159,6 +160,29 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
 };
 
 export type ExactDecimal = { coefficient: bigint; scale: number };
+
+/** The physical representation is deliberately stricter than SQLite's TEXT /
+ * INTEGER affinities.  In particular, SQLite's `GLOB '[0-9]*'` means "a
+ * digit followed by anything", so it accepts values such as `12abc`. */
+const MAX_CANONICAL_SCALE = 9007199254740991n;
+function canonicalStoredInteger(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value.toString();
+  return null;
+}
+
+function isCanonicalStoredExactAmount(coefficientValue: unknown, scaleValue: unknown): boolean {
+  const coefficient = canonicalStoredInteger(coefficientValue);
+  const scale = canonicalStoredInteger(scaleValue);
+  if (coefficient === null || scale === null
+    || !/^-?(?:0|[1-9]\d*)$/.test(coefficient)
+    || !/^(?:0|[1-9]\d*)$/.test(scale)) return false;
+  try {
+    BigInt(coefficient);
+    return BigInt(scale) <= MAX_CANONICAL_SCALE;
+  } catch { return false; }
+}
 
 export function parseExactDecimalLexeme(lexeme: string): ExactDecimal {
   if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(lexeme)) {
@@ -921,6 +945,22 @@ CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_active ON proj
 CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_revision ON projection_generation_transactions(generation_id, revision_id, projection_commit_id);
 CREATE INDEX IF NOT EXISTS idx_projection_generation_fields_active ON projection_generation_transaction_fields(generation_id, transaction_id, field_name, projection_commit_id);
 CREATE INDEX IF NOT EXISTS idx_projection_generations_status ON projection_generations(status, build_cutoff_commit_sequence, generation_id);
+CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_switch_insert
+BEFORE INSERT ON active_projection_generation
+WHEN (SELECT COUNT(*) FROM canonical_commits) > 0 AND NEW.switched_commit_id IS NULL
+BEGIN SELECT RAISE(ABORT, 'active projection switch commit is required'); END;
+CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_switch_update
+BEFORE UPDATE OF switched_commit_id ON active_projection_generation
+WHEN (SELECT COUNT(*) FROM canonical_commits) > 0 AND NEW.switched_commit_id IS NULL
+BEGIN SELECT RAISE(ABORT, 'active projection switch commit is required'); END;
+CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_commit_insert
+BEFORE INSERT ON active_projection_generation
+WHEN NEW.switched_commit_id IS NOT (SELECT switched_commit_id FROM projection_generations WHERE generation_id = NEW.generation_id)
+BEGIN SELECT RAISE(ABORT, 'active projection switch commit does not match generation'); END;
+CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_commit_update
+BEFORE UPDATE OF generation_id, switched_commit_id ON active_projection_generation
+WHEN NEW.switched_commit_id IS NOT (SELECT switched_commit_id FROM projection_generations WHERE generation_id = NEW.generation_id)
+BEGIN SELECT RAISE(ABORT, 'active projection switch commit does not match generation'); END;
 `;
 
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
@@ -1347,6 +1387,7 @@ function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
       commit_kind TEXT NOT NULL CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))
     )`);
     db.exec("INSERT INTO canonical_commits_v6 SELECT * FROM canonical_commits");
+    db.exec("DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_update; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_update");
     db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v6 RENAME TO canonical_commits");
     ensureV6SharedAssertionSpine(db);
     db.exec(SCHEMA_V6_APPEND);
@@ -1379,6 +1420,7 @@ function migrateV6ToV7(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
       commit_kind TEXT NOT NULL CHECK(commit_kind IN ('source_capture','derived_import','user_assertion','projection_rebuild'))
     )`);
     db.exec("INSERT INTO canonical_commits_v7 SELECT * FROM canonical_commits");
+    db.exec("DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_update; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_update");
     db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v7 RENAME TO canonical_commits");
     db.exec("CREATE INDEX IF NOT EXISTS idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id)");
     db.exec(SCHEMA_V7_APPEND);
@@ -1389,8 +1431,8 @@ function migrateV6ToV7(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     let latestSequence = Number(latest?.commit_sequence ?? 0);
     const generationExists = db.prepare("SELECT 1 FROM projection_generations WHERE generation_id = 1").get();
     if (!generationExists) {
-      db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
-      VALUES (1, 'active', ?, 'canonical/projection/v1', ?)`).run(latestSequence, latestCommit ?? null);
+      db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id, validated_commit_id, switched_commit_id)
+      VALUES (1, 'active', ?, 'canonical/projection/v1', ?, ?, ?)`).run(latestSequence, latestCommit ?? null, latestCommit ?? null, latestCommit ?? null);
       db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
         SELECT 1, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run();
       db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
@@ -1416,23 +1458,82 @@ function migrateV6ToV7(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
   }
 }
 
+function validateGenerationExactAmounts(db: DatabaseSync, generationId: number): void {
+  const rows = db.prepare(`SELECT revision.amount_coefficient, CAST(revision.amount_scale AS TEXT) AS amount_scale
+    FROM projection_generation_transactions projected
+    JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    WHERE projected.generation_id = ?`).all(generationId) as Array<{ amount_coefficient?: unknown; amount_scale?: unknown }>;
+  if (rows.some((row) => !isCanonicalStoredExactAmount(row.amount_coefficient, row.amount_scale))) {
+    throw new Error("Canonical v7 projection contains non-exact arithmetic values.");
+  }
+}
+
+function validateCathayAuthorityRoute(db: DatabaseSync, generationId: number): void {
+  const invalid = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+    WHERE projected.generation_id = ? AND NOT EXISTS (
+      SELECT 1 FROM transaction_revisions revision
+      JOIN source_captures capture ON capture.capture_id = revision.capture_id
+      JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
+      JOIN source_authority_routes registered ON registered.authority_route = capture.authority_route
+      WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
+        AND capture.authority_route = ? AND capture.stream = ?
+        AND capture.completeness_rule_version = ?
+        AND registered.integration_namespace = ? AND registered.stream = ? AND registered.contract_version = ?
+        AND source_assertion.producer_id = ? AND source_assertion.rule_lineage = ?
+    )`).get(generationId, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_STREAM,
+    CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM,
+    CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) as { count?: number }).count ?? 0);
+  if (invalid !== 0) throw new Error("Canonical v7 projection contains an unregistered or invalid Cathay authority route.");
+}
+
+function canonicalIdsEqual(left: unknown, right: unknown): boolean {
+  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array)) return false;
+  return Buffer.compare(Buffer.from(left), Buffer.from(right)) === 0;
+}
+
+/** Validate the one switch boundary used by both writer and read-only startup.
+ * This is intentionally a row-level gate: SQLite FKs can prove that a pointer
+ * names a row, but cannot prove that the row is the sole active generation or
+ * that all knowledge-state commits agree. */
+function validateActiveProjectionBoundary(db: DatabaseSync): number {
+  const pointer = db.prepare("SELECT generation_id, switched_commit_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number; switched_commit_id?: unknown } | undefined;
+  if (!pointer) throw new Error("Canonical v7 active projection pointer is missing.");
+  const activeRows = db.prepare("SELECT generation_id, switched_commit_id, build_cutoff_commit_sequence FROM projection_generations WHERE status = 'active'").all() as Array<{ generation_id?: number; switched_commit_id?: unknown; build_cutoff_commit_sequence?: number }>;
+  if (activeRows.length !== 1) throw new Error("Canonical v7 active projection generation is ambiguous.");
+  const active = activeRows[0]!;
+  const generationId = Number(active.generation_id ?? 0);
+  if (generationId <= 0 || Number(pointer.generation_id ?? 0) !== generationId) throw new Error("Canonical v7 active projection pointer does not target the sole active generation.");
+  const commitCount = Number((db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count?: number }).count ?? 0);
+  const stateRows = db.prepare("SELECT generation, commit_id FROM current_projection_state").all() as Array<{ generation?: number; commit_id?: unknown }>;
+  if (commitCount === 0) {
+    if (pointer.switched_commit_id !== null && pointer.switched_commit_id !== undefined) throw new Error("Canonical v7 empty projection has an unexpected switch commit.");
+    if (active.switched_commit_id !== null && active.switched_commit_id !== undefined) throw new Error("Canonical v7 empty generation has an unexpected switch commit.");
+    if (stateRows.length !== 0) throw new Error("Canonical v7 empty projection has an unexpected knowledge state.");
+  } else {
+    if (pointer.switched_commit_id === null || pointer.switched_commit_id === undefined
+      || active.switched_commit_id === null || active.switched_commit_id === undefined) {
+      throw new Error("Canonical v7 active projection switch commit is missing.");
+    }
+    if (!canonicalIdsEqual(pointer.switched_commit_id, active.switched_commit_id)) throw new Error("Canonical v7 active projection pointer does not match its generation switch commit.");
+    if (!db.prepare("SELECT 1 FROM canonical_commits WHERE commit_id = ?").get(blob(pointer.switched_commit_id))) throw new Error("Canonical v7 active projection pointer references no commit.");
+    if (stateRows.length !== 1 || Number(stateRows[0]!.generation) !== 1 || !canonicalIdsEqual(stateRows[0]!.commit_id, pointer.switched_commit_id)) {
+      throw new Error("Canonical v7 active projection knowledge state does not match its switch commit.");
+    }
+    const switchSequence = Number((db.prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?").get(blob(pointer.switched_commit_id)) as { commit_sequence?: number } | undefined)?.commit_sequence ?? -1);
+    if (switchSequence < Number(active.build_cutoff_commit_sequence ?? 0)) throw new Error("Canonical v7 active projection switch precedes its knowledge cutoff.");
+  }
+  validateGenerationExactAmounts(db, generationId);
+  validateCathayAuthorityRoute(db, generationId);
+  return generationId;
+}
+
 function ensureV7ProjectionSchema(db: DatabaseSync): void {
   db.exec(SCHEMA_V7_APPEND);
-  const pointer = db.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number } | undefined;
-  if (!pointer) throw new Error("Canonical v7 active projection pointer is missing.");
-  const generationId = Number(pointer.generation_id ?? 0);
-  const generation = db.prepare("SELECT generation_id, status FROM projection_generations WHERE generation_id = ?").get(generationId) as { generation_id?: number; status?: string } | undefined;
-  if (!generation || generation.status !== "active") throw new Error("Canonical v7 active projection generation is not active.");
-  const activeCount = Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generations WHERE status = 'active'").get() as { count?: number }).count ?? 0);
-  if (activeCount !== 1) throw new Error("Canonical v7 active projection generation is ambiguous.");
+  const generationId = validateActiveProjectionBoundary(db);
   const mixedRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
     WHERE rows.generation_id = ? AND (rows.revision_id NOT IN (SELECT revision_id FROM transaction_revisions)
       OR rows.transaction_id NOT IN (SELECT transaction_id FROM financial_transactions))`).get(generationId) as { count?: number }).count ?? 0);
   if (mixedRows !== 0) throw new Error("Canonical v7 active projection contains mixed or dangling rows.");
-  const badArithmetic = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
-    JOIN transaction_revisions revision ON revision.revision_id = rows.revision_id
-    WHERE revision.amount_coefficient NOT GLOB '-[0-9]*' AND revision.amount_coefficient NOT GLOB '[0-9]*'`).get() as { count?: number }).count ?? 0);
-  if (badArithmetic !== 0) throw new Error("Canonical v7 projection contains non-exact arithmetic values.");
 }
 function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOptions = {}): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
@@ -1628,9 +1729,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.revision_commit_id
       AND current_row.commit_id = current_row.projection_commit_id`).get() as { count?: number }).count ?? 0);
   if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
+  const validatedActiveGenerationId = validateActiveProjectionBoundary(db);
   const activePointer = db.prepare("SELECT generation_id, switched_commit_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number; switched_commit_id?: unknown } | undefined;
   if (!activePointer) throw new Error("Canonical v7 active projection pointer is missing.");
-  const activeGenerationId = Number(activePointer.generation_id ?? 0);
+  const activeGenerationId = validatedActiveGenerationId;
   const activeGeneration = db.prepare("SELECT status, build_cutoff_commit_sequence FROM projection_generations WHERE generation_id = ?").get(activeGenerationId) as { status?: string; build_cutoff_commit_sequence?: number } | undefined;
   if (!activeGeneration || activeGeneration.status !== "active") throw new Error("Canonical v7 active projection is not readable.");
   if (activePointer.switched_commit_id !== null && activePointer.switched_commit_id !== undefined
@@ -1779,7 +1881,7 @@ function commitCathayDomesticDepositSyncOnce(
     const maxSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0);
     const commitSequence = maxSequence + 1;
     db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)").run(commitId, commitSequence, recordedAtUtcUs(admissionClock()), input.authorityRoute, "source_capture");
-    db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(input.authorityRoute, CATHAY_INTEGRATION_NAMESPACE, input.stream, "v1", commitId);
+    db.prepare("INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)").run(input.authorityRoute, CATHAY_INTEGRATION_NAMESPACE, input.stream, CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION, commitId);
     const connectionExisting = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
     const sourceConnectionId = connectionExisting ? blob(dbRow<{ source_connection_id: unknown }>(connectionExisting).source_connection_id) : uuidV7();
     if (!connectionExisting) db.prepare("INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, ?, ?, ?)").run(sourceConnectionId, CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId, commitId);
@@ -1966,10 +2068,9 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
       LEFT JOIN financial_transactions transaction_row ON transaction_row.transaction_id = projected.transaction_id
       LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
       WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`).get(generation) as { count?: number }).count ?? 0);
-    const arithmetic = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions projected
-      JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
-      WHERE projected.generation_id = ? AND (revision.amount_coefficient NOT GLOB '[0-9]*' AND revision.amount_coefficient NOT GLOB '-[0-9]*')`).get(generation) as { count?: number }).count ?? 0);
-    if (dangling !== 0 || arithmetic !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
+    if (dangling !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
+    validateGenerationExactAmounts(db, generation);
+    validateCathayAuthorityRoute(db, generation);
     const duplicate = Number((db.prepare(`SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`).get(generation) as { count?: number }).count ?? 0);
     if (duplicate !== 0) throw new Error("Projection rebuild validation found duplicate transaction authority.");
     rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
