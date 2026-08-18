@@ -766,7 +766,10 @@ function migrateV3ToV4(db: DatabaseSync): void {
     throw error;
   }
 }
-function migrateV4ToV5(db: DatabaseSync): void {
+export type CanonicalMigrationFailureInjection = "v4-v5-after-record-copy";
+export type CanonicalDatabaseOptions = { readOnly?: boolean; injectMigrationFailure?: CanonicalMigrationFailureInjection };
+
+function migrateV4ToV5(db: DatabaseSync, injectMigrationFailure?: CanonicalMigrationFailureInjection): void {
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -797,6 +800,29 @@ function migrateV4ToV5(db: DatabaseSync): void {
     if (recordCount !== mappedCount) throw new Error("v4 source records could not be deterministically mapped to capture scopes.");
     const ambiguous = Number((db.prepare("SELECT COUNT(*) AS count FROM (SELECT source_record_id FROM source_record_scope_migration GROUP BY source_record_id HAVING COUNT(*) <> 1)").get() as { count?: number }).count ?? 0);
     if (ambiguous !== 0) throw new Error("v4 source records have ambiguous capture scope identity.");
+    const projectionState = db.prepare(`SELECT state.commit_id, commit_row.commit_sequence FROM current_projection_state state
+      JOIN canonical_commits commit_row ON commit_row.commit_id = state.commit_id WHERE state.generation = 1`).get() as { commit_id?: unknown; commit_sequence?: number } | undefined;
+    const currentRowCount = Number((db.prepare("SELECT COUNT(*) AS count FROM current_transactions").get() as { count?: number }).count ?? 0);
+    if (currentRowCount > 0 && !projectionState) throw new Error("v4 current projection state is missing; restoration knowledge is ambiguous.");
+    const ambiguousRestorations = Number((db.prepare(`SELECT COUNT(*) AS count FROM (
+      SELECT lifecycle.transaction_id, lifecycle.revision_id, commit_row.commit_sequence
+      FROM assertion_lifecycle_events lifecycle JOIN canonical_commits commit_row ON commit_row.commit_id = lifecycle.commit_id
+      WHERE lifecycle.event_kind = 'restored'
+      GROUP BY lifecycle.transaction_id, lifecycle.revision_id, commit_row.commit_sequence HAVING COUNT(*) > 1
+    )`).get() as { count?: number }).count ?? 0);
+    if (ambiguousRestorations !== 0) throw new Error("v4 restoration projection knowledge is ambiguous.");
+    db.exec(`CREATE TEMP TABLE current_projection_migration AS
+      SELECT current_row.transaction_id, current_row.revision_id,
+        COALESCE((SELECT lifecycle.commit_id FROM assertion_lifecycle_events lifecycle JOIN canonical_commits lifecycle_commit ON lifecycle_commit.commit_id = lifecycle.commit_id
+          WHERE lifecycle.event_kind = 'restored' AND lifecycle.transaction_id = current_row.transaction_id AND lifecycle.revision_id = current_row.revision_id
+          ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC LIMIT 1), current_row.commit_id) AS projection_commit_id,
+        revision.commit_id AS revision_commit_id
+      FROM current_transactions current_row JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id`);
+    if (projectionState) {
+      if (projectionState.commit_sequence === undefined) throw new Error("v4 current projection state sequence is missing; restoration knowledge is ambiguous.");
+      const outOfBounds = Number((db.prepare(`SELECT COUNT(*) AS count FROM current_projection_migration migrated JOIN canonical_commits projection_commit ON projection_commit.commit_id = migrated.projection_commit_id WHERE projection_commit.commit_sequence > ?`).get(projectionState.commit_sequence) as { count?: number }).count ?? 0);
+      if (outOfBounds !== 0) throw new Error("v4 restoration projection knowledge exceeds current projection state.");
+    }
 
     db.exec(`CREATE TABLE source_captures_v5 (
       capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
@@ -815,6 +841,7 @@ function migrateV4ToV5(db: DatabaseSync): void {
       UNIQUE(source_record_id, capture_id)
     )`);
     db.exec("INSERT INTO source_records_v5(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) SELECT source_record_id, capture_id, commit_id, provider_sequence, description, payload_json FROM source_record_scope_migration");
+    if (injectMigrationFailure === "v4-v5-after-record-copy") throw new Error("Injected v4-v5 migration failure after record copy.");
     db.exec("DROP TABLE source_records; DROP TABLE source_captures; ALTER TABLE source_captures_v5 RENAME TO source_captures; ALTER TABLE source_records_v5 RENAME TO source_records");
     if (!columnExists(db, "capture_scopes", "scope_kind")) db.exec("ALTER TABLE capture_scopes ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'bounded-range' CHECK(scope_kind = 'bounded-range')");
     if (!columnExists(db, "transaction_revisions", "economic_status")) db.exec("ALTER TABLE transaction_revisions ADD COLUMN economic_status TEXT NOT NULL DEFAULT 'normal' CHECK(economic_status IN ('normal','canceled','refund','reversal'))");
@@ -822,8 +849,8 @@ function migrateV4ToV5(db: DatabaseSync): void {
     if (!columnExists(db, "transaction_revisions", "semantic_rule_version")) db.exec("ALTER TABLE transaction_revisions ADD COLUMN semantic_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')");
     if (!columnExists(db, "current_transactions", "projection_commit_id")) db.exec("ALTER TABLE current_transactions ADD COLUMN projection_commit_id BLOB REFERENCES canonical_commits(commit_id)");
     if (!columnExists(db, "current_transactions", "revision_commit_id")) db.exec("ALTER TABLE current_transactions ADD COLUMN revision_commit_id BLOB REFERENCES canonical_commits(commit_id)");
-    db.exec("UPDATE current_transactions SET projection_commit_id = commit_id");
-    db.exec("UPDATE current_transactions SET revision_commit_id = (SELECT revision.commit_id FROM transaction_revisions revision WHERE revision.revision_id = current_transactions.revision_id)");
+    db.exec("UPDATE current_transactions SET projection_commit_id = (SELECT migrated.projection_commit_id FROM current_projection_migration migrated WHERE migrated.transaction_id = current_transactions.transaction_id AND migrated.revision_id = current_transactions.revision_id), revision_commit_id = (SELECT migrated.revision_commit_id FROM current_projection_migration migrated WHERE migrated.transaction_id = current_transactions.transaction_id AND migrated.revision_id = current_transactions.revision_id)");
+    db.exec("UPDATE current_transactions SET commit_id = projection_commit_id");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_capture ON capture_scopes(scope_id, capture_id); CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_account ON capture_scopes(scope_id, account_id)");
     db.exec(SCHEMA_V5_APPEND);
     db.exec("INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) SELECT source_record_id, scope_id, capture_id, account_id, provider_sequence, commit_id FROM source_record_scope_migration");
@@ -837,7 +864,7 @@ function migrateV4ToV5(db: DatabaseSync): void {
     throw error;
   }
 }
-function applySchemaMigration(db: DatabaseSync): void {
+function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOptions = {}): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
   const version = Number(row.user_version ?? 0);
   if (version > CANONICAL_SCHEMA_VERSION) throw new Error(`Canonical SQLite schema ${version} is newer than supported ${CANONICAL_SCHEMA_VERSION}.`);
@@ -846,22 +873,22 @@ function applySchemaMigration(db: DatabaseSync): void {
     migrateV1ToV2(db);
     migrateV2ToV3(db);
     migrateV3ToV4(db);
-    migrateV4ToV5(db);
+    migrateV4ToV5(db, options.injectMigrationFailure);
     return;
   }
   if (version === 2) {
     migrateV2ToV3(db);
     migrateV3ToV4(db);
-    migrateV4ToV5(db);
+    migrateV4ToV5(db, options.injectMigrationFailure);
     return;
   }
   if (version === 3) {
     migrateV3ToV4(db);
-    migrateV4ToV5(db);
+    migrateV4ToV5(db, options.injectMigrationFailure);
     return;
   }
   if (version === 4) {
-    migrateV4ToV5(db);
+    migrateV4ToV5(db, options.injectMigrationFailure);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -883,8 +910,34 @@ function applySchemaMigration(db: DatabaseSync): void {
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
-  for (const table of ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events"]) {
-    if (!tableExists(db, table)) throw new Error(`Canonical schema v4 table ${table} is missing.`);
+  const requiredTables = ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state"];
+  for (const table of requiredTables) {
+    if (!tableExists(db, table)) throw new Error(`Canonical schema v5 table ${table} is missing.`);
+  }
+  const requiredColumns: Record<string, string[]> = {
+    source_captures: ["account_no", "completeness_basis", "completeness_rule_version"],
+    capture_scopes: ["scope_kind", "contract_fingerprint", "preflight_fingerprint", "completeness_rule_version"],
+    source_record_scopes: ["source_record_id", "scope_id", "capture_id", "account_id", "sequence_lexeme"],
+    transaction_revisions: ["economic_status", "administrative_state", "semantic_rule_version"],
+    current_transactions: ["projection_commit_id", "revision_commit_id"],
+  };
+  for (const [table, columns] of Object.entries(requiredColumns)) {
+    const actual = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).map((column) => column.name));
+    for (const column of columns) if (!actual.has(column)) throw new Error(`Canonical schema v5 column ${table}.${column} is missing.`);
+  }
+  const requiredIndexes = [
+    "idx_capture_scopes_account_time", "idx_capture_scope_pages_proof", "idx_assertion_lifecycle_scope",
+    "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
+  ];
+  for (const index of requiredIndexes) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v5 index ${index} is missing.`);
+  }
+  const tableSql = (table: string): string => String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql?: unknown } | undefined)?.sql ?? "");
+  if (!/FOREIGN KEY\s*\(source_record_id,\s*capture_id\)/i.test(tableSql("source_record_scopes")) || !/capture_scopes/i.test(tableSql("source_record_scopes"))) {
+    throw new Error("Canonical schema v5 source-record scope constraints are missing.");
+  }
+  if (!/economic_status.*canceled.*refund.*reversal/i.test(tableSql("transaction_revisions")) || !/administrative_state.*deleted.*purged/i.test(tableSql("transaction_revisions"))) {
+    throw new Error("Canonical schema v5 semantic constraints are missing.");
   }
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
@@ -907,7 +960,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
 }
 
-export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: boolean } = {}): DatabaseSync {
+export function openCanonicalDatabase(ledgerDir: string, options: CanonicalDatabaseOptions = {}): DatabaseSync {
   const path = canonicalSqlitePath(ledgerDir);
   if (options.readOnly && !existsSync(path)) throw new Error(`Missing canonical SQLite: ${path}`);
   if (!options.readOnly) mkdirSync(ledgerDir, { recursive: true });
@@ -915,7 +968,7 @@ export function openCanonicalDatabase(ledgerDir: string, options: { readOnly?: b
   try {
     db.exec("PRAGMA foreign_keys = ON");
     db.exec("PRAGMA busy_timeout = 30000");
-    if (!options.readOnly) { db.exec("PRAGMA journal_mode = WAL"); db.exec("PRAGMA synchronous = FULL"); applySchemaMigration(db); }
+    if (!options.readOnly) { db.exec("PRAGMA journal_mode = WAL"); db.exec("PRAGMA synchronous = FULL"); applySchemaMigration(db, options); }
     else {
       const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
       if (Number(row.user_version ?? 0) !== CANONICAL_SCHEMA_VERSION) throw new Error("Canonical SQLite schema is missing or unsupported for read-only access.");
@@ -1235,7 +1288,10 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.projection_commit_id
         ORDER BY a.account_no, t.source_sequence`).all() as Record<string, unknown>[];
-      return { status: "ok", kind: "current", accounts, transactions: rows.map(transactionFromRow), commitSequence: rows.reduce((max, row) => Math.max(max, Number(row.commit_sequence)), 0) };
+      const projection = db.prepare(`SELECT c.commit_sequence FROM current_projection_state state
+        JOIN canonical_commits c ON c.commit_id = state.commit_id WHERE state.generation = 1`).get() as { commit_sequence?: number } | undefined;
+      if (!projection) throw new Error("Canonical current projection cutoff is missing.");
+      return { status: "ok", kind: "current", accounts, transactions: rows.map(transactionFromRow), commitSequence: Number(projection.commit_sequence) };
     } finally { db.close(); }
   }
   async historical(request: CathayCanonicalHistoricalQueryRequest): Promise<CathayCanonicalHistoricalQueryResult> {
