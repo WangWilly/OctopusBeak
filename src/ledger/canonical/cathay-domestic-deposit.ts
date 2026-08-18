@@ -847,10 +847,6 @@ CREATE TABLE IF NOT EXISTS current_transaction_fields (
 );
 CREATE INDEX IF NOT EXISTS idx_derived_scope_coordinates_lineage ON derived_scope_coordinates(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
 CREATE INDEX IF NOT EXISTS idx_derived_assertions_lineage ON derived_assertions(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
-CREATE INDEX IF NOT EXISTS idx_derived_assertion_provenance_run ON derived_assertion_provenance(run_id, coordinate_id, assertion_id);
-CREATE INDEX IF NOT EXISTS idx_derived_assertion_lifecycle_knowledge ON derived_assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id);
-CREATE INDEX IF NOT EXISTS idx_user_assertion_lifecycle_knowledge ON user_assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id);
-CREATE INDEX IF NOT EXISTS idx_user_assertion_provenance_commit ON user_assertion_provenance(commit_id, assertion_id);
 CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id);
 `;
 const SCHEMA_V6 = `${SCHEMA_V5.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
@@ -874,6 +870,10 @@ if (SCHEMA_V2.includes("completeness_basis") || SCHEMA_V2.includes("completeness
 
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+function relationType(db: DatabaseSync, name: string): "table" | "view" | null {
+  const row = db.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(name) as { type?: string } | undefined;
+  return row?.type === "table" || row?.type === "view" ? row.type : null;
 }
 function columnExists(db: DatabaseSync, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).some((row) => row.name === column);
@@ -985,6 +985,102 @@ function ensureV6SharedAssertionSpine(db: DatabaseSync): void {
     db.exec("DROP TABLE assertion_provenance_v5");
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id)");
+}
+
+function backfillV6DerivedAndUserAssertions(db: DatabaseSync): void {
+  if (tableExists(db, "derived_assertions")) {
+    db.exec(`INSERT OR IGNORE INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+      SELECT assertion_id, transaction_id, field_name, 'transaction', 'derived', producer_id, rule_lineage, NULL, value_text, commit_id FROM derived_assertions`);
+  }
+  if (tableExists(db, "user_assertions")) {
+    db.exec(`INSERT OR IGNORE INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+      SELECT assertion_id, transaction_id, field_name, 'transaction', 'user', user_id, 'user/local', NULL, value_text, commit_id FROM user_assertions`);
+  }
+  if (tableExists(db, "derived_assertion_lifecycle_events")) {
+    db.exec(`INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind)
+      SELECT event.event_id, event.assertion_id, event.transaction_id, event.field_name, NULL, NULL, event.run_id, event.coordinate_id, NULL, event.commit_id, event.event_kind
+      FROM derived_assertion_lifecycle_events event
+      WHERE NOT EXISTS (SELECT 1 FROM assertion_transitions existing
+        WHERE existing.assertion_id = event.assertion_id AND existing.transaction_id = event.transaction_id
+          AND existing.field_name = event.field_name AND existing.run_id = event.run_id
+          AND existing.coordinate_id IS event.coordinate_id AND existing.commit_id = event.commit_id
+          AND existing.event_kind = event.event_kind)`);
+  }
+  if (tableExists(db, "user_assertion_lifecycle_events")) {
+    db.exec(`INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind)
+      SELECT event.event_id, event.assertion_id, event.transaction_id, event.field_name, NULL, NULL, NULL, NULL, event.user_id, event.commit_id, event.event_kind
+      FROM user_assertion_lifecycle_events event
+      WHERE NOT EXISTS (SELECT 1 FROM assertion_transitions existing
+        WHERE existing.assertion_id = event.assertion_id AND existing.transaction_id = event.transaction_id
+          AND existing.field_name = event.field_name AND existing.user_id IS event.user_id
+          AND existing.commit_id = event.commit_id AND existing.event_kind = event.event_kind)`);
+  }
+  if (tableExists(db, "derived_assertion_provenance")) {
+    db.exec(`INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id)
+      SELECT provenance.assertion_id, NULL, provenance.run_id, provenance.coordinate_id, provenance.commit_id
+      FROM derived_assertion_provenance provenance
+      WHERE NOT EXISTS (SELECT 1 FROM assertion_provenance existing
+        WHERE existing.assertion_id = provenance.assertion_id AND existing.source_record_id IS NULL
+          AND existing.run_id = provenance.run_id AND existing.coordinate_id = provenance.coordinate_id
+          AND existing.commit_id = provenance.commit_id)`);
+  }
+  if (tableExists(db, "user_assertion_provenance")) {
+    db.exec(`INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id)
+      SELECT provenance.assertion_id, NULL, NULL, NULL, provenance.commit_id
+      FROM user_assertion_provenance provenance
+      WHERE NOT EXISTS (SELECT 1 FROM assertion_provenance existing
+        WHERE existing.assertion_id = provenance.assertion_id AND existing.source_record_id IS NULL
+          AND existing.run_id IS NULL AND existing.coordinate_id IS NULL AND existing.commit_id = provenance.commit_id)`);
+  }
+}
+
+function convertV6CompatibilityTables(db: DatabaseSync): void {
+  backfillV6DerivedAndUserAssertions(db);
+  const compatibilityViews: Array<{ name: string; select: string }> = [
+    {
+      name: "assertion_lifecycle_events",
+      select: `SELECT transition.event_id, transition.assertion_id, transition.transaction_id, assertion.revision_id,
+        transition.capture_id, transition.scope_id, transition.commit_id, transition.event_kind
+        FROM assertion_transitions transition JOIN assertions assertion ON assertion.assertion_id = transition.assertion_id
+        WHERE assertion.origin = 'source'`,
+    },
+    {
+      name: "derived_assertion_lifecycle_events",
+      select: `SELECT transition.event_id, transition.assertion_id, transition.transaction_id, transition.field_name,
+        transition.run_id, transition.coordinate_id, transition.commit_id, transition.event_kind
+        FROM assertion_transitions transition JOIN assertions assertion ON assertion.assertion_id = transition.assertion_id
+        WHERE assertion.origin = 'derived'`,
+    },
+    {
+      name: "user_assertion_lifecycle_events",
+      select: `SELECT transition.event_id, transition.assertion_id, transition.transaction_id, transition.field_name,
+        transition.user_id, transition.commit_id, transition.event_kind
+        FROM assertion_transitions transition JOIN assertions assertion ON assertion.assertion_id = transition.assertion_id
+        WHERE assertion.origin = 'user'`,
+    },
+    {
+      name: "derived_assertion_provenance",
+      select: `SELECT provenance.assertion_id, provenance.run_id, provenance.coordinate_id, provenance.commit_id
+        FROM assertion_provenance provenance JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+        WHERE assertion.origin = 'derived' AND provenance.run_id IS NOT NULL`,
+    },
+    {
+      name: "user_assertion_provenance",
+      select: `SELECT provenance.assertion_id, provenance.commit_id
+        FROM assertion_provenance provenance JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+        WHERE assertion.origin = 'user' AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL`,
+    },
+  ];
+  for (const compatibility of compatibilityViews) {
+    if (relationType(db, compatibility.name) === "table") {
+      const legacyName = `${compatibility.name}_compat_legacy`;
+      db.exec(`ALTER TABLE ${compatibility.name} RENAME TO ${legacyName}`);
+      db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
+      db.exec(`DROP TABLE ${legacyName}`);
+    } else if (relationType(db, compatibility.name) === null) {
+      db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
+    }
+  }
 }
 
 function migrateV4ToV5(db: DatabaseSync, injectMigrationFailure?: CanonicalMigrationFailureInjection): void {
@@ -1099,6 +1195,7 @@ function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v6 RENAME TO canonical_commits");
     ensureV6SharedAssertionSpine(db);
     db.exec(SCHEMA_V6_APPEND);
+    convertV6CompatibilityTables(db);
     if (injectMigrationFailure === "v5-v6-after-derived-schema") throw new Error("Injected v5-v6 migration failure after derived schema.");
     db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(6, currentUtcMicros());
     db.exec("PRAGMA user_version = 6");
@@ -1153,7 +1250,8 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     db.exec("BEGIN IMMEDIATE");
     try {
       ensureV6SharedAssertionSpine(db);
-      db.exec(SCHEMA_V6_APPEND);
+      if (relationType(db, "assertion_lifecycle_events") !== "view") db.exec(SCHEMA_V6_APPEND);
+      convertV6CompatibilityTables(db);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -1166,6 +1264,8 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA_V6);
+    ensureV6SharedAssertionSpine(db);
+    convertV6CompatibilityTables(db);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -1178,7 +1278,10 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
 function validateReadOnlyDatabase(db: DatabaseSync): void {
   const requiredTables = ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields"];
   for (const table of requiredTables) {
-    if (!tableExists(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
+    if (!relationType(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
+  }
+  for (const table of ["assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
+    if (relationType(db, table) !== "view") throw new Error(`Canonical schema v6 compatibility relation ${table} is not a read-only view.`);
   }
   const requiredColumns: Record<string, string[]> = {
     assertions: ["assertion_id", "transaction_id", "field_name", "target_kind", "origin", "producer_id", "rule_lineage", "revision_id", "value_text", "created_commit_id"],
@@ -1204,17 +1307,16 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     for (const column of columns) if (!actual.has(column)) throw new Error(`Canonical schema v6 column ${table}.${column} is missing.`);
   }
   const requiredIndexes = [
-    "idx_canonical_commits_sequence", "idx_capture_scopes_account_time", "idx_capture_scope_pages_proof", "idx_assertion_lifecycle_scope",
+    "idx_canonical_commits_sequence", "idx_capture_scopes_account_time", "idx_capture_scope_pages_proof",
     "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
     "idx_assertions_lineage", "idx_assertion_transitions_knowledge", "idx_assertion_transitions_transaction", "idx_assertion_provenance_authority",
-    "idx_derived_scope_coordinates_lineage", "idx_derived_assertions_lineage", "idx_derived_assertion_provenance_run",
-    "idx_derived_assertion_lifecycle_knowledge", "idx_user_assertion_lifecycle_knowledge", "idx_current_transaction_fields_projection",
-    "idx_user_assertion_provenance_commit",
+    "idx_derived_scope_coordinates_lineage", "idx_derived_assertions_lineage",
+    "idx_current_transaction_fields_projection",
   ];
   for (const index of requiredIndexes) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v6 index ${index} is missing.`);
   }
-  const tableSql = (table: string): string => String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql?: unknown } | undefined)?.sql ?? "");
+  const tableSql = (table: string): string => String((db.prepare("SELECT sql FROM sqlite_master WHERE (type = 'table' OR type = 'view') AND name = ?").get(table) as { sql?: unknown } | undefined)?.sql ?? "");
   if (!/FOREIGN KEY\s*\(source_record_id,\s*capture_id\)/i.test(tableSql("source_record_scopes")) || !/capture_scopes/i.test(tableSql("source_record_scopes"))) {
     throw new Error("Canonical schema v6 source-record scope constraints are missing.");
   }
@@ -1225,8 +1327,11 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     throw new Error("Canonical schema v6 assertion origin taxonomy is missing.");
   }
   const transitionCheck = /event_kind\s+TEXT\s+NOT NULL\s+CHECK\s*\(event_kind\s+IN\s*\('observed','superseded','withdrawn'(?:,'restored')?\)\)/i;
-  if (!transitionCheck.test(tableSql("assertion_transitions")) || !transitionCheck.test(tableSql("derived_assertion_lifecycle_events")) || !transitionCheck.test(tableSql("user_assertion_lifecycle_events"))) {
+  if (!transitionCheck.test(tableSql("assertion_transitions"))) {
     throw new Error("Canonical schema v6 shared assertion transition taxonomy is missing.");
+  }
+  if (!["assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"].every((view) => /assertion_(?:transitions|provenance)/i.test(tableSql(view)))) {
+    throw new Error("Canonical schema v6 compatibility views are not backed by the shared assertion spine.");
   }
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
@@ -1342,7 +1447,6 @@ function insertLifecycleEvent(
   values: { assertionId: CanonicalId; transactionId: CanonicalId; revisionId: CanonicalId; captureId: CanonicalId; scopeId: CanonicalId | null; commitId: CanonicalId; kind: LifecycleEventKind },
 ): void {
   const eventId = uuidV7();
-  db.prepare("INSERT INTO assertion_lifecycle_events(event_id, assertion_id, transaction_id, revision_id, capture_id, scope_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(eventId, values.assertionId, values.transactionId, values.revisionId, values.captureId, values.scopeId, values.commitId, values.kind);
   db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, ?, ?)").run(eventId, values.assertionId, values.transactionId, values.captureId, values.scopeId, values.commitId, values.kind);
 }
 function latestLifecycleEvent(db: DatabaseSync, assertionId: CanonicalId): LifecycleEventKind | null {
@@ -1591,7 +1695,6 @@ function derivedDiagnostic(error: unknown, input: CathayDerivedImportRunInput, s
 }
 
 function insertDerivedLifecycleEvent(db: DatabaseSync, values: { assertionId: CanonicalId; transactionId: CanonicalId; field: CathayDerivedField; runId: CanonicalId; coordinateId: CanonicalId | null; commitId: CanonicalId; kind: "observed" | "superseded" | "withdrawn" | "restored" }): void {
-  db.prepare("INSERT INTO derived_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, run_id, coordinate_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(uuidV7(), values.assertionId, values.transactionId, values.field, values.runId, values.coordinateId, values.commitId, values.kind);
   db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)").run(uuidV7(), values.assertionId, values.transactionId, values.field, values.runId, values.coordinateId, values.commitId, values.kind);
 }
 
@@ -1619,7 +1722,7 @@ function refreshCurrentFieldAfterWithdrawal(db: DatabaseSync, transactionId: Can
     JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
     WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = 'user'
     AND e.event_kind NOT IN ('withdrawn','superseded')
-    AND NOT EXISTS (SELECT 1 FROM user_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+    AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
       WHERE newer.assertion_id = e.assertion_id AND (nc.commit_sequence > (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id)
         OR (nc.commit_sequence = (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) AND newer.rowid > e.rowid)))
     ORDER BY (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) DESC, e.rowid DESC LIMIT 1`).get(transactionId, field) as Record<string, unknown> | undefined;
@@ -1693,7 +1796,6 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
         db.prepare("INSERT INTO derived_assertions(assertion_id, transaction_id, field_name, producer_id, origin, rule_lineage, value_text, run_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, coordinate.field, input.producerId, origin, input.ruleLineage, value, runId, commitId);
         db.prepare("INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES (?, ?, ?, 'transaction', 'derived', ?, ?, NULL, ?, ?)").run(assertionId, transactionId, coordinate.field, input.producerId, input.ruleLineage, value, commitId);
       }
-      db.prepare("INSERT INTO derived_assertion_provenance(assertion_id, run_id, coordinate_id, commit_id) VALUES (?, ?, ?, ?)").run(assertionId, runId, coordinateId, commitId);
       db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, ?, ?, ?)").run(assertionId, runId, coordinateId, commitId);
       if (eventKind) insertDerivedLifecycleEvent(db, { assertionId, transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: eventKind });
       assertionIds.push(idToString(assertionId));
@@ -1761,7 +1863,6 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
       if (withdrawn) {
         if (!prior) throw new Error("Cannot withdraw a user assertion that does not exist.");
         assertionId = blob(prior.assertion_id);
-        db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'withdrawn')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
         db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'withdrawn')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
       } else {
         const value = input.value ?? "";
@@ -1770,12 +1871,10 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
         } else {
           assertionId = uuidV7();
           if (prior) {
-            db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'superseded')").run(uuidV7(), blob(prior.assertion_id), transactionId, field, userId, commitId);
             db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'superseded')").run(uuidV7(), blob(prior.assertion_id), transactionId, field, userId, commitId);
           }
           db.prepare("INSERT INTO user_assertions(assertion_id, transaction_id, field_name, user_id, value_text, commit_id) VALUES (?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, field, userId, value, commitId);
           db.prepare("INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES (?, ?, ?, 'transaction', 'user', ?, 'user/local', NULL, ?, ?)").run(assertionId, transactionId, field, userId, value, commitId);
-          db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'observed')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
           db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'observed')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
         }
       }
@@ -1785,7 +1884,6 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
       }
       else db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
         VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, input.value ?? "", assertionId, commitId);
-      db.prepare("INSERT OR IGNORE INTO user_assertion_provenance(assertion_id, commit_id) VALUES (?, ?)").run(assertionId, commitId);
       db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, NULL, NULL, ?)").run(assertionId, commitId);
       db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
       db.exec("COMMIT"); inTransaction = false;
