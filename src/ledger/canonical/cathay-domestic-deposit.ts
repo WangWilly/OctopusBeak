@@ -968,7 +968,6 @@ WHEN NOT EXISTS (
   SELECT 1 FROM assertions assertion JOIN projection_generations generation ON generation.generation_id = NEW.generation_id
   WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
     AND assertion.origin = NEW.origin AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
-    AND NEW.projection_commit_id IS COALESCE(generation.switched_commit_id, generation.created_commit_id)
 )
 BEGIN SELECT RAISE(ABORT, 'projection generation field assertion integrity mismatch'); END;
 CREATE TRIGGER IF NOT EXISTS trg_projection_generation_fields_integrity_update
@@ -977,9 +976,88 @@ WHEN NOT EXISTS (
   SELECT 1 FROM assertions assertion JOIN projection_generations generation ON generation.generation_id = NEW.generation_id
   WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
     AND assertion.origin = NEW.origin AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
-    AND NEW.projection_commit_id IS COALESCE(generation.switched_commit_id, generation.created_commit_id)
 )
 BEGIN SELECT RAISE(ABORT, 'projection generation field assertion integrity mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS trg_assertion_transitions_integrity_insert
+BEFORE INSERT ON assertion_transitions
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
+    AND (assertion.origin = 'source'
+      OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL AND NEW.user_id = assertion.producer_id)
+      OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit' AND registered.contract_version = 'v1'
+      )))
+)
+BEGIN SELECT RAISE(ABORT, 'assertion transition coordinate mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS trg_assertion_transitions_integrity_update
+BEFORE UPDATE OF assertion_id, transaction_id, field_name ON assertion_transitions
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
+    AND (assertion.origin = 'source'
+      OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL AND NEW.user_id = assertion.producer_id)
+      OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit' AND registered.contract_version = 'v1'
+      )))
+)
+BEGIN SELECT RAISE(ABORT, 'assertion transition coordinate mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS trg_assertion_provenance_integrity_insert
+BEFORE INSERT ON assertion_provenance
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND (assertion.origin = 'source' AND NEW.source_record_id IS NOT NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+      OR assertion.origin = 'user' AND NEW.source_record_id IS NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+      OR assertion.origin = 'derived' AND NEW.source_record_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit' AND registered.contract_version = 'v1'
+      ))
+)
+BEGIN SELECT RAISE(ABORT, 'assertion provenance coordinate mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS trg_assertion_provenance_integrity_update
+BEFORE UPDATE OF assertion_id, source_record_id, run_id, coordinate_id ON assertion_provenance
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND (assertion.origin = 'source' AND NEW.source_record_id IS NOT NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+      OR assertion.origin = 'user' AND NEW.source_record_id IS NULL AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+      OR assertion.origin = 'derived' AND NEW.source_record_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit' AND registered.contract_version = 'v1'
+      ))
+)
+BEGIN SELECT RAISE(ABORT, 'assertion provenance coordinate mismatch'); END;
 `;
 
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
@@ -1515,11 +1593,10 @@ function projectionIdentityKey(row: { transaction_id?: unknown; revision_id?: un
 }
 
 /** Rebuild population is intentionally allowed to omit malformed evidence;
- * this equality check makes that omission observable before a shadow can be
- * validated. The expected set is derived from immutable revision/scope rows,
+ * this calculator derives the expected set from immutable revision/scope rows,
  * not from the Source Assertion join used by the population query. */
-function validateGenerationTransactionCompleteness(db: DatabaseSync, generationId: number, cutoff: number): void {
-  const expected = db.prepare(`SELECT transaction_row.transaction_id, revision.revision_id
+function expectedGenerationTransactions(db: DatabaseSync, cutoff: number): Array<{ transaction_id?: unknown; revision_id?: unknown }> {
+  return db.prepare(`SELECT transaction_row.transaction_id, revision.revision_id
     FROM financial_transactions transaction_row
     JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
     JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
@@ -1536,6 +1613,10 @@ function validateGenerationTransactionCompleteness(db: DatabaseSync, generationI
         WHERE source_assertion.origin = 'source' AND source_assertion.revision_id = revision.revision_id
           AND transition_commit.commit_sequence <= ?
         ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1), 'observed') <> 'withdrawn'`).all(cutoff, cutoff, cutoff) as Array<{ transaction_id?: unknown; revision_id?: unknown }>;
+}
+
+function validateGenerationTransactionIntegrity(db: DatabaseSync, generationId: number, cutoff: number): void {
+  const expected = expectedGenerationTransactions(db, cutoff);
   const actual = db.prepare("SELECT transaction_id, revision_id FROM projection_generation_transactions WHERE generation_id = ?").all(generationId) as Array<{ transaction_id?: unknown; revision_id?: unknown }>;
   const expectedKeys = new Set(expected.map(projectionIdentityKey));
   const actualKeys = new Set(actual.map(projectionIdentityKey));
@@ -1543,6 +1624,23 @@ function validateGenerationTransactionCompleteness(db: DatabaseSync, generationI
   const extra = [...actualKeys].filter((key) => !expectedKeys.has(key));
   if (missing.length !== 0 || extra.length !== 0 || expectedKeys.size !== actualKeys.size) {
     throw new Error(`Projection rebuild completeness mismatch: missing=${missing.length}, extra=${extra.length}.`);
+  }
+  const rows = db.prepare(`SELECT projected.transaction_id, projected.revision_id, projected.projection_commit_id, projected.revision_commit_id,
+      revision.transaction_id AS revision_transaction_id, revision.commit_id AS source_revision_commit_id,
+      revision_commit.commit_sequence AS revision_commit_sequence, projection_commit.commit_sequence AS projection_commit_sequence,
+      upper_commit.commit_sequence AS upper_commit_sequence
+    FROM projection_generation_transactions projected
+    JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+    JOIN canonical_commits projection_commit ON projection_commit.commit_id = projected.projection_commit_id
+    JOIN projection_generations generation ON generation.generation_id = projected.generation_id
+    JOIN canonical_commits upper_commit ON upper_commit.commit_id = COALESCE(generation.switched_commit_id, generation.created_commit_id)
+    WHERE projected.generation_id = ?`).all(generationId) as Array<Record<string, unknown>>;
+  if (rows.some((row) => !canonicalIdsEqual(row.revision_transaction_id, row.transaction_id)
+    || !canonicalIdsEqual(row.revision_commit_id, row.source_revision_commit_id)
+    || Number(row.projection_commit_sequence) < Number(row.revision_commit_sequence)
+    || Number(row.projection_commit_sequence) > Number(row.upper_commit_sequence))) {
+    throw new Error("Canonical v7 projection transaction commit semantics are invalid.");
   }
 }
 
@@ -1558,7 +1656,15 @@ function validateGenerationFieldIntegrity(db: DatabaseSync, generationId: number
       projected.transaction_id AS projected_transaction_id, projected.revision_id AS projected_revision_id,
       projected.projection_commit_id AS projected_projection_commit_id, projected.revision_commit_id AS projected_revision_commit_id,
       revision.transaction_id AS revision_transaction_id, revision.commit_id AS revision_commit_id,
+      revision_commit.commit_sequence AS revision_commit_sequence,
       projection_commit.commit_sequence AS projection_commit_sequence,
+      projection_commit.commit_kind AS projection_commit_kind,
+      projected_projection_commit.commit_sequence AS projected_projection_commit_sequence,
+      upper_commit.commit_sequence AS upper_commit_sequence,
+      EXISTS (SELECT 1 FROM assertion_transitions projection_transition
+        WHERE projection_transition.transaction_id = field.transaction_id
+          AND projection_transition.field_name = field.field_name
+          AND projection_transition.commit_id = field.projection_commit_id) AS projection_commit_is_field_event,
       (SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
         WHERE transition.assertion_id = assertion.assertion_id AND transition_commit.commit_sequence <= generation.build_cutoff_commit_sequence
         ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1) AS lifecycle_event,
@@ -1572,24 +1678,43 @@ function validateGenerationFieldIntegrity(db: DatabaseSync, generationId: number
     LEFT JOIN canonical_commits assertion_commit ON assertion_commit.commit_id = assertion.created_commit_id
     LEFT JOIN projection_generation_transactions projected ON projected.generation_id = field.generation_id AND projected.transaction_id = field.transaction_id
     LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    LEFT JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
     LEFT JOIN canonical_commits projection_commit ON projection_commit.commit_id = field.projection_commit_id
+    LEFT JOIN canonical_commits projected_projection_commit ON projected_projection_commit.commit_id = projected.projection_commit_id
+    LEFT JOIN canonical_commits upper_commit ON upper_commit.commit_id = COALESCE(generation.switched_commit_id, generation.created_commit_id)
     LEFT JOIN derived_import_runs run ON run.commit_id = assertion.created_commit_id AND run.producer_id = assertion.producer_id AND run.rule_lineage = assertion.rule_lineage
     LEFT JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
     WHERE field.generation_id = ?`).all(generationId) as Array<Record<string, unknown>>;
   for (const row of rows) {
-    const expectedProjectionCommit = row.generation_switched_commit_id ?? row.generation_created_commit_id;
     const validLifecycle = row.lifecycle_event === "observed" || row.lifecycle_event === "restored";
     const assertionMatches = row.assertion_id !== undefined && row.assertion_id !== null
       && canonicalIdsEqual(row.assertion_transaction_id, row.transaction_id)
       && row.assertion_field_name === row.field_name && row.assertion_origin === row.origin
       && row.assertion_value_text === row.value_text;
-    const projectionMatches = canonicalIdsEqual(row.projection_commit_id, expectedProjectionCommit)
+    const fieldProjectionSequence = Number(row.projection_commit_sequence);
+    const projectedProjectionSequence = Number(row.projected_projection_commit_sequence);
+    const revisionSequence = Number(row.revision_commit_sequence);
+    const assertionSequence = Number(row.assertion_commit_sequence);
+    const upperSequence = Number(row.upper_commit_sequence);
+    const projectionMatches = row.projection_commit_id !== undefined && row.projection_commit_id !== null
       && row.projected_projection_commit_id !== undefined && row.projected_projection_commit_id !== null
-      && canonicalIdsEqual(row.projected_projection_commit_id, row.projection_commit_id)
       && canonicalIdsEqual(row.projected_revision_commit_id, row.revision_commit_id)
       && canonicalIdsEqual(row.revision_transaction_id, row.transaction_id)
       && row.projected_transaction_id !== undefined && row.projected_transaction_id !== null
       && row.projection_commit_sequence !== undefined && row.projection_commit_sequence !== null;
+    const projectionCommitIsLegitimate = canonicalIdsEqual(row.projection_commit_id, row.assertion_created_commit_id)
+      || canonicalIdsEqual(row.projection_commit_id, row.generation_created_commit_id)
+      || row.projection_commit_kind === "projection_rebuild"
+      || Number(row.projection_commit_is_field_event) === 1;
+    const commitSemantics = Number.isSafeInteger(fieldProjectionSequence)
+      && Number.isSafeInteger(projectedProjectionSequence)
+      && Number.isSafeInteger(revisionSequence)
+      && Number.isSafeInteger(assertionSequence)
+      && Number.isSafeInteger(upperSequence)
+      && fieldProjectionSequence >= assertionSequence
+      && fieldProjectionSequence <= upperSequence
+      && projectedProjectionSequence >= revisionSequence
+      && projectedProjectionSequence <= upperSequence;
     const assertionAsOfCutoff = row.assertion_commit_sequence !== undefined && row.assertion_commit_sequence !== null
       && Number(row.assertion_commit_sequence) <= Number(row.build_cutoff_commit_sequence);
     const authorityValid = row.origin === "user"
@@ -1601,10 +1726,85 @@ function validateGenerationFieldIntegrity(db: DatabaseSync, generationId: number
         && row.run_origin === CATHAY_DERIVED_ORIGIN && row.run_status === "complete"
         && row.registered_namespace === CATHAY_INTEGRATION_NAMESPACE && row.registered_stream === CATHAY_DOMESTIC_DEPOSIT_STREAM
         && row.registered_contract_version === CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION;
-    if (!assertionMatches || !projectionMatches || !validLifecycle || !assertionAsOfCutoff || !authorityValid) {
+    if (!assertionMatches || !projectionMatches || !projectionCommitIsLegitimate || !commitSemantics || !validLifecycle || !assertionAsOfCutoff || !authorityValid) {
       throw new Error("Canonical v7 projection field assertion integrity is invalid.");
     }
   }
+}
+
+function validateGenerationFieldCompleteness(db: DatabaseSync, generationId: number, cutoff: number): void {
+  const expected: string[] = [];
+  for (const transaction of expectedGenerationTransactions(db, cutoff)) {
+    const transactionId = blob(transaction.transaction_id);
+    for (const field of ["display_name", "note"] as const) {
+      const selected = selectAssertionAsOf(db, transactionId, field, cutoff, "user")
+        ?? selectAssertionAsOf(db, transactionId, field, cutoff, "derived");
+      if (selected) expected.push(`${transactionId.toString("hex")}:${field}:${blob(selected.assertion_id).toString("hex")}:${selected.origin}:${selected.value_text}`);
+    }
+  }
+  const actualRows = db.prepare(`SELECT transaction_id, field_name, origin, value_text,
+      CASE WHEN origin = 'derived' THEN derived_assertion_id ELSE user_assertion_id END AS assertion_id
+    FROM projection_generation_transaction_fields WHERE generation_id = ?`).all(generationId) as Array<{ transaction_id?: unknown; field_name?: unknown; origin?: unknown; value_text?: unknown; assertion_id?: unknown }>;
+  const actual = actualRows.map((row) => `${blob(row.transaction_id).toString("hex")}:${String(row.field_name)}:${blob(row.assertion_id).toString("hex")}:${String(row.origin)}:${String(row.value_text)}`);
+  const expectedSet = new Set(expected);
+  const actualSet = new Set(actual);
+  const missing = [...expectedSet].filter((key) => !actualSet.has(key));
+  const extra = [...actualSet].filter((key) => !expectedSet.has(key));
+  if (missing.length !== 0 || extra.length !== 0 || expectedSet.size !== actualSet.size) {
+    throw new Error(`Canonical v7 projection field completeness mismatch: missing=${missing.length}, extra=${extra.length}.`);
+  }
+}
+
+function validateGenerationLifecycleCoordinates(db: DatabaseSync, generationId: number): void {
+  const invalidTransitions = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transaction_fields field
+    JOIN projection_generations generation ON generation.generation_id = field.generation_id
+    JOIN assertions assertion ON assertion.assertion_id = CASE WHEN field.origin = 'derived' THEN field.derived_assertion_id ELSE field.user_assertion_id END
+    JOIN assertion_transitions transition ON transition.assertion_id = assertion.assertion_id
+    JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+    WHERE field.generation_id = ? AND transition_commit.commit_sequence <= generation.build_cutoff_commit_sequence
+      AND NOT (
+        transition.transaction_id = assertion.transaction_id AND transition.field_name = assertion.field_name
+        AND ((assertion.origin = 'user' AND transition.capture_id IS NULL AND transition.scope_id IS NULL
+              AND transition.run_id IS NULL AND transition.coordinate_id IS NULL AND transition.user_id = assertion.producer_id
+              AND transition_commit.authority_route = 'user/local')
+          OR (assertion.origin = 'derived' AND transition.capture_id IS NULL AND transition.scope_id IS NULL
+              AND transition.user_id IS NULL AND transition_commit.authority_route = ? AND EXISTS (
+            SELECT 1 FROM derived_import_runs run
+            JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = transition.coordinate_id
+            JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+            WHERE run.run_id = transition.run_id AND coordinate.run_id = run.run_id
+              AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+              AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+              AND run.authority_route = ? AND run.stream = ? AND run.producer_id = assertion.producer_id
+              AND run.origin = ? AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+              AND registered.integration_namespace = ? AND registered.stream = ? AND registered.contract_version = ?
+          )))
+      )`).get(generationId, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DERIVED_ORIGIN,
+    CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION) as { count?: number }).count ?? 0);
+  if (invalidTransitions !== 0) throw new Error("Canonical v7 selected assertion lifecycle coordinates are invalid.");
+
+  const invalidProvenance = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transaction_fields field
+    JOIN projection_generations generation ON generation.generation_id = field.generation_id
+    JOIN assertions assertion ON assertion.assertion_id = CASE WHEN field.origin = 'derived' THEN field.derived_assertion_id ELSE field.user_assertion_id END
+    JOIN assertion_provenance provenance ON provenance.assertion_id = assertion.assertion_id
+    JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
+    WHERE field.generation_id = ? AND provenance_commit.commit_sequence <= generation.build_cutoff_commit_sequence AND (
+      (assertion.origin = 'user' AND provenance_commit.authority_route = 'user/local'
+        AND (provenance.source_record_id IS NOT NULL OR provenance.run_id IS NOT NULL OR provenance.coordinate_id IS NOT NULL))
+      OR (assertion.origin = 'derived' AND (provenance.source_record_id IS NOT NULL OR provenance_commit.authority_route <> 'cathay/domestic-deposit/v1' OR NOT EXISTS (
+        SELECT 1 FROM derived_import_runs run
+        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = provenance.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = provenance.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = ? AND run.stream = ? AND run.producer_id = assertion.producer_id
+          AND run.origin = ? AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = ? AND registered.stream = ? AND registered.contract_version = ?
+      )))
+    )`).get(generationId, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DERIVED_ORIGIN,
+    CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION) as { count?: number }).count ?? 0);
+  if (invalidProvenance !== 0) throw new Error("Canonical v7 selected assertion provenance coordinates are invalid.");
 }
 
 /** Validate the one switch boundary used by both writer and read-only startup.
@@ -1640,7 +1840,11 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
   }
   validateGenerationExactAmounts(db, generationId);
   validateCathayAuthorityRoute(db, generationId);
+  const activeCutoff = Number((db.prepare("SELECT build_cutoff_commit_sequence FROM projection_generations WHERE generation_id = ?").get(generationId) as { build_cutoff_commit_sequence?: number } | undefined)?.build_cutoff_commit_sequence ?? 0);
+  validateGenerationTransactionIntegrity(db, generationId, activeCutoff);
+  validateGenerationFieldCompleteness(db, generationId, activeCutoff);
   validateGenerationFieldIntegrity(db, generationId);
+  validateGenerationLifecycleCoordinates(db, generationId);
   return generationId;
 }
 
@@ -2180,10 +2384,12 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
       LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
       WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`).get(generation) as { count?: number }).count ?? 0);
     if (dangling !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
-    validateGenerationTransactionCompleteness(db, generation, cutoff);
+    validateGenerationTransactionIntegrity(db, generation, cutoff);
+    validateGenerationFieldCompleteness(db, generation, cutoff);
     validateGenerationExactAmounts(db, generation);
     validateCathayAuthorityRoute(db, generation);
     validateGenerationFieldIntegrity(db, generation);
+    validateGenerationLifecycleCoordinates(db, generation);
     const duplicate = Number((db.prepare(`SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`).get(generation) as { count?: number }).count ?? 0);
     if (duplicate !== 0) throw new Error("Projection rebuild validation found duplicate transaction authority.");
     rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
@@ -2351,7 +2557,9 @@ function insertCurrentDerivedField(db: DatabaseSync, transactionId: CanonicalId,
   const user = db.prepare("SELECT 1 FROM current_transaction_fields WHERE transaction_id = ? AND field_name = ? AND origin = 'user'").get(transactionId, field);
   if (user) return;
   db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
-    VALUES (?, ?, ?, 'derived', ?, NULL, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'derived', derived_assertion_id = excluded.derived_assertion_id, user_assertion_id = NULL, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, value, assertionId, commitId);
+    VALUES (?, ?, ?, 'derived', ?, NULL, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'derived', derived_assertion_id = excluded.derived_assertion_id, user_assertion_id = NULL,
+      projection_commit_id = CASE WHEN current_transaction_fields.derived_assertion_id = excluded.derived_assertion_id AND current_transaction_fields.value_text = excluded.value_text
+        THEN current_transaction_fields.projection_commit_id ELSE excluded.projection_commit_id END`).run(transactionId, field, value, assertionId, commitId);
 }
 
 function refreshCurrentFieldAfterWithdrawal(db: DatabaseSync, transactionId: CanonicalId, field: CathayDerivedField, commitId: CanonicalId): void {
@@ -2564,7 +2772,9 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
         refreshCurrentFieldAfterWithdrawal(db, transactionId, field, commitId);
       }
       else db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
-        VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, input.value ?? "", assertionId, commitId);
+        VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id,
+          projection_commit_id = CASE WHEN current_transaction_fields.user_assertion_id = excluded.user_assertion_id AND current_transaction_fields.value_text = excluded.value_text
+            THEN current_transaction_fields.projection_commit_id ELSE excluded.projection_commit_id END`).run(transactionId, field, input.value ?? "", assertionId, commitId);
       db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, NULL, NULL, ?)").run(assertionId, commitId);
       syncActiveProjectionFromCompatibility(db, commitId);
       db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
@@ -2653,10 +2863,11 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
-        r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM projection_generation_transactions current_row
+        r.utc_instant_utc_us, r.revision_id, projection_cutoff.commit_sequence FROM projection_generation_transactions current_row
         JOIN active_projection_generation pointer ON pointer.singleton_id = 1 AND pointer.generation_id = current_row.generation_id
+        JOIN canonical_commits projection_cutoff ON projection_cutoff.commit_id = pointer.switched_commit_id
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
-        JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.projection_commit_id
+        JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
         ORDER BY a.account_no, t.source_sequence`).all() as Record<string, unknown>[];
       const projection = db.prepare(`SELECT c.commit_sequence FROM active_projection_generation pointer
         JOIN canonical_commits c ON c.commit_id = pointer.switched_commit_id WHERE pointer.singleton_id = 1`).get() as { commit_sequence?: number } | undefined;
