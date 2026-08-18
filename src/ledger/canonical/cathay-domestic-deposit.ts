@@ -8,7 +8,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 5;
+export const CANONICAL_SCHEMA_VERSION = 6;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -73,6 +73,75 @@ export type CathayDomesticDepositSyncInput = {
   syncState: { cursor?: string | null };
   observedAt: string;
   pages: CathayStagedCapturePage[];
+};
+
+/** The first derived import contract is deliberately transaction-scoped.  A
+ * complete run supplies one coordinate for every transaction/field pair it
+ * claims to own.  Unsupported is an explicit output state, not a missing
+ * array element, so a partial producer can never withdraw an old claim. */
+export type CathayDerivedField = "display_name" | "note";
+export type CathayDerivedOutputState = "supported" | "unsupported";
+export type CathayDerivedImportCoordinate = {
+  transactionId: string;
+  field: CathayDerivedField;
+  state: CathayDerivedOutputState;
+  value?: string | null;
+};
+export type CathayDerivedImportSubject = { kind: "transaction"; id: string } | string;
+export type CathayDerivedImportScope = {
+  subjects: CathayDerivedImportSubject[];
+  fields: CathayDerivedField[];
+  producerId?: string;
+  origin?: string;
+  ruleLineage?: string;
+};
+export type CathayDerivedImportRunInput = {
+  sourceConnectionId: string;
+  identityEpoch: string;
+  authorityRoute: string;
+  stream: string;
+  producerId: string;
+  ruleLineage: string;
+  origin?: string;
+  observedAt?: string;
+  /** Complete subject/field/producer/rule-lineage coordinate matrix. */
+  scope?: CathayDerivedImportCoordinate[] | CathayDerivedImportScope;
+  outputScope?: CathayDerivedImportCoordinate[] | CathayDerivedImportScope;
+  coordinates?: CathayDerivedImportCoordinate[];
+  outputs?: CathayDerivedImportCoordinate[];
+  /** Compatibility spelling for callers that model a complete run explicitly. */
+  complete?: boolean;
+};
+export type CathayDerivedImportDiagnostic = {
+  kind: "derived-import-diagnostic";
+  stage: "preflight" | "scope" | "commit";
+  reason: string;
+  producerId?: string;
+  ruleLineage?: string;
+};
+export type CathayDerivedImportResult =
+  | { status: "committed"; runId: string; commitSequence: number; assertionIds: string[] }
+  | { status: "diagnostic"; diagnostic: CathayDerivedImportDiagnostic };
+export type CathayDerivedImportOptions = CathayCanonicalCommitOptions & {
+  onDiagnostic?: (diagnostic: CathayDerivedImportDiagnostic) => void;
+};
+
+export type CathayUserAssertionField = "display_name" | "note";
+export type CathayUserAssertionInput = {
+  transactionId?: string;
+  subject?: { kind: "transaction"; id: string };
+  field?: CathayUserAssertionField | string;
+  target?: { kind?: string; field?: string; id?: string } | string;
+  value?: string | null;
+  userId?: string;
+  observedAt?: string;
+};
+export type CathayUserAssertionResult = {
+  status: "committed";
+  assertionId: string;
+  commitSequence: number;
+  field: CathayUserAssertionField;
+  withdrawn: boolean;
 };
 
 export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput = {
@@ -658,6 +727,97 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   .replace("UNIQUE(capture_id, account_id, scope_start, scope_end)", "UNIQUE(scope_id, capture_id), UNIQUE(scope_id, account_id), UNIQUE(capture_id, account_id, scope_start, scope_end)")
   .replace("absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'tombstone'))", "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range'))");
 
+const SCHEMA_V6_APPEND = `
+CREATE TABLE IF NOT EXISTS derived_import_runs (
+  run_id BLOB PRIMARY KEY CHECK(length(run_id) = 16),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+  stream TEXT NOT NULL, producer_id TEXT NOT NULL, origin TEXT NOT NULL,
+  rule_lineage TEXT NOT NULL, observed_at TEXT NOT NULL,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  status TEXT NOT NULL CHECK(status = 'complete'),
+  UNIQUE(run_id, producer_id, rule_lineage)
+);
+CREATE TABLE IF NOT EXISTS derived_scope_coordinates (
+  coordinate_id BLOB PRIMARY KEY CHECK(length(coordinate_id) = 16),
+  run_id BLOB NOT NULL REFERENCES derived_import_runs(run_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  producer_id TEXT NOT NULL, origin TEXT NOT NULL, rule_lineage TEXT NOT NULL,
+  output_state TEXT NOT NULL CHECK(output_state IN ('supported','unsupported')),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(run_id, transaction_id, field_name, producer_id, origin, rule_lineage)
+);
+CREATE TABLE IF NOT EXISTS derived_assertions (
+  assertion_id BLOB PRIMARY KEY CHECK(length(assertion_id) = 16),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  producer_id TEXT NOT NULL, origin TEXT NOT NULL, rule_lineage TEXT NOT NULL,
+  value_text TEXT NOT NULL, run_id BLOB NOT NULL REFERENCES derived_import_runs(run_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(assertion_id, transaction_id, field_name, producer_id, origin, rule_lineage)
+);
+CREATE TABLE IF NOT EXISTS derived_assertion_provenance (
+  assertion_id BLOB NOT NULL REFERENCES derived_assertions(assertion_id),
+  run_id BLOB NOT NULL REFERENCES derived_import_runs(run_id),
+  coordinate_id BLOB NOT NULL REFERENCES derived_scope_coordinates(coordinate_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(assertion_id, run_id, coordinate_id)
+);
+CREATE TABLE IF NOT EXISTS derived_assertion_lifecycle_events (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  assertion_id BLOB NOT NULL REFERENCES derived_assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  run_id BLOB NOT NULL REFERENCES derived_import_runs(run_id),
+  coordinate_id BLOB REFERENCES derived_scope_coordinates(coordinate_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','restored','provenance_only'))
+);
+CREATE TABLE IF NOT EXISTS user_assertions (
+  assertion_id BLOB PRIMARY KEY CHECK(length(assertion_id) = 16),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  user_id TEXT NOT NULL, value_text TEXT NOT NULL,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(assertion_id, transaction_id, field_name, user_id)
+);
+CREATE TABLE IF NOT EXISTS user_assertion_lifecycle_events (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  assertion_id BLOB NOT NULL REFERENCES user_assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  user_id TEXT NOT NULL, commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','provenance_only'))
+);
+CREATE TABLE IF NOT EXISTS user_assertion_provenance (
+  assertion_id BLOB NOT NULL REFERENCES user_assertions(assertion_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(assertion_id, commit_id)
+);
+CREATE TABLE IF NOT EXISTS current_transaction_fields (
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  value_text TEXT NOT NULL,
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  derived_assertion_id BLOB REFERENCES derived_assertions(assertion_id),
+  user_assertion_id BLOB REFERENCES user_assertions(assertion_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(transaction_id, field_name),
+  CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
+    OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_derived_scope_coordinates_lineage ON derived_scope_coordinates(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
+CREATE INDEX IF NOT EXISTS idx_derived_assertions_lineage ON derived_assertions(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
+CREATE INDEX IF NOT EXISTS idx_derived_assertion_provenance_run ON derived_assertion_provenance(run_id, coordinate_id, assertion_id);
+CREATE INDEX IF NOT EXISTS idx_derived_assertion_lifecycle_knowledge ON derived_assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id);
+CREATE INDEX IF NOT EXISTS idx_user_assertion_lifecycle_knowledge ON user_assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id);
+CREATE INDEX IF NOT EXISTS idx_user_assertion_provenance_commit ON user_assertion_provenance(commit_id, assertion_id);
+CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id);
+`;
+const SCHEMA_V6 = `${SCHEMA_V5.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
+
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
 // Keeping this target schema separate prevents an older database from being created at a
 // partially upgraded shape before its migration transaction reaches the next version.
@@ -703,7 +863,7 @@ function migrateV1ToV2(db: DatabaseSync): void {
     }
     const latestCommit = db.prepare("SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     if (latestCommit) db.prepare("INSERT OR REPLACE INTO current_projection_state(generation, commit_id) VALUES (1, ?)").run(blob(latestCommit.commit_id));
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(2, currentUtcMicros());
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(2, currentUtcMicros());
     db.exec("PRAGMA user_version = 2");
     db.exec("COMMIT");
   } catch (error) {
@@ -727,7 +887,7 @@ function migrateV2ToV3(db: DatabaseSync): void {
       SELECT source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id FROM source_sync_states_v2`);
     db.exec("DROP TABLE source_sync_states_v2");
     db.exec(SCHEMA_V2);
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(3, currentUtcMicros());
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(3, currentUtcMicros());
     db.exec("PRAGMA user_version = 3");
     db.exec("COMMIT");
   } catch (error) {
@@ -758,7 +918,7 @@ function migrateV3ToV4(db: DatabaseSync): void {
         cs.contract_fingerprint, cs.preflight_fingerprint, cs.commit_id
       FROM capture_scopes cs LEFT JOIN capture_scope_pages existing_page ON existing_page.scope_id = cs.scope_id
       WHERE existing_page.scope_id IS NULL`);
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(4, currentUtcMicros());
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(4, currentUtcMicros());
     db.exec("PRAGMA user_version = 4");
     db.exec("COMMIT");
   } catch (error) {
@@ -766,7 +926,7 @@ function migrateV3ToV4(db: DatabaseSync): void {
     throw error;
   }
 }
-export type CanonicalMigrationFailureInjection = "v4-v5-after-record-copy";
+export type CanonicalMigrationFailureInjection = "v4-v5-after-record-copy" | "v5-v6-after-derived-schema";
 export type CanonicalDatabaseOptions = { readOnly?: boolean; injectMigrationFailure?: CanonicalMigrationFailureInjection };
 
 function migrateV4ToV5(db: DatabaseSync, injectMigrationFailure?: CanonicalMigrationFailureInjection): void {
@@ -854,8 +1014,35 @@ function migrateV4ToV5(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_capture ON capture_scopes(scope_id, capture_id); CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_scopes_scope_account ON capture_scopes(scope_id, account_id)");
     db.exec(SCHEMA_V5_APPEND);
     db.exec("INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) SELECT source_record_id, scope_id, capture_id, account_id, provider_sequence, commit_id FROM source_record_scope_migration");
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(5, currentUtcMicros());
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(5, currentUtcMicros());
     db.exec("PRAGMA user_version = 5");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
+function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigrationFailureInjection): void {
+  // commit_kind was intentionally narrow in v5. Rebuild only that table while
+  // foreign keys are disabled; every existing child reference is preserved by
+  // the same primary keys and the whole operation remains one transaction.
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`CREATE TABLE canonical_commits_v6 (
+      commit_id BLOB PRIMARY KEY CHECK(length(commit_id) = 16), commit_sequence INTEGER NOT NULL UNIQUE,
+      recorded_at_utc_us INTEGER NOT NULL, authority_route TEXT NOT NULL,
+      commit_kind TEXT NOT NULL CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))
+    )`);
+    db.exec("INSERT INTO canonical_commits_v6 SELECT * FROM canonical_commits");
+    db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v6 RENAME TO canonical_commits");
+    db.exec(SCHEMA_V6_APPEND);
+    if (injectMigrationFailure === "v5-v6-after-derived-schema") throw new Error("Injected v5-v6 migration failure after derived schema.");
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(6, currentUtcMicros());
+    db.exec("PRAGMA user_version = 6");
     db.exec("COMMIT");
     db.exec("PRAGMA foreign_keys = ON");
   } catch (error) {
@@ -874,21 +1061,29 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     migrateV2ToV3(db);
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
+    migrateV5ToV6(db, options.injectMigrationFailure);
     return;
   }
   if (version === 2) {
     migrateV2ToV3(db);
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
+    migrateV5ToV6(db, options.injectMigrationFailure);
     return;
   }
   if (version === 3) {
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
+    migrateV5ToV6(db, options.injectMigrationFailure);
     return;
   }
   if (version === 4) {
     migrateV4ToV5(db, options.injectMigrationFailure);
+    migrateV5ToV6(db, options.injectMigrationFailure);
+    return;
+  }
+  if (version === 5) {
+    migrateV5ToV6(db, options.injectMigrationFailure);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -899,7 +1094,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
   }
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.exec(SCHEMA_V5);
+    db.exec(SCHEMA_V6);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -910,9 +1105,9 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
-  const requiredTables = ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state"];
+  const requiredTables = ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields"];
   for (const table of requiredTables) {
-    if (!tableExists(db, table)) throw new Error(`Canonical schema v5 table ${table} is missing.`);
+    if (!tableExists(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
   }
   const requiredColumns: Record<string, string[]> = {
     source_captures: ["account_no", "completeness_basis", "completeness_rule_version"],
@@ -923,21 +1118,24 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   };
   for (const [table, columns] of Object.entries(requiredColumns)) {
     const actual = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).map((column) => column.name));
-    for (const column of columns) if (!actual.has(column)) throw new Error(`Canonical schema v5 column ${table}.${column} is missing.`);
+    for (const column of columns) if (!actual.has(column)) throw new Error(`Canonical schema v6 column ${table}.${column} is missing.`);
   }
   const requiredIndexes = [
     "idx_capture_scopes_account_time", "idx_capture_scope_pages_proof", "idx_assertion_lifecycle_scope",
     "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
+    "idx_derived_scope_coordinates_lineage", "idx_derived_assertions_lineage", "idx_derived_assertion_provenance_run",
+    "idx_derived_assertion_lifecycle_knowledge", "idx_user_assertion_lifecycle_knowledge", "idx_current_transaction_fields_projection",
+    "idx_user_assertion_provenance_commit",
   ];
   for (const index of requiredIndexes) {
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v5 index ${index} is missing.`);
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v6 index ${index} is missing.`);
   }
   const tableSql = (table: string): string => String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql?: unknown } | undefined)?.sql ?? "");
   if (!/FOREIGN KEY\s*\(source_record_id,\s*capture_id\)/i.test(tableSql("source_record_scopes")) || !/capture_scopes/i.test(tableSql("source_record_scopes"))) {
-    throw new Error("Canonical schema v5 source-record scope constraints are missing.");
+    throw new Error("Canonical schema v6 source-record scope constraints are missing.");
   }
   if (!/economic_status.*canceled.*refund.*reversal/i.test(tableSql("transaction_revisions")) || !/administrative_state.*deleted.*purged/i.test(tableSql("transaction_revisions"))) {
-    throw new Error("Canonical schema v5 semantic constraints are missing.");
+    throw new Error("Canonical schema v6 semantic constraints are missing.");
   }
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
@@ -986,7 +1184,8 @@ export type CanonicalTransaction = {
   id: string; accountId: string; accountNo: string; sourceSequence: string; amount: CanonicalAmount; currency: "TWD";
   direction: "inflow" | "outflow"; postingStatus: "posted"; postingOrigin: "provider_booked_history"; postingBasis: "query-status-success-with-accounting-date"; postingRuleVersion: "cathay/domestic-deposit/v1";
   assertionSupportState: CanonicalAssertionSupportState; economicStatus: CanonicalEconomicStatus; administrativeState: CanonicalAdministrativeState; semanticRuleVersion: "cathay/domestic-deposit/v1";
-  displayLabel: string | null; effectiveOn: string; effectiveTimeBasis: "accounting"; effectiveTimeRuleVersion: "cathay/domestic-deposit/v1"; transactionDateTimeLocal: string;
+  displayLabel: string | null; displayLabelOrigin: "source" | "derived" | "user"; displayLabelCommitSequence: number | null; note: string | null; noteOrigin: "derived" | "user" | null; noteCommitSequence: number | null;
+  effectiveOn: string; effectiveTimeBasis: "accounting"; effectiveTimeRuleVersion: "cathay/domestic-deposit/v1"; transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE; timePrecision: "second"; timeOrigin: "source_reported";
   utcInstantUtcUs: number; revisionId: string; commitSequence: number;
 };
@@ -1009,6 +1208,8 @@ export type CathayCanonicalLineageEntry = {
   capture: { id: string; observedAt: string; scopeStart: string; scopeEnd: string; authorityRoute: string };
   provenance: Array<{ sourceRecordId: string; captureId: string }>;
   lifecycleEvents: CathayCanonicalLifecycleEvent[];
+  derivedAssertions: Array<{ id: string; field: CathayDerivedField; producerId: string; origin: string; ruleLineage: string; value: string; state: "supported" | "withdrawn"; commitSequence: number; runId: string; provenance: Array<{ runId: string; coordinateId: string }> }>;
+  userAssertions: Array<{ id: string; field: CathayUserAssertionField; userId: string; value: string; state: "supported" | "withdrawn"; commitSequence: number; provenance: Array<{ commitSequence: number }> }>;
 };
 export type CathayCanonicalLineageQueryResult = { status: "ok"; kind: "lineage"; subject: CathayCanonicalLineageQueryRequest["subject"]; entries: CathayCanonicalLineageEntry[] };
 export type CanonicalTransactionRevision = CanonicalTransaction & { transactionId: string };
@@ -1256,14 +1457,284 @@ export function commitCathayDomesticDepositSync(
   return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, validated, admissionClock));
 }
 
+function importCoordinates(input: CathayDerivedImportRunInput): CathayDerivedImportCoordinate[] {
+  if (input.complete === false) throw new Error("Derived import is partial; no canonical mutation was admitted.");
+  const structuredScope = [input.scope, input.outputScope].find((candidate): candidate is CathayDerivedImportScope => candidate !== undefined && !Array.isArray(candidate));
+  if (structuredScope) {
+    if (!Array.isArray(structuredScope.subjects) || !Array.isArray(structuredScope.fields) || structuredScope.subjects.length === 0 || structuredScope.fields.length === 0) throw new Error("A structured derived import scope requires subjects and fields.");
+    const expected = new Set<string>();
+    for (const subject of structuredScope.subjects) {
+      const transactionId = typeof subject === "string" ? subject : subject.kind === "transaction" ? subject.id : "";
+      if (!transactionId) throw new Error("Derived import scope contains a non-transaction subject.");
+      for (const field of structuredScope.fields) expected.add(`${transactionId}:${field}`);
+    }
+    const outputCandidates = [input.coordinates, input.outputs, input.scope, input.outputScope].filter((candidate): candidate is CathayDerivedImportCoordinate[] => Array.isArray(candidate));
+    const outputs = outputCandidates[0];
+    if (!outputs) throw new Error("A structured derived import scope requires output coordinates.");
+    const actual = new Set(outputs.map((coordinate) => `${coordinate.transactionId}:${coordinate.field}`));
+    if (expected.size !== actual.size || [...expected].some((key) => !actual.has(key))) throw new Error("Derived import output does not cover the complete declared scope.");
+    return normalizeDerivedCoordinates(outputs);
+  }
+  const candidates = [input.coordinates, input.outputs, input.scope, input.outputScope].filter((candidate): candidate is CathayDerivedImportCoordinate[] => Array.isArray(candidate));
+  if (candidates.length === 0) throw new Error("A complete derived import requires an explicit coordinate matrix.");
+  const first = candidates[0]!;
+  for (const candidate of candidates.slice(1)) {
+    if (JSON.stringify(candidate) !== JSON.stringify(first)) throw new Error("Derived import coordinate matrices disagree.");
+  }
+  return normalizeDerivedCoordinates(first);
+}
+
+function normalizeDerivedCoordinates(first: CathayDerivedImportCoordinate[]): CathayDerivedImportCoordinate[] {
+  const normalized = first.map((coordinate) => {
+    if (!coordinate || typeof coordinate !== "object") throw new Error("Derived import coordinate must be an object.");
+    if (!coordinate.transactionId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(coordinate.transactionId)) throw new Error("Derived import coordinate has an invalid transaction subject.");
+    const normalizedField = coordinate.field === ("displayName" as CathayDerivedField) || coordinate.field === ("displayLabel" as CathayDerivedField) ? "display_name" : coordinate.field;
+    if (normalizedField !== "display_name" && normalizedField !== "note") throw new Error("Derived import field is not supported.");
+    if (coordinate.state !== "supported" && coordinate.state !== "unsupported") throw new Error("Derived import coordinate has an invalid output state.");
+    if (coordinate.state === "supported" && typeof coordinate.value !== "string") throw new Error("Supported derived output must provide a typed string value.");
+    if (coordinate.state === "unsupported" && coordinate.value !== undefined && coordinate.value !== null) throw new Error("Unsupported derived output cannot carry a value.");
+    return { transactionId: coordinate.transactionId, field: normalizedField, state: coordinate.state, value: coordinate.state === "supported" ? coordinate.value! : null };
+  });
+  const seen = new Set<string>();
+  for (const coordinate of normalized) {
+    const key = `${coordinate.transactionId}:${coordinate.field}`;
+    if (seen.has(key)) throw new Error("Derived import coordinate matrix contains a duplicate subject/field.");
+    seen.add(key);
+  }
+  return normalized;
+}
+
+function validateDerivedImportInput(input: CathayDerivedImportRunInput): CathayDerivedImportCoordinate[] {
+  if (!input.sourceConnectionId.trim() || !input.identityEpoch.trim()) throw new Error("Derived import Source Connection and Identity Epoch are required.");
+  if (input.authorityRoute !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY || input.stream !== CATHAY_DOMESTIC_DEPOSIT_STREAM) throw new Error("Derived import authority route or stream is not supported.");
+  if (!input.producerId.trim() || !input.ruleLineage.trim()) throw new Error("Derived import producer and rule lineage are required.");
+  if (input.origin !== undefined && !input.origin.trim()) throw new Error("Derived import origin is required when supplied.");
+  if (input.observedAt !== undefined) parseRfc3339UtcMicros(input.observedAt, "Derived import observedAt");
+  return importCoordinates(input);
+}
+
+function derivedDiagnostic(error: unknown, input: CathayDerivedImportRunInput, stage: CathayDerivedImportDiagnostic["stage"]): CathayDerivedImportDiagnostic {
+  return { kind: "derived-import-diagnostic", stage, reason: error instanceof Error ? error.message : String(error), producerId: input.producerId, ruleLineage: input.ruleLineage };
+}
+
+function insertDerivedLifecycleEvent(db: DatabaseSync, values: { assertionId: CanonicalId; transactionId: CanonicalId; field: CathayDerivedField; runId: CanonicalId; coordinateId: CanonicalId | null; commitId: CanonicalId; kind: "observed" | "superseded" | "withdrawn" | "restored" | "provenance_only" }): void {
+  db.prepare("INSERT INTO derived_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, run_id, coordinate_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(uuidV7(), values.assertionId, values.transactionId, values.field, values.runId, values.coordinateId, values.commitId, values.kind);
+}
+
+function latestDerivedLifecycle(db: DatabaseSync, assertionId: CanonicalId): string | null {
+  const row = db.prepare(`SELECT event_kind FROM derived_assertion_lifecycle_events e JOIN canonical_commits c ON c.commit_id = e.commit_id
+    WHERE assertion_id = ? ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(assertionId) as { event_kind?: string } | undefined;
+  return row?.event_kind ?? null;
+}
+
+function latestUserLifecycle(db: DatabaseSync, assertionId: CanonicalId): string | null {
+  const row = db.prepare(`SELECT event_kind FROM user_assertion_lifecycle_events e JOIN canonical_commits c ON c.commit_id = e.commit_id
+    WHERE assertion_id = ? ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(assertionId) as { event_kind?: string } | undefined;
+  return row?.event_kind ?? null;
+}
+
+function insertCurrentDerivedField(db: DatabaseSync, transactionId: CanonicalId, field: CathayDerivedField, assertionId: CanonicalId, value: string, commitId: CanonicalId): void {
+  const user = db.prepare("SELECT 1 FROM current_transaction_fields WHERE transaction_id = ? AND field_name = ? AND origin = 'user'").get(transactionId, field);
+  if (user) return;
+  db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+    VALUES (?, ?, ?, 'derived', ?, NULL, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'derived', derived_assertion_id = excluded.derived_assertion_id, user_assertion_id = NULL, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, value, assertionId, commitId);
+}
+
+function refreshCurrentFieldAfterWithdrawal(db: DatabaseSync, transactionId: CanonicalId, field: CathayDerivedField, commitId: CanonicalId): void {
+  const user = db.prepare(`SELECT ua.assertion_id, ua.value_text FROM user_assertions ua
+    JOIN user_assertion_lifecycle_events e ON e.assertion_id = ua.assertion_id
+    WHERE ua.transaction_id = ? AND ua.field_name = ?
+    AND e.event_kind NOT IN ('withdrawn','superseded')
+    AND NOT EXISTS (SELECT 1 FROM user_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+      WHERE newer.assertion_id = e.assertion_id AND (nc.commit_sequence > (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id)
+        OR (nc.commit_sequence = (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) AND newer.rowid > e.rowid)))
+    ORDER BY (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) DESC, e.rowid DESC LIMIT 1`).get(transactionId, field) as Record<string, unknown> | undefined;
+  if (user) {
+    db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+      VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, String(user.value_text), blob(user.assertion_id), commitId);
+    return;
+  }
+  const derived = db.prepare(`SELECT da.assertion_id, da.value_text FROM derived_assertions da
+    JOIN derived_assertion_lifecycle_events e ON e.assertion_id = da.assertion_id
+    WHERE da.transaction_id = ? AND da.field_name = ? AND e.event_kind NOT IN ('withdrawn','superseded')
+    AND NOT EXISTS (SELECT 1 FROM derived_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+      WHERE newer.assertion_id = e.assertion_id AND (nc.commit_sequence > (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id)
+        OR (nc.commit_sequence = (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) AND newer.rowid > e.rowid)))
+    ORDER BY (SELECT c.commit_sequence FROM canonical_commits c WHERE c.commit_id = e.commit_id) DESC, e.rowid DESC LIMIT 1`).get(transactionId, field) as Record<string, unknown> | undefined;
+  if (derived) insertCurrentDerivedField(db, transactionId, field, blob(derived.assertion_id), String(derived.value_text), commitId);
+  else db.prepare("DELETE FROM current_transaction_fields WHERE transaction_id = ? AND field_name = ?").run(transactionId, field);
+}
+
+function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerivedImportRunInput, coordinates: CathayDerivedImportCoordinate[], clock: CanonicalAdmissionClock): { runId: string; commitSequence: number; assertionIds: string[] } {
+  const db = openCanonicalDatabase(ledgerDir);
+  let inTransaction = false;
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    inTransaction = true;
+    const connection = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
+    if (!connection) throw new Error("Derived import source connection is unknown; source lineage must already exist.");
+    const sourceConnectionId = blob(dbRow<{ source_connection_id: unknown }>(connection).source_connection_id);
+    const epoch = db.prepare("SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?").get(sourceConnectionId, input.identityEpoch);
+    if (!epoch) throw new Error("Derived import identity epoch is unknown; source lineage must already exist.");
+    const identityEpochId = blob(dbRow<{ identity_epoch_id: unknown }>(epoch).identity_epoch_id);
+    const commitId = uuidV7();
+    const commitSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0) + 1;
+    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'derived_import')").run(commitId, commitSequence, recordedAtUtcUs(clock()), input.authorityRoute);
+    const runId = uuidV7();
+    const origin = input.origin?.trim() || input.authorityRoute;
+    db.prepare("INSERT INTO derived_import_runs(run_id, source_connection_id, identity_epoch_id, authority_route, stream, producer_id, origin, rule_lineage, observed_at, commit_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete')").run(runId, sourceConnectionId, identityEpochId, input.authorityRoute, input.stream, input.producerId, origin, input.ruleLineage, input.observedAt ?? clock(), commitId);
+    const assertionIds: string[] = [];
+    for (const coordinate of coordinates) {
+      const transactionId = idFromString(coordinate.transactionId);
+      const transaction = db.prepare(`SELECT t.account_id, a.source_connection_id, a.identity_epoch_id, a.stream FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id WHERE t.transaction_id = ?`).get(transactionId) as Record<string, unknown> | undefined;
+      if (!transaction) throw new Error("Derived import targets an unknown transaction subject.");
+      if (Buffer.compare(blob(transaction.source_connection_id), sourceConnectionId) !== 0 || Buffer.compare(blob(transaction.identity_epoch_id), identityEpochId) !== 0 || transaction.stream !== input.stream) throw new Error("Derived import crossed a source identity or stream boundary.");
+      const coordinateId = uuidV7();
+      db.prepare("INSERT INTO derived_scope_coordinates(coordinate_id, run_id, transaction_id, field_name, producer_id, origin, rule_lineage, output_state, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(coordinateId, runId, transactionId, coordinate.field, input.producerId, origin, input.ruleLineage, coordinate.state, commitId);
+      const existingCurrent = db.prepare(`SELECT f.origin, f.derived_assertion_id, f.user_assertion_id FROM current_transaction_fields f WHERE f.transaction_id = ? AND f.field_name = ?`).get(transactionId, coordinate.field) as Record<string, unknown> | undefined;
+      const conflicting = db.prepare(`SELECT da.assertion_id, da.producer_id, da.origin, da.rule_lineage FROM derived_assertions da
+        JOIN derived_assertion_lifecycle_events e ON e.assertion_id = da.assertion_id
+        WHERE da.transaction_id = ? AND da.field_name = ? AND (da.producer_id <> ? OR da.origin <> ?)
+        AND e.event_kind NOT IN ('withdrawn','superseded') LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin) as Record<string, unknown> | undefined;
+      if (conflicting) throw new Error("A different derived producer or origin cannot supersede the current lineage.");
+      const latest = db.prepare(`SELECT da.* FROM derived_assertions da JOIN canonical_commits c ON c.commit_id = da.commit_id
+        WHERE da.transaction_id = ? AND da.field_name = ? AND da.producer_id = ? AND da.origin = ? AND da.rule_lineage = ?
+        ORDER BY c.commit_sequence DESC, da.assertion_id DESC LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin, input.ruleLineage) as Record<string, unknown> | undefined;
+      if (coordinate.state === "unsupported") {
+        if (latest && latestDerivedLifecycle(db, blob(latest.assertion_id)) !== "withdrawn") {
+          const withdrawnAssertion = blob(latest.assertion_id);
+          insertDerivedLifecycleEvent(db, { assertionId: withdrawnAssertion, transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "withdrawn" });
+          if (existingCurrent?.origin === "derived" && existingCurrent.derived_assertion_id && Buffer.compare(blob(existingCurrent.derived_assertion_id), withdrawnAssertion) === 0) refreshCurrentFieldAfterWithdrawal(db, transactionId, coordinate.field, commitId);
+        }
+        continue;
+      }
+      const value = coordinate.value!;
+      let assertionId: CanonicalId;
+      let eventKind: "observed" | "superseded" | "restored" | "provenance_only" = "observed";
+      if (latest && String(latest.value_text) === value) {
+        assertionId = blob(latest.assertion_id);
+        eventKind = latestDerivedLifecycle(db, assertionId) === "withdrawn" ? "restored" : "provenance_only";
+      } else {
+        assertionId = uuidV7();
+        if (latest) insertDerivedLifecycleEvent(db, { assertionId: blob(latest.assertion_id), transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "superseded" });
+        db.prepare("INSERT INTO derived_assertions(assertion_id, transaction_id, field_name, producer_id, origin, rule_lineage, value_text, run_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, coordinate.field, input.producerId, origin, input.ruleLineage, value, runId, commitId);
+      }
+      db.prepare("INSERT INTO derived_assertion_provenance(assertion_id, run_id, coordinate_id, commit_id) VALUES (?, ?, ?, ?)").run(assertionId, runId, coordinateId, commitId);
+      insertDerivedLifecycleEvent(db, { assertionId, transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: eventKind });
+      assertionIds.push(idToString(assertionId));
+      if (existingCurrent?.origin !== "user") insertCurrentDerivedField(db, transactionId, coordinate.field, assertionId, value, commitId);
+    }
+    db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
+    db.exec("COMMIT");
+    inTransaction = false;
+    return { runId: idToString(runId), commitSequence, assertionIds };
+  } catch (error) {
+    if (inTransaction) db.exec("ROLLBACK");
+    throw error;
+  } finally { db.close(); }
+}
+
+export function commitCathayDerivedImportRun(ledgerDir: string, input: CathayDerivedImportRunInput, options: CathayDerivedImportOptions = {}): Promise<CathayDerivedImportResult & { status: "committed" }> {
+  const coordinates = validateDerivedImportInput(input);
+  const clock = options.clock ?? (() => new Date().toISOString());
+  return withCanonicalWriter(ledgerDir, () => ({ status: "committed", ...commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, clock) }));
+}
+
+export const commitCathayImportRun = commitCathayDerivedImportRun;
+export const commitDerivedImportRun = commitCathayDerivedImportRun;
+export const commitCathayDerivedImport = commitCathayDerivedImportRun;
+
+export async function runCathayDerivedImportRun(ledgerDir: string, input: CathayDerivedImportRunInput, options: CathayDerivedImportOptions = {}): Promise<CathayDerivedImportResult> {
+  let coordinates: CathayDerivedImportCoordinate[];
+  try { coordinates = validateDerivedImportInput(input); }
+  catch (error) {
+    const diagnostic = derivedDiagnostic(error, input, "preflight");
+    options.onDiagnostic?.(diagnostic);
+    return { status: "diagnostic", diagnostic };
+  }
+  try { return { status: "committed", ...await withCanonicalWriter(ledgerDir, () => commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, options.clock ?? (() => new Date().toISOString()))) }; }
+  catch (error) {
+    const diagnostic = derivedDiagnostic(error, input, "commit");
+    options.onDiagnostic?.(diagnostic);
+    return { status: "diagnostic", diagnostic };
+  }
+}
+
+export async function commitCathayUserAssertion(ledgerDir: string, input: CathayUserAssertionInput, options: CathayCanonicalCommitOptions = {}): Promise<CathayUserAssertionResult> {
+  const rawField = typeof input.field === "string" ? input.field : typeof input.target === "object" ? input.target.field : undefined;
+  const field = rawField === "displayName" || rawField === "displayLabel" ? "display_name" : rawField;
+  if (field !== "display_name" && field !== "note") throw new Error("User Assertions may target only display_name or note.");
+  const transactionIdText = input.transactionId ?? input.subject?.id ?? (typeof input.target === "object" ? input.target.id : undefined);
+  if (!transactionIdText) throw new Error("User Assertion requires a transaction subject.");
+  if (input.subject && input.subject.kind !== "transaction") throw new Error("User Assertions support transaction subjects only.");
+  const transactionId = idFromString(transactionIdText);
+  if (input.value !== undefined && input.value !== null && typeof input.value !== "string") throw new Error("User Assertion value must be a string or null.");
+  const userId = input.userId?.trim() || "local-user";
+  if (!userId) throw new Error("User Assertion user identity is required.");
+  if (input.observedAt) parseRfc3339UtcMicros(input.observedAt, "User Assertion observedAt");
+  const clock = options.clock ?? (() => new Date().toISOString());
+  return withCanonicalWriter(ledgerDir, () => {
+    const db = openCanonicalDatabase(ledgerDir);
+    let inTransaction = false;
+    try {
+      db.exec("BEGIN IMMEDIATE"); inTransaction = true;
+      if (!db.prepare("SELECT 1 FROM financial_transactions WHERE transaction_id = ?").get(transactionId)) throw new Error("User Assertion targets an unknown transaction.");
+      const commitId = uuidV7();
+      const commitSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0) + 1;
+      db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'user_assertion')").run(commitId, commitSequence, recordedAtUtcUs(clock()), "user/local");
+      const prior = db.prepare(`SELECT ua.* FROM user_assertions ua JOIN canonical_commits c ON c.commit_id = ua.commit_id
+        WHERE ua.transaction_id = ? AND ua.field_name = ? AND ua.user_id = ? ORDER BY c.commit_sequence DESC, ua.assertion_id DESC LIMIT 1`).get(transactionId, field, userId) as Record<string, unknown> | undefined;
+      let assertionId: CanonicalId;
+      const withdrawn = input.value === null;
+      if (withdrawn) {
+        if (!prior) throw new Error("Cannot withdraw a user assertion that does not exist.");
+        assertionId = blob(prior.assertion_id);
+        db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'withdrawn')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
+      } else {
+        const value = input.value ?? "";
+        if (prior && String(prior.value_text) === value && latestUserLifecycle(db, blob(prior.assertion_id)) !== "withdrawn") {
+          assertionId = blob(prior.assertion_id);
+          db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'provenance_only')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
+        } else {
+          assertionId = uuidV7();
+          if (prior) db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'superseded')").run(uuidV7(), blob(prior.assertion_id), transactionId, field, userId, commitId);
+          db.prepare("INSERT INTO user_assertions(assertion_id, transaction_id, field_name, user_id, value_text, commit_id) VALUES (?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, field, userId, value, commitId);
+          db.prepare("INSERT INTO user_assertion_lifecycle_events(event_id, assertion_id, transaction_id, field_name, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, 'observed')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
+        }
+      }
+      if (withdrawn) {
+        db.prepare("DELETE FROM current_transaction_fields WHERE transaction_id = ? AND field_name = ? AND origin = 'user' AND user_assertion_id = ?").run(transactionId, field, assertionId);
+        refreshCurrentFieldAfterWithdrawal(db, transactionId, field, commitId);
+      }
+      else db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+        VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, input.value ?? "", assertionId, commitId);
+      db.prepare("INSERT OR IGNORE INTO user_assertion_provenance(assertion_id, commit_id) VALUES (?, ?)").run(assertionId, commitId);
+      db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
+      db.exec("COMMIT"); inTransaction = false;
+      return { status: "committed", assertionId: idToString(assertionId), commitSequence, field, withdrawn };
+    } catch (error) { if (inTransaction) db.exec("ROLLBACK"); throw error; }
+    finally { db.close(); }
+  });
+}
+
+export const setCathayUserAssertion = commitCathayUserAssertion;
+export const commitCathayUserTransactionAssertion = commitCathayUserAssertion;
+export const commitCathayUserAssertionAction = commitCathayUserAssertion;
+
 function amountFromRow(row: Record<string, unknown>, prefix = ""): CanonicalAmount { return { coefficient: String(row[`${prefix}amount_coefficient`]), scale: Number(row[`${prefix}amount_scale`]) }; }
 function transactionFromRow(row: Record<string, unknown>): CanonicalTransaction {
+  const selectedDisplay = typeof row.selected_display_label === "string" ? row.selected_display_label : typeof row.description === "string" ? row.description : null;
+  const selectedDisplayOrigin = row.selected_display_origin === "user" || row.selected_display_origin === "derived" ? row.selected_display_origin : "source";
+  const selectedDisplayCommitSequence = typeof row.selected_display_commit_sequence === "number" ? row.selected_display_commit_sequence : row.selected_display_commit_sequence !== undefined && row.selected_display_commit_sequence !== null ? Number(row.selected_display_commit_sequence) : null;
+  const selectedNote = typeof row.selected_note === "string" ? row.selected_note : null;
+  const selectedNoteOrigin = row.selected_note_origin === "user" || row.selected_note_origin === "derived" ? row.selected_note_origin : null;
+  const selectedNoteCommitSequence = typeof row.selected_note_commit_sequence === "number" ? row.selected_note_commit_sequence : row.selected_note_commit_sequence !== undefined && row.selected_note_commit_sequence !== null ? Number(row.selected_note_commit_sequence) : null;
   return {
     id: idToString(row.transaction_id), accountId: idToString(row.account_id), accountNo: String(row.account_no), sourceSequence: String(row.source_sequence),
     amount: amountFromRow(row), currency: "TWD", direction: row.direction as "inflow" | "outflow", postingStatus: row.posting_status as "posted",
     postingOrigin: row.posting_origin as "provider_booked_history", postingBasis: row.posting_basis as "query-status-success-with-accounting-date", postingRuleVersion: row.posting_rule_version as "cathay/domestic-deposit/v1",
     assertionSupportState: row.assertion_support_state === "withdrawn" ? "withdrawn" : "supported", economicStatus: row.economic_status as CanonicalEconomicStatus, administrativeState: row.administrative_state as CanonicalAdministrativeState, semanticRuleVersion: row.semantic_rule_version as "cathay/domestic-deposit/v1",
-    displayLabel: typeof row.description === "string" ? row.description : null, effectiveOn: String(row.effective_on), effectiveTimeBasis: row.effective_time_basis as "accounting", effectiveTimeRuleVersion: row.effective_time_rule_version as "cathay/domestic-deposit/v1",
+    displayLabel: selectedDisplay, displayLabelOrigin: selectedDisplayOrigin, displayLabelCommitSequence: selectedDisplayCommitSequence, note: selectedNote, noteOrigin: selectedNoteOrigin, noteCommitSequence: selectedNoteCommitSequence, effectiveOn: String(row.effective_on), effectiveTimeBasis: row.effective_time_basis as "accounting", effectiveTimeRuleVersion: row.effective_time_rule_version as "cathay/domestic-deposit/v1",
     transactionDateTimeLocal: String(row.transaction_date_time_local), timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, timePrecision: "second", timeOrigin: "source_reported",
     utcInstantUtcUs: Number(row.utc_instant_utc_us), revisionId: idToString(row.revision_id), commitSequence: Number(row.commit_sequence),
   };
@@ -1271,6 +1742,35 @@ function transactionFromRow(row: Record<string, unknown>): CanonicalTransaction 
 function transactionRevisionFromRow(row: Record<string, unknown>): CanonicalTransactionRevision {
   const transaction = transactionFromRow(row);
   return { ...transaction, id: idToString(row.revision_id), transactionId: transaction.id };
+}
+
+function selectedCurrentField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField): { value: string; origin: "derived" | "user"; commitSequence: number } | undefined {
+  const row = db.prepare("SELECT f.value_text, f.origin, c.commit_sequence FROM current_transaction_fields f JOIN canonical_commits c ON c.commit_id = f.projection_commit_id WHERE f.transaction_id = ? AND f.field_name = ?").get(transactionId as CanonicalId, field) as { value_text?: unknown; origin?: string; commit_sequence?: number } | undefined;
+  if (row?.origin !== "derived" && row?.origin !== "user") return undefined;
+  return { value: String(row.value_text), origin: row.origin, commitSequence: Number(row.commit_sequence) };
+}
+
+function selectedHistoricalField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number): { value: string; origin: "derived" | "user"; commitSequence: number } | undefined {
+  const user = db.prepare(`SELECT ua.value_text, c.commit_sequence FROM user_assertions ua JOIN user_assertion_lifecycle_events e ON e.assertion_id = ua.assertion_id
+    JOIN canonical_commits c ON c.commit_id = e.commit_id
+    WHERE ua.transaction_id = ? AND ua.field_name = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
+      AND NOT EXISTS (SELECT 1 FROM user_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+        WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ? AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
+    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
+  if (user) return { value: String(user.value_text), origin: "user", commitSequence: Number(user.commit_sequence) };
+  const derived = db.prepare(`SELECT da.value_text, c.commit_sequence FROM derived_assertions da JOIN derived_assertion_lifecycle_events e ON e.assertion_id = da.assertion_id
+    JOIN canonical_commits c ON c.commit_id = e.commit_id
+    WHERE da.transaction_id = ? AND da.field_name = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
+      AND NOT EXISTS (SELECT 1 FROM derived_assertion_lifecycle_events newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+        WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ? AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
+    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
+  return derived ? { value: String(derived.value_text), origin: "derived", commitSequence: Number(derived.commit_sequence) } : undefined;
+}
+
+function addSelectedFields(db: DatabaseSync, row: Record<string, unknown>, knowledgeAt?: number): Record<string, unknown> {
+  const display = knowledgeAt === undefined ? selectedCurrentField(db, row.transaction_id, "display_name") : selectedHistoricalField(db, row.transaction_id, "display_name", knowledgeAt);
+  const note = knowledgeAt === undefined ? selectedCurrentField(db, row.transaction_id, "note") : selectedHistoricalField(db, row.transaction_id, "note", knowledgeAt);
+  return { ...row, selected_display_label: display?.value, selected_display_origin: display?.origin, selected_display_commit_sequence: display?.commitSequence, selected_note: note?.value, selected_note_origin: note?.origin, selected_note_commit_sequence: note?.commitSequence };
 }
 
 class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQuery {
@@ -1291,7 +1791,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       const projection = db.prepare(`SELECT c.commit_sequence FROM current_projection_state state
         JOIN canonical_commits c ON c.commit_id = state.commit_id WHERE state.generation = 1`).get() as { commit_sequence?: number } | undefined;
       if (!projection) throw new Error("Canonical current projection cutoff is missing.");
-      return { status: "ok", kind: "current", accounts, transactions: rows.map(transactionFromRow), commitSequence: Number(projection.commit_sequence) };
+      return { status: "ok", kind: "current", accounts, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row))), commitSequence: Number(projection.commit_sequence) };
     } finally { db.close(); }
   }
   async historical(request: CathayCanonicalHistoricalQueryRequest): Promise<CathayCanonicalHistoricalQueryResult> {
@@ -1316,7 +1816,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
         ) ORDER BY a.account_no, t.source_sequence`).all(knowledgeAt, request.cutoff.financialAt, knowledgeAt, request.cutoff.financialAt, knowledgeAt) as Record<string, unknown>[];
-      return { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map(transactionFromRow) };
+      return { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row, knowledgeAt))) };
     } finally { db.close(); }
   }
   async lineage(request: CathayCanonicalLineageQueryRequest): Promise<CathayCanonicalLineageQueryResult> {
@@ -1342,7 +1842,13 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         const lifecycleEvents = db.prepare(`SELECT e.event_id, e.event_kind, c.commit_sequence, cs.scope_id, cs.completeness, cs.absence_authority, cs.contract_fingerprint, cs.page_count
           FROM assertion_lifecycle_events e JOIN canonical_commits c ON c.commit_id = e.commit_id
           LEFT JOIN capture_scopes cs ON cs.scope_id = e.scope_id WHERE e.assertion_id = ? ORDER BY c.commit_sequence, e.event_id`).all(assertionId) as Record<string, unknown>[];
-        const revision = transactionRevisionFromRow(row);
+        const derivedRows = db.prepare(`SELECT da.assertion_id, da.field_name, da.producer_id, da.origin, da.rule_lineage, da.value_text, da.run_id, c.commit_sequence
+          FROM derived_assertions da JOIN canonical_commits c ON c.commit_id = da.commit_id
+          WHERE da.transaction_id = ? ORDER BY c.commit_sequence, da.assertion_id`).all(transactionId) as Record<string, unknown>[];
+        const userRows = db.prepare(`SELECT ua.assertion_id, ua.field_name, ua.user_id, ua.value_text, c.commit_sequence
+          FROM user_assertions ua JOIN canonical_commits c ON c.commit_id = ua.commit_id
+          WHERE ua.transaction_id = ? ORDER BY c.commit_sequence, ua.assertion_id`).all(transactionId) as Record<string, unknown>[];
+        const revision = transactionRevisionFromRow(addSelectedFields(db, row, Number(row.commit_sequence)));
         return {
           transaction: { id: idToString(row.transaction_id), accountId: idToString(row.account_id), sourceSequence: String(row.source_sequence) },
           revision,
@@ -1354,6 +1860,16 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
             id: idToString(event.event_id), kind: event.event_kind as CathayCanonicalLifecycleEvent["kind"], commitSequence: Number(event.commit_sequence),
             scopeProof: event.scope_id ? { id: idToString(event.scope_id), completeness: "complete-range" as const, absenceAuthority: (event.absence_authority as CathayAbsenceAuthority | null) ?? null, contractFingerprint: String(event.contract_fingerprint), pageCount: Number(event.page_count) } : null,
           })),
+          derivedAssertions: derivedRows.map((derived) => {
+            const derivedAssertionId = blob(derived.assertion_id);
+            const provenanceRows = db.prepare("SELECT run_id, coordinate_id FROM derived_assertion_provenance WHERE assertion_id = ? ORDER BY run_id, coordinate_id").all(derivedAssertionId) as Record<string, unknown>[];
+            return { id: idToString(derivedAssertionId), field: derived.field_name as CathayDerivedField, producerId: String(derived.producer_id), origin: String(derived.origin), ruleLineage: String(derived.rule_lineage), value: String(derived.value_text), state: latestDerivedLifecycle(db, derivedAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(derived.commit_sequence), runId: idToString(derived.run_id), provenance: provenanceRows.map((provenanceRow) => ({ runId: idToString(provenanceRow.run_id), coordinateId: idToString(provenanceRow.coordinate_id) })) };
+          }),
+          userAssertions: userRows.map((user) => {
+            const userAssertionId = blob(user.assertion_id);
+            const userProvenance = db.prepare(`SELECT c.commit_sequence FROM user_assertion_provenance p JOIN canonical_commits c ON c.commit_id = p.commit_id WHERE p.assertion_id = ? ORDER BY c.commit_sequence`).all(userAssertionId) as Array<Record<string, unknown>>;
+            return { id: idToString(userAssertionId), field: user.field_name as CathayUserAssertionField, userId: String(user.user_id), value: String(user.value_text), state: latestUserLifecycle(db, userAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(user.commit_sequence), provenance: userProvenance.map((item) => ({ commitSequence: Number(item.commit_sequence) })) };
+          }),
         } satisfies CathayCanonicalLineageEntry;
       });
       return { status: "ok", kind: "lineage", subject: request.subject, entries };

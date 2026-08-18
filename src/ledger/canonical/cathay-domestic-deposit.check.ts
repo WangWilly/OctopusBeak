@@ -13,6 +13,9 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_PROVENANCE,
   commitCathayDomesticDeposit,
   commitCathayDomesticDepositSync,
+  commitCathayDerivedImportRun,
+  runCathayDerivedImportRun,
+  commitCathayUserAssertion,
   canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
@@ -569,6 +572,66 @@ try {
   assert.equal(seeded.transactions.length, 3);
 } finally { await rm(semanticDir, { recursive: true, force: true }); }
 
+// Issue #130: a complete derived run owns an explicit coordinate matrix. Its
+// output lifecycle is independent from Source Assertions and User Assertions.
+const derivedDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-derived-v6-"));
+try {
+  const source = await commitCathayDomesticDeposit(derivedDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+  const transactionId = source.transactions[0]!.transactionId;
+  const derivedInput = {
+    sourceConnectionId: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.sourceConnectionId,
+    identityEpoch: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.identityEpoch,
+    authorityRoute: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.authorityRoute,
+    stream: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.stream,
+    producerId: "synthetic-enricher-v1",
+    ruleLineage: "synthetic-rule-v1",
+    scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Derived label" }, { transactionId, field: "note" as const, state: "unsupported" as const }],
+  };
+  const firstDerived = await commitCathayDerivedImportRun(derivedDir, derivedInput);
+  const currentDerived = (await createCathayCanonicalFinancialQuery(derivedDir).current({ kind: "current" })).transactions[0]!;
+  assert.equal(currentDerived.displayLabel, "Derived label");
+  assert.equal(currentDerived.displayLabelOrigin, "derived");
+  assert.equal(currentDerived.note, null);
+  assert.equal(currentDerived.displayLabelCommitSequence, firstDerived.commitSequence);
+
+  const unchanged = await commitCathayDerivedImportRun(derivedDir, derivedInput);
+  const changed = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Changed label" }, { transactionId, field: "note" as const, state: "supported" as const, value: "Derived note" }] });
+  const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
+  assert.equal(producerDiagnostic.status, "diagnostic");
+  const withdrawn = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
+  const query = createCathayCanonicalFinancialQuery(derivedDir);
+  assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
+  const historicalChanged = await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(changed.commitSequence) } });
+  assert.equal(historicalChanged.transactions[0]?.displayLabel, "Changed label");
+  const lineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } });
+  const derivedKinds = lineage.entries.flatMap((entry) => entry.derivedAssertions.map((assertion) => assertion.state));
+  assert.equal(derivedKinds.includes("withdrawn"), true);
+  assert.equal(lineage.entries[0]?.derivedAssertions.some((assertion) => assertion.value === "Changed label"), true);
+  const db = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, 4);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count, 4);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events WHERE event_kind = 'provenance_only'").get()?.count, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM derived_assertion_lifecycle_events WHERE event_kind = 'withdrawn'").get()?.count, 2);
+  } finally { db.close(); }
+
+  const user = await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: "User label" });
+  const userCurrent = (await query.current({ kind: "current" })).transactions[0]!;
+  assert.equal(userCurrent.displayLabel, "User label");
+  assert.equal(userCurrent.displayLabelOrigin, "user");
+  assert.equal(userCurrent.displayLabelCommitSequence, user.commitSequence);
+  await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: null });
+  assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
+  const userLineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } });
+  assert.equal(userLineage.entries[0]?.userAssertions.some((assertion) => assertion.state === "withdrawn"), true);
+
+  const diagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, complete: false });
+  assert.equal(diagnostic.status, "diagnostic");
+  const diagnosticDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try { assert.equal(diagnosticDb.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, 4); } finally { diagnosticDb.close(); }
+  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { transactionId, field: "amount", value: "999" } as never), /only display_name or note/);
+} finally { await rm(derivedDir, { recursive: true, force: true }); }
+
 const blockStart = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.indexOf('{"queryStatus"');
 const blockEnd = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.lastIndexOf("}]}}") + 1;
 const singleResultBlock = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.slice(blockStart, blockEnd);
@@ -662,7 +725,7 @@ for (const version of [1, 2] as const) {
     const migrated = openCanonicalDatabase(migrationDir);
     try {
       assert.equal(Number(migrated.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION, `v${version} final version`);
-      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 5, `v${version} migration history`);
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 6, `v${version} migration history`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1, `v${version} source row`);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM transaction_revisions").get()?.count, 1, `v${version} revision`);
       assert.equal(migrated.prepare("SELECT completeness_basis FROM source_captures").get()?.completeness_basis, "success-status-scope-count-details", `v${version} completeness`);
@@ -744,7 +807,7 @@ try {
   try {
     assert.equal(Number(migratedV3.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
     assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 3);
-    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 2);
+    assert.equal(migratedV3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()?.count, 3);
     assert.equal(migratedV3.prepare("SELECT 1 FROM sqlite_master WHERE name = 'capture_scopes'").get()?.["1"], 1);
   } finally { migratedV3.close(); }
   const v3RollbackDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v3-rollback-"));
@@ -781,7 +844,7 @@ try {
   const malformedV5 = new DatabaseSync(canonicalSqlitePath(malformedV5Dir));
   malformedV5.exec("DROP INDEX idx_source_record_scopes_scope_sequence");
   malformedV5.close();
-  assert.throws(() => openCanonicalDatabase(malformedV5Dir, { readOnly: true }), /schema v5 index idx_source_record_scopes_scope_sequence is missing/);
+  assert.throws(() => openCanonicalDatabase(malformedV5Dir, { readOnly: true }), /schema v6 index idx_source_record_scopes_scope_sequence is missing/);
 } finally { await rm(malformedV5Dir, { recursive: true, force: true }); }
 
 for (const [label, capture] of [
