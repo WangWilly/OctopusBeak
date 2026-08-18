@@ -689,6 +689,18 @@ try {
   assert.equal(userCurrent.displayLabelCommitSequence, user.commitSequence);
   await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: null });
   assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
+  const authorityDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try {
+    for (const compatibility of ["assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
+      assert.equal(authorityDb.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(compatibility)?.type, "view", compatibility);
+    }
+    const sharedEventIds = (authorityDb.prepare("SELECT event_id FROM assertion_transitions ORDER BY event_id").all() as Array<Record<string, unknown>>).map((row) => Buffer.from(row.event_id as Uint8Array).toString("hex"));
+    const compatibilityEventIds = (authorityDb.prepare(`SELECT event_id FROM assertion_lifecycle_events
+      UNION SELECT event_id FROM derived_assertion_lifecycle_events
+      UNION SELECT event_id FROM user_assertion_lifecycle_events ORDER BY event_id`).all() as Array<Record<string, unknown>>).map((row) => Buffer.from(row.event_id as Uint8Array).toString("hex"));
+    assert.deepEqual(compatibilityEventIds, sharedEventIds);
+    assert.equal(authorityDb.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count, new Set(sharedEventIds).size);
+  } finally { authorityDb.close(); }
   const userLineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } });
   assert.equal(userLineage.entries[0]?.userAssertions.some((assertion) => assertion.state === "withdrawn"), true);
 
@@ -889,7 +901,7 @@ const v3MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-
 try {
   await commitCathayDomesticDeposit(v3MigrationDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
   const v3Seed = new DatabaseSync(canonicalSqlitePath(v3MigrationDir));
-  v3Seed.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;");
+  v3Seed.exec("DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;");
   v3Seed.exec("DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3;");
   v3Seed.close();
   const migratedV3 = openCanonicalDatabase(v3MigrationDir);
@@ -903,7 +915,7 @@ try {
   try {
     await commitCathayDomesticDeposit(v3RollbackDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
     const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
-    downgrade.exec("DROP TABLE assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;");
+    downgrade.exec("DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;");
     downgrade.close();
     assert.throws(() => openCanonicalDatabase(v3RollbackDir), /capture_scopes|views may not be indexed/);
     const afterFailure = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
@@ -921,7 +933,7 @@ const populatedV5MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp",
 try {
   await commitCathayDomesticDeposit(populatedV5MigrationDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
   const downgrade = new DatabaseSync(canonicalSqlitePath(populatedV5MigrationDir));
-  downgrade.exec("DROP TABLE current_transaction_fields; DROP TABLE user_assertion_provenance; DROP TABLE user_assertion_lifecycle_events; DROP TABLE user_assertions; DROP TABLE derived_assertion_lifecycle_events; DROP TABLE derived_assertion_provenance; DROP TABLE derived_assertions; DROP TABLE derived_scope_coordinates; DROP TABLE derived_import_runs; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;");
+  downgrade.exec("DROP TABLE current_transaction_fields; DROP VIEW user_assertion_provenance; DROP VIEW user_assertion_lifecycle_events; DROP TABLE user_assertions; DROP VIEW derived_assertion_lifecycle_events; DROP VIEW derived_assertion_provenance; DROP TABLE derived_assertions; DROP TABLE derived_scope_coordinates; DROP TABLE derived_import_runs; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;");
   downgrade.close();
   assert.throws(() => openCanonicalDatabase(populatedV5MigrationDir, { injectMigrationFailure: "v5-v6-after-derived-schema" }), /Injected v5-v6 migration failure/);
   const failedPopulatedV5 = new DatabaseSync(canonicalSqlitePath(populatedV5MigrationDir));
