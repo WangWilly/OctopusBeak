@@ -392,6 +392,24 @@ try {
   } finally { migratedV4.close(); }
 } finally { await rm(populatedV4ScopeMigrationDir, { recursive: true, force: true }); }
 
+const provenanceOnlyV4MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v4-provenance-only-"));
+try {
+  await commitCathayDomesticDepositSync(provenanceOnlyV4MigrationDir, syncInput());
+  await commitCathayDomesticDepositSync(provenanceOnlyV4MigrationDir, { ...syncInput(), observedAt: "2026-08-18T00:00:00+08:00" });
+  const provenanceOnlyV4Seed = openCanonicalDatabase(provenanceOnlyV4MigrationDir);
+  provenanceOnlyV4Seed.exec("DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;");
+  provenanceOnlyV4Seed.close();
+  const provenanceOnlyV4Writer = openCanonicalDatabase(provenanceOnlyV4MigrationDir);
+  provenanceOnlyV4Writer.close();
+  const provenanceOnlyV4Migrated = openCanonicalDatabase(provenanceOnlyV4MigrationDir, { readOnly: true });
+  try {
+    assert.equal(provenanceOnlyV4Migrated.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 6);
+    assert.equal(provenanceOnlyV4Migrated.prepare("SELECT COUNT(*) AS count FROM source_record_scopes").get()?.count, 6);
+    assert.equal(provenanceOnlyV4Migrated.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count, 6);
+    assert.equal(provenanceOnlyV4Migrated.prepare("SELECT COUNT(*) AS count FROM source_assertions").get()?.count, 3);
+  } finally { provenanceOnlyV4Migrated.close(); }
+} finally { await rm(provenanceOnlyV4MigrationDir, { recursive: true, force: true }); }
+
 const tombstoneDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-tombstone-") );
 try {
   assert.throws(() => commitCathayDomesticDepositSync(tombstoneDir, syncInput([{
