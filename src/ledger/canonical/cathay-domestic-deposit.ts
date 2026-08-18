@@ -2,6 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  configureCanonicalRuntime,
+  verifyCanonicalRuntime,
+  withCanonicalWriterQueue,
+  type CanonicalRuntimeOptions,
+} from "./canonical-runtime.ts";
 
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
@@ -9,7 +15,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY = "cathay/domestic-deposit/v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CATHAY_DERIVED_ORIGIN = "derived/cathay/domestic-deposit/v1" as const;
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 6;
+export const CANONICAL_SCHEMA_VERSION = 7;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -869,6 +875,54 @@ const SCHEMA_V6_BASE = SCHEMA_V5
   .replace("CREATE INDEX IF NOT EXISTS idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);", "");
 const SCHEMA_V6 = `${SCHEMA_V6_BASE.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
 
+/** v7 keeps the public Current query contract while moving its physical rows
+ * behind an immutable generation boundary. Compatibility tables are mirrored
+ * inside the same write transaction for older #129/#130 callers; these rows
+ * are never consulted by the v7 query adapter. */
+const SCHEMA_V7_APPEND = `
+CREATE TABLE IF NOT EXISTS projection_generations (
+  generation_id INTEGER PRIMARY KEY CHECK(generation_id > 0),
+  status TEXT NOT NULL CHECK(status IN ('building','validated','active','retired')),
+  build_cutoff_commit_sequence INTEGER NOT NULL CHECK(build_cutoff_commit_sequence >= 0),
+  rule_version TEXT NOT NULL,
+  created_commit_id BLOB REFERENCES canonical_commits(commit_id),
+  validated_commit_id BLOB REFERENCES canonical_commits(commit_id),
+  switched_commit_id BLOB REFERENCES canonical_commits(commit_id),
+  UNIQUE(generation_id, status)
+);
+CREATE TABLE IF NOT EXISTS active_projection_generation (
+  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+  generation_id INTEGER NOT NULL UNIQUE REFERENCES projection_generations(generation_id),
+  switched_commit_id BLOB REFERENCES canonical_commits(commit_id)
+);
+CREATE TABLE IF NOT EXISTS projection_generation_transactions (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, transaction_id),
+  UNIQUE(generation_id, revision_id)
+);
+CREATE TABLE IF NOT EXISTS projection_generation_transaction_fields (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  value_text TEXT NOT NULL,
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  derived_assertion_id BLOB REFERENCES assertions(assertion_id),
+  user_assertion_id BLOB REFERENCES assertions(assertion_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, transaction_id, field_name),
+  CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
+    OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_active ON projection_generation_transactions(generation_id, transaction_id, revision_id);
+CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_revision ON projection_generation_transactions(generation_id, revision_id, projection_commit_id);
+CREATE INDEX IF NOT EXISTS idx_projection_generation_fields_active ON projection_generation_transaction_fields(generation_id, transaction_id, field_name, projection_commit_id);
+CREATE INDEX IF NOT EXISTS idx_projection_generations_status ON projection_generations(status, build_cutoff_commit_sequence, generation_id);
+`;
+
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
 // Keeping this target schema separate prevents an older database from being created at a
 // partially upgraded shape before its migration transaction reaches the next version.
@@ -981,8 +1035,18 @@ function migrateV3ToV4(db: DatabaseSync): void {
     throw error;
   }
 }
-export type CanonicalMigrationFailureInjection = "v4-v5-after-record-copy" | "v5-v6-after-derived-schema";
-export type CanonicalDatabaseOptions = { readOnly?: boolean; injectMigrationFailure?: CanonicalMigrationFailureInjection };
+export type CanonicalMigrationFailureInjection =
+  | "v4-v5-after-record-copy"
+  | "v5-v6-after-derived-schema"
+  | "v6-v7-after-generation-creation"
+  | "v6-v7-after-generation-copy"
+  | "v6-v7-after-pointer"
+  | "v6-v7-after-validation";
+export type CanonicalDatabaseOptions = {
+  readOnly?: boolean;
+  injectMigrationFailure?: CanonicalMigrationFailureInjection;
+  runtime?: CanonicalRuntimeOptions;
+};
 
 function ensureV6SharedAssertionSpine(db: DatabaseSync): void {
   const provenanceSql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assertion_provenance'").get() as { sql?: unknown } | undefined)?.sql ?? "");
@@ -1300,6 +1364,76 @@ function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     throw error;
   }
 }
+
+function migrateV6ToV7(db: DatabaseSync, injectMigrationFailure?: CanonicalMigrationFailureInjection, transactionAlreadyOpen = false): void {
+  if (!transactionAlreadyOpen) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("BEGIN IMMEDIATE");
+  }
+  try {
+    // The v6 commit-kind constraint predates projection switches. Rebuild the
+    // small root table while all children are protected by this transaction.
+    db.exec(`CREATE TABLE canonical_commits_v7 (
+      commit_id BLOB PRIMARY KEY CHECK(length(commit_id) = 16), commit_sequence INTEGER NOT NULL UNIQUE,
+      recorded_at_utc_us INTEGER NOT NULL, authority_route TEXT NOT NULL,
+      commit_kind TEXT NOT NULL CHECK(commit_kind IN ('source_capture','derived_import','user_assertion','projection_rebuild'))
+    )`);
+    db.exec("INSERT INTO canonical_commits_v7 SELECT * FROM canonical_commits");
+    db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v7 RENAME TO canonical_commits");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id)");
+    db.exec(SCHEMA_V7_APPEND);
+    if (injectMigrationFailure === "v6-v7-after-generation-creation") throw new Error("Injected v6-v7 migration failure after generation creation.");
+
+    const latest = db.prepare("SELECT commit_id, commit_sequence FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1").get() as { commit_id?: unknown; commit_sequence?: number } | undefined;
+    const latestCommit = latest?.commit_id ? blob(latest.commit_id) : undefined;
+    let latestSequence = Number(latest?.commit_sequence ?? 0);
+    const generationExists = db.prepare("SELECT 1 FROM projection_generations WHERE generation_id = 1").get();
+    if (!generationExists) {
+      db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
+      VALUES (1, 'active', ?, 'canonical/projection/v1', ?)`).run(latestSequence, latestCommit ?? null);
+      db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
+        SELECT 1, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run();
+      db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+        SELECT 1, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`).run();
+    }
+    if (injectMigrationFailure === "v6-v7-after-generation-copy") throw new Error("Injected v6-v7 migration failure after generation copy.");
+    db.prepare(`INSERT INTO active_projection_generation(singleton_id, generation_id, switched_commit_id)
+      VALUES (1, 1, ?) ON CONFLICT(singleton_id) DO UPDATE SET generation_id = excluded.generation_id, switched_commit_id = excluded.switched_commit_id`).run(latestCommit ?? null);
+    if (latestCommit) db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(latestCommit);
+    if (injectMigrationFailure === "v6-v7-after-pointer") throw new Error("Injected v6-v7 migration failure after active pointer.");
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (7, ?)").run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 7");
+    if (!transactionAlreadyOpen) {
+      db.exec("COMMIT");
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  } catch (error) {
+    if (!transactionAlreadyOpen) {
+      db.exec("ROLLBACK");
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+    throw error;
+  }
+}
+
+function ensureV7ProjectionSchema(db: DatabaseSync): void {
+  db.exec(SCHEMA_V7_APPEND);
+  const pointer = db.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number } | undefined;
+  if (!pointer) throw new Error("Canonical v7 active projection pointer is missing.");
+  const generationId = Number(pointer.generation_id ?? 0);
+  const generation = db.prepare("SELECT generation_id, status FROM projection_generations WHERE generation_id = ?").get(generationId) as { generation_id?: number; status?: string } | undefined;
+  if (!generation || generation.status !== "active") throw new Error("Canonical v7 active projection generation is not active.");
+  const activeCount = Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generations WHERE status = 'active'").get() as { count?: number }).count ?? 0);
+  if (activeCount !== 1) throw new Error("Canonical v7 active projection generation is ambiguous.");
+  const mixedRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
+    WHERE rows.generation_id = ? AND (rows.revision_id NOT IN (SELECT revision_id FROM transaction_revisions)
+      OR rows.transaction_id NOT IN (SELECT transaction_id FROM financial_transactions))`).get(generationId) as { count?: number }).count ?? 0);
+  if (mixedRows !== 0) throw new Error("Canonical v7 active projection contains mixed or dangling rows.");
+  const badArithmetic = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
+    JOIN transaction_revisions revision ON revision.revision_id = rows.revision_id
+    WHERE revision.amount_coefficient NOT GLOB '-[0-9]*' AND revision.amount_coefficient NOT GLOB '[0-9]*'`).get() as { count?: number }).count ?? 0);
+  if (badArithmetic !== 0) throw new Error("Canonical v7 projection contains non-exact arithmetic values.");
+}
 function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOptions = {}): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
   const version = Number(row.user_version ?? 0);
@@ -1311,6 +1445,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
     migrateV5ToV6(db, options.injectMigrationFailure);
+    migrateV6ToV7(db, options.injectMigrationFailure);
     return;
   }
   if (version === 2) {
@@ -1318,21 +1453,29 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
     migrateV5ToV6(db, options.injectMigrationFailure);
+    migrateV6ToV7(db, options.injectMigrationFailure);
     return;
   }
   if (version === 3) {
     migrateV3ToV4(db);
     migrateV4ToV5(db, options.injectMigrationFailure);
     migrateV5ToV6(db, options.injectMigrationFailure);
+    migrateV6ToV7(db, options.injectMigrationFailure);
     return;
   }
   if (version === 4) {
     migrateV4ToV5(db, options.injectMigrationFailure);
     migrateV5ToV6(db, options.injectMigrationFailure);
+    migrateV6ToV7(db, options.injectMigrationFailure);
     return;
   }
   if (version === 5) {
     migrateV5ToV6(db, options.injectMigrationFailure);
+    migrateV6ToV7(db, options.injectMigrationFailure);
+    return;
+  }
+  if (version === 6) {
+    migrateV6ToV7(db, options.injectMigrationFailure);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -1347,6 +1490,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
+      ensureV7ProjectionSchema(db);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -1364,10 +1508,10 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     rebuildCurrentTransactionFieldsForSharedAssertions(db);
     convertV6CompatibilityTables(db);
     ensureV6ProjectionOriginConstraints(db);
-    db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
-    db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
+    migrateV6ToV7(db, options.injectMigrationFailure, true);
     db.exec("COMMIT");
     db.exec("PRAGMA foreign_keys = ON");
+    return;
   } catch (error) {
     db.exec("ROLLBACK");
     db.exec("PRAGMA foreign_keys = ON");
@@ -1376,15 +1520,15 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
-  const requiredTables = ["capture_scopes", "capture_scope_pages", "source_assertions", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields"];
+  const requiredTables = ["capture_scopes", "capture_scope_pages", "source_assertions", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields", "projection_generations", "active_projection_generation", "projection_generation_transactions", "projection_generation_transaction_fields"];
   for (const table of requiredTables) {
-    if (!relationType(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
+    if (!relationType(db, table)) throw new Error(`Canonical schema v7 table ${table} is missing.`);
   }
   for (const table of ["source_assertions", "derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
-    if (relationType(db, table) !== "view") throw new Error(`Canonical schema v6 compatibility relation ${table} is not a read-only view.`);
+    if (relationType(db, table) !== "view") throw new Error(`Canonical schema v7 compatibility relation ${table} is not a read-only view.`);
   }
   for (const table of ["assertions", "assertion_transitions", "assertion_provenance", "current_transaction_fields"]) {
-    if (relationType(db, table) !== "table") throw new Error(`Canonical schema v6 shared authority relation ${table} is not a table.`);
+    if (relationType(db, table) !== "table") throw new Error(`Canonical schema v7 shared authority relation ${table} is not a table.`);
   }
   const requiredColumns: Record<string, string[]> = {
     assertions: ["assertion_id", "transaction_id", "field_name", "target_kind", "origin", "producer_id", "rule_lineage", "revision_id", "value_text", "created_commit_id"],
@@ -1405,6 +1549,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     source_record_scopes: ["source_record_id", "scope_id", "capture_id", "account_id", "sequence_lexeme"],
     transaction_revisions: ["economic_status", "administrative_state", "semantic_rule_version"],
     current_transactions: ["projection_commit_id", "revision_commit_id"],
+    projection_generations: ["generation_id", "status", "build_cutoff_commit_sequence", "rule_version", "created_commit_id", "validated_commit_id", "switched_commit_id"],
+    active_projection_generation: ["singleton_id", "generation_id", "switched_commit_id"],
+    projection_generation_transactions: ["generation_id", "transaction_id", "revision_id", "projection_commit_id", "revision_commit_id"],
+    projection_generation_transaction_fields: ["generation_id", "transaction_id", "field_name", "value_text", "origin", "derived_assertion_id", "user_assertion_id", "projection_commit_id"],
   };
   for (const [table, columns] of Object.entries(requiredColumns)) {
     const actual = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).map((column) => column.name));
@@ -1415,27 +1563,27 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
     "idx_assertions_lineage", "idx_assertion_transitions_knowledge", "idx_assertion_transitions_transaction", "idx_assertion_provenance_authority",
     "idx_derived_scope_coordinates_lineage",
-    "idx_current_transaction_fields_projection",
+    "idx_current_transaction_fields_projection", "idx_projection_generation_transactions_active", "idx_projection_generation_transactions_revision", "idx_projection_generation_fields_active", "idx_projection_generations_status",
   ];
   for (const index of requiredIndexes) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v6 index ${index} is missing.`);
   }
   const tableSql = (table: string): string => String((db.prepare("SELECT sql FROM sqlite_master WHERE (type = 'table' OR type = 'view') AND name = ?").get(table) as { sql?: unknown } | undefined)?.sql ?? "");
   if (!/FOREIGN KEY\s*\(source_record_id,\s*capture_id\)/i.test(tableSql("source_record_scopes")) || !/capture_scopes/i.test(tableSql("source_record_scopes"))) {
-    throw new Error("Canonical schema v6 source-record scope constraints are missing.");
+    throw new Error("Canonical schema v7 source-record scope constraints are missing.");
   }
   if (!/economic_status.*canceled.*refund.*reversal/i.test(tableSql("transaction_revisions")) || !/administrative_state.*deleted.*purged/i.test(tableSql("transaction_revisions"))) {
-    throw new Error("Canonical schema v6 semantic constraints are missing.");
+    throw new Error("Canonical schema v7 semantic constraints are missing.");
   }
   if (!/origin\s+TEXT\s+NOT NULL\s+CHECK\s*\(origin\s+IN\s*\('source','derived','user'\)\)/i.test(tableSql("assertions"))) {
-    throw new Error("Canonical schema v6 assertion origin taxonomy is missing.");
+    throw new Error("Canonical schema v7 assertion origin taxonomy is missing.");
   }
   if (!/derived_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(tableSql("current_transaction_fields")) || !/user_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(tableSql("current_transaction_fields"))) {
-    throw new Error("Canonical schema v6 current assertion references are not on the shared authority.");
+    throw new Error("Canonical schema v7 current assertion references are not on the shared authority.");
   }
   const transitionCheck = /event_kind\s+TEXT\s+NOT NULL\s+CHECK\s*\(event_kind\s+IN\s*\('observed','superseded','withdrawn'(?:,'restored')?\)\)/i;
   if (!transitionCheck.test(tableSql("assertion_transitions"))) {
-    throw new Error("Canonical schema v6 shared assertion transition taxonomy is missing.");
+    throw new Error("Canonical schema v7 shared assertion transition taxonomy is missing.");
   }
   const compatibilityAuthority: Record<string, RegExp> = {
     source_assertions: /FROM\s+assertions\b/i,
@@ -1480,6 +1628,20 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     WHERE r.transaction_id = current_row.transaction_id AND r.commit_id = current_row.revision_commit_id
       AND current_row.commit_id = current_row.projection_commit_id`).get() as { count?: number }).count ?? 0);
   if (projectionRows !== currentCount) throw new Error("Canonical current projection authority is inconsistent.");
+  const activePointer = db.prepare("SELECT generation_id, switched_commit_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number; switched_commit_id?: unknown } | undefined;
+  if (!activePointer) throw new Error("Canonical v7 active projection pointer is missing.");
+  const activeGenerationId = Number(activePointer.generation_id ?? 0);
+  const activeGeneration = db.prepare("SELECT status, build_cutoff_commit_sequence FROM projection_generations WHERE generation_id = ?").get(activeGenerationId) as { status?: string; build_cutoff_commit_sequence?: number } | undefined;
+  if (!activeGeneration || activeGeneration.status !== "active") throw new Error("Canonical v7 active projection is not readable.");
+  if (activePointer.switched_commit_id !== null && activePointer.switched_commit_id !== undefined
+    && !db.prepare("SELECT 1 FROM canonical_commits WHERE commit_id = ?").get(blob(activePointer.switched_commit_id))) throw new Error("Canonical v7 active projection pointer references no commit.");
+  const activeRows = Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generation_transactions WHERE generation_id = ?").get(activeGenerationId) as { count?: number }).count ?? 0);
+  const activeDangling = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+    LEFT JOIN financial_transactions transaction_row ON transaction_row.transaction_id = projected.transaction_id
+    LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`).get(activeGenerationId) as { count?: number }).count ?? 0);
+  if (activeDangling !== 0) throw new Error("Canonical v7 active projection has dangling or mixed-generation rows.");
+  if (activeRows !== currentCount) throw new Error("Canonical v7 active projection does not match its compatibility mirror.");
 }
 
 export function openCanonicalDatabase(ledgerDir: string, options: CanonicalDatabaseOptions = {}): DatabaseSync {
@@ -1488,13 +1650,13 @@ export function openCanonicalDatabase(ledgerDir: string, options: CanonicalDatab
   if (!options.readOnly) mkdirSync(ledgerDir, { recursive: true });
   const db = new DatabaseSync(path, options.readOnly ? { readOnly: true } : {});
   try {
-    db.exec("PRAGMA foreign_keys = ON");
-    db.exec("PRAGMA busy_timeout = 30000");
-    if (!options.readOnly) { db.exec("PRAGMA journal_mode = WAL"); db.exec("PRAGMA synchronous = FULL"); applySchemaMigration(db, options); }
+    configureCanonicalRuntime(db, { readOnly: options.readOnly, busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000 });
+    if (!options.readOnly) { applySchemaMigration(db, options); configureCanonicalRuntime(db, { busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000 }); verifyCanonicalRuntime(db); }
     else {
       const row = db.prepare("PRAGMA user_version").get() as { user_version?: number };
       if (Number(row.user_version ?? 0) !== CANONICAL_SCHEMA_VERSION) throw new Error("Canonical SQLite schema is missing or unsupported for read-only access.");
       validateReadOnlyDatabase(db);
+      verifyCanonicalRuntime(db, { readOnly: true });
     }
     return db;
   } catch (error) { db.close(); throw error; }
@@ -1546,6 +1708,25 @@ export type CathayCommitTransactionResult = { transactionId: string; revisionId:
 export type CathayCanonicalCommitScopeResult = { scopeId: string; accountId: string; accountNo: string; transactions: CathayCommitTransactionResult[] };
 export type CathayCanonicalCommitResult = { captureId: string; commitSequence: number; accountIds: string[]; transactions: CathayCommitTransactionResult[]; scopes: CathayCanonicalCommitScopeResult[] };
 
+export type CanonicalProjectionRebuildFailureInjection =
+  | "creation" | "population" | "validation" | "pre-switch"
+  | "after-generation-creation" | "after-generation-population" | "after-validation";
+export type CanonicalProjectionKnowledgePoint = { kind: "commit-sequence"; commitSequence: number };
+export type CanonicalProjectionRebuildOptions = CanonicalRuntimeOptions & {
+  cutoff?: CanonicalProjectionKnowledgePoint;
+  injectFailure?: CanonicalProjectionRebuildFailureInjection;
+  clock?: CanonicalAdmissionClock;
+};
+export type CanonicalProjectionRebuildResult = {
+  status: "switched";
+  previousGeneration: number;
+  generation: number;
+  cutoffCommitSequence: number;
+  commitSequence: number;
+  transactionCount: number;
+  fieldCount: number;
+};
+
 function dbRow<T extends Record<string, unknown>>(value: unknown): T { return value as T; }
 function sameRevision(row: Record<string, unknown>, detail: ValidatedCathayRow): boolean {
   return row.amount_coefficient === detail.amount.coefficient.toString()
@@ -1567,7 +1748,7 @@ function currentUtcMicros(): number {
 }
 
 export type CanonicalAdmissionClock = () => string;
-export type CathayCanonicalCommitOptions = { clock?: CanonicalAdmissionClock };
+export type CathayCanonicalCommitOptions = { clock?: CanonicalAdmissionClock; runtime?: CanonicalRuntimeOptions };
 
 type LifecycleEventKind = CathayCanonicalLifecycleEvent["kind"];
 function insertLifecycleEvent(
@@ -1587,8 +1768,9 @@ function commitCathayDomesticDepositSyncOnce(
   ledgerDir: string,
   input: ValidatedCathaySync,
   admissionClock: CanonicalAdmissionClock,
+  runtime?: CanonicalRuntimeOptions,
 ): CathayCanonicalCommitResult {
-  const db = openCanonicalDatabase(ledgerDir);
+  const db = openCanonicalDatabase(ledgerDir, { runtime });
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -1709,6 +1891,7 @@ function commitCathayDomesticDepositSyncOnce(
         scope_end = excluded.scope_end, cursor = excluded.cursor, last_capture_id = excluded.last_capture_id, commit_id = excluded.commit_id`).run(sourceConnectionId, accountId, input.stream, scope.startDate, scope.endDate, input.syncState.cursor ?? null, captureId, commitId);
       scopeResults.push({ scopeId: idToString(scopeId), accountId: idToString(accountId), accountNo: scope.accountNo, transactions: scopeTransactions });
     }
+    syncActiveProjectionFromCompatibility(db, commitId);
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
@@ -1719,28 +1902,104 @@ function commitCathayDomesticDepositSyncOnce(
   } finally { db.close(); }
 }
 
-const writerQueues = new Map<string, Promise<void>>();
-async function withCanonicalWriter<T>(ledgerDir: string, operation: () => T): Promise<T> {
-  const key = canonicalSqlitePath(ledgerDir);
-  const previous = writerQueues.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const turn = new Promise<void>((resolve) => { release = resolve; });
-  const queued = previous.then(() => turn);
-  writerQueues.set(key, queued);
-  await previous;
+async function withCanonicalWriter<T>(ledgerDir: string, operation: () => T, runtime?: CanonicalRuntimeOptions): Promise<T> {
+  return withCanonicalWriterQueue(canonicalSqlitePath(ledgerDir), operation, runtime);
+}
+
+function rebuildFailure(stage: CanonicalProjectionRebuildFailureInjection | undefined, expected: CanonicalProjectionRebuildFailureInjection[]): void {
+  if (stage !== undefined && expected.includes(stage)) throw new Error(`Injected projection rebuild failure at ${stage}.`);
+}
+
+function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: CanonicalProjectionRebuildOptions): CanonicalProjectionRebuildResult {
+  const db = openCanonicalDatabase(ledgerDir, { runtime: options });
+  let inTransaction = false;
   try {
-    for (let attempt = 0; ; attempt += 1) {
-      try { return operation(); }
-      catch (error) {
-        if (attempt >= 2 || !/busy|locked/i.test(String(error))) throw error;
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    db.exec("BEGIN IMMEDIATE");
+    inTransaction = true;
+    const latest = db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number };
+    const currentKnowledgePoint = Number(latest.max_sequence ?? 0);
+    const cutoff = options.cutoff?.commitSequence ?? currentKnowledgePoint;
+    if (!Number.isSafeInteger(cutoff) || cutoff < 0 || cutoff > currentKnowledgePoint) throw new Error("Projection rebuild cutoff must be a retained Canonical Knowledge Point.");
+    const active = db.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number } | undefined;
+    if (!active) throw new Error("Projection rebuild requires an active generation.");
+    const previousGeneration = Number(active.generation_id);
+    const generation = Number((db.prepare("SELECT COALESCE(MAX(generation_id), 0) AS generation_id FROM projection_generations").get() as { generation_id?: number }).generation_id ?? 0) + 1;
+    const commitId = uuidV7();
+    const commitSequence = currentKnowledgePoint + 1;
+    db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')").run(commitId, commitSequence, recordedAtUtcUs((options.clock ?? (() => new Date().toISOString()))()));
+    db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
+      VALUES (?, 'building', ?, 'canonical/projection/v1', ?)`).run(generation, cutoff, commitId);
+    rebuildFailure(options.injectFailure, ["creation", "after-generation-creation"]);
+    db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
+      SELECT ?, t.transaction_id, revision.revision_id, ?, revision.commit_id
+      FROM financial_transactions t JOIN transaction_revisions revision ON revision.transaction_id = t.transaction_id
+      JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+      JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
+      WHERE revision_commit.commit_sequence <= ?
+        AND NOT EXISTS (SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+          WHERE newer.transaction_id = revision.transaction_id AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > revision_commit.commit_sequence)
+        AND COALESCE((SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+          WHERE transition.assertion_id = source_assertion.assertion_id AND transition_commit.commit_sequence <= ?
+          ORDER BY transition_commit.commit_sequence DESC, transition.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'`).run(generation, commitId, cutoff, cutoff, cutoff);
+    const insertField = db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const generationTransactions = db.prepare("SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ?").all(generation) as Array<Record<string, unknown>>;
+    let fieldCount = 0;
+    for (const transaction of generationTransactions) {
+      for (const field of ["display_name", "note"] as const) {
+        const selectAsOf = (origin: "user" | "derived") => db.prepare(`SELECT a.assertion_id, a.value_text FROM assertions a
+          JOIN assertion_transitions e ON e.assertion_id = a.assertion_id JOIN canonical_commits c ON c.commit_id = e.commit_id
+          WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
+            AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
+              WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ?
+                AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
+          ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(blob(transaction.transaction_id), field, origin, cutoff, cutoff) as { assertion_id?: unknown; value_text?: unknown } | undefined;
+        const selected = selectAsOf("user") ?? selectAsOf("derived");
+        if (!selected) continue;
+        const assertion = blob(selected.assertion_id);
+        insertField.run(generation, blob(transaction.transaction_id), field, String(selected.value_text), (selectAsOf("user") ? "user" : "derived"), (selectAsOf("user") ? null : assertion), (selectAsOf("user") ? assertion : null), commitId);
+        fieldCount += 1;
       }
     }
-  } finally {
-    release();
-    if (writerQueues.get(key) === queued) writerQueues.delete(key);
-  }
+    rebuildFailure(options.injectFailure, ["population", "after-generation-population"]);
+    const dangling = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+      LEFT JOIN financial_transactions transaction_row ON transaction_row.transaction_id = projected.transaction_id
+      LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+      WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`).get(generation) as { count?: number }).count ?? 0);
+    const arithmetic = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+      JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+      WHERE projected.generation_id = ? AND (revision.amount_coefficient NOT GLOB '[0-9]*' AND revision.amount_coefficient NOT GLOB '-[0-9]*')`).get(generation) as { count?: number }).count ?? 0);
+    if (dangling !== 0 || arithmetic !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
+    const duplicate = Number((db.prepare(`SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`).get(generation) as { count?: number }).count ?? 0);
+    if (duplicate !== 0) throw new Error("Projection rebuild validation found duplicate transaction authority.");
+    rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
+    db.prepare("UPDATE projection_generations SET status = 'validated', validated_commit_id = ? WHERE generation_id = ?").run(commitId, generation);
+    rebuildFailure(options.injectFailure, ["pre-switch"]);
+    db.prepare("UPDATE projection_generations SET status = 'retired' WHERE status = 'active'").run();
+    db.prepare("UPDATE projection_generations SET status = 'active', switched_commit_id = ? WHERE generation_id = ?").run(commitId, generation);
+    db.prepare("UPDATE active_projection_generation SET generation_id = ?, switched_commit_id = ? WHERE singleton_id = 1").run(generation, commitId);
+    db.prepare("DELETE FROM current_transactions").run();
+    db.prepare(`INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id)
+      SELECT transaction_id, revision_id, ?, projection_commit_id, revision_commit_id FROM projection_generation_transactions WHERE generation_id = ?`).run(commitId, generation);
+    db.prepare("DELETE FROM current_transaction_fields").run();
+    db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+      SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, ? FROM projection_generation_transaction_fields WHERE generation_id = ?`).run(commitId, generation);
+    db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
+    db.exec("COMMIT");
+    inTransaction = false;
+    return { status: "switched", previousGeneration, generation, cutoffCommitSequence: cutoff, commitSequence, transactionCount: Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generation_transactions WHERE generation_id = ?").get(generation) as { count?: number }).count ?? 0), fieldCount };
+  } catch (error) {
+    if (inTransaction) db.exec("ROLLBACK");
+    throw error;
+  } finally { db.close(); }
 }
+
+export function rebuildCathayCanonicalProjection(ledgerDir: string, options: CanonicalProjectionRebuildOptions = {}): Promise<CanonicalProjectionRebuildResult> {
+  return withCanonicalWriterQueue(canonicalSqlitePath(ledgerDir), () => rebuildCathayCanonicalProjectionOnce(ledgerDir, options), options);
+}
+
+/** Generic name for callers that do not depend on the Cathay adapter. */
+export const rebuildCanonicalProjection = rebuildCathayCanonicalProjection;
 
 export function commitCathayDomesticDeposit(
   ledgerDir: string,
@@ -1769,7 +2028,7 @@ export function commitCathayDomesticDeposit(
       absenceAuthority: input.absenceAuthority,
     }],
   });
-  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, sync, admissionClock));
+  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, sync, admissionClock, options.runtime), options.runtime);
 }
 
 export function commitCathayDomesticDepositSync(
@@ -1779,7 +2038,7 @@ export function commitCathayDomesticDepositSync(
 ): Promise<CathayCanonicalCommitResult> {
   const validated = validateSyncInput(input);
   const admissionClock = options.clock ?? (() => new Date().toISOString());
-  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, validated, admissionClock));
+  return withCanonicalWriter(ledgerDir, () => commitCathayDomesticDepositSyncOnce(ledgerDir, validated, admissionClock, options.runtime), options.runtime);
 }
 
 function importCoordinates(input: CathayDerivedImportRunInput): CathayDerivedImportCoordinate[] {
@@ -1906,8 +2165,27 @@ function refreshCurrentFieldAfterWithdrawal(db: DatabaseSync, transactionId: Can
   else db.prepare("DELETE FROM current_transaction_fields WHERE transaction_id = ? AND field_name = ?").run(transactionId, field);
 }
 
-function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerivedImportRunInput, coordinates: CathayDerivedImportCoordinate[], clock: CanonicalAdmissionClock): { runId: string; commitSequence: number; assertionIds: string[] } {
-  const db = openCanonicalDatabase(ledgerDir);
+/** Keep the v6 compatibility rows and the active v7 generation in lockstep.
+ * This helper is called before every routine commit's COMMIT, so no reader can
+ * observe evidence from one commit with projection rows from another. */
+function syncActiveProjectionFromCompatibility(db: DatabaseSync, projectionCommitId: CanonicalId): void {
+  const pointer = db.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number } | undefined;
+  if (!pointer) throw new Error("Canonical active projection pointer is missing during routine write.");
+  const generationId = Number(pointer.generation_id);
+  const generation = db.prepare("SELECT status FROM projection_generations WHERE generation_id = ?").get(generationId) as { status?: string } | undefined;
+  if (!generation || generation.status !== "active") throw new Error("Canonical active projection generation is not writable.");
+  db.prepare("DELETE FROM projection_generation_transaction_fields WHERE generation_id = ?").run(generationId);
+  db.prepare("DELETE FROM projection_generation_transactions WHERE generation_id = ?").run(generationId);
+  db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
+    SELECT ?, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run(generationId);
+  db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+    SELECT ?, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`).run(generationId);
+  db.prepare("UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?), switched_commit_id = ?, validated_commit_id = ? WHERE generation_id = ?").run(projectionCommitId, projectionCommitId, projectionCommitId, generationId);
+  db.prepare("UPDATE active_projection_generation SET switched_commit_id = ? WHERE singleton_id = 1").run(projectionCommitId);
+}
+
+function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerivedImportRunInput, coordinates: CathayDerivedImportCoordinate[], clock: CanonicalAdmissionClock, runtime?: CanonicalRuntimeOptions): { runId: string; commitSequence: number; assertionIds: string[] } {
+  const db = openCanonicalDatabase(ledgerDir, { runtime });
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -1969,6 +2247,7 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
       assertionIds.push(idToString(assertionId));
       if (existingCurrent?.origin !== "user") insertCurrentDerivedField(db, transactionId, coordinate.field, assertionId, value, commitId);
     }
+    syncActiveProjectionFromCompatibility(db, commitId);
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
     db.exec("COMMIT");
     inTransaction = false;
@@ -1983,7 +2262,7 @@ export function commitCathayDerivedImportRun(ledgerDir: string, input: CathayDer
   const coordinates = validateDerivedImportInput(input);
   validateDerivedImportSubjects(ledgerDir, input, coordinates);
   const clock = options.clock ?? (() => new Date().toISOString());
-  return withCanonicalWriter(ledgerDir, () => ({ status: "committed", ...commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, clock) }));
+  return withCanonicalWriter(ledgerDir, () => ({ status: "committed", ...commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, clock, options.runtime) }), options.runtime);
 }
 
 export async function runCathayDerivedImportRun(ledgerDir: string, input: CathayDerivedImportRunInput, options: CathayDerivedImportOptions = {}): Promise<CathayDerivedImportResult> {
@@ -1996,7 +2275,7 @@ export async function runCathayDerivedImportRun(ledgerDir: string, input: Cathay
   }
   try {
     validateDerivedImportSubjects(ledgerDir, input, coordinates);
-    return { status: "committed", ...await withCanonicalWriter(ledgerDir, () => commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, options.clock ?? (() => new Date().toISOString()))) };
+    return { status: "committed", ...await withCanonicalWriter(ledgerDir, () => commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, options.clock ?? (() => new Date().toISOString()), options.runtime), options.runtime) };
   }
   catch (error) {
     const diagnostic = derivedDiagnostic(error, input, "commit");
@@ -2033,7 +2312,7 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
   if (input.observedAt) parseRfc3339UtcMicros(input.observedAt, "User Assertion observedAt");
   const clock = options.clock ?? (() => new Date().toISOString());
   return withCanonicalWriter(ledgerDir, () => {
-    const db = openCanonicalDatabase(ledgerDir);
+    const db = openCanonicalDatabase(ledgerDir, { runtime: options.runtime });
     let inTransaction = false;
     try {
       db.exec("BEGIN IMMEDIATE"); inTransaction = true;
@@ -2072,12 +2351,13 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
       else db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
         VALUES (?, ?, ?, 'user', NULL, ?, ?) ON CONFLICT(transaction_id, field_name) DO UPDATE SET value_text = excluded.value_text, origin = 'user', derived_assertion_id = NULL, user_assertion_id = excluded.user_assertion_id, projection_commit_id = excluded.projection_commit_id`).run(transactionId, field, input.value ?? "", assertionId, commitId);
       db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, NULL, NULL, ?)").run(assertionId, commitId);
+      syncActiveProjectionFromCompatibility(db, commitId);
       db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
       db.exec("COMMIT"); inTransaction = false;
       return { status: "committed", assertionId: idToString(assertionId), commitSequence, field, withdrawn };
     } catch (error) { if (inTransaction) db.exec("ROLLBACK"); throw error; }
     finally { db.close(); }
-  });
+  }, options.runtime);
 }
 
 function amountFromRow(row: Record<string, unknown>, prefix = ""): CanonicalAmount { return { coefficient: String(row[`${prefix}amount_coefficient`]), scale: Number(row[`${prefix}amount_scale`]) }; }
@@ -2104,7 +2384,10 @@ function transactionRevisionFromRow(row: Record<string, unknown>): CanonicalTran
 }
 
 function selectedCurrentField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField): { value: string; origin: "derived" | "user"; commitSequence: number } | undefined {
-  const row = db.prepare("SELECT f.value_text, f.origin, c.commit_sequence FROM current_transaction_fields f JOIN canonical_commits c ON c.commit_id = f.projection_commit_id WHERE f.transaction_id = ? AND f.field_name = ?").get(transactionId as CanonicalId, field) as { value_text?: unknown; origin?: string; commit_sequence?: number } | undefined;
+  const row = db.prepare(`SELECT f.value_text, f.origin, c.commit_sequence FROM projection_generation_transaction_fields f
+    JOIN active_projection_generation pointer ON pointer.singleton_id = 1 AND pointer.generation_id = f.generation_id
+    JOIN canonical_commits c ON c.commit_id = f.projection_commit_id
+    WHERE f.transaction_id = ? AND f.field_name = ?`).get(transactionId as CanonicalId, field) as { value_text?: unknown; origin?: string; commit_sequence?: number } | undefined;
   if (row?.origin !== "derived" && row?.origin !== "user") return undefined;
   return { value: String(row.value_text), origin: row.origin, commitSequence: Number(row.commit_sequence) };
 }
@@ -2140,18 +2423,22 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
   async current(_request: CathayCanonicalCurrentQueryRequest): Promise<CathayCanonicalCurrentQueryResult> {
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
+      db.exec("BEGIN");
       const accounts = (db.prepare("SELECT account_id AS id, account_no AS accountNo, currency, account_type AS accountType FROM financial_accounts ORDER BY account_no").all() as Record<string, unknown>[]).map((row) => ({ id: idToString(row.id), accountNo: String(row.accountNo), currency: "TWD" as const, accountType: "depository" as const }));
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
-        r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM current_transactions current_row
+        r.utc_instant_utc_us, r.revision_id, c.commit_sequence FROM projection_generation_transactions current_row
+        JOIN active_projection_generation pointer ON pointer.singleton_id = 1 AND pointer.generation_id = current_row.generation_id
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id JOIN canonical_commits c ON c.commit_id = current_row.projection_commit_id
         ORDER BY a.account_no, t.source_sequence`).all() as Record<string, unknown>[];
-      const projection = db.prepare(`SELECT c.commit_sequence FROM current_projection_state state
-        JOIN canonical_commits c ON c.commit_id = state.commit_id WHERE state.generation = 1`).get() as { commit_sequence?: number } | undefined;
+      const projection = db.prepare(`SELECT c.commit_sequence FROM active_projection_generation pointer
+        JOIN canonical_commits c ON c.commit_id = pointer.switched_commit_id WHERE pointer.singleton_id = 1`).get() as { commit_sequence?: number } | undefined;
       if (!projection) throw new Error("Canonical current projection cutoff is missing.");
-      return { status: "ok", kind: "current", accounts, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row))), commitSequence: Number(projection.commit_sequence) };
+      const result = { status: "ok", kind: "current", accounts, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row))), commitSequence: Number(projection.commit_sequence) } satisfies CathayCanonicalCurrentQueryResult;
+      db.exec("COMMIT");
+      return result;
     } finally { db.close(); }
   }
   async historical(request: CathayCanonicalHistoricalQueryRequest): Promise<CathayCanonicalHistoricalQueryResult> {
@@ -2161,6 +2448,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     if (!Number.isSafeInteger(knowledgeAt)) throw new Error("Canonical historical knowledgeAt is outside the supported sequence range.");
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
+      db.exec("BEGIN");
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
@@ -2176,7 +2464,9 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
         ) ORDER BY a.account_no, t.source_sequence`).all(knowledgeAt, request.cutoff.financialAt, knowledgeAt, request.cutoff.financialAt, knowledgeAt) as Record<string, unknown>[];
-      return { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row, knowledgeAt))) };
+      const result = { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row, knowledgeAt))) } satisfies CathayCanonicalHistoricalQueryResult;
+      db.exec("COMMIT");
+      return result;
     } finally { db.close(); }
   }
   async lineage(request: CathayCanonicalLineageQueryRequest): Promise<CathayCanonicalLineageQueryResult> {
@@ -2184,6 +2474,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const transactionId = idFromString(request.subject.id);
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
+      db.exec("BEGIN");
       const revisionRows = db.prepare(`SELECT t.transaction_id, t.account_id, t.source_sequence, a.account_no, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
@@ -2238,7 +2529,9 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           }),
         } satisfies CathayCanonicalLineageEntry;
       });
-      return { status: "ok", kind: "lineage", subject: request.subject, entries };
+      const result = { status: "ok", kind: "lineage", subject: request.subject, entries } satisfies CathayCanonicalLineageQueryResult;
+      db.exec("COMMIT");
+      return result;
     } finally { db.close(); }
   }
 }
