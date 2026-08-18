@@ -16,6 +16,7 @@ import {
   commitCathayDerivedImportRun,
   runCathayDerivedImportRun,
   commitCathayUserAssertion,
+  rebuildCathayCanonicalProjection,
   canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
@@ -810,6 +811,68 @@ try {
   const historicalUser = await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(user.commitSequence) } });
   assert.equal(historicalUser.transactions[0]?.displayLabel, "User label");
   assert.equal(historicalUser.transactions[0]?.displayLabelOrigin, "user");
+  const repeatedDisplayBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const repeatedDisplayCounts = {
+    assertions: repeatedDisplayBefore.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'user'").get()?.count,
+    transitions: repeatedDisplayBefore.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count,
+  };
+  repeatedDisplayBefore.close();
+  const repeatedDisplay = await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: "User label" });
+  const repeatedNoteFirst = await commitCathayUserAssertion(derivedDir, { transactionId, field: "note", value: "User note" });
+  const repeatedNote = await commitCathayUserAssertion(derivedDir, { transactionId, field: "note", value: "User note" });
+  assert.equal(repeatedDisplay.commitSequence > user.commitSequence, true);
+  assert.equal(repeatedNote.commitSequence > repeatedNoteFirst.commitSequence, true);
+  const repeatedUserDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try {
+    assert.equal(repeatedUserDb.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'user'").get()?.count, Number(repeatedDisplayCounts.assertions) + 1);
+    assert.equal(repeatedUserDb.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count, Number(repeatedDisplayCounts.transitions) + 1);
+    assert.equal(repeatedUserDb.prepare("SELECT COUNT(*) AS count FROM assertion_provenance WHERE commit_id IN (SELECT commit_id FROM canonical_commits WHERE commit_sequence IN (?, ?))").get(repeatedDisplay.commitSequence, repeatedNote.commitSequence)?.count, 2);
+    assert.equal(repeatedUserDb.prepare("SELECT COUNT(*) AS count FROM assertion_transitions WHERE commit_id IN (SELECT commit_id FROM canonical_commits WHERE commit_sequence IN (?, ?))").get(repeatedDisplay.commitSequence, repeatedNote.commitSequence)?.count, 0);
+  } finally { repeatedUserDb.close(); }
+  assert.equal((await query.current({ kind: "current" })).transactions[0]?.note, "User note");
+  assert.equal((await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(repeatedNote.commitSequence) } })).transactions[0]?.note, "User note");
+  assert.equal((await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } })).entries.length, 1);
+  assert.equal((await rebuildCathayCanonicalProjection(derivedDir)).status, "switched");
+  const tamperDb = new DatabaseSync(canonicalSqlitePath(derivedDir));
+  const reobservation = tamperDb.prepare(`SELECT provenance.assertion_id, provenance.commit_id
+    FROM assertion_provenance provenance JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+    JOIN canonical_commits commit_row ON commit_row.commit_id = provenance.commit_id
+    WHERE assertion.origin = 'user' AND provenance.source_record_id IS NULL AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM assertion_transitions transition WHERE transition.commit_id = provenance.commit_id)
+      AND assertion.created_commit_id <> provenance.commit_id
+    ORDER BY commit_row.commit_sequence DESC LIMIT 1`).get() as { assertion_id?: Uint8Array; commit_id?: Uint8Array };
+  const sourceAssertionId = Buffer.from((tamperDb.prepare("SELECT assertion_id FROM assertions WHERE origin = 'source' LIMIT 1").get() as { assertion_id?: Uint8Array }).assertion_id!);
+  const reobservationAssertionId = Buffer.from(reobservation.assertion_id!);
+  const reobservationCommitId = Buffer.from(reobservation.commit_id!);
+  const originalRoute = (tamperDb.prepare("SELECT authority_route FROM canonical_commits WHERE commit_id = ?").get(reobservationCommitId) as { authority_route?: string }).authority_route!;
+  const originalAssertion = reobservationAssertionId;
+  const assertTamperedRecovery = async (label: string, mutate: () => void, restore: () => void): Promise<void> => {
+    mutate();
+    try {
+      assert.throws(() => openCanonicalDatabase(derivedDir, { readOnly: true }), /provenance|authority|evidence|route|coordinate/i, label);
+      await assert.rejects(() => rebuildCathayCanonicalProjection(derivedDir), /provenance|authority|evidence|route|coordinate/i, label);
+    } finally { restore(); }
+  };
+  await assertTamperedRecovery("provenance-only wrong route", () => {
+    tamperDb.prepare("UPDATE canonical_commits SET authority_route = 'evil/route' WHERE commit_id = ?").run(reobservationCommitId);
+  }, () => {
+    tamperDb.prepare("UPDATE canonical_commits SET authority_route = ? WHERE commit_id = ?").run(originalRoute, reobservationCommitId);
+  });
+  await assertTamperedRecovery("provenance-only wrong assertion", () => {
+    tamperDb.exec("DROP TRIGGER trg_assertion_provenance_integrity_update");
+    tamperDb.prepare("UPDATE assertion_provenance SET assertion_id = ? WHERE assertion_id = ? AND commit_id = ?").run(sourceAssertionId, reobservationAssertionId, reobservationCommitId);
+  }, () => {
+    tamperDb.prepare("UPDATE assertion_provenance SET assertion_id = ? WHERE assertion_id = ? AND commit_id = ?").run(originalAssertion, sourceAssertionId, reobservationCommitId);
+    const repaired = openCanonicalDatabase(derivedDir);
+    repaired.close();
+  });
+  await assertTamperedRecovery("provenance-only orphan commit", () => {
+    const sourceCommit = Buffer.from((tamperDb.prepare("SELECT commit_id FROM source_captures LIMIT 1").get() as { commit_id?: Uint8Array }).commit_id!);
+    tamperDb.prepare("UPDATE assertion_provenance SET commit_id = ? WHERE assertion_id = ? AND commit_id = ?").run(sourceCommit, reobservationAssertionId, reobservationCommitId);
+  }, () => {
+    tamperDb.prepare("UPDATE assertion_provenance SET commit_id = ? WHERE assertion_id = ? AND commit_id = (SELECT commit_id FROM source_captures LIMIT 1)").run(reobservationCommitId, reobservationAssertionId);
+  });
+  tamperDb.close();
   await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: null });
   assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
   const authorityDb = openCanonicalDatabase(derivedDir, { readOnly: true });
