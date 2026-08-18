@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   configureCanonicalRuntime,
   verifyCanonicalRuntime,
+  withCanonicalSnapshot,
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
@@ -961,6 +962,24 @@ CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_commit_update
 BEFORE UPDATE OF generation_id, switched_commit_id ON active_projection_generation
 WHEN NEW.switched_commit_id IS NOT (SELECT switched_commit_id FROM projection_generations WHERE generation_id = NEW.generation_id)
 BEGIN SELECT RAISE(ABORT, 'active projection switch commit does not match generation'); END;
+CREATE TRIGGER IF NOT EXISTS trg_projection_generation_fields_integrity_insert
+BEFORE INSERT ON projection_generation_transaction_fields
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion JOIN projection_generations generation ON generation.generation_id = NEW.generation_id
+  WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
+    AND assertion.origin = NEW.origin AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
+    AND NEW.projection_commit_id IS COALESCE(generation.switched_commit_id, generation.created_commit_id)
+)
+BEGIN SELECT RAISE(ABORT, 'projection generation field assertion integrity mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS trg_projection_generation_fields_integrity_update
+BEFORE UPDATE OF generation_id, transaction_id, field_name, origin, derived_assertion_id, user_assertion_id, projection_commit_id ON projection_generation_transaction_fields
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion JOIN projection_generations generation ON generation.generation_id = NEW.generation_id
+  WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
+    AND assertion.origin = NEW.origin AND assertion.transaction_id = NEW.transaction_id AND assertion.field_name = NEW.field_name
+    AND NEW.projection_commit_id IS COALESCE(generation.switched_commit_id, generation.created_commit_id)
+)
+BEGIN SELECT RAISE(ABORT, 'projection generation field assertion integrity mismatch'); END;
 `;
 
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
@@ -1491,6 +1510,103 @@ function canonicalIdsEqual(left: unknown, right: unknown): boolean {
   return Buffer.compare(Buffer.from(left), Buffer.from(right)) === 0;
 }
 
+function projectionIdentityKey(row: { transaction_id?: unknown; revision_id?: unknown }): string {
+  return `${blob(row.transaction_id).toString("hex")}:${blob(row.revision_id).toString("hex")}`;
+}
+
+/** Rebuild population is intentionally allowed to omit malformed evidence;
+ * this equality check makes that omission observable before a shadow can be
+ * validated. The expected set is derived from immutable revision/scope rows,
+ * not from the Source Assertion join used by the population query. */
+function validateGenerationTransactionCompleteness(db: DatabaseSync, generationId: number, cutoff: number): void {
+  const expected = db.prepare(`SELECT transaction_row.transaction_id, revision.revision_id
+    FROM financial_transactions transaction_row
+    JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
+    JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+    JOIN source_captures capture ON capture.capture_id = revision.capture_id
+    JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id AND source_record.capture_id = revision.capture_id
+    JOIN source_record_scopes source_scope ON source_scope.source_record_id = source_record.source_record_id AND source_scope.capture_id = source_record.capture_id AND source_scope.sequence_lexeme = source_record.sequence_lexeme
+    JOIN capture_scopes scope ON scope.scope_id = source_scope.scope_id AND scope.capture_id = source_scope.capture_id AND scope.account_id = transaction_row.account_id
+    WHERE revision_commit.commit_sequence <= ?
+      AND NOT EXISTS (SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+        WHERE newer.transaction_id = revision.transaction_id AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > revision_commit.commit_sequence)
+      AND COALESCE((SELECT transition.event_kind FROM assertions source_assertion
+        JOIN assertion_transitions transition ON transition.assertion_id = source_assertion.assertion_id
+        JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+        WHERE source_assertion.origin = 'source' AND source_assertion.revision_id = revision.revision_id
+          AND transition_commit.commit_sequence <= ?
+        ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1), 'observed') <> 'withdrawn'`).all(cutoff, cutoff, cutoff) as Array<{ transaction_id?: unknown; revision_id?: unknown }>;
+  const actual = db.prepare("SELECT transaction_id, revision_id FROM projection_generation_transactions WHERE generation_id = ?").all(generationId) as Array<{ transaction_id?: unknown; revision_id?: unknown }>;
+  const expectedKeys = new Set(expected.map(projectionIdentityKey));
+  const actualKeys = new Set(actual.map(projectionIdentityKey));
+  const missing = [...expectedKeys].filter((key) => !actualKeys.has(key));
+  const extra = [...actualKeys].filter((key) => !expectedKeys.has(key));
+  if (missing.length !== 0 || extra.length !== 0 || expectedKeys.size !== actualKeys.size) {
+    throw new Error(`Projection rebuild completeness mismatch: missing=${missing.length}, extra=${extra.length}.`);
+  }
+}
+
+function validateGenerationFieldIntegrity(db: DatabaseSync, generationId: number): void {
+  const rows = db.prepare(`SELECT field.generation_id, field.transaction_id, field.field_name, field.value_text, field.origin,
+      field.derived_assertion_id, field.user_assertion_id, field.projection_commit_id,
+      generation.build_cutoff_commit_sequence, generation.created_commit_id AS generation_created_commit_id,
+      generation.switched_commit_id AS generation_switched_commit_id,
+      assertion.assertion_id, assertion.transaction_id AS assertion_transaction_id, assertion.field_name AS assertion_field_name,
+      assertion.origin AS assertion_origin, assertion.producer_id AS assertion_producer_id, assertion.rule_lineage AS assertion_rule_lineage,
+      assertion.value_text AS assertion_value_text, assertion.created_commit_id AS assertion_created_commit_id,
+      assertion_commit.commit_sequence AS assertion_commit_sequence, assertion_commit.authority_route AS assertion_authority_route,
+      projected.transaction_id AS projected_transaction_id, projected.revision_id AS projected_revision_id,
+      projected.projection_commit_id AS projected_projection_commit_id, projected.revision_commit_id AS projected_revision_commit_id,
+      revision.transaction_id AS revision_transaction_id, revision.commit_id AS revision_commit_id,
+      projection_commit.commit_sequence AS projection_commit_sequence,
+      (SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+        WHERE transition.assertion_id = assertion.assertion_id AND transition_commit.commit_sequence <= generation.build_cutoff_commit_sequence
+        ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1) AS lifecycle_event,
+      run.run_id, run.authority_route AS run_authority_route, run.stream AS run_stream, run.producer_id AS run_producer_id,
+      run.origin AS run_origin, run.rule_lineage AS run_rule_lineage, run.status AS run_status,
+      registered.integration_namespace AS registered_namespace, registered.stream AS registered_stream,
+      registered.contract_version AS registered_contract_version
+    FROM projection_generation_transaction_fields field
+    JOIN projection_generations generation ON generation.generation_id = field.generation_id
+    LEFT JOIN assertions assertion ON assertion.assertion_id = CASE WHEN field.origin = 'derived' THEN field.derived_assertion_id ELSE field.user_assertion_id END
+    LEFT JOIN canonical_commits assertion_commit ON assertion_commit.commit_id = assertion.created_commit_id
+    LEFT JOIN projection_generation_transactions projected ON projected.generation_id = field.generation_id AND projected.transaction_id = field.transaction_id
+    LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    LEFT JOIN canonical_commits projection_commit ON projection_commit.commit_id = field.projection_commit_id
+    LEFT JOIN derived_import_runs run ON run.commit_id = assertion.created_commit_id AND run.producer_id = assertion.producer_id AND run.rule_lineage = assertion.rule_lineage
+    LEFT JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+    WHERE field.generation_id = ?`).all(generationId) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const expectedProjectionCommit = row.generation_switched_commit_id ?? row.generation_created_commit_id;
+    const validLifecycle = row.lifecycle_event === "observed" || row.lifecycle_event === "restored";
+    const assertionMatches = row.assertion_id !== undefined && row.assertion_id !== null
+      && canonicalIdsEqual(row.assertion_transaction_id, row.transaction_id)
+      && row.assertion_field_name === row.field_name && row.assertion_origin === row.origin
+      && row.assertion_value_text === row.value_text;
+    const projectionMatches = canonicalIdsEqual(row.projection_commit_id, expectedProjectionCommit)
+      && row.projected_projection_commit_id !== undefined && row.projected_projection_commit_id !== null
+      && canonicalIdsEqual(row.projected_projection_commit_id, row.projection_commit_id)
+      && canonicalIdsEqual(row.projected_revision_commit_id, row.revision_commit_id)
+      && canonicalIdsEqual(row.revision_transaction_id, row.transaction_id)
+      && row.projected_transaction_id !== undefined && row.projected_transaction_id !== null
+      && row.projection_commit_sequence !== undefined && row.projection_commit_sequence !== null;
+    const assertionAsOfCutoff = row.assertion_commit_sequence !== undefined && row.assertion_commit_sequence !== null
+      && Number(row.assertion_commit_sequence) <= Number(row.build_cutoff_commit_sequence);
+    const authorityValid = row.origin === "user"
+      ? row.assertion_rule_lineage === "user/local" && row.assertion_authority_route === "user/local" && typeof row.assertion_producer_id === "string" && String(row.assertion_producer_id).length > 0
+      : row.origin === "derived"
+        && row.assertion_authority_route === CATHAY_DOMESTIC_DEPOSIT_AUTHORITY
+        && row.assertion_producer_id === row.run_producer_id && row.assertion_rule_lineage === row.run_rule_lineage
+        && row.run_authority_route === CATHAY_DOMESTIC_DEPOSIT_AUTHORITY && row.run_stream === CATHAY_DOMESTIC_DEPOSIT_STREAM
+        && row.run_origin === CATHAY_DERIVED_ORIGIN && row.run_status === "complete"
+        && row.registered_namespace === CATHAY_INTEGRATION_NAMESPACE && row.registered_stream === CATHAY_DOMESTIC_DEPOSIT_STREAM
+        && row.registered_contract_version === CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION;
+    if (!assertionMatches || !projectionMatches || !validLifecycle || !assertionAsOfCutoff || !authorityValid) {
+      throw new Error("Canonical v7 projection field assertion integrity is invalid.");
+    }
+  }
+}
+
 /** Validate the one switch boundary used by both writer and read-only startup.
  * This is intentionally a row-level gate: SQLite FKs can prove that a pointer
  * names a row, but cannot prove that the row is the sole active generation or
@@ -1524,6 +1640,7 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
   }
   validateGenerationExactAmounts(db, generationId);
   validateCathayAuthorityRoute(db, generationId);
+  validateGenerationFieldIntegrity(db, generationId);
   return generationId;
 }
 
@@ -2049,17 +2166,11 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
     let fieldCount = 0;
     for (const transaction of generationTransactions) {
       for (const field of ["display_name", "note"] as const) {
-        const selectAsOf = (origin: "user" | "derived") => db.prepare(`SELECT a.assertion_id, a.value_text FROM assertions a
-          JOIN assertion_transitions e ON e.assertion_id = a.assertion_id JOIN canonical_commits c ON c.commit_id = e.commit_id
-          WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
-            AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
-              WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ?
-                AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
-          ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(blob(transaction.transaction_id), field, origin, cutoff, cutoff) as { assertion_id?: unknown; value_text?: unknown } | undefined;
-        const selected = selectAsOf("user") ?? selectAsOf("derived");
+        const selected = selectAssertionAsOf(db, blob(transaction.transaction_id), field, cutoff, "user")
+          ?? selectAssertionAsOf(db, blob(transaction.transaction_id), field, cutoff, "derived");
         if (!selected) continue;
         const assertion = blob(selected.assertion_id);
-        insertField.run(generation, blob(transaction.transaction_id), field, String(selected.value_text), (selectAsOf("user") ? "user" : "derived"), (selectAsOf("user") ? null : assertion), (selectAsOf("user") ? assertion : null), commitId);
+        insertField.run(generation, blob(transaction.transaction_id), field, selected.value_text, selected.origin, selected.origin === "derived" ? assertion : null, selected.origin === "user" ? assertion : null, commitId);
         fieldCount += 1;
       }
     }
@@ -2069,8 +2180,10 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
       LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
       WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`).get(generation) as { count?: number }).count ?? 0);
     if (dangling !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
+    validateGenerationTransactionCompleteness(db, generation, cutoff);
     validateGenerationExactAmounts(db, generation);
     validateCathayAuthorityRoute(db, generation);
+    validateGenerationFieldIntegrity(db, generation);
     const duplicate = Number((db.prepare(`SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`).get(generation) as { count?: number }).count ?? 0);
     if (duplicate !== 0) throw new Error("Projection rebuild validation found duplicate transaction authority.");
     rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
@@ -2275,13 +2388,14 @@ function syncActiveProjectionFromCompatibility(db: DatabaseSync, projectionCommi
   const generationId = Number(pointer.generation_id);
   const generation = db.prepare("SELECT status FROM projection_generations WHERE generation_id = ?").get(generationId) as { status?: string } | undefined;
   if (!generation || generation.status !== "active") throw new Error("Canonical active projection generation is not writable.");
+  db.prepare("UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?), switched_commit_id = ?, validated_commit_id = ? WHERE generation_id = ?").run(projectionCommitId, projectionCommitId, projectionCommitId, generationId);
+  db.prepare("UPDATE current_transactions SET commit_id = ?, projection_commit_id = ?").run(projectionCommitId, projectionCommitId);
   db.prepare("DELETE FROM projection_generation_transaction_fields WHERE generation_id = ?").run(generationId);
   db.prepare("DELETE FROM projection_generation_transactions WHERE generation_id = ?").run(generationId);
   db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
     SELECT ?, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run(generationId);
   db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
     SELECT ?, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`).run(generationId);
-  db.prepare("UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?), switched_commit_id = ?, validated_commit_id = ? WHERE generation_id = ?").run(projectionCommitId, projectionCommitId, projectionCommitId, generationId);
   db.prepare("UPDATE active_projection_generation SET switched_commit_id = ? WHERE singleton_id = 1").run(projectionCommitId);
 }
 
@@ -2495,15 +2609,25 @@ function selectedCurrentField(db: DatabaseSync, transactionId: unknown, field: C
 
 type HistoricalAssertionOrigin = "derived" | "user";
 type SelectedHistoricalField = { value: string; origin: HistoricalAssertionOrigin; commitSequence: number };
+type SelectedAssertionAsOf = { assertion_id: unknown; value_text: string; origin: HistoricalAssertionOrigin; commitSequence: number };
 
-function selectHistoricalFieldByOrigin(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number, origin: HistoricalAssertionOrigin): SelectedHistoricalField | undefined {
-  const row = db.prepare(`SELECT a.value_text, c.commit_sequence FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
+/** One as-of assertion selector is shared by historical reads and rebuilds so
+ * lifecycle ordering and cutoff semantics cannot drift between the two paths. */
+function selectAssertionAsOf(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number, origin: HistoricalAssertionOrigin): SelectedAssertionAsOf | undefined {
+  const row = db.prepare(`SELECT a.assertion_id, a.value_text, c.commit_sequence
+    FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
     JOIN canonical_commits c ON c.commit_id = e.commit_id
     WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
       AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
-        WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ? AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
-    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, origin, knowledgeAt, knowledgeAt) as { value_text?: unknown; commit_sequence?: number } | undefined;
-  return row ? { value: String(row.value_text), origin, commitSequence: Number(row.commit_sequence) } : undefined;
+        WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ?
+          AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
+    ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(transactionId as CanonicalId, field, origin, knowledgeAt, knowledgeAt) as { assertion_id?: unknown; value_text?: unknown; commit_sequence?: number } | undefined;
+  return row ? { assertion_id: row.assertion_id, value_text: String(row.value_text), origin, commitSequence: Number(row.commit_sequence) } : undefined;
+}
+
+function selectHistoricalFieldByOrigin(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number, origin: HistoricalAssertionOrigin): SelectedHistoricalField | undefined {
+  const selected = selectAssertionAsOf(db, transactionId, field, knowledgeAt, origin);
+  return selected ? { value: selected.value_text, origin, commitSequence: selected.commitSequence } : undefined;
 }
 
 function selectedHistoricalField(db: DatabaseSync, transactionId: unknown, field: CathayDerivedField, knowledgeAt: number): SelectedHistoricalField | undefined {
@@ -2524,7 +2648,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
   async current(_request: CathayCanonicalCurrentQueryRequest): Promise<CathayCanonicalCurrentQueryResult> {
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
-      db.exec("BEGIN");
+      return withCanonicalSnapshot(db, () => {
       const accounts = (db.prepare("SELECT account_id AS id, account_no AS accountNo, currency, account_type AS accountType FROM financial_accounts ORDER BY account_no").all() as Record<string, unknown>[]).map((row) => ({ id: idToString(row.id), accountNo: String(row.accountNo), currency: "TWD" as const, accountType: "depository" as const }));
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
@@ -2538,8 +2662,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN canonical_commits c ON c.commit_id = pointer.switched_commit_id WHERE pointer.singleton_id = 1`).get() as { commit_sequence?: number } | undefined;
       if (!projection) throw new Error("Canonical current projection cutoff is missing.");
       const result = { status: "ok", kind: "current", accounts, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row))), commitSequence: Number(projection.commit_sequence) } satisfies CathayCanonicalCurrentQueryResult;
-      db.exec("COMMIT");
       return result;
+      });
     } finally { db.close(); }
   }
   async historical(request: CathayCanonicalHistoricalQueryRequest): Promise<CathayCanonicalHistoricalQueryResult> {
@@ -2549,7 +2673,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     if (!Number.isSafeInteger(knowledgeAt)) throw new Error("Canonical historical knowledgeAt is outside the supported sequence range.");
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
-      db.exec("BEGIN");
+      return withCanonicalSnapshot(db, () => {
       const rows = db.prepare(`SELECT t.transaction_id, t.account_id, a.account_no, t.source_sequence, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
@@ -2566,8 +2690,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
         ) ORDER BY a.account_no, t.source_sequence`).all(knowledgeAt, request.cutoff.financialAt, knowledgeAt, request.cutoff.financialAt, knowledgeAt) as Record<string, unknown>[];
       const result = { status: "ok", kind: "historical", cutoff: request.cutoff, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row, knowledgeAt))) } satisfies CathayCanonicalHistoricalQueryResult;
-      db.exec("COMMIT");
       return result;
+      });
     } finally { db.close(); }
   }
   async lineage(request: CathayCanonicalLineageQueryRequest): Promise<CathayCanonicalLineageQueryResult> {
@@ -2575,7 +2699,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const transactionId = idFromString(request.subject.id);
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
-      db.exec("BEGIN");
+      return withCanonicalSnapshot(db, () => {
       const revisionRows = db.prepare(`SELECT t.transaction_id, t.account_id, t.source_sequence, a.account_no, r.amount_coefficient, r.amount_scale, r.currency,
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
@@ -2631,8 +2755,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         } satisfies CathayCanonicalLineageEntry;
       });
       const result = { status: "ok", kind: "lineage", subject: request.subject, entries } satisfies CathayCanonicalLineageQueryResult;
-      db.exec("COMMIT");
       return result;
+      });
     } finally { db.close(); }
   }
 }
