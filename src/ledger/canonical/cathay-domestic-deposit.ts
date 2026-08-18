@@ -838,15 +838,14 @@ CREATE TABLE IF NOT EXISTS current_transaction_fields (
   field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
   value_text TEXT NOT NULL,
   origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
-  derived_assertion_id BLOB REFERENCES derived_assertions(assertion_id),
-  user_assertion_id BLOB REFERENCES user_assertions(assertion_id),
+  derived_assertion_id BLOB REFERENCES assertions(assertion_id),
+  user_assertion_id BLOB REFERENCES assertions(assertion_id),
   projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   PRIMARY KEY(transaction_id, field_name),
   CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
     OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_derived_scope_coordinates_lineage ON derived_scope_coordinates(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
-CREATE INDEX IF NOT EXISTS idx_derived_assertions_lineage ON derived_assertions(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
 CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id);
 `;
 const SCHEMA_V6 = `${SCHEMA_V5.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
@@ -1034,9 +1033,44 @@ function backfillV6DerivedAndUserAssertions(db: DatabaseSync): void {
   }
 }
 
+function rebuildCurrentTransactionFieldsForSharedAssertions(db: DatabaseSync): void {
+  const sql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'current_transaction_fields'").get() as { sql?: unknown } | undefined)?.sql ?? "");
+  if (/derived_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(sql) && /user_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(sql)) return;
+  db.exec(`CREATE TABLE current_transaction_fields_shared (
+    transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+    field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+    value_text TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+    derived_assertion_id BLOB REFERENCES assertions(assertion_id),
+    user_assertion_id BLOB REFERENCES assertions(assertion_id),
+    projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+    PRIMARY KEY(transaction_id, field_name),
+    CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
+      OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
+  )`);
+  db.exec(`INSERT INTO current_transaction_fields_shared(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+    SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`);
+  db.exec("DROP TABLE current_transaction_fields; ALTER TABLE current_transaction_fields_shared RENAME TO current_transaction_fields");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id)");
+}
+
 function convertV6CompatibilityTables(db: DatabaseSync): void {
   backfillV6DerivedAndUserAssertions(db);
   const compatibilityViews: Array<{ name: string; select: string }> = [
+    {
+      name: "derived_assertions",
+      select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.field_name, assertion.producer_id,
+        run.origin, assertion.rule_lineage, assertion.value_text, run.run_id, assertion.created_commit_id AS commit_id
+        FROM assertions assertion JOIN derived_import_runs run ON run.commit_id = assertion.created_commit_id
+          AND run.producer_id = assertion.producer_id AND run.rule_lineage = assertion.rule_lineage
+        WHERE assertion.origin = 'derived'`,
+    },
+    {
+      name: "user_assertions",
+      select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.field_name, assertion.producer_id AS user_id,
+        assertion.value_text, assertion.created_commit_id AS commit_id
+        FROM assertions assertion WHERE assertion.origin = 'user'`,
+    },
     {
       name: "assertion_lifecycle_events",
       select: `SELECT transition.event_id, transition.assertion_id, transition.transaction_id, assertion.revision_id,
@@ -1195,6 +1229,7 @@ function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     db.exec("DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v6 RENAME TO canonical_commits");
     ensureV6SharedAssertionSpine(db);
     db.exec(SCHEMA_V6_APPEND);
+    rebuildCurrentTransactionFieldsForSharedAssertions(db);
     convertV6CompatibilityTables(db);
     if (injectMigrationFailure === "v5-v6-after-derived-schema") throw new Error("Injected v5-v6 migration failure after derived schema.");
     db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(6, currentUtcMicros());
@@ -1251,6 +1286,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     try {
       ensureV6SharedAssertionSpine(db);
       if (relationType(db, "assertion_lifecycle_events") !== "view") db.exec(SCHEMA_V6_APPEND);
+      rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
@@ -1261,16 +1297,20 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     }
     return;
   }
+  db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA_V6);
     ensureV6SharedAssertionSpine(db);
+    rebuildCurrentTransactionFieldsForSharedAssertions(db);
     convertV6CompatibilityTables(db);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
   } catch (error) {
     db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
 }
@@ -1280,8 +1320,11 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   for (const table of requiredTables) {
     if (!relationType(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
   }
-  for (const table of ["assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
+  for (const table of ["derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
     if (relationType(db, table) !== "view") throw new Error(`Canonical schema v6 compatibility relation ${table} is not a read-only view.`);
+  }
+  for (const table of ["assertions", "assertion_transitions", "assertion_provenance", "current_transaction_fields"]) {
+    if (relationType(db, table) !== "table") throw new Error(`Canonical schema v6 shared authority relation ${table} is not a table.`);
   }
   const requiredColumns: Record<string, string[]> = {
     assertions: ["assertion_id", "transaction_id", "field_name", "target_kind", "origin", "producer_id", "rule_lineage", "revision_id", "value_text", "created_commit_id"],
@@ -1310,7 +1353,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     "idx_canonical_commits_sequence", "idx_capture_scopes_account_time", "idx_capture_scope_pages_proof",
     "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
     "idx_assertions_lineage", "idx_assertion_transitions_knowledge", "idx_assertion_transitions_transaction", "idx_assertion_provenance_authority",
-    "idx_derived_scope_coordinates_lineage", "idx_derived_assertions_lineage",
+    "idx_derived_scope_coordinates_lineage",
     "idx_current_transaction_fields_projection",
   ];
   for (const index of requiredIndexes) {
@@ -1326,12 +1369,24 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   if (!/origin\s+TEXT\s+NOT NULL\s+CHECK\s*\(origin\s+IN\s*\('source','derived','user'\)\)/i.test(tableSql("assertions"))) {
     throw new Error("Canonical schema v6 assertion origin taxonomy is missing.");
   }
+  if (!/derived_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(tableSql("current_transaction_fields")) || !/user_assertion_id\s+BLOB\s+REFERENCES\s+assertions\s*\(/i.test(tableSql("current_transaction_fields"))) {
+    throw new Error("Canonical schema v6 current assertion references are not on the shared authority.");
+  }
   const transitionCheck = /event_kind\s+TEXT\s+NOT NULL\s+CHECK\s*\(event_kind\s+IN\s*\('observed','superseded','withdrawn'(?:,'restored')?\)\)/i;
   if (!transitionCheck.test(tableSql("assertion_transitions"))) {
     throw new Error("Canonical schema v6 shared assertion transition taxonomy is missing.");
   }
-  if (!["assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"].every((view) => /assertion_(?:transitions|provenance)/i.test(tableSql(view)))) {
-    throw new Error("Canonical schema v6 compatibility views are not backed by the shared assertion spine.");
+  const compatibilityAuthority: Record<string, RegExp> = {
+    derived_assertions: /FROM\s+assertions\b/i,
+    user_assertions: /FROM\s+assertions\b/i,
+    assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    derived_assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    user_assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    derived_assertion_provenance: /FROM\s+assertion_provenance\b/i,
+    user_assertion_provenance: /FROM\s+assertion_provenance\b/i,
+  };
+  for (const [view, authority] of Object.entries(compatibilityAuthority)) {
+    if (!authority.test(tableSql(view))) throw new Error(`Canonical schema v6 compatibility view ${view} is not backed by the shared assertion spine.`);
   }
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
@@ -1769,13 +1824,15 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
       const coordinateId = uuidV7();
       db.prepare("INSERT INTO derived_scope_coordinates(coordinate_id, run_id, transaction_id, field_name, producer_id, origin, rule_lineage, output_state, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(coordinateId, runId, transactionId, coordinate.field, input.producerId, origin, input.ruleLineage, coordinate.state, commitId);
       const existingCurrent = db.prepare(`SELECT f.origin, f.derived_assertion_id, f.user_assertion_id FROM current_transaction_fields f WHERE f.transaction_id = ? AND f.field_name = ?`).get(transactionId, coordinate.field) as Record<string, unknown> | undefined;
-      const conflicting = db.prepare(`SELECT da.assertion_id, da.producer_id, da.origin, da.rule_lineage FROM derived_assertions da
-        WHERE da.transaction_id = ? AND da.field_name = ? AND (da.producer_id <> ? OR da.origin <> ? OR da.rule_lineage <> ?)
-        LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin, input.ruleLineage) as Record<string, unknown> | undefined;
+      const conflicting = db.prepare(`SELECT assertion.assertion_id, assertion.producer_id, assertion.origin, assertion.rule_lineage FROM assertions assertion
+        WHERE assertion.origin = 'derived' AND assertion.transaction_id = ? AND assertion.field_name = ?
+          AND (assertion.producer_id <> ? OR assertion.origin <> 'derived' OR assertion.rule_lineage <> ?)
+        LIMIT 1`).get(transactionId, coordinate.field, input.producerId, input.ruleLineage) as Record<string, unknown> | undefined;
       if (conflicting) throw new Error("A different derived producer or origin cannot supersede the current lineage.");
-      const latest = db.prepare(`SELECT da.* FROM derived_assertions da JOIN canonical_commits c ON c.commit_id = da.commit_id
-        WHERE da.transaction_id = ? AND da.field_name = ? AND da.producer_id = ? AND da.origin = ? AND da.rule_lineage = ?
-        ORDER BY c.commit_sequence DESC, da.assertion_id DESC LIMIT 1`).get(transactionId, coordinate.field, input.producerId, origin, input.ruleLineage) as Record<string, unknown> | undefined;
+      const latest = db.prepare(`SELECT assertion.* FROM assertions assertion JOIN canonical_commits c ON c.commit_id = assertion.created_commit_id
+        WHERE assertion.origin = 'derived' AND assertion.transaction_id = ? AND assertion.field_name = ?
+          AND assertion.producer_id = ? AND assertion.rule_lineage = ?
+        ORDER BY c.commit_sequence DESC, assertion.assertion_id DESC LIMIT 1`).get(transactionId, coordinate.field, input.producerId, input.ruleLineage) as Record<string, unknown> | undefined;
       if (coordinate.state === "unsupported") {
         if (latest && latestDerivedLifecycle(db, blob(latest.assertion_id)) !== "withdrawn") {
           const withdrawnAssertion = blob(latest.assertion_id);
@@ -1793,7 +1850,6 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
       } else {
         assertionId = uuidV7();
         if (latest) insertDerivedLifecycleEvent(db, { assertionId: blob(latest.assertion_id), transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "superseded" });
-        db.prepare("INSERT INTO derived_assertions(assertion_id, transaction_id, field_name, producer_id, origin, rule_lineage, value_text, run_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, coordinate.field, input.producerId, origin, input.ruleLineage, value, runId, commitId);
         db.prepare("INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES (?, ?, ?, 'transaction', 'derived', ?, ?, NULL, ?, ?)").run(assertionId, transactionId, coordinate.field, input.producerId, input.ruleLineage, value, commitId);
       }
       db.prepare("INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, ?, ?, ?)").run(assertionId, runId, coordinateId, commitId);
@@ -1856,8 +1912,11 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
       const commitId = uuidV7();
       const commitSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits").get() as { max_sequence?: number }).max_sequence ?? 0) + 1;
       db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'user_assertion')").run(commitId, commitSequence, recordedAtUtcUs(clock()), "user/local");
-      const prior = db.prepare(`SELECT ua.* FROM user_assertions ua JOIN canonical_commits c ON c.commit_id = ua.commit_id
-        WHERE ua.transaction_id = ? AND ua.field_name = ? AND ua.user_id = ? ORDER BY c.commit_sequence DESC, ua.assertion_id DESC LIMIT 1`).get(transactionId, field, userId) as Record<string, unknown> | undefined;
+      const prior = db.prepare(`SELECT assertion.assertion_id, assertion.transaction_id, assertion.field_name,
+          assertion.producer_id AS user_id, assertion.value_text, assertion.created_commit_id AS commit_id
+        FROM assertions assertion JOIN canonical_commits c ON c.commit_id = assertion.created_commit_id
+        WHERE assertion.origin = 'user' AND assertion.transaction_id = ? AND assertion.field_name = ? AND assertion.producer_id = ?
+        ORDER BY c.commit_sequence DESC, assertion.assertion_id DESC LIMIT 1`).get(transactionId, field, userId) as Record<string, unknown> | undefined;
       let assertionId: CanonicalId;
       const withdrawn = input.value === null;
       if (withdrawn) {
@@ -1873,7 +1932,6 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
           if (prior) {
             db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'superseded')").run(uuidV7(), blob(prior.assertion_id), transactionId, field, userId, commitId);
           }
-          db.prepare("INSERT INTO user_assertions(assertion_id, transaction_id, field_name, user_id, value_text, commit_id) VALUES (?, ?, ?, ?, ?, ?)").run(assertionId, transactionId, field, userId, value, commitId);
           db.prepare("INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES (?, ?, ?, 'transaction', 'user', ?, 'user/local', NULL, ?, ?)").run(assertionId, transactionId, field, userId, value, commitId);
           db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'observed')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
         }
@@ -2014,12 +2072,18 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         const lifecycleEvents = db.prepare(`SELECT e.event_id, e.event_kind, c.commit_sequence, cs.scope_id, cs.completeness, cs.absence_authority, cs.contract_fingerprint, cs.page_count
           FROM assertion_transitions e JOIN canonical_commits c ON c.commit_id = e.commit_id
           LEFT JOIN capture_scopes cs ON cs.scope_id = e.scope_id WHERE e.assertion_id = ? ORDER BY c.commit_sequence, e.event_id`).all(assertionId) as Record<string, unknown>[];
-        const derivedRows = db.prepare(`SELECT da.assertion_id, da.field_name, da.producer_id, da.origin, da.rule_lineage, da.value_text, da.run_id, c.commit_sequence
-          FROM derived_assertions da JOIN canonical_commits c ON c.commit_id = da.commit_id
-          WHERE da.transaction_id = ? ORDER BY c.commit_sequence, da.assertion_id`).all(transactionId) as Record<string, unknown>[];
-        const userRows = db.prepare(`SELECT ua.assertion_id, ua.field_name, ua.user_id, ua.value_text, c.commit_sequence
-          FROM user_assertions ua JOIN canonical_commits c ON c.commit_id = ua.commit_id
-          WHERE ua.transaction_id = ? ORDER BY c.commit_sequence, ua.assertion_id`).all(transactionId) as Record<string, unknown>[];
+        const derivedRows = db.prepare(`SELECT assertion.assertion_id, assertion.field_name, assertion.producer_id, assertion.origin,
+            assertion.rule_lineage, assertion.value_text, run.run_id, c.commit_sequence
+          FROM assertions assertion JOIN derived_import_runs run ON run.commit_id = assertion.created_commit_id
+            AND run.producer_id = assertion.producer_id AND run.rule_lineage = assertion.rule_lineage
+          JOIN canonical_commits c ON c.commit_id = assertion.created_commit_id
+          WHERE assertion.transaction_id = ? AND assertion.origin = 'derived'
+          ORDER BY c.commit_sequence, assertion.assertion_id`).all(transactionId) as Record<string, unknown>[];
+        const userRows = db.prepare(`SELECT assertion.assertion_id, assertion.field_name, assertion.producer_id AS user_id,
+            assertion.value_text, c.commit_sequence
+          FROM assertions assertion JOIN canonical_commits c ON c.commit_id = assertion.created_commit_id
+          WHERE assertion.transaction_id = ? AND assertion.origin = 'user'
+          ORDER BY c.commit_sequence, assertion.assertion_id`).all(transactionId) as Record<string, unknown>[];
         const revision = transactionRevisionFromRow(addSelectedFields(db, row, Number(row.commit_sequence)));
         return {
           transaction: { id: idToString(row.transaction_id), accountId: idToString(row.account_id), sourceSequence: String(row.source_sequence) },
