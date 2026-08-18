@@ -273,6 +273,39 @@ for (const [label, corruptField] of [
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
+// Every assertion selected into the active projection must retain at least one
+// origin-appropriate provenance row. Removing all rows is distinct from a
+// malformed row and must fail both startup and candidate rebuild validation.
+for (const origin of ["source", "derived", "user"] as const) {
+  const { dir, transactionId } = await makeFieldLedger(`cathay-canonical-v7-red-provenance-missing-${origin}-`);
+  try {
+    if (origin === "derived") {
+      await commitCathayDerivedImportRun(dir, {
+        sourceConnectionId: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.sourceConnectionId,
+        identityEpoch: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.identityEpoch,
+        authorityRoute: "cathay/domestic-deposit/v1",
+        stream: "domestic-deposit",
+        producerId: "missing-provenance-enricher",
+        ruleLineage: "missing-provenance-rule",
+        complete: true,
+        status: "complete",
+        subjectIds: [transactionId],
+        fields: ["note"],
+        scope: [{ transactionId, field: "note", state: "supported", value: "Missing provenance note" }],
+      });
+    }
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const assertion = origin === "source"
+      ? corrupt.prepare("SELECT assertion_id FROM assertions WHERE origin = 'source' LIMIT 1").get()
+      : corrupt.prepare("SELECT CASE WHEN origin = 'derived' THEN derived_assertion_id ELSE user_assertion_id END AS assertion_id FROM projection_generation_transaction_fields WHERE origin = ? LIMIT 1").get(origin);
+    assert.ok(assertion && (assertion as { assertion_id?: Uint8Array }).assertion_id);
+    corrupt.prepare("DELETE FROM assertion_provenance WHERE assertion_id = ?").run(Buffer.from((assertion as { assertion_id: Uint8Array }).assertion_id));
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /provenance|lineage|source|assertion|selected/i, origin);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /provenance|lineage|source|assertion|selected/i, origin);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
 {
   const { dir, otherTransactionId } = await makeFieldLedger("cathay-canonical-v7-red-lifecycle-coordinate-");
   try {
@@ -405,23 +438,23 @@ for (const [label, corruptField] of [
 // rejected by the read-only startup verifier and rebuild gate.
 for (const [label, corrupt] of [
   ["deleted history", (db: DatabaseSync) => {
-    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete");
+    db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_delete");
     db.exec("DELETE FROM projection_generation_provenance WHERE ordinal = 4");
   }],
   ["wrong digest", (db: DatabaseSync) => {
-    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update");
     db.exec("UPDATE projection_generation_provenance SET event_digest = randomblob(32) WHERE ordinal = 4");
   }],
   ["wrong ordinal", (db: DatabaseSync) => {
-    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update");
     db.exec("UPDATE projection_generation_provenance SET ordinal = 99 WHERE ordinal = 4");
   }],
   ["wrong previous event", (db: DatabaseSync) => {
-    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update");
     db.exec("UPDATE projection_generation_provenance SET previous_event_id = randomblob(16) WHERE ordinal = 4");
   }],
   ["wrong event source", (db: DatabaseSync) => {
-    db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update");
     db.exec("UPDATE projection_generation_provenance SET event_source = 'migration' WHERE ordinal = 4");
   }],
   ["wrong commit kind", (db: DatabaseSync) => {
@@ -467,7 +500,7 @@ for (const [label, corrupt] of [
   try {
     await rebuildCathayCanonicalProjection(dir);
     const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
-    corrupt.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update");
+    corrupt.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update");
     corrupt.exec("UPDATE projection_generation_provenance SET generation_id = 2 WHERE generation_id = 1 AND ordinal = 4");
     corrupt.close();
     assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /chain|provenance|knowledge|generation/i);
@@ -482,8 +515,8 @@ for (const [label, corrupt] of [
   try {
     const legacy = new DatabaseSync(canonicalSqlitePath(dir));
     legacy.exec(`PRAGMA foreign_keys = OFF;
-      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update;
-      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete;
+      DROP TRIGGER IF EXISTS projection_generation_events_no_update;
+      DROP TRIGGER IF EXISTS projection_generation_events_no_delete;
       ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy;
       CREATE TABLE projection_generation_provenance(
         event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), generation_id INTEGER NOT NULL,
@@ -516,8 +549,8 @@ for (const [label, corrupt] of [
   try {
     const legacy = new DatabaseSync(canonicalSqlitePath(dir));
     legacy.exec(`PRAGMA foreign_keys = OFF;
-      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update;
-      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete;
+      DROP TRIGGER IF EXISTS projection_generation_events_no_update;
+      DROP TRIGGER IF EXISTS projection_generation_events_no_delete;
       DELETE FROM projection_generation_provenance WHERE event_kind = 'created';
       ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy;
       CREATE TABLE projection_generation_provenance(
@@ -535,6 +568,25 @@ for (const [label, corrupt] of [
     try {
       assert.deepEqual((migrated.prepare("SELECT event_kind FROM projection_generation_provenance WHERE generation_id = 1 ORDER BY ordinal").all() as Array<{ event_kind: string }>).map((row) => row.event_kind).slice(0, 3), ["created", "validated", "switched"]);
     } finally { migrated.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// Trigger names are part of the recovery contract: two present triggers with
+// swapped operations are not equivalent to the required update/delete pair.
+{
+  const { dir } = await makePopulatedLedger("cathay-canonical-v7-red-trigger-definition-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    corrupt.exec(`DROP TRIGGER projection_generation_events_no_update;
+      DROP TRIGGER projection_generation_events_no_delete;
+      CREATE TRIGGER projection_generation_events_no_update
+      BEFORE DELETE ON projection_generation_provenance
+      BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
+      CREATE TRIGGER projection_generation_events_no_delete
+      BEFORE UPDATE ON projection_generation_provenance
+      BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;`);
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /trigger|append-only|provenance/i);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
