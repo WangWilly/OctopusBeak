@@ -596,6 +596,25 @@ try {
 
   const unchanged = await commitCathayDerivedImportRun(derivedDir, derivedInput);
   const changed = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Changed label" }, { transactionId, field: "note" as const, state: "supported" as const, value: "Derived note" }] });
+  const beforeRuleLineage = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const beforeRuleLineageCounts = {
+    commits: beforeRuleLineage.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+    runs: beforeRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count,
+    assertions: beforeRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count,
+    provenance: beforeRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count,
+    current: beforeRuleLineage.prepare("SELECT value_text, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
+  };
+  beforeRuleLineage.close();
+  const ruleLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ruleLineage: "synthetic-rule-v2", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Rule v2 label" }] });
+  assert.equal(ruleLineageDiagnostic.status, "diagnostic");
+  const afterRuleLineage = openCanonicalDatabase(derivedDir, { readOnly: true });
+  try {
+    assert.equal(afterRuleLineage.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count, beforeRuleLineageCounts.commits);
+    assert.equal(afterRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, beforeRuleLineageCounts.runs);
+    assert.equal(afterRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count, beforeRuleLineageCounts.assertions);
+    assert.equal(afterRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count, beforeRuleLineageCounts.provenance);
+    assert.deepEqual(afterRuleLineage.prepare("SELECT value_text, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")), beforeRuleLineageCounts.current);
+  } finally { afterRuleLineage.close(); }
   const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
   assert.equal(producerDiagnostic.status, "diagnostic");
   const withdrawn = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
@@ -629,6 +648,7 @@ try {
   assert.equal(diagnostic.status, "diagnostic");
   const diagnosticDb = openCanonicalDatabase(derivedDir, { readOnly: true });
   try { assert.equal(diagnosticDb.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count, 4); } finally { diagnosticDb.close(); }
+  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { target: { kind: "balance", field: "note", id: transactionId }, value: "forbidden" }), /transaction targets only/);
   await assert.rejects(() => commitCathayUserAssertion(derivedDir, { transactionId, field: "amount", value: "999" } as never), /only display_name or note/);
 } finally { await rm(derivedDir, { recursive: true, force: true }); }
 
