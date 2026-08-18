@@ -985,10 +985,10 @@ CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_commit_update
 BEFORE UPDATE OF generation_id, switched_commit_id ON active_projection_generation
 WHEN NEW.switched_commit_id IS NOT (SELECT switched_commit_id FROM projection_generations WHERE generation_id = NEW.generation_id)
 BEGIN SELECT RAISE(ABORT, 'active projection switch commit does not match generation'); END;
-CREATE TRIGGER IF NOT EXISTS trg_projection_generation_provenance_no_update
+CREATE TRIGGER IF NOT EXISTS projection_generation_events_no_update
 BEFORE UPDATE ON projection_generation_provenance
 BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS trg_projection_generation_provenance_no_delete
+CREATE TRIGGER IF NOT EXISTS projection_generation_events_no_delete
 BEFORE DELETE ON projection_generation_provenance
 BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS trg_projection_generation_fields_integrity_insert
@@ -1664,24 +1664,29 @@ function projectionGenerationEventDigest(values: {
     .digest();
 }
 
+const PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS = [
+  { name: "projection_generation_events_no_update", operation: "UPDATE" },
+  { name: "projection_generation_events_no_delete", operation: "DELETE" },
+] as const;
+
 function ensureProjectionGenerationProvenanceTriggers(db: DatabaseSync): void {
-  db.exec(`DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update;
-    DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete;
-    CREATE TRIGGER trg_projection_generation_provenance_no_update
-    BEFORE UPDATE ON projection_generation_provenance
-    BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
-    CREATE TRIGGER trg_projection_generation_provenance_no_delete
-    BEFORE DELETE ON projection_generation_provenance
-    BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;`);
+  db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete");
+  for (const definition of PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS) {
+    db.exec(`DROP TRIGGER IF EXISTS ${definition.name};
+      CREATE TRIGGER ${definition.name}
+      BEFORE ${definition.operation} ON projection_generation_provenance
+      BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;`);
+  }
 }
 
 function validateProjectionGenerationProvenanceTriggers(db: DatabaseSync): void {
   const rows = db.prepare(`SELECT name, sql FROM sqlite_master
-    WHERE type = 'trigger' AND name IN ('trg_projection_generation_provenance_no_update', 'trg_projection_generation_provenance_no_delete')`).all() as Array<{ name?: string; sql?: string }>;
-  if (rows.length !== 2
-    || rows.some((row) => !/projection_generation_provenance/i.test(String(row.sql))
-      || !/BEFORE\s+(UPDATE|DELETE)\s+ON\s+projection_generation_provenance/i.test(String(row.sql))
-      || !/append-only/i.test(String(row.sql)))) {
+    WHERE type = 'trigger' AND name IN (${PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS.map(() => "?").join(", ")})`).all(...PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS.map((definition) => definition.name)) as Array<{ name?: string; sql?: string }>;
+  const definitions = new Map(rows.map((row) => [String(row.name), String(row.sql)]));
+  const valid = definitions.size === PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS.length
+    && PROJECTION_GENERATION_APPEND_ONLY_TRIGGER_DEFINITIONS.every((definition) => definitions.get(definition.name)?.replaceAll(/\s+/g, " ").toLowerCase().includes(`create trigger ${definition.name} before ${definition.operation.toLowerCase()} on projection_generation_provenance`))
+    && [...definitions.values()].every((sql) => /raise\s*\(\s*abort\s*,\s*'projection generation provenance is append-only'\s*\)/i.test(sql));
+  if (!valid) {
     throw new Error("Canonical v7 projection provenance append-only triggers are missing or invalid.");
   }
 }
@@ -1696,22 +1701,11 @@ function ensureProjectionGenerationProvenanceSchema(db: DatabaseSync): boolean {
   }
 
   // v7 databases created before the chain fields are upgraded in the same
-  // migration transaction. Keep the persisted event IDs, then derive a
-  // stable order and link/digest for every generation; a malformed legacy
-  // relation fails the copy and rolls the schema back atomically.
-  const legacyRows = db.prepare(`SELECT event.rowid AS row_id, event.event_id, event.generation_id,
-      event.event_kind, event.event_source, event.commit_id, commit_row.commit_sequence
-    FROM projection_generation_provenance event
-    JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id`).all() as Array<Record<string, unknown>>;
-  const switchedByGeneration = new Map((db.prepare("SELECT generation_id, switched_commit_id FROM projection_generations").all() as Array<Record<string, unknown>>)
-    .filter((row) => row.switched_commit_id !== null && row.switched_commit_id !== undefined)
-    .map((row) => [Number(row.generation_id), blob(row.switched_commit_id)] as const));
-  // The first v7 runtime recorded the activation commit both as `switched`
-  // and as a routine `knowledge` event. It carried no additional knowledge
-  // advance; normalize that legacy duplicate while constructing the chain.
-  const legacy = legacyRows.filter((row) => row.event_kind !== "knowledge"
-    || !canonicalIdsEqual(blob(row.commit_id), switchedByGeneration.get(Number(row.generation_id))));
-  db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy");
+  // migration transaction. Keep the legacy table beside the empty typed table;
+  // rebuildLegacyProjectionProvenanceChains is the single planner/copier that
+  // derives phases, ordinals, links, and digests before dropping the legacy
+  // relation. This avoids a lossy first-pass chain followed by a second copy.
+  db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update; DROP TRIGGER IF EXISTS projection_generation_events_no_delete; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy");
   db.exec(`CREATE TABLE projection_generation_provenance (
     event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
     generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
@@ -1724,37 +1718,7 @@ function ensureProjectionGenerationProvenanceSchema(db: DatabaseSync): boolean {
     UNIQUE(generation_id, ordinal),
     UNIQUE(generation_id, event_kind, event_source, commit_id)
   )`);
-  const insert = db.prepare(`INSERT INTO projection_generation_provenance(
-    event_id, generation_id, ordinal, previous_event_id, event_kind, event_source, commit_id, event_digest
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-  const grouped = new Map<number, Array<Record<string, unknown>>>();
-  for (const row of legacy) {
-    const generationId = Number(row.generation_id);
-    const group = grouped.get(generationId) ?? [];
-    group.push(row);
-    grouped.set(generationId, group);
-  }
-  for (const rows of grouped.values()) {
-    rows.sort((left, right) => Number(left.commit_sequence) - Number(right.commit_sequence)
-      || PROJECTION_GENERATION_EVENT_ORDER[String(left.event_kind) as ProjectionGenerationEventKind] - PROJECTION_GENERATION_EVENT_ORDER[String(right.event_kind) as ProjectionGenerationEventKind]
-      || Number(left.row_id) - Number(right.row_id));
-    let previous: CanonicalId | null = null;
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index]!;
-      const generationId = Number(row.generation_id);
-      const ordinal = index + 1;
-      const eventKind = String(row.event_kind) as ProjectionGenerationEventKind;
-      const eventSource = String(row.event_source) as ProjectionGenerationEventSource;
-      const commitId = blob(row.commit_id);
-      const eventId = blob(row.event_id);
-      insert.run(eventId, generationId, ordinal, previous, eventKind, eventSource, commitId,
-        projectionGenerationEventDigest({ generationId, ordinal, eventKind, eventSource, commitId, previousEventId: previous }));
-      previous = eventId;
-    }
-  }
-  db.exec("DROP TABLE projection_generation_provenance_legacy");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_projection_generation_provenance_ordinal ON projection_generation_provenance(generation_id, ordinal); CREATE UNIQUE INDEX IF NOT EXISTS idx_projection_generation_provenance_semantic ON projection_generation_provenance(generation_id, event_kind, event_source, commit_id);");
-  ensureProjectionGenerationProvenanceTriggers(db);
   return true;
 }
 
@@ -1796,8 +1760,17 @@ function rebuildLegacyProjectionProvenanceChains(db: DatabaseSync): void {
   const generations = db.prepare(`SELECT generation_id, status, build_cutoff_commit_sequence,
       created_commit_id, validated_commit_id, switched_commit_id
     FROM projection_generations ORDER BY generation_id`).all() as Array<Record<string, unknown>>;
+  const sourceTable = relationType(db, "projection_generation_provenance_legacy") ? "projection_generation_provenance_legacy" : "projection_generation_provenance";
   const events = db.prepare(`SELECT rowid AS row_id, event_id, generation_id, event_kind, event_source, commit_id
-    FROM projection_generation_provenance ORDER BY generation_id, rowid`).all() as Array<Record<string, unknown>>;
+    FROM ${sourceTable} ORDER BY generation_id, rowid`).all() as Array<Record<string, unknown>>;
+  const switchedByGeneration = new Map((db.prepare("SELECT generation_id, switched_commit_id FROM projection_generations").all() as Array<Record<string, unknown>>)
+    .filter((row) => row.switched_commit_id !== null && row.switched_commit_id !== undefined)
+    .map((row) => [Number(row.generation_id), blob(row.switched_commit_id)] as const));
+  // The first v7 runtime recorded activation as both `switched` and a routine
+  // `knowledge` event. It carried no additional knowledge advance, so the
+  // single planner normalizes that legacy duplicate before copying.
+  const normalizedEvents = events.filter((row) => row.event_kind !== "knowledge"
+    || !canonicalIdsEqual(blob(row.commit_id), switchedByGeneration.get(Number(row.generation_id))));
   const commitInfo = (commitId: CanonicalId): { sequence: number; kind: string } => {
     const row = db.prepare("SELECT commit_sequence, commit_kind FROM canonical_commits WHERE commit_id = ?").get(commitId) as { commit_sequence?: number; commit_kind?: string } | undefined;
     if (!row) throw new Error("Legacy projection provenance references an unknown commit.");
@@ -1807,7 +1780,7 @@ function rebuildLegacyProjectionProvenanceChains(db: DatabaseSync): void {
   const planned = new Map<number, Array<{ eventId: CanonicalId; eventKind: ProjectionGenerationEventKind; eventSource: ProjectionGenerationEventSource; commitId: CanonicalId; sequence: number }>>();
   for (const generation of generations) {
     const generationId = Number(generation.generation_id);
-    const generationEvents = events.filter((event) => Number(event.generation_id) === generationId);
+    const generationEvents = normalizedEvents.filter((event) => Number(event.generation_id) === generationId);
     const phases = new Map<ProjectionGenerationEventKind, Record<string, unknown>>();
     for (const event of generationEvents) {
       const kind = String(event.event_kind) as ProjectionGenerationEventKind;
@@ -1877,7 +1850,7 @@ function rebuildLegacyProjectionProvenanceChains(db: DatabaseSync): void {
         : left.eventKind === "knowledge" && right.eventKind === "knowledge" ? left.sequence - right.sequence : PROJECTION_GENERATION_EVENT_ORDER[left.eventKind] - PROJECTION_GENERATION_EVENT_ORDER[right.eventKind]);
     planned.set(generationId, rows);
   }
-  db.exec("DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; DELETE FROM projection_generation_provenance");
+  db.exec("DROP TRIGGER IF EXISTS projection_generation_events_no_update; DROP TRIGGER IF EXISTS projection_generation_events_no_delete; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; DELETE FROM projection_generation_provenance");
   const insert = db.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, ordinal, previous_event_id, event_kind, event_source, commit_id, event_digest)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const [generationId, rows] of planned) {
@@ -1890,6 +1863,7 @@ function rebuildLegacyProjectionProvenanceChains(db: DatabaseSync): void {
       previous = row.eventId;
     }
   }
+  if (sourceTable === "projection_generation_provenance_legacy") db.exec("DROP TABLE projection_generation_provenance_legacy");
   ensureProjectionGenerationProvenanceTriggers(db);
 }
 
@@ -2105,6 +2079,75 @@ function validateGenerationFieldCompleteness(db: DatabaseSync, generationId: num
   if (missing.length !== 0 || extra.length !== 0 || expectedSet.size !== actualSet.size) {
     throw new Error(`Canonical v7 projection field completeness mismatch: missing=${missing.length}, extra=${extra.length}.`);
   }
+}
+
+/** Selected assertions are only readable when their typed provenance is still
+ * present at the same Knowledge Point. This existence-aware gate deliberately
+ * starts from selected projection rows, so unrelated historical assertions do
+ * not become a false completeness requirement. */
+function validateSelectedAssertionProvenance(db: DatabaseSync, generationId: number, cutoff: number): void {
+  const invalidSource = Number((db.prepare(`SELECT COUNT(*) AS count
+    FROM projection_generation_transactions projected
+    JOIN projection_generations generation ON generation.generation_id = projected.generation_id
+    JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    LEFT JOIN assertions assertion ON assertion.revision_id = revision.revision_id AND assertion.origin = 'source'
+    WHERE projected.generation_id = ? AND NOT EXISTS (
+      SELECT 1 FROM assertion_provenance provenance
+      JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
+      JOIN source_records source_record ON source_record.source_record_id = provenance.source_record_id
+      JOIN source_captures capture ON capture.capture_id = source_record.capture_id
+      WHERE provenance.assertion_id = assertion.assertion_id
+        AND provenance.source_record_id = revision.source_record_id
+        AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
+        AND source_record.capture_id = revision.capture_id
+        AND provenance_commit.commit_sequence <= ?
+        AND provenance_commit.commit_kind = 'source_capture'
+        AND provenance_commit.authority_route = ?
+        AND capture.commit_id = provenance.commit_id
+        AND capture.authority_route = ? AND capture.stream = ?
+        AND capture.completeness_rule_version = ?
+    )`).get(generationId, cutoff, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) as { count?: number }).count ?? 0);
+  if (invalidSource !== 0) throw new Error("Canonical v7 selected Source assertion provenance is incomplete.");
+
+  const invalidUserFields = Number((db.prepare(`SELECT COUNT(*) AS count
+    FROM projection_generation_transaction_fields field
+    JOIN projection_generations generation ON generation.generation_id = field.generation_id
+    LEFT JOIN assertions assertion ON assertion.assertion_id = field.user_assertion_id
+    WHERE field.generation_id = ? AND field.origin = 'user' AND NOT EXISTS (
+      SELECT 1 FROM assertion_provenance provenance
+      JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
+      WHERE provenance.assertion_id = assertion.assertion_id
+        AND provenance.source_record_id IS NULL AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
+        AND provenance_commit.commit_sequence <= ?
+        AND provenance_commit.commit_kind = 'user_assertion' AND provenance_commit.authority_route = 'user/local'
+        AND (provenance.commit_id = assertion.created_commit_id OR EXISTS (
+          SELECT 1 FROM assertion_transitions transition
+          WHERE transition.assertion_id = assertion.assertion_id AND transition.user_id IS NOT NULL AND transition.commit_id = provenance.commit_id
+        ))
+    )`).get(generationId, cutoff) as { count?: number }).count ?? 0);
+  const invalidDerivedFields = Number((db.prepare(`SELECT COUNT(*) AS count
+    FROM projection_generation_transaction_fields field
+    JOIN projection_generations generation ON generation.generation_id = field.generation_id
+    LEFT JOIN assertions assertion ON assertion.assertion_id = field.derived_assertion_id
+    WHERE field.generation_id = ? AND field.origin = 'derived' AND NOT EXISTS (
+      SELECT 1 FROM assertion_provenance provenance
+      JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
+      JOIN derived_import_runs run ON run.run_id = provenance.run_id
+      JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = provenance.coordinate_id
+      JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+      WHERE provenance.assertion_id = assertion.assertion_id
+        AND provenance.source_record_id IS NULL AND provenance.run_id IS NOT NULL AND provenance.coordinate_id IS NOT NULL
+        AND provenance_commit.commit_sequence <= ?
+        AND provenance_commit.commit_kind = 'derived_import' AND provenance_commit.authority_route = ?
+        AND run.commit_id = provenance.commit_id AND run.authority_route = ? AND run.stream = ?
+        AND run.producer_id = assertion.producer_id AND run.origin = ? AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+        AND coordinate.run_id = run.run_id AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+        AND coordinate.producer_id = assertion.producer_id AND coordinate.origin = ? AND coordinate.rule_lineage = assertion.rule_lineage
+        AND coordinate.output_state = 'supported'
+        AND registered.integration_namespace = ? AND registered.stream = ? AND registered.contract_version = ?
+    )`).get(generationId, cutoff, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_AUTHORITY, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DERIVED_ORIGIN, CATHAY_DERIVED_ORIGIN, CATHAY_INTEGRATION_NAMESPACE, CATHAY_DOMESTIC_DEPOSIT_STREAM, CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION) as { count?: number }).count ?? 0);
+  const invalidFields = invalidUserFields + invalidDerivedFields;
+  if (invalidFields !== 0) throw new Error("Canonical v7 selected assertion provenance is incomplete.");
 }
 
 function validateGenerationLifecycleCoordinates(db: DatabaseSync, generationId: number): void {
@@ -2394,6 +2437,7 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
   const activeCutoff = Number((db.prepare("SELECT build_cutoff_commit_sequence FROM projection_generations WHERE generation_id = ?").get(generationId) as { build_cutoff_commit_sequence?: number } | undefined)?.build_cutoff_commit_sequence ?? 0);
   validateGenerationTransactionIntegrity(db, generationId, activeCutoff);
   validateGenerationFieldCompleteness(db, generationId, activeCutoff);
+  validateSelectedAssertionProvenance(db, generationId, activeCutoff);
   validateGenerationFieldIntegrity(db, generationId);
   validateGenerationLifecycleCoordinates(db, generationId);
   validateUserAssertionProvenanceAuthority(db);
@@ -2950,6 +2994,7 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
     if (dangling !== 0) throw new Error("Projection rebuild validation failed for references or exact arithmetic.");
     validateGenerationTransactionIntegrity(db, generation, cutoff);
     validateGenerationFieldCompleteness(db, generation, cutoff);
+    validateSelectedAssertionProvenance(db, generation, cutoff);
     validateGenerationExactAmounts(db, generation);
     validateCathayAuthorityRoute(db, generation);
     validateGenerationFieldIntegrity(db, generation);
