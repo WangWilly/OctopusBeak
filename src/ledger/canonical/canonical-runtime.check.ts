@@ -105,6 +105,32 @@ async function makeFieldLedger(prefix: string): Promise<{ dir: string; transacti
   return { dir, transactionId, otherTransactionId };
 }
 
+// The documented empty-store state has no canonical evidence or projection
+// generation yet. Read-only startup and all three public query contracts must
+// treat that state as a valid empty result, while any partial state remains a
+// recovery error.
+{
+  const dir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-empty-"));
+  try {
+    const writer = openCanonicalDatabase(dir);
+    writer.close();
+    const readable = openCanonicalDatabase(dir, { readOnly: true });
+    readable.close();
+    const query = createCathayCanonicalFinancialQuery(dir);
+    assert.deepEqual(await query.current({ kind: "current" }), {
+      status: "ok", kind: "current", accounts: [], transactions: [], commitSequence: 0,
+    });
+    assert.deepEqual((await query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-01-01", knowledgeAt: "0" } })).transactions, []);
+    assert.deepEqual((await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: "00000000-0000-0000-0000-000000000000" } })).entries, []);
+
+    const partial = new DatabaseSync(canonicalSqlitePath(dir));
+    const commitId = Buffer.alloc(16, 0x2a);
+    partial.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, 1, 0, 'cathay/domestic-deposit/v1', 'source_capture')").run(commitId);
+    partial.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /empty|projection|generation|pointer|provenance/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
 // These are deliberately isolated red cases: each corrupts a copy of an otherwise
 // valid ledger, so a startup gate cannot be accidentally masked by a prior case.
 {
@@ -227,6 +253,23 @@ for (const [label, corruptField] of [
     corrupt.close();
     assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /field|assertion|projection|origin|generation/i, label);
     await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /field|assertion|projection|origin|generation/i, label);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// User assertion provenance is local user authority, even when the nullable
+// source/run/coordinate columns are all empty. A source-capture commit must
+// never be accepted as the provenance of a user assertion.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-user-provenance-route-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const sourceCommit = (corrupt.prepare("SELECT commit_id FROM canonical_commits WHERE commit_kind = 'source_capture' LIMIT 1").get() as { commit_id: Uint8Array }).commit_id;
+    corrupt.prepare(`UPDATE assertion_provenance SET commit_id = ? WHERE assertion_id = (
+      SELECT user_assertion_id FROM projection_generation_transaction_fields WHERE origin = 'user' LIMIT 1
+    )`).run(Buffer.from(sourceCommit));
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /user|provenance|authority|route|commit/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /user|provenance|authority|route|commit/i);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -457,6 +500,40 @@ for (const [label, corrupt] of [
     try {
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM projection_generation_provenance WHERE ordinal IS NULL OR event_digest IS NULL").get()?.count, 0);
       assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM projection_generation_provenance WHERE previous_event_id IS NULL").get()?.count, 1);
+    } finally { migrated.close(); }
+    const immutable = new DatabaseSync(canonicalSqlitePath(dir));
+    assert.throws(() => immutable.exec("UPDATE projection_generation_provenance SET event_source = 'routine' WHERE ordinal = 1"), /append-only/i);
+    assert.throws(() => immutable.exec("DELETE FROM projection_generation_provenance WHERE ordinal = 1"), /append-only/i);
+    immutable.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// A genuine legacy chain may have lost an early phase row. Migration must
+// reconstruct the complete ordered chain from generation state before the
+// writer-open gate, rather than appending `created` after later phases.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-chain-migration-missing-phase-");
+  try {
+    const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    legacy.exec(`PRAGMA foreign_keys = OFF;
+      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update;
+      DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete;
+      DELETE FROM projection_generation_provenance WHERE event_kind = 'created';
+      ALTER TABLE projection_generation_provenance RENAME TO projection_generation_provenance_legacy;
+      CREATE TABLE projection_generation_provenance(
+        event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), generation_id INTEGER NOT NULL,
+        event_kind TEXT NOT NULL, event_source TEXT NOT NULL, commit_id BLOB NOT NULL
+      );
+      INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
+        SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
+      DROP TABLE projection_generation_provenance_legacy;
+      PRAGMA user_version = 7;`);
+    legacy.close();
+    const writer = openCanonicalDatabase(dir);
+    writer.close();
+    const migrated = openCanonicalDatabase(dir, { readOnly: true });
+    try {
+      assert.deepEqual((migrated.prepare("SELECT event_kind FROM projection_generation_provenance WHERE generation_id = 1 ORDER BY ordinal").all() as Array<{ event_kind: string }>).map((row) => row.event_kind).slice(0, 3), ["created", "validated", "switched"]);
     } finally { migrated.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
