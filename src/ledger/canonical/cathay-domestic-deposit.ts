@@ -96,10 +96,15 @@ export type CathayDerivedImportRunInput = {
   stream: string;
   producerId: string;
   ruleLineage: string;
-  origin?: string;
+  origin?: CathayDerivedOrigin;
   observedAt?: string;
-  /** Complete subject/field/producer/rule-lineage coordinate matrix. */
-  scope?: CathayDerivedImportCoordinate[];
+  /** The closed-run marker; only a complete successful run may mutate canonical data. */
+  complete: boolean;
+  status: "complete" | "partial" | "failed";
+  /** Complete, non-empty subject/field/producer/rule-lineage coordinate matrix. */
+  subjectIds: string[];
+  fields: CathayDerivedField[];
+  scope: CathayDerivedImportCoordinate[];
 };
 export type CathayDerivedImportDiagnostic = {
   kind: "derived-import-diagnostic";
@@ -116,11 +121,12 @@ export type CathayDerivedImportOptions = CathayCanonicalCommitOptions & {
 };
 
 export type CathayUserAssertionField = "display_name" | "note";
+export type CathayUserAssertionTargetField = CathayUserAssertionField | "displayName" | "displayLabel";
 export type CathayUserAssertionInput = {
   transactionId?: string;
   subject?: { kind: "transaction"; id: string };
   field?: CathayUserAssertionField | string;
-  target?: { kind?: string; field?: string; id?: string } | string;
+  target?: { kind: "transaction"; field?: CathayUserAssertionTargetField; id: string };
   value?: string | null;
   userId?: string;
   observedAt?: string;
@@ -596,6 +602,7 @@ CREATE INDEX IF NOT EXISTS idx_assertions_lineage ON assertions(transaction_id, 
 CREATE INDEX IF NOT EXISTS idx_assertion_transitions_knowledge ON assertion_transitions(assertion_id, commit_id, event_kind, event_id);
 CREATE INDEX IF NOT EXISTS idx_assertion_transitions_transaction ON assertion_transitions(transaction_id, field_name, commit_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_assertion_provenance_authority ON assertion_provenance(assertion_id, commit_id, source_record_id, run_id, coordinate_id);
+CREATE INDEX IF NOT EXISTS idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);
 `;
 
 const SCHEMA = `
@@ -673,7 +680,12 @@ CREATE TABLE IF NOT EXISTS source_assertions (
   revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), UNIQUE(transaction_id, revision_id)
 );
-${SCHEMA_SHARED_ASSERTION_SPINE}
+CREATE TABLE IF NOT EXISTS assertion_provenance (
+  assertion_id BLOB NOT NULL REFERENCES source_assertions(assertion_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(assertion_id, source_record_id)
+);
 CREATE TABLE IF NOT EXISTS source_sync_states (
   source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
   stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, cursor TEXT,
@@ -847,8 +859,15 @@ CREATE TABLE IF NOT EXISTS current_transaction_fields (
 );
 CREATE INDEX IF NOT EXISTS idx_derived_scope_coordinates_lineage ON derived_scope_coordinates(transaction_id, field_name, origin, producer_id, rule_lineage, commit_id);
 CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id);
+CREATE INDEX IF NOT EXISTS idx_current_transactions_revision ON current_transactions(revision_id, commit_id, transaction_id);
 `;
-const SCHEMA_V6 = `${SCHEMA_V5.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
+// A fresh v6 database must not first create the v5 Source-only provenance table:
+// the shared spine owns provenance at v6, while v5 migrations still retain the
+// legacy table long enough for ensureV6SharedAssertionSpine to backfill it.
+const SCHEMA_V6_BASE = SCHEMA_V5
+  .replace(/CREATE TABLE IF NOT EXISTS assertion_provenance \([\s\S]*?\n\);\n/, "")
+  .replace("CREATE INDEX IF NOT EXISTS idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);", "");
+const SCHEMA_V6 = `${SCHEMA_V6_BASE.replace("CHECK(commit_kind = 'source_capture')", "CHECK(commit_kind IN ('source_capture','derived_import','user_assertion'))")}${SCHEMA_V6_APPEND}`;
 
 // Version 2 deliberately excludes only the v3 completeness proof columns and nullable cursor.
 // Keeping this target schema separate prevents an older database from being created at a
@@ -1054,9 +1073,40 @@ function rebuildCurrentTransactionFieldsForSharedAssertions(db: DatabaseSync): v
   db.exec("CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id)");
 }
 
+function ensureV6ProjectionOriginConstraints(db: DatabaseSync): void {
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_current_transaction_fields_origin_insert
+    BEFORE INSERT ON current_transaction_fields
+    WHEN NOT EXISTS (
+      SELECT 1 FROM assertions assertion
+      WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
+        AND assertion.origin = NEW.origin
+        AND assertion.transaction_id = NEW.transaction_id
+        AND assertion.field_name = NEW.field_name
+    )
+    BEGIN SELECT RAISE(ABORT, 'current transaction field assertion origin mismatch'); END;
+  CREATE TRIGGER IF NOT EXISTS trg_current_transaction_fields_origin_update
+    BEFORE UPDATE OF transaction_id, field_name, origin, derived_assertion_id, user_assertion_id ON current_transaction_fields
+    WHEN NOT EXISTS (
+      SELECT 1 FROM assertions assertion
+      WHERE assertion.assertion_id = CASE WHEN NEW.origin = 'derived' THEN NEW.derived_assertion_id ELSE NEW.user_assertion_id END
+        AND assertion.origin = NEW.origin
+        AND assertion.transaction_id = NEW.transaction_id
+        AND assertion.field_name = NEW.field_name
+    )
+    BEGIN SELECT RAISE(ABORT, 'current transaction field assertion origin mismatch'); END;`);
+}
+
 function convertV6CompatibilityTables(db: DatabaseSync): void {
   backfillV6DerivedAndUserAssertions(db);
   const compatibilityViews: Array<{ name: string; select: string }> = [
+    {
+      name: "source_assertions",
+      select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
+        MIN(provenance.source_record_id) AS source_record_id, assertion.created_commit_id AS commit_id
+        FROM assertions assertion JOIN assertion_provenance provenance ON provenance.assertion_id = assertion.assertion_id
+        WHERE assertion.origin = 'source' AND provenance.source_record_id IS NOT NULL
+        GROUP BY assertion.assertion_id, assertion.transaction_id, assertion.revision_id, assertion.created_commit_id`,
+    },
     {
       name: "derived_assertions",
       select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.field_name, assertion.producer_id,
@@ -1231,6 +1281,7 @@ function migrateV5ToV6(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     db.exec(SCHEMA_V6_APPEND);
     rebuildCurrentTransactionFieldsForSharedAssertions(db);
     convertV6CompatibilityTables(db);
+    ensureV6ProjectionOriginConstraints(db);
     if (injectMigrationFailure === "v5-v6-after-derived-schema") throw new Error("Injected v5-v6 migration failure after derived schema.");
     db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(6, currentUtcMicros());
     db.exec("PRAGMA user_version = 6");
@@ -1288,6 +1339,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
       if (relationType(db, "assertion_lifecycle_events") !== "view") db.exec(SCHEMA_V6_APPEND);
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
+      ensureV6ProjectionOriginConstraints(db);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -1304,6 +1356,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
     ensureV6SharedAssertionSpine(db);
     rebuildCurrentTransactionFieldsForSharedAssertions(db);
     convertV6CompatibilityTables(db);
+    ensureV6ProjectionOriginConstraints(db);
     db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(CANONICAL_SCHEMA_VERSION, currentUtcMicros());
     db.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -1316,11 +1369,11 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
-  const requiredTables = ["capture_scopes", "capture_scope_pages", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields"];
+  const requiredTables = ["capture_scopes", "capture_scope_pages", "source_assertions", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields"];
   for (const table of requiredTables) {
     if (!relationType(db, table)) throw new Error(`Canonical schema v6 table ${table} is missing.`);
   }
-  for (const table of ["derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
+  for (const table of ["source_assertions", "derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
     if (relationType(db, table) !== "view") throw new Error(`Canonical schema v6 compatibility relation ${table} is not a read-only view.`);
   }
   for (const table of ["assertions", "assertion_transitions", "assertion_provenance", "current_transaction_fields"]) {
@@ -1328,6 +1381,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   }
   const requiredColumns: Record<string, string[]> = {
     assertions: ["assertion_id", "transaction_id", "field_name", "target_kind", "origin", "producer_id", "rule_lineage", "revision_id", "value_text", "created_commit_id"],
+    source_assertions: ["assertion_id", "transaction_id", "revision_id", "source_record_id", "commit_id"],
     assertion_transitions: ["event_id", "assertion_id", "transaction_id", "field_name", "capture_id", "scope_id", "run_id", "coordinate_id", "user_id", "commit_id", "event_kind"],
     assertion_provenance: ["assertion_id", "source_record_id", "run_id", "coordinate_id", "commit_id"],
     derived_import_runs: ["run_id", "source_connection_id", "identity_epoch_id", "authority_route", "stream", "producer_id", "origin", "rule_lineage", "observed_at", "commit_id", "status"],
@@ -1377,6 +1431,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     throw new Error("Canonical schema v6 shared assertion transition taxonomy is missing.");
   }
   const compatibilityAuthority: Record<string, RegExp> = {
+    source_assertions: /FROM\s+assertions\b/i,
     derived_assertions: /FROM\s+assertions\b/i,
     user_assertions: /FROM\s+assertions\b/i,
     assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
@@ -1388,6 +1443,14 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   for (const [view, authority] of Object.entries(compatibilityAuthority)) {
     if (!authority.test(tableSql(view))) throw new Error(`Canonical schema v6 compatibility view ${view} is not backed by the shared assertion spine.`);
   }
+  const triggerRows = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('trg_current_transaction_fields_origin_insert', 'trg_current_transaction_fields_origin_update')").all() as Array<{ name?: string; sql?: string }>;
+  if (triggerRows.length !== 2 || triggerRows.some((row) => !/assertions/i.test(String(row.sql)))) throw new Error("Canonical v6 current projection origin triggers are missing.");
+  const invalidProjectionRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM current_transaction_fields field
+    LEFT JOIN assertions derived ON derived.assertion_id = field.derived_assertion_id
+    LEFT JOIN assertions user_assertion ON user_assertion.assertion_id = field.user_assertion_id
+    WHERE (field.origin = 'derived' AND (derived.origin <> 'derived' OR derived.transaction_id <> field.transaction_id OR derived.field_name <> field.field_name OR derived.assertion_id IS NULL))
+       OR (field.origin = 'user' AND (user_assertion.origin <> 'user' OR user_assertion.transaction_id <> field.transaction_id OR user_assertion.field_name <> field.field_name OR user_assertion.assertion_id IS NULL))`).get() as { count?: number }).count ?? 0);
+  if (invalidProjectionRows !== 0) throw new Error("Canonical v6 current projection assertion origin is inconsistent.");
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
   if (journalMode !== "wal") throw new Error("Canonical SQLite WAL journal is not available for read-only access.");
   const integrity = String((db.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown }).integrity_check ?? "");
@@ -1568,7 +1631,7 @@ function commitCathayDomesticDepositSyncOnce(
         let assertionId: CanonicalId;
         if (revisionCreated) {
           if (latestRow) {
-            const oldAssertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE revision_id = ?").get(blob(latestRow.revision_id));
+            const oldAssertion = db.prepare("SELECT assertion_id FROM assertions WHERE origin = 'source' AND revision_id = ?").get(blob(latestRow.revision_id));
             if (oldAssertion) insertLifecycleEvent(db, { assertionId: blob(dbRow<{ assertion_id: unknown }>(oldAssertion).assertion_id), transactionId, revisionId: blob(latestRow.revision_id), captureId, scopeId, commitId, kind: "superseded" });
           }
           revisionId = uuidV7();
@@ -1586,12 +1649,11 @@ function commitCathayDomesticDepositSyncOnce(
           observation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "accounting", detail.accountDate, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "date", "source_reported", detail.accountingUtcInstantUtcUs);
           observation.run(uuidV7(), transactionId, revisionId, sourceRecordId, commitId, "occurred", detail.transactionDateTime, CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE, "second", "source_reported", detail.utcInstantUtcUs);
           assertionId = uuidV7();
-          db.prepare("INSERT INTO source_assertions(assertion_id, transaction_id, revision_id, source_record_id, commit_id) VALUES (?, ?, ?, ?, ?)").run(assertionId, transactionId, revisionId, sourceRecordId, commitId);
           db.prepare("INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES (?, ?, 'transaction_revision', 'transaction', 'source', ?, ?, ?, NULL, ?)").run(assertionId, transactionId, input.authorityRoute, input.authorityRoute, revisionId, commitId);
           insertLifecycleEvent(db, { assertionId, transactionId, revisionId, captureId, scopeId, commitId, kind: "observed" });
           db.prepare("INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_id = excluded.commit_id, projection_commit_id = excluded.projection_commit_id, revision_commit_id = excluded.revision_commit_id").run(transactionId, revisionId, commitId, commitId, commitId);
         } else {
-          const assertion = db.prepare("SELECT assertion_id FROM source_assertions WHERE transaction_id = ? AND revision_id = ?").get(transactionId, revisionId);
+          const assertion = db.prepare("SELECT assertion_id FROM assertions WHERE origin = 'source' AND transaction_id = ? AND revision_id = ?").get(transactionId, revisionId);
           if (!assertion) throw new Error("Canonical assertion was not created.");
           assertionId = blob(dbRow<{ assertion_id: unknown }>(assertion).assertion_id);
           const wasWithdrawn = latestLifecycleEvent(db, assertionId) === "withdrawn";
@@ -1607,7 +1669,7 @@ function commitCathayDomesticDepositSyncOnce(
         allTransactions.push(result);
       }
       if (scope.absenceAuthority) {
-        const prior = db.prepare(`SELECT sa.assertion_id, sa.transaction_id, sa.revision_id, t.source_sequence FROM source_assertions sa
+        const prior = db.prepare(`SELECT sa.assertion_id, sa.transaction_id, sa.revision_id, t.source_sequence FROM assertions sa
           JOIN financial_transactions t ON t.transaction_id = sa.transaction_id JOIN transaction_revisions r ON r.revision_id = sa.revision_id
           JOIN current_transactions current_row ON current_row.transaction_id = t.transaction_id AND current_row.revision_id = r.revision_id
           JOIN assertion_provenance provenance ON provenance.assertion_id = sa.assertion_id
@@ -1615,7 +1677,7 @@ function commitCathayDomesticDepositSyncOnce(
           JOIN source_record_scopes prior_record_scope ON prior_record_scope.source_record_id = prior_record.source_record_id
           JOIN capture_scopes prior_scope ON prior_scope.scope_id = prior_record_scope.scope_id
           JOIN source_captures prior_capture ON prior_capture.capture_id = prior_scope.capture_id
-          WHERE t.account_id = ? AND r.effective_on BETWEEN ? AND ?
+          WHERE sa.origin = 'source' AND t.account_id = ? AND r.effective_on BETWEEN ? AND ?
             AND prior_scope.source_connection_id = ? AND prior_scope.identity_epoch_id = ? AND prior_scope.account_id = ?
             AND prior_scope.stream = ? AND prior_scope.scope_kind = 'bounded-range'
             AND prior_scope.completeness = 'complete-range' AND prior_scope.completeness_rule_version = ?
@@ -1711,15 +1773,35 @@ export function commitCathayDomesticDepositSync(
 }
 
 function importCoordinates(input: CathayDerivedImportRunInput): CathayDerivedImportCoordinate[] {
-  if (!input.scope) throw new Error("A complete derived import requires an explicit coordinate matrix.");
-  return normalizeDerivedCoordinates(input.scope);
+  if (!Array.isArray(input.subjectIds) || input.subjectIds.length === 0) throw new Error("A complete derived import requires non-empty subjectIds.");
+  if (!Array.isArray(input.fields) || input.fields.length === 0) throw new Error("A complete derived import requires non-empty fields.");
+  if (!Array.isArray(input.scope) || input.scope.length === 0) throw new Error("A complete derived import requires a non-empty coordinate matrix.");
+  const subjectIds = input.subjectIds.map((subjectId) => {
+    if (typeof subjectId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subjectId)) throw new Error("Derived import subjectIds contains an invalid transaction subject.");
+    return subjectId;
+  });
+  if (new Set(subjectIds.map((subjectId) => subjectId.toLowerCase())).size !== subjectIds.length) throw new Error("Derived import subjectIds contains a duplicate transaction subject.");
+  const fields = input.fields.map((field) => {
+    if (field !== "display_name" && field !== "note") throw new Error("Derived import fields contains an unsupported field.");
+    return field;
+  });
+  if (new Set(fields).size !== fields.length) throw new Error("Derived import fields contains a duplicate field.");
+  const normalized = normalizeDerivedCoordinates(input.scope);
+  const expected = new Set(subjectIds.flatMap((subjectId) => fields.map((field) => `${subjectId.toLowerCase()}:${field}`)));
+  for (const coordinate of normalized) {
+    const key = `${coordinate.transactionId.toLowerCase()}:${coordinate.field}`;
+    if (!expected.has(key)) throw new Error("Derived import scope contains a coordinate outside the declared subject/field matrix.");
+    expected.delete(key);
+  }
+  if (expected.size > 0) throw new Error("Derived import scope is missing a declared subject/field coordinate.");
+  return normalized;
 }
 
 function normalizeDerivedCoordinates(first: CathayDerivedImportCoordinate[]): CathayDerivedImportCoordinate[] {
   const normalized = first.map((coordinate) => {
     if (!coordinate || typeof coordinate !== "object") throw new Error("Derived import coordinate must be an object.");
     if (!coordinate.transactionId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(coordinate.transactionId)) throw new Error("Derived import coordinate has an invalid transaction subject.");
-    const normalizedField = coordinate.field === ("displayName" as CathayDerivedField) || coordinate.field === ("displayLabel" as CathayDerivedField) ? "display_name" : coordinate.field;
+    const normalizedField = coordinate.field;
     if (normalizedField !== "display_name" && normalizedField !== "note") throw new Error("Derived import field is not supported.");
     if (coordinate.state !== "supported" && coordinate.state !== "unsupported") throw new Error("Derived import coordinate has an invalid output state.");
     if (coordinate.state === "supported" && typeof coordinate.value !== "string") throw new Error("Supported derived output must provide a typed string value.");
@@ -1741,8 +1823,31 @@ function validateDerivedImportInput(input: CathayDerivedImportRunInput): CathayD
   if (input.authorityRoute !== CATHAY_DOMESTIC_DEPOSIT_AUTHORITY || input.stream !== CATHAY_DOMESTIC_DEPOSIT_STREAM) throw new Error("Derived import authority route or stream is not supported.");
   if (!input.producerId.trim() || !input.ruleLineage.trim()) throw new Error("Derived import producer and rule lineage are required.");
   if (input.origin !== undefined && input.origin !== CATHAY_DERIVED_ORIGIN) throw new Error("Derived import origin is not a registered Derived origin.");
+  if (input.complete !== true || input.status !== "complete") throw new Error("Only a complete successful derived import may mutate canonical data.");
   if (input.observedAt !== undefined) parseRfc3339UtcMicros(input.observedAt, "Derived import observedAt");
   return importCoordinates(input);
+}
+
+function validateDerivedImportSubjects(ledgerDir: string, input: CathayDerivedImportRunInput, coordinates: CathayDerivedImportCoordinate[]): void {
+  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  try {
+    const connection = db.prepare("SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?").get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
+    if (!connection) throw new Error("Derived import source connection is unknown; source lineage must already exist.");
+    const sourceConnectionId = blob(dbRow<{ source_connection_id: unknown }>(connection).source_connection_id);
+    const epoch = db.prepare("SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?").get(sourceConnectionId, input.identityEpoch);
+    if (!epoch) throw new Error("Derived import identity epoch is unknown; source lineage must already exist.");
+    const identityEpochId = blob(dbRow<{ identity_epoch_id: unknown }>(epoch).identity_epoch_id);
+    for (const coordinate of coordinates) {
+      const transactionId = idFromString(coordinate.transactionId);
+      const transaction = db.prepare(`SELECT a.source_connection_id, a.identity_epoch_id, a.stream
+        FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
+        WHERE t.transaction_id = ?`).get(transactionId) as Record<string, unknown> | undefined;
+      if (!transaction) throw new Error("Derived import targets an unknown transaction subject.");
+      if (Buffer.compare(blob(transaction.source_connection_id), sourceConnectionId) !== 0
+        || Buffer.compare(blob(transaction.identity_epoch_id), identityEpochId) !== 0
+        || transaction.stream !== input.stream) throw new Error("Derived import crossed a source identity or stream boundary.");
+    }
+  } finally { db.close(); }
 }
 
 function derivedDiagnostic(error: unknown, input: CathayDerivedImportRunInput, stage: CathayDerivedImportDiagnostic["stage"]): CathayDerivedImportDiagnostic {
@@ -1869,6 +1974,7 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
 
 export function commitCathayDerivedImportRun(ledgerDir: string, input: CathayDerivedImportRunInput, options: CathayDerivedImportOptions = {}): Promise<CathayDerivedImportResult & { status: "committed" }> {
   const coordinates = validateDerivedImportInput(input);
+  validateDerivedImportSubjects(ledgerDir, input, coordinates);
   const clock = options.clock ?? (() => new Date().toISOString());
   return withCanonicalWriter(ledgerDir, () => ({ status: "committed", ...commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, clock) }));
 }
@@ -1881,7 +1987,10 @@ export async function runCathayDerivedImportRun(ledgerDir: string, input: Cathay
     options.onDiagnostic?.(diagnostic);
     return { status: "diagnostic", diagnostic };
   }
-  try { return { status: "committed", ...await withCanonicalWriter(ledgerDir, () => commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, options.clock ?? (() => new Date().toISOString()))) }; }
+  try {
+    validateDerivedImportSubjects(ledgerDir, input, coordinates);
+    return { status: "committed", ...await withCanonicalWriter(ledgerDir, () => commitCathayDerivedImportRunOnce(ledgerDir, input, coordinates, options.clock ?? (() => new Date().toISOString()))) };
+  }
   catch (error) {
     const diagnostic = derivedDiagnostic(error, input, "commit");
     options.onDiagnostic?.(diagnostic);
@@ -2054,7 +2163,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC LIMIT 1), 'supported') AS assertion_support_state
         FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
-        JOIN source_assertions sa ON sa.revision_id = r.revision_id
+        JOIN assertions sa ON sa.revision_id = r.revision_id AND sa.origin = 'source'
         WHERE r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
@@ -2077,7 +2186,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
         JOIN source_records sr ON sr.source_record_id = r.source_record_id JOIN source_record_scopes record_scope ON record_scope.source_record_id = sr.source_record_id
         JOIN capture_scopes source_scope ON source_scope.scope_id = record_scope.scope_id JOIN source_captures sc ON sc.capture_id = r.capture_id
-        JOIN source_assertions sa ON sa.revision_id = r.revision_id WHERE t.transaction_id = ? ORDER BY r.revision_number`).all(transactionId) as Record<string, unknown>[];
+        JOIN assertions sa ON sa.revision_id = r.revision_id AND sa.origin = 'source' WHERE t.transaction_id = ? ORDER BY r.revision_number`).all(transactionId) as Record<string, unknown>[];
       const entries = revisionRows.map((row) => {
         const assertionId = blob(row.assertion_id);
         const provenance = db.prepare(`SELECT p.source_record_id AS sourceRecordId, sr.capture_id AS captureId FROM assertion_provenance p

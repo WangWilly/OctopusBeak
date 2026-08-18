@@ -202,6 +202,73 @@ function restoreLegacySyncState(db: DatabaseSync): void {
   db.prepare("INSERT INTO source_sync_states(source_connection_id, account_id, stream, scope_start, scope_end, cursor, last_capture_id, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(2), legacyId(6), "domestic-deposit", "2026-07-01", "2026-07-01", "legacy-cursor", legacyId(4), legacyId(1));
 }
 
+function seedLegacyV5Database(directory: string): void {
+  seedLegacyDatabase(directory, 2);
+  const db = new DatabaseSync(canonicalSqlitePath(directory));
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("ALTER TABLE source_captures ADD COLUMN completeness_basis TEXT NOT NULL DEFAULT 'success-status-scope-count-details' CHECK(completeness_basis = 'success-status-scope-count-details')");
+  db.exec("ALTER TABLE source_captures ADD COLUMN completeness_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1')");
+  db.exec("ALTER TABLE transaction_revisions ADD COLUMN economic_status TEXT NOT NULL DEFAULT 'normal' CHECK(economic_status IN ('normal','canceled','refund','reversal'))");
+  db.exec("ALTER TABLE transaction_revisions ADD COLUMN administrative_state TEXT NOT NULL DEFAULT 'active' CHECK(administrative_state IN ('active','deleted','purged'))");
+  db.exec("ALTER TABLE transaction_revisions ADD COLUMN semantic_rule_version TEXT NOT NULL DEFAULT 'cathay/domestic-deposit/v1' CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')");
+  db.exec("ALTER TABLE current_transactions ADD COLUMN projection_commit_id BLOB REFERENCES canonical_commits(commit_id)");
+  db.exec("ALTER TABLE current_transactions ADD COLUMN revision_commit_id BLOB REFERENCES canonical_commits(commit_id)");
+  db.prepare("UPDATE current_transactions SET projection_commit_id = commit_id, revision_commit_id = commit_id").run();
+  db.exec(`CREATE TABLE capture_scopes (
+    scope_id BLOB PRIMARY KEY CHECK(length(scope_id) = 16), capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+    source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id), identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+    account_id BLOB NOT NULL REFERENCES financial_accounts(account_id), account_no TEXT NOT NULL, stream TEXT NOT NULL,
+    scope_start TEXT NOT NULL, scope_end TEXT NOT NULL, scope_kind TEXT NOT NULL CHECK(scope_kind = 'bounded-range'),
+    completeness TEXT NOT NULL CHECK(completeness = 'complete-range'), completeness_basis TEXT NOT NULL CHECK(completeness_basis = 'success-status-scope-count-details'),
+    completeness_rule_version TEXT NOT NULL CHECK(completeness_rule_version = 'cathay/domestic-deposit/v1'), absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range')),
+    contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL, page_count INTEGER NOT NULL CHECK(page_count > 0),
+    terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)), commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+    UNIQUE(scope_id, capture_id), UNIQUE(scope_id, account_id), UNIQUE(capture_id, account_id, scope_start, scope_end)
+  );
+  CREATE TABLE capture_scope_pages (
+    scope_page_id BLOB PRIMARY KEY CHECK(length(scope_page_id) = 16), scope_id BLOB NOT NULL REFERENCES capture_scopes(scope_id),
+    page_ordinal INTEGER NOT NULL CHECK(page_ordinal >= 0), terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)), row_count INTEGER NOT NULL CHECK(row_count >= 0),
+    response_digest TEXT NOT NULL, proof_kind TEXT NOT NULL CHECK(proof_kind = 'success-status-scope-count-details'),
+    contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL, commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+    UNIQUE(scope_id, page_ordinal)
+  );
+  CREATE TABLE source_record_scopes (
+    source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16), scope_id BLOB NOT NULL CHECK(length(scope_id) = 16),
+    capture_id BLOB NOT NULL CHECK(length(capture_id) = 16) REFERENCES source_captures(capture_id),
+    account_id BLOB NOT NULL CHECK(length(account_id) = 16) REFERENCES financial_accounts(account_id),
+    sequence_lexeme TEXT NOT NULL, commit_id BLOB NOT NULL CHECK(length(commit_id) = 16) REFERENCES canonical_commits(commit_id),
+    FOREIGN KEY(source_record_id, capture_id) REFERENCES source_records(source_record_id, capture_id),
+    FOREIGN KEY(scope_id, capture_id) REFERENCES capture_scopes(scope_id, capture_id),
+    FOREIGN KEY(scope_id, account_id) REFERENCES capture_scopes(scope_id, account_id),
+    UNIQUE(scope_id, sequence_lexeme)
+  );
+  CREATE TABLE assertion_lifecycle_events (
+    event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), assertion_id BLOB NOT NULL REFERENCES source_assertions(assertion_id),
+    transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id), revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+    capture_id BLOB NOT NULL REFERENCES source_captures(capture_id), scope_id BLOB REFERENCES capture_scopes(scope_id),
+    commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','restored'))
+  );
+  `);
+  db.exec("CREATE UNIQUE INDEX source_records_source_record_capture ON source_records(source_record_id, capture_id)");
+  db.prepare("INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(12), legacyId(4), legacyId(2), legacyId(3), legacyId(6), "SYNTHETIC-LEGACY-001", "domestic-deposit", "2026-07-01", "2026-07-01", "bounded-range", "complete-range", "success-status-scope-count-details", "cathay/domestic-deposit/v1", "comparable-complete-range", "legacy-v5-contract", "legacy-v5-preflight", 1, 1, legacyId(1));
+  db.prepare("INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(13), legacyId(12), 0, 1, 1, "legacy-v5-digest", "success-status-scope-count-details", "legacy-v5-contract", "legacy-v5-preflight", legacyId(1));
+  db.prepare("INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) VALUES (?, ?, ?, ?, ?, ?)").run(legacyId(5), legacyId(12), legacyId(4), legacyId(6), "1", legacyId(1));
+  db.prepare("INSERT INTO assertion_lifecycle_events(event_id, assertion_id, transaction_id, revision_id, capture_id, scope_id, commit_id, event_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(legacyId(14), legacyId(9), legacyId(7), legacyId(8), legacyId(4), legacyId(12), legacyId(1), "observed");
+  db.exec("CREATE INDEX idx_capture_scopes_account_time ON capture_scopes(source_connection_id, identity_epoch_id, account_id, scope_start, scope_end, commit_id)");
+  db.exec("CREATE INDEX idx_capture_scope_pages_proof ON capture_scope_pages(scope_id, page_ordinal, commit_id)");
+  db.exec("CREATE INDEX idx_source_record_scopes_scope_sequence ON source_record_scopes(scope_id, sequence_lexeme, source_record_id)");
+  db.exec("CREATE INDEX idx_source_record_scopes_account_capture ON source_record_scopes(account_id, capture_id, source_record_id)");
+  db.exec("CREATE INDEX idx_assertion_lifecycle_assertion_knowledge ON assertion_lifecycle_events(assertion_id, commit_id, event_kind, event_id)");
+  db.exec("CREATE INDEX idx_assertion_lifecycle_transaction_knowledge ON assertion_lifecycle_events(transaction_id, commit_id, event_kind, event_id)");
+  db.exec("CREATE INDEX idx_assertion_lifecycle_scope ON assertion_lifecycle_events(scope_id, commit_id, assertion_id)");
+  db.exec("CREATE INDEX idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id)");
+  db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(3, 1782864000000002);
+  db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(4, 1782864000000003);
+  db.prepare("INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)").run(5, 1782864000000004);
+  db.exec("PRAGMA user_version = 5");
+  db.close();
+}
+
 const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-"));
 try {
   const first = await commitCathayDomesticDeposit(ledgerDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
@@ -585,6 +652,10 @@ try {
     stream: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.stream,
     producerId: "synthetic-enricher-v1",
     ruleLineage: "synthetic-rule-v1",
+    complete: true as const,
+    status: "complete" as const,
+    subjectIds: [transactionId],
+    fields: ["display_name" as const, "note" as const],
     scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Derived label" }, { transactionId, field: "note" as const, state: "unsupported" as const }],
   };
   const firstDerived = await commitCathayDerivedImportRun(derivedDir, derivedInput);
@@ -623,7 +694,7 @@ try {
     current: beforeRuleLineage.prepare("SELECT value_text, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")),
   };
   beforeRuleLineage.close();
-  const ruleLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ruleLineage: "synthetic-rule-v2", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Rule v2 label" }] });
+  const ruleLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ruleLineage: "synthetic-rule-v2", fields: ["display_name" as const], scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Rule v2 label" }] });
   assert.equal(ruleLineageDiagnostic.status, "diagnostic");
   const afterRuleLineage = openCanonicalDatabase(derivedDir, { readOnly: true });
   try {
@@ -633,7 +704,7 @@ try {
     assert.equal(afterRuleLineage.prepare("SELECT COUNT(*) AS count FROM derived_assertion_provenance").get()?.count, beforeRuleLineageCounts.provenance);
     assert.deepEqual(afterRuleLineage.prepare("SELECT value_text, projection_commit_id FROM current_transaction_fields WHERE transaction_id = ? AND field_name = 'display_name'").get(Buffer.from(transactionId.replaceAll("-", ""), "hex")), beforeRuleLineageCounts.current);
   } finally { afterRuleLineage.close(); }
-  const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
+  const producerDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, producerId: "other-producer", fields: ["display_name" as const], scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Other label" }] });
   assert.equal(producerDiagnostic.status, "diagnostic");
   const withdrawn = await commitCathayDerivedImportRun(derivedDir, { ...derivedInput, scope: [{ transactionId, field: "display_name" as const, state: "unsupported" as const }, { transactionId, field: "note" as const, state: "unsupported" as const }] });
   const historicalLineageBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
@@ -652,7 +723,7 @@ try {
     { producerId: "other-producer" },
     { origin: "other-origin" },
   ] as const) {
-    const historicalLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ...mismatch, scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Historical mismatch label" }] });
+    const historicalLineageDiagnostic = await runCathayDerivedImportRun(derivedDir, { ...derivedInput, ...mismatch, fields: ["display_name" as const], scope: [{ transactionId, field: "display_name" as const, state: "supported" as const, value: "Historical mismatch label" }] } as never);
     assert.equal(historicalLineageDiagnostic.status, "diagnostic");
     const historicalLineageAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
     try {
@@ -691,16 +762,19 @@ try {
   assert.equal((await query.current({ kind: "current" })).transactions[0]?.displayLabel, CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.includes("Synthetic Cathay deposit description") ? "Synthetic Cathay deposit description" : null);
   const authorityDb = openCanonicalDatabase(derivedDir, { readOnly: true });
   try {
-    for (const compatibility of ["derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
+    for (const compatibility of ["source_assertions", "derived_assertions", "user_assertions", "assertion_lifecycle_events", "derived_assertion_lifecycle_events", "user_assertion_lifecycle_events", "derived_assertion_provenance", "user_assertion_provenance"]) {
       assert.equal(authorityDb.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(compatibility)?.type, "view", compatibility);
     }
     const compatibilityAssertionCounts = {
+      source: authorityDb.prepare("SELECT COUNT(*) AS count FROM source_assertions").get()?.count,
       derived: authorityDb.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count,
       user: authorityDb.prepare("SELECT COUNT(*) AS count FROM user_assertions").get()?.count,
     };
+    assert.throws(() => authorityDb.exec("UPDATE source_assertions SET commit_id = commit_id"), /cannot modify source_assertions because it is a view/);
     assert.throws(() => authorityDb.exec("UPDATE derived_assertions SET value_text = 'tampered'"), /cannot modify derived_assertions because it is a view/);
     assert.throws(() => authorityDb.exec("UPDATE user_assertions SET value_text = 'tampered'"), /cannot modify user_assertions because it is a view/);
     assert.deepEqual({
+      source: authorityDb.prepare("SELECT COUNT(*) AS count FROM source_assertions").get()?.count,
       derived: authorityDb.prepare("SELECT COUNT(*) AS count FROM derived_assertions").get()?.count,
       user: authorityDb.prepare("SELECT COUNT(*) AS count FROM user_assertions").get()?.count,
     }, compatibilityAssertionCounts);
@@ -718,6 +792,14 @@ try {
   sharedMetadataEdit.close();
   const sharedAuthorityLineage = await query.lineage({ kind: "lineage", subject: { kind: "transaction", id: transactionId } });
   assert.equal(sharedAuthorityLineage.entries[0]?.derivedAssertions.some((assertion) => assertion.value === "Shared authority label"), true);
+
+  await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: "Origin trigger user", userId: "origin-trigger-user" });
+  const originTriggerDb = new DatabaseSync(canonicalSqlitePath(derivedDir));
+  try {
+    const sourceAssertionId = originTriggerDb.prepare("SELECT assertion_id FROM assertions WHERE origin = 'source' LIMIT 1").get()?.assertion_id as Uint8Array;
+    assert.throws(() => originTriggerDb.prepare("UPDATE current_transaction_fields SET origin = 'derived', derived_assertion_id = ?, user_assertion_id = NULL WHERE transaction_id = ? AND field_name = 'display_name'").run(sourceAssertionId, Buffer.from(transactionId.replaceAll("-", ""), "hex")), /origin mismatch/);
+  } finally { originTriggerDb.close(); }
+  await commitCathayUserAssertion(derivedDir, { transactionId, field: "display_name", value: null, userId: "origin-trigger-user" });
 
   const malformedTargetBefore = openCanonicalDatabase(derivedDir, { readOnly: true });
   const malformedTargetSnapshot = {
@@ -776,7 +858,49 @@ try {
       projection: diagnosticDb.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
     }, emptyScopeSnapshot);
   } finally { diagnosticDb.close(); }
-  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { target: { kind: "balance", field: "note", id: transactionId }, value: "forbidden" }), /valid transaction target/);
+  const validMatrix = derivedInput.scope;
+  const invalidMatrixSnapshotDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const invalidMatrixSnapshot = {
+    commits: invalidMatrixSnapshotDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+    runs: invalidMatrixSnapshotDb.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count,
+    assertions: invalidMatrixSnapshotDb.prepare("SELECT COUNT(*) AS count FROM assertions").get()?.count,
+    transitions: invalidMatrixSnapshotDb.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count,
+    provenance: invalidMatrixSnapshotDb.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count,
+    current: invalidMatrixSnapshotDb.prepare("SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields ORDER BY transaction_id, field_name").all(),
+    projection: invalidMatrixSnapshotDb.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+  };
+  invalidMatrixSnapshotDb.close();
+  const unknownSubjectId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+  const invalidMatrixCases = [
+    ["missing subject ids", { ...derivedInput, subjectIds: [], scope: [] }],
+    ["missing fields", { ...derivedInput, fields: [], scope: [] }],
+    ["missing scope", { ...derivedInput, scope: undefined }],
+    ["missing coordinate", { ...derivedInput, fields: ["display_name", "note"], scope: validMatrix.filter((coordinate) => coordinate.field === "display_name") }],
+    ["extra coordinate", { ...derivedInput, fields: ["display_name"], scope: validMatrix }],
+    ["duplicate coordinate", { ...derivedInput, fields: ["display_name"], scope: [validMatrix[0], validMatrix[0]] },],
+    ["unknown subject", { ...derivedInput, subjectIds: [unknownSubjectId], fields: ["display_name"], scope: [{ transactionId: unknownSubjectId, field: "display_name", state: "supported", value: "unknown" }] },],
+    ["failed marker", { ...derivedInput, complete: false }],
+    ["partial status", { ...derivedInput, status: "partial" }],
+    ["failed status", { ...derivedInput, status: "failed" }],
+    ["permissive field alias", { ...derivedInput, fields: ["display_name"], scope: [{ transactionId, field: "displayLabel", state: "supported", value: "alias" }] },],
+  ] as const;
+  for (const [label, invalidInput] of invalidMatrixCases) {
+    const invalidResult = await runCathayDerivedImportRun(derivedDir, invalidInput as never);
+    assert.equal(invalidResult.status, "diagnostic", label);
+    const invalidAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
+    try {
+      assert.deepEqual({
+        commits: invalidAfter.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()?.count,
+        runs: invalidAfter.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()?.count,
+        assertions: invalidAfter.prepare("SELECT COUNT(*) AS count FROM assertions").get()?.count,
+        transitions: invalidAfter.prepare("SELECT COUNT(*) AS count FROM assertion_transitions").get()?.count,
+        provenance: invalidAfter.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count,
+        current: invalidAfter.prepare("SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields ORDER BY transaction_id, field_name").all(),
+        projection: invalidAfter.prepare("SELECT generation, commit_id FROM current_projection_state").all(),
+      }, invalidMatrixSnapshot, label);
+    } finally { invalidAfter.close(); }
+  }
+  await assert.rejects(() => commitCathayUserAssertion(derivedDir, { target: { kind: "balance", field: "note", id: transactionId }, value: "forbidden" } as never), /valid transaction target/);
   await assert.rejects(() => commitCathayUserAssertion(derivedDir, { transactionId, field: "amount", value: "999" } as never), /only display_name or note/);
 } finally { await rm(derivedDir, { recursive: true, force: true }); }
 
@@ -910,6 +1034,7 @@ try {
   try {
     assert.equal(Number(afterV1Failure.prepare("PRAGMA user_version").get()?.user_version), 2);
     assert.equal(afterV1Failure.prepare("SELECT 1 FROM schema_migrations WHERE version = 2").get()?.["1"], 1);
+    assert.equal(afterV1Failure.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('assertions', 'assertion_transitions', 'derived_import_runs')").get(), undefined);
     const v2CaptureColumns = afterV1Failure.prepare("PRAGMA table_info(source_captures)").all() as Array<{ name?: string }>;
     assert.equal(v2CaptureColumns.some((column) => column.name === "completeness_basis"), false);
     afterV1Failure.exec("DROP VIEW source_sync_states");
@@ -980,24 +1105,42 @@ try {
 
 const populatedV5MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-populated-v5-"));
 try {
-  await commitCathayDomesticDeposit(populatedV5MigrationDir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const downgrade = new DatabaseSync(canonicalSqlitePath(populatedV5MigrationDir));
-  downgrade.exec("DROP TABLE current_transaction_fields; DROP VIEW user_assertion_provenance; DROP VIEW user_assertion_lifecycle_events; DROP VIEW user_assertions; DROP VIEW derived_assertion_lifecycle_events; DROP VIEW derived_assertion_provenance; DROP VIEW derived_assertions; DROP TABLE derived_scope_coordinates; DROP TABLE derived_import_runs; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;");
-  downgrade.close();
+  seedLegacyV5Database(populatedV5MigrationDir);
+  const genuineV5 = new DatabaseSync(canonicalSqlitePath(populatedV5MigrationDir));
+  try {
+    assert.equal(Number(genuineV5.prepare("PRAGMA user_version").get()?.user_version), 5);
+    assert.equal(genuineV5.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assertions'").get(), undefined);
+    assert.equal(genuineV5.prepare("SELECT type FROM sqlite_master WHERE name = 'source_assertions'").get()?.type, "table");
+    assert.equal(genuineV5.prepare("SELECT type FROM sqlite_master WHERE name = 'assertion_lifecycle_events'").get()?.type, "table");
+  } finally { genuineV5.close(); }
   assert.throws(() => openCanonicalDatabase(populatedV5MigrationDir, { injectMigrationFailure: "v5-v6-after-derived-schema" }), /Injected v5-v6 migration failure/);
   const failedPopulatedV5 = new DatabaseSync(canonicalSqlitePath(populatedV5MigrationDir));
   try {
     assert.equal(Number(failedPopulatedV5.prepare("PRAGMA user_version").get()?.user_version), 5);
-    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 3);
-    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM current_transactions").get()?.count, 3);
+    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1);
+    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_assertions").get()?.count, 1);
+    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertion_lifecycle_events").get()?.count, 1);
+    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count, 1);
+    assert.equal(failedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM current_transactions").get()?.count, 1);
     assert.equal(failedPopulatedV5.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_canonical_commits_sequence'").get()?.["1"], 1);
+    assert.equal(failedPopulatedV5.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assertions'").get(), undefined);
   } finally { failedPopulatedV5.close(); }
   const retriedPopulatedV5 = openCanonicalDatabase(populatedV5MigrationDir);
   try {
     assert.equal(Number(retriedPopulatedV5.prepare("PRAGMA user_version").get()?.user_version), CANONICAL_SCHEMA_VERSION);
-    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 3);
-    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'source'").get()?.count, 3);
+    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 1);
+    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertions WHERE origin = 'source'").get()?.count, 1);
+    assert.equal(retriedPopulatedV5.prepare("SELECT type FROM sqlite_master WHERE name = 'source_assertions'").get()?.type, "view");
+    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM source_assertions").get()?.count, 1);
+    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertion_lifecycle_events").get()?.count, 1);
+    assert.equal(retriedPopulatedV5.prepare("SELECT COUNT(*) AS count FROM assertion_provenance").get()?.count, 1);
   } finally { retriedPopulatedV5.close(); }
+  const migratedV5Query = createCathayCanonicalFinancialQuery(populatedV5MigrationDir);
+  assert.equal((await migratedV5Query.current({ kind: "current" })).transactions.length, 1);
+  assert.equal((await migratedV5Query.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: "1" } })).transactions.length, 1);
+  assert.equal((await migratedV5Query.lineage({ kind: "lineage", subject: { kind: "transaction", id: "07070707-0707-0707-0707-070707070707" } })).entries.length, 1);
+  const migratedV5ReadOnly = openCanonicalDatabase(populatedV5MigrationDir, { readOnly: true });
+  migratedV5ReadOnly.close();
 } finally { await rm(populatedV5MigrationDir, { recursive: true, force: true }); }
 
 const corruptDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-corrupt-"));
