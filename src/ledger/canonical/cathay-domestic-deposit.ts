@@ -915,6 +915,14 @@ CREATE TABLE IF NOT EXISTS projection_generations (
   switched_commit_id BLOB REFERENCES canonical_commits(commit_id),
   UNIQUE(generation_id, status)
 );
+CREATE TABLE IF NOT EXISTS projection_generation_provenance (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('created','validated','switched','knowledge')),
+  event_source TEXT NOT NULL CHECK(event_source IN ('migration','rebuild','routine')),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(generation_id, event_kind, event_source, commit_id)
+);
 CREATE TABLE IF NOT EXISTS active_projection_generation (
   singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
   generation_id INTEGER NOT NULL UNIQUE REFERENCES projection_generations(generation_id),
@@ -928,6 +936,16 @@ CREATE TABLE IF NOT EXISTS projection_generation_transactions (
   revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   PRIMARY KEY(generation_id, transaction_id),
   UNIQUE(generation_id, revision_id)
+);
+CREATE TABLE IF NOT EXISTS projection_generation_transaction_selection (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  selection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  selection_kind TEXT NOT NULL CHECK(selection_kind IN ('source_lifecycle','rebuild','migration')),
+  PRIMARY KEY(generation_id, transaction_id),
+  UNIQUE(generation_id, revision_id),
+  FOREIGN KEY(generation_id, transaction_id) REFERENCES projection_generation_transactions(generation_id, transaction_id)
 );
 CREATE TABLE IF NOT EXISTS projection_generation_transaction_fields (
   generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
@@ -944,6 +962,7 @@ CREATE TABLE IF NOT EXISTS projection_generation_transaction_fields (
 );
 CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_active ON projection_generation_transactions(generation_id, transaction_id, revision_id);
 CREATE INDEX IF NOT EXISTS idx_projection_generation_transactions_revision ON projection_generation_transactions(generation_id, revision_id, projection_commit_id);
+CREATE INDEX IF NOT EXISTS idx_projection_generation_selection_commit ON projection_generation_transaction_selection(generation_id, selection_commit_id, selection_kind, transaction_id);
 CREATE INDEX IF NOT EXISTS idx_projection_generation_fields_active ON projection_generation_transaction_fields(generation_id, transaction_id, field_name, projection_commit_id);
 CREATE INDEX IF NOT EXISTS idx_projection_generations_status ON projection_generations(status, build_cutoff_commit_sequence, generation_id);
 CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_switch_insert
@@ -962,6 +981,12 @@ CREATE TRIGGER IF NOT EXISTS trg_active_projection_generation_commit_update
 BEFORE UPDATE OF generation_id, switched_commit_id ON active_projection_generation
 WHEN NEW.switched_commit_id IS NOT (SELECT switched_commit_id FROM projection_generations WHERE generation_id = NEW.generation_id)
 BEGIN SELECT RAISE(ABORT, 'active projection switch commit does not match generation'); END;
+CREATE TRIGGER IF NOT EXISTS trg_projection_generation_provenance_no_update
+BEFORE UPDATE ON projection_generation_provenance
+BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_projection_generation_provenance_no_delete
+BEFORE DELETE ON projection_generation_provenance
+BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS trg_projection_generation_fields_integrity_insert
 BEFORE INSERT ON projection_generation_transaction_fields
 WHEN NOT EXISTS (
@@ -1526,18 +1551,39 @@ function migrateV6ToV7(db: DatabaseSync, injectMigrationFailure?: CanonicalMigra
     const latest = db.prepare("SELECT commit_id, commit_sequence FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1").get() as { commit_id?: unknown; commit_sequence?: number } | undefined;
     const latestCommit = latest?.commit_id ? blob(latest.commit_id) : undefined;
     let latestSequence = Number(latest?.commit_sequence ?? 0);
-    const generationExists = db.prepare("SELECT 1 FROM projection_generations WHERE generation_id = 1").get();
+    const existingGeneration = db.prepare(`SELECT created_commit_id, switched_commit_id
+      FROM projection_generations WHERE generation_id = 1`).get() as { created_commit_id?: unknown; switched_commit_id?: unknown } | undefined;
+    const generationExists = Boolean(existingGeneration);
+    // A pre-typed v7 database may already have an active generation whose
+    // switch boundary is older than the latest routine commit. Migration must
+    // preserve that immutable activation provenance; advancing the pointer to
+    // the latest commit would make the trigger reject a valid database and
+    // would silently turn a routine knowledge commit into a switch event.
+    const generationSwitchCommit = existingGeneration?.switched_commit_id
+      ? blob(existingGeneration.switched_commit_id)
+      : latestCommit;
     if (!generationExists) {
       db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id, validated_commit_id, switched_commit_id)
       VALUES (1, 'active', ?, 'canonical/projection/v1', ?, ?, ?)`).run(latestSequence, latestCommit ?? null, latestCommit ?? null, latestCommit ?? null);
       db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
         SELECT 1, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run();
+      db.prepare(`INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
+        SELECT 1, transaction_id, revision_id, projection_commit_id, 'migration' FROM current_transactions`).run();
       db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
         SELECT 1, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`).run();
     }
     if (injectMigrationFailure === "v6-v7-after-generation-copy") throw new Error("Injected v6-v7 migration failure after generation copy.");
+    const existingPointer = db.prepare("SELECT switched_commit_id FROM active_projection_generation WHERE singleton_id = 1").get() as { switched_commit_id?: unknown } | undefined;
+    if (existingGeneration && existingPointer && !canonicalIdsEqual(existingPointer.switched_commit_id, generationSwitchCommit)) {
+      throw new Error("Canonical v7 active projection pointer does not match its generation switch commit.");
+    }
     db.prepare(`INSERT INTO active_projection_generation(singleton_id, generation_id, switched_commit_id)
-      VALUES (1, 1, ?) ON CONFLICT(singleton_id) DO UPDATE SET generation_id = excluded.generation_id, switched_commit_id = excluded.switched_commit_id`).run(latestCommit ?? null);
+      VALUES (1, 1, ?) ON CONFLICT(singleton_id) DO UPDATE SET generation_id = excluded.generation_id, switched_commit_id = excluded.switched_commit_id`).run(generationSwitchCommit ?? null);
+    if (generationSwitchCommit) {
+      recordProjectionGenerationEventIfMissing(db, 1, "created", "migration", generationSwitchCommit);
+      recordProjectionGenerationEventIfMissing(db, 1, "validated", "migration", generationSwitchCommit);
+      recordProjectionGenerationEventIfMissing(db, 1, "switched", "migration", generationSwitchCommit);
+    }
     if (latestCommit) db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(latestCommit);
     if (injectMigrationFailure === "v6-v7-after-pointer") throw new Error("Injected v6-v7 migration failure after active pointer.");
     db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (7, ?)").run(currentUtcMicros());
@@ -1588,6 +1634,62 @@ function canonicalIdsEqual(left: unknown, right: unknown): boolean {
   return Buffer.compare(Buffer.from(left), Buffer.from(right)) === 0;
 }
 
+type ProjectionGenerationEventKind = "created" | "validated" | "switched" | "knowledge";
+type ProjectionGenerationEventSource = "migration" | "rebuild" | "routine";
+
+function recordProjectionGenerationEvent(
+  db: DatabaseSync,
+  generationId: number,
+  eventKind: ProjectionGenerationEventKind,
+  eventSource: ProjectionGenerationEventSource,
+  commitId: CanonicalId,
+): void {
+  db.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
+    VALUES (?, ?, ?, ?, ?)`).run(uuidV7(), generationId, eventKind, eventSource, commitId);
+}
+
+function recordProjectionGenerationEventIfMissing(
+  db: DatabaseSync,
+  generationId: number,
+  eventKind: ProjectionGenerationEventKind,
+  eventSource: ProjectionGenerationEventSource,
+  commitId: CanonicalId,
+): void {
+  if (db.prepare("SELECT 1 FROM projection_generation_provenance WHERE generation_id = ? AND event_kind = ?").get(generationId, eventKind)) return;
+  recordProjectionGenerationEvent(db, generationId, eventKind, eventSource, commitId);
+}
+
+/** Existing v7 databases predate the typed provenance tables. Backfill only
+ * from persisted generation/current rows; no synthetic canonical commit is
+ * created, and all future changes use append-only events. */
+function backfillProjectionProvenance(db: DatabaseSync): void {
+  const generations = db.prepare(`SELECT generation_id, created_commit_id, validated_commit_id, switched_commit_id
+    FROM projection_generations ORDER BY generation_id`).all() as Array<Record<string, unknown>>;
+  for (const generation of generations) {
+    const generationId = Number(generation.generation_id);
+    const created = generation.created_commit_id ? blob(generation.created_commit_id) : undefined;
+    const validated = generation.validated_commit_id ? blob(generation.validated_commit_id) : undefined;
+    const switched = generation.switched_commit_id ? blob(generation.switched_commit_id) : undefined;
+    const eventSource = (commitId: CanonicalId): ProjectionGenerationEventSource => {
+      const kind = String((db.prepare("SELECT commit_kind FROM canonical_commits WHERE commit_id = ?").get(commitId) as { commit_kind?: unknown } | undefined)?.commit_kind ?? "");
+      return kind === "projection_rebuild" ? "rebuild" : "migration";
+    };
+    const backfillPhase = (eventKind: ProjectionGenerationEventKind, commitId: CanonicalId | undefined): void => {
+      if (!commitId || db.prepare("SELECT 1 FROM projection_generation_provenance WHERE generation_id = ? AND event_kind = ?").get(generationId, eventKind)) return;
+      db.prepare(`INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id) VALUES (?, ?, ?, ?, ?)`).run(uuidV7(), generationId, eventKind, eventSource(commitId), commitId);
+    };
+    backfillPhase("created", created);
+    backfillPhase("validated", validated);
+    backfillPhase("switched", switched);
+    const selectionCount = Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generation_transaction_selection WHERE generation_id = ?").get(generationId) as { count?: number }).count ?? 0);
+    if (selectionCount === 0) {
+      db.prepare(`INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
+        SELECT projected.generation_id, projected.transaction_id, projected.revision_id, projected.projection_commit_id, 'migration'
+        FROM projection_generation_transactions projected WHERE projected.generation_id = ?`).run(generationId);
+    }
+  }
+}
+
 function projectionIdentityKey(row: { transaction_id?: unknown; revision_id?: unknown }): string {
   return `${blob(row.transaction_id).toString("hex")}:${blob(row.revision_id).toString("hex")}`;
 }
@@ -1595,8 +1697,14 @@ function projectionIdentityKey(row: { transaction_id?: unknown; revision_id?: un
 /** Rebuild population is intentionally allowed to omit malformed evidence;
  * this calculator derives the expected set from immutable revision/scope rows,
  * not from the Source Assertion join used by the population query. */
-function expectedGenerationTransactions(db: DatabaseSync, cutoff: number): Array<{ transaction_id?: unknown; revision_id?: unknown }> {
-  return db.prepare(`SELECT transaction_row.transaction_id, revision.revision_id
+function expectedGenerationTransactions(db: DatabaseSync, cutoff: number): Array<{ transaction_id?: unknown; revision_id?: unknown; selection_commit_id?: unknown }> {
+  return db.prepare(`SELECT transaction_row.transaction_id, revision.revision_id,
+      (SELECT transition.commit_id FROM assertions source_assertion
+        JOIN assertion_transitions transition ON transition.assertion_id = source_assertion.assertion_id
+        JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+        WHERE source_assertion.origin = 'source' AND source_assertion.revision_id = revision.revision_id
+          AND transition_commit.commit_sequence <= ?
+        ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1) AS selection_commit_id
     FROM financial_transactions transaction_row
     JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
     JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
@@ -1612,7 +1720,7 @@ function expectedGenerationTransactions(db: DatabaseSync, cutoff: number): Array
         JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
         WHERE source_assertion.origin = 'source' AND source_assertion.revision_id = revision.revision_id
           AND transition_commit.commit_sequence <= ?
-        ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1), 'observed') <> 'withdrawn'`).all(cutoff, cutoff, cutoff) as Array<{ transaction_id?: unknown; revision_id?: unknown }>;
+        ORDER BY transition_commit.commit_sequence DESC, transition.rowid DESC LIMIT 1), 'observed') <> 'withdrawn'`).all(cutoff, cutoff, cutoff, cutoff) as Array<{ transaction_id?: unknown; revision_id?: unknown; selection_commit_id?: unknown }>;
 }
 
 function validateGenerationTransactionIntegrity(db: DatabaseSync, generationId: number, cutoff: number): void {
@@ -1625,21 +1733,41 @@ function validateGenerationTransactionIntegrity(db: DatabaseSync, generationId: 
   if (missing.length !== 0 || extra.length !== 0 || expectedKeys.size !== actualKeys.size) {
     throw new Error(`Projection rebuild completeness mismatch: missing=${missing.length}, extra=${extra.length}.`);
   }
+  const expectedByKey = new Map(expected.map((row) => [projectionIdentityKey(row), row]));
   const rows = db.prepare(`SELECT projected.transaction_id, projected.revision_id, projected.projection_commit_id, projected.revision_commit_id,
+      selection.selection_commit_id, selection.selection_kind,
       revision.transaction_id AS revision_transaction_id, revision.commit_id AS source_revision_commit_id,
+      generation.created_commit_id AS generation_created_commit_id,
       revision_commit.commit_sequence AS revision_commit_sequence, projection_commit.commit_sequence AS projection_commit_sequence,
-      upper_commit.commit_sequence AS upper_commit_sequence
+      selection_commit.commit_sequence AS selection_commit_sequence
     FROM projection_generation_transactions projected
+    LEFT JOIN projection_generation_transaction_selection selection
+      ON selection.generation_id = projected.generation_id AND selection.transaction_id = projected.transaction_id
     JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
     JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
     JOIN canonical_commits projection_commit ON projection_commit.commit_id = projected.projection_commit_id
     JOIN projection_generations generation ON generation.generation_id = projected.generation_id
-    JOIN canonical_commits upper_commit ON upper_commit.commit_id = COALESCE(generation.switched_commit_id, generation.created_commit_id)
+    LEFT JOIN canonical_commits selection_commit ON selection_commit.commit_id = selection.selection_commit_id
     WHERE projected.generation_id = ?`).all(generationId) as Array<Record<string, unknown>>;
-  if (rows.some((row) => !canonicalIdsEqual(row.revision_transaction_id, row.transaction_id)
-    || !canonicalIdsEqual(row.revision_commit_id, row.source_revision_commit_id)
-    || Number(row.projection_commit_sequence) < Number(row.revision_commit_sequence)
-    || Number(row.projection_commit_sequence) > Number(row.upper_commit_sequence))) {
+  if (rows.some((row) => {
+    const expectedRow = expectedByKey.get(projectionIdentityKey(row));
+    const rebuildSelection = row.selection_kind === "rebuild";
+    const expectedSelection = expectedRow?.selection_commit_id;
+    const selectionMatches = row.selection_commit_id !== undefined && row.selection_commit_id !== null
+      && canonicalIdsEqual(row.selection_commit_id, row.projection_commit_id)
+      && (rebuildSelection
+        ? canonicalIdsEqual(row.selection_commit_id, row.generation_created_commit_id)
+        : row.selection_kind === "migration"
+          ? (canonicalIdsEqual(row.selection_commit_id, expectedSelection)
+            || canonicalIdsEqual(row.selection_commit_id, row.generation_created_commit_id))
+          : expectedSelection !== undefined && expectedSelection !== null && canonicalIdsEqual(row.selection_commit_id, expectedSelection));
+    return !expectedRow
+      || !canonicalIdsEqual(row.revision_transaction_id, row.transaction_id)
+      || !canonicalIdsEqual(row.revision_commit_id, row.source_revision_commit_id)
+      || !selectionMatches
+      || row.selection_commit_sequence === undefined || row.selection_commit_sequence === null
+      || Number(row.selection_commit_sequence) < Number(row.revision_commit_sequence);
+  })) {
     throw new Error("Canonical v7 projection transaction commit semantics are invalid.");
   }
 }
@@ -1681,7 +1809,9 @@ function validateGenerationFieldIntegrity(db: DatabaseSync, generationId: number
     LEFT JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
     LEFT JOIN canonical_commits projection_commit ON projection_commit.commit_id = field.projection_commit_id
     LEFT JOIN canonical_commits projected_projection_commit ON projected_projection_commit.commit_id = projected.projection_commit_id
-    LEFT JOIN canonical_commits upper_commit ON upper_commit.commit_id = COALESCE(generation.switched_commit_id, generation.created_commit_id)
+    LEFT JOIN active_projection_generation active_pointer ON active_pointer.singleton_id = 1 AND active_pointer.generation_id = generation.generation_id
+    LEFT JOIN current_projection_state active_state ON active_state.generation = 1 AND active_pointer.generation_id IS NOT NULL
+    LEFT JOIN canonical_commits upper_commit ON upper_commit.commit_id = COALESCE(active_state.commit_id, generation.switched_commit_id, generation.created_commit_id)
     LEFT JOIN derived_import_runs run ON run.commit_id = assertion.created_commit_id AND run.producer_id = assertion.producer_id AND run.rule_lineage = assertion.rule_lineage
     LEFT JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
     WHERE field.generation_id = ?`).all(generationId) as Array<Record<string, unknown>>;
@@ -1807,6 +1937,46 @@ function validateGenerationLifecycleCoordinates(db: DatabaseSync, generationId: 
   if (invalidProvenance !== 0) throw new Error("Canonical v7 selected assertion provenance coordinates are invalid.");
 }
 
+function validateProjectionGenerationProvenance(db: DatabaseSync, generationId: number): void {
+  const generation = db.prepare(`SELECT status, created_commit_id, validated_commit_id, switched_commit_id
+    FROM projection_generations WHERE generation_id = ?`).get(generationId) as { status?: string; created_commit_id?: unknown; validated_commit_id?: unknown; switched_commit_id?: unknown } | undefined;
+  if (!generation) throw new Error("Canonical v7 projection generation provenance is missing.");
+  const events = db.prepare(`SELECT event.event_kind, event.event_source, event.commit_id, commit_row.commit_sequence
+    FROM projection_generation_provenance event JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+    WHERE event.generation_id = ? ORDER BY commit_row.commit_sequence, event.rowid`).all(generationId) as Array<{ event_kind?: string; event_source?: string; commit_id?: unknown; commit_sequence?: number }>;
+  const requirePhase = (kind: ProjectionGenerationEventKind, commitId: unknown): void => {
+    if (commitId === null || commitId === undefined) return;
+    const phase = events.filter((event) => event.event_kind === kind);
+    if (phase.length !== 1 || !canonicalIdsEqual(phase[0]!.commit_id, commitId)) throw new Error(`Canonical v7 ${kind} provenance does not match generation state.`);
+  };
+  requirePhase("created", generation.created_commit_id);
+  requirePhase("validated", generation.validated_commit_id);
+  requirePhase("switched", generation.switched_commit_id);
+  if (generation.status === "active" && (generation.switched_commit_id === null || generation.switched_commit_id === undefined)) {
+    throw new Error("Canonical v7 active generation has no typed switch provenance.");
+  }
+  const activePointer = db.prepare("SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1").get() as { generation_id?: number } | undefined;
+  if (!activePointer || Number(activePointer.generation_id) !== generationId) return;
+  const commitCount = Number((db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count?: number }).count ?? 0);
+  const stateRows = db.prepare("SELECT generation, commit_id FROM current_projection_state").all() as Array<{ generation?: number; commit_id?: unknown }>;
+  if (commitCount === 0) {
+    if (stateRows.length !== 0 || events.length !== 0) throw new Error("Canonical v7 empty projection has unexpected provenance state.");
+    return;
+  }
+  if (stateRows.length !== 1 || Number(stateRows[0]!.generation) !== 1 || stateRows[0]!.commit_id === null || stateRows[0]!.commit_id === undefined) {
+    throw new Error("Canonical v7 current knowledge state is missing typed provenance.");
+  }
+  const stateCommit = blob(stateRows[0]!.commit_id);
+  const knowledgeEvents = events.filter((event) => event.event_kind === "switched" || event.event_kind === "knowledge");
+  if (!knowledgeEvents.some((event) => canonicalIdsEqual(event.commit_id, stateCommit))) {
+    throw new Error("Canonical v7 current knowledge commit has no projection provenance event.");
+  }
+  const latestKnowledge = knowledgeEvents.at(-1);
+  if (!latestKnowledge || !canonicalIdsEqual(latestKnowledge.commit_id, stateCommit)) {
+    throw new Error("Canonical v7 current knowledge state is not the latest active provenance event.");
+  }
+}
+
 /** Validate the one switch boundary used by both writer and read-only startup.
  * This is intentionally a row-level gate: SQLite FKs can prove that a pointer
  * names a row, but cannot prove that the row is the sole active generation or
@@ -1832,12 +2002,15 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
     }
     if (!canonicalIdsEqual(pointer.switched_commit_id, active.switched_commit_id)) throw new Error("Canonical v7 active projection pointer does not match its generation switch commit.");
     if (!db.prepare("SELECT 1 FROM canonical_commits WHERE commit_id = ?").get(blob(pointer.switched_commit_id))) throw new Error("Canonical v7 active projection pointer references no commit.");
-    if (stateRows.length !== 1 || Number(stateRows[0]!.generation) !== 1 || !canonicalIdsEqual(stateRows[0]!.commit_id, pointer.switched_commit_id)) {
-      throw new Error("Canonical v7 active projection knowledge state does not match its switch commit.");
+    if (stateRows.length !== 1 || Number(stateRows[0]!.generation) !== 1
+      || stateRows[0]!.commit_id === null || stateRows[0]!.commit_id === undefined
+      || !db.prepare("SELECT 1 FROM canonical_commits WHERE commit_id = ?").get(blob(stateRows[0]!.commit_id))) {
+      throw new Error("Canonical v7 active projection knowledge state is missing or invalid.");
     }
-    const switchSequence = Number((db.prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?").get(blob(pointer.switched_commit_id)) as { commit_sequence?: number } | undefined)?.commit_sequence ?? -1);
-    if (switchSequence < Number(active.build_cutoff_commit_sequence ?? 0)) throw new Error("Canonical v7 active projection switch precedes its knowledge cutoff.");
+    const knowledgeSequence = Number((db.prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?").get(blob(stateRows[0]!.commit_id)) as { commit_sequence?: number } | undefined)?.commit_sequence ?? -1);
+    if (knowledgeSequence < Number(active.build_cutoff_commit_sequence ?? 0)) throw new Error("Canonical v7 active projection knowledge precedes its cutoff.");
   }
+  validateProjectionGenerationProvenance(db, generationId);
   validateGenerationExactAmounts(db, generationId);
   validateCathayAuthorityRoute(db, generationId);
   const activeCutoff = Number((db.prepare("SELECT build_cutoff_commit_sequence FROM projection_generations WHERE generation_id = ?").get(generationId) as { build_cutoff_commit_sequence?: number } | undefined)?.build_cutoff_commit_sequence ?? 0);
@@ -1850,6 +2023,7 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
 
 function ensureV7ProjectionSchema(db: DatabaseSync): void {
   db.exec(SCHEMA_V7_APPEND);
+  backfillProjectionProvenance(db);
   const generationId = validateActiveProjectionBoundary(db);
   const mixedRows = Number((db.prepare(`SELECT COUNT(*) AS count FROM projection_generation_transactions rows
     WHERE rows.generation_id = ? AND (rows.revision_id NOT IN (SELECT revision_id FROM transaction_revisions)
@@ -1942,7 +2116,7 @@ function applySchemaMigration(db: DatabaseSync, options: CanonicalDatabaseOption
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
-  const requiredTables = ["capture_scopes", "capture_scope_pages", "source_assertions", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields", "projection_generations", "active_projection_generation", "projection_generation_transactions", "projection_generation_transaction_fields"];
+  const requiredTables = ["capture_scopes", "capture_scope_pages", "source_assertions", "assertion_lifecycle_events", "source_record_scopes", "current_projection_state", "assertions", "assertion_transitions", "assertion_provenance", "derived_import_runs", "derived_scope_coordinates", "derived_assertions", "derived_assertion_provenance", "derived_assertion_lifecycle_events", "user_assertions", "user_assertion_lifecycle_events", "user_assertion_provenance", "current_transaction_fields", "projection_generations", "projection_generation_provenance", "active_projection_generation", "projection_generation_transactions", "projection_generation_transaction_selection", "projection_generation_transaction_fields"];
   for (const table of requiredTables) {
     if (!relationType(db, table)) throw new Error(`Canonical schema v7 table ${table} is missing.`);
   }
@@ -1972,8 +2146,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     transaction_revisions: ["economic_status", "administrative_state", "semantic_rule_version"],
     current_transactions: ["projection_commit_id", "revision_commit_id"],
     projection_generations: ["generation_id", "status", "build_cutoff_commit_sequence", "rule_version", "created_commit_id", "validated_commit_id", "switched_commit_id"],
+    projection_generation_provenance: ["event_id", "generation_id", "event_kind", "event_source", "commit_id"],
     active_projection_generation: ["singleton_id", "generation_id", "switched_commit_id"],
     projection_generation_transactions: ["generation_id", "transaction_id", "revision_id", "projection_commit_id", "revision_commit_id"],
+    projection_generation_transaction_selection: ["generation_id", "transaction_id", "revision_id", "selection_commit_id", "selection_kind"],
     projection_generation_transaction_fields: ["generation_id", "transaction_id", "field_name", "value_text", "origin", "derived_assertion_id", "user_assertion_id", "projection_commit_id"],
   };
   for (const [table, columns] of Object.entries(requiredColumns)) {
@@ -1985,7 +2161,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     "idx_source_record_scopes_scope_sequence", "idx_source_record_scopes_account_capture", "idx_current_transactions_revision",
     "idx_assertions_lineage", "idx_assertion_transitions_knowledge", "idx_assertion_transitions_transaction", "idx_assertion_provenance_authority",
     "idx_derived_scope_coordinates_lineage",
-    "idx_current_transaction_fields_projection", "idx_projection_generation_transactions_active", "idx_projection_generation_transactions_revision", "idx_projection_generation_fields_active", "idx_projection_generations_status",
+    "idx_current_transaction_fields_projection", "idx_projection_generation_transactions_active", "idx_projection_generation_transactions_revision", "idx_projection_generation_selection_commit", "idx_projection_generation_fields_active", "idx_projection_generations_status",
   ];
   for (const index of requiredIndexes) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Canonical schema v6 index ${index} is missing.`);
@@ -2352,6 +2528,7 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
     db.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')").run(commitId, commitSequence, recordedAtUtcUs((options.clock ?? (() => new Date().toISOString()))()));
     db.prepare(`INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
       VALUES (?, 'building', ?, 'canonical/projection/v1', ?)`).run(generation, cutoff, commitId);
+    recordProjectionGenerationEvent(db, generation, "created", "rebuild", commitId);
     rebuildFailure(options.injectFailure, ["creation", "after-generation-creation"]);
     db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
       SELECT ?, t.transaction_id, revision.revision_id, ?, revision.commit_id
@@ -2364,6 +2541,9 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
         AND COALESCE((SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
           WHERE transition.assertion_id = source_assertion.assertion_id AND transition_commit.commit_sequence <= ?
           ORDER BY transition_commit.commit_sequence DESC, transition.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'`).run(generation, commitId, cutoff, cutoff, cutoff);
+    db.prepare(`INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
+      SELECT generation_id, transaction_id, revision_id, projection_commit_id, 'rebuild'
+      FROM projection_generation_transactions WHERE generation_id = ?`).run(generation);
     const insertField = db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     const generationTransactions = db.prepare("SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ?").all(generation) as Array<Record<string, unknown>>;
@@ -2394,9 +2574,12 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
     if (duplicate !== 0) throw new Error("Projection rebuild validation found duplicate transaction authority.");
     rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
     db.prepare("UPDATE projection_generations SET status = 'validated', validated_commit_id = ? WHERE generation_id = ?").run(commitId, generation);
+    recordProjectionGenerationEvent(db, generation, "validated", "rebuild", commitId);
+    validateProjectionGenerationProvenance(db, generation);
     rebuildFailure(options.injectFailure, ["pre-switch"]);
     db.prepare("UPDATE projection_generations SET status = 'retired' WHERE status = 'active'").run();
     db.prepare("UPDATE projection_generations SET status = 'active', switched_commit_id = ? WHERE generation_id = ?").run(commitId, generation);
+    recordProjectionGenerationEvent(db, generation, "switched", "rebuild", commitId);
     db.prepare("UPDATE active_projection_generation SET generation_id = ?, switched_commit_id = ? WHERE singleton_id = 1").run(generation, commitId);
     db.prepare("DELETE FROM current_transactions").run();
     db.prepare(`INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id)
@@ -2405,6 +2588,7 @@ function rebuildCathayCanonicalProjectionOnce(ledgerDir: string, options: Canoni
     db.prepare(`INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
       SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, ? FROM projection_generation_transaction_fields WHERE generation_id = ?`).run(commitId, generation);
     db.prepare("INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id").run(commitId);
+    validateProjectionGenerationProvenance(db, generation);
     db.exec("COMMIT");
     inTransaction = false;
     return { status: "switched", previousGeneration, generation, cutoffCommitSequence: cutoff, commitSequence, transactionCount: Number((db.prepare("SELECT COUNT(*) AS count FROM projection_generation_transactions WHERE generation_id = ?").get(generation) as { count?: number }).count ?? 0), fieldCount };
@@ -2596,15 +2780,27 @@ function syncActiveProjectionFromCompatibility(db: DatabaseSync, projectionCommi
   const generationId = Number(pointer.generation_id);
   const generation = db.prepare("SELECT status FROM projection_generations WHERE generation_id = ?").get(generationId) as { status?: string } | undefined;
   if (!generation || generation.status !== "active") throw new Error("Canonical active projection generation is not writable.");
-  db.prepare("UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?), switched_commit_id = ?, validated_commit_id = ? WHERE generation_id = ?").run(projectionCommitId, projectionCommitId, projectionCommitId, generationId);
-  db.prepare("UPDATE current_transactions SET commit_id = ?, projection_commit_id = ?").run(projectionCommitId, projectionCommitId);
+  const generationState = db.prepare("SELECT created_commit_id, switched_commit_id FROM projection_generations WHERE generation_id = ?").get(generationId) as { created_commit_id?: unknown; switched_commit_id?: unknown } | undefined;
+  if (!generationState?.switched_commit_id) {
+    db.prepare("UPDATE projection_generations SET created_commit_id = COALESCE(created_commit_id, ?), validated_commit_id = COALESCE(validated_commit_id, ?), switched_commit_id = ? WHERE generation_id = ?").run(projectionCommitId, projectionCommitId, projectionCommitId, generationId);
+    recordProjectionGenerationEvent(db, generationId, "created", "routine", projectionCommitId);
+    recordProjectionGenerationEvent(db, generationId, "validated", "routine", projectionCommitId);
+    recordProjectionGenerationEvent(db, generationId, "switched", "routine", projectionCommitId);
+    db.prepare("UPDATE active_projection_generation SET switched_commit_id = ? WHERE singleton_id = 1").run(projectionCommitId);
+  }
+  db.prepare("UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?) WHERE generation_id = ?").run(projectionCommitId, generationId);
   db.prepare("DELETE FROM projection_generation_transaction_fields WHERE generation_id = ?").run(generationId);
+  db.prepare("DELETE FROM projection_generation_transaction_selection WHERE generation_id = ?").run(generationId);
   db.prepare("DELETE FROM projection_generation_transactions WHERE generation_id = ?").run(generationId);
   db.prepare(`INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
     SELECT ?, transaction_id, revision_id, projection_commit_id, revision_commit_id FROM current_transactions`).run(generationId);
+  db.prepare(`INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
+    SELECT ?, current_row.transaction_id, current_row.revision_id, current_row.projection_commit_id,
+      CASE WHEN current_row.projection_commit_id = generation.switched_commit_id THEN 'rebuild' ELSE 'source_lifecycle' END
+    FROM current_transactions current_row JOIN projection_generations generation ON generation.generation_id = ?`).run(generationId, generationId);
   db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
     SELECT ?, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields`).run(generationId);
-  db.prepare("UPDATE active_projection_generation SET switched_commit_id = ? WHERE singleton_id = 1").run(projectionCommitId);
+  recordProjectionGenerationEvent(db, generationId, "knowledge", "routine", projectionCommitId);
 }
 
 function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerivedImportRunInput, coordinates: CathayDerivedImportCoordinate[], clock: CanonicalAdmissionClock, runtime?: CanonicalRuntimeOptions): { runId: string; commitSequence: number; assertionIds: string[] } {
@@ -2865,12 +3061,13 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, projection_cutoff.commit_sequence FROM projection_generation_transactions current_row
         JOIN active_projection_generation pointer ON pointer.singleton_id = 1 AND pointer.generation_id = current_row.generation_id
-        JOIN canonical_commits projection_cutoff ON projection_cutoff.commit_id = pointer.switched_commit_id
+        JOIN current_projection_state state ON state.generation = 1
+        JOIN canonical_commits projection_cutoff ON projection_cutoff.commit_id = state.commit_id
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
         ORDER BY a.account_no, t.source_sequence`).all() as Record<string, unknown>[];
-      const projection = db.prepare(`SELECT c.commit_sequence FROM active_projection_generation pointer
-        JOIN canonical_commits c ON c.commit_id = pointer.switched_commit_id WHERE pointer.singleton_id = 1`).get() as { commit_sequence?: number } | undefined;
+      const projection = db.prepare(`SELECT c.commit_sequence FROM current_projection_state state
+        JOIN canonical_commits c ON c.commit_id = state.commit_id WHERE state.generation = 1`).get() as { commit_sequence?: number } | undefined;
       if (!projection) throw new Error("Canonical current projection cutoff is missing.");
       const result = { status: "ok", kind: "current", accounts, transactions: rows.map((row) => transactionFromRow(addSelectedFields(db, row))), commitSequence: Number(projection.commit_sequence) } satisfies CathayCanonicalCurrentQueryResult;
       return result;

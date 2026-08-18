@@ -159,7 +159,7 @@ async function makeFieldLedger(prefix: string): Promise<{ dir: string; transacti
     const ids = corrupt.prepare("SELECT commit_id FROM canonical_commits ORDER BY commit_sequence").all() as Array<{ commit_id: Uint8Array }>;
     assert.equal(ids.length >= 2, true);
     corrupt.exec("DROP TRIGGER trg_active_projection_generation_commit_update");
-    corrupt.prepare("UPDATE active_projection_generation SET switched_commit_id = ?").run(Buffer.from(ids[0]!.commit_id));
+    corrupt.prepare("UPDATE active_projection_generation SET switched_commit_id = ?").run(Buffer.from(ids[1]!.commit_id));
     corrupt.close();
     assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /pointer|switch|projection state/i);
     assert.equal(first.commitSequence, 1);
@@ -319,5 +319,39 @@ for (const [label, corruptField] of [
     assert.equal(current.noteCommitSequence, derived.commitSequence);
     const readable = openCanonicalDatabase(dir, { readOnly: true });
     try { assert.equal(readable.prepare("SELECT COUNT(*) AS count FROM projection_generation_transaction_fields WHERE origin = 'derived'").get()?.count, 1); } finally { readable.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// A valid canonical commit is not automatically a valid projection-selection
+// commit: an unchanged transaction must retain the source lifecycle commit
+// that selected its revision, not an unrelated later Derived/User commit.
+{
+  const { dir, otherTransactionId } = await makeFieldLedger("cathay-canonical-v7-red-transaction-selection-commit-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const unrelated = (corrupt.prepare("SELECT commit_id FROM canonical_commits WHERE commit_sequence = 2").get() as { commit_id: Uint8Array }).commit_id;
+    corrupt.prepare("UPDATE projection_generation_transactions SET projection_commit_id = ? WHERE transaction_id = ?").run(Buffer.from(unrelated), Buffer.from(otherTransactionId.replaceAll("-", ""), "hex"));
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /selection|projection|commit|provenance/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /selection|projection|commit|provenance/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// Pointer, generation and current-state fields may all point at a real commit;
+// without an append-only switch/knowledge event that commit is still orphaned.
+{
+  const { dir } = await makeFieldLedger("cathay-canonical-v7-red-orphan-knowledge-commit-");
+  try {
+    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const maxSequence = Number((corrupt.prepare("SELECT MAX(commit_sequence) AS sequence FROM canonical_commits").get() as { sequence?: number }).sequence ?? 0);
+    const orphan = Buffer.alloc(16, 0x77);
+    corrupt.prepare("INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'user/local', 'user_assertion')").run(orphan, maxSequence + 1, 0);
+    corrupt.exec("DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_update; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_update");
+    corrupt.prepare("UPDATE projection_generations SET switched_commit_id = ? WHERE status = 'active'").run(orphan);
+    corrupt.prepare("UPDATE active_projection_generation SET switched_commit_id = ? WHERE singleton_id = 1").run(orphan);
+    corrupt.prepare("UPDATE current_projection_state SET commit_id = ? WHERE generation = 1").run(orphan);
+    corrupt.close();
+    assert.throws(() => openCanonicalDatabase(dir, { readOnly: true }), /switch|knowledge|provenance|projection/i);
+    await assert.rejects(() => rebuildCathayCanonicalProjection(dir), /switch|knowledge|provenance|projection/i);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
