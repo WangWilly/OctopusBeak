@@ -315,8 +315,9 @@ try {
   } finally {
     repeatDb.close();
   }
-
   const boundaryQuery = createBoundaryCanonicalQuery(ledgerDir);
+  assert.equal((await boundaryQuery.current({ kind: "current" })).commitSequence, repeated.commitSequence);
+
   assert.equal((await boundaryQuery.current({ kind: "current" })).transactions.length, 3);
   assert.equal((await boundaryQuery.historical({
     kind: "historical",
@@ -410,6 +411,34 @@ try {
   } finally { provenanceOnlyV4Migrated.close(); }
 } finally { await rm(provenanceOnlyV4MigrationDir, { recursive: true, force: true }); }
 
+const restorationV4MigrationDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v4-restoration-"));
+try {
+  await commitCathayDomesticDepositSync(restorationV4MigrationDir, syncInput());
+  const emptyRaw = CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace(/"count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":\[[\s\S]*?\]\}/, '"count":0,"startDate":"2025-08-17","endDate":"2026-08-17","details":[]}');
+  await commitCathayDomesticDepositSync(restorationV4MigrationDir, { ...syncInput([syncPage(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo, emptyRaw)]), observedAt: "2026-08-18T00:00:00+08:00" });
+  const restoration = await commitCathayDomesticDepositSync(restorationV4MigrationDir, { ...syncInput(), observedAt: "2026-08-19T00:00:00+08:00" });
+  const restorationV4Seed = openCanonicalDatabase(restorationV4MigrationDir);
+  restorationV4Seed.exec("UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;");
+  restorationV4Seed.close();
+  assert.throws(() => openCanonicalDatabase(restorationV4MigrationDir, { injectMigrationFailure: "v4-v5-after-record-copy" }), /Injected v4-v5 migration failure/);
+  const failedV4 = new DatabaseSync(canonicalSqlitePath(restorationV4MigrationDir));
+  try {
+    assert.equal(Number(failedV4.prepare("PRAGMA user_version").get()?.user_version), 4);
+    assert.equal(failedV4.prepare("SELECT COUNT(*) AS count FROM source_records").get()?.count, 6);
+    assert.equal(failedV4.prepare("SELECT 1 FROM sqlite_master WHERE name = 'source_record_scopes'").get(), undefined);
+  } finally { failedV4.close(); }
+  const restoredMigrationWriter = openCanonicalDatabase(restorationV4MigrationDir);
+  restoredMigrationWriter.close();
+  const restoredMigrationDb = openCanonicalDatabase(restorationV4MigrationDir, { readOnly: true });
+  try {
+    const migratedProjection = restoredMigrationDb.prepare("SELECT commit_id, projection_commit_id, revision_commit_id FROM current_transactions LIMIT 1").get() as Record<string, unknown>;
+    const migratedState = restoredMigrationDb.prepare("SELECT commit_id FROM current_projection_state WHERE generation = 1").get() as Record<string, unknown>;
+    assert.deepEqual(Buffer.from(migratedProjection.projection_commit_id as Uint8Array), Buffer.from(migratedState.commit_id as Uint8Array));
+    assert.notDeepEqual(Buffer.from(migratedProjection.revision_commit_id as Uint8Array), Buffer.from(migratedProjection.projection_commit_id as Uint8Array));
+    assert.equal(restoration.commitSequence, 3);
+  } finally { restoredMigrationDb.close(); }
+} finally { await rm(restorationV4MigrationDir, { recursive: true, force: true }); }
+
 const tombstoneDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-tombstone-") );
 try {
   assert.throws(() => commitCathayDomesticDepositSync(tombstoneDir, syncInput([{
@@ -460,7 +489,9 @@ try {
     observedAt: "2026-08-18T00:00:00+08:00",
   });
   const withdrawnQuery = createCathayCanonicalFinancialQuery(lifecycleDir);
-  assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 0);
+  const withdrawnCurrent = await withdrawnQuery.current({ kind: "current" });
+  assert.equal(withdrawnCurrent.transactions.length, 0);
+  assert.equal(withdrawnCurrent.commitSequence, withdrawn.commitSequence);
   const historicalWithdrawn = await withdrawnQuery.historical({ kind: "historical", cutoff: { kind: "both", financialAt: "2026-12-31", knowledgeAt: String(withdrawn.commitSequence) } });
   assert.equal(historicalWithdrawn.transactions.length, 3);
   assert.equal(historicalWithdrawn.transactions[0]?.assertionSupportState, "withdrawn");
@@ -469,6 +500,7 @@ try {
     observedAt: "2026-08-19T00:00:00+08:00",
   });
   assert.equal((await withdrawnQuery.current({ kind: "current" })).transactions.length, 3);
+  assert.equal((await withdrawnQuery.current({ kind: "current" })).commitSequence, restored.commitSequence);
   const restoredProjectionDb = openCanonicalDatabase(lifecycleDir, { readOnly: true });
   try {
     const projection = restoredProjectionDb.prepare("SELECT commit_id, projection_commit_id, revision_commit_id FROM current_transactions LIMIT 1").get() as Record<string, unknown>;
@@ -742,6 +774,15 @@ try {
   corruptDb.close();
   assert.throws(() => openCanonicalDatabase(corruptDir, { readOnly: true }), /foreign-key integrity/);
 } finally { await rm(corruptDir, { recursive: true, force: true }); }
+
+const malformedV5Dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-malformed-v5-"));
+try {
+  await commitCathayDomesticDeposit(malformedV5Dir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+  const malformedV5 = new DatabaseSync(canonicalSqlitePath(malformedV5Dir));
+  malformedV5.exec("DROP INDEX idx_source_record_scopes_scope_sequence");
+  malformedV5.close();
+  assert.throws(() => openCanonicalDatabase(malformedV5Dir, { readOnly: true }), /schema v5 index idx_source_record_scopes_scope_sequence is missing/);
+} finally { await rm(malformedV5Dir, { recursive: true, force: true }); }
 
 for (const [label, capture] of [
   ["wrong currency", { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE, currency: "USD" }],
