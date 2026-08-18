@@ -1102,10 +1102,12 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
     {
       name: "source_assertions",
       select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
-        MIN(provenance.source_record_id) AS source_record_id, assertion.created_commit_id AS commit_id
-        FROM assertions assertion JOIN assertion_provenance provenance ON provenance.assertion_id = assertion.assertion_id
-        WHERE assertion.origin = 'source' AND provenance.source_record_id IS NOT NULL
-        GROUP BY assertion.assertion_id, assertion.transaction_id, assertion.revision_id, assertion.created_commit_id`,
+        revision.source_record_id, assertion.created_commit_id AS commit_id
+        FROM assertions assertion JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
+        WHERE assertion.origin = 'source' AND EXISTS (
+          SELECT 1 FROM assertion_provenance provenance
+          WHERE provenance.assertion_id = assertion.assertion_id AND provenance.source_record_id IS NOT NULL
+        )`,
     },
     {
       name: "derived_assertions",
@@ -1161,6 +1163,11 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
       db.exec(`ALTER TABLE ${compatibility.name} RENAME TO ${legacyName}`);
       db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
       db.exec(`DROP TABLE ${legacyName}`);
+    } else if (relationType(db, compatibility.name) === "view" && compatibility.name === "source_assertions") {
+      const existingSql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?").get(compatibility.name) as { sql?: unknown } | undefined)?.sql ?? "");
+      if (!/revision\.source_record_id/i.test(existingSql)) {
+        db.exec(`DROP VIEW ${compatibility.name}; CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
+      }
     } else if (relationType(db, compatibility.name) === null) {
       db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
     }
@@ -1442,6 +1449,9 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   };
   for (const [view, authority] of Object.entries(compatibilityAuthority)) {
     if (!authority.test(tableSql(view))) throw new Error(`Canonical schema v6 compatibility view ${view} is not backed by the shared assertion spine.`);
+  }
+  if (!/JOIN\s+transaction_revisions\s+revision\s+ON/i.test(tableSql("source_assertions")) || !/revision\.source_record_id/i.test(tableSql("source_assertions"))) {
+    throw new Error("Canonical schema v6 Source compatibility view does not preserve revision source identity.");
   }
   const triggerRows = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('trg_current_transaction_fields_origin_insert', 'trg_current_transaction_fields_origin_update')").all() as Array<{ name?: string; sql?: string }>;
   if (triggerRows.length !== 2 || triggerRows.some((row) => !/assertions/i.test(String(row.sql)))) throw new Error("Canonical v6 current projection origin triggers are missing.");
@@ -1858,13 +1868,7 @@ function insertDerivedLifecycleEvent(db: DatabaseSync, values: { assertionId: Ca
   db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)").run(uuidV7(), values.assertionId, values.transactionId, values.field, values.runId, values.coordinateId, values.commitId, values.kind);
 }
 
-function latestDerivedLifecycle(db: DatabaseSync, assertionId: CanonicalId): string | null {
-  const row = db.prepare(`SELECT event_kind FROM assertion_transitions e JOIN canonical_commits c ON c.commit_id = e.commit_id
-    WHERE assertion_id = ? ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(assertionId) as { event_kind?: string } | undefined;
-  return row?.event_kind ?? null;
-}
-
-function latestUserLifecycle(db: DatabaseSync, assertionId: CanonicalId): string | null {
+function latestAssertionLifecycle(db: DatabaseSync, assertionId: CanonicalId): string | null {
   const row = db.prepare(`SELECT event_kind FROM assertion_transitions e JOIN canonical_commits c ON c.commit_id = e.commit_id
     WHERE assertion_id = ? ORDER BY c.commit_sequence DESC, e.rowid DESC LIMIT 1`).get(assertionId) as { event_kind?: string } | undefined;
   return row?.event_kind ?? null;
@@ -1939,10 +1943,13 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
           AND assertion.producer_id = ? AND assertion.rule_lineage = ?
         ORDER BY c.commit_sequence DESC, assertion.assertion_id DESC LIMIT 1`).get(transactionId, coordinate.field, input.producerId, input.ruleLineage) as Record<string, unknown> | undefined;
       if (coordinate.state === "unsupported") {
-        if (latest && latestDerivedLifecycle(db, blob(latest.assertion_id)) !== "withdrawn") {
+        if (latest) {
           const withdrawnAssertion = blob(latest.assertion_id);
-          insertDerivedLifecycleEvent(db, { assertionId: withdrawnAssertion, transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "withdrawn" });
-          if (existingCurrent?.origin === "derived" && existingCurrent.derived_assertion_id && Buffer.compare(blob(existingCurrent.derived_assertion_id), withdrawnAssertion) === 0) refreshCurrentFieldAfterWithdrawal(db, transactionId, coordinate.field, commitId);
+          db.prepare("INSERT OR IGNORE INTO assertion_provenance(assertion_id, source_record_id, run_id, coordinate_id, commit_id) VALUES (?, NULL, ?, ?, ?)").run(withdrawnAssertion, runId, coordinateId, commitId);
+          if (latestAssertionLifecycle(db, withdrawnAssertion) !== "withdrawn") {
+            insertDerivedLifecycleEvent(db, { assertionId: withdrawnAssertion, transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "withdrawn" });
+            if (existingCurrent?.origin === "derived" && existingCurrent.derived_assertion_id && Buffer.compare(blob(existingCurrent.derived_assertion_id), withdrawnAssertion) === 0) refreshCurrentFieldAfterWithdrawal(db, transactionId, coordinate.field, commitId);
+          }
         }
         continue;
       }
@@ -1951,7 +1958,7 @@ function commitCathayDerivedImportRunOnce(ledgerDir: string, input: CathayDerive
       let eventKind: "observed" | "superseded" | "restored" | null = "observed";
       if (latest && String(latest.value_text) === value) {
         assertionId = blob(latest.assertion_id);
-        eventKind = latestDerivedLifecycle(db, assertionId) === "withdrawn" ? "restored" : null;
+        eventKind = latestAssertionLifecycle(db, assertionId) === "withdrawn" ? "restored" : null;
       } else {
         assertionId = uuidV7();
         if (latest) insertDerivedLifecycleEvent(db, { assertionId: blob(latest.assertion_id), transactionId, field: coordinate.field, runId, coordinateId, commitId, kind: "superseded" });
@@ -2047,7 +2054,7 @@ export async function commitCathayUserAssertion(ledgerDir: string, input: Cathay
         db.prepare("INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'withdrawn')").run(uuidV7(), assertionId, transactionId, field, userId, commitId);
       } else {
         const value = input.value ?? "";
-        if (prior && String(prior.value_text) === value && latestUserLifecycle(db, blob(prior.assertion_id)) !== "withdrawn") {
+        if (prior && String(prior.value_text) === value && latestAssertionLifecycle(db, blob(prior.assertion_id)) !== "withdrawn") {
           assertionId = blob(prior.assertion_id);
         } else {
           assertionId = uuidV7();
@@ -2221,12 +2228,12 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           derivedAssertions: derivedRows.map((derived) => {
             const derivedAssertionId = blob(derived.assertion_id);
             const provenanceRows = db.prepare("SELECT run_id, coordinate_id FROM assertion_provenance WHERE assertion_id = ? AND run_id IS NOT NULL ORDER BY run_id, coordinate_id").all(derivedAssertionId) as Record<string, unknown>[];
-            return { id: idToString(derivedAssertionId), field: derived.field_name as CathayDerivedField, producerId: String(derived.producer_id), origin: String(derived.origin), ruleLineage: String(derived.rule_lineage), value: String(derived.value_text), state: latestDerivedLifecycle(db, derivedAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(derived.commit_sequence), runId: idToString(derived.run_id), provenance: provenanceRows.map((provenanceRow) => ({ runId: idToString(provenanceRow.run_id), coordinateId: idToString(provenanceRow.coordinate_id) })) };
+            return { id: idToString(derivedAssertionId), field: derived.field_name as CathayDerivedField, producerId: String(derived.producer_id), origin: String(derived.origin), ruleLineage: String(derived.rule_lineage), value: String(derived.value_text), state: latestAssertionLifecycle(db, derivedAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(derived.commit_sequence), runId: idToString(derived.run_id), provenance: provenanceRows.map((provenanceRow) => ({ runId: idToString(provenanceRow.run_id), coordinateId: idToString(provenanceRow.coordinate_id) })) };
           }),
           userAssertions: userRows.map((user) => {
             const userAssertionId = blob(user.assertion_id);
             const userProvenance = db.prepare(`SELECT c.commit_sequence FROM assertion_provenance p JOIN canonical_commits c ON c.commit_id = p.commit_id WHERE p.assertion_id = ? ORDER BY c.commit_sequence`).all(userAssertionId) as Array<Record<string, unknown>>;
-            return { id: idToString(userAssertionId), field: user.field_name as CathayUserAssertionField, userId: String(user.user_id), value: String(user.value_text), state: latestUserLifecycle(db, userAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(user.commit_sequence), provenance: userProvenance.map((item) => ({ commitSequence: Number(item.commit_sequence) })) };
+            return { id: idToString(userAssertionId), field: user.field_name as CathayUserAssertionField, userId: String(user.user_id), value: String(user.value_text), state: latestAssertionLifecycle(db, userAssertionId) === "withdrawn" ? "withdrawn" as const : "supported" as const, commitSequence: Number(user.commit_sequence), provenance: userProvenance.map((item) => ({ commitSequence: Number(item.commit_sequence) })) };
           }),
         } satisfies CathayCanonicalLineageEntry;
       });
