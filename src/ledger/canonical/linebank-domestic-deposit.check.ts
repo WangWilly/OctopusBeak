@@ -9,14 +9,29 @@ import {
   LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_FIXTURE,
   LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE,
+  LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_DIRECTION_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_DIRECTION_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_TIME_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_PROVENANCE,
   LINEBANK_DOMESTIC_DEPOSIT_READINESS,
   LINEBANK_DOMESTIC_DEPOSIT_REPEAT_CAPTURE_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_REPEAT_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_SCOPE_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE_VERSION,
+  linebankCompareZeroResultCaptures,
   linebankSummarizeCrossWindowEvidence,
+  linebankBuildSourceOccurrenceKey,
+  linebankCompareSourceOccurrenceCaptures,
+  linebankValidateSourceOccurrenceCapture,
+  linebankValidateZeroResultPage,
   preflightLineBankDomesticDeposit,
 } from "./linebank-domestic-deposit.ts";
 
@@ -28,6 +43,22 @@ assert.equal(LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION, "preflight-v4");
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE_VERSION,
   "clean-headed-v6",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION,
+  "historical-v7",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE_VERSION,
+  "historical-revalidation-v9",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+  "occurrence-v1",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION,
+  "observed-time-v1",
 );
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_SCOPE_EVIDENCE_VERSION,
@@ -85,6 +116,57 @@ assert.equal(
   ),
   false,
 );
+
+assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_DIRECTION_EVIDENCE, {
+  evidenceVersion: "historical-v7",
+  rowCount: 5,
+  directionCounts: { code1: 4, code2: 1 },
+  amounts: {
+    allNumericNonNegative: true,
+    negativeRowCount: 0,
+    signIsNotDirectionEvidence: true,
+  },
+  afterBalanceTransitions: {
+    code1PlusExact: 3,
+    code2MinusExact: 1,
+    inconsistent: 0,
+    indeterminate: 0,
+  },
+  classificationSetsDisjoint: true,
+  code2UiLabelCorrelation: false,
+  distinctCaseCodeCount: 3,
+  distinctBusinessFunctionCount: 3,
+  cancellationFlags: ["N"],
+  candidateIdentity: {
+    txSeqPresent: 5,
+    txSeqDistinct: 3,
+    txSeqCrrnDistinct: 5,
+    txSeqDtmDistinct: 5,
+    nullableLinkagePresentRows: 1,
+  },
+  mappingStatus: "observed-versioned",
+  providerGuaranteed: false,
+  unknownOrMissingCodesReject: true,
+});
+assert.equal(
+  JSON.stringify(
+    LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_DIRECTION_EVIDENCE,
+  ).includes("SYNTHETIC"),
+  false,
+);
+assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_TIME_EVIDENCE, {
+  evidenceVersion: "observed-time-v1",
+  rowsObserved: 5,
+  exactTaipeiEpochMillisecondsMatches: 5,
+  safeIntegerMilliseconds: 5,
+  utcOrSecondsMatches: 0,
+  ambiguityOrMismatch: 0,
+  chronology: "descending",
+  sameTimeCollisionCount: 0,
+  semanticStatus: "observed-versioned",
+  representsPostingOrAccountingTime: false,
+  providerGuaranteed: false,
+});
 
 assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE, {
   evidenceVersion: "clean-headed-v6",
@@ -149,6 +231,96 @@ assert.equal(
   false,
 );
 
+assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE, {
+  evidenceVersion: "historical-revalidation-v9",
+  cleanStart: {
+    noOpenSessions: true,
+    freshHeadedSession: true,
+  },
+  manualAuthNavigation: {
+    liveValidation: "complete",
+    humanCompletedLoginAndCaptcha: true,
+    authenticatedRootReached: true,
+    transactionRouteReached: true,
+  },
+  accountMatchCount: 1,
+  historyPost: { count: 1, status: 200 },
+  aggregate: {
+    pageNbr: 1,
+    pageCnt: 1000,
+    totTxCnt: 5,
+    txCnt: 5,
+    rowCount: 5,
+  },
+  direction: {
+    codes: ["1", "2"],
+    counts: { code1: 4, code2: 1 },
+    allRowsAccepted: true,
+  },
+  cancellationFlags: ["N"],
+  occurrence: {
+    txSeqNbrPresent: 5,
+    txSeqNbrDistinct: 3,
+    txSeqCrrnDistinct: 5,
+    txSeqDtmDistinct: 5,
+  },
+  amount: {
+    numericNonNegativeRows: 5,
+  },
+  sourceTime: {
+    evidenceVersion: "observed-time-v1",
+    rowsObserved: 5,
+    exactTaipeiEpochMillisecondsMatches: 5,
+    utcOrSecondsMatches: 0,
+    ambiguityOrMismatch: 0,
+    chronology: "descending",
+    sameTimeCollisionCount: 0,
+  },
+  fieldTypes: {
+    txDt: "string",
+    txTm: "string",
+    txDtm: "number",
+    amount: "number",
+  },
+  validation: {
+    transport: "complete",
+    direction: "complete",
+  },
+  automationProgress: [25, 100],
+  commandExitCode: 0,
+  sessionClosed: true,
+  canonicalAdmission: "blocked",
+  readiness: "preflight-only",
+  remainingBlockers: {
+    identityProviderGuarantee: true,
+    postingSemantics: true,
+    effectiveTimeSemantics: true,
+    cancellationSemantics: true,
+    completenessSemantics: true,
+    authoritySemantics: true,
+    canonicalWriter: true,
+    queryCompleteness: true,
+  },
+});
+const revalidationJson = JSON.stringify(
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE,
+);
+assert.equal(revalidationJson.includes("acctNbr"), false);
+assert.equal(revalidationJson.includes("txAmt"), false);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE.canonicalAdmission,
+  "blocked",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE.readiness,
+  "preflight-only",
+);
+assert.ok(
+  Object.values(
+    LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE.remainingBlockers,
+  ).every(Boolean),
+);
+
 const page = {
   pageNbr: 1,
   pageCnt: 1000,
@@ -157,9 +329,10 @@ const page = {
   rows: [
     {
       txSeqNbr: "1",
+      crrnDpstNthCnt: 1,
       txDt: "20260705",
       txTm: "143738",
-      txDtm: 1700000000000,
+      txDtm: 1783233458000,
       dpstWdrwDsCd: "1",
       txAmt: "1000",
       afTxBal: "1005",
@@ -181,6 +354,7 @@ const valid = preflightLineBankDomesticDeposit({
         acctNbr: "synthetic-account",
         arrId: "synthetic-arrangement",
         pdNm: "synthetic-domestic-main-account",
+        opnDtm: 1700000000000,
       },
     },
   ],
@@ -212,10 +386,11 @@ assert.equal(
   valid.diagnostics.some((item) => item.code === "currency-scope-unsupported"),
   false,
 );
-assert.ok(
+assert.equal(
   valid.diagnostics.some(
     (item) => item.code === "direction-mapping-incomplete",
   ),
+  false,
 );
 assert.ok(
   valid.diagnostics.some(
@@ -258,9 +433,9 @@ assert.ok(
   ),
 );
 
-// The sanitized live shape preserves one complete page and matching counts,
-// but repeats txSeqNbr across two distinct rows.  That proves the current
-// occurrence key is insufficient and must remain blocked before any write.
+// The sanitized live shape preserves one complete page and matching counts.
+// Repeated txSeqNbr values are accepted only when the empirical occurrence
+// tuple is complete and unique; canonical admission remains blocked.
 const liveEvidence = preflightLineBankDomesticDeposit(
   LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE,
 );
@@ -298,7 +473,7 @@ assert.equal(
   liveEvidence.accountKey,
   LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_KEY_DESCRIPTOR,
 );
-assert.equal(liveEvidence.directionEvidence.completeMapping, false);
+assert.equal(liveEvidence.directionEvidence.completeMapping, true);
 assert.deepEqual(liveEvidence.currencyEvidence, {
   status: "unsupported",
   currency: null,
@@ -318,10 +493,14 @@ assert.equal(
   JSON.stringify(liveEvidence).includes("SYNTHETIC-PRODUCT-CODE"),
   false,
 );
-assert.ok(
+assert.equal(
   liveEvidence.diagnostics.some(
-    (item) => item.code === "transaction-key-duplicate",
+    (item) =>
+      item.code === "transaction-key-duplicate" ||
+      item.code === "occurrence-duplicate" ||
+      item.code === "occurrence-base-time-conflict",
   ),
+  false,
 );
 assert.ok(
   liveEvidence.diagnostics.some(
@@ -419,14 +598,21 @@ const crossShortPreflight = preflightLineBankDomesticDeposit(
 );
 assert.equal(crossLongPreflight.status, "blocked");
 assert.equal(crossShortPreflight.status, "blocked");
-assert.ok(
-  crossLongPreflight.diagnostics.some(
-    (item) => item.code === "transaction-key-duplicate",
-  ),
-);
 assert.equal(
   crossShortPreflight.diagnostics.some(
-    (item) => item.code === "transaction-key-duplicate",
+    (item) =>
+      item.code === "transaction-key-duplicate" ||
+      item.code === "occurrence-duplicate" ||
+      item.code === "occurrence-base-time-conflict",
+  ),
+  false,
+);
+assert.equal(
+  crossLongPreflight.diagnostics.some(
+    (item) =>
+      item.code === "transaction-key-duplicate" ||
+      item.code === "occurrence-duplicate" ||
+      item.code === "occurrence-base-time-conflict",
   ),
   false,
 );
@@ -440,6 +626,223 @@ assert.ok(
     (item) => item.code === "identity-continuity-unproven",
   ),
 );
+
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE.providerGuaranteed,
+  false,
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE.matchingRuleVersion,
+  "occurrence-v1",
+);
+assert.equal(
+  (
+    LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE.matchingFields as readonly string[]
+  ).includes("txAmt"),
+  false,
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE.excludedFromMatching.includes(
+    "txAmt",
+  ),
+  true,
+);
+
+const occurrenceContext = {
+  namespace: "linebank" as const,
+  sourceConnection: "accessibility.linebank.com.tw" as const,
+  stream: "domestic-deposit" as const,
+  contractVersion: "preflight-v4",
+  identityEpoch: 1700000000000,
+  account: {
+    acctNbr: "synthetic-occurrence-account",
+    arrId: "synthetic-occurrence-arrangement",
+  },
+};
+const occurrenceRow = {
+  ...page.rows[0]!,
+  crrnDpstNthCnt: 1,
+};
+const occurrenceKey = linebankBuildSourceOccurrenceKey(
+  occurrenceContext,
+  occurrenceRow,
+);
+assert.ok(occurrenceKey);
+assert.match(occurrenceKey.tupleDigest, /^[a-f0-9]{64}$/);
+assert.match(occurrenceKey.baseDigest, /^[a-f0-9]{64}$/);
+assert.match(occurrenceKey.changeFingerprint, /^[a-f0-9]{64}$/);
+assert.equal(
+  JSON.stringify(occurrenceKey).includes("synthetic-occurrence-account"),
+  false,
+);
+
+const stableRepeat = linebankCompareSourceOccurrenceCaptures(
+  {
+    context: occurrenceContext,
+    rows: [occurrenceRow],
+    comparableCompleteness: true,
+  },
+  {
+    context: occurrenceContext,
+    rows: [{ ...occurrenceRow }],
+    comparableCompleteness: true,
+  },
+);
+assert.deepEqual(
+  {
+    status: stableRepeat.status,
+    overlapCount: stableRepeat.overlapCount,
+    stableObservationCount: stableRepeat.stableObservationCount,
+    conflictCount: stableRepeat.conflictCount,
+    withdrawalAuthorized: stableRepeat.withdrawalAuthorized,
+  },
+  {
+    status: "stable",
+    overlapCount: 1,
+    stableObservationCount: 1,
+    conflictCount: 0,
+    withdrawalAuthorized: false,
+  },
+);
+
+const changedFinancialValue = linebankCompareSourceOccurrenceCaptures(
+  {
+    context: occurrenceContext,
+    rows: [occurrenceRow],
+    comparableCompleteness: true,
+  },
+  {
+    context: occurrenceContext,
+    rows: [{ ...occurrenceRow, txAmt: "2000" }],
+    comparableCompleteness: true,
+  },
+);
+assert.equal(changedFinancialValue.status, "conflict");
+assert.equal(changedFinancialValue.overlapCount, 1);
+assert.equal(changedFinancialValue.conflictCount, 1);
+assert.equal(changedFinancialValue.withdrawalAuthorized, false);
+assert.deepEqual(changedFinancialValue.diagnostics, ["source-conflict"]);
+
+const exactTupleCollision = linebankValidateSourceOccurrenceCapture({
+  context: occurrenceContext,
+  rows: [occurrenceRow, { ...occurrenceRow }],
+  comparableCompleteness: true,
+});
+assert.equal(exactTupleCollision.status, "blocked");
+assert.equal(exactTupleCollision.keys.length, 0);
+assert.ok(
+  exactTupleCollision.diagnostics.some(
+    (item) => item.code === "occurrence-duplicate",
+  ),
+);
+
+const baseTimeCollision = linebankValidateSourceOccurrenceCapture({
+  context: occurrenceContext,
+  rows: [
+    occurrenceRow,
+    { ...occurrenceRow, txDtm: occurrenceRow.txDtm! + 1000 },
+  ],
+  comparableCompleteness: true,
+});
+assert.equal(baseTimeCollision.status, "blocked");
+assert.equal(baseTimeCollision.keys.length, 0);
+assert.ok(
+  baseTimeCollision.diagnostics.some(
+    (item) => item.code === "occurrence-base-time-conflict",
+  ),
+);
+
+const missingOccurrenceField = linebankValidateSourceOccurrenceCapture({
+  context: occurrenceContext,
+  rows: [{ ...occurrenceRow, crrnDpstNthCnt: undefined }],
+  comparableCompleteness: true,
+});
+assert.equal(missingOccurrenceField.status, "blocked");
+assert.equal(missingOccurrenceField.keys.length, 0);
+assert.ok(
+  missingOccurrenceField.diagnostics.some(
+    (item) => item.code === "occurrence-key-missing",
+  ),
+);
+
+const historicalFiveRows = Array.from({ length: 5 }, (_, index) => ({
+  ...occurrenceRow,
+  txSeqNbr: String((index % 3) + 1),
+  crrnDpstNthCnt: index + 1,
+  txDtm: occurrenceRow.txDtm! + index * 1000,
+}));
+const historicalFiveValidation = linebankValidateSourceOccurrenceCapture({
+  context: occurrenceContext,
+  rows: historicalFiveRows,
+  comparableCompleteness: true,
+});
+assert.equal(historicalFiveValidation.status, "valid");
+assert.equal(historicalFiveValidation.keys.length, 5);
+assert.equal(
+  new Set(historicalFiveValidation.keys.map((key) => key.tupleDigest)).size,
+  5,
+);
+
+const backfill = linebankCompareSourceOccurrenceCaptures(
+  {
+    context: occurrenceContext,
+    rows: [occurrenceRow],
+    comparableCompleteness: true,
+  },
+  {
+    context: occurrenceContext,
+    rows: [{ ...occurrenceRow, crrnDpstNthCnt: 2 }],
+    comparableCompleteness: true,
+  },
+);
+assert.equal(backfill.status, "no-overlap");
+assert.equal(backfill.absenceWithoutComparableCompleteness, false);
+assert.equal(backfill.withdrawalAuthorized, false);
+
+const incompleteAbsence = linebankCompareSourceOccurrenceCaptures(
+  {
+    context: occurrenceContext,
+    rows: [occurrenceRow],
+    comparableCompleteness: true,
+  },
+  {
+    context: occurrenceContext,
+    rows: [],
+    comparableCompleteness: false,
+  },
+);
+assert.equal(incompleteAbsence.status, "no-overlap");
+assert.equal(incompleteAbsence.absenceWithoutComparableCompleteness, true);
+assert.equal(incompleteAbsence.withdrawalAuthorized, false);
+assert.deepEqual(incompleteAbsence.diagnostics, ["absence-incomparable"]);
+
+for (const separatedContext of [
+  {
+    ...occurrenceContext,
+    account: {
+      acctNbr: "synthetic-other-account",
+      arrId: "synthetic-other-arrangement",
+    },
+  },
+  { ...occurrenceContext, identityEpoch: occurrenceContext.identityEpoch + 1 },
+  { ...occurrenceContext, contractVersion: "preflight-v5" },
+]) {
+  const separated = linebankCompareSourceOccurrenceCaptures(
+    {
+      context: occurrenceContext,
+      rows: [occurrenceRow],
+      comparableCompleteness: true,
+    },
+    {
+      context: separatedContext,
+      rows: [occurrenceRow],
+      comparableCompleteness: true,
+    },
+  );
+  assert.equal(separated.status, "no-overlap");
+  assert.equal(separated.overlapCount, 0);
+  assert.equal(separated.withdrawalAuthorized, false);
+}
 
 // Red transport preflight: page gaps, count drift, unknown direction, and
 // cancellation flags must be visible before any legacy/canonical write.
@@ -465,6 +868,62 @@ assert.ok(
 );
 assert.ok(
   invalid.diagnostics.some((item) => item.code === "unsupported-cancellation"),
+);
+
+const observedWithdrawal = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], dpstWdrwDsCd: "2", txAmt: "250" }],
+    },
+  ],
+});
+assert.deepEqual(observedWithdrawal.directionCodes, ["2"]);
+assert.equal(
+  observedWithdrawal.diagnostics.some(
+    (item) => item.code === "direction-unknown",
+  ),
+  false,
+);
+assert.equal(
+  observedWithdrawal.diagnostics.some(
+    (item) => item.code === "amount-sign-conflict",
+  ),
+  false,
+);
+
+const missingDirection = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], dpstWdrwDsCd: undefined }],
+    },
+  ],
+});
+assert.ok(
+  missingDirection.diagnostics.some(
+    (item) => item.code === "direction-missing",
+  ),
+);
+
+const negativeDirectionAmount = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], dpstWdrwDsCd: "2", txAmt: "-250" }],
+    },
+  ],
+});
+assert.ok(
+  negativeDirectionAmount.diagnostics.some(
+    (item) => item.code === "amount-sign-conflict",
+  ),
 );
 
 const mismatchedCurrencyScope = preflightLineBankDomesticDeposit({
@@ -539,6 +998,54 @@ assert.ok(
   ),
 );
 
+const mismatchedSourceTime = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], txDtm: 1783233458001 }],
+    },
+  ],
+});
+assert.ok(
+  mismatchedSourceTime.diagnostics.some(
+    (item) => item.code === "transaction-source-time-mismatch",
+  ),
+);
+
+const invalidSourceCalendar = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], txDt: "20260230" }],
+    },
+  ],
+});
+assert.ok(
+  invalidSourceCalendar.diagnostics.some(
+    (item) => item.code === "transaction-date-invalid",
+  ),
+);
+
+const invalidSourceClock = preflightLineBankDomesticDeposit({
+  account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
+  scope: { startDate: "20260705", endDate: "20260705" },
+  pages: [
+    {
+      ...page,
+      rows: [{ ...page.rows[0], txTm: "246000" }],
+    },
+  ],
+});
+assert.ok(
+  invalidSourceClock.diagnostics.some(
+    (item) => item.code === "transaction-time-invalid",
+  ),
+);
+
 const mismatchedSource = preflightLineBankDomesticDeposit({
   account: { acctNbr: "synthetic-account", arrId: "synthetic-arrangement" },
   scope: { startDate: "20260705", endDate: "20260705" },
@@ -591,5 +1098,261 @@ assert.ok(
 assert.ok(
   emptyResponse.diagnostics.some(
     (item) => item.code === "authority-semantics-unproven",
+  ),
+);
+
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE_VERSION,
+  "zero-result-v11",
+);
+assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE, {
+  evidenceVersion: "zero-result-v11",
+  providerExplicit: true,
+  responseCode: "200",
+  aggregate: {
+    pageNbr: 1,
+    pageCnt: 1000,
+    totTxCnt: 0,
+    txCnt: 0,
+    rowCount: 0,
+  },
+  repeat: "stable-observation",
+  absence: {
+    comparableCompletenessRequired: true,
+    withdrawalAuthorized: false,
+    revisionAuthorized: false,
+  },
+  canonicalAdmission: "blocked",
+  readiness: "preflight-only",
+  remainingBlockers: {
+    providerIdentityGuarantee: true,
+    postingSemantics: true,
+    effectiveTimeSemantics: true,
+    cancellationSemantics: true,
+    completenessSemantics: true,
+    authoritySemantics: true,
+    revisionSemantics: true,
+    canonicalWriter: true,
+  },
+});
+assert.equal(
+  JSON.stringify(LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE).includes(
+    "acctNbr",
+  ),
+  false,
+);
+
+const zeroPage = {
+  pageNbr: 1,
+  pageCnt: 1000,
+  totTxCnt: 0,
+  txCnt: 0,
+  rows: [],
+  responseCode: "200",
+  source: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+    opnDtm: 1700000000000,
+  },
+};
+assert.deepEqual(linebankValidateZeroResultPage(zeroPage), {
+  status: "accepted",
+  diagnostics: [],
+});
+const zeroPreflight = preflightLineBankDomesticDeposit({
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  scope: { startDate: "20250701", endDate: "20250701" },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  pages: [zeroPage],
+});
+assert.equal(zeroPreflight.status, "blocked");
+assert.equal(zeroPreflight.reportedRowCount, 0);
+assert.equal(zeroPreflight.collectedRowCount, 0);
+assert.deepEqual(zeroPreflight.directionCodes, []);
+assert.equal(
+  zeroPreflight.diagnostics.some(
+    (item) =>
+      item.code === "pages-missing" ||
+      item.code === "page-row-count-mismatch" ||
+      item.code === "total-count-mismatch" ||
+      item.code === "occurrence-context-invalid",
+  ),
+  false,
+);
+for (const invalidZeroPage of [
+  { ...zeroPage, totTxCnt: 1 },
+  { ...zeroPage, txCnt: 1 },
+  { ...zeroPage, rows: [{ ...page.rows[0] }] },
+  { ...zeroPage, responseCode: "500" },
+  { ...zeroPage, pageNbr: 2 },
+]) {
+  const result = linebankValidateZeroResultPage(invalidZeroPage);
+  assert.equal(result.status, "blocked");
+  assert.ok(result.diagnostics.length > 0);
+}
+
+const zeroContext = {
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  identityEpoch: 1700000000000,
+  contractVersion: "preflight-v4",
+  scope: {
+    startDate: "20250701",
+    endDate: "20250701",
+    accountFilter: "synthetic-main-account",
+    currencyFilter: "TWD",
+  },
+};
+const stableZero = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  { ...zeroContext, page: { ...zeroPage }, comparableCompleteness: true },
+);
+assert.deepEqual(stableZero, {
+  status: "stable",
+  providerGuaranteed: false,
+  absenceWithoutComparableCompleteness: false,
+  withdrawalAuthorized: false,
+  revisionAuthorized: false,
+  diagnostics: [],
+});
+const incompleteZeroAbsence = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  { ...zeroContext, page: { ...zeroPage }, comparableCompleteness: false },
+);
+assert.equal(incompleteZeroAbsence.status, "not-comparable");
+assert.equal(incompleteZeroAbsence.withdrawalAuthorized, false);
+assert.equal(incompleteZeroAbsence.revisionAuthorized, false);
+assert.equal(incompleteZeroAbsence.absenceWithoutComparableCompleteness, true);
+const zeroScopeDrift = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  {
+    ...zeroContext,
+    scope: { ...zeroContext.scope, startDate: "20250702" },
+    page: { ...zeroPage },
+    comparableCompleteness: true,
+  },
+);
+assert.equal(zeroScopeDrift.status, "not-comparable");
+assert.deepEqual(zeroScopeDrift.diagnostics, ["scope-separated"]);
+const zeroMetadataDrift = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  {
+    ...zeroContext,
+    page: { ...zeroPage, pageCnt: 500 },
+    comparableCompleteness: true,
+  },
+);
+assert.equal(zeroMetadataDrift.status, "not-comparable");
+assert.deepEqual(zeroMetadataDrift.diagnostics, ["page-metadata-drift"]);
+const wrongZeroSourcePage = {
+  ...zeroPage,
+  source: {
+    ...zeroPage.source,
+    acctNbr: "synthetic-wrong-account",
+  },
+};
+const bothWrongZeroSource = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: wrongZeroSourcePage, comparableCompleteness: true },
+  {
+    ...zeroContext,
+    page: { ...wrongZeroSourcePage },
+    comparableCompleteness: true,
+  },
+);
+assert.equal(bothWrongZeroSource.status, "not-comparable");
+assert.deepEqual(bothWrongZeroSource.diagnostics, ["source-identity-invalid"]);
+const oneWrongZeroSource = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  {
+    ...zeroContext,
+    page: wrongZeroSourcePage,
+    comparableCompleteness: true,
+  },
+);
+assert.equal(oneWrongZeroSource.status, "not-comparable");
+assert.deepEqual(oneWrongZeroSource.diagnostics, ["source-identity-invalid"]);
+const oneMissingZeroSource = linebankCompareZeroResultCaptures(
+  { ...zeroContext, page: zeroPage, comparableCompleteness: true },
+  {
+    ...zeroContext,
+    page: { ...zeroPage, source: undefined },
+    comparableCompleteness: true,
+  },
+);
+assert.equal(oneMissingZeroSource.status, "not-comparable");
+assert.deepEqual(oneMissingZeroSource.diagnostics, ["source-identity-invalid"]);
+
+const malformedZeroPreflight = preflightLineBankDomesticDeposit({
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  scope: { startDate: "20250701", endDate: "20250701" },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  pages: [{ ...zeroPage, responseCode: "500" }],
+});
+assert.ok(
+  malformedZeroPreflight.diagnostics.some(
+    (item) => item.code === "zero-response-status-invalid",
+  ),
+);
+const contradictoryZeroPreflight = preflightLineBankDomesticDeposit({
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  scope: { startDate: "20250701", endDate: "20250701" },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  pages: [{ ...zeroPage, txCnt: 1 }],
+});
+assert.ok(
+  contradictoryZeroPreflight.diagnostics.some(
+    (item) => item.code === "zero-row-count-nonzero",
+  ),
+);
+assert.ok(
+  contradictoryZeroPreflight.diagnostics.some(
+    (item) => item.code === "zero-page-row-mismatch",
+  ),
+);
+const missingZeroSourcePreflight = preflightLineBankDomesticDeposit({
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  scope: { startDate: "20250701", endDate: "20250701" },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  pages: [{ ...zeroPage, source: undefined }],
+});
+assert.ok(
+  missingZeroSourcePreflight.diagnostics.some(
+    (item) => item.code === "source-account-identity-incomplete",
+  ),
+);
+const mismatchedZeroSourcePreflight = preflightLineBankDomesticDeposit({
+  account: {
+    acctNbr: "synthetic-zero-account",
+    arrId: "synthetic-zero-arrangement",
+  },
+  scope: { startDate: "20250701", endDate: "20250701" },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  pages: [
+    {
+      ...zeroPage,
+      source: {
+        ...zeroPage.source,
+        acctNbr: "synthetic-other-account",
+      },
+    },
+  ],
+});
+assert.ok(
+  mismatchedZeroSourcePreflight.diagnostics.some(
+    (item) => item.code === "source-account-identity-mismatch",
   ),
 );

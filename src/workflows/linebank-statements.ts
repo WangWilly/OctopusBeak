@@ -298,6 +298,107 @@ function formatTime(value: string | undefined): string {
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
 }
 
+export const LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION =
+  "observed-time-v1" as const;
+
+/** Reconstruct the source timestamp using Taiwan's fixed UTC+8 offset. */
+export function linebankEpochMillisecondsFromSourceDateTime(
+  txDt: string | undefined,
+  txTm: string | undefined,
+): number {
+  const date = cleanText(txDt);
+  const time = cleanText(txTm);
+  const dateMatch = date.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const timeMatch = time.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!dateMatch || !timeMatch) {
+    throw new Error("LINE Bank transaction source date/time is invalid.");
+  }
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const second = Number(timeMatch[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new Error("LINE Bank transaction source date/time is invalid.");
+  }
+  const epochMilliseconds = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour - 8,
+    minute,
+    second,
+  );
+  if (!Number.isSafeInteger(epochMilliseconds)) {
+    throw new Error("LINE Bank transaction source time is out of range.");
+  }
+  return epochMilliseconds;
+}
+
+export function linebankValidateTransactionTime(
+  row: LineBankTransactionRow,
+): void {
+  if (
+    !cleanText(row.txDt) ||
+    !cleanText(row.txTm) ||
+    row.txDtm === undefined ||
+    row.txDtm === null
+  ) {
+    throw new Error("LINE Bank transaction source time is incomplete.");
+  }
+  if (!Number.isSafeInteger(row.txDtm) || row.txDtm < 0) {
+    throw new Error(
+      "LINE Bank transaction source txDtm must be a safe epoch-millisecond integer.",
+    );
+  }
+  if (
+    linebankEpochMillisecondsFromSourceDateTime(row.txDt, row.txTm) !==
+    row.txDtm
+  ) {
+    throw new Error(
+      "LINE Bank transaction source txDtm does not match txDt+txTm in Asia/Taipei.",
+    );
+  }
+}
+
+/** Preserve and validate the provider occurrence fields before any export. */
+export function linebankValidateSourceOccurrenceFields(
+  row: LineBankTransactionRow,
+): void {
+  const txSeqNbr = row.txSeqNbr;
+  const validSequence =
+    (typeof txSeqNbr === "number" &&
+      Number.isSafeInteger(txSeqNbr) &&
+      txSeqNbr > 0) ||
+    (typeof txSeqNbr === "string" &&
+      /^\d+$/.test(txSeqNbr.trim()) &&
+      BigInt(txSeqNbr.trim()) > 0n);
+  if (!validSequence) {
+    throw new Error(
+      "LINE Bank transaction source txSeqNbr must be a positive integer.",
+    );
+  }
+  if (
+    typeof row.crrnDpstNthCnt !== "number" ||
+    !Number.isSafeInteger(row.crrnDpstNthCnt) ||
+    row.crrnDpstNthCnt <= 0
+  ) {
+    throw new Error(
+      "LINE Bank transaction source crrnDpstNthCnt must be a positive integer.",
+    );
+  }
+  linebankValidateTransactionTime(row);
+}
+
 const DECIMAL_AMOUNT_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 function transactionAmountLexeme(value: number | string | undefined): string {
@@ -326,13 +427,15 @@ function amountText(value: number | string | undefined): string {
 }
 
 function validateTransactionDirection(row: LineBankTransactionRow): string {
-  if (row.dpstWdrwDsCd !== "1") {
+  if (row.dpstWdrwDsCd !== "1" && row.dpstWdrwDsCd !== "2") {
     throw new Error("Unsupported LINE Bank transaction direction.");
   }
   const rawAmount = transactionAmountLexeme(row.txAmt);
   if (rawAmount.startsWith("-")) {
     throw new Error(
-      "LINE Bank transaction amount conflicts with deposit direction.",
+      `LINE Bank transaction amount conflicts with ${
+        row.dpstWdrwDsCd === "1" ? "deposit" : "withdrawal"
+      } direction.`,
     );
   }
   return rawAmount;
@@ -342,7 +445,7 @@ function amountColumns(row: LineBankTransactionRow): [string, string] {
   const rawAmount = validateTransactionDirection(row);
   const amount = rawAmount.replace(/^-/, "");
   if (!amount) return ["", ""];
-  return ["", amount];
+  return row.dpstWdrwDsCd === "1" ? ["", amount] : [amount, ""];
 }
 
 function compareRowsDesc(
@@ -427,6 +530,7 @@ export function linebankTransactionPageFromResponse(
     }
   }
   for (const row of pageRows) {
+    linebankValidateSourceOccurrenceFields(row);
     if (row.txAmt !== undefined && row.txAmt !== null) {
       transactionAmountLexeme(row.txAmt);
     }

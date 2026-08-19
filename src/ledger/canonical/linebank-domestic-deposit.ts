@@ -4,13 +4,20 @@ import type {
   LineBankTransactionPage,
   LineBankTransactionRow,
 } from "../../workflows/linebank-statements.ts";
+import {
+  LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION,
+  linebankEpochMillisecondsFromSourceDateTime,
+} from "../../workflows/linebank-statements.ts";
 
 /**
  * This is intentionally a preflight contract, not a canonical writer.  The
- * live evidence identifies the source fields and response envelope, but it
- * does not establish direction, posting, effective-time, cancellation, or
- * cross-query identity semantics.  Keeping the contract version explicit
- * prevents a best-effort CSV projection from becoming financial truth.
+ * live evidence identifies the source fields and response envelope, the
+ * historical-v7 slice adds an observed-only direction projection, and
+ * occurrence-v1 adds an opaque empirical source-occurrence comparison seam.
+ * None establishes provider direction, posting, effective-time, cancellation,
+ * revision, authority, or provider-backed identity semantics. Keeping the
+ * contract version explicit prevents a best-effort CSV projection from
+ * becoming financial truth.
  */
 export const LINEBANK_INTEGRATION_NAMESPACE = "linebank";
 export const LINEBANK_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
@@ -19,6 +26,8 @@ export const LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY =
 export const LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION = "preflight-v4";
 export const LINEBANK_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const LINEBANK_DOMESTIC_DEPOSIT_READINESS = "preflight-only" as const;
+export const LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION =
+  LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION;
 /** Returned instead of the source account values so diagnostics remain safe to log. */
 export const LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_KEY_DESCRIPTOR =
   "acctNbr+arrId" as const;
@@ -49,16 +58,267 @@ export const LINEBANK_DOMESTIC_DEPOSIT_PROVENANCE = {
   values: "synthetic-or-redacted",
   liveResponseRetained: false,
   readiness: LINEBANK_DOMESTIC_DEPOSIT_READINESS,
-  note: "The latest redacted response preserved source envelope and nullable linkage fields; official public product text supports TWD only for the explicit domestic-main-account scope, duplicate txSeqNbr evidence remains in the versioned fixture, response semantics remain unresolved, and no canonical write is exposed.",
+  note: "The latest redacted responses preserve source envelope and nullable linkage fields; historical-v7 records an observed-only direction mapping for codes 1 and 2, observed-time-v1 records exact source timestamp reconstruction without claiming posting time, occurrence-v1 adds only an opaque empirical source-occurrence comparison rule with providerGuaranteed false, zero-result-v11 records provider-explicit empty-page structure without inferring withdrawal or revision, official public product text supports TWD only for the explicit domestic-main-account scope, other response semantics remain unresolved, and no canonical write is exposed.",
 } as const;
 
-/** One observed UI correlation only; this is not a complete direction enum. */
+export const LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION =
+  "historical-v7" as const;
+
+/**
+ * Versioned empirical mapping for the observed source codes.  It is usable by
+ * the source projection only; provider guarantees and canonical readiness
+ * remain blocked.
+ */
 export const LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_DIRECTION_EVIDENCE = {
-  sourceCode: "1",
-  uiLabel: "存入",
-  scope: "single-observed-response",
-  completeMapping: false,
+  evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION,
+  status: "observed-versioned",
+  mappings: {
+    "1": {
+      direction: "inflow",
+      amountSign: "absolute-non-negative",
+      uiLabelCorrelation: "存入",
+      evidence: "ui-correlation-and-balance-arithmetic",
+    },
+    "2": {
+      direction: "outflow",
+      amountSign: "absolute-non-negative",
+      uiLabelCorrelation: null,
+      evidence: "balance-arithmetic-only",
+    },
+  },
+  unknownOrMissingCode: "reject",
+  negativeAmountConflict: "reject",
+  providerGuaranteed: false,
+  completeMapping: true,
 } as const;
+
+/** Aggregate-only direction evidence from the historical validation. */
+export const LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_DIRECTION_EVIDENCE = {
+  evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION,
+  rowCount: 5,
+  directionCounts: { code1: 4, code2: 1 },
+  amounts: {
+    allNumericNonNegative: true,
+    negativeRowCount: 0,
+    signIsNotDirectionEvidence: true,
+  },
+  afterBalanceTransitions: {
+    code1PlusExact: 3,
+    code2MinusExact: 1,
+    inconsistent: 0,
+    indeterminate: 0,
+  },
+  classificationSetsDisjoint: true,
+  code2UiLabelCorrelation: false,
+  distinctCaseCodeCount: 3,
+  distinctBusinessFunctionCount: 3,
+  cancellationFlags: ["N"],
+  candidateIdentity: {
+    txSeqPresent: 5,
+    txSeqDistinct: 3,
+    txSeqCrrnDistinct: 5,
+    txSeqDtmDistinct: 5,
+    nullableLinkagePresentRows: 1,
+  },
+  mappingStatus: "observed-versioned",
+  providerGuaranteed: false,
+  unknownOrMissingCodesReject: true,
+} as const;
+
+/** Aggregate-only observed source-time evidence; this is not posting time. */
+export const LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_TIME_EVIDENCE = {
+  evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION,
+  rowsObserved: 5,
+  exactTaipeiEpochMillisecondsMatches: 5,
+  safeIntegerMilliseconds: 5,
+  utcOrSecondsMatches: 0,
+  ambiguityOrMismatch: 0,
+  chronology: "descending",
+  sameTimeCollisionCount: 0,
+  semanticStatus: "observed-versioned",
+  representsPostingOrAccountingTime: false,
+  providerGuaranteed: false,
+} as const;
+
+export const LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION =
+  "occurrence-v1" as const;
+
+/**
+ * This is an empirical source-occurrence rule, not a provider identity claim.
+ * The tuple digest uses only the source namespace/connection/stream, contract
+ * version, account epoch/composite, txDtm, txSeqNbr and crrnDpstNthCnt. The
+ * change fingerprint is comparison-only and never participates in matching.
+ */
+export const LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE = {
+  matchingRuleVersion:
+    LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+  providerGuaranteed: false,
+  matchingFields: [
+    "namespace",
+    "sourceConnection",
+    "stream",
+    "contractVersion",
+    "identityEpoch",
+    "accountComposite",
+    "txDtm",
+    "txSeqNbr",
+    "crrnDpstNthCnt",
+  ],
+  excludedFromMatching: [
+    "txAmt",
+    "afTxBal",
+    "bizTxFuncTpCd",
+    "bizTxFuncTpNm",
+    "txRmkCont",
+    "txMemoVal",
+    "rowOrder",
+    "ctptCustLineUid",
+    "fxsTxId",
+    "rltvTxArrId",
+  ],
+  repeatSameTupleSameSource: "stable-observation",
+  repeatSameTupleChangedSource: "conflict-no-overwrite",
+  missingOrInvalidFields: "reject-capture",
+  duplicateFullTuple: "reject-capture",
+  baseTupleWithDifferentTime: "reject-capture",
+  windowAbsenceWithoutComparableCompleteness: "no-withdrawal",
+} as const;
+
+export const LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE_VERSION =
+  "zero-result-v11" as const;
+
+/** Aggregate-only evidence for a provider-explicit empty transaction page. */
+export const LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE = {
+  evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE_VERSION,
+  providerExplicit: true,
+  responseCode: "200",
+  aggregate: {
+    pageNbr: 1,
+    pageCnt: 1000,
+    totTxCnt: 0,
+    txCnt: 0,
+    rowCount: 0,
+  },
+  repeat: "stable-observation",
+  absence: {
+    comparableCompletenessRequired: true,
+    withdrawalAuthorized: false,
+    revisionAuthorized: false,
+  },
+  canonicalAdmission: "blocked",
+  readiness: LINEBANK_DOMESTIC_DEPOSIT_READINESS,
+  remainingBlockers: {
+    providerIdentityGuarantee: true,
+    postingSemantics: true,
+    effectiveTimeSemantics: true,
+    cancellationSemantics: true,
+    completenessSemantics: true,
+    authoritySemantics: true,
+    revisionSemantics: true,
+    canonicalWriter: true,
+  },
+} as const;
+
+export type LineBankZeroResultDiagnosticCode =
+  | "zero-response-status-invalid"
+  | "zero-page-number-invalid"
+  | "zero-page-count-invalid"
+  | "zero-total-count-nonzero"
+  | "zero-row-count-nonzero"
+  | "zero-page-row-mismatch";
+
+export type LineBankZeroResultValidationResult = {
+  status: "accepted" | "blocked";
+  diagnostics: LineBankZeroResultDiagnosticCode[];
+};
+
+export type LineBankZeroResultCapture = {
+  account: LineBankAccount;
+  identityEpoch: number;
+  contractVersion: string;
+  scope: {
+    startDate: string;
+    endDate: string;
+    accountFilter: string;
+    currencyFilter: string;
+  };
+  page: LineBankTransactionPage;
+  comparableCompleteness: boolean;
+};
+
+export type LineBankZeroResultComparison = {
+  status: "stable" | "not-comparable";
+  providerGuaranteed: false;
+  absenceWithoutComparableCompleteness: boolean;
+  withdrawalAuthorized: false;
+  revisionAuthorized: false;
+  diagnostics: (
+    | "capture-invalid"
+    | "source-identity-invalid"
+    | "context-separated"
+    | "scope-separated"
+    | "page-metadata-drift"
+    | "absence-incomparable"
+  )[];
+};
+
+export type LineBankOccurrenceCaptureContext = {
+  namespace: typeof LINEBANK_INTEGRATION_NAMESPACE;
+  sourceConnection: "accessibility.linebank.com.tw";
+  stream: typeof LINEBANK_DOMESTIC_DEPOSIT_STREAM;
+  /** Contract versions are part of the key so migrations cannot collide. */
+  contractVersion: string;
+  identityEpoch: number;
+  account: LineBankAccount;
+};
+
+export type LineBankSourceOccurrenceKey = {
+  matchingRuleVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION;
+  /** Opaque SHA-256 digest; raw account and row fields never leave the helper. */
+  tupleDigest: string;
+  /** Opaque digest without txDtm, used only to detect time collisions. */
+  baseDigest: string;
+  /** Opaque comparison fingerprint; never used as an identity key. */
+  changeFingerprint: string;
+};
+
+export type LineBankOccurrenceValidationDiagnosticCode =
+  | "occurrence-context-missing"
+  | "occurrence-context-invalid"
+  | "occurrence-key-missing"
+  | "occurrence-duplicate"
+  | "occurrence-base-time-conflict";
+
+export type LineBankOccurrenceValidationResult = {
+  matchingRuleVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION;
+  providerGuaranteed: false;
+  status: "valid" | "blocked";
+  keys: LineBankSourceOccurrenceKey[];
+  diagnostics: {
+    code: LineBankOccurrenceValidationDiagnosticCode;
+    rowIndex?: number;
+  }[];
+};
+
+export type LineBankOccurrenceCapture = {
+  context: LineBankOccurrenceCaptureContext;
+  rows: readonly LineBankTransactionRow[];
+  comparableCompleteness: boolean;
+};
+
+export type LineBankOccurrenceComparison = {
+  matchingRuleVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION;
+  providerGuaranteed: false;
+  status: "stable" | "conflict" | "no-overlap" | "not-comparable";
+  overlapCount: number;
+  stableObservationCount: number;
+  conflictCount: number;
+  absenceWithoutComparableCompleteness: boolean;
+  withdrawalAuthorized: false;
+  diagnostics: (
+    "capture-invalid" | "source-conflict" | "absence-incomparable"
+  )[];
+};
 
 export const LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_VERSION =
   "cross-window-v3" as const;
@@ -242,11 +502,95 @@ export const LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE = {
   },
 } as const;
 
+export const LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE_VERSION =
+  "historical-revalidation-v9" as const;
+
+/**
+ * Aggregate-only evidence from the completed historical revalidation.  The
+ * source transport and observed direction projection are live-complete for
+ * this capture; canonical admission remains blocked because evidence does
+ * not prove provider identity or accounting semantics.
+ */
+export const LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE = {
+  evidenceVersion:
+    LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE_VERSION,
+  cleanStart: {
+    noOpenSessions: true,
+    freshHeadedSession: true,
+  },
+  manualAuthNavigation: {
+    liveValidation: "complete",
+    humanCompletedLoginAndCaptcha: true,
+    authenticatedRootReached: true,
+    transactionRouteReached: true,
+  },
+  accountMatchCount: 1,
+  historyPost: { count: 1, status: 200 },
+  aggregate: {
+    pageNbr: 1,
+    pageCnt: 1000,
+    totTxCnt: 5,
+    txCnt: 5,
+    rowCount: 5,
+  },
+  direction: {
+    codes: ["1", "2"],
+    counts: { code1: 4, code2: 1 },
+    allRowsAccepted: true,
+  },
+  cancellationFlags: ["N"],
+  occurrence: {
+    txSeqNbrPresent: 5,
+    txSeqNbrDistinct: 3,
+    txSeqCrrnDistinct: 5,
+    txSeqDtmDistinct: 5,
+  },
+  amount: {
+    numericNonNegativeRows: 5,
+  },
+  sourceTime: {
+    evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION,
+    rowsObserved: 5,
+    exactTaipeiEpochMillisecondsMatches: 5,
+    utcOrSecondsMatches: 0,
+    ambiguityOrMismatch: 0,
+    chronology: "descending",
+    sameTimeCollisionCount: 0,
+  },
+  fieldTypes: {
+    txDt: "string",
+    txTm: "string",
+    txDtm: "number",
+    amount: "number",
+  },
+  validation: {
+    transport: "complete",
+    direction: "complete",
+  },
+  automationProgress: [25, 100],
+  commandExitCode: 0,
+  sessionClosed: true,
+  canonicalAdmission: "blocked",
+  readiness: LINEBANK_DOMESTIC_DEPOSIT_READINESS,
+  remainingBlockers: {
+    identityProviderGuarantee: true,
+    postingSemantics: true,
+    effectiveTimeSemantics: true,
+    cancellationSemantics: true,
+    completenessSemantics: true,
+    authoritySemantics: true,
+    canonicalWriter: true,
+    queryCompleteness: true,
+  },
+} as const;
+
 /**
  * Sanitized shape evidence from one live response. Every value below is
  * synthetic; it preserves only the response invariants needed by preflight.
  * In particular, the two rows deliberately share txSeqNbr while differing in
- * other source fields, so the current candidate occurrence key is rejected.
+ * other source fields; occurrence-v1 requires crrnDpstNthCnt and txDtm as
+ * additional empirical tuple components, while provider identity remains
+ * unproven.
  */
 export const LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE: LineBankDomesticDepositPreflightInput =
   {
@@ -284,7 +628,7 @@ export const LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE: LineBankDomesticDe
             txSeqNbr: "1",
             txDt: "20260101",
             txTm: "010203",
-            txDtm: 1700000000000,
+            txDtm: 1767200523000,
             dpstWdrwDsCd: "1",
             bizTxFuncTpCd: "SYNTHETIC-FUNCTION-CODE-A",
             crrnDpstNthCnt: 1,
@@ -303,7 +647,7 @@ export const LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE: LineBankDomesticDe
             txSeqNbr: "1",
             txDt: "20260102",
             txTm: "020304",
-            txDtm: 1700000001000,
+            txDtm: 1767290584000,
             dpstWdrwDsCd: "1",
             bizTxFuncTpCd: "SYNTHETIC-FUNCTION-CODE-B",
             crrnDpstNthCnt: 2,
@@ -362,7 +706,7 @@ export const LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_FIXTURE: LineBankCr
               txSeqNbr: "1",
               txDt: "20251215",
               txTm: "010203",
-              txDtm: 1700000200000,
+              txDtm: 1765731723000,
               dpstWdrwDsCd: "1",
               bizTxFuncTpCd: "SYNTHETIC-CROSS-FUNCTION-A",
               crrnDpstNthCnt: 1,
@@ -382,7 +726,7 @@ export const LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_FIXTURE: LineBankCr
               txSeqNbr: "1",
               txDt: "20250601",
               txTm: "020304",
-              txDtm: 1700000300000,
+              txDtm: 1748714584000,
               dpstWdrwDsCd: "1",
               bizTxFuncTpCd: "SYNTHETIC-CROSS-FUNCTION-B",
               crrnDpstNthCnt: 2,
@@ -434,7 +778,7 @@ export const LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_FIXTURE: LineBankCr
               txSeqNbr: "1",
               txDt: "20251215",
               txTm: "010203",
-              txDtm: 1700000200000,
+              txDtm: 1765731723000,
               dpstWdrwDsCd: "1",
               bizTxFuncTpCd: "SYNTHETIC-CROSS-FUNCTION-A",
               crrnDpstNthCnt: 1,
@@ -469,6 +813,18 @@ export type LineBankPreflightDiagnosticCode =
   | "total-count-mismatch"
   | "transaction-key-missing"
   | "transaction-key-duplicate"
+  | "occurrence-context-invalid"
+  | "occurrence-context-missing"
+  | "occurrence-key-missing"
+  | "occurrence-duplicate"
+  | "occurrence-base-time-conflict"
+  | "occurrence-identity-epoch-mismatch"
+  | "zero-response-status-invalid"
+  | "zero-page-number-invalid"
+  | "zero-page-count-invalid"
+  | "zero-total-count-nonzero"
+  | "zero-row-count-nonzero"
+  | "zero-page-row-mismatch"
   | "identity-continuity-unproven"
   | "direction-missing"
   | "direction-unknown"
@@ -476,9 +832,12 @@ export type LineBankPreflightDiagnosticCode =
   | "direction-semantics-unproven"
   | "amount-missing"
   | "amount-invalid"
+  | "amount-sign-conflict"
   | "transaction-date-invalid"
   | "transaction-time-invalid"
   | "transaction-effective-time-invalid"
+  | "transaction-source-time-missing"
+  | "transaction-source-time-mismatch"
   | "effective-time-semantics-unproven"
   | "posting-semantics-unproven"
   | "completeness-semantics-unproven"
@@ -559,6 +918,18 @@ function candidateAccountKey(account: LineBankAccount): string {
   return acctNbr && arrId ? `${acctNbr}:${arrId}` : "";
 }
 
+type SourceAccountIdentityStatus = "match" | "missing" | "mismatch";
+
+function sourceAccountIdentityStatus(
+  account: LineBankAccount,
+  source: LineBankTransactionPage["source"],
+): SourceAccountIdentityStatus {
+  const expected = candidateAccountKey(account);
+  const actual = source ? candidateAccountKey(source) : "";
+  if (!expected || !actual) return "missing";
+  return expected === actual ? "match" : "mismatch";
+}
+
 const PROVIDER_LOOKING_CANDIDATE_FIELDS = [
   "txSeqNbr",
   "ctptCustLineUid",
@@ -584,6 +955,310 @@ const ENVELOPE_COMPARISON_FIELDS = [
 
 function opaqueFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function occurrenceSequence(value: unknown): string | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return null;
+  const normalized = value.trim();
+  return BigInt(normalized) > 0n ? BigInt(normalized).toString() : null;
+}
+
+function occurrenceCounter(value: unknown): string | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? String(value)
+    : null;
+}
+
+function occurrenceEpoch(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function occurrenceContextParts(
+  context: LineBankOccurrenceCaptureContext,
+): [string, string, string, string, string, string, string] | null {
+  const accountComposite = candidateAccountKey(context.account);
+  const identityEpoch = occurrenceEpoch(context.identityEpoch);
+  if (
+    context.namespace !== LINEBANK_INTEGRATION_NAMESPACE ||
+    context.sourceConnection !== "accessibility.linebank.com.tw" ||
+    context.stream !== LINEBANK_DOMESTIC_DEPOSIT_STREAM ||
+    !clean(context.contractVersion) ||
+    !accountComposite ||
+    identityEpoch === null
+  ) {
+    return null;
+  }
+  return [
+    LINEBANK_INTEGRATION_NAMESPACE,
+    "accessibility.linebank.com.tw",
+    LINEBANK_DOMESTIC_DEPOSIT_STREAM,
+    clean(context.contractVersion),
+    String(identityEpoch),
+    accountComposite,
+    LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+  ];
+}
+
+/**
+ * Build an opaque occurrence key.  This helper never returns source values;
+ * null means the capture must be rejected by the caller.
+ */
+export function linebankBuildSourceOccurrenceKey(
+  context: LineBankOccurrenceCaptureContext,
+  row: LineBankTransactionRow,
+): LineBankSourceOccurrenceKey | null {
+  const contextParts = occurrenceContextParts(context);
+  const txDtm = occurrenceEpoch(row.txDtm);
+  const txSeqNbr = occurrenceSequence(row.txSeqNbr);
+  const crrnDpstNthCnt = occurrenceCounter(row.crrnDpstNthCnt);
+  if (
+    contextParts === null ||
+    txDtm === null ||
+    txSeqNbr === null ||
+    crrnDpstNthCnt === null
+  ) {
+    return null;
+  }
+  const baseParts = [...contextParts, txSeqNbr, crrnDpstNthCnt];
+  const tupleParts = [...baseParts, String(txDtm)];
+  return {
+    matchingRuleVersion:
+      LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+    baseDigest: opaqueFingerprint(baseParts),
+    tupleDigest: opaqueFingerprint(tupleParts),
+    changeFingerprint: opaqueFingerprint([
+      row.txDt ?? null,
+      row.txTm ?? null,
+      row.dpstWdrwDsCd ?? null,
+      row.txAmt ?? null,
+      row.afTxBal ?? null,
+      row.cncdTxYn ?? null,
+      row.cnclTxYn ?? null,
+    ]),
+  };
+}
+
+/** Validate one capture atomically; blocked captures return no usable keys. */
+export function linebankValidateSourceOccurrenceCapture(
+  capture: LineBankOccurrenceCapture,
+): LineBankOccurrenceValidationResult {
+  const diagnostics: LineBankOccurrenceValidationResult["diagnostics"] = [];
+  if (occurrenceContextParts(capture.context) === null) {
+    diagnostics.push({ code: "occurrence-context-invalid" });
+  }
+  const keys: LineBankSourceOccurrenceKey[] = [];
+  const seenTuples = new Set<string>();
+  const seenBases = new Map<string, string>();
+  for (const [rowIndex, row] of capture.rows.entries()) {
+    const key = linebankBuildSourceOccurrenceKey(capture.context, row);
+    if (key === null) {
+      diagnostics.push({ code: "occurrence-key-missing", rowIndex });
+      continue;
+    }
+    if (seenTuples.has(key.tupleDigest)) {
+      diagnostics.push({ code: "occurrence-duplicate", rowIndex });
+    }
+    const previousTime = seenBases.get(key.baseDigest);
+    if (previousTime !== undefined && previousTime !== key.tupleDigest) {
+      diagnostics.push({ code: "occurrence-base-time-conflict", rowIndex });
+    }
+    seenTuples.add(key.tupleDigest);
+    seenBases.set(key.baseDigest, key.tupleDigest);
+    keys.push(key);
+  }
+  return {
+    matchingRuleVersion:
+      LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+    providerGuaranteed: false,
+    status: diagnostics.length === 0 ? "valid" : "blocked",
+    keys: diagnostics.length === 0 ? keys : [],
+    diagnostics,
+  };
+}
+
+/**
+ * Compare captures without exposing raw rows.  A same tuple with changed
+ * financial/source fields is a conflict, never an overwrite or revision.
+ */
+export function linebankCompareSourceOccurrenceCaptures(
+  previous: LineBankOccurrenceCapture,
+  current: LineBankOccurrenceCapture,
+): LineBankOccurrenceComparison {
+  const previousValidation = linebankValidateSourceOccurrenceCapture(previous);
+  const currentValidation = linebankValidateSourceOccurrenceCapture(current);
+  const diagnostics: LineBankOccurrenceComparison["diagnostics"] = [];
+  if (
+    previousValidation.status === "blocked" ||
+    currentValidation.status === "blocked"
+  ) {
+    diagnostics.push("capture-invalid");
+  }
+  const previousByTuple = new Map(
+    previousValidation.keys.map((key) => [key.tupleDigest, key]),
+  );
+  let overlapCount = 0;
+  let stableObservationCount = 0;
+  let conflictCount = 0;
+  for (const currentKey of currentValidation.keys) {
+    const previousKey = previousByTuple.get(currentKey.tupleDigest);
+    if (!previousKey) continue;
+    overlapCount += 1;
+    if (previousKey.changeFingerprint === currentKey.changeFingerprint) {
+      stableObservationCount += 1;
+    } else {
+      conflictCount += 1;
+      diagnostics.push("source-conflict");
+    }
+  }
+  const absenceWithoutComparableCompleteness =
+    overlapCount === 0 &&
+    !(previous.comparableCompleteness && current.comparableCompleteness);
+  if (absenceWithoutComparableCompleteness) {
+    diagnostics.push("absence-incomparable");
+  }
+  const status = diagnostics.includes("capture-invalid")
+    ? "not-comparable"
+    : conflictCount > 0
+      ? "conflict"
+      : overlapCount > 0
+        ? "stable"
+        : "no-overlap";
+  return {
+    matchingRuleVersion:
+      LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_RULE_VERSION,
+    providerGuaranteed: false,
+    status,
+    overlapCount,
+    stableObservationCount,
+    conflictCount,
+    absenceWithoutComparableCompleteness,
+    withdrawalAuthorized: false,
+    diagnostics: [...new Set(diagnostics)],
+  };
+}
+
+/** Accept only the provider-explicit structural shape of an empty page. */
+export function linebankValidateZeroResultPage(
+  page: LineBankTransactionPage,
+): LineBankZeroResultValidationResult {
+  const diagnostics: LineBankZeroResultDiagnosticCode[] = [];
+  if (page.responseCode !== "200")
+    diagnostics.push("zero-response-status-invalid");
+  if (page.pageNbr !== 1) diagnostics.push("zero-page-number-invalid");
+  if (!Number.isInteger(page.pageCnt) || page.pageCnt < 1)
+    diagnostics.push("zero-page-count-invalid");
+  if (page.totTxCnt !== 0) diagnostics.push("zero-total-count-nonzero");
+  if (page.txCnt !== 0) diagnostics.push("zero-row-count-nonzero");
+  if (page.rows.length !== 0) diagnostics.push("zero-row-count-nonzero");
+  if (page.txCnt !== page.rows.length)
+    diagnostics.push("zero-page-row-mismatch");
+  return {
+    status: diagnostics.length === 0 ? "accepted" : "blocked",
+    diagnostics: [...new Set(diagnostics)],
+  };
+}
+
+function zeroResultIdentityFingerprint(
+  capture: LineBankZeroResultCapture,
+): string | null {
+  const accountComposite = candidateAccountKey(capture.account);
+  if (
+    !accountComposite ||
+    occurrenceEpoch(capture.identityEpoch) === null ||
+    !clean(capture.contractVersion)
+  ) {
+    return null;
+  }
+  return opaqueFingerprint([
+    LINEBANK_INTEGRATION_NAMESPACE,
+    "accessibility.linebank.com.tw",
+    LINEBANK_DOMESTIC_DEPOSIT_STREAM,
+    clean(capture.contractVersion),
+    String(capture.identityEpoch),
+    accountComposite,
+  ]);
+}
+
+function zeroResultScopeFingerprint(
+  capture: LineBankZeroResultCapture,
+): string | null {
+  const values = [
+    clean(capture.scope.startDate),
+    clean(capture.scope.endDate),
+    clean(capture.scope.accountFilter),
+    clean(capture.scope.currencyFilter).toUpperCase(),
+  ];
+  return values.every(Boolean) ? opaqueFingerprint(values) : null;
+}
+
+function zeroResultPageMetadataFingerprint(
+  page: LineBankTransactionPage,
+): string {
+  return opaqueFingerprint([
+    page.responseCode ?? null,
+    page.pageNbr,
+    page.pageCnt,
+    page.totTxCnt,
+    page.txCnt,
+    page.rows.length,
+  ]);
+}
+
+/** Compare empty captures without treating a narrow-window absence as a delete. */
+export function linebankCompareZeroResultCaptures(
+  previous: LineBankZeroResultCapture,
+  current: LineBankZeroResultCapture,
+): LineBankZeroResultComparison {
+  const diagnostics: LineBankZeroResultComparison["diagnostics"] = [];
+  if (
+    linebankValidateZeroResultPage(previous.page).status === "blocked" ||
+    linebankValidateZeroResultPage(current.page).status === "blocked" ||
+    zeroResultIdentityFingerprint(previous) === null ||
+    zeroResultIdentityFingerprint(current) === null ||
+    zeroResultScopeFingerprint(previous) === null ||
+    zeroResultScopeFingerprint(current) === null
+  ) {
+    diagnostics.push("capture-invalid");
+  } else if (
+    sourceAccountIdentityStatus(previous.account, previous.page.source) !==
+      "match" ||
+    sourceAccountIdentityStatus(current.account, current.page.source) !==
+      "match"
+  ) {
+    diagnostics.push("source-identity-invalid");
+  } else if (
+    zeroResultIdentityFingerprint(previous) !==
+    zeroResultIdentityFingerprint(current)
+  ) {
+    diagnostics.push("context-separated");
+  } else if (
+    zeroResultScopeFingerprint(previous) !== zeroResultScopeFingerprint(current)
+  ) {
+    diagnostics.push("scope-separated");
+  } else if (
+    zeroResultPageMetadataFingerprint(previous.page) !==
+    zeroResultPageMetadataFingerprint(current.page)
+  ) {
+    diagnostics.push("page-metadata-drift");
+  }
+  const absenceWithoutComparableCompleteness = !(
+    previous.comparableCompleteness && current.comparableCompleteness
+  );
+  if (absenceWithoutComparableCompleteness)
+    diagnostics.push("absence-incomparable");
+  return {
+    status: diagnostics.length === 0 ? "stable" : "not-comparable",
+    providerGuaranteed: false,
+    absenceWithoutComparableCompleteness,
+    withdrawalAuthorized: false,
+    revisionAuthorized: false,
+    diagnostics: [...new Set(diagnostics)],
+  };
 }
 
 function rowFingerprint(
@@ -842,12 +1517,11 @@ export function preflightLineBankDomesticDeposit(
     push(diagnostics, "scope-invalid");
   }
 
-  // The live observation has not established these semantics.  Keep these as
-  // explicit diagnostics on every result, including an empty response, so a
-  // future evidence update must change the contract deliberately before
-  // canonical admission can be added.
+  // Direction codes 1 and 2 now have an observed-versioned projection mapping,
+  // but provider semantics are still not guaranteed. Keep the remaining
+  // semantic diagnostics on every result, including an empty response, so
+  // canonical admission cannot be inferred from this empirical mapping.
   push(diagnostics, "identity-continuity-unproven");
-  push(diagnostics, "direction-mapping-incomplete");
   push(diagnostics, "direction-semantics-unproven");
   push(diagnostics, "posting-semantics-unproven");
   push(diagnostics, "effective-time-semantics-unproven");
@@ -872,8 +1546,55 @@ export function preflightLineBankDomesticDeposit(
     };
   }
 
+  const zeroCandidate =
+    input.pages.length === 1 && input.pages[0]?.totTxCnt === 0;
+  if (zeroCandidate) {
+    const zeroPage = input.pages[0]!;
+    const zeroValidation = linebankValidateZeroResultPage(zeroPage);
+    for (const diagnostic of zeroValidation.diagnostics) {
+      push(diagnostics, diagnostic, zeroPage.pageNbr);
+    }
+    const zeroSourceIdentity = sourceAccountIdentityStatus(
+      input.account,
+      zeroPage.source,
+    );
+    if (zeroSourceIdentity === "missing") {
+      push(diagnostics, "source-account-identity-incomplete", zeroPage.pageNbr);
+    } else if (zeroSourceIdentity === "mismatch") {
+      push(diagnostics, "source-account-identity-mismatch", zeroPage.pageNbr);
+    }
+  }
+
+  const identityEpochs = input.pages.map((page) =>
+    occurrenceEpoch(page.source?.opnDtm),
+  );
+  const identityEpoch = identityEpochs[0] ?? null;
+  if (
+    identityEpoch === null ||
+    identityEpochs.some((epoch) => epoch === null)
+  ) {
+    push(diagnostics, "occurrence-context-invalid");
+  } else if (identityEpochs.some((epoch) => epoch !== identityEpoch)) {
+    push(diagnostics, "occurrence-identity-epoch-mismatch");
+  } else {
+    const occurrenceValidation = linebankValidateSourceOccurrenceCapture({
+      context: {
+        namespace: LINEBANK_INTEGRATION_NAMESPACE,
+        sourceConnection: "accessibility.linebank.com.tw",
+        stream: LINEBANK_DOMESTIC_DEPOSIT_STREAM,
+        contractVersion: LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
+        identityEpoch,
+        account: input.account,
+      },
+      rows: input.pages.flatMap((page) => page.rows),
+      comparableCompleteness: false,
+    });
+    for (const diagnostic of occurrenceValidation.diagnostics) {
+      push(diagnostics, diagnostic.code);
+    }
+  }
+
   const seenPages = new Set<number>();
-  const seenTransactions = new Set<string>();
   const directionCodes = new Set<string>();
   let reportedRowCount: number | null = null;
   let collectedRowCount = 0;
@@ -897,12 +1618,14 @@ export function preflightLineBankDomesticDeposit(
     if (page.source !== undefined) {
       const sourceKey = candidateAccountKey(page.source);
       if (!sourceKey) {
-        push(diagnostics, "source-account-identity-incomplete", page.pageNbr);
+        if (!zeroCandidate) {
+          push(diagnostics, "source-account-identity-incomplete", page.pageNbr);
+        }
       } else {
         if (sourceIdentity !== undefined && sourceIdentity !== sourceKey) {
           push(diagnostics, "source-account-identity-mismatch", page.pageNbr);
         }
-        if (candidateKey && candidateKey !== sourceKey) {
+        if (candidateKey && candidateKey !== sourceKey && !zeroCandidate) {
           push(diagnostics, "source-account-identity-mismatch", page.pageNbr);
         }
         sourceIdentity = sourceKey;
@@ -911,13 +1634,6 @@ export function preflightLineBankDomesticDeposit(
     collectedRowCount += page.rows.length;
 
     for (const [rowIndex, row] of page.rows.entries()) {
-      const sequence = transactionKey(row);
-      if (!sequence)
-        push(diagnostics, "transaction-key-missing", page.pageNbr, rowIndex);
-      else if (seenTransactions.has(sequence))
-        push(diagnostics, "transaction-key-duplicate", page.pageNbr, rowIndex);
-      else seenTransactions.add(sequence);
-
       const direction = clean(row.dpstWdrwDsCd);
       if (!direction)
         push(diagnostics, "direction-missing", page.pageNbr, rowIndex);
@@ -932,22 +1648,62 @@ export function preflightLineBankDomesticDeposit(
         clean(row.txAmt) === ""
       )
         push(diagnostics, "amount-missing", page.pageNbr, rowIndex);
-      else if (decimalLexeme(row.txAmt) === null)
-        push(diagnostics, "amount-invalid", page.pageNbr, rowIndex);
+      else {
+        const amount = decimalLexeme(row.txAmt);
+        if (amount === null)
+          push(diagnostics, "amount-invalid", page.pageNbr, rowIndex);
+        else if (amount.startsWith("-"))
+          push(diagnostics, "amount-sign-conflict", page.pageNbr, rowIndex);
+      }
       if (!validDate(row.txDt))
         push(diagnostics, "transaction-date-invalid", page.pageNbr, rowIndex);
       if (!validTime(row.txTm))
         push(diagnostics, "transaction-time-invalid", page.pageNbr, rowIndex);
-      if (
-        row.txDtm !== undefined &&
-        !validTransactionEffectiveTime(row.txDtm)
-      ) {
+      if (!validTransactionEffectiveTime(row.txDtm)) {
         push(
           diagnostics,
           "transaction-effective-time-invalid",
           page.pageNbr,
           rowIndex,
         );
+      }
+      if (
+        !clean(row.txDt) ||
+        !clean(row.txTm) ||
+        row.txDtm === undefined ||
+        row.txDtm === null
+      ) {
+        push(
+          diagnostics,
+          "transaction-source-time-missing",
+          page.pageNbr,
+          rowIndex,
+        );
+      } else if (
+        validDate(row.txDt) &&
+        validTime(row.txTm) &&
+        validTransactionEffectiveTime(row.txDtm)
+      ) {
+        try {
+          if (
+            linebankEpochMillisecondsFromSourceDateTime(row.txDt, row.txTm) !==
+            row.txDtm
+          ) {
+            push(
+              diagnostics,
+              "transaction-source-time-mismatch",
+              page.pageNbr,
+              rowIndex,
+            );
+          }
+        } catch {
+          push(
+            diagnostics,
+            "transaction-source-time-mismatch",
+            page.pageNbr,
+            rowIndex,
+          );
+        }
       }
       if (clean(row.txDtm) === "")
         push(

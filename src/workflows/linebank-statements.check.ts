@@ -5,11 +5,14 @@ import {
   linebankAccountKey,
   linebankApiRowsToStatementRows,
   linebankEnsureTransactionPage,
+  linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
   linebankQueryWindows,
   linebankSortStatementRows,
   linebankStatementRowsToCsv,
   linebankTransactionPageFromResponse,
+  linebankValidateSourceOccurrenceFields,
+  linebankValidateTransactionTime,
   linebankValidateTransactionPageSequence,
   linebankAutoDismissApprovedAlert,
   linebankWaitForManualSignIn,
@@ -466,7 +469,7 @@ const sourceResponse = linebankTransactionPageFromResponse({
         txSeqNbr: 1,
         txDt: "20260705",
         txTm: "143738",
-        txDtm: 1700000000000,
+        txDtm: 1783233458000,
         dpstWdrwDsCd: "1",
         bizTxFuncTpCd: "synthetic-function-code",
         bizTxFuncTpNm: "synthetic-function-name",
@@ -496,6 +499,109 @@ assert.equal(sourceResponse.rows[0]?.fxsTxId, null);
 assert.equal(sourceResponse.rows[0]?.rltvTxArrId, null);
 assert.equal(sourceResponse.rows[0]?.txCaseCd, "synthetic-case");
 assert.equal(typeof sourceResponse.rows[0]?.txDtm, "number");
+assert.equal(
+  linebankEpochMillisecondsFromSourceDateTime("20260705", "143738"),
+  1783233458000,
+);
+assert.equal(
+  linebankEpochMillisecondsFromSourceDateTime("20260329", "000000"),
+  Date.UTC(2026, 2, 28, 16, 0, 0),
+);
+linebankValidateTransactionTime(sourceResponse.rows[0]!);
+linebankValidateSourceOccurrenceFields(sourceResponse.rows[0]!);
+assert.throws(
+  () =>
+    linebankValidateSourceOccurrenceFields({
+      ...sourceResponse.rows[0]!,
+      crrnDpstNthCnt: undefined,
+    }),
+  /crrnDpstNthCnt must be a positive integer/,
+);
+assert.throws(
+  () =>
+    linebankTransactionPageFromResponse({
+      code: "200",
+      content: {
+        pageNbr: 1,
+        pageCnt: 30,
+        totTxCnt: 1,
+        txCnt: 1,
+        txLst: [{ ...sourceResponse.rows[0]!, txSeqNbr: "0" }],
+      },
+    }),
+  /txSeqNbr must be a positive integer/,
+);
+assert.throws(
+  () =>
+    linebankTransactionPageFromResponse({
+      code: "200",
+      content: {
+        pageNbr: 1,
+        pageCnt: 30,
+        totTxCnt: 1,
+        txCnt: 1,
+        txLst: [{ ...sourceResponse.rows[0]!, crrnDpstNthCnt: 0 }],
+      },
+    }),
+  /crrnDpstNthCnt must be a positive integer/,
+);
+for (const [txDt, txTm] of [
+  ["20260230", "143738"],
+  ["20260705", "246000"],
+] as const) {
+  assert.throws(
+    () => linebankEpochMillisecondsFromSourceDateTime(txDt, txTm),
+    /source date\/time is invalid/,
+  );
+}
+assert.throws(
+  () =>
+    linebankValidateTransactionTime({
+      txDt: "20260705",
+      txTm: "143738",
+      txDtm: Math.floor(1783233458000 / 1000),
+    }),
+  /does not match txDt\+txTm/,
+);
+assert.throws(
+  () =>
+    linebankValidateTransactionTime({
+      txDt: "20260705",
+      txTm: "143738",
+      txDtm: Date.UTC(2026, 6, 5, 14, 37, 38),
+    }),
+  /does not match txDt\+txTm/,
+);
+assert.throws(
+  () =>
+    linebankValidateTransactionTime({
+      txDt: "20260705",
+      txTm: "143738",
+      txDtm: 1783233458001,
+    }),
+  /does not match txDt\+txTm/,
+);
+assert.throws(
+  () => linebankValidateTransactionTime({ txDt: "20260705", txTm: "143738" }),
+  /source time is incomplete/,
+);
+assert.throws(
+  () =>
+    linebankTransactionPageFromResponse({
+      code: "200",
+      content: {
+        pageNbr: 1,
+        pageCnt: 30,
+        totTxCnt: 2,
+        txCnt: 2,
+        txLst: [
+          sourceResponse.rows[0]!,
+          { ...sourceResponse.rows[0]!, txSeqNbr: 2, txDtm: 1783233458001 },
+        ],
+      },
+    }),
+  /does not match txDt\+txTm/,
+);
 linebankValidateTransactionPageSequence([sourceResponse], {
   requireComplete: true,
   expectedAccount: {
@@ -540,10 +646,18 @@ assert.throws(
         pageCnt: 30,
         totTxCnt: 1,
         txCnt: 1,
-        txLst: [{ txDtm: "1700000000000" as unknown as number }],
+        txLst: [
+          {
+            txSeqNbr: 1,
+            crrnDpstNthCnt: 1,
+            txDt: "20260705",
+            txTm: "143738",
+            txDtm: "1700000000000" as unknown as number,
+          },
+        ],
       },
     }),
-  /invalid txDtm type/,
+  /safe epoch-millisecond integer/,
 );
 assert.throws(
   () =>
@@ -600,6 +714,18 @@ assert.equal(
   "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註,匯率\n2026/07/05,2026/07/05,14:37:38,轉帳,,1000,1005,匯入 備註,\n",
 );
 
+const withdrawalRows = linebankApiRowsToStatementRows([
+  {
+    txDt: "20260705",
+    txTm: "143739",
+    dpstWdrwDsCd: "2",
+    bizTxFuncTpNm: "轉帳",
+    txAmt: "250",
+    afTxBal: "755",
+  },
+]);
+assert.deepEqual(withdrawalRows[0]?.values.slice(4, 7), ["250", "", "755"]);
+
 assert.throws(
   () =>
     linebankApiRowsToStatementRows([
@@ -623,13 +749,24 @@ assert.throws(
         pageCnt: 30,
         totTxCnt: 1,
         txCnt: 1,
-        txLst: [{ dpstWdrwDsCd: "1", txAmt: 100, afTxBal: 100 }],
+        txLst: [
+          {
+            txSeqNbr: 1,
+            crrnDpstNthCnt: 1,
+            txDt: "20260705",
+            txTm: "143738",
+            txDtm: 1783233458000,
+            dpstWdrwDsCd: "1",
+            txAmt: 100,
+            afTxBal: 100,
+          },
+        ],
       },
     }),
   /Invalid LINE Bank transaction amount/,
 );
 
-for (const direction of ["2", "9", undefined]) {
+for (const direction of ["9", undefined]) {
   assert.throws(
     () =>
       linebankApiRowsToStatementRows([
@@ -657,6 +794,36 @@ assert.throws(
 );
 assert.throws(
   () =>
+    linebankApiRowsToStatementRows([
+      {
+        txDt: "20260705",
+        txTm: "143738",
+        dpstWdrwDsCd: "2",
+        txAmt: -250,
+      },
+    ]),
+  /conflicts with withdrawal direction/,
+);
+assert.throws(
+  () =>
+    linebankApiRowsToStatementRows([
+      {
+        txDt: "20260705",
+        txTm: "143738",
+        dpstWdrwDsCd: "1",
+        txAmt: 100,
+      },
+      {
+        txDt: "20260705",
+        txTm: "143739",
+        dpstWdrwDsCd: "2",
+        txAmt: -50,
+      },
+    ]),
+  /conflicts with withdrawal direction/,
+);
+assert.throws(
+  () =>
     linebankTransactionPageFromResponse({
       code: "200",
       content: {
@@ -664,7 +831,18 @@ assert.throws(
         pageCnt: 30,
         totTxCnt: 1,
         txCnt: 1,
-        txLst: [{ dpstWdrwDsCd: "1", txAmt: 12.5, afTxBal: 100 }],
+        txLst: [
+          {
+            txSeqNbr: 1,
+            crrnDpstNthCnt: 1,
+            txDt: "20260705",
+            txTm: "143738",
+            txDtm: 1783233458000,
+            dpstWdrwDsCd: "1",
+            txAmt: 12.5,
+            afTxBal: 100,
+          },
+        ],
       },
     }),
   /Invalid LINE Bank transaction amount/,
@@ -678,7 +856,18 @@ assert.throws(
         pageCnt: 30,
         totTxCnt: 1,
         txCnt: 1,
-        txLst: [{ dpstWdrwDsCd: "1", txAmt: 100, afTxBal: 12.5 }],
+        txLst: [
+          {
+            txSeqNbr: 1,
+            crrnDpstNthCnt: 1,
+            txDt: "20260705",
+            txTm: "143738",
+            txDtm: 1783233458000,
+            dpstWdrwDsCd: "1",
+            txAmt: 100,
+            afTxBal: 12.5,
+          },
+        ],
       },
     }),
   /Invalid LINE Bank transaction amount/,

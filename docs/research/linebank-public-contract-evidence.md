@@ -43,7 +43,7 @@ LINE Bank 友善網路銀行的公開網站導覽把「帳戶交易明細查詢�
 
 `resolveDateRange`（`src/workflows/linebank-statements.ts:193-202`）在未給 `startDate` 時預設從 `endDate` 往前 12 個月加一天；`linebankQueryWindows`（`src/workflows/linebank-statements.ts:204-221`）將較長查詢切成每段最多約 12 個月。這是 workflow 的防護／實作假設，不是官方公開的 LINE Bank 上限證據。
 
-`amountColumns`（`src/workflows/linebank-statements.ts`）目前只接受已觀察到 UI correlation 的 `dpstWdrwDsCd === "1"`，並將其視為暫時的存入投影；code `2`、未知／缺漏方向與負金額一律拒絕。這是 evidence-gated projection，不是完整方向 enum，也不宣稱負號或 code `2` 的銀行端語義。
+`amountColumns`（`src/workflows/linebank-statements.ts`）現在依 `historical-v7` 的 observed-versioned mapping 將 code `1` 投影為 inflow、code `2` 投影為 outflow，兩者都要求 absolute non-negative amount；未知／缺漏方向與 signed-negative conflict 一律拒絕。這是 evidence-gated projection，不是 provider-guaranteed canonical direction semantics。
 
 `linebankApiRowsToStatementRows`（`src/workflows/linebank-statements.ts:315-337`）仍把同一個 `txDt` 同時寫成「帳務日期」與「交易日期」，把 `txTm` 格式化成 `HH:mm:ss`，以 `txDt + txTm + txSeqNbr` 排序；numeric `txDtm` 只保留在 typed staged page，未寫入 legacy CSV，也沒有被宣稱為 posting/effective-time。
 
@@ -59,13 +59,21 @@ LINE Bank 友善網路銀行的公開網站導覽把「帳戶交易明細查詢�
 
 已授權的最新交易 response 是一筆 HTTP 200、JSON、第一頁；`pageNbr`、`pageCnt`、`totTxCnt`、`txCnt` 與列數均保留在 typed page，來源 row 為 numeric `txDtm`，且 `acctNbr`／`arrId`、product／role／status envelope 與 nullable linkage candidates 皆保留。所有真實值只存在於受控的本地觀察，不進入 fixture、研究文件、CSV 或 diagnostics。
 
-UI 同頁觀察到 `dpstWdrwDsCd="1"` 與「存入」的單筆 correlation；這只是 sample-level evidence，沒有 `2` 或其他方向樣本，因此 direction mapping 仍不完整。`fxsTxId`／`rltvTxArrId` 在該樣本為 nullable，不能作為已證實 transaction ID 或 reversal link。交易 response 本身沒有已證實的 currency、posting、effective、revision、authority 欄位語義；上段官方產品資料只證明明確的 domestic main-account scope，不能把 live response 的未知 product 欄位轉成 TWD。`txDtm` 與 Asia/Taipei epoch-millisecond 轉換相容，但單筆不能建立 provider contract。
+UI 同頁觀察到 `dpstWdrwDsCd="1"` 與「存入」的單筆 correlation；historical-v7 另有 code `2` 的單筆 response row 與 exact negative balance transition，但沒有 code `2` 對 UI「提出」的直接 correlation。`fxsTxId`／`rltvTxArrId` 在該樣本為 nullable，不能作為已證實 transaction ID 或 reversal link。交易 response 本身沒有已證實的 currency、posting、effective、revision、authority 欄位語義；上段官方產品資料只證明明確的 domestic main-account scope，不能把 live response 的未知 product 欄位轉成 TWD。`txDtm` 與 Asia/Taipei epoch-millisecond 轉換相容，但這些 observations 仍不能建立 provider-guaranteed canonical contract。
 
 本次 evidence fixture／preflight contract 已版本化為 `linebank/domestic-deposit/preflight-v4`，並加入 `cross-window-v3` 的完全 synthetic cross-window fixture。該 fixture 表示：長窗口兩列共享 `txSeqNbr`、短窗口恰有一列與長窗口 full-row／non-content candidate tuple 各重疊一列；`txSeqNbr + crrnDpstNthCnt`、`txSeqNbr + txDtm` 與 provider-looking tuple 在此樣本內暫時唯一，但仍標示為 observed-not-provider-guaranteed。候選明確排除 amount、description、balance、content hash 與 row order；nullable linkage 不被當作身份證據。未保留 static bundle hash；因公開 assets 未提供可安全引用的固定 hash，不能以本地 raw sidecar 的 digest 代替第一方公開證據。route、typed fixture version、domestic-main-twd-v1 scope descriptor 與 source field inventory 是目前可審計的證據界面。
 
 既有 sidecar 另保留一組 `repeat-v5` aggregate-only 比對：前一筆 semantics capture 與後一筆 repeat capture 都是 transaction-history endpoint 的單一 HTTP 200 POST；request shape、account composite 與 query window 相同，兩次均為第一頁、相同 page/count aggregate 與單列結果。full-row equality overlap 為 1，provider-looking candidate tuple overlap 為 1；`txSeqNbr`、`crrnDpstNthCnt`、nullable linkage candidates、`txCaseCd`、`bizTxFuncTpCd`、`txDtm` 均在此 repeat 中穩定，方向觀察仍只有 code `1`、取消旗標仍為 `N`，`txDtm` 兩次均為 numeric presence。未觀察到 request、account、window、response-envelope、aggregate 或 candidate drift。這是重複樣本的經驗穩定性，不是 provider-backed identity、revision、posting/effective 或 authority 證明；因此 identity and all other semantic blockers remain.
 
 另加入完全 aggregate-only 的 `clean-headed-v6` evidence record：從無 open session 的 fresh headed start，由人完成 login／CAPTCHA，通過 authenticated root → transaction route；只匹配一個主帳戶，alert gate 為 no-visible-dialog，transaction-history POST 恰一筆且 HTTP 200，回應是一頁一列（page/count invariants preserved），direction set 只有 `1`、取消旗標只有 `N`，`txSeqNbr` 在該 sample 出現且唯一，`txDt`／`txTm` 是 string、`txDtm`／amount 是 number，automation progress 為 25 → 100，最後 session 已關閉。此 record 不含任何帳號、交易、日期或 timestamp 值；它只把 manual-auth-navigation live validation 標成 `complete`。它不能獨立授權 canonical admission：provider-backed identity、完整 direction、posting／effective-time、cancellation lifecycle、completeness、authority、writer 與 query completeness blockers 全部保留；source manifest 仍是 `partial`／`preflight-only`。
+
+歷史範圍另形成 `historical-v7` aggregate-only evidence：共 5 列，direction code `1` 有 4 列、code `2` 有 1 列；所有 amount 都是 non-negative numeric，按 `txDtm` 排序的相鄰餘額轉移有 3 次 code `1` 的 exact `+amount` 與 1 次 code `2` 的 exact `-amount`，沒有 inconsistent 或 indeterminate transition。兩組 classification set 互斥，但沒有 code `2` 對 UI「提出」的直接 correlation；取消旗標仍只觀察到 `N`。因此 source projection contract 現在把 code `1` 觀察式映射為 inflow、code `2` 觀察式映射為 outflow，兩者都要求 absolute non-negative amount，unknown／missing code 與 signed-negative conflict 在 export／admission 前拒絕。這是 `observed-versioned`、非 provider-guaranteed 的方向證據；只移除 `direction-mapping-incomplete`，`direction-semantics-unproven`、identity、posting、effective-time、cancellation、completeness、authority 與 writer/readiness blockers 仍保留。
+
+同一 historical capture 的來源時間另版本化為 `observed-time-v1`：5/5 列的 `txDtm` 都是 safe-integer epoch milliseconds，且精確等於 `txDt + txTm` 以 Asia/Taipei 固定 UTC+8 重建的結果；seconds、UTC offset、mismatch、ambiguity 與 same-time collision 都是 0，排序 chronology 為 descending。workflow 與 preflight 對缺漏／非法 calendar date／clock time、非 safe integer、seconds-like unit、offset mismatch 或重建不一致的 row/page 整體拒絕。這只證明 source timestamp reconstruction，不把 `txDtm` 稱為 posting、accounting 或 effective event time；`effective-time-semantics-unproven` 與其他 canonical blockers 保留。
+
+完成一次新的 historical revalidation 後，另加入完全 aggregate-only 的 `historical-revalidation-v9` record：fresh headed start 時沒有 open session，由人完成 login／CAPTCHA，authenticated root → transaction route，只匹配一個主帳戶；transaction-history POST 恰一筆且 HTTP 200，第一頁 `pageNbr=1`、`pageCnt=1000`，`totTxCnt=5` 與 `txCnt=5`，共 5 列。direction code `1` 有 4 列、code `2` 有 1 列，全部通過目前 observed-versioned projection；取消旗標仍只有 `N`。`txSeqNbr` 有 3 個 distinct 值，但 `txSeqNbr + crrnDpstNthCnt` 與 `txSeqNbr + txDtm` 各 5 個 distinct；amount 全為 non-negative numeric。5/5 `txDtm` 精確符合 Asia/Taipei UTC+8 reconstruction，UTC／seconds／mismatch／ambiguity／same-time collision 都是 0，chronology 為 descending；automation progress 為 25 → 100、command exit 0、session 已關閉。這只把 transport 與 observed direction validation 標成 live-complete；canonical admission 仍為 blocked、readiness 仍為 preflight-only，identity provider guarantee、posting/effective-time、cancellation lifecycle、completeness、authority、writer 與 query completeness blockers 全部保留。
+
+在 v9 之上加入 `occurrence-v1` empirical source-occurrence matching seam：opaque tuple digest 僅組合 source namespace／connection／domestic-deposit stream、contract version、source account identity epoch、`acctNbr + arrId` composite、`txDtm`、`txSeqNbr` 與 `crrnDpstNthCnt`；不把 amount、balance、description、row order、business classification 或 nullable linkage 當成 identity。缺漏／非法欄位、同 capture 完整 tuple 重複、同 base tuple 卻有不同 `txDtm` 都以 atomic rejection/quarantine 處理。相同 tuple 與相同非 identity source values 的 repeat 只記為 stable observation；同 tuple 若 financial/source change 則是 conflict，禁止 overwrite/revision。account、identity epoch 與 contract version 會隔離 digest；window absence 沒有 comparable completeness 時不產生 withdrawal decision。這個規則明確 `providerGuaranteed: false`，只提供 preflight/comparison seam，不增加 writer 或 readiness。
 
 Workflow 的登入邊界也已明確化：`startUrl` 是官方登入頁；`librettoAuthenticate` 在 `/login` 一律視為未登入，非 login root page 以任一可見「帳戶交易明細查詢」連結判定，`/transaction` 則以任一可見 `#account-dropdown` 判定。未登入時只等待人完成登入／CAPTCHA（明確最長兩分鐘），不讀取或填寫 credential；完成後才透過可見連結（或同源 `/transaction` fallback）進入交易 stage，並等待 `#account-dropdown`。已登入或已在交易頁的 path 不重登入、不重導覽。這是互動式 authentication handoff contract，不代表 live query 已在本工作包重送。
 
@@ -76,8 +84,8 @@ Workflow 的登入邊界也已明確化：`startUrl` 是官方登入頁；`libre
 ## 合理推論
 
 1. 官方「30天」控制項與可選「交易期間」表示 UI 至少支援期間選擇；因此 12 個月切窗並非由官方文字直接證實的最大範圍。可是，沒有公開上限時，不能把它推進為任意多年查詢或移除切窗。
-2. workflow 送 `dpstWdrwDsCd: ""` 很可能意圖代表不限制方向，與官方 UI 的「交易類型」控制相容；但沒有官方 enum 文件或兩種方向樣本，不能把空字串、code `1`、code `2` 對應成 canonical income/expense。
-3. `acctNbr + arrId` 是目前最合理的 account request identity candidate，`txSeqNbr` 是目前最合理的 row occurrence candidate；它們是否跨查詢期間、帳戶或修正事件穩定唯一，仍未由公開資料證實。
+2. workflow 送 `dpstWdrwDsCd: ""` 很可能意圖代表不限制方向，與官方 UI 的「交易類型」控制相容；historical-v7 讓 code `1`／`2` 可以作 observed-versioned inflow/outflow projection，但沒有官方 enum 文件或 code `2` 的直接 UI correlation，不能把它們宣稱為 provider-guaranteed canonical income/expense。
+3. `acctNbr + arrId` 是目前 account request identity candidate；`occurrence-v1` 將 account epoch、`txDtm`、`txSeqNbr` 與 `crrnDpstNthCnt` 組成 opaque empirical source-occurrence key，但它是否為 provider-backed stable identity、revision link 或 authority contract，仍未由公開資料證實。
 4. source 同時提供 `txDt`／`txTm` 與 numeric `txDtm`；把 `txDt` 複製到兩個日期欄位仍只是目前輸出格式的 projection，不能宣稱帳務日與交易日相同，也不能宣稱 `txTm` 或 `txDtm` 是 posting/effective time。
 
 ## 未解決契約矩陣
@@ -86,9 +94,9 @@ Workflow 的登入邊界也已明確化：`startUrl` 是官方登入頁；`libre
 |---|---|---|
 | 可查歷史範圍 | 官方教學有「30天」預設／查詢期間控制 | 最長期間、最早日期、是否可跨多年 |
 | 查詢／篩選控制 | 交易類型、交易期間、顯示餘額；repo request 另有 detail/sort 欄位 | 每個 request 欄位的 enum、空值語義、UI 與 API 的一一對應 |
-| 方向碼 | 回應型別有 `dpstWdrwDsCd`；單筆 UI correlation 為 code `1` →「存入」，目前 mapping 仍特判 `2` | code `1`／`2` 的完整官方存入／支出含義、其他 code、取消交易的方向 |
-| 帳戶／交易 identifier | `acctNbr`、`arrId`、`txSeqNbr` 出現在 source contract；前兩者用於 request | stable uniqueness、masking、帳戶重建或交易修正時是否不變 |
-| `txDt`／`txTm`／`txDtm` | 已遮罩 response 有三者；`txDtm` 為 numeric source field，單筆與 Asia/Taipei epoch-ms 相容 | `txDt` 是帳務日或交易日、provider 的 `txDtm` 單位／時區／事件語義 |
+| 方向碼 | `historical-v7`：code `1` 4 列、code `2` 1 列；餘額轉移分別符合 `+amount`／`-amount`，code `1` 另有 UI「存入」correlation | provider-guaranteed 的 code `1`／`2` 完整存入／支出含義、其他 code、取消交易的方向 |
+| 帳戶／交易 identifier | `acctNbr`、`arrId`、`txSeqNbr`、`crrnDpstNthCnt`、`txDtm` 出現在 source contract；`occurrence-v1` 只產生 opaque empirical tuple | provider-backed stable uniqueness、masking、帳戶重建或交易修正時是否不變、revision／authority link |
+| `txDt`／`txTm`／`txDtm` | `observed-time-v1`：5/5 exact Asia/Taipei UTC+8 epoch-ms reconstruction，0 mismatch／ambiguity | `txDt` 是帳務日或交易日、provider 的 `txDtm` 是否代表 posting／accounting／effective event |
 | 取消旗標 | 已遮罩 response 與 typed row 保存 `cncdTxYn`／`cnclTxYn` | 值域的完整保證、取消是否會產生反向 row、如何與原交易關聯 |
 | 幣別／產品 scope | 官方產品文字把臺幣活期儲蓄存款「主帳戶」與外幣存款帳戶分開；preflight-v4 有明確 domestic-main-twd-v1 descriptor | live response 的 product code／currency 欄位與官方產品描述的映射、外幣產品的完整 enum；未知或不一致 scope 不得產生 TWD |
 | 分頁／完整性 | response observation 有 page/total count；repo 會保存並核對 `pageCnt`／`txCnt`／`totTxCnt` | `pageCnt` 的精確語義、總數在跨頁期間是否固定、是否可能 truncation 或代表完整 snapshot |
@@ -98,10 +106,10 @@ Workflow 的登入邊界也已明確化：`startUrl` 是官方登入頁；`libre
 
 - 不應因官方「30天」預設就把來源限制為 30 天；同樣也不應因官方提到可選期間，就把 workflow 改成無切窗多年查詢。
 - 在 live evidence 尚未證明更大合法範圍前，保留 `linebankQueryWindows` 的 12 個月切窗。它是目前可解釋、可回退的安全假設；報告與 workflow 都不應把 12 個月寫成銀行保證。
-- 方向 mapping 必須保持未驗證狀態：目前只有 `code 1 → 存入` 的單筆 UI correlation；legacy projection 對 code `2`、未知／缺漏方向與 sign-conflict 直接拒絕，不足以完成 Issue #132 的 source-specific direction contract。
+- 方向 mapping 現為 `observed-versioned`：legacy projection 接受 code `1`／`2` 的 absolute non-negative amount，未知／缺漏方向與 sign-conflict 直接拒絕；`direction-semantics-unproven` 仍保留，因 code `2` 沒有直接 UI correlation，且 provider guarantee 尚未建立。
 - workflow 在每頁 staged response 上要求 source envelope 的 `acctNbr + arrId` 精確等於 request account；缺漏或 mismatch 在 rows/export 前拒絕。這是 transport identity guard，不是 transaction occurrence identity 或 canonical readiness 證明。
 - TWD JSON numeric amount/balance 只接受可安全、精確表示的整數；證據未支持的 numeric float、非有限值與 unsafe integer 在 staged/page 或 CSV projection 前拒絕。字串 decimal 仍以 exact lexeme 保存，但不因此建立銀行語義。
-- typed staged page 保存取消旗標、nullable linkage candidates、來源 envelope 與 numeric `txDtm`，但 legacy CSV projection 仍不輸出它們；在沒有欄位和值域證據前，不應以欄位名稱猜測或把 `txDt` 複製結果當成 source fact。
+- typed staged page 保存取消旗標、nullable linkage candidates、來源 envelope 與 numeric `txDtm`，並在 transport/preflight 以 observed-time-v1 嚴格核對 `txDt`／`txTm`；legacy CSV projection 仍不輸出 `txDtm`，也不把它當成 posting/effective time。在沒有欄位和值域證據前，不應以欄位名稱猜測或把 `txDt` 複製結果當成 source fact。
 - 對已證實的 domestic main-account scope，preflight 可保留 `currency: TWD` 的**證據描述**；這不是 writer readiness，也不替代 identity、direction-total、posting、effective-time、cancellation、completeness 或 authority blockers。沒有完整 scope descriptor 或 source envelope 不一致時，currency evidence 維持 unsupported。
 - 分頁 acceptance 應要求一次 live 查詢取得 `totTxCnt`、每頁 row count、最後 page，以及至少一個多頁或空頁邊界；只有一頁結果不足以證明 completeness。
 
@@ -119,4 +127,4 @@ npx libretto run src/workflows/linebank-statements.ts --session issue132-lineban
 
 ## 結論
 
-公開資訊能把「可查期間」從固定 30 天的誤解，擴大為「UI 支援可調整交易期間」，並在官方產品 scope 上支持「臺幣活期儲蓄存款主帳戶」這個明確 descriptor。最新遮罩 response 與 cross-window-v3 synthetic fixture 已補足 typed source envelope、numeric `txDtm`、nullable linkage 與跨範圍 aggregate evidence，但仍不能把任何 candidate tuple 宣稱為 provider-backed identity，也不能證明完整方向 enum、取消 lifecycle、posting/effective semantics、authority 或分頁完整性。Issue #132 目前應**保留 12 個月切窗**；只有明確的 domestic-main-twd-v1 scope 可以去除 currency scope blocker，canonical readiness 仍維持 preflight-only/blocked。
+公開資訊能把「可查期間」從固定 30 天的誤解，擴大為「UI 支援可調整交易期間」，並在官方產品 scope 上支持「臺幣活期儲蓄存款主帳戶」這個明確 descriptor。最新遮罩 response、cross-window-v3 synthetic fixture、observed-time-v1、historical-revalidation-v9 與 occurrence-v1 seam 已補足 typed source envelope、來源時間重建、方向／分頁／聚合驗證、跨範圍 aggregate evidence 與 privacy-safe empirical occurrence comparison；這些 observations 仍不能把 opaque tuple 宣稱為 provider-backed identity，也不能證明 revision、取消 lifecycle、posting/effective semantics、authority 或分頁完整性。Issue #132 目前應**保留 12 個月切窗**；只有明確的 domestic-main-twd-v1 scope 可以去除 currency scope blocker，canonical readiness 仍維持 preflight-only/blocked。
