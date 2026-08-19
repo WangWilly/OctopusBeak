@@ -4,7 +4,7 @@ description: "Browser automation CLI for building, maintaining, and running brow
 license: MIT
 metadata:
   author: saffron-health
-  version: "0.6.31"
+  version: "0.6.45"
 ---
 
 ## How Libretto Works
@@ -27,6 +27,8 @@ Mix strategies freely across steps on a site.
 
 Prefer to enter sites at a user-facing URL (homepage, login, etc.) on the first navigation — deep URLs on a cold session are commonly blocked by edge bot protection.
 
+Always declare that entry URL as workflow `startUrl`. Do not open the same URL again with `page.goto` at the top of the handler when Libretto launches the browser; Libretto loads `startUrl` before the handler runs (and before CDP attach on Kernel / cloud providers). `run --cdp` attaches without navigating, so leave the existing page as-is or navigate inside the handler.
+
 ## CAPTCHA Handling
 
 - If a CAPTCHA, Cloudflare challenge, or similar bot check appears in a local Chromium session, try to solve it in the visible browser and continue from the solved state.
@@ -44,19 +46,31 @@ Prefer to enter sites at a user-facing URL (homepage, login, etc.) on the first 
 
 - Use `npx libretto experiments` to list internal feature flags and `npx libretto experiments describe <name>` for usage notes when an experiment is enabled.
 
+## Run Modes
+
+There are three ways to run workflows:
+
+- Local browser run: `npx libretto run ./workflow.ts` runs workflow code and local Chromium on the current machine. This is easy to watch and private, but most likely to hit CAPTCHAs or anti-bot checks.
+- Hosted browser run: `npx libretto run ./workflow.ts --provider libretto-cloud` runs workflow code locally while the browser runs on provider infrastructure with stealth mechanisms. Use this for anti-bot/CAPTCHA issues, provider-specific behavior, and pre-deploy validation. If the user has not specified a provider, prefer `libretto-cloud` because it includes one free allocated browser-hour and does not require a third-party provider API key.
+- Deployed workflow: Libretto Cloud packages the workflow as an API-backed workflow with the same remote-browser anti-bot mechanisms as hosted provider runs. Deploy only after the workflow passes with the target provider.
+
+When editing a deployed workflow, validate changes with `run --provider <deployment-provider>` before redeploying; do not debug by repeatedly deploying and running the deployed job.
+
+If the user prefers a provider for all local CLI runs in a workspace or only deploys workflows to that provider, update `.libretto/config.json` with `provider` instead of repeating `--provider`. Read `references/configuration-file-reference.md` first.
+
 ## Working Rules
 
 - Announce which session you are using and what page you are on.
 - Ask instead of guessing when it is unclear what to click, type, or submit.
 - Do not treat visibility as interactivity. If an element will not act, inspect blockers before retrying.
 - Defer repo/code review until you begin generating code, unless the user explicitly asks for it earlier.
-- Read and follow guidelines in `references/code-generation-rules.md` before generating or editing production workflow code.
+- Read and follow guidelines in `references/code-generation-rules.md` before generating or editing production workflow code. Every generated workflow must set `startUrl` to the first page the automation needs.
 - For authenticated workflows, manual login is discovery only. After the user logs in, read only the sign-in action logs and identify the required credentials; if credentials are unclear, ask before writing code.
 - Add missing blank `LIBRETTO_CLOUD_<secret_name>=` entries without overwriting populated values. If any required credential is blank, stop and ask the user to fill it; until then, do not inspect logged-in pages, read authenticated network bodies, write workflow code, open validation sessions, or continue discovery.
-- Authenticated workflows must implement `librettoAuthenticate` with declared credentials before validation. Use a reusable `*_totp_secret` credential for authenticator-app MFA, not a one-time `otp_code`; text and email verification codes are not supported for fully automated sign-in.
-- Read `references/website-authentication.md` when you need `librettoAuthenticate` examples or auth-profile details.
+- Authenticated workflows must implement `librettoAuthenticate` with declared credentials before validation. Use a reusable `*_totp_secret` credential for authenticator-app MFA when the portal supports it (not a one-time `otp_code`). For SMS one-time codes, follow `references/website-authentication.md`.
+- Read `references/website-authentication.md` when you need `librettoAuthenticate` examples, auth-profile details, or SMS OTP (`claimSmsOtp`).
 - Validation requires a successful clean `run` on a fresh, unauthenticated session with confirmation of the actual returned output, not just process success. Use the same headed or headless mode that the workflow run is already using.
-- After validation, always show the user: (1) the output/results from the validation run, and (2) the same command so they can re-run it themselves. Include any `--params`, `--headed`, or `--headless` flags the workflow needs.
+- After validation, always show the user: (1) the output/results from the validation run, and (2) the same command so they can re-run it themselves. Include any `--params`, `--provider`, `--headed`, or `--headless` flags the workflow needs. Do not add `--auth-profile` to `run`; workflow `authProfile` metadata controls profile use.
 - Treat exploration sessions as disposable unless the user explicitly wants one kept open.
 - Close disposable sessions before your final response once exploration, debugging, or validation is complete. Open browsers keep consuming local or hosted resources.
 - Get explicit user confirmation before mutating actions or replaying network requests that may have side effects.
@@ -74,6 +88,7 @@ Prefer to enter sites at a user-facing URL (homepage, login, etc.) on the first 
 
 ```bash
 npx libretto open https://example.com
+npx libretto open https://example.com --provider libretto-cloud --session provider-debug
 npx libretto open https://example.com --read-only --session readonly-example
 npx libretto open https://example.com --session debug-example
 ```
@@ -106,8 +121,7 @@ npx libretto session-mode --session my-session
 
 - Use `snapshot` as the primary page observation tool.
 - Run `snapshot` without `--objective` or `--context`; the command prints a screenshot path and compact accessibility tree for the current page.
-- Run `snapshot <ref>` to inspect a subtree from the latest full snapshot. Use ref forms printed in the tree, such as `l16`; numeric-suffix aliases such as `e16` also match `l16`.
-- Run an unscoped snapshot before using refs. Subtree snapshots capture a fresh screenshot but reuse the latest cached tree.
+- Run `snapshot <ref>` to inspect a subtree. Each call captures a fresh screenshot and accessibility tree, then scopes output to that ref. Use ref forms printed in the tree, such as `l16`; numeric-suffix aliases such as `e16` also match `l16`.
 - Use it before guessing at selectors, after workflow failures, and whenever the visible page state is unclear.
 
 ```bash
@@ -126,11 +140,13 @@ npx libretto snapshot --session debug-example --page <page-id>
 - Let failures throw. Do not hide `exec` failures with `try/catch` or `.catch()`.
 - Do not run multiple `exec` commands in parallel.
 - Do not use `exec` in read-only diagnosis flows. Use `readonly-exec` from the `libretto-readonly` skill for those sessions.
-- After successful mutations, `exec` prints page-change diffs from compact snapshots.
+- Snapshot diffs are opt-in. Pass `--diff-snapshot` when you mutate the page and do not know what will change (for example clicking an unfamiliar control). Prefer returning a specific value or running `snapshot` when you already know what to check.
+- Without `--diff-snapshot`, `exec` skips the before/after compact snapshot work.
 
 ```bash
 npx libretto exec "await page.url()"
 npx libretto exec "await page.locator('button:has-text(\"Continue\")').click()"
+npx libretto exec --diff-snapshot "await page.locator('button:has-text(\"Continue\")').click()"
 echo "async function textOf(selector) { return await page.locator(selector).textContent(); }" | npx libretto exec - --session debug-example
 npx libretto exec --session debug-example "await textOf('h1')"
 ```
@@ -150,6 +166,9 @@ npx libretto exec --session debug-example --page <page-id> "await page.url()"
 - Use `run` to verify a workflow file after creating it or editing it. Use the same headed or headless mode for validation that the workflow run is already using. Plain `run` defaults to headed mode.
 - Workflows define their input shape with a Zod schema (see `references/code-generation-rules.md`). `run` validates `--params` against that schema before calling the handler and prints a clear field-by-field error if the input doesn't match.
 - Successful runs close the browser by default. Pass `--stay-open-on-success` when you need to inspect the completed state with `pages`, `snapshot`, or `exec`.
+- Use `--provider <name>` when validating behavior in that provider's browser runtime.
+- Use `--cdp <url>` to run a workflow against an existing CDP endpoint (Electron or Chrome with `--remote-debugging-port`). Libretto attaches without navigating to workflow `startUrl`, preserving the page URL and auth state. Do not pass `--provider`, `--headed`, `--headless`, or `--viewport` with `--cdp`. Optional `--page page-N` selects which discovered page becomes `ctx.page`.
+- Prefer `connect` + `exec` / `snapshot` for interactive exploration of an external CDP browser; use `run --cdp` once the workflow file is ready.
 - Pass `--read-only` if the preserved session should come back locked for follow-up terminal inspection after the workflow run.
 - If the workflow fails, Libretto keeps the browser open. Inspect the failed state with `snapshot` and `exec` before editing code.
 - Insert `await pause(session)` statements in the workflow file when you need to stop at specific states for interactive debugging, like breakpoints in the browser flow.
@@ -158,6 +177,9 @@ npx libretto exec --session debug-example --page <page-id> "await page.url()"
 
 ```bash
 npx libretto run ./integration.ts --params '{"status":"open"}'
+npx libretto run ./integration.ts --provider libretto-cloud
+npx libretto run ./integration.ts --cdp http://127.0.0.1:9222
+npx libretto run ./integration.ts --cdp http://127.0.0.1:9222 --page page-1
 npx libretto run ./integration.ts --read-only
 npx libretto run ./integration.ts --stay-open-on-success
 ```
@@ -282,3 +304,4 @@ To run it again, use: npx libretto run ./integration.ts
 - Read `references/pages-and-page-targeting.md` when a session has multiple open pages or you need `--page`.
 - Read `references/action-logs.md` for full action log field descriptions and user-vs-agent event semantics.
 - If the workflow code is deployed to the Libretto Cloud platform and you need to reference its API docs, fetch [https://libretto.sh/docs/llms.txt](https://libretto.sh/docs/llms.txt) and follow the relevant page links.
+- Details of how users can share workflows externally are in `references/sharing-workflows-externally.md`.
