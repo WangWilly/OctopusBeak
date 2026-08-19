@@ -1,0 +1,495 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import {
+  CANONICAL_SOURCE_SCHEMA_VERSION,
+  CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  admitCanonicalSourceEvidence,
+  commitCathayDomesticDeposit,
+  commitCanonicalSourceEvidence,
+  createCanonicalSourceStore,
+  createCathayCanonicalFinancialQuery,
+  queryCanonicalSourceCurrent,
+  queryCanonicalSourceHistorical,
+  queryCanonicalSourceLineage,
+  openCanonicalDatabase,
+  validateCanonicalSourceStore,
+  type CanonicalSourceEvidence,
+  type CanonicalValidatedSourceEvidence,
+} from "./canonical-source-store.ts";
+
+const token = (letter: string) => `sha256:${letter.repeat(64)}`;
+
+const evidence = (captureId: string): CanonicalSourceEvidence => ({
+  captureId,
+  integrationNamespace: "synthetic",
+  sourceConnectionKey: token("a"),
+  identityEpoch: token("b"),
+  stream: "domestic-deposit",
+  recordKind: "source-record",
+  routeKey: "synthetic/domestic-deposit/v8",
+  contractVersion: "synthetic-v8",
+  subjectDigest: token("c"),
+  observedAt: "2026-08-19T00:00:00.000Z",
+  scope: {
+    startDate: "20260101",
+    endDate: "20260102",
+    kind: "point-in-time",
+    completeness: "single-page",
+    ruleVersion: "synthetic-completeness-v1",
+  },
+  pages: [
+    {
+      pageOrdinal: 0,
+      responseCode: "200",
+      rowCount: 1,
+      terminal: true,
+      metadata: { pageCount: 1, totalCount: 1 },
+    },
+  ],
+  records: [
+    {
+      occurrenceKey: token("d"),
+      collisionKey: token("7"),
+      providerKey: token("e"),
+      contentHash: token("f"),
+      compact: {
+        sourceSequence: "1",
+        directionCode: "1",
+        amount: { coefficient: "100", scale: 0 },
+      },
+    },
+  ],
+});
+
+const lineageRequest = {
+  integrationNamespace: "synthetic",
+  sourceConnectionKey: token("a"),
+  identityEpoch: token("b"),
+  stream: "domestic-deposit",
+  recordKind: "source-record",
+  subjectDigest: token("c"),
+  occurrenceKey: token("d"),
+} as const;
+
+const directory = await mkdtemp(join(tmpdir(), "canonical-source-v8-"));
+try {
+  const path = join(directory, "canonical.sqlite");
+  const store = createCanonicalSourceStore(path);
+  validateCanonicalSourceStore(store);
+  assert.equal(
+    Number(
+      (
+        store.db.prepare("PRAGMA user_version").get() as {
+          user_version?: number;
+        }
+      ).user_version,
+    ),
+    CANONICAL_SOURCE_SCHEMA_VERSION,
+  );
+  await assert.rejects(
+    () =>
+      commitCanonicalSourceEvidence(
+        store,
+        evidence(
+          "capture-unbranded",
+        ) as unknown as CanonicalValidatedSourceEvidence,
+      ),
+    /runtime|validated|admission/i,
+  );
+
+  const first = await commitCanonicalSourceEvidence(
+    store,
+    admitCanonicalSourceEvidence(evidence("capture-1")),
+  );
+  assert.equal(first.status, "durable-source-evidence");
+  const repeat = await commitCanonicalSourceEvidence(
+    store,
+    admitCanonicalSourceEvidence(evidence("capture-2")),
+  );
+  assert.equal(repeat.status, "durable-source-evidence");
+  const current = queryCanonicalSourceCurrent(store);
+  assert.equal(current.records.length, 1);
+  assert.equal(current.observations.length, 2);
+  assert.deepEqual(
+    current.observations.map((observation) => observation.captureId),
+    ["capture-1", "capture-2"],
+  );
+  const historical = queryCanonicalSourceHistorical(store, { knowledgeAt: 2 });
+  assert.equal(historical.observations.length, 2);
+  assert.throws(
+    () => queryCanonicalSourceHistorical(store, { effectiveAt: "20260101" }),
+    /effective|financial/i,
+  );
+  const lineage = queryCanonicalSourceLineage(store, lineageRequest);
+  assert.equal(lineage.observations.length, 2);
+  assert.equal(lineage.provenance.length, 2);
+  assert.equal(JSON.stringify(current).includes("rawResponse"), false);
+  assert.equal(JSON.stringify(current).includes("headers"), false);
+  for (const table of [
+    "financial_accounts",
+    "financial_transactions",
+    "transaction_revisions",
+    "assertions",
+    "source_sync_states",
+    "current_transactions",
+  ]) {
+    assert.equal(
+      (
+        store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+          value?: number;
+        }
+      ).value,
+      0,
+      `${table} remains untouched by source-only evidence`,
+    );
+  }
+  assert.equal(
+    (
+      store.db
+        .prepare(
+          "SELECT COUNT(*) AS value FROM sqlite_master WHERE name LIKE 'canonical_source_%'",
+        )
+        .get() as { value?: number }
+    ).value,
+    0,
+  );
+
+  await assert.rejects(
+    () =>
+      commitCanonicalSourceEvidence(
+        store,
+        admitCanonicalSourceEvidence({
+          ...evidence("capture-conflict"),
+          records: [
+            {
+              ...evidence("capture-conflict").records[0]!,
+              providerKey: token("9"),
+            },
+          ],
+        }),
+      ),
+    /conflict|overwrite/i,
+  );
+  assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
+  await assert.rejects(
+    () =>
+      commitCanonicalSourceEvidence(
+        store,
+        admitCanonicalSourceEvidence({
+          ...evidence("capture-collision"),
+          records: [
+            {
+              ...evidence("capture-collision").records[0]!,
+              occurrenceKey: token("8"),
+            },
+          ],
+        }),
+      ),
+    /collision|conflict|overwrite/i,
+  );
+  assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
+  store.close();
+
+  const reopened = createCanonicalSourceStore(path);
+  assert.equal(queryCanonicalSourceCurrent(reopened).observations.length, 2);
+  reopened.close();
+} finally {
+  await rm(directory, { recursive: true, force: true });
+}
+
+const fenceDirectory = await mkdtemp(join(tmpdir(), "canonical-source-fence-"));
+try {
+  let clock = 2_000_000;
+  const path = join(fenceDirectory, "canonical.sqlite");
+  const store = createCanonicalSourceStore(path, {
+    commitClock: () => clock--,
+  });
+  await commitCanonicalSourceEvidence(
+    store,
+    admitCanonicalSourceEvidence(evidence("fence-base")),
+  );
+  for (const [captureId, overrides] of [
+    ["fence-connection", { sourceConnectionKey: token("1") }],
+    ["fence-epoch", { identityEpoch: token("2") }],
+    ["fence-subject", { subjectDigest: token("3") }],
+  ] as const) {
+    await commitCanonicalSourceEvidence(
+      store,
+      admitCanonicalSourceEvidence({
+        ...evidence(captureId),
+        ...overrides,
+        records: [
+          {
+            ...evidence(captureId).records[0]!,
+            providerKey: token(captureId.at(-1) ?? "4"),
+            contentHash: token(captureId.at(-2) ?? "5"),
+          },
+        ],
+      }),
+    );
+  }
+  assert.equal(queryCanonicalSourceCurrent(store).records.length, 4);
+  assert.equal(
+    queryCanonicalSourceLineage(store, lineageRequest).observations.length,
+    1,
+  );
+  const knowledgeRows = store.db
+    .prepare(
+      "SELECT recorded_at_utc_us FROM canonical_commits ORDER BY commit_sequence",
+    )
+    .all() as Array<{ recorded_at_utc_us?: number }>;
+  assert.deepEqual(
+    knowledgeRows.map((row) => Number(row.recorded_at_utc_us)),
+    [2_000_000, 2_000_001, 2_000_002, 2_000_003],
+  );
+  assert.equal(
+    queryCanonicalSourceHistorical(store, { knowledgeAt: 2 }).observations
+      .length,
+    2,
+  );
+  assert.equal(
+    (
+      store.db
+        .prepare(
+          "SELECT observed_at FROM source_captures ORDER BY rowid LIMIT 1",
+        )
+        .get() as { observed_at?: string }
+    ).observed_at,
+    "2026-08-19T00:00:00.000Z",
+  );
+  assert.equal(
+    (
+      store.db
+        .prepare("SELECT DISTINCT scope_kind FROM capture_scopes")
+        .get() as { scope_kind?: string }
+    ).scope_kind,
+    "point-in-time",
+  );
+  const snapshotReader = createCanonicalSourceStore(path);
+  snapshotReader.db.exec("BEGIN");
+  assert.equal(
+    (
+      snapshotReader.db
+        .prepare("SELECT COUNT(*) AS count FROM source_records")
+        .get() as { count?: number }
+    ).count,
+    4,
+  );
+  await commitCanonicalSourceEvidence(
+    store,
+    admitCanonicalSourceEvidence({
+      ...evidence("fence-snapshot"),
+      subjectDigest: token("4"),
+    }),
+  );
+  assert.equal(
+    (
+      snapshotReader.db
+        .prepare("SELECT COUNT(*) AS count FROM source_records")
+        .get() as { count?: number }
+    ).count,
+    4,
+  );
+  snapshotReader.db.exec("COMMIT");
+  assert.equal(queryCanonicalSourceCurrent(snapshotReader).records.length, 5);
+  snapshotReader.close();
+  store.close();
+
+  const readOnly = openCanonicalDatabase(fenceDirectory, { readOnly: true });
+  readOnly.close();
+  const financial = createCathayCanonicalFinancialQuery(fenceDirectory);
+  const current = await financial.current({ kind: "current" });
+  assert.deepEqual(current.accounts, []);
+  assert.deepEqual(current.transactions, []);
+  assert.equal(current.commitSequence, 0);
+  const historical = await financial.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-08-19",
+      knowledgeAt: "4",
+    },
+  });
+  assert.deepEqual(historical.transactions, []);
+  const corruptProjection = new DatabaseSync(path);
+  const sourceOnlyCommit = corruptProjection
+    .prepare(
+      "SELECT commit_id FROM canonical_commits ORDER BY commit_sequence LIMIT 1",
+    )
+    .get() as { commit_id?: unknown };
+  corruptProjection
+    .prepare(
+      "INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)",
+    )
+    .run(sourceOnlyCommit.commit_id as Uint8Array);
+  corruptProjection.close();
+  assert.throws(
+    () => openCanonicalDatabase(fenceDirectory, { readOnly: true }),
+    /source-only|financial projection/i,
+  );
+} finally {
+  await rm(fenceDirectory, { recursive: true, force: true });
+}
+
+const v7Directory = await mkdtemp(join(tmpdir(), "canonical-source-v7-"));
+try {
+  const path = join(v7Directory, "canonical.sqlite");
+  assert.throws(
+    () =>
+      openCanonicalDatabase(v7Directory, {
+        injectMigrationFailure: "v7-v8-after-source-copy",
+      }),
+    /Injected v7-v8 migration failure/,
+  );
+  const legacy = new DatabaseSync(path);
+  assert.equal(
+    Number(
+      (legacy.prepare("PRAGMA user_version").get() as { user_version?: number })
+        .user_version,
+    ),
+    7,
+  );
+  assert.equal(
+    legacy
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_captures'",
+      )
+      .get()?.["1"],
+    1,
+  );
+  assert.equal(
+    legacy
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_subjects'",
+      )
+      .get(),
+    undefined,
+  );
+  legacy.close();
+  const migrated = createCanonicalSourceStore(path);
+  assert.equal(
+    Number(
+      (
+        migrated.db.prepare("PRAGMA user_version").get() as {
+          user_version?: number;
+        }
+      ).user_version,
+    ),
+    CANONICAL_SOURCE_SCHEMA_VERSION,
+  );
+  validateCanonicalSourceStore(migrated);
+  migrated.close();
+} finally {
+  await rm(v7Directory, { recursive: true, force: true });
+}
+
+const partialDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-partial-v8-"),
+);
+try {
+  const path = join(partialDirectory, "canonical.sqlite");
+  const complete = createCanonicalSourceStore(path);
+  complete.db.exec("DROP TABLE source_record_provenance");
+  complete.close();
+  assert.throws(
+    () => createCanonicalSourceStore(path),
+    /v8.*source_record_provenance|source_record_provenance.*missing/i,
+  );
+} finally {
+  await rm(partialDirectory, { recursive: true, force: true });
+}
+
+const orphanDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-orphan-"),
+);
+try {
+  const path = join(orphanDirectory, "canonical.sqlite");
+  assert.throws(
+    () =>
+      openCanonicalDatabase(orphanDirectory, {
+        injectMigrationFailure: "v7-v8-after-source-copy",
+      }),
+    /Injected v7-v8 migration failure/,
+  );
+  const legacy = new DatabaseSync(path);
+  legacy.exec("PRAGMA foreign_keys = OFF");
+  legacy
+    .prepare(
+      "INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (randomblob(16), randomblob(16), randomblob(16), 'orphan', NULL, '{}')",
+    )
+    .run();
+  legacy.close();
+  assert.throws(
+    () => createCanonicalSourceStore(path),
+    /orphaned|ambiguous scope relations/i,
+  );
+  const unchanged = new DatabaseSync(path);
+  assert.equal(
+    Number(
+      (
+        unchanged.prepare("PRAGMA user_version").get() as {
+          user_version?: number;
+        }
+      ).user_version,
+    ),
+    7,
+  );
+  assert.equal(
+    (
+      unchanged
+        .prepare("SELECT COUNT(*) AS count FROM source_records")
+        .get() as {
+        count?: number;
+      }
+    ).count,
+    1,
+  );
+  assert.equal(
+    unchanged
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_subjects'",
+      )
+      .get(),
+    undefined,
+  );
+  unchanged.close();
+} finally {
+  await rm(orphanDirectory, { recursive: true, force: true });
+}
+
+const mixedDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-mixed-v8-"),
+);
+try {
+  await commitCathayDomesticDeposit(
+    mixedDirectory,
+    CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  );
+  const before = await createCathayCanonicalFinancialQuery(
+    mixedDirectory,
+  ).current({
+    kind: "current",
+  });
+  const path = join(mixedDirectory, "canonical.sqlite");
+  const mixed = createCanonicalSourceStore(path);
+  await commitCanonicalSourceEvidence(
+    mixed,
+    admitCanonicalSourceEvidence(evidence("capture-mixed-source-only")),
+  );
+  mixed.close();
+  const reopened = createCanonicalSourceStore(path);
+  assert.equal(queryCanonicalSourceCurrent(reopened).observations.length, 1);
+  reopened.close();
+  const after = await createCathayCanonicalFinancialQuery(
+    mixedDirectory,
+  ).current({
+    kind: "current",
+  });
+  assert.equal(after.transactions.length, before.transactions.length);
+  assert.equal(after.commitSequence, before.commitSequence);
+} finally {
+  await rm(mixedDirectory, { recursive: true, force: true });
+}

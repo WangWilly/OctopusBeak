@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import type { LineBankTransactionSourceEnvelope } from "../../workflows/linebank-statements.ts";
 import {
   LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
   LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_KEY_DESCRIPTOR,
   LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_CANDIDATE_FIELDS,
   LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_FIXTURE,
   LINEBANK_DOMESTIC_DEPOSIT_CROSS_WINDOW_EVIDENCE_VERSION,
@@ -30,10 +33,16 @@ import {
   linebankSummarizeCrossWindowEvidence,
   linebankBuildSourceOccurrenceKey,
   linebankCompareSourceOccurrenceCaptures,
+  validateLineBankCanonicalCapture,
   linebankValidateSourceOccurrenceCapture,
   linebankValidateZeroResultPage,
   preflightLineBankDomesticDeposit,
 } from "./linebank-domestic-deposit.ts";
+import {
+  commitCanonicalDomesticDeposit,
+  createDomesticDepositStore,
+  queryCurrent,
+} from "./domestic-deposit-store.ts";
 
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -43,6 +52,10 @@ assert.equal(LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION, "preflight-v4");
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_CLEAN_HEADED_EVIDENCE_VERSION,
   "clean-headed-v6",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE_VERSION,
+  "result-ui-v12",
 );
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_DIRECTION_EVIDENCE_VERSION,
@@ -231,6 +244,70 @@ assert.equal(
   false,
 );
 
+assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE, {
+  evidenceVersion: "result-ui-v12",
+  route: "/transaction",
+  userSubmittedQueryCount: 1,
+  agentMutation: false,
+  responseBodyRetained: false,
+  visibleColumnHeaders: ["時間", "摘要", "金額"],
+  missingSemanticLabels: [
+    "date-basis",
+    "posting/accounting/effective-time",
+    "direction",
+    "balance",
+    "status",
+    "cancellation/correction",
+    "provider-transaction-id",
+    "total/page",
+    "period",
+    "download",
+  ],
+  rowDetails: {
+    visibleInteractiveControls: 0,
+    ariaExpandedControls: 0,
+    ariaHaspopupControls: 0,
+  },
+  canonicalAdmission: "blocked",
+  readiness: "preflight-only",
+  remainingBlockers: {
+    providerIdentityGuarantee: true,
+    postingSemantics: true,
+    effectiveTimeSemantics: true,
+    cancellationSemantics: true,
+    completenessSemantics: true,
+    canonicalWriter: true,
+    queryCompleteness: true,
+  },
+});
+const resultUiJson = JSON.stringify(
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE,
+);
+for (const forbidden of [
+  "acctNbr",
+  "arrId",
+  "txAmt",
+  "afTxBal",
+  "txDtm",
+  "NT$",
+  "2026",
+]) {
+  assert.equal(resultUiJson.includes(forbidden), false);
+}
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE.canonicalAdmission,
+  "blocked",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE.readiness,
+  "preflight-only",
+);
+assert.ok(
+  Object.values(
+    LINEBANK_DOMESTIC_DEPOSIT_RESULT_UI_EVIDENCE.remainingBlockers,
+  ).every(Boolean),
+);
+
 assert.deepEqual(LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE, {
   evidenceVersion: "historical-revalidation-v9",
   cleanStart: {
@@ -355,7 +432,7 @@ const valid = preflightLineBankDomesticDeposit({
         arrId: "synthetic-arrangement",
         pdNm: "synthetic-domestic-main-account",
         opnDtm: 1700000000000,
-      },
+      } as unknown as LineBankTransactionSourceEnvelope,
     },
   ],
 });
@@ -751,6 +828,24 @@ assert.ok(
     (item) => item.code === "occurrence-base-time-conflict",
   ),
 );
+const comparedBaseTimeCollision = linebankCompareSourceOccurrenceCaptures(
+  {
+    context: occurrenceContext,
+    rows: [occurrenceRow],
+    comparableCompleteness: true,
+  },
+  {
+    context: occurrenceContext,
+    rows: [{ ...occurrenceRow, txDtm: occurrenceRow.txDtm! + 1000 }],
+    comparableCompleteness: true,
+  },
+);
+assert.equal(comparedBaseTimeCollision.status, "conflict");
+assert.equal(comparedBaseTimeCollision.overlapCount, 0);
+assert.equal(comparedBaseTimeCollision.conflictCount, 1);
+assert.deepEqual(comparedBaseTimeCollision.diagnostics, [
+  "source-base-conflict",
+]);
 
 const missingOccurrenceField = linebankValidateSourceOccurrenceCapture({
   context: occurrenceContext,
@@ -1347,12 +1442,424 @@ const mismatchedZeroSourcePreflight = preflightLineBankDomesticDeposit({
       source: {
         ...zeroPage.source,
         acctNbr: "synthetic-other-account",
-      },
+      } as unknown as LineBankTransactionSourceEnvelope,
     },
   ],
 });
 assert.ok(
   mismatchedZeroSourcePreflight.diagnostics.some(
     (item) => item.code === "source-account-identity-mismatch",
+  ),
+);
+
+// The strict public seam admits only compact source records. It never claims
+// that LINE Bank rows are posted canonical Financial Transactions.
+const canonicalInput = {
+  ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE,
+  account: {
+    ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,
+    currCd: "TWD",
+  },
+  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  captureId: "synthetic-capture-admission-1",
+  sourceConnection: "accessibility.linebank.com.tw" as const,
+  identityEpoch: 1700000000000,
+  observedAt: "2026-01-03T00:00:00.000Z",
+  pages: [
+    {
+      ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!,
+      responseCode: "200",
+      source: {
+        ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source,
+        jntAcctMbrTpCd: "personal-main-account",
+        jntMbrListCnt: 0,
+        totJntAcctMbrCnt: 0,
+        isSecuAcctBndg: false,
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+};
+const admittedSourceCapture = validateLineBankCanonicalCapture(canonicalInput);
+assert.equal(admittedSourceCapture.status, "source-record-admissible");
+assert.equal(admittedSourceCapture.stage, "source-record-only");
+assert.equal(admittedSourceCapture.canonicalAdmission, "blocked");
+assert.ok(admittedSourceCapture.capture);
+assert.equal(admittedSourceCapture.capture?.records.length, 2);
+assert.ok(
+  admittedSourceCapture.financialAdmissionBlockers.includes(
+    "posting-semantics-unproven",
+  ),
+);
+assert.equal(
+  JSON.stringify(admittedSourceCapture).includes("SYNTHETIC-ACCOUNT"),
+  false,
+);
+const actualAuthorityFieldNames = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-authority-long-field-names",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        jntAcctMbrTpCd: "personal-main-account",
+        jntMbrListCnt: undefined,
+        totJntAcctMbrCnt: undefined,
+        jntAcctMbrCnt: 0,
+        jntAcctMbrDpstCnt: 0,
+        isSecuAcctBndg: false,
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+});
+assert.equal(actualAuthorityFieldNames.status, "source-record-admissible");
+const missingAuthorityEnvelope = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-authority-missing",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        jntAcctMbrTpCd: undefined,
+        jntMbrListCnt: undefined,
+        totJntAcctMbrCnt: undefined,
+        jntAcctMbrCnt: undefined,
+        jntAcctMbrDpstCnt: undefined,
+        isSecuAcctBndg: undefined,
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+});
+assert.equal(missingAuthorityEnvelope.status, "rejected");
+assert.ok(
+  missingAuthorityEnvelope.diagnostics.some(
+    (item) => item.code === "authority-envelope-missing",
+  ),
+);
+const sharedAuthority = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-authority-shared",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        jntAcctMbrCnt: 1,
+        jntAcctMbrDpstCnt: 1,
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+});
+assert.equal(sharedAuthority.status, "rejected");
+assert.ok(
+  sharedAuthority.diagnostics.some(
+    (item) => item.code === "authority-shared-account",
+  ),
+);
+const unknownAuthority = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-authority-unknown",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        jntAcctMbrTpCd: "unclassified-role",
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+});
+assert.equal(unknownAuthority.status, "rejected");
+assert.ok(
+  unknownAuthority.diagnostics.some(
+    (item) => item.code === "authority-role-unknown",
+  ),
+);
+const linkedAuthority = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-authority-security-linked",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        isSecuAcctBndg: true,
+      } as unknown as LineBankTransactionSourceEnvelope,
+    },
+  ],
+});
+assert.equal(linkedAuthority.status, "rejected");
+assert.ok(
+  linkedAuthority.diagnostics.some(
+    (item) => item.code === "authority-security-linked",
+  ),
+);
+const inconsistentBalance = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-balance-inconsistent",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [
+        canonicalInput.pages[0]!.rows[0]!,
+        { ...canonicalInput.pages[0]!.rows[1]!, afTxBal: "13000" },
+      ],
+    },
+  ],
+});
+assert.equal(inconsistentBalance.status, "rejected");
+assert.ok(
+  inconsistentBalance.diagnostics.some(
+    (item) => item.code === "balance-transition-inconsistent",
+  ),
+);
+const isolatedBalance = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-balance-isolated",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [canonicalInput.pages[0]!.rows[0]!],
+      txCnt: 1,
+      totTxCnt: 1,
+    },
+  ],
+});
+assert.equal(isolatedBalance.status, "rejected");
+assert.ok(
+  isolatedBalance.diagnostics.some(
+    (item) => item.code === "balance-transition-insufficient",
+  ),
+);
+const linebankStore = createDomesticDepositStore(":memory:");
+const linebankCommit = await commitCanonicalDomesticDeposit(
+  linebankStore,
+  admittedSourceCapture.capture!,
+);
+assert.equal(linebankCommit.status, "source-record-only");
+assert.equal(linebankCommit.canonicalAdmission, "blocked");
+assert.equal(queryCurrent(linebankStore).records.length, 2);
+assert.equal(
+  (
+    linebankStore.db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM source_captures WHERE record_kind = 'linebank-domestic-deposit-source-record'",
+      )
+      .get() as { count?: number }
+  ).count,
+  1,
+);
+assert.equal(
+  (
+    linebankStore.db
+      .prepare("SELECT COUNT(*) AS count FROM source_records")
+      .get() as { count?: number }
+  ).count,
+  2,
+);
+assert.equal(
+  (
+    linebankStore.db
+      .prepare("SELECT COUNT(*) AS count FROM source_subjects")
+      .get() as { count?: number }
+  ).count,
+  1,
+);
+assert.equal(
+  (
+    linebankStore.db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'domestic_deposit_%'",
+      )
+      .get() as { count?: number }
+  ).count,
+  0,
+);
+assert.deepEqual(
+  {
+    ...linebankStore.db
+      .prepare(
+        "SELECT scope_kind, completeness, absence_authority FROM capture_scopes",
+      )
+      .get(),
+  },
+  {
+    scope_kind: "bounded-range",
+    completeness: "single-page",
+    absence_authority: null,
+  },
+);
+
+const zeroCanonicalInput = {
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-zero-1",
+  scope: { startDate: "20250701", endDate: "20250701" },
+  pages: [
+    {
+      pageNbr: 1,
+      pageCnt: 1000,
+      totTxCnt: 0,
+      txCnt: 0,
+      rows: [],
+      responseCode: "200",
+      source: {
+        acctNbr: "SYNTHETIC-ACCOUNT",
+        arrId: "SYNTHETIC-ARRANGEMENT",
+        opnDtm: 1700000000000,
+        jntAcctMbrTpCd: "personal-main-account",
+        jntMbrListCnt: 0,
+        totJntAcctMbrCnt: 0,
+        isSecuAcctBndg: false,
+      },
+    },
+  ],
+};
+const zeroSourceCapture = validateLineBankCanonicalCapture(zeroCanonicalInput);
+assert.equal(zeroSourceCapture.status, "source-record-admissible");
+assert.equal(zeroSourceCapture.capture?.records.length, 0);
+const zeroStore = createDomesticDepositStore(":memory:");
+await commitCanonicalDomesticDeposit(zeroStore, zeroSourceCapture.capture!);
+assert.equal(queryCurrent(zeroStore).records.length, 0);
+assert.deepEqual(
+  {
+    ...zeroStore.db
+      .prepare(
+        "SELECT scope_kind, completeness, absence_authority FROM capture_scopes",
+      )
+      .get(),
+  },
+  {
+    scope_kind: "bounded-range",
+    completeness: "single-page",
+    absence_authority: null,
+  },
+);
+const zeroRepeat = validateLineBankCanonicalCapture({
+  ...zeroCanonicalInput,
+  captureId: "synthetic-capture-admission-zero-2",
+});
+await commitCanonicalDomesticDeposit(zeroStore, zeroRepeat.capture!);
+assert.equal(queryCurrent(zeroStore).records.length, 0);
+assert.equal(queryCurrent(zeroStore).provenanceCount, 2);
+linebankStore.close();
+zeroStore.close();
+
+const unknownDirection = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-unknown-direction",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [{ ...canonicalInput.pages[0]!.rows[0]!, dpstWdrwDsCd: "9" }],
+      txCnt: 1,
+      totTxCnt: 1,
+    },
+  ],
+});
+assert.equal(unknownDirection.status, "rejected");
+assert.equal(unknownDirection.capture, null);
+assert.ok(
+  unknownDirection.diagnostics.some(
+    (item) => item.code === "direction-unknown",
+  ),
+);
+
+const missingBalance = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-missing-balance",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [{ ...canonicalInput.pages[0]!.rows[0]!, afTxBal: undefined }],
+      txCnt: 1,
+      totTxCnt: 1,
+    },
+  ],
+});
+assert.equal(missingBalance.status, "rejected");
+assert.ok(
+  missingBalance.diagnostics.some((item) => item.code === "balance-missing"),
+);
+
+const changedCancellation = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-cancelled",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [{ ...canonicalInput.pages[0]!.rows[0]!, cnclTxYn: "Y" }],
+      txCnt: 1,
+      totTxCnt: 1,
+    },
+  ],
+});
+assert.equal(changedCancellation.status, "rejected");
+assert.ok(
+  changedCancellation.diagnostics.some(
+    (item) => item.code === "cancellation-not-explicit-n",
+  ),
+);
+
+const negativeAmount = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-negative-amount",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      rows: [{ ...canonicalInput.pages[0]!.rows[0]!, txAmt: "-1" }],
+      txCnt: 1,
+      totTxCnt: 1,
+    },
+  ],
+});
+assert.equal(negativeAmount.status, "rejected");
+assert.ok(
+  negativeAmount.diagnostics.some(
+    (item) => item.code === "amount-sign-conflict",
+  ),
+);
+
+const mismatchedEnvelope = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-envelope-mismatch",
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      source: {
+        ...canonicalInput.pages[0]!.source,
+        acctNbr: "SYNTHETIC-OTHER-ACCOUNT",
+      },
+    },
+  ],
+});
+assert.equal(mismatchedEnvelope.status, "rejected");
+assert.ok(
+  mismatchedEnvelope.diagnostics.some(
+    (item) => item.code === "source-account-identity-mismatch",
+  ),
+);
+
+const missingResponseStatus = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-missing-status",
+  pages: [{ ...canonicalInput.pages[0]!, responseCode: undefined }],
+});
+assert.equal(missingResponseStatus.status, "rejected");
+assert.ok(
+  missingResponseStatus.diagnostics.some(
+    (item) => item.code === "response-status-invalid",
+  ),
+);
+
+const canonicalReversedScope = validateLineBankCanonicalCapture({
+  ...canonicalInput,
+  captureId: "synthetic-capture-admission-reversed-scope",
+  scope: { startDate: "20260102", endDate: "20260101" },
+});
+assert.equal(canonicalReversedScope.status, "rejected");
+assert.ok(
+  canonicalReversedScope.diagnostics.some(
+    (item) => item.code === "scope-invalid",
   ),
 );
