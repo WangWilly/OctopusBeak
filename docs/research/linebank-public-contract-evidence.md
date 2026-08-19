@@ -67,6 +67,8 @@ UI 同頁觀察到 `dpstWdrwDsCd="1"` 與「存入」的單筆 correlation；his
 
 另加入完全 aggregate-only 的 `clean-headed-v6` evidence record：從無 open session 的 fresh headed start，由人完成 login／CAPTCHA，通過 authenticated root → transaction route；只匹配一個主帳戶，alert gate 為 no-visible-dialog，transaction-history POST 恰一筆且 HTTP 200，回應是一頁一列（page/count invariants preserved），direction set 只有 `1`、取消旗標只有 `N`，`txSeqNbr` 在該 sample 出現且唯一，`txDt`／`txTm` 是 string、`txDtm`／amount 是 number，automation progress 為 25 → 100，最後 session 已關閉。此 record 不含任何帳號、交易、日期或 timestamp 值；它只把 manual-auth-navigation live validation 標成 `complete`。它不能獨立授權 canonical admission：provider-backed identity、完整 direction、posting／effective-time、cancellation lifecycle、completeness、authority、writer 與 query completeness blockers 全部保留；source manifest 仍是 `partial`／`preflight-only`。
 
+另加入完全 UI-only、aggregate-free 的 `result-ui-v12` boundary evidence：使用者手動送出一筆查詢後，結果 route 為 `/transaction`，可見欄位標題只有「時間／摘要／金額」。本次不保留 row 值、帳戶、餘額、描述、金額、timestamp 或 response body；`tbody` 沒有可見詳情／展開控制，也沒有 `aria-expanded`／`aria-haspopup`。頁面未出現可用來證明 date basis、posting／accounting／effective time、direction、balance、status、cancellation／correction、provider transaction ID、total／page、period 或 download 的可見 label。這只界定 UI 邊界與缺失 evidence，不能解除 provider identity、posting、effective-time、cancellation、completeness 或 query completeness blockers；canonical admission 仍為 `blocked`、readiness 仍為 `preflight-only`，且不含任何可回放的 response 資料。
+
 歷史範圍另形成 `historical-v7` aggregate-only evidence：共 5 列，direction code `1` 有 4 列、code `2` 有 1 列；所有 amount 都是 non-negative numeric，按 `txDtm` 排序的相鄰餘額轉移有 3 次 code `1` 的 exact `+amount` 與 1 次 code `2` 的 exact `-amount`，沒有 inconsistent 或 indeterminate transition。兩組 classification set 互斥，但沒有 code `2` 對 UI「提出」的直接 correlation；取消旗標仍只觀察到 `N`。因此 source projection contract 現在把 code `1` 觀察式映射為 inflow、code `2` 觀察式映射為 outflow，兩者都要求 absolute non-negative amount，unknown／missing code 與 signed-negative conflict 在 export／admission 前拒絕。這是 `observed-versioned`、非 provider-guaranteed 的方向證據；只移除 `direction-mapping-incomplete`，`direction-semantics-unproven`、identity、posting、effective-time、cancellation、completeness、authority 與 writer/readiness blockers 仍保留。
 
 同一 historical capture 的來源時間另版本化為 `observed-time-v1`：5/5 列的 `txDtm` 都是 safe-integer epoch milliseconds，且精確等於 `txDt + txTm` 以 Asia/Taipei 固定 UTC+8 重建的結果；seconds、UTC offset、mismatch、ambiguity 與 same-time collision 都是 0，排序 chronology 為 descending。workflow 與 preflight 對缺漏／非法 calendar date／clock time、非 safe integer、seconds-like unit、offset mismatch 或重建不一致的 row/page 整體拒絕。這只證明 source timestamp reconstruction，不把 `txDtm` 稱為 posting、accounting 或 effective event time；`effective-time-semantics-unproven` 與其他 canonical blockers 保留。
@@ -90,17 +92,17 @@ Workflow 的登入邊界也已明確化：`startUrl` 是官方登入頁；`libre
 
 ## 未解決契約矩陣
 
-| 契約項目 | 公開資料能證明什麼 | 仍不能安全宣稱什麼 |
-|---|---|---|
-| 可查歷史範圍 | 官方教學有「30天」預設／查詢期間控制 | 最長期間、最早日期、是否可跨多年 |
-| 查詢／篩選控制 | 交易類型、交易期間、顯示餘額；repo request 另有 detail/sort 欄位 | 每個 request 欄位的 enum、空值語義、UI 與 API 的一一對應 |
-| 方向碼 | `historical-v7`：code `1` 4 列、code `2` 1 列；餘額轉移分別符合 `+amount`／`-amount`，code `1` 另有 UI「存入」correlation | provider-guaranteed 的 code `1`／`2` 完整存入／支出含義、其他 code、取消交易的方向 |
-| 帳戶／交易 identifier | `acctNbr`、`arrId`、`txSeqNbr`、`crrnDpstNthCnt`、`txDtm` 出現在 source contract；`occurrence-v1` 只產生 opaque empirical tuple | provider-backed stable uniqueness、masking、帳戶重建或交易修正時是否不變、revision／authority link |
-| `txDt`／`txTm`／`txDtm` | `observed-time-v1`：5/5 exact Asia/Taipei UTC+8 epoch-ms reconstruction，0 mismatch／ambiguity | `txDt` 是帳務日或交易日、provider 的 `txDtm` 是否代表 posting／accounting／effective event |
-| 取消旗標 | 已遮罩 response 與 typed row 保存 `cncdTxYn`／`cnclTxYn` | 值域的完整保證、取消是否會產生反向 row、如何與原交易關聯 |
-| 幣別／產品 scope | 官方產品文字把臺幣活期儲蓄存款「主帳戶」與外幣存款帳戶分開；preflight-v4 有明確 domestic-main-twd-v1 descriptor | live response 的 product code／currency 欄位與官方產品描述的映射、外幣產品的完整 enum；未知或不一致 scope 不得產生 TWD |
-| 分頁／完整性 | response observation 有 page/total count；repo 會保存並核對 `pageCnt`／`txCnt`／`totTxCnt` | `pageCnt` 的精確語義、總數在跨頁期間是否固定、是否可能 truncation 或代表完整 snapshot |
-| 公開 assets／validation | 公開 route 要求 JavaScript，未登入 HTML 沒有 API schema | 從公開資產直接取得可依賴的 range limit、enum 或 validation contract |
+| 契約項目                | 公開資料能證明什麼                                                                                                              | 仍不能安全宣稱什麼                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 可查歷史範圍            | 官方教學有「30天」預設／查詢期間控制                                                                                            | 最長期間、最早日期、是否可跨多年                                                                                       |
+| 查詢／篩選控制          | 交易類型、交易期間、顯示餘額；repo request 另有 detail/sort 欄位                                                                | 每個 request 欄位的 enum、空值語義、UI 與 API 的一一對應                                                               |
+| 方向碼                  | `historical-v7`：code `1` 4 列、code `2` 1 列；餘額轉移分別符合 `+amount`／`-amount`，code `1` 另有 UI「存入」correlation       | provider-guaranteed 的 code `1`／`2` 完整存入／支出含義、其他 code、取消交易的方向                                     |
+| 帳戶／交易 identifier   | `acctNbr`、`arrId`、`txSeqNbr`、`crrnDpstNthCnt`、`txDtm` 出現在 source contract；`occurrence-v1` 只產生 opaque empirical tuple | provider-backed stable uniqueness、masking、帳戶重建或交易修正時是否不變、revision／authority link                     |
+| `txDt`／`txTm`／`txDtm` | `observed-time-v1`：5/5 exact Asia/Taipei UTC+8 epoch-ms reconstruction，0 mismatch／ambiguity                                  | `txDt` 是帳務日或交易日、provider 的 `txDtm` 是否代表 posting／accounting／effective event                             |
+| 取消旗標                | 已遮罩 response 與 typed row 保存 `cncdTxYn`／`cnclTxYn`                                                                        | 值域的完整保證、取消是否會產生反向 row、如何與原交易關聯                                                               |
+| 幣別／產品 scope        | 官方產品文字把臺幣活期儲蓄存款「主帳戶」與外幣存款帳戶分開；preflight-v4 有明確 domestic-main-twd-v1 descriptor                 | live response 的 product code／currency 欄位與官方產品描述的映射、外幣產品的完整 enum；未知或不一致 scope 不得產生 TWD |
+| 分頁／完整性            | response observation 有 page/total count；repo 會保存並核對 `pageCnt`／`txCnt`／`totTxCnt`                                      | `pageCnt` 的精確語義、總數在跨頁期間是否固定、是否可能 truncation 或代表完整 snapshot                                  |
+| 公開 assets／validation | 公開 route 要求 JavaScript，未登入 HTML 沒有 API schema                                                                         | 從公開資產直接取得可依賴的 range limit、enum 或 validation contract                                                    |
 
 ## 對 Issue #132 的 actionable implications
 
