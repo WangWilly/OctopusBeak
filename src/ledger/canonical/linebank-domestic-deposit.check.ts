@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LineBankTransactionSourceEnvelope } from "../../workflows/linebank-statements.ts";
 import {
   LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -29,6 +32,8 @@ import {
   LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION,
   LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_ZERO_RESULT_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
   linebankCompareZeroResultCaptures,
   linebankSummarizeCrossWindowEvidence,
   linebankBuildSourceOccurrenceKey,
@@ -37,12 +42,21 @@ import {
   linebankValidateSourceOccurrenceCapture,
   linebankValidateZeroResultPage,
   preflightLineBankDomesticDeposit,
+  validateLineBankHumanAttestedV13Capture,
+  commitCanonicalLineBankFinancialCapture,
 } from "./linebank-domestic-deposit.ts";
 import {
   commitCanonicalDomesticDeposit,
   createDomesticDepositStore,
+  queryHistorical,
+  queryLineage,
   queryCurrent,
 } from "./domestic-deposit-store.ts";
+import {
+  CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  commitCathayDomesticDeposit,
+  createCathayCanonicalFinancialQuery,
+} from "./canonical-source-store.ts";
 
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -1863,3 +1877,846 @@ assert.ok(
     (item) => item.code === "scope-invalid",
   ),
 );
+
+// Human-attested v13 financial admission is a separate, stricter seam. It
+// admits only a complete source capture and never infers unsupported rows.
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE_VERSION,
+  "human-attested-v13",
+);
+assert.equal(
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE.providerGuaranteed,
+  false,
+);
+const v13Source = {
+  ...canonicalInput.pages[0]!.source,
+  opnDtm: 1700000000000,
+  jntAcctMbrTpCd: "personal-main-account",
+  jntMbrListCnt: 0,
+  totJntAcctMbrCnt: 0,
+  isSecuAcctBndg: false,
+} as unknown as LineBankTransactionSourceEnvelope;
+const v13Rows = [
+  {
+    ...canonicalInput.pages[0]!.rows[0]!,
+    txSeqNbr: "10",
+    crrnDpstNthCnt: 1,
+    txDt: "20260705",
+    txTm: "143738",
+    txDtm: 1783233458000,
+    dpstWdrwDsCd: "1",
+    txAmt: "100",
+    afTxBal: "1000",
+    cncdTxYn: "N",
+    cnclTxYn: "N",
+  },
+  {
+    ...canonicalInput.pages[0]!.rows[0]!,
+    txSeqNbr: "10",
+    crrnDpstNthCnt: 2,
+    txDt: "20260705",
+    txTm: "143739",
+    txDtm: 1783233459000,
+    dpstWdrwDsCd: "2",
+    txAmt: "100",
+    afTxBal: "900",
+    cncdTxYn: "N",
+    cnclTxYn: "N",
+  },
+];
+const v13Input = {
+  ...canonicalInput,
+  captureId: "synthetic-v13-capture-1",
+  sourceConnection: "accessibility.linebank.com.tw" as const,
+  identityEpoch: 1700000000000,
+  scope: { startDate: "20260701", endDate: "20260731" },
+  observedAt: "2026-07-06T00:00:00.000Z",
+  humanAttestation: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+  authority: {
+    kind: "personal-main" as const,
+    membershipEffectiveDate: null,
+  },
+  pages: [
+    {
+      ...canonicalInput.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 2,
+      txCnt: 1,
+      rows: [v13Rows[0]!],
+      source: v13Source,
+    },
+    {
+      ...canonicalInput.pages[0]!,
+      pageNbr: 2,
+      pageCnt: 1,
+      totTxCnt: 2,
+      txCnt: 1,
+      rows: [v13Rows[1]!],
+      source: v13Source,
+    },
+  ],
+};
+const admittedV13 = validateLineBankHumanAttestedV13Capture(v13Input);
+assert.equal(admittedV13.status, "admissible");
+assert.equal(admittedV13.capture?.records.length, 2);
+assert.equal(admittedV13.capture?.completeness, "complete-range");
+assert.equal(admittedV13.capture?.postingStatus, "posted");
+assert.equal(admittedV13.capture?.effectiveTimeBasis, "transaction-time");
+assert.equal(admittedV13.capture?.providerGuaranteed, false);
+assert.equal(admittedV13.readiness, "canonical-live");
+assert.equal(admittedV13.liveValidation, "complete");
+assert.deepEqual(admittedV13.financialAdmissionBlockers, []);
+assert.equal(JSON.stringify(admittedV13).includes("SYNTHETIC"), false);
+
+const isolatedV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-isolated-posted",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 1,
+      txCnt: 1,
+      rows: [v13Rows[0]!],
+    },
+  ],
+});
+assert.equal(isolatedV13.status, "admissible");
+assert.equal(isolatedV13.capture?.records.length, 1);
+
+const inconsistentV13Balance = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-balance-inconsistent",
+  pages: [
+    v13Input.pages[0]!,
+    {
+      ...v13Input.pages[1]!,
+      rows: [{ ...v13Rows[1]!, afTxBal: "950" }],
+    },
+  ],
+});
+assert.equal(inconsistentV13Balance.status, "rejected");
+assert.ok(inconsistentV13Balance.diagnostics.includes("amount-invalid"));
+
+const missingAttestation = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  humanAttestation: undefined,
+});
+assert.equal(missingAttestation.status, "rejected");
+assert.ok(missingAttestation.diagnostics.includes("human-attestation-missing"));
+
+const totalsDrift = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  pages: [v13Input.pages[0]!, { ...v13Input.pages[1]!, totTxCnt: 3 }],
+});
+assert.equal(totalsDrift.status, "rejected");
+assert.ok(totalsDrift.diagnostics.includes("totals-drift"));
+
+const unsupportedCancellation = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      rows: [{ ...v13Rows[0]!, cnclTxYn: "Y" }],
+    },
+    v13Input.pages[1]!,
+  ],
+});
+assert.equal(unsupportedCancellation.status, "rejected");
+assert.ok(
+  unsupportedCancellation.diagnostics.includes("unsupported-cancellation"),
+);
+
+const sharedBeforeJoin = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  authority: {
+    kind: "shared-member" as const,
+    membershipEffectiveDate: "20260706",
+  },
+  pages: v13Input.pages.map((page) => ({
+    ...page,
+    source: {
+      ...page.source,
+      jntAcctMbrTpCd: "shared-member",
+      jntMbrListCnt: 1,
+      totJntAcctMbrCnt: 2,
+    } as unknown as LineBankTransactionSourceEnvelope,
+  })),
+});
+assert.equal(sharedBeforeJoin.status, "rejected");
+assert.ok(
+  sharedBeforeJoin.diagnostics.includes(
+    "member-effective-date-before-transaction",
+  ),
+);
+
+const sharedAfterJoin = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  scope: { startDate: "20260705", endDate: "20260731" },
+  authority: {
+    kind: "shared-member" as const,
+    membershipEffectiveDate: "20260705",
+  },
+  pages: v13Input.pages.map((page) => ({
+    ...page,
+    source: {
+      ...page.source,
+      jntAcctMbrTpCd: "shared-member",
+      jntMbrListCnt: 1,
+      totJntAcctMbrCnt: 2,
+    } as unknown as LineBankTransactionSourceEnvelope,
+  })),
+});
+assert.equal(sharedAfterJoin.status, "rejected");
+assert.ok(sharedAfterJoin.diagnostics.includes("authority-shared-account"));
+
+const callerLabelMismatch = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  scope: { startDate: "20260705", endDate: "20260731" },
+  authority: {
+    kind: "shared-member" as const,
+    membershipEffectiveDate: "20260705",
+  },
+});
+assert.equal(callerLabelMismatch.status, "rejected");
+assert.ok(callerLabelMismatch.diagnostics.includes("authority-shared-account"));
+
+const forgedAuthority = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  authority: {
+    kind: "personal-main",
+    membershipEffectiveDate: null,
+    trustedByCaller: true,
+  } as unknown as typeof v13Input.authority,
+});
+assert.equal(forgedAuthority.status, "rejected");
+assert.ok(forgedAuthority.diagnostics.includes("authority-role-unknown"));
+
+const unknownV13Authority = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  authority: {
+    kind: "owner",
+    membershipEffectiveDate: null,
+  } as unknown as typeof v13Input.authority,
+});
+assert.equal(unknownV13Authority.status, "rejected");
+assert.ok(unknownV13Authority.diagnostics.includes("authority-role-unknown"));
+
+const plausibleEqualTime = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-equal-time-plausible",
+  pages: [
+    v13Input.pages[0]!,
+    {
+      ...v13Input.pages[1]!,
+      rows: [
+        {
+          ...v13Rows[1]!,
+          txTm: v13Rows[0]!.txTm,
+          txDtm: v13Rows[0]!.txDtm,
+        },
+      ],
+    },
+  ],
+});
+assert.equal(plausibleEqualTime.status, "rejected");
+assert.ok(
+  plausibleEqualTime.diagnostics.includes("transaction-order-ambiguous"),
+);
+
+const inconsistentEqualTime = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-equal-time-inconsistent",
+  pages: [
+    v13Input.pages[0]!,
+    {
+      ...v13Input.pages[1]!,
+      rows: [
+        {
+          ...v13Rows[1]!,
+          txTm: v13Rows[0]!.txTm,
+          txDtm: v13Rows[0]!.txDtm,
+          afTxBal: "950",
+        },
+      ],
+    },
+  ],
+});
+assert.equal(inconsistentEqualTime.status, "rejected");
+assert.ok(
+  inconsistentEqualTime.diagnostics.includes("transaction-order-ambiguous"),
+);
+const ambiguousOrderStore = createDomesticDepositStore(":memory:");
+await assert.rejects(
+  () =>
+    commitCanonicalLineBankFinancialCapture(
+      ambiguousOrderStore,
+      plausibleEqualTime.capture!,
+    ),
+  /runtime-validated|v13 seam/i,
+);
+assert.equal(
+  ambiguousOrderStore.db
+    .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
+    .get()?.count,
+  0,
+);
+ambiguousOrderStore.close();
+
+const zeroV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-zero",
+  scope: { startDate: "20260701", endDate: "20260701" },
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 0,
+      txCnt: 0,
+      rows: [],
+    },
+  ],
+});
+assert.equal(zeroV13.status, "admissible");
+assert.equal(zeroV13.capture?.records.length, 0);
+
+const v13Store = createDomesticDepositStore(":memory:");
+await assert.rejects(
+  () =>
+    commitCanonicalLineBankFinancialCapture(v13Store, {
+      ...admittedV13.capture!,
+      captureId: "synthetic-v13-fabricated",
+    }),
+  /runtime-validated|v13 seam/i,
+);
+const v13Commit = await commitCanonicalLineBankFinancialCapture(
+  v13Store,
+  admittedV13.capture!,
+);
+assert.equal(v13Commit.status, "canonical-live");
+assert.equal(v13Commit.transactionCount, 2);
+assert.equal(queryCurrent(v13Store).transactions?.length, 2);
+const v13Repeat = await commitCanonicalLineBankFinancialCapture(
+  v13Store,
+  validateLineBankHumanAttestedV13Capture({
+    ...v13Input,
+    captureId: "synthetic-v13-capture-2",
+    observedAt: "2026-07-07T00:00:00.000Z",
+  }).capture!,
+);
+assert.equal(v13Repeat.transactionCount, 2);
+assert.equal(queryCurrent(v13Store).transactions?.length, 2);
+assert.equal(queryCurrent(v13Store).provenanceCount, 2);
+const knowledgeOnlyV13 = queryHistorical(v13Store, {
+  knowledgeAt: v13Commit.commitSequence,
+});
+assert.equal(knowledgeOnlyV13.status, "canonical-live");
+assert.equal(knowledgeOnlyV13.transactions?.length, 2);
+assert.equal(knowledgeOnlyV13.financialCutoffApplied, false);
+assert.deepEqual(knowledgeOnlyV13.cutoff, {
+  kind: "knowledge",
+  knowledgeAt: v13Commit.commitSequence,
+});
+const beforeFinancialV13 = queryHistorical(v13Store, {
+  knowledgeAt: v13Commit.commitSequence,
+  financialAt: "2026-07-04",
+});
+assert.equal(beforeFinancialV13.status, "canonical-live");
+assert.equal(beforeFinancialV13.transactions.length, 0);
+assert.equal(beforeFinancialV13.financialCutoffApplied, true);
+assert.deepEqual(beforeFinancialV13.cutoff, {
+  kind: "both",
+  knowledgeAt: v13Commit.commitSequence,
+  financialAt: "2026-07-04",
+});
+const onFinancialV13 = queryHistorical(v13Store, {
+  knowledgeAt: v13Commit.commitSequence,
+  financialAt: "2026-07-05",
+});
+assert.equal(onFinancialV13.status, "canonical-live");
+assert.equal(onFinancialV13.transactions.length, 2);
+assert.equal(onFinancialV13.financialCutoffApplied, true);
+const committedV13Lineage = queryLineage(v13Store, {
+  sourceOccurrenceKey: admittedV13.capture!.records[0]!.sourceOccurrenceKey,
+  sourceConnection: v13Input.sourceConnection,
+  identityEpoch: v13Input.identityEpoch,
+  stream: "domestic-deposit",
+  accountKey: admittedV13.capture!.accountKey,
+});
+assert.equal(committedV13Lineage.status, "canonical-live");
+assert.equal(committedV13Lineage.transactions?.length, 1);
+assert.equal(committedV13Lineage.records.length, 1);
+assert.equal(committedV13Lineage.observations.length, 2);
+assert.equal(committedV13Lineage.provenance.length, 2);
+assert.equal(committedV13Lineage.provenanceCount, 2);
+assert.equal(committedV13Lineage.expectedObservationCount, 2);
+assert.equal(committedV13Lineage.provenanceComplete, true);
+assert.ok(
+  committedV13Lineage.observations.every(
+    (observation) =>
+      observation.sourceOccurrenceKey ===
+        admittedV13.capture!.records[0]!.sourceOccurrenceKey &&
+      observation.provenance.captureId.length > 0,
+  ),
+);
+
+const incompleteLineageStore = createDomesticDepositStore(":memory:");
+await commitCanonicalLineBankFinancialCapture(
+  incompleteLineageStore,
+  admittedV13.capture!,
+);
+incompleteLineageStore.db.exec("DELETE FROM source_record_provenance");
+const incompleteV13Lineage = queryLineage(incompleteLineageStore, {
+  sourceOccurrenceKey: admittedV13.capture!.records[0]!.sourceOccurrenceKey,
+  sourceConnection: v13Input.sourceConnection,
+  identityEpoch: v13Input.identityEpoch,
+  stream: "domestic-deposit",
+  accountKey: admittedV13.capture!.accountKey,
+});
+assert.notEqual(incompleteV13Lineage.status, "canonical-live");
+assert.equal(incompleteV13Lineage.records.length, 0);
+assert.equal(incompleteV13Lineage.observations.length, 0);
+assert.equal(incompleteV13Lineage.provenanceCount, 0);
+assert.equal(incompleteV13Lineage.expectedObservationCount, 1);
+assert.equal(incompleteV13Lineage.provenanceComplete, false);
+incompleteLineageStore.close();
+
+const repeatedLineageCaptures = [
+  admittedV13.capture!,
+  validateLineBankHumanAttestedV13Capture({
+    ...v13Input,
+    captureId: "synthetic-v13-lineage-repeat-2",
+    observedAt: "2026-07-07T00:00:00.000Z",
+  }).capture!,
+  validateLineBankHumanAttestedV13Capture({
+    ...v13Input,
+    captureId: "synthetic-v13-lineage-repeat-3",
+    observedAt: "2026-07-08T00:00:00.000Z",
+  }).capture!,
+];
+const repeatedLineageRequest = {
+  sourceOccurrenceKey: admittedV13.capture!.records[0]!.sourceOccurrenceKey,
+  sourceConnection: v13Input.sourceConnection,
+  identityEpoch: v13Input.identityEpoch,
+  stream: "domestic-deposit",
+  accountKey: admittedV13.capture!.accountKey,
+};
+for (const missingIndex of [0, 1, 2]) {
+  const partialStore = createDomesticDepositStore(":memory:");
+  for (const capture of repeatedLineageCaptures)
+    await commitCanonicalLineBankFinancialCapture(partialStore, capture);
+  const complete = queryLineage(partialStore, repeatedLineageRequest);
+  assert.equal(complete.status, "canonical-live");
+  assert.equal(complete.observations.length, 3);
+  assert.equal(complete.provenance.length, 3);
+  assert.equal(complete.expectedObservationCount, 3);
+  assert.equal(complete.provenanceComplete, true);
+  partialStore.db
+    .prepare(
+      `DELETE FROM source_record_provenance WHERE rowid = (
+        SELECT provenance.rowid FROM source_record_provenance provenance
+        JOIN source_records record ON record.source_record_id = provenance.source_record_id
+        WHERE record.occurrence_key = ?
+        ORDER BY provenance.rowid LIMIT 1 OFFSET ?
+      )`,
+    )
+    .run(repeatedLineageRequest.sourceOccurrenceKey, missingIndex);
+  const partial = queryLineage(partialStore, repeatedLineageRequest);
+  assert.notEqual(partial.status, "canonical-live");
+  assert.equal(partial.observations.length, 2);
+  assert.equal(partial.provenance.length, 2);
+  assert.equal(partial.expectedObservationCount, 3);
+  assert.equal(partial.provenanceComplete, false);
+  partialStore.close();
+}
+
+const extraLineageStore = createDomesticDepositStore(":memory:");
+for (const capture of repeatedLineageCaptures)
+  await commitCanonicalLineBankFinancialCapture(extraLineageStore, capture);
+extraLineageStore.db
+  .prepare(
+    `INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id)
+     SELECT first_record.source_record_id, second_record.capture_id, second_record.commit_id
+     FROM source_records first_record
+     JOIN source_records second_record
+       ON second_record.occurrence_key = first_record.occurrence_key
+      AND second_record.rowid > first_record.rowid
+     WHERE first_record.occurrence_key = ?
+     ORDER BY first_record.rowid, second_record.rowid LIMIT 1`,
+  )
+  .run(repeatedLineageRequest.sourceOccurrenceKey);
+const extraLineage = queryLineage(extraLineageStore, repeatedLineageRequest);
+assert.notEqual(extraLineage.status, "canonical-live");
+assert.equal(extraLineage.observations.length, 3);
+assert.equal(extraLineage.provenance.length, 3);
+assert.equal(extraLineage.expectedObservationCount, 3);
+assert.equal(extraLineage.provenanceComplete, false);
+extraLineageStore.close();
+
+const missingObservationLinkStore = createDomesticDepositStore(":memory:");
+for (const capture of repeatedLineageCaptures)
+  await commitCanonicalLineBankFinancialCapture(
+    missingObservationLinkStore,
+    capture,
+  );
+missingObservationLinkStore.db
+  .prepare(
+    `DELETE FROM source_record_scopes WHERE source_record_id = (
+      SELECT record.source_record_id FROM source_records record
+      WHERE record.occurrence_key = ?
+      ORDER BY record.rowid LIMIT 1 OFFSET 1
+    )`,
+  )
+  .run(repeatedLineageRequest.sourceOccurrenceKey);
+const missingObservationLink = queryLineage(
+  missingObservationLinkStore,
+  repeatedLineageRequest,
+);
+assert.notEqual(missingObservationLink.status, "canonical-live");
+assert.equal(missingObservationLink.observations.length, 3);
+assert.equal(missingObservationLink.provenance.length, 3);
+assert.equal(missingObservationLink.expectedObservationCount, 3);
+assert.equal(missingObservationLink.provenanceComplete, false);
+missingObservationLinkStore.close();
+
+const absentSecond = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-absence",
+  observedAt: "2026-07-08T00:00:00.000Z",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 1,
+      txCnt: 1,
+      rows: [v13Rows[0]!],
+    },
+  ],
+});
+assert.equal(absentSecond.status, "admissible");
+await commitCanonicalLineBankFinancialCapture(v13Store, absentSecond.capture!);
+assert.equal(queryCurrent(v13Store).transactions.length, 1);
+assert.equal(
+  v13Store.db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM assertion_transitions WHERE event_kind = 'withdrawn'",
+    )
+    .get()?.count,
+  1,
+);
+
+const restoredV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-restoration",
+  observedAt: "2026-07-09T00:00:00.000Z",
+});
+await commitCanonicalLineBankFinancialCapture(v13Store, restoredV13.capture!);
+assert.equal(queryCurrent(v13Store).transactions.length, 2);
+assert.equal(
+  v13Store.db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM assertion_transitions WHERE event_kind = 'restored'",
+    )
+    .get()?.count,
+  1,
+);
+
+const differentZero = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-different-zero",
+  observedAt: "2026-08-02T00:00:00.000Z",
+  scope: { startDate: "20260801", endDate: "20260801" },
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 0,
+      txCnt: 0,
+      rows: [],
+    },
+  ],
+});
+await commitCanonicalLineBankFinancialCapture(v13Store, differentZero.capture!);
+assert.equal(queryCurrent(v13Store).transactions.length, 2);
+
+const overwriteV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-overwrite",
+  observedAt: "2026-07-10T00:00:01.000Z",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 1,
+      txCnt: 1,
+      rows: [{ ...v13Rows[0]!, txAmt: "200" }],
+    },
+  ],
+});
+assert.equal(overwriteV13.status, "admissible");
+await assert.rejects(
+  () =>
+    commitCanonicalLineBankFinancialCapture(v13Store, overwriteV13.capture!),
+  /content overwrite|overwrite/i,
+);
+assert.equal(queryCurrent(v13Store).transactions.length, 2);
+
+const collisionV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-collision",
+  observedAt: "2026-07-10T00:00:00.000Z",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 1,
+      txCnt: 1,
+      rows: [
+        {
+          ...v13Rows[0]!,
+          txTm: "143740",
+          txDtm: 1783233460000,
+        },
+      ],
+    },
+  ],
+});
+assert.equal(collisionV13.status, "admissible");
+await assert.rejects(
+  () =>
+    commitCanonicalLineBankFinancialCapture(v13Store, collisionV13.capture!),
+  /collision|overwrite/i,
+);
+assert.equal(queryCurrent(v13Store).transactions.length, 2);
+
+const lateFailure = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-late-failure",
+  observedAt: "2026-07-11T00:00:00.000Z",
+});
+assert.equal(lateFailure.status, "admissible");
+const commitsBeforeLateFailure = v13Store.db
+  .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
+  .get()?.count;
+v13Store.db.exec(`CREATE TRIGGER inject_v13_late_failure
+  BEFORE UPDATE ON source_sync_states
+  BEGIN SELECT RAISE(ABORT, 'injected late v13 failure'); END`);
+await assert.rejects(
+  () => commitCanonicalLineBankFinancialCapture(v13Store, lateFailure.capture!),
+  /injected late v13 failure/i,
+);
+v13Store.db.exec("DROP TRIGGER inject_v13_late_failure");
+assert.equal(
+  v13Store.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
+    ?.count,
+  commitsBeforeLateFailure,
+);
+assert.equal(
+  v13Store.db
+    .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
+    .get("synthetic-v13-late-failure"),
+  undefined,
+);
+
+const crossEpochInput = {
+  ...v13Input,
+  captureId: "synthetic-v13-cross-epoch",
+  identityEpoch: 1800000000000,
+  observedAt: "2026-07-12T00:00:00.000Z",
+  pages: v13Input.pages.map((page) => ({
+    ...page,
+    source: {
+      ...page.source,
+      opnDtm: 1800000000000,
+    } as LineBankTransactionSourceEnvelope,
+  })),
+};
+const crossEpoch = validateLineBankHumanAttestedV13Capture(crossEpochInput);
+assert.equal(crossEpoch.status, "admissible");
+await commitCanonicalLineBankFinancialCapture(v13Store, crossEpoch.capture!);
+assert.equal(queryCurrent(v13Store).transactions.length, 4);
+assert.equal(
+  queryLineage(v13Store, {
+    sourceOccurrenceKey: admittedV13.capture!.records[0]!.sourceOccurrenceKey,
+    sourceConnection: v13Input.sourceConnection,
+    identityEpoch: v13Input.identityEpoch,
+    stream: "domestic-deposit",
+    accountKey: admittedV13.capture!.accountKey,
+  }).transactions.length,
+  1,
+);
+assert.equal(
+  queryLineage(v13Store, {
+    sourceOccurrenceKey: crossEpoch.capture!.records[0]!.sourceOccurrenceKey,
+    sourceConnection: crossEpochInput.sourceConnection,
+    identityEpoch: crossEpochInput.identityEpoch,
+    stream: "domestic-deposit",
+    accountKey: crossEpoch.capture!.accountKey,
+  }).transactions.length,
+  1,
+);
+assert.equal(
+  v13Store.db.prepare("SELECT COUNT(*) AS count FROM financial_accounts").get()
+    ?.count,
+  2,
+);
+assert.equal(
+  v13Store.db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+       JOIN active_projection_generation active
+         ON active.generation_id = projected.generation_id`,
+    )
+    .get()?.count,
+  4,
+);
+assert.equal(
+  JSON.stringify(
+    v13Store.db
+      .prepare("SELECT payload_json FROM source_records WHERE record_kind = ?")
+      .all("linebank-domestic-deposit-financial-v13"),
+  ).includes("SYNTHETIC-ACCOUNT"),
+  false,
+);
+
+const zeroFirstStore = createDomesticDepositStore(":memory:");
+await commitCanonicalLineBankFinancialCapture(zeroFirstStore, zeroV13.capture!);
+assert.equal(queryCurrent(zeroFirstStore).transactions.length, 0);
+assert.equal(
+  zeroFirstStore.db
+    .prepare("SELECT COUNT(*) AS count FROM source_sync_states")
+    .get()?.count,
+  1,
+);
+assert.equal(
+  zeroFirstStore.db
+    .prepare("SELECT COUNT(*) AS count FROM current_projection_state")
+    .get()?.count,
+  1,
+);
+zeroFirstStore.close();
+
+const backfillStore = createDomesticDepositStore(":memory:");
+const laterOnly = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-backfill-later",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 1,
+      totTxCnt: 1,
+      txCnt: 1,
+      rows: [v13Rows[0]!],
+    },
+  ],
+});
+const laterCommit = await commitCanonicalLineBankFinancialCapture(
+  backfillStore,
+  laterOnly.capture!,
+);
+const olderRow = {
+  ...v13Rows[0]!,
+  txSeqNbr: "9",
+  crrnDpstNthCnt: 1,
+  txTm: "143737",
+  txDtm: 1783233457000,
+  txAmt: "50",
+  afTxBal: "900",
+};
+const withBackfill = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-backfill-complete",
+  observedAt: "2026-07-07T00:00:00.000Z",
+  pages: [
+    {
+      ...v13Input.pages[0]!,
+      pageNbr: 1,
+      pageCnt: 2,
+      totTxCnt: 2,
+      txCnt: 2,
+      rows: [olderRow, v13Rows[0]!],
+    },
+  ],
+});
+assert.equal(withBackfill.status, "admissible");
+await commitCanonicalLineBankFinancialCapture(
+  backfillStore,
+  withBackfill.capture!,
+);
+assert.equal(queryCurrent(backfillStore).transactions.length, 2);
+assert.equal(
+  queryHistorical(backfillStore, {
+    knowledgeAt: laterCommit.commitSequence,
+  }).transactions.length,
+  1,
+);
+assert.equal(
+  backfillStore.db
+    .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+    .get()?.count,
+  2,
+);
+backfillStore.close();
+
+const persistentV13Directory = await mkdtemp(
+  join(tmpdir(), "linebank-v13-persistent-"),
+);
+try {
+  const path = join(persistentV13Directory, "canonical.sqlite");
+  const persistent = createDomesticDepositStore(path);
+  await commitCanonicalLineBankFinancialCapture(
+    persistent,
+    admittedV13.capture!,
+  );
+  await commitCanonicalLineBankFinancialCapture(
+    persistent,
+    absentSecond.capture!,
+  );
+  await commitCanonicalLineBankFinancialCapture(
+    persistent,
+    restoredV13.capture!,
+  );
+  persistent.close();
+  const reopened = createDomesticDepositStore(path);
+  assert.equal(queryCurrent(reopened).transactions.length, 2);
+  assert.equal(queryCurrent(reopened).status, "canonical-live");
+  assert.deepEqual(queryCurrent(reopened).financialAdmissionBlockers, []);
+  reopened.close();
+} finally {
+  await rm(persistentV13Directory, { recursive: true, force: true });
+}
+
+const mixedV13Directory = await mkdtemp(join(tmpdir(), "linebank-v13-mixed-"));
+try {
+  await commitCathayDomesticDeposit(
+    mixedV13Directory,
+    CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  );
+  const cathayBefore = await createCathayCanonicalFinancialQuery(
+    mixedV13Directory,
+  ).current({ kind: "current" });
+  const mixed = createDomesticDepositStore(
+    join(mixedV13Directory, "canonical.sqlite"),
+  );
+  await commitCanonicalLineBankFinancialCapture(mixed, admittedV13.capture!);
+  assert.equal(queryCurrent(mixed).transactions.length, 2);
+  mixed.close();
+  const cathayAfter = await createCathayCanonicalFinancialQuery(
+    mixedV13Directory,
+  ).current({ kind: "current" });
+  assert.equal(
+    cathayAfter.transactions.length,
+    cathayBefore.transactions.length,
+  );
+} finally {
+  await rm(mixedV13Directory, { recursive: true, force: true });
+}
+v13Store.close();

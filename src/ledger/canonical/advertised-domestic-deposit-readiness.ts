@@ -24,12 +24,10 @@ import {
   preflightHncbDomesticDeposit,
 } from "./hncb-domestic-deposit.ts";
 import {
-  LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
-  LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
-  LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE,
-  LINEBANK_DOMESTIC_DEPOSIT_READINESS,
-  preflightLineBankDomesticDeposit,
-  type LineBankPreflightDiagnosticCode,
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_AUTHORITY,
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE_VERSION,
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_READINESS,
+  validateLineBankHumanAttestedV13Fixture,
 } from "./linebank-domestic-deposit.ts";
 import {
   POST_DOMESTIC_DEPOSIT_CONTRACT,
@@ -145,15 +143,13 @@ const SOURCE_MANIFESTS = {
     liveValidation: "pending",
   },
   linebank: {
-    authority: LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
-    contractVersion: LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
+    authority: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_AUTHORITY,
+    contractVersion:
+      LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE_VERSION,
     workflow: "linebankStatements",
-    capability: LINEBANK_DOMESTIC_DEPOSIT_READINESS,
-    fixtureResult: () =>
-      preflightLineBankDomesticDeposit(
-        LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE,
-      ),
-    liveValidation: "partial",
+    capability: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_READINESS,
+    fixtureResult: validateLineBankHumanAttestedV13Fixture,
+    liveValidation: "complete",
   },
 } as const;
 
@@ -215,30 +211,14 @@ function semanticBlockersFromPreflight(
     );
 }
 
-const LINEBANK_DIAGNOSTIC_ADAPTER: Partial<
-  Record<
-    LineBankPreflightDiagnosticCode,
-    AdvertisedDomesticDepositSemanticBlocker
-  >
-> = {
-  "identity-continuity-unproven": "occurrence-identity-unproven",
-  "direction-semantics-unproven": "direction-semantics-unproven",
-  "posting-semantics-unproven": "posting-semantics-unproven",
-  "effective-time-semantics-unproven": "effective-time-semantics-unproven",
-};
-
-function lineBankSemanticBlockers(): AdvertisedDomesticDepositSemanticBlocker[] {
+function lineBankV13SemanticBlockers(): AdvertisedDomesticDepositSemanticBlocker[] {
   const result = SOURCE_MANIFESTS.linebank.fixtureResult();
-  const blockers = new Set<AdvertisedDomesticDepositSemanticBlocker>([
-    "account-identity-unproven",
-    "completeness-semantics-unproven",
-    "authority-semantics-unproven",
-  ]);
-  for (const { code } of result.diagnostics) {
-    const adapted = LINEBANK_DIAGNOSTIC_ADAPTER[code];
-    if (adapted) blockers.add(adapted);
-  }
-  return [...blockers];
+  return result.status === "admissible" &&
+    result.readiness === "canonical-live" &&
+    result.liveValidation === "complete" &&
+    result.financialAdmissionBlockers.length === 0
+    ? []
+    : [...ADVERTISED_DOMESTIC_DEPOSIT_SEMANTIC_BLOCKERS];
 }
 
 export type AdvertisedDomesticDepositReadinessBlocker =
@@ -250,9 +230,11 @@ export type AdvertisedDomesticDepositReadinessEntry = {
   workflow: string;
   authority: string;
   contractVersion: string;
-  capability: "canonical-synthetic" | "preflight-only";
+  capability: "canonical-synthetic" | "canonical-live" | "preflight-only";
   fixtureEvidence:
-    "canonical-versioned-synthetic" | "preflight-versioned-synthetic";
+    | "canonical-versioned-synthetic"
+    | "canonical-versioned-human-attested"
+    | "preflight-versioned-synthetic";
   liveValidation: "pending" | "partial" | "complete";
   semanticBlockers: readonly AdvertisedDomesticDepositSemanticBlocker[];
   blockers: readonly AdvertisedDomesticDepositReadinessBlocker[];
@@ -277,7 +259,7 @@ function buildReadinessEntry(
     sourceId === "cathay"
       ? []
       : sourceId === "linebank"
-        ? lineBankSemanticBlockers()
+        ? lineBankV13SemanticBlockers()
         : semanticBlockersFromPreflight(
             (
               manifest.fixtureResult as () => AdvertisedDomesticDepositPreflightResult
@@ -294,7 +276,9 @@ function buildReadinessEntry(
     fixtureEvidence:
       sourceId === "cathay"
         ? "canonical-versioned-synthetic"
-        : "preflight-versioned-synthetic",
+        : sourceId === "linebank"
+          ? "canonical-versioned-human-attested"
+          : "preflight-versioned-synthetic",
     liveValidation: manifest.liveValidation,
     semanticBlockers,
     blockers: [...liveBlockers, ...semanticBlockers],
@@ -316,8 +300,10 @@ export function isAdvertisedDomesticDepositEntryReleaseReady(
   entry: AdvertisedDomesticDepositReadinessEntry,
 ): boolean {
   return (
-    entry.capability === "canonical-synthetic" &&
-    entry.fixtureEvidence === "canonical-versioned-synthetic" &&
+    (entry.capability === "canonical-synthetic" ||
+      entry.capability === "canonical-live") &&
+    (entry.fixtureEvidence === "canonical-versioned-synthetic" ||
+      entry.fixtureEvidence === "canonical-versioned-human-attested") &&
     entry.liveValidation === "complete" &&
     entry.blockers.length === 0
   );
