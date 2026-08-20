@@ -160,6 +160,8 @@ const lineage = queryLineage(store, {
 assert.equal(lineage.kind, "lineage");
 assert.equal(lineage.records.length, 1);
 assert.equal(lineage.observations.length, 2);
+assert.equal(lineage.expectedObservationCount, 2);
+assert.equal(lineage.provenanceComplete, true);
 assert.deepEqual(
   lineage.observations.map((observation) => observation.recordId),
   [1, 2],

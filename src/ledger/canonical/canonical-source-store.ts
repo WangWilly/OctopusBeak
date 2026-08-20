@@ -1111,6 +1111,30 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   .replace(
     "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'tombstone'))",
     "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range'))",
+  )
+  .replace(
+    "posting_origin TEXT NOT NULL CHECK(posting_origin = 'provider_booked_history')",
+    "posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history'))",
+  )
+  .replace(
+    "posting_basis TEXT NOT NULL CHECK(posting_basis = 'query-status-success-with-accounting-date')",
+    "posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted'))",
+  )
+  .replace(
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
+  )
+  .replace(
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
+  )
+  .replace(
+    "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
+    "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+  )
+  .replace(
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2282,22 +2306,30 @@ function validateCathayAuthorityRoute(
       JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
       JOIN source_authority_routes registered ON registered.authority_route = capture.authority_route
       WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
-        AND capture.authority_route = ? AND capture.stream = ?
-        AND capture.completeness_rule_version = ?
-        AND registered.integration_namespace = ? AND registered.stream = ? AND registered.contract_version = ?
-        AND source_assertion.producer_id = ? AND source_assertion.rule_lineage = ?
+        AND capture.stream = ? AND registered.stream = ?
+        AND source_assertion.producer_id = capture.authority_route
+        AND source_assertion.rule_lineage = capture.authority_route
+        AND (
+          (capture.authority_route = ?
+            AND capture.completeness_rule_version = ?
+            AND registered.integration_namespace = ?
+            AND registered.contract_version = ?)
+          OR
+          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
+            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
+            AND registered.integration_namespace = 'linebank'
+            AND registered.contract_version = 'human-attested-v13')
+        )
     )`,
         )
         .get(
           generationId,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_DOMESTIC_DEPOSIT_STREAM,
+          CATHAY_DOMESTIC_DEPOSIT_STREAM,
+          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_INTEGRATION_NAMESPACE,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
           CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
         ) as { count?: number }
     ).count ?? 0,
   );
@@ -3201,18 +3233,22 @@ function validateSelectedAssertionProvenance(
         AND source_record.capture_id = revision.capture_id
         AND provenance_commit.commit_sequence <= ?
         AND provenance_commit.commit_kind = 'source_capture'
-        AND provenance_commit.authority_route = ?
+        AND provenance_commit.authority_route = capture.authority_route
         AND capture.commit_id = provenance.commit_id
-        AND capture.authority_route = ? AND capture.stream = ?
-        AND capture.completeness_rule_version = ?
+        AND capture.stream = ?
+        AND (
+          (capture.authority_route = ? AND capture.completeness_rule_version = ?)
+          OR
+          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
+            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
+        )
     )`,
         )
         .get(
           generationId,
           cutoff,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_DOMESTIC_DEPOSIT_STREAM,
+          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
         ) as { count?: number }
     ).count ?? 0,
@@ -3443,7 +3479,15 @@ function canonicalCommitHasEvidence(
       db
         .prepare(
           sourceOnlyAware
-            ? "SELECT 1 FROM source_captures WHERE commit_id = ? AND record_kind = 'cathay-domestic-deposit' LIMIT 1"
+            ? `SELECT 1 FROM source_captures capture
+               WHERE capture.commit_id = ? AND (
+                 capture.record_kind = 'cathay-domestic-deposit'
+                 OR EXISTS (
+                   SELECT 1 FROM capture_scopes scope
+                   WHERE scope.capture_id = capture.capture_id
+                     AND scope.account_id IS NOT NULL
+                 )
+               ) LIMIT 1`
             : "SELECT 1 FROM source_captures WHERE commit_id = ? LIMIT 1",
         )
         .get(commitId),
@@ -4206,6 +4250,102 @@ function ensureV7ProjectionSchema(db: DatabaseSync): void {
     );
 }
 
+/** v13 widens only the typed financial semantics accepted by the shared
+ * revision authority. Existing v8 ledgers keep their version and data; the
+ * table is rebuilt transactionally on the next writable open. */
+function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (/human_attested_history/.test(sql) && /transaction-time/.test(sql))
+    return;
+  const before = Number(
+    (
+      db
+        .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+        .get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  db.exec(`
+    DROP VIEW IF EXISTS source_assertions;
+    CREATE TABLE transaction_revisions_v13 (
+      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), revision_number INTEGER NOT NULL,
+      amount_coefficient TEXT NOT NULL, amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0), currency TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')),
+      posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
+      posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history')),
+      posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted')),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
+      administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
+      time_precision TEXT NOT NULL CHECK(time_precision = 'second'),
+      time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
+    );
+    INSERT INTO transaction_revisions_v13(
+      revision_id, transaction_id, source_record_id, capture_id, commit_id,
+      revision_number, amount_coefficient, amount_scale, currency, direction,
+      posting_status, posting_origin, posting_basis, posting_rule_version,
+      description, economic_status, administrative_state, semantic_rule_version,
+      effective_on, transaction_date_time_local, time_zone, time_precision,
+      time_origin, effective_time_basis, effective_time_rule_version,
+      utc_instant_utc_us
+    ) SELECT
+      revision_id, transaction_id, source_record_id, capture_id, commit_id,
+      revision_number, amount_coefficient, amount_scale, currency, direction,
+      posting_status, posting_origin, posting_basis, posting_rule_version,
+      description, economic_status, administrative_state, semantic_rule_version,
+      effective_on, transaction_date_time_local, time_zone, time_precision,
+      time_origin, effective_time_basis, effective_time_rule_version,
+      utc_instant_utc_us
+    FROM transaction_revisions;
+    DROP TABLE transaction_revisions;
+    ALTER TABLE transaction_revisions_v13 RENAME TO transaction_revisions;
+    CREATE VIEW source_assertions AS
+      SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
+        revision.source_record_id, assertion.created_commit_id AS commit_id
+      FROM assertions assertion
+      JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
+      WHERE assertion.origin = 'source' AND EXISTS (
+        SELECT 1 FROM assertion_provenance provenance
+        WHERE provenance.assertion_id = assertion.assertion_id
+          AND provenance.source_record_id IS NOT NULL
+      );
+    CREATE INDEX idx_transaction_revisions_financial_time ON transaction_revisions(effective_on, utc_instant_utc_us, transaction_id, commit_id);
+    CREATE INDEX idx_transaction_revisions_knowledge_time ON transaction_revisions(commit_id, transaction_id, revision_number);
+    CREATE INDEX idx_transaction_revisions_lineage ON transaction_revisions(transaction_id, revision_number, revision_id);
+  `);
+  const after = Number(
+    (
+      db
+        .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+        .get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  if (after !== before)
+    throw new Error(
+      "Canonical v8 LINE Bank revision-schema rebuild lost legacy rows.",
+    );
+}
+
 const SCHEMA_V8_SOURCE_EVIDENCE = `
 CREATE TABLE source_subjects (
   source_subject_id BLOB PRIMARY KEY CHECK(length(source_subject_id) = 16),
@@ -4634,6 +4774,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
+      ensureLineBankV13RevisionSchema(db);
       ensureV7ProjectionSchema(db);
       db.exec("COMMIT");
       db.exec("PRAGMA foreign_keys = ON");
@@ -4664,6 +4805,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
+      ensureLineBankV13RevisionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
       db.exec("PRAGMA foreign_keys = ON");
@@ -6883,6 +7025,15 @@ function syncActiveProjectionFromCompatibility(
     );
 }
 
+/** Shared projection synchronization seam for source adapters that admit
+ * financial rows in the same SQLite transaction as their source evidence. */
+export function syncCanonicalProjectionFromCompatibility(
+  db: DatabaseSync,
+  projectionCommitId: Uint8Array,
+): void {
+  syncActiveProjectionFromCompatibility(db, blob(projectionCommitId));
+}
+
 function commitCathayDerivedImportRunOnce(
   ledgerDir: string,
   input: CathayDerivedImportRunInput,
@@ -7680,7 +7831,13 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         const accounts = (
           db
             .prepare(
-              "SELECT account_id AS id, account_no AS accountNo, currency, account_type AS accountType FROM financial_accounts ORDER BY account_no",
+              `SELECT account.account_id AS id, account.account_no AS accountNo,
+                account.currency, account.account_type AS accountType
+               FROM financial_accounts account
+               JOIN source_connections connection
+                 ON connection.source_connection_id = account.source_connection_id
+               WHERE connection.integration_namespace = 'cathay'
+               ORDER BY account.account_no`,
             )
             .all() as Record<string, unknown>[]
         ).map((row) => ({
@@ -7709,6 +7866,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN canonical_commits projection_cutoff ON projection_cutoff.commit_id = state.commit_id
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
+        WHERE r.posting_rule_version = 'cathay/domestic-deposit/v1'
         ORDER BY a.account_no, t.source_sequence`,
           )
           .all() as Record<string, unknown>[];
@@ -7768,7 +7926,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
         JOIN assertions sa ON sa.revision_id = r.revision_id AND sa.origin = 'source'
-        WHERE r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
+        WHERE r.posting_rule_version = 'cathay/domestic-deposit/v1'
+          AND r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
         ) ORDER BY a.account_no, t.source_sequence`,
@@ -8075,6 +8234,8 @@ export type CanonicalSourceLineageQuery = CanonicalSourceQueryBase & {
   occurrenceKey: string;
   identity: CanonicalSourceIdentityFence;
   provenance: Array<{ captureId: string; commitSequence: number }>;
+  expectedObservationCount: number;
+  provenanceComplete: boolean;
 };
 export type CanonicalSourceLineageRequest = CanonicalSourceIdentityFence & {
   occurrenceKey: string;
@@ -8702,6 +8863,10 @@ function canonicalSourceObservationRows(
       subject.stream, subject.record_kind AS subject_record_kind, subject.subject_digest,
       record.occurrence_key, record.collision_key, record.provider_key, record.content_hash, record.payload_json
     FROM source_records record JOIN source_captures capture ON capture.capture_id = record.capture_id
+    JOIN source_record_provenance provenance
+      ON provenance.source_record_id = record.source_record_id
+     AND provenance.capture_id = record.capture_id
+     AND provenance.commit_id = record.commit_id
     JOIN canonical_commits commit_row ON commit_row.commit_id = record.commit_id
     JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
     JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
@@ -8847,6 +9012,98 @@ export function queryCanonicalSourceLineage(
       captureId,
       commitSequence,
     }));
+    const integrity = store.db
+      .prepare(
+        `SELECT COUNT(*) AS expected_count,
+          COALESCE(SUM((SELECT COUNT(*) FROM source_record_provenance exact_link
+            WHERE exact_link.source_record_id = record.source_record_id
+              AND exact_link.capture_id = record.capture_id
+              AND exact_link.commit_id = record.commit_id)), 0) AS exact_link_count,
+          COALESCE(SUM((SELECT COUNT(*) FROM source_record_provenance any_link
+            WHERE any_link.source_record_id = record.source_record_id)), 0) AS total_link_count,
+          COALESCE(SUM((SELECT COUNT(*) FROM source_record_scopes exact_scope
+            WHERE exact_scope.source_record_id = record.source_record_id
+              AND exact_scope.capture_id = record.capture_id
+              AND exact_scope.source_subject_id = record.source_subject_id
+              AND exact_scope.occurrence_key = record.occurrence_key
+              AND exact_scope.commit_id = record.commit_id)), 0) AS exact_scope_count,
+          COALESCE(SUM((SELECT COUNT(*) FROM source_record_scopes any_scope
+            WHERE any_scope.source_record_id = record.source_record_id)), 0) AS total_scope_count
+         FROM source_records record
+         JOIN source_captures capture ON capture.capture_id = record.capture_id
+         JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
+         JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
+         JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
+         WHERE connection.integration_namespace = ?
+           AND connection.source_connection_key = ?
+           AND epoch.epoch_key = ?
+           AND subject.stream = ?
+           AND subject.record_kind = ?
+           AND subject.subject_digest = ?
+           AND record.occurrence_key = ?`,
+      )
+      .get(
+        lineage.integrationNamespace,
+        lineage.sourceConnectionKey,
+        lineage.identityEpoch,
+        lineage.stream,
+        lineage.recordKind,
+        lineage.subjectDigest,
+        lineage.occurrenceKey,
+      ) as {
+      expected_count?: number;
+      exact_link_count?: number;
+      total_link_count?: number;
+      exact_scope_count?: number;
+      total_scope_count?: number;
+    };
+    const occurrenceScopeLinks = Number(
+      (
+        store.db
+          .prepare(
+            `SELECT COUNT(*) AS value
+             FROM source_record_scopes link
+             JOIN source_subjects subject ON subject.source_subject_id = link.source_subject_id
+             JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
+             JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
+             WHERE connection.integration_namespace = ?
+               AND connection.source_connection_key = ?
+               AND epoch.epoch_key = ?
+               AND subject.stream = ?
+               AND subject.record_kind = ?
+               AND subject.subject_digest = ?
+               AND link.occurrence_key = ?`,
+          )
+          .get(
+            lineage.integrationNamespace,
+            lineage.sourceConnectionKey,
+            lineage.identityEpoch,
+            lineage.stream,
+            lineage.recordKind,
+            lineage.subjectDigest,
+            lineage.occurrenceKey,
+          ) as { value?: number }
+      ).value ?? 0,
+    );
+    const persistedObservationCount = Number(integrity.expected_count ?? 0);
+    const expectedObservationCount = Math.max(
+      persistedObservationCount,
+      occurrenceScopeLinks,
+    );
+    const exactLinkCount = Number(integrity.exact_link_count ?? 0);
+    const totalLinkCount = Number(integrity.total_link_count ?? 0);
+    const exactScopeCount = Number(integrity.exact_scope_count ?? 0);
+    const totalScopeCount = Number(integrity.total_scope_count ?? 0);
+    const provenanceComplete =
+      expectedObservationCount > 0 &&
+      persistedObservationCount === expectedObservationCount &&
+      occurrenceScopeLinks === expectedObservationCount &&
+      observations.length === expectedObservationCount &&
+      provenance.length === expectedObservationCount &&
+      exactLinkCount === expectedObservationCount &&
+      totalLinkCount === expectedObservationCount &&
+      exactScopeCount === expectedObservationCount &&
+      totalScopeCount === expectedObservationCount;
     return {
       kind: "lineage",
       occurrenceKey: lineage.occurrenceKey,
@@ -8864,6 +9121,8 @@ export function queryCanonicalSourceLineage(
       observations,
       provenanceCount: provenance.length,
       provenance,
+      expectedObservationCount,
+      provenanceComplete,
     };
   });
 }

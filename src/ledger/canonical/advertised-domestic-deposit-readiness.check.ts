@@ -134,22 +134,21 @@ assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE.providerGuaranteed,
   false,
 );
-assert.equal(linebank.liveValidation, "partial");
-assert.equal(linebank.capability, "preflight-only");
-assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(linebank), false);
-assert.ok(linebank.blockers.includes("live-validation-pending"));
-assert.ok(linebank.blockers.includes("occurrence-identity-unproven"));
-assert.ok(linebank.blockers.includes("direction-semantics-unproven"));
-assert.ok(linebank.blockers.includes("posting-semantics-unproven"));
-assert.ok(linebank.blockers.includes("effective-time-semantics-unproven"));
-assert.ok(linebank.blockers.includes("completeness-semantics-unproven"));
-assert.ok(linebank.blockers.includes("authority-semantics-unproven"));
+assert.equal(linebank.liveValidation, "complete");
+assert.equal(linebank.capability, "canonical-live");
+assert.equal(linebank.fixtureEvidence, "canonical-versioned-human-attested");
+assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(linebank), true);
+assert.deepEqual(linebank.semanticBlockers, []);
+assert.deepEqual(linebank.blockers, []);
 
 for (const entry of ADVERTISED_DOMESTIC_DEPOSIT_READINESS) {
   assert.ok(entry.authority.length > 0, entry.sourceId);
   assert.ok(entry.contractVersion.length > 0, entry.sourceId);
-  assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(entry), false);
-  if (entry.sourceId !== "cathay") {
+  assert.equal(
+    isAdvertisedDomesticDepositEntryReleaseReady(entry),
+    entry.sourceId === "linebank",
+  );
+  if (entry.sourceId !== "cathay" && entry.sourceId !== "linebank") {
     assert.equal(entry.capability, "preflight-only", entry.sourceId);
     assert.equal(
       entry.fixtureEvidence,
@@ -168,7 +167,9 @@ assert.deepEqual(evaluateAdvertisedDomesticDepositReadiness(), {
   status: "blocked",
   releaseReady: false,
   advertisedSourceCount: 8,
-  unreadySourceIds: expectedSourceIds,
+  unreadySourceIds: expectedSourceIds.filter(
+    (sourceId) => sourceId !== "linebank",
+  ),
 });
 assert.throws(
   () =>
