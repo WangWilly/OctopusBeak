@@ -55,7 +55,7 @@ function processCommand(pid: number) {
   }
 }
 
-function isExpectedDaemon(pid: number, session: string) {
+export function isExpectedLibrettoDaemon(pid: number, session: string) {
   const command = processCommand(pid);
   return command.includes("libretto/dist/cli/core/daemon/daemon.js")
     && command.includes('\"session\":\"' + session + '\"');
@@ -77,7 +77,7 @@ export function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
 const defaultFinalizeDeps: FinalizeSessionDeps = {
   closeSession: closeLibrettoSession,
   startCloseSession: startLibrettoClose,
-  isExpectedDaemon,
+  isExpectedDaemon: isExpectedLibrettoDaemon,
   signalProcessGroup,
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };

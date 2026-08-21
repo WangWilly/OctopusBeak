@@ -38,7 +38,20 @@ export async function clickAndWaitForNavigation(
 
 export async function activateControlWithoutPointer(
   locator: Locator,
+  options: {
+    signal?: AbortSignal;
+    timeout?: number;
+  } = {},
 ): Promise<void> {
+  if (options.signal !== undefined || options.timeout !== undefined) {
+    // Playwright's dispatchEvent is the no-pointer equivalent of
+    // HTMLElement.click(), but unlike locator.evaluate it supports an
+    // AbortSignal. A timed-out evaluation remains queued in the frame and can
+    // block every subsequent probe after a bank redirect.
+    await locator.dispatchEvent("click", undefined, options);
+    return;
+  }
+
   await locator.evaluate((element) => {
     if (!(element instanceof HTMLElement)) {
       throw new Error("Control is not an HTMLElement.");
@@ -53,12 +66,10 @@ export async function fillInputWithoutPointer(
   value: string,
 ): Promise<void> {
   await locator.evaluate((element, nextValue) => {
-    if (
-      !(
-        element instanceof HTMLInputElement ||
-        element instanceof HTMLTextAreaElement
-      )
-    ) {
+    if (!(
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement
+    )) {
       throw new Error("Input control is not an input or textarea element.");
     }
 

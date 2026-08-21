@@ -1,4 +1,5 @@
 import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-selection.ts";
+import type { DatabaseSync } from "node:sqlite";
 import {
   ADVERTISED_DOMESTIC_DEPOSIT_SEMANTIC_BLOCKERS,
   type AdvertisedDomesticDepositPreflightResult,
@@ -16,6 +17,10 @@ import {
 import {
   FUBON_DOMESTIC_DEPOSIT_CONTRACT,
   FUBON_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
+  FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  FUBON_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+  FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+  isFubonHumanAttestationDurablyActive,
   preflightFubonDomesticDeposit,
 } from "./fubon-domestic-deposit.ts";
 import {
@@ -230,12 +235,17 @@ export type AdvertisedDomesticDepositReadinessEntry = {
   workflow: string;
   authority: string;
   contractVersion: string;
-  capability: "canonical-synthetic" | "canonical-live" | "preflight-only";
+  capability:
+    | "canonical-synthetic"
+    | "canonical-live"
+    | "canonical-human-attested"
+    | "preflight-only";
   fixtureEvidence:
     | "canonical-versioned-synthetic"
     | "canonical-versioned-human-attested"
     | "preflight-versioned-synthetic";
   liveValidation: "pending" | "partial" | "complete";
+  providerGuaranteed?: boolean;
   semanticBlockers: readonly AdvertisedDomesticDepositSemanticBlocker[];
   blockers: readonly AdvertisedDomesticDepositReadinessBlocker[];
 };
@@ -301,12 +311,74 @@ export function isAdvertisedDomesticDepositEntryReleaseReady(
 ): boolean {
   return (
     (entry.capability === "canonical-synthetic" ||
-      entry.capability === "canonical-live") &&
+      entry.capability === "canonical-live" ||
+      entry.capability === "canonical-human-attested") &&
     (entry.fixtureEvidence === "canonical-versioned-synthetic" ||
       entry.fixtureEvidence === "canonical-versioned-human-attested") &&
     entry.liveValidation === "complete" &&
     entry.blockers.length === 0
   );
+}
+
+/**
+ * Read the Fubon limited-admission state from durable canonical evidence. The
+ * static inventory intentionally remains preflight-only until this probe sees
+ * a committed human-attested capture; a fixture or an active manifest alone
+ * cannot promote readiness.
+ */
+export function buildFubonDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("fubon");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN financial_accounts account_row
+             ON account_row.account_id = transaction_row.account_id
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           WHERE capture.authority_route = ?`,
+        )
+        .get(FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  const durable =
+    durableCaptureCount > 0 && isFubonHumanAttestationDurablyActive(db);
+  if (!durable) return base;
+  return {
+    ...base,
+    authority: FUBON_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: FUBON_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: FUBON_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
+export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessGate {
+  const entries = ADVERTISED_DOMESTIC_DEPOSIT_READINESS.map((entry) =>
+    entry.sourceId === "fubon"
+      ? buildFubonDomesticDepositReadinessFromLedger(db)
+      : entry,
+  );
+  return evaluateAdvertisedDomesticDepositReadiness(entries);
 }
 
 export function evaluateAdvertisedDomesticDepositReadiness(

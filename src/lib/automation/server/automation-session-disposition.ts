@@ -1,13 +1,17 @@
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { readLibrettoSessionState } from "./libretto-session.ts";
+import {
+  cdpEndpointForSession,
+  readLibrettoSessionState,
+} from "./libretto-session.ts";
 import {
   armAutomationSessionTimeout,
   claimAutomationSessionForCleanup,
   disarmAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
+  isExpectedLibrettoDaemon,
   ownAutomationSession,
   ownedAutomationSession,
   restoreAutomationSessionOwnership,
@@ -27,6 +31,13 @@ export type ForceQuitFinalizationDependencies = Partial<{
   readSessionState: typeof readLibrettoSessionState;
   claimSession: typeof claimAutomationSessionForCleanup;
   finalizeSession: typeof finalizeExactOwnedAutomationSession;
+}>;
+
+export type LiveAutomationSessionDependencies = Partial<{
+  readSessionState: typeof readLibrettoSessionState;
+  endpointForSession: typeof cdpEndpointForSession;
+  isExpectedDaemon: typeof isExpectedLibrettoDaemon;
+  probeEndpoint: (endpoint: string) => Promise<boolean>;
 }>;
 
 export type AutomationSessionCleanupResult = {
@@ -105,6 +116,65 @@ export function sessionPid(session: string) {
     return readLibrettoSessionState(session)?.pid ?? null;
   } catch {
     return null;
+  }
+}
+
+function isLoopbackHttpEndpoint(endpoint: string) {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "http:"
+      && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+  } catch {
+    return false;
+  }
+}
+
+async function probeCdpEndpoint(endpoint: string) {
+  if (!isLoopbackHttpEndpoint(endpoint)) return false;
+  try {
+    const response = await fetch(new URL("/json/version", endpoint), {
+      signal: AbortSignal.timeout(1_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function isLiveOwnedAutomationSession(
+  owner: Pick<OwnedAutomationSession, "session" | "pid">,
+  dependencies: LiveAutomationSessionDependencies = {},
+) {
+  const deps = {
+    readSessionState: readLibrettoSessionState,
+    endpointForSession: cdpEndpointForSession,
+    isExpectedDaemon: isExpectedLibrettoDaemon,
+    probeEndpoint: probeCdpEndpoint,
+    ...dependencies,
+  };
+  let state: ReturnType<typeof readLibrettoSessionState>;
+  try {
+    state = deps.readSessionState(owner.session);
+  } catch {
+    return false;
+  }
+  if (!state || state.session !== owner.session || state.status !== "paused" || !state.pid || owner.pid !== state.pid) return false;
+  try {
+    if (!deps.isExpectedDaemon(state.pid, owner.session)) return false;
+  } catch {
+    return false;
+  }
+  let endpoint: string | null;
+  try {
+    endpoint = deps.endpointForSession(owner.session);
+  } catch {
+    return false;
+  }
+  if (!endpoint || !isLoopbackHttpEndpoint(endpoint)) return false;
+  try {
+    return await deps.probeEndpoint(endpoint);
+  } catch {
+    return false;
   }
 }
 

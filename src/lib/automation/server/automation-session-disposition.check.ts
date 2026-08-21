@@ -8,6 +8,7 @@ import {
   automationSessionOwnerForRun,
   claimAutomationTaskRunSession,
   finalizeAutomationSessionForRun,
+  isLiveOwnedAutomationSession,
   ownedAutomationSessionForTask,
   refreshAutomationSession,
   relinquishAutomationSessionForTask,
@@ -67,6 +68,40 @@ test("resume session parsing accepts Libretto resume output", () => {
   assert.equal(
     resumeSessionFromLog('Resume requested for session "ses-resume-output".'),
     "ses-resume-output",
+  );
+});
+
+test("live session recovery requires exact daemon identity and a loopback CDP probe", async () => {
+  const owner = { session: "ses-live-check", pid: 4242 };
+  const state = { session: owner.session, port: 49321, pid: owner.pid, status: "paused" };
+  const dependencies = {
+    readSessionState: () => state,
+    endpointForSession: () => "http://127.0.0.1:49321",
+    isExpectedDaemon: (pid: number, session: string) => pid === owner.pid && session === owner.session,
+    probeEndpoint: async () => true,
+  };
+  assert.equal(await isLiveOwnedAutomationSession(owner, dependencies), true);
+  assert.equal(await isLiveOwnedAutomationSession({ ...owner, pid: 4243 }, dependencies), false);
+  assert.equal(
+    await isLiveOwnedAutomationSession(owner, {
+      ...dependencies,
+      endpointForSession: () => "https://127.0.0.1:49321",
+    }),
+    false,
+  );
+  assert.equal(
+    await isLiveOwnedAutomationSession(owner, {
+      ...dependencies,
+      probeEndpoint: async () => false,
+    }),
+    false,
+  );
+  assert.equal(
+    await isLiveOwnedAutomationSession(owner, {
+      ...dependencies,
+      probeEndpoint: async () => { throw new Error("probe unavailable"); },
+    }),
+    false,
   );
 });
 

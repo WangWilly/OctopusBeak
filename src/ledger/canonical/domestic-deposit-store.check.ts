@@ -12,6 +12,10 @@ import {
   type DomesticDepositCapture,
   type DomesticDepositValidatedCapture,
 } from "./domestic-deposit-store.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 
 const commitCanonicalDomesticDeposit = async (
   store: ReturnType<typeof createDomesticDepositStore>,
@@ -344,3 +348,180 @@ await assert.rejects(
 );
 assert.equal(queryCurrent(store).provenanceCount, 3);
 store.close();
+
+// The financial seam is provider-neutral: this fixture deliberately uses a
+// second namespace, authority route, record kind, and contract vocabulary.
+// It proves the transaction core is not shaped around LINE Bank fields.
+const syntheticFinancialStore = createDomesticDepositStore(":memory:");
+const syntheticFinancialCapture = admitCanonicalFinancialDepositCapture({
+  captureId: "synthetic-provider-capture-1",
+  authorityRoute: "synthetic-bank/deposit/posted-v1",
+  contractVersion: "posted-v1",
+  identity: {
+    integrationNamespace: "synthetic-bank",
+    sourceConnectionKey: "sha256:synthetic-connection",
+    identityEpochKey: "sha256:synthetic-epoch",
+    stream: "checking",
+    recordKind: "synthetic-posted-deposit",
+    subjectDigest: "sha256:synthetic-account",
+    accountNo: "sha256:synthetic-account",
+    accountType: "depository",
+    currency: "TWD",
+  },
+  observedAt: "2026-01-03T00:00:00.000Z",
+  scope: {
+    startDate: "2026-01-01",
+    endDate: "2026-01-02",
+    scopeKind: "bounded-range",
+    completeness: "complete-range",
+    completenessBasis: "synthetic-all-pages",
+    completenessRuleVersion: "synthetic-posted-v1",
+    absenceAuthority: "comparable-complete-range",
+    contractFingerprint: "sha256:synthetic-contract",
+    preflightFingerprint: "sha256:synthetic-preflight",
+    pageCount: 1,
+  },
+  semantics: {
+    postingStatus: "posted",
+    postingOrigin: "synthetic_provider_booked_history_v1",
+    postingBasis: "synthetic_query_status_success_v1",
+    postingRuleVersion: "synthetic-bank/deposit/posted-v1",
+    economicStatus: "normal",
+    administrativeState: "active",
+    semanticRuleVersion: "synthetic-bank/deposit/posted-v1",
+    effectiveTimeBasis: "accounting",
+    effectiveTimeRuleVersion: "synthetic-bank/deposit/transaction-time-v1",
+    timeZone: "Asia/Taipei",
+    timePrecision: "second",
+    timeOrigin: "source_reported",
+    requireBalance: true,
+  },
+  pages: [
+    {
+      pageOrdinal: 0,
+      responseCode: "200",
+      terminal: true,
+      rowCount: 1,
+      responseDigest: "sha256:synthetic-page",
+      proofKind: "synthetic-all-pages",
+      contractFingerprint: "sha256:synthetic-contract",
+      preflightFingerprint: "sha256:synthetic-preflight",
+      metadataJson: '{"page":1}',
+    },
+  ],
+  records: [
+    {
+      occurrenceKey: "sha256:synthetic-occurrence",
+      collisionKey: "sha256:synthetic-collision",
+      providerKey: "sha256:synthetic-occurrence",
+      contentHash: "sha256:synthetic-content",
+      sequenceLexeme: "synthetic-sequence-1",
+      compactJson: '{"source":"synthetic"}',
+      amount: { coefficient: "1250", scale: 0 },
+      balanceAfter: { coefficient: "91250", scale: 0 },
+      currency: "TWD",
+      direction: "inflow",
+      sourceTime: {
+        localDate: "2026-01-01",
+        localTime: "10:20:30",
+        timeZone: "Asia/Taipei",
+        epochMilliseconds: 1767234030000,
+      },
+      effectiveOn: "2026-01-01",
+      transactionDateTimeLocal: "2026-01-01T10:20:30",
+    },
+  ],
+});
+const forgedSyntheticCapture = Object.create(
+  Object.getPrototypeOf(syntheticFinancialCapture),
+);
+Object.defineProperties(
+  forgedSyntheticCapture,
+  Object.getOwnPropertyDescriptors(syntheticFinancialCapture),
+);
+for (const key of Reflect.ownKeys(syntheticFinancialCapture)) {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    syntheticFinancialCapture,
+    key,
+  );
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(forgedSyntheticCapture, key),
+    descriptor,
+  );
+}
+await assert.rejects(
+  () =>
+    commitCanonicalFinancialDepositCapture(
+      {
+        db: syntheticFinancialStore.db,
+        databasePath: syntheticFinancialStore.databasePath,
+        commitClock: () => syntheticFinancialStore.sourceStore.commitClock(),
+      },
+      forgedSyntheticCapture,
+    ),
+  /runtime-validated|admission seam/i,
+);
+const syntheticFinancialCommit = await commitCanonicalFinancialDepositCapture(
+  {
+    db: syntheticFinancialStore.db,
+    databasePath: syntheticFinancialStore.databasePath,
+    commitClock: () => syntheticFinancialStore.sourceStore.commitClock(),
+  },
+  syntheticFinancialCapture,
+);
+assert.equal(syntheticFinancialCommit.status, "canonical-live");
+assert.equal(syntheticFinancialCommit.transactionCount, 1);
+assert.equal(
+  syntheticFinancialStore.db
+    .prepare(
+      "SELECT integration_namespace, authority_route, record_kind FROM source_captures JOIN source_connections USING (source_connection_id)",
+    )
+    .get()?.integration_namespace,
+  "synthetic-bank",
+);
+assert.equal(
+  syntheticFinancialStore.db
+    .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+    .get()?.count,
+  1,
+);
+assert.equal(
+  queryCurrent(syntheticFinancialStore, {
+    integrationNamespace: "synthetic-bank",
+  }).status,
+  "canonical-live",
+);
+assert.equal(
+  queryCurrent(syntheticFinancialStore, {
+    integrationNamespace: "synthetic-bank",
+  }).transactions.length,
+  1,
+);
+assert.equal(
+  queryCurrent(syntheticFinancialStore, {
+    integrationNamespace: "synthetic-bank",
+  }).transactions[0]?.effectiveTimeBasis,
+  "accounting",
+);
+const syntheticHistorical = queryHistorical(syntheticFinancialStore, {
+  integrationNamespace: "synthetic-bank",
+  financialAt: "2026-01-01",
+});
+assert.equal(syntheticHistorical.status, "canonical-live");
+assert.equal(syntheticHistorical.transactions.length, 1);
+assert.equal(syntheticHistorical.financialCutoffApplied, true);
+const syntheticLineage = queryLineage(syntheticFinancialStore, {
+  sourceOccurrenceKey: "sha256:synthetic-occurrence",
+  sourceConnection: "synthetic",
+  identityEpoch: 1,
+  stream: "checking",
+  accountKey: "sha256:synthetic-account",
+  integrationNamespace: "synthetic-bank",
+  sourceConnectionKey: "sha256:synthetic-connection",
+  identityEpochKey: "sha256:synthetic-epoch",
+  recordKind: "synthetic-posted-deposit",
+});
+assert.equal(syntheticLineage.status, "canonical-live");
+assert.equal(syntheticLineage.transactions.length, 1);
+assert.equal(syntheticLineage.provenanceComplete, true);
+syntheticFinancialStore.close();

@@ -1114,19 +1114,19 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "posting_origin TEXT NOT NULL CHECK(posting_origin = 'provider_booked_history')",
-    "posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history'))",
+    "posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%')",
   )
   .replace(
     "posting_basis TEXT NOT NULL CHECK(posting_basis = 'query-status-success-with-accounting-date')",
-    "posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted'))",
+    "posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%')",
   )
   .replace(
     "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
-    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
-    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
@@ -1134,7 +1134,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
-    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13'))",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2319,6 +2319,11 @@ function validateCathayAuthorityRoute(
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
             AND registered.integration_namespace = 'linebank'
             AND registered.contract_version = 'human-attested-v13')
+          OR
+          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'human-attested-v1')
         )
     )`,
         )
@@ -3241,6 +3246,9 @@ function validateSelectedAssertionProvenance(
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
+          OR
+          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1')
         )
     )`,
         )
@@ -4250,10 +4258,11 @@ function ensureV7ProjectionSchema(db: DatabaseSync): void {
     );
 }
 
-/** v13 widens only the typed financial semantics accepted by the shared
- * revision authority. Existing v8 ledgers keep their version and data; the
- * table is rebuilt transactionally on the next writable open. */
-function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
+/** Widen provider-specific financial semantics without weakening normalized
+ * enums. Existing v8 ledgers keep their rows; the revision table is rebuilt
+ * transactionally on the next writable open when it still has a closed
+ * provider allowlist. */
+function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
   const sql = String(
     (
       db
@@ -4263,7 +4272,20 @@ function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
         .get() as { sql?: unknown } | undefined
     )?.sql ?? "",
   );
-  if (/human_attested_history/.test(sql) && /transaction-time/.test(sql))
+  if (
+    /posting_origin TEXT NOT NULL CHECK\(posting_origin IN/.test(sql) &&
+    /posting_basis TEXT NOT NULL CHECK\(posting_basis IN/.test(sql) &&
+    /posting_rule_version TEXT NOT NULL CHECK\(posting_rule_version IN/.test(
+      sql,
+    ) &&
+    /semantic_rule_version TEXT NOT NULL CHECK\(semantic_rule_version IN/.test(
+      sql,
+    ) &&
+    /effective_time_rule_version TEXT NOT NULL CHECK\(effective_time_rule_version IN/.test(
+      sql,
+    ) &&
+    /posting_origin LIKE 'synthetic_%'/.test(sql)
+  )
     return;
   const before = Number(
     (
@@ -4276,7 +4298,7 @@ function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
   );
   db.exec(`
     DROP VIEW IF EXISTS source_assertions;
-    CREATE TABLE transaction_revisions_v13 (
+    CREATE TABLE transaction_revisions_widened (
       revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
       transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
       source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
@@ -4285,20 +4307,20 @@ function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
       amount_coefficient TEXT NOT NULL, amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0), currency TEXT NOT NULL,
       direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')),
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
-      posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history')),
-      posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted')),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
+      posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision = 'second'),
       time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13')),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
-    INSERT INTO transaction_revisions_v13(
+    INSERT INTO transaction_revisions_widened(
       revision_id, transaction_id, source_record_id, capture_id, commit_id,
       revision_number, amount_coefficient, amount_scale, currency, direction,
       posting_status, posting_origin, posting_basis, posting_rule_version,
@@ -4316,7 +4338,7 @@ function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
       utc_instant_utc_us
     FROM transaction_revisions;
     DROP TABLE transaction_revisions;
-    ALTER TABLE transaction_revisions_v13 RENAME TO transaction_revisions;
+    ALTER TABLE transaction_revisions_widened RENAME TO transaction_revisions;
     CREATE VIEW source_assertions AS
       SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
         revision.source_record_id, assertion.created_commit_id AS commit_id
@@ -4342,7 +4364,7 @@ function ensureLineBankV13RevisionSchema(db: DatabaseSync): void {
   );
   if (after !== before)
     throw new Error(
-      "Canonical v8 LINE Bank revision-schema rebuild lost legacy rows.",
+      "Canonical v8 financial revision-schema rebuild lost legacy rows.",
     );
 }
 
@@ -4774,7 +4796,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
-      ensureLineBankV13RevisionSchema(db);
+      ensureCanonicalFinancialRevisionSchema(db);
       ensureV7ProjectionSchema(db);
       db.exec("COMMIT");
       db.exec("PRAGMA foreign_keys = ON");
@@ -4805,7 +4827,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
-      ensureLineBankV13RevisionSchema(db);
+      ensureCanonicalFinancialRevisionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
       db.exec("PRAGMA foreign_keys = ON");

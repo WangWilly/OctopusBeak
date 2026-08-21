@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   BANK_STATEMENT_CAPABILITIES,
+  allSupportedStatementTypeIds,
   automationFlagEnabled,
   isStatementSelectionGroup,
   selectStatementTypes,
@@ -10,15 +11,34 @@ import {
 const fubon = BANK_STATEMENT_CAPABILITIES.fubon;
 const esun = BANK_STATEMENT_CAPABILITIES.esun;
 
-assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types", statementTypes: [] }), true);
-assert.equal(isStatementSelectionGroup({ statementSelectionKey: "types" }), false);
+assert.deepEqual(allSupportedStatementTypeIds(fubon), [
+  "deposit",
+  "credit_card",
+  "loan",
+]);
+
+assert.equal(
+  isStatementSelectionGroup({
+    statementSelectionKey: "types",
+    statementTypes: [],
+  }),
+  true,
+);
+assert.equal(
+  isStatementSelectionGroup({ statementSelectionKey: "types" }),
+  false,
+);
 assert.equal(automationFlagEnabled(undefined), false);
 
 assert.deepEqual(selectStatementTypes(fubon, {}, "display"), {
-  selectedIds: [], needsSetup: false, persisted: false,
+  selectedIds: [],
+  needsSetup: false,
+  persisted: false,
 });
 assert.deepEqual(selectStatementTypes(esun, {}, "strict"), {
-  selectedIds: ["credit_card"], needsSetup: false, persisted: false,
+  selectedIds: ["credit_card"],
+  needsSetup: false,
+  persisted: false,
 });
 assert.deepEqual(
   selectStatementTypes(
@@ -60,14 +80,15 @@ assert.deepEqual(
 );
 
 assert.throws(
-  () => selectStatementTypes(
-    fubon,
-    {
-      [fubon.enabledKey]: true,
-      [fubon.statementSelectionKey]: "deposit,unknown",
-    },
-    "strict",
-  ),
+  () =>
+    selectStatementTypes(
+      fubon,
+      {
+        [fubon.enabledKey]: true,
+        [fubon.statementSelectionKey]: "deposit,unknown",
+      },
+      "strict",
+    ),
   (error: unknown) => {
     assert.ok(error instanceof StatementSelectionError);
     assert.equal(error.groupId, "fubon");
@@ -93,14 +114,15 @@ assert.deepEqual(
   { selectedIds: ["deposit"], needsSetup: true, persisted: true },
 );
 assert.throws(
-  () => selectStatementTypes(
-    fubon,
-    {
-      [fubon.enabledKey]: true,
-      [fubon.statementSelectionKey]: "",
-    },
-    "strict",
-  ),
+  () =>
+    selectStatementTypes(
+      fubon,
+      {
+        [fubon.enabledKey]: true,
+        [fubon.statementSelectionKey]: "",
+      },
+      "strict",
+    ),
   (error: unknown) => {
     assert.ok(error instanceof StatementSelectionError);
     assert.equal(error.groupId, "fubon");

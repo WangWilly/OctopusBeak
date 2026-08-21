@@ -270,7 +270,7 @@ export async function finalizePersistedActiveRuns(
   if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
-function scheduleAutomationTaskRunTimeout(
+export function scheduleAutomationTaskRunTimeout(
   context: AutomationTaskRunFinalizationContext,
 ) {
   const initialRun = taskRunById(context.taskDb, context.taskRunId);

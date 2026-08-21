@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type LibrettoSessionState = {
   session: string;
   port: number;
   pid?: number;
   cdpEndpoint?: string;
+  status?: string;
   viewport?: { width: number; height: number };
 };
 
@@ -26,12 +27,17 @@ export function librettoSessionPath(session: string) {
   );
 }
 
+export function librettoSessionLogPath(session: string) {
+  return join(dirname(librettoSessionPath(session)), "logs.jsonl");
+}
+
 export function parseLibrettoSessionState(text: string): LibrettoSessionState {
   const raw = JSON.parse(text) as {
     session?: unknown;
     port?: unknown;
     pid?: unknown;
     cdpEndpoint?: unknown;
+    status?: unknown;
     viewport?: unknown;
   };
   const session = validateLibrettoSessionName(String(raw.session ?? ""));
@@ -51,6 +57,7 @@ export function parseLibrettoSessionState(text: string): LibrettoSessionState {
     port,
     pid,
     cdpEndpoint: typeof raw.cdpEndpoint === "string" ? raw.cdpEndpoint : undefined,
+    status: typeof raw.status === "string" ? raw.status : undefined,
     viewport,
   };
 }
@@ -67,7 +74,47 @@ export function cdpEndpointFromState(state: LibrettoSessionState | Pick<Libretto
   return null;
 }
 
+function isTerminalSessionEvent(event: string) {
+  return /(?:child[-_](?:exit|close|closed|killed|termination|terminated)|(?:^|[-_])(?:close|closed|killed|kill|termination|terminated|sigterm|sigkill|shutdown|exit)(?:$|[-_]))/i.test(event);
+}
+
+export function cdpEndpointFromSessionLog(state: LibrettoSessionState, text: string) {
+  if (state.port !== 0 || state.cdpEndpoint || !state.pid) return null;
+  let endpoint: string | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    const eventName = typeof record.event === "string" ? record.event : "";
+    const data = record.data;
+    if (!data || typeof data !== "object") continue;
+    const child = data as Record<string, unknown>;
+    if (eventName === "child-launched") {
+      if (record.scope !== "libretto.child" || child.session !== state.session || Number(child.pid) !== state.pid) continue;
+      const port = Number(child.port);
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) continue;
+      endpoint = `http://127.0.0.1:${port}`;
+      continue;
+    }
+    if (!isTerminalSessionEvent(eventName) || child.session !== state.session) continue;
+    if (child.pid !== undefined && Number(child.pid) !== state.pid) continue;
+    endpoint = null;
+  }
+  return endpoint;
+}
+
 export function cdpEndpointForSession(session: string) {
   const state = readLibrettoSessionState(session);
-  return state ? cdpEndpointFromState(state) : null;
+  if (!state) return null;
+  const direct = cdpEndpointFromState(state);
+  if (direct) return direct;
+  const logPath = librettoSessionLogPath(session);
+  if (!existsSync(logPath)) return null;
+  return cdpEndpointFromSessionLog(state, readFileSync(logPath, "utf8"));
 }

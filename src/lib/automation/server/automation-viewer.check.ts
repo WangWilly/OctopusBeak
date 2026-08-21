@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
+  viewerScreenshotErrorKind,
   isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
@@ -38,6 +39,9 @@ assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
 assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
 assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
 assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
+assert.equal(viewerScreenshotErrorKind(new Error("No CDP endpoint available for Libretto session ses-ist4.")), "unavailable");
+assert.equal(viewerScreenshotErrorKind(new Error("browserType.connectOverCDP: socket hang up")), "transient");
+assert.equal(viewerScreenshotErrorKind(new Error("Unexpected screenshot failure")), "failed");
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
