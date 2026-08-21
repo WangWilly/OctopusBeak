@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { createHash, randomBytes } from "node:crypto";
-import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
+import { createHash } from "node:crypto";
 import {
   admitCanonicalSourceEvidence,
   commitCanonicalSourceEvidence,
@@ -13,15 +12,32 @@ import {
 } from "./canonical-source-store.ts";
 import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
 import type { LineBankHumanAttestedV13Capture } from "./linebank-domestic-deposit.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositValidatedCapture,
+} from "./canonical-financial-deposit-writer.ts";
+
+export {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
+export type {
+  CanonicalFinancialDepositCapture,
+  CanonicalFinancialDepositCommitResult,
+  CanonicalFinancialDepositPage,
+  CanonicalFinancialDepositRecord,
+  CanonicalFinancialDepositValidatedCapture,
+  CanonicalFinancialDepositWriterStore,
+} from "./canonical-financial-deposit-writer.ts";
 
 /**
- * Durable Source Capture/Record storage shared by domestic-deposit adapters.
+ * Durable Source Capture/Record storage shared by domestic-deposit adapters;
+ * the financial admission seam delegates to the provider-neutral writer.
  *
- * This is deliberately not a Financial Transaction table. It preserves the
- * compact, typed evidence needed for a later contract review while every
- * result remains `canonicalAdmission: blocked`. The database is SQLite with a
- * single BEGIN IMMEDIATE writer boundary; no response body, headers, DOM, or
- * credentials are retained.
+ * Source-record admission remains deliberately blocked. Financial captures
+ * cross the separate normalized seam below and use the shared transaction
+ * writer; no response body, headers, DOM, or credentials are retained.
  */
 export const DOMESTIC_DEPOSIT_SOURCE_RECORD_STAGE =
   "source-record-only" as const;
@@ -205,13 +221,13 @@ export type DomesticDepositFinancialTransaction = {
   accountNo: string;
   sourceOccurrenceKey: string;
   amount: DomesticDepositExactAmount;
-  currency: "TWD";
+  currency: string;
   direction: "inflow" | "outflow";
-  postingStatus: "posted";
+  postingStatus: "pending" | "posted";
   effectiveOn: string;
   transactionDateTimeLocal: string;
-  effectiveTimeBasis: "transaction-time";
-  timeZone: "Asia/Taipei";
+  effectiveTimeBasis: "accounting" | "transaction-time";
+  timeZone: string;
   knowledgeCommitSequence: number;
 };
 
@@ -282,6 +298,10 @@ export type DomesticDepositLineageRequest = {
   identityEpoch: number;
   stream: string;
   accountKey: string;
+  integrationNamespace?: string;
+  sourceConnectionKey?: string;
+  identityEpochKey?: string;
+  recordKind?: string;
 };
 
 export class DomesticDepositConflictError extends Error {
@@ -832,10 +852,6 @@ export async function commitCanonicalDomesticDeposit(
 const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
 const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
 
-function canonicalId(): Uint8Array {
-  return randomBytes(16);
-}
-
 function idText(value: unknown): string {
   return Buffer.from(value as Uint8Array).toString("hex");
 }
@@ -856,7 +872,7 @@ function v13CanonicalDate(value: string): string {
   return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
 }
 
-function v13FinancialCutoff(value: string): string {
+function financialCutoffDate(value: string): string {
   const normalized = /^\d{8}$/.test(value) ? v13CanonicalDate(value) : value;
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
   if (!match) throw new Error("Financial cutoff must be a calendar date.");
@@ -908,653 +924,152 @@ function v13CompactRecord(
   });
 }
 
-function latestLineBankLifecycle(
-  db: DatabaseSync,
-  assertionId: Uint8Array,
-): string | null {
-  const row = db
-    .prepare(
-      `SELECT transition.event_kind FROM assertion_transitions transition
-       JOIN canonical_commits commit_row ON commit_row.commit_id = transition.commit_id
-       WHERE transition.assertion_id = ?
-       ORDER BY commit_row.commit_sequence DESC, transition.event_id DESC LIMIT 1`,
-    )
-    .get(assertionId) as { event_kind?: string } | undefined;
-  return row?.event_kind ?? null;
-}
-
-function insertLineBankLifecycle(
-  db: DatabaseSync,
-  values: {
-    assertionId: Uint8Array;
-    transactionId: Uint8Array;
-    captureId: Uint8Array;
-    scopeId: Uint8Array;
-    commitId: Uint8Array;
-    kind: "observed" | "withdrawn" | "restored";
-  },
-): void {
-  db.prepare(
-    `INSERT INTO assertion_transitions(
-      event_id, assertion_id, transaction_id, field_name, capture_id, scope_id,
-      run_id, coordinate_id, user_id, commit_id, event_kind
-    ) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, ?, ?)`,
-  ).run(
-    canonicalId(),
-    values.assertionId,
-    values.transactionId,
-    values.captureId,
-    values.scopeId,
-    values.commitId,
-    values.kind,
-  );
-}
-
-function commitCanonicalLineBankFinancialCaptureOnce(
-  store: DomesticDepositStore,
+/**
+ * Adapter boundary for the financial writer.  All provider-specific
+ * vocabulary is resolved here; the writer only receives normalized identity,
+ * completeness, time, posting and occurrence semantics.
+ */
+function normalizeLineBankFinancialCapture(
   capture: LineBankHumanAttestedV13ValidatedCapture,
-): LineBankFinancialCommitResult {
+): CanonicalFinancialDepositValidatedCapture {
   if (!hasLineBankFinancialValidatedBrand(capture))
     throw new DomesticDepositConflictError(
       "LINE Bank financial capture did not cross the runtime-validated v13 seam.",
     );
-  const db = store.db;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (
-      db
-        .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
-        .get(capture.captureId)
-    )
-      throw new DomesticDepositConflictError("Capture overwrite is forbidden.");
-
-    const commitId = canonicalId();
-    const commitSequence = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? 1,
-    );
-    const previousKnowledge = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? -1,
-    );
-    const clockValue = store.sourceStore.commitClock();
-    if (!Number.isSafeInteger(clockValue) || clockValue < 0)
-      throw new Error("Canonical admission clock returned invalid UTC micros.");
-    db.prepare(
-      `INSERT INTO canonical_commits(
-        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-      ) VALUES (?, ?, ?, ?, 'source_capture')`,
-    ).run(
-      commitId,
-      commitSequence,
-      Math.max(clockValue, previousKnowledge + 1),
-      LINEBANK_V13_AUTHORITY,
-    );
-    db.prepare(
-      `INSERT INTO source_authority_routes(
-        authority_route, integration_namespace, stream, contract_version, created_commit_id
-      ) VALUES (?, 'linebank', ?, 'human-attested-v13', ?)
-      ON CONFLICT(authority_route) DO NOTHING`,
-    ).run(LINEBANK_V13_AUTHORITY, capture.stream, commitId);
-
-    const connectionKey = v13ConnectionKey(capture);
-    const existingConnection = db
-      .prepare(
-        "SELECT source_connection_id FROM source_connections WHERE integration_namespace = 'linebank' AND source_connection_key = ?",
-      )
-      .get(connectionKey) as { source_connection_id?: unknown } | undefined;
-    const connectionId = existingConnection
-      ? (existingConnection.source_connection_id as Uint8Array)
-      : canonicalId();
-    if (!existingConnection)
-      db.prepare(
-        "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, 'linebank', ?, ?)",
-      ).run(connectionId, connectionKey, commitId);
-
-    const epochKey = v13EpochKey(capture);
-    const existingEpoch = db
-      .prepare(
-        "SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?",
-      )
-      .get(connectionId, epochKey) as
-      { identity_epoch_id?: unknown } | undefined;
-    const epochId = existingEpoch
-      ? (existingEpoch.identity_epoch_id as Uint8Array)
-      : canonicalId();
-    if (!existingEpoch)
-      db.prepare(
-        "INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES (?, ?, ?, ?)",
-      ).run(epochId, connectionId, epochKey, commitId);
-    db.prepare(
-      "INSERT INTO source_route_bindings(authority_route, source_connection_id, created_commit_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-    ).run(LINEBANK_V13_AUTHORITY, connectionId, commitId);
-
-    const existingSubject = db
-      .prepare(
-        `SELECT source_subject_id FROM source_subjects
-         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ?
-           AND record_kind = ? AND subject_digest = ?`,
-      )
-      .get(
-        connectionId,
-        epochId,
-        capture.stream,
-        LINEBANK_V13_RECORD_KIND,
-        capture.accountKey,
-      ) as { source_subject_id?: unknown } | undefined;
-    const subjectId = existingSubject
-      ? (existingSubject.source_subject_id as Uint8Array)
-      : canonicalId();
-    if (!existingSubject)
-      db.prepare(
-        `INSERT INTO source_subjects(
-          source_subject_id, source_connection_id, identity_epoch_id, stream,
-          record_kind, subject_digest, created_commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        subjectId,
-        connectionId,
-        epochId,
-        capture.stream,
-        LINEBANK_V13_RECORD_KIND,
-        capture.accountKey,
-        commitId,
-      );
-
-    for (const record of capture.records) {
-      const collisions = db
-        .prepare(
-          `SELECT occurrence_key FROM source_records
-           WHERE source_subject_id = ? AND collision_key = ?`,
-        )
-        .all(subjectId, record.baseOccurrenceKey) as Array<{
-        occurrence_key?: unknown;
-      }>;
-      if (
-        collisions.some(
-          (row) => String(row.occurrence_key) !== record.sourceOccurrenceKey,
-        )
-      )
-        throw new DomesticDepositConflictError(
-          "LINE Bank occurrence base collision is forbidden.",
-        );
-      const prior = db
-        .prepare(
-          `SELECT provider_key, content_hash FROM source_records
-           WHERE source_subject_id = ? AND occurrence_key = ?`,
-        )
-        .all(subjectId, record.sourceOccurrenceKey) as Array<{
-        provider_key?: unknown;
-        content_hash?: unknown;
-      }>;
-      if (
-        prior.some(
-          (row) =>
-            String(row.provider_key) !== record.sourceOccurrenceKey ||
-            String(row.content_hash) !== record.sourceChangeFingerprint,
-        )
-      )
-        throw new DomesticDepositConflictError(
-          "LINE Bank occurrence content overwrite is forbidden.",
-        );
-    }
-
-    const existingAccount = db
-      .prepare(
-        `SELECT account_id, currency, account_type FROM financial_accounts
-         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND account_no = ?`,
-      )
-      .get(connectionId, epochId, capture.stream, capture.accountKey) as
-      | { account_id?: unknown; currency?: unknown; account_type?: unknown }
-      | undefined;
-    if (
-      existingAccount &&
-      (existingAccount.currency !== "TWD" ||
-        existingAccount.account_type !== "depository")
-    )
-      throw new DomesticDepositConflictError(
-        "LINE Bank account classification conflict is forbidden.",
-      );
-    const accountId = existingAccount
-      ? (existingAccount.account_id as Uint8Array)
-      : canonicalId();
-    if (!existingAccount)
-      db.prepare(
-        `INSERT INTO financial_accounts(
-          account_id, source_connection_id, identity_epoch_id, stream, account_no,
-          account_type, currency, created_commit_id
-        ) VALUES (?, ?, ?, ?, ?, 'depository', 'TWD', ?)`,
-      ).run(
-        accountId,
-        connectionId,
-        epochId,
-        capture.stream,
-        capture.accountKey,
-        commitId,
-      );
-
-    const captureId = canonicalId();
-    const scopeId = canonicalId();
-    const scopeStart = v13CanonicalDate(capture.scope.startDate);
-    const scopeEnd = v13CanonicalDate(capture.scope.endDate);
-    db.prepare(
-      `INSERT INTO source_captures(
-        capture_id, capture_key, source_connection_id, identity_epoch_id,
-        authority_route, source_subject_id, stream, record_kind, account_no,
-        observed_at, scope_start, scope_end, completeness, completeness_basis,
-        completeness_rule_version, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete-range',
-        'human-attested-requested-scope-all-pages-stable-totals',
-        'linebank/domestic-deposit/human-attested-v13', ?)`,
-    ).run(
-      captureId,
-      capture.captureId,
-      connectionId,
-      epochId,
-      LINEBANK_V13_AUTHORITY,
-      subjectId,
-      capture.stream,
-      LINEBANK_V13_RECORD_KIND,
-      capture.accountKey,
-      capture.observedAt,
-      scopeStart,
-      scopeEnd,
-      commitId,
-    );
-    const contractFingerprint = opaqueToken(
-      "linebank-v13-contract",
-      capture.contractVersion,
-      capture.humanAttestation.evidenceVersion,
-    );
-    const preflightFingerprint = opaqueToken(
-      "linebank-v13-scope",
-      capture.sourceScopeEvidence.evidenceVersion,
-      capture.authority.kind,
-      capture.authority.membershipEffectiveDate ?? "personal-main",
-    );
-    db.prepare(
-      `INSERT INTO capture_scopes(
-        scope_id, capture_id, source_connection_id, identity_epoch_id, account_id,
-        source_subject_id, account_no, stream, scope_start, scope_end, scope_kind,
-        completeness, completeness_basis, completeness_rule_version,
-        absence_authority, contract_fingerprint, preflight_fingerprint,
-        page_count, terminal, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'bounded-range', 'complete-range',
-        'human-attested-requested-scope-all-pages-stable-totals',
-        'linebank/domestic-deposit/human-attested-v13',
-        'comparable-complete-range', ?, ?, ?, 1, ?)`,
-    ).run(
-      scopeId,
-      captureId,
-      connectionId,
-      epochId,
-      accountId,
-      subjectId,
-      capture.accountKey,
-      capture.stream,
-      scopeStart,
-      scopeEnd,
+  const contractFingerprint = opaqueToken(
+    "linebank-v13-contract",
+    capture.contractVersion,
+    capture.humanAttestation.evidenceVersion,
+  );
+  const preflightFingerprint = opaqueToken(
+    "linebank-v13-scope",
+    capture.sourceScopeEvidence.evidenceVersion,
+    capture.authority.kind,
+    capture.authority.membershipEffectiveDate ?? "personal-main",
+  );
+  return admitCanonicalFinancialDepositCapture({
+    captureId: capture.captureId,
+    authorityRoute: LINEBANK_V13_AUTHORITY,
+    // The financial admission contract is distinct from the source
+    // preflight-v4 envelope carried by the adapter input.
+    contractVersion: "human-attested-v13",
+    identity: {
+      integrationNamespace: "linebank",
+      sourceConnectionKey: v13ConnectionKey(capture),
+      identityEpochKey: v13EpochKey(capture),
+      stream: capture.stream,
+      recordKind: LINEBANK_V13_RECORD_KIND,
+      subjectDigest: capture.accountKey,
+      accountNo: capture.accountKey,
+      accountType: "depository",
+      currency: "TWD",
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: v13CanonicalDate(capture.scope.startDate),
+      endDate: v13CanonicalDate(capture.scope.endDate),
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis:
+        "human-attested-requested-scope-all-pages-stable-totals",
+      completenessRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      absenceAuthority: "comparable-complete-range",
       contractFingerprint,
       preflightFingerprint,
-      capture.pageCount,
-      commitId,
-    );
-    for (const page of capture.pages)
-      db.prepare(
-        `INSERT INTO capture_scope_pages(
-          scope_page_id, scope_id, page_ordinal, response_code, terminal,
-          row_count, response_digest, proof_kind, contract_fingerprint,
-          preflight_fingerprint, metadata_json, commit_id
-        ) VALUES (?, ?, ?, '200', ?, ?, ?,
-          'human-attested-requested-scope-all-pages-stable-totals', ?, ?, ?, ?)`,
-      ).run(
-        canonicalId(),
-        scopeId,
-        page.pageNbr - 1,
-        page.pageNbr === capture.pageCount ? 1 : 0,
-        page.txCnt,
-        opaqueToken(
-          "linebank-v13-page",
-          capture.captureId,
-          String(page.pageNbr),
-          String(page.txCnt),
-        ),
-        contractFingerprint,
-        preflightFingerprint,
-        JSON.stringify({
-          pageNbr: page.pageNbr,
-          pageCapacity: page.pageCnt,
-          totalCount: page.totTxCnt,
-          rowCount: page.txCnt,
-        }),
-        commitId,
-      );
-
-    const seen = new Set<string>();
-    for (const record of capture.records) {
-      if (!record.balanceAfter)
-        throw new DomesticDepositConflictError(
-          "LINE Bank admitted financial record lacks an exact balance.",
-        );
-      seen.add(record.sourceOccurrenceKey);
-      const sourceRecordId = canonicalId();
-      db.prepare(
-        `INSERT INTO source_records(
-          source_record_id, capture_id, source_subject_id, commit_id, record_kind,
-          sequence_lexeme, provider_key, content_hash, occurrence_key,
-          collision_key, description, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      ).run(
-        sourceRecordId,
-        captureId,
-        subjectId,
-        commitId,
-        LINEBANK_V13_RECORD_KIND,
-        record.sourceOccurrenceKey,
-        record.sourceOccurrenceKey,
-        record.sourceChangeFingerprint,
-        record.sourceOccurrenceKey,
-        record.baseOccurrenceKey,
-        v13CompactRecord(capture, record),
-      );
-      db.prepare(
-        `INSERT INTO source_record_scopes(
-          source_record_id, scope_id, capture_id, account_id, source_subject_id,
-          sequence_lexeme, occurrence_key, commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        sourceRecordId,
-        scopeId,
-        captureId,
-        accountId,
-        subjectId,
-        record.sourceOccurrenceKey,
-        record.sourceOccurrenceKey,
-        commitId,
-      );
-      db.prepare(
-        "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
-      ).run(sourceRecordId, captureId, commitId);
-
-      const existingTransaction = db
-        .prepare(
-          "SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
-        )
-        .get(accountId, record.sourceOccurrenceKey) as
-        { transaction_id?: unknown } | undefined;
-      const transactionId = existingTransaction
-        ? (existingTransaction.transaction_id as Uint8Array)
-        : canonicalId();
-      if (!existingTransaction)
-        db.prepare(
-          "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES (?, ?, ?, ?)",
-        ).run(transactionId, accountId, record.sourceOccurrenceKey, commitId);
-      const existingRevision = db
-        .prepare(
-          "SELECT revision_id, commit_id FROM transaction_revisions WHERE transaction_id = ? ORDER BY revision_number DESC LIMIT 1",
-        )
-        .get(transactionId) as
-        { revision_id?: unknown; commit_id?: unknown } | undefined;
-      let revisionId: Uint8Array;
-      let assertionId: Uint8Array;
-      if (!existingRevision) {
-        revisionId = canonicalId();
-        db.prepare(
-          `INSERT INTO transaction_revisions(
-            revision_id, transaction_id, source_record_id, capture_id, commit_id,
-            revision_number, amount_coefficient, amount_scale, currency, direction,
-            posting_status, posting_origin, posting_basis, posting_rule_version,
-            description, economic_status, administrative_state,
-            semantic_rule_version, effective_on, transaction_date_time_local,
-            time_zone, time_precision, time_origin, effective_time_basis,
-            effective_time_rule_version, utc_instant_utc_us
-          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'TWD', ?, 'posted',
-            'human_attested_history', 'human-attested-formally-posted',
-            'linebank/domestic-deposit/human-attested-v13', NULL, 'normal',
-            'active', 'linebank/domestic-deposit/human-attested-v13', ?, ?,
-            'Asia/Taipei', 'second', 'source_reported', 'transaction-time',
-            'linebank/domestic-deposit/human-attested-v13', ?)`,
-        ).run(
-          revisionId,
-          transactionId,
-          sourceRecordId,
-          captureId,
-          commitId,
-          record.amount.coefficient,
-          record.amount.scale,
-          record.direction,
-          v13CanonicalDate(record.sourceTime.localDate),
-          v13CanonicalDateTime(record.sourceTime),
-          record.sourceTime.epochMilliseconds * 1_000,
-        );
-        db.prepare(
-          `INSERT INTO transaction_time_observations(
-            observation_id, transaction_id, revision_id, source_record_id,
-            commit_id, role, local_value, time_zone, time_precision,
-            time_origin, utc_instant_utc_us
-          ) VALUES (?, ?, ?, ?, ?, 'occurred', ?, 'Asia/Taipei', 'second',
-            'source_reported', ?)`,
-        ).run(
-          canonicalId(),
-          transactionId,
-          revisionId,
-          sourceRecordId,
-          commitId,
-          v13CanonicalDateTime(record.sourceTime),
-          record.sourceTime.epochMilliseconds * 1_000,
-        );
-        assertionId = canonicalId();
-        db.prepare(
-          `INSERT INTO assertions(
-            assertion_id, transaction_id, field_name, target_kind, origin,
-            producer_id, rule_lineage, revision_id, value_text, created_commit_id
-          ) VALUES (?, ?, 'transaction_revision', 'transaction', 'source', ?, ?, ?, NULL, ?)`,
-        ).run(
-          assertionId,
-          transactionId,
-          LINEBANK_V13_AUTHORITY,
-          LINEBANK_V13_AUTHORITY,
-          revisionId,
-          commitId,
-        );
-        insertLineBankLifecycle(db, {
-          assertionId,
-          transactionId,
-          captureId,
-          scopeId,
-          commitId,
-          kind: "observed",
-        });
-        db.prepare(
-          `INSERT INTO current_transactions(
-            transaction_id, revision_id, commit_id, projection_commit_id,
-            revision_commit_id
-          ) VALUES (?, ?, ?, ?, ?)`,
-        ).run(transactionId, revisionId, commitId, commitId, commitId);
-      } else {
-        revisionId = existingRevision.revision_id as Uint8Array;
-        const assertion = db
-          .prepare(
-            "SELECT assertion_id FROM assertions WHERE origin = 'source' AND revision_id = ?",
-          )
-          .get(revisionId) as { assertion_id?: unknown } | undefined;
-        if (!assertion)
-          throw new Error("LINE Bank canonical source assertion is missing.");
-        assertionId = assertion.assertion_id as Uint8Array;
-        if (latestLineBankLifecycle(db, assertionId) === "withdrawn") {
-          insertLineBankLifecycle(db, {
-            assertionId,
-            transactionId,
-            captureId,
-            scopeId,
-            commitId,
-            kind: "restored",
-          });
-          db.prepare(
-            `INSERT INTO current_transactions(
-              transaction_id, revision_id, commit_id, projection_commit_id,
-              revision_commit_id
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(transaction_id) DO UPDATE SET
-              revision_id = excluded.revision_id,
-              commit_id = excluded.commit_id,
-              projection_commit_id = excluded.projection_commit_id,
-              revision_commit_id = excluded.revision_commit_id`,
-          ).run(
-            transactionId,
-            revisionId,
-            commitId,
-            commitId,
-            existingRevision.commit_id as Uint8Array,
-          );
-        }
-      }
-      db.prepare(
-        "INSERT INTO assertion_provenance(assertion_id, source_record_id, commit_id) VALUES (?, ?, ?)",
-      ).run(assertionId, sourceRecordId, commitId);
-    }
-
-    const prior = db
-      .prepare(
-        `SELECT assertion.assertion_id, assertion.transaction_id,
-          transaction_row.source_sequence, revision.revision_id
-         FROM assertions assertion
-         JOIN financial_transactions transaction_row
-           ON transaction_row.transaction_id = assertion.transaction_id
-         JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-         JOIN current_transactions current_row
-           ON current_row.transaction_id = transaction_row.transaction_id
-          AND current_row.revision_id = revision.revision_id
-         JOIN assertion_provenance provenance
-           ON provenance.assertion_id = assertion.assertion_id
-         JOIN source_record_scopes record_scope
-           ON record_scope.source_record_id = provenance.source_record_id
-         JOIN capture_scopes prior_scope ON prior_scope.scope_id = record_scope.scope_id
-         JOIN source_captures prior_capture ON prior_capture.capture_id = prior_scope.capture_id
-         WHERE assertion.origin = 'source' AND transaction_row.account_id = ?
-           AND revision.effective_on BETWEEN ? AND ?
-           AND prior_scope.source_connection_id = ?
-           AND prior_scope.identity_epoch_id = ?
-           AND prior_scope.account_id = ? AND prior_scope.stream = ?
-           AND prior_scope.scope_start = ? AND prior_scope.scope_end = ?
-           AND prior_scope.scope_kind = 'bounded-range'
-           AND prior_scope.completeness = 'complete-range'
-           AND prior_scope.completeness_rule_version = ?
-           AND prior_scope.contract_fingerprint = ?
-           AND prior_scope.preflight_fingerprint = ?
-           AND prior_capture.authority_route = ?`,
-      )
-      .all(
-        accountId,
-        scopeStart,
-        scopeEnd,
-        connectionId,
-        epochId,
-        accountId,
-        capture.stream,
-        scopeStart,
-        scopeEnd,
-        LINEBANK_V13_AUTHORITY,
-        contractFingerprint,
-        preflightFingerprint,
-        LINEBANK_V13_AUTHORITY,
-      ) as Array<Record<string, unknown>>;
-    for (const row of prior) {
-      if (seen.has(String(row.source_sequence))) continue;
-      const assertionId = row.assertion_id as Uint8Array;
-      if (latestLineBankLifecycle(db, assertionId) === "withdrawn") continue;
-      insertLineBankLifecycle(db, {
-        assertionId,
-        transactionId: row.transaction_id as Uint8Array,
-        captureId,
-        scopeId,
-        commitId,
-        kind: "withdrawn",
-      });
-      db.prepare(
-        "DELETE FROM current_transactions WHERE transaction_id = ? AND revision_id = ?",
-      ).run(row.transaction_id as Uint8Array, row.revision_id as Uint8Array);
-    }
-
-    db.prepare(
-      `INSERT INTO source_sync_states(
-        source_connection_id, account_id, stream, scope_start, scope_end,
-        cursor, last_capture_id, commit_id
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-      ON CONFLICT(source_connection_id, account_id, stream) DO UPDATE SET
-        scope_start = excluded.scope_start, scope_end = excluded.scope_end,
-        cursor = excluded.cursor, last_capture_id = excluded.last_capture_id,
-        commit_id = excluded.commit_id`,
-    ).run(
-      connectionId,
-      accountId,
-      capture.stream,
-      scopeStart,
-      scopeEnd,
-      captureId,
-      commitId,
-    );
-    syncCanonicalProjectionFromCompatibility(db, commitId);
-    db.prepare(
-      `INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)
-       ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id`,
-    ).run(commitId);
-    db.exec("COMMIT");
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      captureId: capture.captureId,
-      commitSequence,
-      transactionCount: capture.records.length,
-      provenanceCount: Number(
-        (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM source_captures WHERE record_kind = ?",
-            )
-            .get(LINEBANK_V13_RECORD_KIND) as { count?: number }
-        ).count ?? 0,
+      pageCount: capture.pageCount,
+    },
+    semantics: {
+      postingStatus: capture.postingStatus,
+      postingOrigin: "human_attested_history",
+      postingBasis: "human-attested-formally-posted",
+      postingRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      effectiveTimeBasis: capture.effectiveTimeBasis,
+      effectiveTimeRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      timeZone: capture.timeZone,
+      timePrecision: "second",
+      timeOrigin: "source_reported",
+      requireBalance: true,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageNbr - 1,
+      responseCode: "200",
+      terminal: page.pageNbr === capture.pageCount,
+      rowCount: page.txCnt,
+      responseDigest: opaqueToken(
+        "linebank-v13-page",
+        capture.captureId,
+        String(page.pageNbr),
+        String(page.txCnt),
       ),
-    };
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* preserve original failure */
-    }
-    throw error;
-  }
+      proofKind: "human-attested-requested-scope-all-pages-stable-totals",
+      contractFingerprint,
+      preflightFingerprint,
+      metadataJson: JSON.stringify({
+        pageNbr: page.pageNbr,
+        pageCapacity: page.pageCnt,
+        totalCount: page.totTxCnt,
+        rowCount: page.txCnt,
+      }),
+    })),
+    records: capture.records.map((record) => ({
+      occurrenceKey: record.sourceOccurrenceKey,
+      collisionKey: record.baseOccurrenceKey,
+      providerKey: record.sourceOccurrenceKey,
+      contentHash: record.sourceChangeFingerprint,
+      sequenceLexeme: record.sourceOccurrenceKey,
+      compactJson: v13CompactRecord(capture, record),
+      amount: record.amount,
+      balanceAfter: record.balanceAfter,
+      currency: record.currency,
+      direction: record.direction,
+      sourceTime: {
+        localDate: record.sourceTime.localDate,
+        localTime: record.sourceTime.localTime,
+        timeZone: record.sourceTime.timeZone,
+        epochMilliseconds: record.sourceTime.epochMilliseconds,
+      },
+      effectiveOn: v13CanonicalDate(record.sourceTime.localDate),
+      transactionDateTimeLocal: v13CanonicalDateTime(record.sourceTime),
+    })),
+  });
 }
 
-export function commitCanonicalLineBankFinancialCapture(
+export async function commitCanonicalLineBankFinancialCapture(
   store: DomesticDepositStore,
   capture: LineBankHumanAttestedV13ValidatedCapture,
 ): Promise<LineBankFinancialCommitResult> {
   ensureOpen(store);
-  return withCanonicalWriterQueue(store.databasePath, () =>
-    commitCanonicalLineBankFinancialCaptureOnce(store, capture),
+  return commitCanonicalFinancialDepositCapture(
+    {
+      db: store.db,
+      databasePath: store.databasePath,
+      commitClock: () => store.sourceStore.commitClock(),
+    },
+    normalizeLineBankFinancialCapture(capture),
   );
 }
 
-function hasLineBankFinancialEvidence(store: DomesticDepositStore): boolean {
+function hasFinancialEvidence(
+  store: DomesticDepositStore,
+  integrationNamespace = "linebank",
+): boolean {
   return Boolean(
     store.db
-      .prepare("SELECT 1 FROM source_captures WHERE record_kind = ? LIMIT 1")
-      .get(LINEBANK_V13_RECORD_KIND),
+      .prepare(
+        `SELECT 1 FROM source_captures capture
+         JOIN source_connections connection
+           ON connection.source_connection_id = capture.source_connection_id
+         WHERE connection.integration_namespace = ?
+           AND capture.record_kind NOT LIKE '%source-record%' LIMIT 1`,
+      )
+      .get(integrationNamespace),
   );
 }
 
-function lineBankFinancialRows(
+function canonicalFinancialRows(
   store: DomesticDepositStore,
   request: {
     knowledgeAt?: number;
@@ -1562,6 +1077,7 @@ function lineBankFinancialRows(
     occurrenceKey?: string;
     accountKey?: string;
     sourceConnectionKey?: string;
+    integrationNamespace?: string;
     identityEpochKey?: string;
     includeWithdrawn?: boolean;
   } = {},
@@ -1576,10 +1092,7 @@ function lineBankFinancialRows(
     ).value ?? 0,
   );
   const knowledgeAt = request.knowledgeAt ?? latestKnowledge;
-  const clauses = [
-    "revision.posting_rule_version = 'linebank/domestic-deposit/human-attested-v13'",
-    "revision_commit.commit_sequence <= ?",
-  ];
+  const clauses = ["revision_commit.commit_sequence <= ?"];
   if (!request.includeWithdrawn)
     clauses.push(`COALESCE((
       SELECT transition.event_kind FROM assertion_transitions transition
@@ -1592,7 +1105,7 @@ function lineBankFinancialRows(
   if (!request.includeWithdrawn) parameters.push(knowledgeAt);
   if (request.financialAt !== undefined) {
     clauses.push("revision.effective_on <= ?");
-    parameters.push(v13FinancialCutoff(request.financialAt));
+    parameters.push(financialCutoffDate(request.financialAt));
   }
   if (request.occurrenceKey !== undefined) {
     clauses.push("transaction_row.source_sequence = ?");
@@ -1602,11 +1115,12 @@ function lineBankFinancialRows(
     clauses.push("account.account_no = ?");
     parameters.push(request.accountKey);
   }
+  if (request.integrationNamespace !== undefined) {
+    clauses.push("connection.integration_namespace = ?");
+    parameters.push(request.integrationNamespace);
+  }
   if (request.sourceConnectionKey !== undefined) {
-    clauses.push(
-      "connection.integration_namespace = 'linebank'",
-      "connection.source_connection_key = ?",
-    );
+    clauses.push("connection.source_connection_key = ?");
     parameters.push(request.sourceConnectionKey);
   }
   if (request.identityEpochKey !== undefined) {
@@ -1651,25 +1165,28 @@ function lineBankFinancialRows(
       coefficient: String(row.amount_coefficient),
       scale: Number(row.amount_scale),
     },
-    currency: "TWD",
+    currency: String(row.currency),
     direction: String(row.direction) as "inflow" | "outflow",
-    postingStatus: "posted",
+    postingStatus: String(row.posting_status) as "pending" | "posted",
     effectiveOn: String(row.effective_on),
     transactionDateTimeLocal: String(row.transaction_date_time_local),
-    effectiveTimeBasis: "transaction-time",
-    timeZone: "Asia/Taipei",
+    effectiveTimeBasis: String(row.effective_time_basis) as
+      "accounting" | "transaction-time",
+    timeZone: String(row.time_zone),
     knowledgeCommitSequence: Number(row.commit_sequence),
   }));
 }
 
 export function queryCurrent(
   store: DomesticDepositStore,
+  request: { integrationNamespace?: string } = {},
 ): DomesticDepositCurrentQueryResult {
   ensureOpen(store);
   const base = domesticQueryResult(
     queryCanonicalSourceCurrent(store.sourceStore),
   );
-  const financial = hasLineBankFinancialEvidence(store);
+  const integrationNamespace = request.integrationNamespace ?? "linebank";
+  const financial = hasFinancialEvidence(store, integrationNamespace);
   return {
     kind: "current",
     ...base,
@@ -1680,20 +1197,25 @@ export function queryCurrent(
           financialAdmissionBlockers: [] as const,
         }
       : {}),
-    transactions: lineBankFinancialRows(store),
+    transactions: canonicalFinancialRows(store, { integrationNamespace }),
   };
 }
 
 export function queryHistorical(
   store: DomesticDepositStore,
-  request: { knowledgeAt?: number; financialAt?: string } = {},
+  request: {
+    knowledgeAt?: number;
+    financialAt?: string;
+    integrationNamespace?: string;
+  } = {},
 ):
   | DomesticDepositHistoricalQueryResult
   | DomesticDepositBlockedHistoricalQueryResult {
   ensureOpen(store);
+  const integrationNamespace = request.integrationNamespace ?? "linebank";
   if (
     request.financialAt !== undefined &&
-    !hasLineBankFinancialEvidence(store)
+    !hasFinancialEvidence(store, integrationNamespace)
   ) {
     return {
       status: "blocked",
@@ -1710,11 +1232,11 @@ export function queryHistorical(
   const result = queryCanonicalSourceHistorical(store.sourceStore, {
     knowledgeAt: request.knowledgeAt,
   });
-  const financial = hasLineBankFinancialEvidence(store);
+  const financial = hasFinancialEvidence(store, integrationNamespace);
   const financialAt =
     request.financialAt === undefined
       ? undefined
-      : v13FinancialCutoff(request.financialAt);
+      : financialCutoffDate(request.financialAt);
   const common = {
     kind: "historical",
     knowledgeAt: result.knowledgeAt,
@@ -1726,7 +1248,10 @@ export function queryHistorical(
           financialAdmissionBlockers: [] as const,
         }
       : {}),
-    transactions: lineBankFinancialRows(store, request),
+    transactions: canonicalFinancialRows(store, {
+      ...request,
+      integrationNamespace,
+    }),
   };
   if (financialAt === undefined)
     return {
@@ -1752,31 +1277,35 @@ export function queryLineage(
   request: DomesticDepositLineageRequest,
 ): DomesticDepositLineageQueryResult {
   ensureOpen(store);
-  const sourceConnectionKey = opaqueToken(
-    "linebank-connection",
-    request.sourceConnection,
-  );
-  const identityEpochKey = opaqueToken(
-    "linebank-epoch",
-    request.sourceConnection,
-    String(request.identityEpoch),
-  );
-  const transactions = lineBankFinancialRows(store, {
+  const integrationNamespace = request.integrationNamespace ?? "linebank";
+  const sourceConnectionKey =
+    request.sourceConnectionKey ??
+    opaqueToken(`${integrationNamespace}-connection`, request.sourceConnection);
+  const identityEpochKey =
+    request.identityEpochKey ??
+    opaqueToken(
+      `${integrationNamespace}-epoch`,
+      request.sourceConnection,
+      String(request.identityEpoch),
+    );
+  const transactions = canonicalFinancialRows(store, {
     occurrenceKey: request.sourceOccurrenceKey,
     accountKey: request.accountKey,
     sourceConnectionKey,
+    integrationNamespace,
     identityEpochKey,
     includeWithdrawn: true,
   });
   const result = queryCanonicalSourceLineage(store.sourceStore, {
-    integrationNamespace: "linebank",
+    integrationNamespace,
     sourceConnectionKey,
     identityEpoch: identityEpochKey,
     stream: request.stream,
     recordKind:
-      transactions.length > 0
+      request.recordKind ??
+      (transactions.length > 0
         ? LINEBANK_V13_RECORD_KIND
-        : "linebank-domestic-deposit-source-record",
+        : "linebank-domestic-deposit-source-record"),
     subjectDigest: request.accountKey,
     occurrenceKey: request.sourceOccurrenceKey,
   });

@@ -43,6 +43,7 @@ export type HumanAssistanceCompletionProbe = {
   challengeVisible: boolean;
   challengeSubmitVisible: boolean;
 };
+export type ViewerScreenshotErrorKind = "unavailable" | "transient" | "failed";
 type InspectableRect = { x: number; y: number; width: number; height: number };
 type InspectableTextTarget = InspectableTarget & { rect: InspectableRect };
 
@@ -65,10 +66,21 @@ const editableTargetSelector = [
   '[contenteditable="true"]',
 ].join(", ");
 
-export function isClosedViewerSessionError(error: unknown) {
+export function viewerScreenshotErrorKind(error: unknown): ViewerScreenshotErrorKind {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes("No CDP endpoint available for Libretto session") ||
-    /connect ECONNREFUSED 127\.0\.0\.1:\d+/.test(message);
+  if (message.includes("No CDP endpoint available for Libretto session")
+    || message.includes("No browser page available for Libretto session")
+    || /connect ECONNREFUSED 127\.0\.0\.1:\d+/.test(message)) {
+    return "unavailable";
+  }
+  if (/ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|Target (?:page|context|browser) .*closed|browser has been closed/i.test(message)) {
+    return "transient";
+  }
+  return "failed";
+}
+
+export function isClosedViewerSessionError(error: unknown) {
+  return viewerScreenshotErrorKind(error) === "unavailable";
 }
 
 function pixel(value: unknown) {

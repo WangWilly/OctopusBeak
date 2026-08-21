@@ -380,10 +380,152 @@ try {
     ),
     CANONICAL_SOURCE_SCHEMA_VERSION,
   );
+  const migratedRevisionSchema = String(
+    (
+      migrated.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /CHECK\(posting_origin IN .*synthetic_%/,
+  );
+  assert.match(migratedRevisionSchema, /CHECK\(posting_basis IN .*synthetic_%/);
+  assert.match(
+    migratedRevisionSchema,
+    /CHECK\(posting_rule_version IN .*synthetic-%/,
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /CHECK\(semantic_rule_version IN .*synthetic-%/,
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /CHECK\(effective_time_rule_version IN .*synthetic-%/,
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /effective_time_basis TEXT NOT NULL CHECK\(effective_time_basis IN \('accounting','transaction-time'\)\)/,
+  );
   validateCanonicalSourceStore(migrated);
   migrated.close();
 } finally {
   await rm(v7Directory, { recursive: true, force: true });
+}
+
+const closedRevisionDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-closed-revision-v8-"),
+);
+try {
+  const path = join(closedRevisionDirectory, "canonical.sqlite");
+  await commitCathayDomesticDeposit(
+    closedRevisionDirectory,
+    CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  );
+  const legacy = new DatabaseSync(path);
+  const currentRevisionSchema = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const closedRevisionSchema = currentRevisionSchema
+    .replace(
+      "CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%')",
+      "CHECK(posting_origin = 'provider_booked_history')",
+    )
+    .replace(
+      "CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%')",
+      "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
+    )
+    .replace(
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+      "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
+    )
+    .replace(
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+      "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
+    )
+    .replace(
+      "CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+      "CHECK(effective_time_basis = 'accounting')",
+    )
+    .replace(
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+      "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
+    );
+  assert.notEqual(closedRevisionSchema, currentRevisionSchema);
+  const beforeRevisionCount = Number(
+    (
+      legacy
+        .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  const sourceAssertionsView = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  assert.match(sourceAssertionsView, /CREATE VIEW source_assertions/);
+  legacy.exec("PRAGMA foreign_keys = OFF");
+  legacy.exec(
+    "DROP VIEW IF EXISTS source_assertions; DROP INDEX IF EXISTS idx_transaction_revisions_financial_time; DROP INDEX IF EXISTS idx_transaction_revisions_knowledge_time; DROP INDEX IF EXISTS idx_transaction_revisions_lineage; CREATE TABLE transaction_revisions_backup AS SELECT * FROM transaction_revisions; DROP TABLE transaction_revisions;",
+  );
+  legacy.exec(closedRevisionSchema);
+  legacy.exec(
+    "INSERT INTO transaction_revisions SELECT * FROM transaction_revisions_backup; DROP TABLE transaction_revisions_backup;",
+  );
+  legacy.exec(sourceAssertionsView);
+  legacy.close();
+
+  const migratedClosed = createCanonicalSourceStore(path);
+  const widenedRevisionSchema = String(
+    (
+      migratedClosed.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  assert.match(widenedRevisionSchema, /CHECK\(posting_origin IN .*synthetic_%/);
+  assert.match(widenedRevisionSchema, /CHECK\(posting_basis IN .*synthetic_%/);
+  assert.match(
+    widenedRevisionSchema,
+    /CHECK\(posting_rule_version IN .*synthetic-%/,
+  );
+  assert.match(
+    widenedRevisionSchema,
+    /CHECK\(semantic_rule_version IN .*synthetic-%/,
+  );
+  assert.equal(
+    Number(
+      (
+        migratedClosed.db
+          .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    beforeRevisionCount,
+  );
+  const widenedQuery = await createCathayCanonicalFinancialQuery(
+    closedRevisionDirectory,
+  ).current({ kind: "current" });
+  assert.equal(widenedQuery.transactions.length, beforeRevisionCount);
+  migratedClosed.close();
+} finally {
+  await rm(closedRevisionDirectory, { recursive: true, force: true });
 }
 
 const partialDirectory = await mkdtemp(

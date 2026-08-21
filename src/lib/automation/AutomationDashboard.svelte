@@ -185,6 +185,7 @@
   $: onboardingNeedsStatements = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup?.statementTypes?.length
+    && selectedCredentialGroup.id !== "fubon"
     && (
       !(statementSelectionDrafts[selectedCredentialGroup.id]?.length)
       || !statementSelectionConfirmed
@@ -406,6 +407,7 @@
 
   function credentialGroupStatus(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation) {
     if (!enabled) return dictionary.common.disabled;
+    if (group.id === "fubon") return dictionary.common.enabled;
     if (group.statementSetupRequired && group.selectedStatementTypeIds.length) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length && !selectedCount) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
@@ -775,12 +777,17 @@
     try {
       const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
       if (humanTask?.id !== taskId || requestId !== viewerRequestId) return;
-      if (!bytes) return;
+      if (!bytes) {
+        if (!viewerImageUrl) viewerError = $t.automation.screenshotUnavailable;
+        return;
+      }
       if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
       viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
       viewerError = "";
     } catch (error) {
-      if (humanTask?.id === taskId && requestId === viewerRequestId) viewerError = error instanceof Error ? error.message : String(error);
+      if (humanTask?.id === taskId && requestId === viewerRequestId && !viewerImageUrl) {
+        viewerError = $t.automation.screenshotUnavailable;
+      }
     }
   }
 
@@ -1629,7 +1636,12 @@
                 {/if}
               {/each}
             </div>
-            {#if selectedCredentialGroup.statementTypes?.length}
+            {#if selectedCredentialGroup.id === "fubon" && selectedCredentialGroup.statementTypes?.length}
+              <fieldset class="statement-selection" id="fubon-statement-selection" tabindex="-1">
+                <legend>{$t.automation.statementsToCollect}</legend>
+                <p id="fubon-statement-help">{$t.automation.statementSelectionAllSupported(credentialGroupName(selectedCredentialGroup))}</p>
+              </fieldset>
+            {:else if selectedCredentialGroup.statementTypes?.length}
               <fieldset
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
@@ -1842,23 +1854,34 @@
               onpointerup={handleViewerPointerUp}
               onpointercancel={handleViewerPointerCancel}
             >
-              <img
-                class="viewer-image"
-                data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
-                  ? "automation-assist"
-                  : undefined}
-                data-onboarding-action="choose-verification-control"
-                src={viewerImageUrl}
-                alt={$t.automation.pausedBrowser}
-                draggable="false"
-                tabindex="-1"
-                onload={(event) => {
-                  const image = event.currentTarget as HTMLImageElement;
-                  viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
-                  viewerError = "";
-                }}
-                onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
-              />
+              {#if viewerImageUrl}
+                <img
+                  class="viewer-image"
+                  data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
+                    ? "automation-assist"
+                    : undefined}
+                  data-onboarding-action="choose-verification-control"
+                  src={viewerImageUrl}
+                  alt={$t.automation.pausedBrowser}
+                  draggable="false"
+                  tabindex="-1"
+                  onload={(event) => {
+                    const image = event.currentTarget as HTMLImageElement;
+                    viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
+                    viewerError = "";
+                  }}
+                  onerror={() => {
+                    URL.revokeObjectURL(viewerImageUrl);
+                    viewerImageUrl = "";
+                    viewerImageSize = { width: 0, height: 0 };
+                    viewerError = $t.automation.screenshotUnavailable;
+                  }}
+                />
+              {:else}
+                <div class="viewer-screenshot-placeholder" role="status" aria-live="polite">
+                  {viewerError || $t.automation.screenshotUnavailable}
+                </div>
+              {/if}
             </button>
           {#if onboardingStep === "assist" && humanTask && guideAssistViewer}
             <div class="verification-viewer-tooltip" role="tooltip">
@@ -3365,6 +3388,16 @@
     background: transparent;
     touch-action: none;
     user-select: none;
+  }
+
+  .viewer-screenshot-placeholder {
+    display: grid;
+    width: 100%;
+    min-height: 180px;
+    place-items: center;
+    padding: var(--space-6);
+    color: color-mix(in oklch, white 76%, transparent);
+    text-align: center;
   }
 
   .viewer-image:focus,
