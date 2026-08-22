@@ -1,28 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
-import type { Dialog, Frame, Locator, Page } from "playwright";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import { dismissYuantaBankNotice } from "./yuanta-statements.js";
-
-const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import {
+  authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  type YuantaCredentials,
+} from "./yuanta-auth.ts";
 
 type BrowserScope = Page | Frame;
-
-type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
 
 type MonthOption = {
   index: number;
@@ -95,27 +85,25 @@ const outputSchema = z.object({
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
 
-function requireCredential(
-  credentials: YuantaCredentials,
-  name: keyof YuantaCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function isCreditCardNoRecordText(
   value: string | null | undefined,
 ): boolean {
   return /查無資料|查無相關資料|無資料|無消費/.test(cleanText(value));
+}
+
+export function isCreditCardProductAbsentText(
+  value: string | null | undefined,
+): boolean {
+  return /未持有信用卡|目前(?:無|沒有)信用卡|無信用卡產品|尚未申請信用卡|查無信用卡|無可用信用卡|未持有卡片/.test(
+    cleanText(value),
+  );
 }
 
 export function creditCardNoRecordLocator(scope: BrowserScope): Locator {
@@ -151,7 +139,8 @@ function consumeDateSortKey(row: StatementRow): string {
   const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
   if (!match) return "";
 
-  const year = match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  const year =
+    match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
   return `${String(year).padStart(4, "0")}${match[2]}${match[3]}`;
 }
 
@@ -232,170 +221,10 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(250);
 }
 
-async function fillLoginForm(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const userId = requireCredential(credentials, "yuanta_user_id");
-  const account = requireCredential(credentials, "yuanta_account");
-  const password = requireCredential(credentials, "yuanta_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const loginFrame = await waitForFrame(page, "main");
-  const userIdField = loginFrame.locator("#custidMask");
-  await userIdField.fill(userId);
-  await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
-  await loginFrame.locator("#gcode").focus();
-}
-
-async function maskUserId(loginFrame: Frame): Promise<void> {
-  await loginFrame.evaluate(() => {
-    const yuanTaWindow = window as typeof window & { maskID?: () => void };
-    if (typeof yuanTaWindow.maskID !== "function") {
-      throw new Error("YuanTa login page did not expose maskID().");
-    }
-    yuanTaWindow.maskID();
-  });
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (!hiddenUserId.trim()) {
-    throw new Error("YuanTa login page did not populate hidden custid.");
-  }
-}
-
-async function restoreUserIdForSubmit(
-  loginFrame: Frame,
-  userId: string,
-): Promise<void> {
-  const normalizedUserId = userId.trim();
-  await loginFrame.locator("#custid").evaluate((element, value) => {
-    (element as HTMLInputElement).value = value;
-  }, normalizedUserId);
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (hiddenUserId !== normalizedUserId) {
-    throw new Error("YuanTa login page did not restore hidden custid.");
-  }
-}
-
-async function fillReadonlyLoginInput(
-  field: Locator,
-  value: string,
-): Promise<void> {
-  await field.click({ force: true });
-  await field.evaluate((element, nextValue) => {
-    const input = element as HTMLInputElement;
-    input.removeAttribute("readonly");
-    input.readOnly = false;
-    input.value = nextValue;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  }, value);
-}
-
-async function submitLogin(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const loginFrame = await waitForFrame(page, "main");
-  await restoreUserIdForSubmit(
-    loginFrame,
-    requireCredential(credentials, "yuanta_user_id"),
-  );
-  await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
-}
-
-async function isCreditCardBillsPage(
-  page: Page,
-  timeoutMs = 3_000,
-): Promise<boolean> {
-  return await findCreditCardBillsScope(page, timeoutMs)
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function isSignedIn(page: Page): Promise<boolean> {
-  if (await isCreditCardBillsPage(page)) return true;
-
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("#submenuAreaCD")
-        .or(candidate.locator('a[onclick*="creditcardbillsquery"]'))
-        .or(candidate.locator('a[onclick*="creditcardsummary"]'))
-        .first(),
-    "YuanTa signed-in credit card navigation",
-    3_000,
-  )
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function waitForSignedInState(
-  page: Page,
-  getLastDialogMessage: () => string,
-  replaceActiveSession: boolean,
-): Promise<boolean> {
-  const deadline = Date.now() + 120_000;
-  let replacedActiveSession = false;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return replacedActiveSession;
-
-    const loginFrame = page.frame({ name: "main" });
-    const activeSessionPrompt =
-      loginFrame &&
-      (await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .isVisible()
-        .catch(() => false));
-    if (loginFrame && activeSessionPrompt) {
-      if (!replaceActiveSession) {
-        throw new Error(
-          "YuanTa reports another active session. Re-run with replaceActiveSession=true to continue.",
-        );
-      }
-
-      await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .click({ force: true });
-      replacedActiveSession = true;
-      await settleAfterNavigation(page);
-      continue;
-    }
-
-    const stillOnLogin =
-      loginFrame &&
-      (await loginFrame
-        .locator("#custidMask, #custnoInput, #custcode, #gcode")
-        .first()
-        .isVisible()
-        .catch(() => false));
-    const dialogMessage = getLastDialogMessage();
-    if (stillOnLogin && dialogMessage) {
-      throw new Error(`YuanTa login failed: ${dialogMessage}`);
-    }
-
-    await page.waitForTimeout(250);
-  }
-
-  const dialogMessage = getLastDialogMessage();
-  throw new Error(
-    dialogMessage
-      ? `Timed out waiting for YuanTa signed-in state after dialog: ${dialogMessage}`
-      : "Timed out waiting for YuanTa signed-in state.",
-  );
-}
-
 async function openCreditCardBillsPage(page: Page): Promise<BrowserScope> {
-  const existing = await findCreditCardBillsScope(page, 5_000).catch(() => null);
+  const existing = await findCreditCardBillsScope(page, 5_000).catch(
+    () => null,
+  );
   if (existing) {
     const ready = await waitForCreditCardBillsReady(
       page,
@@ -440,8 +269,19 @@ async function findCreditCardBillsScope(
       const hasMonthLink = await hasAttachedLocator(
         scope.locator('a[onclick*="queryMonth("]'),
       );
-      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
+      const hasTable = await hasAttachedLocator(
+        scope.locator("table.rwdTable"),
+      );
       if (hasMonthLink && hasTable) return scope;
+      const bodyText = await scope
+        .locator("body")
+        .textContent({ timeout: 500 })
+        .catch(() => "");
+      if (isCreditCardProductAbsentText(bodyText)) {
+        throw new StatementComponentAbsentError(
+          "No YuanTa credit-card product is available for this login.",
+        );
+      }
     }
     await page.waitForTimeout(250);
   }
@@ -471,7 +311,9 @@ async function waitForCreditCardBillsReady(
     await page.waitForTimeout(250);
   }
 
-  throw new Error("Timed out waiting for YuanTa credit card bills page tables.");
+  throw new Error(
+    "Timed out waiting for YuanTa credit card bills page tables.",
+  );
 }
 
 async function clickCreditCardBillsLink(
@@ -612,7 +454,8 @@ async function clickCreditCardFunction(
 ): Promise<BrowserScope> {
   const scope = await findScopeWithLocator(
     page,
-    (candidate) => candidate.locator(`a[onclick*="turnCDFunc(${functionIndex})"]`),
+    (candidate) =>
+      candidate.locator(`a[onclick*="turnCDFunc(${functionIndex})"]`),
     description,
   );
   const link = await firstVisibleLocator(
@@ -673,8 +516,9 @@ function stripHtml(value: string): string {
 }
 
 function htmlElements(html: string, tag: string): string[] {
-  return [...html.matchAll(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "gi"))]
-    .map((match) => match[0]);
+  return [
+    ...html.matchAll(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "gi")),
+  ].map((match) => match[0]);
 }
 
 function htmlBlocksByClass(html: string, className: string): string[] {
@@ -696,9 +540,7 @@ function parseHtmlRowsFromString(tableHtml: string): string[][] {
   const parsedRows: string[][] = [];
 
   for (const rowHtml of htmlElements(tableHtml, "tr")) {
-    const values = [
-      ...rowHtml.matchAll(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi),
-    ]
+    const values = [...rowHtml.matchAll(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi)]
       .filter((match) => {
         const className = htmlAttribute(match[0], "class");
         return !/\b(cardDetailList|billcontrol_Btn)\b/.test(className);
@@ -730,7 +572,8 @@ function parseMonthOptionsFromHtml(html: string): MonthOption[] {
     /<a\b[^>]*onclick=["'][^"']*queryMonth\(['"]?(\d+)['"]?\)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi,
   )) {
     const label = stripHtml(match[2]);
-    if (label) options.set(Number(match[1]), { index: Number(match[1]), label });
+    if (label)
+      options.set(Number(match[1]), { index: Number(match[1]), label });
   }
 
   if (options.size === 0) {
@@ -761,7 +604,9 @@ export async function submitCreditCardMonthOptions(
     const month = monthOptions[position];
     const html = await submit(month, position);
     if (hasUntraversedPager(html)) {
-      throw new Error("YuanTa credit-card response has untraversed pagination.");
+      throw new Error(
+        "YuanTa credit-card response has untraversed pagination.",
+      );
     }
     await onResponse(month, html, position);
   }
@@ -800,11 +645,7 @@ function normalizeTableRows(tableLabel: string, rows: string[][]): string[][] {
 
   const normalizedHeaders = headers.slice(0, trailingHeaderIndex);
   const normalizedBodyRows = bodyRows.map((row) => {
-    if (
-      row.length === headers.length &&
-      !row[0] &&
-      row[trailingHeaderIndex]
-    ) {
+    if (row.length === headers.length && !row[0] && row[trailingHeaderIndex]) {
       return row.slice(1);
     }
 
@@ -819,9 +660,8 @@ function creditCardDownloadsDir(): string {
 }
 
 function headerScore(row: string[]): number {
-  return row.filter((value) =>
-    /日期|明細|幣別|金額|繳款|入帳|消費/.test(value),
-  ).length;
+  return row.filter((value) => /日期|明細|幣別|金額|繳款|入帳|消費/.test(value))
+    .length;
 }
 
 function findHeaderRowIndex(rows: string[][]): number {
@@ -948,6 +788,11 @@ async function findStatementScope(page: Page): Promise<BrowserScope | null> {
         )
         .catch(() => "");
       if (isCreditCardNoRecordText(noRecordText)) return null;
+      if (isCreditCardProductAbsentText(noRecordText)) {
+        throw new StatementComponentAbsentError(
+          "No YuanTa credit-card product is available for this login.",
+        );
+      }
     }
     await page.waitForTimeout(250);
   }
@@ -963,22 +808,25 @@ async function parseStatementRows(
   const scope = await findStatementScope(page);
   if (!scope) return [];
 
-  const cardTables = await scope
-    .locator(".cardBx")
-    .evaluateAll((cardBoxes) =>
-      cardBoxes
-        .filter(
-          (cardBox) =>
-            cardBox.querySelector(".cardInfoD") &&
-            cardBox.querySelector("table.rwdTable"),
-        )
-        .map((cardBox) => {
+  const cardTables = await scope.locator(".cardBx").evaluateAll((cardBoxes) =>
+    cardBoxes
+      .filter(
+        (cardBox) =>
+          cardBox.querySelector(".cardInfoD") &&
+          cardBox.querySelector("table.rwdTable"),
+      )
+      .map((cardBox) => {
         const textOf = (element: Element | null): string =>
-          (element?.textContent ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+          (element?.textContent ?? "")
+            .replace(/\u00a0/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
         const creditCardName = textOf(
           cardBox.querySelector(".cardInfoD h4.web") ??
             cardBox.querySelector(".cardHead h4"),
-        ).replace(/主卡/g, "").trim();
+        )
+          .replace(/主卡/g, "")
+          .trim();
         let creditCardNo = "";
         for (const item of Array.from(
           cardBox.querySelectorAll(".cardInfod_Con li"),
@@ -988,21 +836,22 @@ async function parseStatementRows(
             break;
           }
         }
-        const tables = Array.from(cardBox.querySelectorAll("table.rwdTable")).map(
-          (table) =>
-            Array.from(table.querySelectorAll("tr"))
-              .map((row) =>
-                Array.from(
-                  row.querySelectorAll(
-                    "th, td:not(.cardDetailList):not(.billcontrol_Btn)",
-                  ),
-                ).map(textOf),
-              )
-              .filter((row) => row.some((value) => value.length > 0)),
+        const tables = Array.from(
+          cardBox.querySelectorAll("table.rwdTable"),
+        ).map((table) =>
+          Array.from(table.querySelectorAll("tr"))
+            .map((row) =>
+              Array.from(
+                row.querySelectorAll(
+                  "th, td:not(.cardDetailList):not(.billcontrol_Btn)",
+                ),
+              ).map(textOf),
+            )
+            .filter((row) => row.some((value) => value.length > 0)),
         );
         return { creditCardNo, creditCardName, tables };
       }),
-    );
+  );
 
   return cardTables.flatMap(({ creditCardNo, creditCardName, tables }) =>
     tables.flatMap((rows) =>
@@ -1041,10 +890,10 @@ function paymentStatusFromTables(tables: string[][][]): string {
     if (headerRowIndex < 0 || headerRowIndex + 1 >= rows.length) continue;
 
     const headers = uniqueHeaders(rows[headerRowIndex]);
-    const values = alignValuesToHeaders(rows[headerRowIndex + 1], headers).slice(
-      0,
-      headers.length,
-    );
+    const values = alignValuesToHeaders(
+      rows[headerRowIndex + 1],
+      headers,
+    ).slice(0, headers.length);
     return inferPaymentStatus(columnsFromValues(headers, values));
   }
 
@@ -1056,14 +905,20 @@ function parseCreditCardName(cardHtml: string): string {
     cardHtml.match(
       /<h4\b[^>]*class=["'][^"']*\bweb\b[^"']*["'][^>]*>([\s\S]*?)<\/h4>/i,
     )?.[1] ??
-    cardHtml.match(/<div\b[^>]*class=["'][^"']*\bcardHead\b[^"']*["'][^>]*>[\s\S]*?<h4\b[^>]*>([\s\S]*?)<\/h4>/i)?.[1] ??
+    cardHtml.match(
+      /<div\b[^>]*class=["'][^"']*\bcardHead\b[^"']*["'][^>]*>[\s\S]*?<h4\b[^>]*>([\s\S]*?)<\/h4>/i,
+    )?.[1] ??
     "";
   return stripHtml(heading).replace(/主卡/g, "").trim();
 }
 
 function parseCreditCardNo(cardHtml: string): string {
   for (const item of htmlElements(cardHtml, "li")) {
-    if (!stripHtml(item.match(/<h5\b[^>]*>([\s\S]*?)<\/h5>/i)?.[1] ?? "").includes("卡號")) {
+    if (
+      !stripHtml(
+        item.match(/<h5\b[^>]*>([\s\S]*?)<\/h5>/i)?.[1] ?? "",
+      ).includes("卡號")
+    ) {
       continue;
     }
     return stripHtml(item.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i)?.[1] ?? "");
@@ -1080,7 +935,10 @@ function parseCreditCardBillsHtml(
   const tables = parseRwdTablesFromHtml(html);
   const paymentStatus = period ? paymentStatusFromTables(tables) : "";
   const rows = htmlBlocksByClass(html, "cardBx")
-    .filter((cardHtml) => cardHtml.includes("cardInfoD") && cardHtml.includes("rwdTable"))
+    .filter(
+      (cardHtml) =>
+        cardHtml.includes("cardInfoD") && cardHtml.includes("rwdTable"),
+    )
     .flatMap((cardHtml) => {
       const creditCardNo = parseCreditCardNo(cardHtml);
       const creditCardName = parseCreditCardName(cardHtml);
@@ -1120,10 +978,10 @@ async function readBillingPaymentStatus(page: Page): Promise<string> {
     if (headerRowIndex < 0 || headerRowIndex + 1 >= rows.length) continue;
 
     const headers = uniqueHeaders(rows[headerRowIndex]);
-    const values = alignValuesToHeaders(rows[headerRowIndex + 1], headers).slice(
-      0,
-      headers.length,
-    );
+    const values = alignValuesToHeaders(
+      rows[headerRowIndex + 1],
+      headers,
+    ).slice(0, headers.length);
     return inferPaymentStatus(columnsFromValues(headers, values));
   }
 
@@ -1179,7 +1037,9 @@ async function writeStatementFile(
   const generatedAt = new Date().toISOString();
   const headers = statementHeaders(kind);
   const periods = [
-    ...new Set(rows.map((row) => row.period).filter((period) => period !== null)),
+    ...new Set(
+      rows.map((row) => row.period).filter((period) => period !== null),
+    ),
   ];
 
   await writeFile(csvPath, statementRowsToCsv(kind, rows), "utf8");
@@ -1253,7 +1113,8 @@ async function readCreditCardBillsHtmlFromFrameUrl(
   if (!url.includes("creditcardbillsquery")) return null;
 
   const response = await frame.goto(url, { waitUntil: "domcontentloaded" });
-  if (!response) throw new Error("YuanTa credit card bills page did not respond.");
+  if (!response)
+    throw new Error("YuanTa credit card bills page did not respond.");
   return await response.text();
 }
 
@@ -1294,15 +1155,20 @@ async function submitCreditCardMonth(
   await waitForCreditCardForm(frame);
   const responsePromise = page.waitForResponse(
     (response) =>
-      response.url().includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
+      response
+        .url()
+        .includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
       response.request().method() === "POST",
     { timeout: 120_000 },
   );
   await frame.evaluate((monthIndex) => {
     const form = document.forms.namedItem("mform");
     if (!form) throw new Error("YuanTa credit card form was not found.");
-    const field = form.elements.namedItem("cdHistoryQuery") as HTMLInputElement | null;
-    if (!field) throw new Error("YuanTa credit card form missed cdHistoryQuery.");
+    const field = form.elements.namedItem(
+      "cdHistoryQuery",
+    ) as HTMLInputElement | null;
+    if (!field)
+      throw new Error("YuanTa credit card form missed cdHistoryQuery.");
     field.value = String(monthIndex);
     form.action = "../tx/creditcardbillsquery?method=queryHistoryDetail";
     form.submit();
@@ -1342,74 +1208,34 @@ export default workflow("yuantaCreditCardStatements", {
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: YuantaCredentials })
-      .credentials;
-    let lastBankDialogMessage = "";
-    let replacedActiveSession = false;
-
-    const acceptBankDialog = async (dialog: Dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    };
-    page.on("dialog", acceptBankDialog);
-
-    const authResult = await librettoAuthenticate(ctx, {
+    const { page } = ctx;
+    const credentials = (
+      input as typeof input & { credentials: YuantaCredentials }
+    ).credentials;
+    const authResult = await sharedAuthenticateYuantaBank(
+      ctx,
       credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-        const captchaFrame = await waitForFrame(authPage, "main");
-        await dismissYuantaBankNotice(captchaFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
-          contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-        });
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            authSession +
-            "`.",
-        );
-        await pause(authSession);
-        const loginFrame = await waitForFrame(authPage, "main");
-        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
-          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
-        }
-        const loginButtonVisible =
-          loginFrame &&
-          (await loginFrame
-            .locator('a[href="javascript:doPreLogin();"]')
-            .isVisible()
-            .catch(() => false));
-        if (loginButtonVisible) {
-          await submitLogin(authPage, signInCredentials as YuantaCredentials);
-        }
-        replacedActiveSession = await waitForSignedInState(
-          authPage,
-          () => lastBankDialogMessage,
-          input.replaceActiveSession,
-        );
-      },
-    }).finally(() => page.off("dialog", acceptBankDialog));
+      input.replaceActiveSession,
+    );
+    const replacedActiveSession = authResult.replacedActiveSession;
 
     const pageReadyStartedAt = Date.now();
     console.log("yuanta-credit-card-page-ready-start", {
       startedAt: new Date(pageReadyStartedAt).toISOString(),
     });
     const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+    if (isCreditCardProductAbsentText(currentMonthHtml)) {
+      throw new StatementComponentAbsentError(
+        "No YuanTa credit-card product is available for this login.",
+      );
+    }
     console.log("yuanta-credit-card-page-ready-complete", {
       durationMs: Date.now() - pageReadyStartedAt,
     });
     if (hasUntraversedPager(currentMonthHtml)) {
-      throw new Error("YuanTa credit-card response has untraversed pagination.");
+      throw new Error(
+        "YuanTa credit-card response has untraversed pagination.",
+      );
     }
     const allMonthOptions = parseCreditCardBillsHtml(
       currentMonthHtml,
@@ -1425,15 +1251,16 @@ export default workflow("yuantaCreditCardStatements", {
     const creditCardStepCount =
       monthOptions.length + (input.includeUnbilled ? 1 : 0);
     let completedCreditCardSteps = 0;
-    const creditCardProgress = (currentCreditCardSteps = completedCreditCardSteps) =>
+    const creditCardProgress = (
+      currentCreditCardSteps = completedCreditCardSteps,
+    ) =>
       console.log(
         `automation-progress: ${
           60 +
           Math.min(
             14,
             Math.round(
-              (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) *
-                14,
+              (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) * 14,
             ),
           )
         }`,
@@ -1480,13 +1307,11 @@ export default workflow("yuantaCreditCardStatements", {
       creditCardProgress(completedCreditCardSteps + 1);
       const unbilledHtml = await submitCreditCardUnbilled(page);
       if (hasUntraversedPager(unbilledHtml)) {
-        throw new Error("YuanTa credit-card response has untraversed pagination.");
+        throw new Error(
+          "YuanTa credit-card response has untraversed pagination.",
+        );
       }
-      unbilledRows = parseCreditCardBillsHtml(
-        unbilledHtml,
-        null,
-        false,
-      ).rows;
+      unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
       completedCreditCardSteps += 1;
       console.log("yuanta-credit-card-unbilled-complete", {
         rowCount: unbilledRows.length,
@@ -1496,7 +1321,9 @@ export default workflow("yuantaCreditCardStatements", {
     }
 
     const cardKeys = [
-      ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
+      ...new Set(
+        [...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean),
+      ),
     ];
     const isFullCapture =
       !input.monthIndexes &&

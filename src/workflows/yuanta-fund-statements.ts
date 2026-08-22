@@ -1,29 +1,21 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
-import type { Dialog, Frame, Locator, Page } from "playwright";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import { dismissYuantaBankNotice } from "./yuanta-statements.js";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import {
+  authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  type YuantaCredentials,
+} from "./yuanta-auth.ts";
 
-const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_LOGOUT_URL = "https://ebank.yuantabank.com.tw/nib/tx/logout";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-const FUND_TABLE_SELECTOR = "table.rwdTable, table.normalTable, table.formTable";
+const FUND_TABLE_SELECTOR =
+  "table.rwdTable, table.normalTable, table.formTable";
 
 type BrowserScope = Page | Frame;
-
-type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
 
 type FundPosition = {
   txnType: string;
@@ -124,33 +116,27 @@ const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
 const rowMetadataHeaders = ["資料類別", "基金識別", "查詢期間"];
 
 const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
-  "portfolio-summary": simpleTableConfig(
-    "fund-holdings",
-    [
-      "基金名稱",
-      "基金類型",
-      "投資幣別",
-      "投資金額",
-      "不含息參考市值",
-      "不含息參考損益",
-      "不含息參考報酬率",
-      "含息參考損益",
-      "含息參考報酬率",
-      "狀態",
-    ],
-  ),
-  "currency-total": simpleTableConfig(
-    "fund-currency-totals",
-    [
-      "幣別總計",
-      "投資金額",
-      "不含息參考市值",
-      "不含息參考損益",
-      "不含息參考報酬率",
-      "含息參考損益",
-      "含息參考報酬率",
-    ],
-  ),
+  "portfolio-summary": simpleTableConfig("fund-holdings", [
+    "基金名稱",
+    "基金類型",
+    "投資幣別",
+    "投資金額",
+    "不含息參考市值",
+    "不含息參考損益",
+    "不含息參考報酬率",
+    "含息參考損益",
+    "含息參考報酬率",
+    "狀態",
+  ]),
+  "currency-total": simpleTableConfig("fund-currency-totals", [
+    "幣別總計",
+    "投資金額",
+    "不含息參考市值",
+    "不含息參考損益",
+    "不含息參考報酬率",
+    "含息參考損益",
+    "含息參考報酬率",
+  ]),
   "investment-detail": {
     kind: "fund-position-lots",
     rawColumns: [
@@ -228,20 +214,17 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       ];
     },
   },
-  "buy-details": simpleTableConfig(
-    "fund-buy-transactions",
-    [
-      "投資日期",
-      "基金名稱",
-      "交易編號",
-      "投資金額",
-      "申購匯率",
-      "申購淨值",
-      "申購手續費",
-      "點數折抵",
-      "申購單位數",
-    ],
-  ),
+  "buy-details": simpleTableConfig("fund-buy-transactions", [
+    "投資日期",
+    "基金名稱",
+    "交易編號",
+    "投資金額",
+    "申購匯率",
+    "申購淨值",
+    "申購手續費",
+    "點數折抵",
+    "申購單位數",
+  ]),
   "redemption-details": {
     kind: "fund-redemption-transactions",
     rawColumns: [
@@ -432,38 +415,32 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       ];
     },
   },
-  "unit-dividend-details": simpleTableConfig(
-    "fund-unit-dividends",
-    [
-      "分配日期",
-      "基金名稱",
-      "交易編號",
-      "基準日期",
-      "基準單位數",
-      "分配率",
-      "分配單位數",
-    ],
-  ),
-  "offhour-buy-orders": simpleTableConfig(
-    "fund-offhour-buy-orders",
-    [
-      "申購基金",
-      "投資類型",
-      "申購日期",
-      "投資生效日期",
-      "投資幣別",
-      "客戶風險等級",
-      "扣款帳號/信用卡卡號",
-      "申購手續費",
-      "每月扣款日期",
-      "每次投資金額",
-      "扣款起始日",
-      "扣款到期日",
-      "精選組合",
-      "介紹人編號",
-      "公開說明書交付方式",
-    ],
-  ),
+  "unit-dividend-details": simpleTableConfig("fund-unit-dividends", [
+    "分配日期",
+    "基金名稱",
+    "交易編號",
+    "基準日期",
+    "基準單位數",
+    "分配率",
+    "分配單位數",
+  ]),
+  "offhour-buy-orders": simpleTableConfig("fund-offhour-buy-orders", [
+    "申購基金",
+    "投資類型",
+    "申購日期",
+    "投資生效日期",
+    "投資幣別",
+    "客戶風險等級",
+    "扣款帳號/信用卡卡號",
+    "申購手續費",
+    "每月扣款日期",
+    "每次投資金額",
+    "扣款起始日",
+    "扣款到期日",
+    "精選組合",
+    "介紹人編號",
+    "公開說明書交付方式",
+  ]),
   "offhour-conversion-orders": simpleTableConfig(
     "fund-offhour-conversion-orders",
     [
@@ -510,16 +487,13 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       "保留金額",
     ],
   ),
-  "offhour-change-orders": simpleTableConfig(
-    "fund-offhour-change-orders",
-    [
-      "異動基金",
-      "申請日期",
-      "生效日期",
-      "異動種類",
-      "變更後設定值",
-    ],
-  ),
+  "offhour-change-orders": simpleTableConfig("fund-offhour-change-orders", [
+    "異動基金",
+    "申請日期",
+    "生效日期",
+    "異動種類",
+    "變更後設定值",
+  ]),
 };
 
 const bookingOutputKinds = new Set([
@@ -537,21 +511,11 @@ const sortDateHeaderByKind: Record<string, string> = {
   "fund-conversion-transactions": "轉出日期",
 };
 
-function requireCredential(
-  credentials: YuantaCredentials,
-  name: keyof YuantaCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function toAsciiDigits(value: string): string {
@@ -620,7 +584,11 @@ function parseDateSortValue(value: string): number | null {
   const rawYear = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  if (!Number.isFinite(rawYear) || !Number.isFinite(month) || !Number.isFinite(day)) {
+  if (
+    !Number.isFinite(rawYear) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day)
+  ) {
     return null;
   }
 
@@ -656,18 +624,6 @@ function resolveDateRange(input: WorkflowInput): {
   const endDate = formatDate(end);
 
   return { startDate, endDate, label: `${startDate}-${endDate}` };
-}
-
-function matchesFundFilter(position: FundPosition, filters: string[]): boolean {
-  if (filters.length === 0) return true;
-
-  const haystack = toAsciiDigits(
-    `${position.txnType} ${position.paperNo} ${position.trustNo} ${position.label}`,
-  ).toLowerCase();
-
-  return filters.some((filter) =>
-    haystack.includes(toAsciiDigits(filter).toLowerCase().trim()),
-  );
 }
 
 async function waitForFrame(
@@ -784,76 +740,6 @@ async function gotoFundTransactionPage(
   return true;
 }
 
-async function fillLoginForm(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const userId = requireCredential(credentials, "yuanta_user_id");
-  const account = requireCredential(credentials, "yuanta_account");
-  const password = requireCredential(credentials, "yuanta_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const loginFrame = await waitForFrame(page, "main");
-  const userIdField = loginFrame.locator("#custidMask");
-  await userIdField.fill(userId);
-  await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
-  await loginFrame.locator("#gcode").focus();
-}
-
-async function maskUserId(loginFrame: Frame): Promise<void> {
-  await loginFrame.evaluate(() => {
-    const yuanTaWindow = window as typeof window & { maskID?: () => void };
-    if (typeof yuanTaWindow.maskID !== "function") {
-      throw new Error("YuanTa login page did not expose maskID().");
-    }
-    yuanTaWindow.maskID();
-  });
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (!hiddenUserId.trim()) {
-    throw new Error("YuanTa login page did not populate hidden custid.");
-  }
-}
-
-async function restoreUserIdForSubmit(
-  loginFrame: Frame,
-  userId: string,
-): Promise<void> {
-  const normalizedUserId = userId.trim();
-  await loginFrame.locator("#custid").evaluate((element, value) => {
-    (element as HTMLInputElement).value = value;
-  }, normalizedUserId);
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (hiddenUserId !== normalizedUserId) {
-    throw new Error("YuanTa login page did not restore hidden custid.");
-  }
-}
-
-async function fillReadonlyLoginInput(
-  field: Locator,
-  value: string,
-): Promise<void> {
-  await field.click({ force: true });
-  await field.evaluate((element) => element.removeAttribute("readonly"));
-  await field.fill(value);
-}
-
-async function submitLogin(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const loginFrame = await waitForFrame(page, "main");
-  await restoreUserIdForSubmit(
-    loginFrame,
-    requireCredential(credentials, "yuanta_user_id"),
-  );
-  await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
-}
-
 async function isFundArea(page: Page, timeoutMs = 3_000): Promise<boolean> {
   return await findScopeWithLocator(
     page,
@@ -869,83 +755,6 @@ async function isFundArea(page: Page, timeoutMs = 3_000): Promise<boolean> {
   )
     .then(() => true)
     .catch(() => false);
-}
-
-async function isSignedIn(page: Page): Promise<boolean> {
-  if (await isFundArea(page)) return true;
-
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('a[onclick*="doAction"][onclick*="FUND"]')
-        .or(candidate.locator('a[onclick*="menu_fund"]'))
-        .or(candidate.locator('a[onclick*="creditcardsummary"]'))
-        .first(),
-    "YuanTa signed-in navigation",
-    3_000,
-  )
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function waitForSignedInState(
-  page: Page,
-  getLastDialogMessage: () => string,
-  replaceActiveSession: boolean,
-): Promise<boolean> {
-  const deadline = Date.now() + 120_000;
-  let replacedActiveSession = false;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return replacedActiveSession;
-
-    const loginFrame = page.frame({ name: "main" });
-    const activeSessionPrompt =
-      loginFrame &&
-      (await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .isVisible()
-        .catch(() => false));
-    if (loginFrame && activeSessionPrompt) {
-      if (!replaceActiveSession) {
-        throw new Error(
-          "YuanTa reports another active session. Re-run with replaceActiveSession=true to continue.",
-        );
-      }
-
-      await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .click({ force: true });
-      replacedActiveSession = true;
-      await settleAfterNavigation(page);
-      continue;
-    }
-
-    const stillOnLogin =
-      loginFrame &&
-      (await loginFrame
-        .locator("#custidMask, #custnoInput, #custcode, #gcode")
-        .first()
-        .isVisible()
-        .catch(() => false));
-    const dialogMessage = getLastDialogMessage();
-    if (stillOnLogin && dialogMessage) {
-      throw new Error(`YuanTa login failed: ${dialogMessage}`);
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  const dialogMessage = getLastDialogMessage();
-  throw new Error(
-    dialogMessage
-      ? `Timed out waiting for YuanTa signed-in state after dialog: ${dialogMessage}`
-      : "Timed out waiting for YuanTa signed-in state.",
-  );
 }
 
 async function clickFundMenuLink(
@@ -984,6 +793,11 @@ async function clickFundMenuLink(
     return;
   }
 
+  // The authenticated shell can retain fmenu/fmain while hiding the visual
+  // fund menu after another product navigation. Use Yuanta's own menuaction
+  // hook before waiting for a visible menu or re-authenticating.
+  if (await runFundMenuAction(page, actionFragment, menuId, 2_000)) return;
+
   await revealFundMenu(page);
   const scope = await findScopeWithLocator(
     page,
@@ -998,7 +812,9 @@ async function clickFundMenuLink(
   const link =
     scope &&
     (await firstVisibleLocator(
-      scope.locator(`a[onclick*="${actionFragment}"]`).filter({ hasText: label }),
+      scope
+        .locator(`a[onclick*="${actionFragment}"]`)
+        .filter({ hasText: label }),
       description,
       5_000,
     ).catch(() => null));
@@ -1008,25 +824,7 @@ async function clickFundMenuLink(
     return;
   }
 
-  const menuActionScope = await findMenuActionScope(page, 10_000).catch(
-    () => null,
-  );
-  if (menuActionScope) {
-    await menuActionScope.evaluate(
-      ({ action, id }) => {
-        const yuanTaWindow = window as typeof window & {
-          menuaction?: (menuAction: string, menuId: string, flag?: string) => void;
-        };
-        if (typeof yuanTaWindow.menuaction !== "function") {
-          throw new Error("YuanTa page did not expose menuaction().");
-        }
-        yuanTaWindow.menuaction(action, id, "N");
-      },
-      { action: actionFragment, id: menuId },
-    );
-    await settleAfterNavigation(page);
-    return;
-  }
+  if (await runFundMenuAction(page, actionFragment, menuId, 10_000)) return;
 
   throw new Error(`Could not click ${description}.`);
 }
@@ -1052,6 +850,37 @@ async function findMenuActionScope(
   }
 
   throw new Error("Could not find YuanTa menuaction() in any frame.");
+}
+
+async function runFundMenuAction(
+  page: Page,
+  actionFragment: string,
+  menuId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const menuActionScope = await findMenuActionScope(page, timeoutMs).catch(
+    () => null,
+  );
+  if (!menuActionScope) return false;
+
+  await menuActionScope.evaluate(
+    ({ action, id }) => {
+      const yuanTaWindow = window as typeof window & {
+        menuaction?: (
+          menuAction: string,
+          menuId: string,
+          flag?: string,
+        ) => void;
+      };
+      if (typeof yuanTaWindow.menuaction !== "function") {
+        throw new Error("YuanTa page did not expose menuaction().");
+      }
+      yuanTaWindow.menuaction(action, id, "N");
+    },
+    { action: actionFragment, id: menuId },
+  );
+  await settleAfterNavigation(page);
+  return true;
 }
 
 async function revealFundMenu(page: Page): Promise<void> {
@@ -1090,7 +919,10 @@ async function waitForFundTables(
       if (!hasTable) continue;
 
       const bodyText = cleanText(
-        await scope.locator("body").innerText().catch(() => ""),
+        await scope
+          .locator("body")
+          .innerText()
+          .catch(() => ""),
       );
       if (bodyPattern.test(bodyText)) return scope;
     }
@@ -1125,8 +957,16 @@ async function openInvestmentOverview(page: Page): Promise<BrowserScope> {
   );
   return await waitForFundTables(
     page,
-    /投資日期|交易編號|基金明細查詢/,
+    /投資日期|交易編號|基金明細查詢|無持有基金|未持有基金|無基金部位/,
     "YuanTa fund investment detail tables",
+  );
+}
+
+export function isYuantaFundPositionAbsentText(
+  value: string | null | undefined,
+): boolean {
+  return /無持有基金|未持有基金|無基金部位|沒有基金部位|查無基金/.test(
+    cleanText(value),
   );
 }
 
@@ -1177,7 +1017,9 @@ async function queryOffHourOrders(
   );
 }
 
-async function extractFundPositions(page: Page): Promise<FundPosition[]> {
+export async function extractFundPositions(
+  page: Page,
+): Promise<FundPosition[]> {
   const scope = await waitForFundTables(
     page,
     /fundDetail|基金明細查詢|交易編號/,
@@ -1197,7 +1039,10 @@ async function extractFundPositions(page: Page): Promise<FundPosition[]> {
 
     const [, txnType, paperNo, trustNo] = match;
     const rowText = cleanText(
-      await link.locator("xpath=ancestor::tr[1]").innerText().catch(() => ""),
+      await link
+        .locator("xpath=ancestor::tr[1]")
+        .innerText()
+        .catch(() => ""),
     );
     const label = cleanText(await link.textContent()) || rowText || paperNo;
     const key = `${txnType}:${paperNo}:${trustNo}`;
@@ -1206,7 +1051,20 @@ async function extractFundPositions(page: Page): Promise<FundPosition[]> {
     }
   }
 
-  return [...positions.values()];
+  const result = [...positions.values()];
+  if (result.length === 0) {
+    const bodyText = await scope
+      .locator("body")
+      .innerText()
+      .catch(() => "");
+    if (isYuantaFundPositionAbsentText(bodyText)) {
+      throw new StatementComponentAbsentError(
+        "No YuanTa fund position is available for this login.",
+      );
+    }
+  }
+
+  return result;
 }
 
 async function openFundDetail(
@@ -1280,30 +1138,32 @@ async function submitForm(
   action: string,
   values: Record<string, string>,
 ): Promise<void> {
-  await scope.locator("form#mform, form[name='mform']").first().evaluate(
-    (formElement, { action: formAction, values: formValues }) => {
-      const form = formElement as HTMLFormElement;
-      for (const [name, value] of Object.entries(formValues)) {
-        const byName = form.elements.namedItem(name);
-        const element =
-          byName instanceof RadioNodeList ? byName[0] : byName;
-        if (element && "value" in element) {
-          (element as HTMLInputElement).value = value;
-          continue;
+  await scope
+    .locator("form#mform, form[name='mform']")
+    .first()
+    .evaluate(
+      (formElement, { action: formAction, values: formValues }) => {
+        const form = formElement as HTMLFormElement;
+        for (const [name, value] of Object.entries(formValues)) {
+          const byName = form.elements.namedItem(name);
+          const element = byName instanceof RadioNodeList ? byName[0] : byName;
+          if (element && "value" in element) {
+            (element as HTMLInputElement).value = value;
+            continue;
+          }
+
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = name;
+          input.value = value;
+          form.appendChild(input);
         }
 
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = name;
-        input.value = value;
-        form.appendChild(input);
-      }
-
-      form.action = formAction;
-      form.submit();
-    },
-    { action, values },
-  );
+        form.action = formAction;
+        form.submit();
+      },
+      { action, values },
+    );
 }
 
 async function logoutFromYuanTa(page: Page): Promise<void> {
@@ -1426,9 +1286,7 @@ function fundDownloadsDir(): string {
 
 function headerScore(row: string[]): number {
   return row.filter((value) =>
-    /日期|基金|交易|投資|金額|幣別|單位|淨值|帳號|類型|損益|報酬率/.test(
-      value,
-    ),
+    /日期|基金|交易|投資|金額|幣別|單位|淨值|帳號|類型|損益|報酬率/.test(value),
   ).length;
 }
 
@@ -1481,14 +1339,18 @@ function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
     rowIndex < table.rows.length;
     rowIndex += 1
   ) {
-    const values = alignValuesToHeaders(table.rows[rowIndex], config.rawColumns);
+    const values = alignValuesToHeaders(
+      table.rows[rowIndex],
+      config.rawColumns,
+    );
     if (!values.some((value) => value.length > 0)) continue;
     if (values.length !== config.rawColumns.length) continue;
     if (isRepeatedHeaderRow(values, config.rawColumns)) continue;
 
     const rowColumns: Record<string, string> = {};
     for (let columnIndex = 0; columnIndex < values.length; columnIndex += 1) {
-      const header = config.rawColumns[columnIndex] ?? `column_${columnIndex + 1}`;
+      const header =
+        config.rawColumns[columnIndex] ?? `column_${columnIndex + 1}`;
       rowColumns[header] = values[columnIndex] ?? "";
     }
 
@@ -1534,9 +1396,7 @@ function addIfPresent(values: Set<string>, value: string | null): void {
   if (value) values.add(value);
 }
 
-function groupedOutputTables(
-  tables: ParsedTable[],
-): OutputTableGroup[] {
+function groupedOutputTables(tables: ParsedTable[]): OutputTableGroup[] {
   const groups = new Map<string, OutputTableGroup>();
 
   for (const table of tables) {
@@ -1698,63 +1558,16 @@ export default workflow("yuantaFundStatements", {
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: YuantaCredentials })
-      .credentials;
-    let lastBankDialogMessage = "";
-    let replacedActiveSession = false;
-
-    const acceptBankDialog = async (dialog: Dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    };
-    page.on("dialog", acceptBankDialog);
-
-    const authResult = await librettoAuthenticate(ctx, {
+    const { page } = ctx;
+    const credentials = (
+      input as typeof input & { credentials: YuantaCredentials }
+    ).credentials;
+    const authResult = await sharedAuthenticateYuantaBank(
+      ctx,
       credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-        const captchaFrame = await waitForFrame(authPage, "main");
-        await dismissYuantaBankNotice(captchaFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
-          contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-        });
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            authSession +
-            "`.",
-        );
-        await pause(authSession);
-        const loginFrame = await waitForFrame(authPage, "main");
-        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
-          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
-        }
-        const loginButtonVisible =
-          loginFrame &&
-          (await loginFrame
-            .locator('a[href="javascript:doPreLogin();"]')
-            .isVisible()
-            .catch(() => false));
-        if (loginButtonVisible) {
-          await submitLogin(authPage, signInCredentials as YuantaCredentials);
-        }
-        replacedActiveSession = await waitForSignedInState(
-          authPage,
-          () => lastBankDialogMessage,
-          input.replaceActiveSession,
-        );
-      },
-    }).finally(() => page.off("dialog", acceptBankDialog));
+      input.replaceActiveSession,
+    );
+    const replacedActiveSession = authResult.replacedActiveSession;
 
     try {
       const dateRange = resolveDateRange(input);
@@ -1768,10 +1581,7 @@ export default workflow("yuantaFundStatements", {
         console.log(
           `automation-progress: ${
             75 +
-            Math.min(
-              24,
-              Math.round((completedFundSteps / fundStepCount) * 24),
-            )
+            Math.min(24, Math.round((completedFundSteps / fundStepCount) * 24))
           }`,
         );
       };
@@ -1794,9 +1604,10 @@ export default workflow("yuantaFundStatements", {
         const overviewStartedAt = Date.now();
         await openInvestmentOverview(page);
         const fundPositions = await extractFundPositions(page);
-        selectedFunds = fundPositions.filter((position) =>
-          matchesFundFilter(position, input.fundFilters),
-        );
+        // Fund filters are legacy persisted UI state. Yuanta captures every
+        // visible position; provider absence is handled by the position
+        // reader and remains the only skip condition.
+        selectedFunds = fundPositions;
         console.log("yuanta-fund-positions-found", {
           available: fundPositions.length,
           selected: selectedFunds.length,

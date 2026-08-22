@@ -1,13 +1,18 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { librettoAuthenticate, workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Page } from "playwright";
+import {
+  librettoAuthenticate,
+  workflow,
+  type LibrettoWorkflowContext,
+} from "libretto";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
 const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
+export const LINEBANK_MANUAL_LOGIN_TIMEOUT_MS = 120_000;
 
 const statementHeaders = [
   "帳務日期",
@@ -67,7 +72,7 @@ type LineBankCredentials = {
   linebank_password?: string;
 };
 
-type LineBankAccount = {
+export type LineBankAccount = {
   acctNbr?: string;
   arrId?: string;
   acctNick?: string;
@@ -78,6 +83,17 @@ type LineBankAccount = {
   currency?: string;
 };
 
+/** The provider's account identity is a composite of the two source fields.
+ * Keep the delimiter explicit so two different pairs cannot concatenate to the
+ * same opaque key (for example, `12` + `3` versus `1` + `23`). */
+export function linebankAccountKey(account: LineBankAccount): string {
+  const accountNumber = cleanText(account.acctNbr);
+  const arrangementId = cleanText(account.arrId);
+  return accountNumber && arrangementId
+    ? `${accountNumber}:${arrangementId}`
+    : "";
+}
+
 type LineBankAccountsResponse = {
   code?: string;
   message?: string;
@@ -86,25 +102,78 @@ type LineBankAccountsResponse = {
   } | null;
 };
 
-type LineBankTransactionRow = {
-  txSeqNbr?: number;
+export type LineBankTransactionRow = {
+  txSeqNbr?: number | string;
   txDt?: string;
   txTm?: string;
+  /** Observed source type: epoch milliseconds. */
+  txDtm?: number;
   dpstWdrwDsCd?: string;
+  bizTxFuncTpCd?: string;
   bizTxFuncTpNm?: string;
-  txAmt?: number;
-  afTxBal?: number;
+  crrnDpstNthCnt?: number;
+  ctptCustLineUid?: string | null;
+  fxsTxId?: string | null;
+  rltvTxArrId?: string | null;
+  txCaseCd?: string;
+  txAmt?: number | string;
+  afTxBal?: number | string;
+  cncdTxYn?: string;
+  cnclTxYn?: string;
   txRmkCont?: string;
-  txMemoVal?: string;
+  txMemoVal?: string | null;
 };
 
-type LineBankTransactionsResponse = {
+/** Scalar account/product/status fields observed in the transaction response. */
+export type LineBankTransactionSourceEnvelope = {
+  acctNbr?: string;
+  arrId?: string;
+  acctNick?: string;
+  acctBal?: number;
+  wdrwAvblAmt?: number;
+  acctColrTpCd?: string;
+  acctColrTpVal?: string;
+  acctCardImgUrl?: string | null;
+  pdCd?: string;
+  pdNm?: string;
+  simpAcctTpCd?: string | null;
+  jntAcctMbrTpCd?: string;
+  isSecuAcctBndg?: boolean;
+  debitCardFundBlcknYn?: string;
+  txBlcknYn?: string;
+  opnDtm?: number;
+  jntMbrListCnt?: number;
+  totJntAcctMbrCnt?: number;
+  rcntTxfrListCnt?: number;
+};
+
+export type LineBankTransactionResponseContent =
+  LineBankTransactionSourceEnvelope & {
+    pageNbr?: number;
+    pageCnt?: number;
+    totTxCnt?: number;
+    txCnt?: number;
+    txLst?: LineBankTransactionRow[];
+  };
+
+export type LineBankTransactionsResponse = {
   code?: string;
   message?: string;
-  content?: {
-    totTxCnt?: number;
-    txLst?: LineBankTransactionRow[];
-  } | null;
+  content?: LineBankTransactionResponseContent | null;
+};
+
+/** A page preserves the source response envelope instead of reducing it to
+ * rendered CSV rows. The canonical contract uses these counts to prove that
+ * the requested range was completely collected before admitting any record. */
+export type LineBankTransactionPage = {
+  pageNbr: number;
+  pageCnt: number;
+  totTxCnt: number;
+  txCnt: number;
+  rows: LineBankTransactionRow[];
+  source?: LineBankTransactionSourceEnvelope;
+  responseCode?: string;
+  responseMessage?: string;
 };
 
 type LineBankDownload = z.infer<typeof downloadSchema>;
@@ -116,21 +185,10 @@ export type LineBankStatementRow = {
 
 let lastTimestamp = 0;
 
-function requireCredential(
-  credentials: LineBankCredentials,
-  name: keyof LineBankCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: unknown): string {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function safeFilename(filename: string): string {
@@ -154,9 +212,17 @@ function rowsToCsv(rows: string[][]): string {
 function dateFromYYYYMMDD(value: string): Date {
   const match = value.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (!match) throw new Error(`Invalid date: ${value}`);
-  return new Date(
+  const date = new Date(
     Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
   );
+  if (
+    date.getUTCFullYear() !== Number(match[1]) ||
+    date.getUTCMonth() !== Number(match[2]) - 1 ||
+    date.getUTCDate() !== Number(match[3])
+  ) {
+    throw new Error(`Invalid calendar date: ${value}`);
+  }
+  return date;
 }
 
 function formatYYYYMMDD(date: Date): string {
@@ -204,6 +270,8 @@ function resolveDateRange(input: z.infer<typeof inputSchema>): DateRange {
 export function linebankQueryWindows(dateRange: DateRange): DateRange[] {
   const firstStart = dateFromYYYYMMDD(dateRange.startDate);
   let end = dateFromYYYYMMDD(dateRange.endDate);
+  if (firstStart > end)
+    throw new Error("startDate must be on or before endDate.");
   const windows: DateRange[] = [];
 
   while (end >= firstStart) {
@@ -230,35 +298,280 @@ function formatTime(value: string | undefined): string {
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
 }
 
-function amountText(value: number | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "";
-  return String(Math.abs(value));
+export const LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION =
+  "observed-time-v1" as const;
+
+/** Reconstruct the source timestamp using Taiwan's fixed UTC+8 offset. */
+export function linebankEpochMillisecondsFromSourceDateTime(
+  txDt: string | undefined,
+  txTm: string | undefined,
+): number {
+  const date = cleanText(txDt);
+  const time = cleanText(txTm);
+  const dateMatch = date.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const timeMatch = time.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!dateMatch || !timeMatch) {
+    throw new Error("LINE Bank transaction source date/time is invalid.");
+  }
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const second = Number(timeMatch[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new Error("LINE Bank transaction source date/time is invalid.");
+  }
+  const epochMilliseconds = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour - 8,
+    minute,
+    second,
+  );
+  if (!Number.isSafeInteger(epochMilliseconds)) {
+    throw new Error("LINE Bank transaction source time is out of range.");
+  }
+  return epochMilliseconds;
+}
+
+export function linebankValidateTransactionTime(
+  row: LineBankTransactionRow,
+): void {
+  if (
+    !cleanText(row.txDt) ||
+    !cleanText(row.txTm) ||
+    row.txDtm === undefined ||
+    row.txDtm === null
+  ) {
+    throw new Error("LINE Bank transaction source time is incomplete.");
+  }
+  if (!Number.isSafeInteger(row.txDtm) || row.txDtm < 0) {
+    throw new Error(
+      "LINE Bank transaction source txDtm must be a safe epoch-millisecond integer.",
+    );
+  }
+  if (
+    linebankEpochMillisecondsFromSourceDateTime(row.txDt, row.txTm) !==
+    row.txDtm
+  ) {
+    throw new Error(
+      "LINE Bank transaction source txDtm does not match txDt+txTm in Asia/Taipei.",
+    );
+  }
+}
+
+/** Preserve and validate the provider occurrence fields before any export. */
+export function linebankValidateSourceOccurrenceFields(
+  row: LineBankTransactionRow,
+): void {
+  const txSeqNbr = row.txSeqNbr;
+  const validSequence =
+    (typeof txSeqNbr === "number" &&
+      Number.isSafeInteger(txSeqNbr) &&
+      txSeqNbr > 0) ||
+    (typeof txSeqNbr === "string" &&
+      /^\d+$/.test(txSeqNbr.trim()) &&
+      BigInt(txSeqNbr.trim()) > 0n);
+  if (!validSequence) {
+    throw new Error(
+      "LINE Bank transaction source txSeqNbr must be a positive integer.",
+    );
+  }
+  if (
+    typeof row.crrnDpstNthCnt !== "number" ||
+    !Number.isSafeInteger(row.crrnDpstNthCnt) ||
+    row.crrnDpstNthCnt <= 0
+  ) {
+    throw new Error(
+      "LINE Bank transaction source crrnDpstNthCnt must be a positive integer.",
+    );
+  }
+  linebankValidateTransactionTime(row);
+}
+
+const DECIMAL_AMOUNT_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+function transactionAmountLexeme(value: number | string | undefined): string {
+  if (value == null) return "";
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value))
+      throw new Error("Invalid LINE Bank transaction amount.");
+    const lexeme = String(value);
+    if (!DECIMAL_AMOUNT_RE.test(lexeme)) {
+      throw new Error("Invalid LINE Bank transaction amount.");
+    }
+    return lexeme;
+  }
+  if (typeof value !== "string")
+    throw new Error("Invalid LINE Bank transaction amount.");
+  const lexeme = value.trim();
+  if (lexeme === "" || !DECIMAL_AMOUNT_RE.test(lexeme)) {
+    if (lexeme === "") return "";
+    throw new Error("Invalid LINE Bank transaction amount.");
+  }
+  return lexeme;
+}
+
+function amountText(value: number | string | undefined): string {
+  return transactionAmountLexeme(value).replace(/^-/, "");
+}
+
+function validateTransactionDirection(row: LineBankTransactionRow): string {
+  if (row.dpstWdrwDsCd !== "1" && row.dpstWdrwDsCd !== "2") {
+    throw new Error("Unsupported LINE Bank transaction direction.");
+  }
+  const rawAmount = transactionAmountLexeme(row.txAmt);
+  if (rawAmount.startsWith("-")) {
+    throw new Error(
+      `LINE Bank transaction amount conflicts with ${
+        row.dpstWdrwDsCd === "1" ? "deposit" : "withdrawal"
+      } direction.`,
+    );
+  }
+  return rawAmount;
 }
 
 function amountColumns(row: LineBankTransactionRow): [string, string] {
-  const amount = amountText(row.txAmt);
+  const rawAmount = validateTransactionDirection(row);
+  const amount = rawAmount.replace(/^-/, "");
   if (!amount) return ["", ""];
-  if (row.dpstWdrwDsCd === "2" || (row.txAmt ?? 0) < 0) return [amount, ""];
-  return ["", amount];
+  return row.dpstWdrwDsCd === "1" ? ["", amount] : [amount, ""];
 }
 
-function compareRowsDesc(left: LineBankStatementRow, right: LineBankStatementRow) {
+function compareRowsDesc(
+  left: LineBankStatementRow,
+  right: LineBankStatementRow,
+) {
   return right.sortKey.localeCompare(left.sortKey);
 }
 
-function dedupeRows(rows: LineBankStatementRow[]): LineBankStatementRow[] {
-  return Array.from(
-    new Map(rows.map((row) => [row.values.join("\u001f"), row])).values(),
-  ).sort(compareRowsDesc);
+export function linebankSortStatementRows(
+  rows: LineBankStatementRow[],
+): LineBankStatementRow[] {
+  return [...rows].sort(compareRowsDesc);
+}
+
+function linebankSourceEnvelope(
+  content: LineBankTransactionResponseContent,
+): LineBankTransactionSourceEnvelope {
+  return {
+    acctNbr: content.acctNbr,
+    arrId: content.arrId,
+    acctNick: content.acctNick,
+    acctBal: content.acctBal,
+    wdrwAvblAmt: content.wdrwAvblAmt,
+    acctColrTpCd: content.acctColrTpCd,
+    acctColrTpVal: content.acctColrTpVal,
+    acctCardImgUrl: content.acctCardImgUrl,
+    pdCd: content.pdCd,
+    pdNm: content.pdNm,
+    simpAcctTpCd: content.simpAcctTpCd,
+    jntAcctMbrTpCd: content.jntAcctMbrTpCd,
+    isSecuAcctBndg: content.isSecuAcctBndg,
+    debitCardFundBlcknYn: content.debitCardFundBlcknYn,
+    txBlcknYn: content.txBlcknYn,
+    opnDtm: content.opnDtm,
+    jntMbrListCnt: content.jntMbrListCnt,
+    totJntAcctMbrCnt: content.totJntAcctMbrCnt,
+    rcntTxfrListCnt: content.rcntTxfrListCnt,
+  };
+}
+
+/** Preserve the source response as a typed staged page without projecting it
+ * into CSV fields. This helper is deliberately pure so its shape can be
+ * checked without a browser or a live request. */
+export function linebankTransactionPageFromResponse(
+  response: LineBankTransactionsResponse,
+): LineBankTransactionPage {
+  if (response.code !== "200") {
+    throw new Error("LINE Bank transactions failed.");
+  }
+  const content = response.content;
+  const pageRows = content?.txLst;
+  if (!content || !Array.isArray(pageRows)) {
+    throw new Error("LINE Bank transaction response is missing its page rows.");
+  }
+  const pageNbr = content.pageNbr;
+  const pageCnt = content.pageCnt;
+  const totTxCnt = content.totTxCnt;
+  const txCnt = content.txCnt;
+  if (
+    typeof pageNbr !== "number" ||
+    typeof pageCnt !== "number" ||
+    typeof totTxCnt !== "number" ||
+    typeof txCnt !== "number" ||
+    !Number.isInteger(pageNbr) ||
+    !Number.isInteger(pageCnt) ||
+    !Number.isInteger(totTxCnt) ||
+    !Number.isInteger(txCnt) ||
+    pageNbr < 1 ||
+    pageCnt < 1 ||
+    totTxCnt < 0 ||
+    txCnt < 0 ||
+    txCnt !== pageRows.length
+  ) {
+    throw new Error(
+      "LINE Bank transaction response has invalid page/count metadata.",
+    );
+  }
+  for (const balance of [content.acctBal, content.wdrwAvblAmt]) {
+    if (balance !== undefined && balance !== null) {
+      transactionAmountLexeme(balance);
+    }
+  }
+  for (const row of pageRows) {
+    linebankValidateSourceOccurrenceFields(row);
+    if (row.txAmt !== undefined && row.txAmt !== null) {
+      transactionAmountLexeme(row.txAmt);
+    }
+    if (row.afTxBal !== undefined && row.afTxBal !== null) {
+      transactionAmountLexeme(row.afTxBal);
+    }
+    if (
+      row.txDtm !== undefined &&
+      (!Number.isSafeInteger(row.txDtm) || row.txDtm < 0)
+    ) {
+      throw new Error("LINE Bank transaction response has invalid txDtm type.");
+    }
+  }
+  return {
+    pageNbr,
+    pageCnt,
+    totTxCnt,
+    txCnt,
+    rows: pageRows,
+    source: linebankSourceEnvelope(content),
+    responseCode: response.code,
+    responseMessage: response.message,
+  };
 }
 
 function noteText(row: LineBankTransactionRow): string {
-  return [row.txRmkCont, row.txMemoVal].map(cleanText).filter(Boolean).join(" ");
+  return [row.txRmkCont, row.txMemoVal]
+    .map(cleanText)
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function linebankApiRowsToStatementRows(
   rows: LineBankTransactionRow[],
 ): LineBankStatementRow[] {
+  for (const row of rows) {
+    validateTransactionDirection(row);
+    if (row.afTxBal !== undefined && row.afTxBal !== null) {
+      transactionAmountLexeme(row.afTxBal);
+    }
+  }
   return rows
     .filter((row) => cleanText(row.txDt) || cleanText(row.bizTxFuncTpNm))
     .map((row) => {
@@ -281,7 +594,91 @@ export function linebankApiRowsToStatementRows(
     });
 }
 
-export function linebankStatementRowsToCsv(rows: LineBankStatementRow[]): string {
+export function linebankValidateTransactionPageSequence(
+  pages: readonly LineBankTransactionPage[],
+  options: {
+    requireComplete?: boolean;
+    expectedAccount?: LineBankAccount;
+  } = {},
+): void {
+  if (pages.length === 0)
+    throw new Error("LINE Bank transaction pages are empty.");
+  const first = pages[0];
+  let collectedRows = 0;
+  let sourceIdentity: string | undefined;
+  const expectedIdentity = options.expectedAccount
+    ? linebankAccountKey(options.expectedAccount)
+    : "";
+  const hasSourceEnvelope = pages.some((page) => page.source !== undefined);
+  if (expectedIdentity && pages.some((page) => page.source === undefined)) {
+    throw new Error(
+      "LINE Bank source account identity metadata is missing for requested account.",
+    );
+  }
+  if (hasSourceEnvelope && pages.some((page) => page.source === undefined)) {
+    throw new Error("LINE Bank source account identity metadata is missing.");
+  }
+  for (const [index, page] of pages.entries()) {
+    if (
+      !Number.isInteger(page.pageNbr) ||
+      page.pageNbr !== index + 1 ||
+      !Number.isInteger(page.pageCnt) ||
+      page.pageCnt < 1 ||
+      !Number.isInteger(page.totTxCnt) ||
+      page.totTxCnt < 0 ||
+      !Number.isInteger(page.txCnt) ||
+      page.txCnt < 0 ||
+      page.txCnt !== page.rows.length
+    ) {
+      throw new Error("LINE Bank transaction page metadata is invalid.");
+    }
+    if (page.responseCode !== undefined && page.responseCode !== "200") {
+      throw new Error("LINE Bank transaction response status is invalid.");
+    }
+    if (page.source !== undefined) {
+      const acctNbr = cleanText(page.source.acctNbr);
+      const arrId = cleanText(page.source.arrId);
+      if (!acctNbr || !arrId) {
+        throw new Error(
+          "LINE Bank source account identity metadata is incomplete.",
+        );
+      }
+      const pageSourceIdentity = `${acctNbr}:${arrId}`;
+      if (expectedIdentity && pageSourceIdentity !== expectedIdentity) {
+        throw new Error(
+          "LINE Bank source account identity does not match requested account.",
+        );
+      }
+      if (
+        sourceIdentity !== undefined &&
+        pageSourceIdentity !== sourceIdentity
+      ) {
+        throw new Error("LINE Bank source account identity drift detected.");
+      }
+      sourceIdentity = pageSourceIdentity;
+    }
+    if (page.pageCnt !== first.pageCnt)
+      throw new Error("LINE Bank pageCnt drift detected.");
+    if (page.totTxCnt !== first.totTxCnt)
+      throw new Error("LINE Bank totTxCnt drift detected.");
+    for (const row of page.rows) {
+      if (
+        row.txDtm !== undefined &&
+        (!Number.isSafeInteger(row.txDtm) || row.txDtm < 0)
+      ) {
+        throw new Error("LINE Bank transaction txDtm type is invalid.");
+      }
+    }
+    collectedRows += page.rows.length;
+  }
+  if (options.requireComplete && collectedRows !== first.totTxCnt) {
+    throw new Error("LINE Bank transaction total row count mismatch.");
+  }
+}
+
+export function linebankStatementRowsToCsv(
+  rows: LineBankStatementRow[],
+): string {
   return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
 }
 
@@ -290,18 +687,25 @@ function accountId(account: LineBankAccount): string {
 }
 
 function accountLabel(account: LineBankAccount): string {
-  return cleanText(account.acctNick) || cleanText(account.pdNm) || accountId(account);
+  return (
+    cleanText(account.acctNick) || cleanText(account.pdNm) || accountId(account)
+  );
 }
 
 export function linebankAccountCurrency(account: LineBankAccount): string {
   return cleanText(
-    account.currCd ?? account.ccyCd ?? account.crncyCd ?? account.currency ?? "TWD",
+    account.currCd ??
+      account.ccyCd ??
+      account.crncyCd ??
+      account.currency ??
+      "TWD",
   ).toUpperCase();
 }
 
 function matchesFilters(account: LineBankAccount, filters: string[]): boolean {
   if (filters.length === 0) return true;
-  const haystack = `${accountLabel(account)} ${accountId(account)}`.toLowerCase();
+  const haystack =
+    `${accountLabel(account)} ${accountId(account)}`.toLowerCase();
   return filters.some((filter) => haystack.includes(filter.toLowerCase()));
 }
 
@@ -328,42 +732,140 @@ function queryPeriod(dateRange: DateRange): string {
   return `${formatSlashDate(dateRange.startDate)} ~ ${formatSlashDate(dateRange.endDate)}`;
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  return await page
-    .locator('a[href="/logout"], a[aria-label*="登出"]')
-    .first()
-    .isVisible()
-    .catch(() => false);
+function transactionLinkLocator(page: Page): Locator {
+  return page.getByRole("link", { name: "帳戶交易明細查詢" });
 }
 
-async function signInLineBank(
-  ctx: LibrettoWorkflowContext,
-  credentials: LineBankCredentials,
-): Promise<void> {
-  const { page } = ctx;
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-  await page.locator("#nationalId").fill(
-    requireCredential(credentials, "linebank_user_id"),
+function authenticatedMarkerLocator(page: Page): Locator {
+  return page.locator(
+    'a[href="/transaction"]:visible, #account-dropdown:visible',
   );
-  await page
-    .locator("#userId")
-    .fill(requireCredential(credentials, "linebank_account"));
-  await page
-    .locator("#pw")
-    .fill(requireCredential(credentials, "linebank_password"));
-  await Promise.all([
-    page.waitForURL((url) => url.pathname !== "/login", { timeout: 60_000 }),
-    page.getByRole("button", { name: "登入友善網路銀行" }).click(),
-  ]);
+}
 
-  const confirm = page.getByRole("button", { name: "確定" });
-  if (await confirm.isVisible({ timeout: 5_000 }).catch(() => false)) {
-    await confirm.click();
+async function visibleMatches(locator: Locator): Promise<Locator[]> {
+  const count = await locator.count();
+  const matches: Locator[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (await candidate.isVisible().catch(() => false)) matches.push(candidate);
   }
-  await page
-    .locator('a[href="/logout"], a[aria-label*="登出"]')
-    .first()
-    .waitFor({ state: "visible", timeout: 60_000 });
+  return matches;
+}
+
+async function firstVisibleMatch(locator: Locator): Promise<Locator | null> {
+  return (await visibleMatches(locator))[0] ?? null;
+}
+
+/**
+ * Close only the explicitly approved, non-form dismissal button on one
+ * visible alertdialog. Never inspect dialog text, click unknown controls, or
+ * force a click; anything ambiguous remains a hard pre-query blocker.
+ */
+export async function linebankAutoDismissApprovedAlert(
+  page: Page,
+): Promise<void> {
+  const dialogs = page.getByRole("alertdialog");
+  const visibleDialogs = await visibleMatches(dialogs);
+  if (visibleDialogs.length === 0) return;
+  if (visibleDialogs.length !== 1) {
+    throw new Error(
+      "LINE Bank requires exactly one visible alert dialog before navigation.",
+    );
+  }
+
+  const dialog = visibleDialogs[0];
+  const approvedButtons = dialog.getByRole("button", {
+    name: /^(?:確定|關閉|知道了)$/,
+  });
+  if ((await approvedButtons.count()) !== 1) {
+    throw new Error(
+      "LINE Bank alert dialog requires exactly one approved dismissal button.",
+    );
+  }
+  const button = approvedButtons.nth(0);
+  if (!(await button.isVisible().catch(() => false))) {
+    throw new Error("LINE Bank approved dismissal button is not visible.");
+  }
+  await button.click();
+  await dialog.waitFor({
+    state: "hidden",
+    timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+  });
+  if ((await visibleMatches(dialogs)).length !== 0) {
+    throw new Error("LINE Bank alert dialog remained visible after dismissal.");
+  }
+}
+
+export async function linebankIsSignedIn(page: Page): Promise<boolean> {
+  const pathname = new URL(page.url()).pathname;
+  if (pathname === "/login") return false;
+  if (pathname === "/transaction") {
+    return (
+      (await firstVisibleMatch(page.locator("#account-dropdown"))) !== null
+    );
+  }
+  return (await firstVisibleMatch(transactionLinkLocator(page))) !== null;
+}
+
+/**
+ * Wait for the person to complete LINE Bank login and any CAPTCHA in the
+ * visible browser. Credentials remain a declared workflow contract, but this
+ * callback never reads, fills, logs, or submits them.
+ */
+export async function linebankWaitForManualSignIn(page: Page): Promise<void> {
+  if (await linebankIsSignedIn(page)) return;
+  if (new URL(page.url()).pathname !== "/login") {
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  }
+
+  // Wait for human CAPTCHA/login completion; see https://libretto.sh/docs/libretto-cloud-hosting/stealth.
+  const deadline = Date.now() + LINEBANK_MANUAL_LOGIN_TIMEOUT_MS;
+  const remainingTimeout = () => Math.max(1, deadline - Date.now());
+  await page.waitForURL((url) => url.pathname !== "/login", {
+    timeout: remainingTimeout(),
+  });
+  if (!(await linebankIsSignedIn(page))) {
+    const marker = authenticatedMarkerLocator(page).first();
+    await marker.waitFor({
+      state: "visible",
+      timeout: remainingTimeout(),
+    });
+  }
+  if (
+    !(await linebankIsSignedIn(page)) ||
+    new URL(page.url()).pathname === "/login"
+  ) {
+    throw new Error(
+      "LINE Bank manual sign-in did not reach an authenticated page.",
+    );
+  }
+}
+
+/** Enter the transaction stage only after authentication has completed. */
+export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
+  if (new URL(page.url()).pathname === "/transaction") {
+    await page.locator("#account-dropdown").waitFor({
+      state: "visible",
+      timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+    });
+    return;
+  }
+
+  const transactionLink = await firstVisibleMatch(transactionLinkLocator(page));
+  if (transactionLink) {
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === "/transaction", {
+        timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+      }),
+      transactionLink.click(),
+    ]);
+  } else {
+    await page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" });
+  }
+  await page.locator("#account-dropdown").waitFor({
+    state: "visible",
+    timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+  });
 }
 
 class LineBankApiClient {
@@ -373,7 +875,10 @@ class LineBankApiClient {
     this.page = page;
   }
 
-  private async apiJson<T>(path: string, options?: { body?: unknown }): Promise<T> {
+  private async apiJson<T>(
+    path: string,
+    options?: { body?: unknown },
+  ): Promise<T> {
     return (await this.page.evaluate(
       async ({ path, body }) => {
         const headers = {
@@ -402,7 +907,8 @@ class LineBankApiClient {
   }
 
   async fetchAccounts(): Promise<LineBankAccount[]> {
-    const response = await this.apiJson<LineBankAccountsResponse>(ACCOUNTS_ENDPOINT);
+    const response =
+      await this.apiJson<LineBankAccountsResponse>(ACCOUNTS_ENDPOINT);
     if (response.code !== "200") {
       throw new Error(
         `LINE Bank account list failed: ${response.message ?? "unknown"}`,
@@ -411,10 +917,11 @@ class LineBankApiClient {
     return response.content?.dpstAcctList ?? [];
   }
 
-  async fetchTransactions(
+  async fetchTransactionPages(
     account: LineBankAccount,
     dateRange: DateRange,
-  ): Promise<LineBankTransactionRow[]> {
+  ): Promise<LineBankTransactionPage[]> {
+    const pages: LineBankTransactionPage[] = [];
     const rows: LineBankTransactionRow[] = [];
     const pageCnt = 1000;
     let pageNbr = 1;
@@ -438,19 +945,45 @@ class LineBankApiClient {
           },
         },
       );
-      if (response.code !== "200") {
+      const page = linebankTransactionPageFromResponse(response);
+      if (page.pageNbr !== pageNbr) {
         throw new Error(
-          `LINE Bank transactions failed: ${response.message ?? "unknown"}`,
+          "LINE Bank transaction page metadata does not match the requested page.",
         );
       }
-      const pageRows = response.content?.txLst ?? [];
-      rows.push(...pageRows);
-      total = response.content?.totTxCnt ?? rows.length;
-      if (pageRows.length === 0) break;
+      if (page.totTxCnt < rows.length + page.rows.length) {
+        throw new Error(
+          "LINE Bank transaction page rows exceed the reported total.",
+        );
+      }
+      pages.push(page);
+      linebankValidateTransactionPageSequence(pages, {
+        expectedAccount: account,
+      });
+      rows.push(...page.rows);
+      total = page.totTxCnt;
+      if (page.rows.length === 0 && rows.length < total) {
+        throw new Error(
+          "LINE Bank transaction pagination ended before the reported total.",
+        );
+      }
+      if (rows.length >= total) break;
       pageNbr += 1;
     }
 
-    return rows;
+    linebankValidateTransactionPageSequence(pages, {
+      requireComplete: true,
+      expectedAccount: account,
+    });
+    return pages;
+  }
+
+  async fetchTransactions(
+    account: LineBankAccount,
+    dateRange: DateRange,
+  ): Promise<LineBankTransactionRow[]> {
+    const pages = await this.fetchTransactionPages(account, dateRange);
+    return pages.flatMap((page) => page.rows);
   }
 }
 
@@ -523,7 +1056,9 @@ async function downloadLineBankStatements(
   );
 
   if (accounts.length === 0) {
-    throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
+    throw new Error(
+      "No LINE Bank accounts matched accountFilters/currencyFilters.",
+    );
   }
 
   const downloads: LineBankDownload[] = [];
@@ -537,7 +1072,11 @@ async function downloadLineBankStatements(
       );
     }
     downloads.push(
-      await writeStatementFiles(account, windows.map(queryPeriod), dedupeRows(rows)),
+      await writeStatementFiles(
+        account,
+        windows.map(queryPeriod),
+        linebankSortStatementRows(rows),
+      ),
     );
   }
 
@@ -549,7 +1088,15 @@ async function downloadLineBankStatements(
   };
 }
 
+/**
+ * Manual-auth exception: librettoAuthenticate remains the authentication
+ * boundary and the credential declaration is retained for workflow metadata
+ * and runtime compatibility, but LINE Bank credentials are never read,
+ * filled, submitted, or logged here. The human completes login/CAPTCHA; only
+ * then does automation proceed from the visible authenticated state.
+ */
 export default workflow("linebankStatements", {
+  startUrl: LOGIN_URL,
   credentials: ["linebank_user_id", "linebank_account", "linebank_password"],
   input: inputSchema,
   output: outputSchema,
@@ -561,15 +1108,15 @@ export default workflow("linebankStatements", {
 
     await librettoAuthenticate(ctx, {
       credentials: input.credentials,
-      isSignedIn: async () => await isSignedIn(page),
-      signIn: async () => {
-        await signInLineBank(ctx, input.credentials);
+      isSignedIn: async () => await linebankIsSignedIn(page),
+      signIn: async (signInContext) => {
+        await linebankWaitForManualSignIn(signInContext.page);
       },
     });
 
+    await linebankAutoDismissApprovedAlert(page);
     console.log("automation-progress: 25");
-    await page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" });
-    await page.locator("#account-dropdown").waitFor({ timeout: 60_000 });
+    await linebankEnsureTransactionPage(page);
     const result = await downloadLineBankStatements(page, input);
     console.log("automation-progress: 100");
     return result;

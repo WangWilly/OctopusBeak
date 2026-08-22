@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
-} from "./browser-interaction.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+} from "./browser-interaction.ts";
+import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+// completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -40,10 +42,7 @@ type CaptureMetadata =
 const periodOffsetSchema = z.number().int().min(1).max(6);
 
 const inputSchema = z.object({
-  periodOffsets: z
-    .array(periodOffsetSchema)
-    .min(1)
-    .default([1, 2, 3, 4, 5, 6]),
+  periodOffsets: z.array(periodOffsetSchema).min(1).default([1, 2, 3, 4, 5, 6]),
   statementCardLabels: z.array(z.string()).default([]),
   unbilledCardNumbers: z.array(z.string()).default([]),
 });
@@ -152,7 +151,10 @@ function safeFilename(filename: string): string {
 }
 
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isFubonCreditCardNoRecordText(
@@ -225,7 +227,8 @@ function consumeDateSortKey(row: CsvRow): string {
   const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
   if (!match) return "";
 
-  const year = match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  const year =
+    match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
   return `${String(year).padStart(4, "0")}${match[2]}${match[3]}`;
 }
 
@@ -421,7 +424,12 @@ async function waitForNoVisibleBankMask(
       const masks = scope.locator("div._mask, ._mask");
       const count = await masks.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
-        if (await masks.nth(index).isVisible().catch(() => false)) {
+        if (
+          await masks
+            .nth(index)
+            .isVisible()
+            .catch(() => false)
+        ) {
           hasVisibleMask = true;
           break;
         }
@@ -486,54 +494,8 @@ async function openCreditCardFunctionPage(
   await clickLinkByClassOrText(page, classSelector, text);
 }
 
-async function fillCreditCardLoginForm(
-  page: Page,
-  credentials: FubonCredentials,
-) {
-  const userId = requireCredential(credentials, "fubon_user_id");
-  const account = requireCredential(credentials, "fubon_account");
-  const password = requireCredential(credentials, "fubon_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const headerFrame = await waitForFrame(page, "frame1");
-  await activateControlWithoutPointer(headerFrame.locator("#menu_CCC"));
-
-  const landingFrame = await waitForFrame(page, "txnFrame");
-  const creditCardHref = await landingFrame
-    .locator("a.task_CCCQU002.menu_CCC02")
-    .first()
-    .getAttribute("href");
-  if (!creditCardHref) {
-    throw new Error("Could not find the credit card billing navigation href.");
-  }
-
-  await landingFrame.goto(new URL(creditCardHref, BANK_ENTRY_URL).toString(), {
-    waitUntil: "domcontentloaded",
-  });
-
-  await activateControlWithoutPointer(
-    headerFrame.locator("a").filter({ hasText: "登入" }).first(),
-  );
-
-  const loginFrame = await waitForFrame(page, "txnFrame");
-  const visiblePasswordFields = loginFrame.locator(
-    'input[type="password"]:visible',
-  );
-  await visiblePasswordFields.first().waitFor({ timeout: 60_000 });
-
-  // The bank page renders these fields as password inputs even for user ID/account.
-  await visiblePasswordFields.nth(0).fill(userId);
-  await visiblePasswordFields.nth(1).fill(account);
-  await visiblePasswordFields.nth(2).fill(password);
-  await loginFrame.locator("#m1_userCaptcha").focus();
-}
-
-async function waitForSignedInState(page: Page): Promise<void> {
-  const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame
-    .locator("#header_form\\:header_logout")
-    .waitFor({ state: "visible", timeout: 60_000 });
+async function openCreditCardLoginForm(page: Page) {
+  await openFubonLoginForm(page);
 }
 
 async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
@@ -542,17 +504,33 @@ async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
     "task_CCCQU003.menu_CCC0202",
     "帳單明細查詢",
   );
-  const scope = await findScopeWithLocator(
-    page,
-    statementDetailsTable,
-    "credit card statement detail table",
-    60_000,
-  );
+  const scope = await findStatementDetailsScope(page);
+  if (await hasFubonCreditCardNoRecord(scope)) {
+    throw new StatementComponentAbsentError(
+      "Fubon credit-card statement records are not available for this account.",
+    );
+  }
   await statementDetailsTable(scope).waitFor({
     state: "attached",
     timeout: 60_000,
   });
   return scope;
+}
+
+async function findStatementDetailsScope(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<BrowserScope> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if (await hasAttachedLocator(statementDetailsTable(scope))) return scope;
+      if (await hasFubonCreditCardNoRecord(scope)) return scope;
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error("Could not find credit card statement result in any frame.");
 }
 
 async function openUnbilledDetailsPage(page: Page): Promise<BrowserScope> {
@@ -664,7 +642,10 @@ async function readStatementPeriodLabel(scope: BrowserScope): Promise<string> {
 
 function isStatementCardLabelRow(cells: string[]): boolean {
   const nonEmpty = cells.filter(Boolean);
-  return nonEmpty.length === 1 && /(?:正卡|附卡).*末[０-９0-9]{1,4}/.test(nonEmpty[0]);
+  return (
+    nonEmpty.length === 1 &&
+    /(?:正卡|附卡).*末[０-９0-9]{1,4}/.test(nonEmpty[0])
+  );
 }
 
 function isUnbilledCardLabelRow(cells: string[]): boolean {
@@ -702,7 +683,9 @@ async function selectStatementPeriod(
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       scope = await findScopeWithSelector(page, "#form1\\:period", 5_000);
-      const value = await scope.locator("#form1\\:period").getAttribute("value");
+      const value = await scope
+        .locator("#form1\\:period")
+        .getAttribute("value");
       if (value === String(periodOffset)) {
         await waitForNoVisibleBankMask(page);
         return scope;
@@ -738,7 +721,8 @@ async function readStatementRows(
     }
 
     if (isFubonStatementSummaryRow(cells)) {
-      if ((cells[1] ?? "").includes("前期應繳總額")) previousBalanceCells = cells;
+      if ((cells[1] ?? "").includes("前期應繳總額"))
+        previousBalanceCells = cells;
       if (/網路繳款|行動銀行繳款/.test(cells[1] ?? "")) paymentCells = cells;
       continue;
     }
@@ -858,7 +842,11 @@ export async function runFubonCreditCardStatements(
     .slice()
     .sort(compareRowsByConsumeDateDesc);
   const cardKeys = [
-    ...new Set([...sortedStatementRows, ...sortedUnbilledRows].map(cardKeyForRow).filter(Boolean)),
+    ...new Set(
+      [...sortedStatementRows, ...sortedUnbilledRows]
+        .map(cardKeyForRow)
+        .filter(Boolean),
+    ),
   ];
   const isFullCapture =
     input.periodOffsets.length === periodTabs.length &&
@@ -936,63 +924,17 @@ export default workflow("fubonCreditCardStatements", {
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
     const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: FubonCredentials })
-      .credentials;
+    const credentials = (
+      input as typeof input & { credentials: FubonCredentials }
+    ).credentials;
 
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await fillCreditCardLoginForm(page, credentials);
-    const loginFrame = await waitForFrame(page, "txnFrame");
-    await emitHumanAssistanceStage({
-      stageId: "fubon-login-captcha",
-      title: "Enter the Fubon CAPTCHA",
-      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "fubon.login.captcha-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_userCaptcha") }],
-      contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "fubon.login.captcha-challenge" }],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-    });
-
-    console.log(
-      "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-        session +
-        "`.",
-    );
-    await pause(session);
-
-    if (!(await loginFrame.locator("#m1_userCaptcha").inputValue()).trim()) {
-      throw new Error("Fubon CAPTCHA is empty. Enter it in the browser before resuming.");
-    }
-    await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
-
-    if (
-      await loginFrame
-        .locator("#m1_inputOTP")
-        .isVisible()
-        .catch(() => false)
-    ) {
-      await emitHumanAssistanceStage({
-        stageId: "fubon-login-otp",
-        title: "Enter the Fubon OTP",
-        targets: [{ id: "otp-input", label: "OTP input", semanticId: "fubon.login.otp-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_inputOTP") }],
-        contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
-        completion: { mode: "inline", targetIds: ["otp-input"] },
-        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
-      });
-      console.log(
-        "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-      if (!(await loginFrame.locator("#m1_inputOTP").inputValue()).trim()) {
-        throw new Error("Fubon OTP is empty. Enter it in the browser before resuming.");
-      }
-    }
-
-    await waitForSignedInState(page);
+    const values = {
+      userId: requireCredential(credentials, "fubon_user_id"),
+      account: requireCredential(credentials, "fubon_account"),
+      password: requireCredential(credentials, "fubon_password"),
+    };
+    await openCreditCardLoginForm(page);
+    await completeFubonHumanLogin(page, session, values);
     return await runFubonCreditCardStatements(page, input);
   },
 });

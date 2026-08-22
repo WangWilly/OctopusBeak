@@ -1,23 +1,57 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   activateControlWithoutPointer,
   fillInputWithoutPointer,
   selectOptionWithoutPointer,
-} from "./browser-interaction.js";
-import {
-  fetchFormPostbackHtml,
-  replaceDocumentHtml,
-} from "./form-postback.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+} from "./browser-interaction.ts";
+import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
+// completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
+import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 
 type BrowserScope = Page | Frame;
+
+const LOAN_ACCOUNT_SELECTOR = "#form1\\:loanAccountCombo";
+const LOAN_FORM_SELECTOR = "form#form1";
+const LOAN_NAVIGATION_ERROR = "Could not navigate to the loan statement page.";
+
+export type LoanNavigationOptions = Readonly<{
+  existingScopeTimeoutMs?: number;
+  formReadyTimeoutMs?: number;
+  retryFormReadyTimeoutMs?: number;
+  navigationControlTimeoutMs?: number;
+  navigationLinkTimeoutMs?: number;
+}>;
+
+const DEFAULT_LOAN_NAVIGATION_OPTIONS: Required<LoanNavigationOptions> = {
+  existingScopeTimeoutMs: 5_000,
+  formReadyTimeoutMs: 30_000,
+  retryFormReadyTimeoutMs: 5_000,
+  navigationControlTimeoutMs: 5_000,
+  navigationLinkTimeoutMs: 30_000,
+};
+
+type LoanNavigationStage =
+  | "loan-existing-form-probe"
+  | "loan-link-resolve"
+  | "loan-menu-trigger"
+  | "loan-form-ready";
+
+type LoanNavigationStageStatus = "start" | "success" | "timeout" | "failure";
+
+function logLoanNavigationStage(
+  stage: LoanNavigationStage,
+  status: LoanNavigationStageStatus,
+): void {
+  console.log(stage, { status });
+}
 
 type FubonCredentials = {
   fubon_user_id?: string;
@@ -34,9 +68,7 @@ const queryItemSchema = z.enum([
 
 type QueryItem = z.infer<typeof queryItemSchema>;
 
-const DEFAULT_QUERY_ITEMS: QueryItem[] = [
-  "TRANSACTION_DETAIL_QUERY",
-];
+const DEFAULT_QUERY_ITEMS: QueryItem[] = ["TRANSACTION_DETAIL_QUERY"];
 const SUPPORTED_NORMALIZED_QUERY_ITEM: QueryItem = "TRANSACTION_DETAIL_QUERY";
 
 const quickMonthsSchema = z.enum(["1", "3", "6"]);
@@ -182,7 +214,11 @@ function loanRowSortTime(row: string[]): number | null {
   const match = cleanText(row[0]).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
   if (!match) return null;
 
-  const time = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const time = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+  );
   return Number.isFinite(time) ? time : null;
 }
 
@@ -237,11 +273,160 @@ async function findScopeWithSelector(
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
       const locator = scope.locator(selector).first();
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await waitForLoanAttached(locator, deadline)) return scope;
+      if (Date.now() >= deadline) break;
     }
     await page.waitForTimeout(500);
   }
   throw new Error(`Could not find selector "${selector}" in any frame.`);
+}
+
+function scopesForLoanNavigation(page: Page): BrowserScope[] {
+  const scopes: BrowserScope[] = [page];
+  const currentTransactionFrame = page.frame({ name: "txnFrame" });
+  if (currentTransactionFrame) scopes.push(currentTransactionFrame);
+
+  for (const frame of page.frames()) {
+    if (frame !== currentTransactionFrame) scopes.push(frame);
+  }
+
+  return scopes;
+}
+
+async function waitForLoanAttached(
+  locator: Locator,
+  deadline: number,
+  probeSliceMs = 250,
+): Promise<boolean> {
+  const remainingMs = deadline - Date.now();
+  const timeoutMs = Math.min(probeSliceMs, remainingMs);
+  if (timeoutMs <= 0) return false;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await locator.first().waitFor({
+      state: "attached",
+      timeout: timeoutMs,
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function hasLoanForm(
+  scope: BrowserScope,
+  deadline: number,
+): Promise<boolean> {
+  const combo = scope.locator(LOAN_ACCOUNT_SELECTOR).first();
+  if (!(await waitForLoanAttached(combo, deadline))) return false;
+
+  const form = scope.locator(LOAN_FORM_SELECTOR).first();
+  return await waitForLoanAttached(form, deadline);
+}
+
+async function findLoanFormScope(
+  page: Page,
+  timeoutMs: number,
+  stage: Exclude<
+    LoanNavigationStage,
+    "loan-link-resolve" | "loan-menu-trigger"
+  >,
+): Promise<BrowserScope> {
+  logLoanNavigationStage(stage, "start");
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    for (const scope of scopesForLoanNavigation(page)) {
+      if (await hasLoanForm(scope, deadline)) {
+        logLoanNavigationStage(stage, "success");
+        return scope;
+      }
+      if (Date.now() >= deadline) break;
+    }
+
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(
+      Math.min(250, Math.max(1, deadline - Date.now())),
+    );
+  }
+
+  logLoanNavigationStage(stage, "timeout");
+  throw new Error(
+    `Could not find selector "${LOAN_ACCOUNT_SELECTOR}" in any frame.`,
+  );
+}
+
+async function findLoanNavigationLink(
+  page: Page,
+  timeoutMs: number,
+): Promise<Locator> {
+  logLoanNavigationStage("loan-link-resolve", "start");
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    for (const scope of scopesForLoanNavigation(page)) {
+      const taskLink = scope.locator("a.task_CLNQU001.menu_CLN02").first();
+      if (await waitForLoanAttached(taskLink, deadline)) {
+        logLoanNavigationStage("loan-link-resolve", "success");
+        return taskLink;
+      }
+      if (Date.now() >= deadline) break;
+
+      const textLink = scope
+        .locator("a")
+        .filter({ hasText: "貸款交易明細查詢" })
+        .first();
+      if (await waitForLoanAttached(textLink, deadline)) {
+        logLoanNavigationStage("loan-link-resolve", "success");
+        return textLink;
+      }
+      if (Date.now() >= deadline) break;
+    }
+
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(
+      Math.min(250, Math.max(1, deadline - Date.now())),
+    );
+  }
+
+  logLoanNavigationStage("loan-link-resolve", "timeout");
+  throw new Error("Could not find the loan statement navigation control.");
+}
+
+async function activateLoanControlWithTimeout(
+  locator: Locator,
+  timeoutMs: number,
+): Promise<void> {
+  const controller = new AbortController();
+  const action = activateControlWithoutPointer(locator, {
+    signal: controller.signal,
+    timeout: 0,
+  });
+  let timedOut = false;
+  const timer = setTimeout(
+    () => {
+      timedOut = true;
+      controller.abort();
+    },
+    Math.max(0, timeoutMs),
+  );
+
+  try {
+    await action;
+    if (timedOut) {
+      throw new Error("Loan navigation control timed out.");
+    }
+  } catch (error) {
+    if (timedOut) {
+      throw new Error("Loan navigation control timed out.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function findScopeWithLocator(
@@ -254,7 +439,8 @@ async function findScopeWithLocator(
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
       const locator = locatorFor(scope);
-      if ((await locator.count().catch(() => 0)) > 0) return scope;
+      if (await waitForLoanAttached(locator, deadline)) return scope;
+      if (Date.now() >= deadline) break;
     }
     await page.waitForTimeout(500);
   }
@@ -272,7 +458,12 @@ async function waitForNoVisibleBankMask(
       const masks = scope.locator("div._mask, ._mask");
       const count = await masks.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
-        if (await masks.nth(index).isVisible().catch(() => false)) {
+        if (
+          await masks
+            .nth(index)
+            .isVisible()
+            .catch(() => false)
+        ) {
           hasVisibleMask = true;
           break;
         }
@@ -287,60 +478,8 @@ async function waitForNoVisibleBankMask(
   throw new Error("Timed out waiting for the bank loading mask to clear.");
 }
 
-async function fillLoanLoginForm(page: Page, credentials: FubonCredentials) {
-  const userId = requireCredential(credentials, "fubon_user_id");
-  const account = requireCredential(credentials, "fubon_account");
-  const password = requireCredential(credentials, "fubon_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const headerFrame = await waitForFrame(page, "frame1");
-  await activateControlWithoutPointer(headerFrame.locator("#menu_CLN"));
-
-  const landingFrame = await waitForFrame(page, "txnFrame");
-  let loanStatementHref = await landingFrame
-    .locator("a.task_CLNQU001.menu_CLN02")
-    .first()
-    .getAttribute("href");
-  if (!loanStatementHref) {
-    loanStatementHref = await landingFrame
-      .locator("a")
-      .filter({ hasText: "貸款交易" })
-      .first()
-      .getAttribute("href");
-  }
-  if (!loanStatementHref) {
-    throw new Error("Could not find the loan statement navigation href.");
-  }
-
-  await landingFrame.goto(new URL(loanStatementHref, BANK_ENTRY_URL).toString(), {
-    waitUntil: "domcontentloaded",
-  });
-
-  let loginFrame = await waitForFrame(page, "txnFrame");
-  let visiblePasswordFields = loginFrame.locator('input[type="password"]:visible');
-  if ((await visiblePasswordFields.count().catch(() => 0)) === 0) {
-    await activateControlWithoutPointer(
-      headerFrame.locator("a").filter({ hasText: "登入" }).first(),
-    );
-    loginFrame = await waitForFrame(page, "txnFrame");
-    visiblePasswordFields = loginFrame.locator('input[type="password"]:visible');
-  }
-
-  await visiblePasswordFields.first().waitFor({ timeout: 60_000 });
-
-  // The bank page renders these fields as password inputs even for user ID/account.
-  await visiblePasswordFields.nth(0).fill(userId);
-  await visiblePasswordFields.nth(1).fill(account);
-  await visiblePasswordFields.nth(2).fill(password);
-  await loginFrame.locator("#m1_userCaptcha").focus();
-}
-
-async function waitForSignedInState(page: Page): Promise<void> {
-  const headerFrame = await waitForFrame(page, "frame1");
-  await headerFrame
-    .locator("#header_form\\:header_logout")
-    .waitFor({ state: "visible", timeout: 120_000 });
+async function openLoanLoginForm(page: Page) {
+  await openFubonLoginForm(page);
 }
 
 function loanForm(scope: BrowserScope): Locator {
@@ -356,49 +495,88 @@ function loanResultTable(scope: BrowserScope): Locator {
     .first();
 }
 
-async function navigateToLoanStatementsPage(page: Page): Promise<BrowserScope> {
+export async function navigateToLoanStatementsPage(
+  page: Page,
+  options: LoanNavigationOptions = {},
+): Promise<BrowserScope> {
+  const timings = {
+    ...DEFAULT_LOAN_NAVIGATION_OPTIONS,
+    ...options,
+  };
+
+  // A previous statement component may already have left the loan form in a
+  // live frame. Reuse that DOM before triggering another bank redirect.
   try {
-    return await findScopeWithSelector(page, "#form1\\:loanAccountCombo", 5_000);
+    return await findLoanFormScope(
+      page,
+      timings.existingScopeTimeoutMs,
+      "loan-existing-form-probe",
+    );
   } catch {
-    // Continue with explicit navigation below.
+    // Continue with the bounded navigation trigger below.
   }
 
-  const headerFrame = await waitForFrame(page, "frame1");
-  await activateControlWithoutPointer(headerFrame.locator("#menu_CLN"));
+  logLoanNavigationStage("loan-menu-trigger", "start");
+  try {
+    const headerFrame = await waitForFrame(
+      page,
+      "frame1",
+      timings.navigationLinkTimeoutMs,
+    );
+    await activateLoanControlWithTimeout(
+      headerFrame.locator("#menu_CLN"),
+      timings.navigationControlTimeoutMs,
+    );
+    logLoanNavigationStage("loan-menu-trigger", "success");
+  } catch {
+    logLoanNavigationStage("loan-menu-trigger", "failure");
+    // The transaction frame can already be on the target page. In that case
+    // the link trigger is unnecessary, and the readiness probe below is the
+    // source of truth.
+  }
 
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const taskLink = scope.locator("a.task_CLNQU001.menu_CLN02").first();
-      const textLink = scope
-        .locator("a")
-        .filter({ hasText: "貸款交易明細查詢" })
-        .first();
+  let navigationLink: Locator | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!navigationLink) {
+      navigationLink = await findLoanNavigationLink(
+        page,
+        timings.navigationLinkTimeoutMs,
+      ).catch(() => undefined);
+    }
 
-      for (const link of [taskLink, textLink]) {
-        if ((await link.count().catch(() => 0)) === 0) continue;
-
-        const href = await link.getAttribute("href");
-        if (href && href !== "#" && !href.startsWith("javascript:")) {
-          await scope.goto(new URL(href, BANK_ENTRY_URL).toString(), {
-            waitUntil: "domcontentloaded",
-          });
-        } else {
-          await activateControlWithoutPointer(link);
-        }
-
-        return await findScopeWithSelector(
-          page,
-          "#form1\\:loanAccountCombo",
-          60_000,
+    if (navigationLink) {
+      try {
+        // Trigger the bank-owned redirect through the current DOM. Directly
+        // navigating the frame loses the 302 hand-off and can wait forever for
+        // a destination document that the bank never exposes.
+        await activateLoanControlWithTimeout(
+          navigationLink,
+          timings.navigationControlTimeoutMs,
         );
+      } catch {
+        // A timed-out trigger is not proof that the redirect failed. Probe the
+        // current DOM before the single controlled retry.
       }
     }
 
-    await page.waitForTimeout(500);
+    try {
+      return await findLoanFormScope(
+        page,
+        attempt === 0
+          ? timings.formReadyTimeoutMs
+          : timings.retryFormReadyTimeoutMs,
+        "loan-form-ready",
+      );
+    } catch {
+      if (attempt === 0) {
+        // Re-resolve the link once in case the first trigger replaced the
+        // transaction frame. The loop allows exactly one retry/fallback.
+        navigationLink = undefined;
+      }
+    }
   }
 
-  throw new Error("Could not navigate to the loan statement page.");
+  throw new Error(LOAN_NAVIGATION_ERROR);
 }
 
 async function openLoanStatementsPage(page: Page): Promise<BrowserScope> {
@@ -434,7 +612,9 @@ function requestedQueryItems(input: FubonLoanStatementsInput): QueryItem[] {
 }
 
 function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
-  return Boolean(input.queryItem || (input.queryItems && input.queryItems.length > 0));
+  return Boolean(
+    input.queryItem || (input.queryItems && input.queryItems.length > 0),
+  );
 }
 
 function describeLoanPeriod(input: FubonLoanStatementsInput): LoanPeriod {
@@ -461,11 +641,7 @@ function addMonthsClamped(date: Date, months: number): Date {
   const targetYear = date.getFullYear();
   const targetMonth = date.getMonth() + months;
   const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
-  return new Date(
-    targetYear,
-    targetMonth,
-    Math.min(date.getDate(), lastDay),
-  );
+  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
 }
 
 function loanQueryPeriod(input: FubonLoanStatementsInput): string {
@@ -507,7 +683,9 @@ async function readLoanAccountOptions(
   }
 
   if (result.length === 0) {
-    throw new Error("No matching loan accounts were found.");
+    throw new StatementComponentAbsentError(
+      "No Fubon loan account is available for this login.",
+    );
   }
 
   return result;
@@ -561,7 +739,9 @@ async function configureLoanQuery(
   const scope = await findScopeWithSelector(page, "#form1\\:queryItemCombo");
   const availableQueryItems = await readAvailableLoanQueryItems(scope);
   if (!availableQueryItems.includes(queryItem)) {
-    throw new Error(`Loan query item is not available for this account: ${queryItem}`);
+    throw new Error(
+      `Loan query item is not available for this account: ${queryItem}`,
+    );
   }
 
   await selectOptionWithoutPointer(
@@ -618,7 +798,9 @@ async function parseLoanStatementHtml(
         )
         .find((rows) =>
           rows.some((row) =>
-            headers.every((header, index) => clean(row[index]).includes(header)),
+            headers.every((header, index) =>
+              clean(row[index]).includes(header),
+            ),
           ),
         );
       if (!tableRows) {
@@ -636,9 +818,10 @@ async function parseLoanStatementHtml(
         .map((table) =>
           Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
         )
-        .find((rows) =>
-          rows.some((row) => row.includes("分行名稱")) &&
-          rows.some((row) => row.includes("幣別")),
+        .find(
+          (rows) =>
+            rows.some((row) => row.includes("分行名稱")) &&
+            rows.some((row) => row.includes("幣別")),
         );
       const metadataValue = (label: string) => {
         for (const row of metadataRows ?? []) {
@@ -695,7 +878,11 @@ async function writeLoanStatementFiles(
 ): Promise<FubonLoanStatementsOutput["downloads"][number]> {
   const parsed = await parseLoanStatementHtml(page, html, loanAccount, input);
 
-  const downloadsDir = join(process.cwd(), "downloads", "fubon-loan-statements");
+  const downloadsDir = join(
+    process.cwd(),
+    "downloads",
+    "fubon-loan-statements",
+  );
   await mkdir(downloadsDir, { recursive: true });
 
   const baseName = `loan-${safeFilename(parsed.loanAccountId)}-${nextTimestamp()}`;
@@ -793,7 +980,8 @@ export async function runFubonLoanStatements(
 
     if (accountQueryItems.length === 0) {
       const queryItem = queryItems[0];
-      const reason = "No requested loan query items are available for this account.";
+      const reason =
+        "No requested loan query items are available for this account.";
       console.warn("loan-query-skipped", {
         loanAccount: account.label,
         queryItem,
@@ -808,35 +996,22 @@ export async function runFubonLoanStatements(
     }
 
     for (const queryItem of accountQueryItems) {
-      try {
-        scope = await configureLoanQuery(page, input, queryItem);
-        const html = await fetchLoanQueryHtml(page);
-        const download = await writeLoanStatementFiles(
-          page,
-          html,
-          account.label,
-          queryItem,
-          input,
-        );
-        downloads.push(download);
-      } catch (error) {
-        console.warn("loan-query-skipped", {
-          loanAccount: account.label,
-          queryItem,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-        skippedAccounts.push({
-          loanAccount: account.label,
-          queryItem,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
+      scope = await configureLoanQuery(page, input, queryItem);
+      const html = await fetchLoanQueryHtml(page);
+      const download = await writeLoanStatementFiles(
+        page,
+        html,
+        account.label,
+        queryItem,
+        input,
+      );
+      downloads.push(download);
     }
   }
 
   if (downloads.length === 0 && skippedAccounts.length > 0) {
-    throw new Error(
-      `No loan statements were downloaded. First skipped account reason: ${skippedAccounts[0].reason}`,
+    throw new StatementComponentAbsentError(
+      `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
     );
   }
 
@@ -856,63 +1031,17 @@ export default workflow("fubonLoanStatements", {
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
     const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: FubonCredentials })
-      .credentials;
+    const credentials = (
+      input as typeof input & { credentials: FubonCredentials }
+    ).credentials;
 
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await fillLoanLoginForm(page, credentials);
-    const loginFrame = await waitForFrame(page, "txnFrame");
-    await emitHumanAssistanceStage({
-      stageId: "fubon-login-captcha",
-      title: "Enter the Fubon CAPTCHA",
-      targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "fubon.login.captcha-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_userCaptcha") }],
-      contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "fubon.login.captcha-challenge" }],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-    });
-
-    console.log(
-      "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-        session +
-        "`.",
-    );
-    await pause(session);
-
-    if (!(await loginFrame.locator("#m1_userCaptcha").inputValue()).trim()) {
-      throw new Error("Fubon CAPTCHA is empty. Enter it in the browser before resuming.");
-    }
-    await activateControlWithoutPointer(loginFrame.locator("#btnLogin2"));
-
-    if (
-      await loginFrame
-        .locator("#m1_inputOTP")
-        .isVisible()
-        .catch(() => false)
-    ) {
-      await emitHumanAssistanceStage({
-        stageId: "fubon-login-otp",
-        title: "Enter the Fubon OTP",
-        targets: [{ id: "otp-input", label: "OTP input", semanticId: "fubon.login.otp-input", modes: ["click", "type"], locator: loginFrame.locator("#m1_inputOTP") }],
-        contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
-        completion: { mode: "inline", targetIds: ["otp-input"] },
-        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
-      });
-      console.log(
-        "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-      if (!(await loginFrame.locator("#m1_inputOTP").inputValue()).trim()) {
-        throw new Error("Fubon OTP is empty. Enter it in the browser before resuming.");
-      }
-    }
-
-    await waitForSignedInState(page);
+    const values = {
+      userId: requireCredential(credentials, "fubon_user_id"),
+      account: requireCredential(credentials, "fubon_account"),
+      password: requireCredential(credentials, "fubon_password"),
+    };
+    await openLoanLoginForm(page);
+    await completeFubonHumanLogin(page, session, values);
     return await runFubonLoanStatements(page, input);
   },
 });
