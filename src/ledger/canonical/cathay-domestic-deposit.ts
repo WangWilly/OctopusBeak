@@ -6,3 +6,4 @@
  * implementation. Keep this module as the stable Cathay import path.
  */
 export * from "./canonical-source-store.ts";
+export * from "./cathay-human-attestation.ts";

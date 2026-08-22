@@ -28,17 +28,25 @@ assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
-  /selectStatementTypes\([\s\S]*BANK_STATEMENT_CAPABILITIES\.yuanta/,
+  /allSupportedStatementTypeIds\([\s\S]*BANK_STATEMENT_CAPABILITIES\.yuanta/,
 );
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.doesNotMatch(source, /continueOnError/);
 assert.match(
   source,
-  /typeId: "deposit"[\s\S]*typeId: "foreign_currency"[\s\S]*typeId: "loan"[\s\S]*typeId: "credit_card"[\s\S]*typeId: "fund"/,
+  /typeId: "deposit"[\s\S]*typeId: "foreign_currency"[\s\S]*typeId: "credit_card"[\s\S]*typeId: "loan"[\s\S]*typeId: "fund"/,
 );
-assert.match(source, /prepare:[\s\S]*?prepareForComponent\(ctx, "foreignCurrency"\)/);
+assert.doesNotMatch(source, /includeByType/);
+assert.doesNotMatch(source, /filter\(\(typeId\) => include/);
+assert.match(
+  source,
+  /prepare:[\s\S]*?prepareForComponent\(ctx, "foreignCurrency"\)/,
+);
 assert.match(source, /prepare:[\s\S]*?prepareForComponent\(ctx, "loan"\)/);
-assert.match(source, /prepare:[\s\S]*?prepareForComponent\(ctx, "creditCard"\)/);
+assert.match(
+  source,
+  /prepare:[\s\S]*?prepareForComponent\(ctx, "creditCard"\)/,
+);
 assert.match(source, /prepare:[\s\S]*?prepareForComponent\(ctx, "fund"\)/);
 assert.match(
   source,
@@ -48,34 +56,13 @@ assert.doesNotMatch(
   source,
   /\.or\(candidate\.locator\('a\[onclick\*="queryMonth\("\]'\)\)/,
 );
-assert.match(authSource, /page\.on\("dialog", acceptBankDialog\)/);
-assert.match(authSource, /finally \{\s*page\.off\("dialog", acceptBankDialog\);\s*\}/);
-const authSignInSource = authSource.slice(
-  authSource.indexOf('signIn: async ({ page: authPage'),
-  authSource.indexOf('page.off("dialog", acceptBankDialog);'),
-);
-assert.match(
-  authSignInSource,
-  /const loginFrame = await waitForFrame\(authPage, "main"\);\s*await dismissYuantaBankNotice\(loginFrame, 5_000\);[\s\S]*?await emitHumanAssistanceStage/,
-);
+assert.match(authSource, /sharedAuthenticateYuantaBank\(/);
 for (const componentSource of componentSources) {
-  assert.match(componentSource, /page\.on\("dialog", acceptBankDialog\)/);
   assert.match(
     componentSource,
-    /librettoAuthenticate\([\s\S]*?\.finally\(\(\) => page\.off\("dialog", acceptBankDialog\)\)/,
+    /authenticateYuantaBank as sharedAuthenticateYuantaBank/,
   );
-  const componentSignInSource = componentSource.slice(
-    componentSource.indexOf('signIn: async ({ page: authPage'),
-    componentSource.indexOf('page.off("dialog", acceptBankDialog);'),
-  );
-  assert.match(
-    componentSignInSource,
-    /const captchaFrame = await waitForFrame\(authPage, "main"\);\s*await dismissYuantaBankNotice\(captchaFrame, 5_000\);[\s\S]*?await emitHumanAssistanceStage/,
-  );
-  assert.match(
-    componentSignInSource,
-    /await pause\(authSession\);\s*const loginFrame = await waitForFrame\(authPage, "main"\);\s*if \(!\(await loginFrame\.locator\("#gcode"\)\.inputValue\(\)\)\.trim\(\)\)/,
-  );
+  assert.match(componentSource, /sharedAuthenticateYuantaBank\(/);
 }
 
 const server = await createServer({
@@ -85,9 +72,9 @@ const server = await createServer({
   appType: "custom",
   logLevel: "silent",
 });
-const module = await server.ssrLoadModule(
-  "/src/workflows/yuanta-all-statements.ts",
-).finally(() => server.close());
+const module = await server
+  .ssrLoadModule("/src/workflows/yuanta-all-statements.ts")
+  .finally(() => server.close());
 const workflow = module.default;
 const runYuantaAllStatements = module.runYuantaAllStatements;
 assert.equal(workflow.handler, runYuantaAllStatements);
@@ -114,6 +101,23 @@ const fundOutput = {
   count: 0,
   files: [],
 };
+const depositOutput = {
+  dateRange: "three_months",
+  replacedActiveSession: false,
+  count: 1,
+  files: [],
+};
+const loanOutput = {
+  dateRange: "one_year",
+  replacedActiveSession: false,
+  count: 0,
+  files: [],
+};
+const creditCardOutput = {
+  replacedActiveSession: false,
+  count: 0,
+  files: [],
+};
 let output: unknown;
 try {
   output = await runYuantaAllStatements(
@@ -122,7 +126,7 @@ try {
       credentials,
       include: {},
       prepareBetweenComponents: true,
-      statements: {},
+      statements: { replaceActiveSession: false },
       foreignCurrency: {
         accountFilters: ["foreign"],
         replaceActiveSession: false,
@@ -148,8 +152,11 @@ try {
       },
       yuantaStatements: {
         name: "yuantaStatements",
-        run: async () => {
-          throw new Error("unselected deposit ran");
+        run: async (actualCtx: unknown, input: Record<string, unknown>) => {
+          assert.equal(actualCtx, ctx);
+          assert.equal(input.credentials, credentials);
+          calls.push("run:deposit");
+          return depositOutput;
         },
       },
       yuantaForeignCurrencyStatements: {
@@ -164,13 +171,15 @@ try {
       yuantaLoanStatements: {
         name: "yuantaLoanStatements",
         run: async () => {
-          throw new Error("unselected loan ran");
+          calls.push("run:loan");
+          return loanOutput;
         },
       },
       yuantaCreditCardStatements: {
         name: "yuantaCreditCardStatements",
         run: async () => {
-          throw new Error("unselected credit card ran");
+          calls.push("run:creditCard");
+          return creditCardOutput;
         },
       },
       yuantaFundStatements: {
@@ -195,29 +204,42 @@ try {
 
 assert.deepEqual(calls, [
   "authenticate",
+  "run:deposit",
   "prepare:foreignCurrency",
   "run:foreignCurrency",
+  "prepare:creditCard",
+  "run:creditCard",
+  "prepare:loan",
+  "run:loan",
   "prepare:fund",
   "run:fund",
 ]);
 assert.deepEqual(output, {
-  count: 2,
-  succeeded: 2,
+  count: 5,
+  succeeded: 5,
   failed: 0,
-  skipped: 3,
-  statements: { workflow: "yuantaStatements", status: "skipped" },
+  skipped: 0,
+  statements: {
+    workflow: "yuantaStatements",
+    status: "success",
+    output: depositOutput,
+  },
   foreignCurrency: {
     workflow: "yuantaForeignCurrencyStatements",
     status: "success",
     output: {
       ...foreignCurrencyOutput,
-      usedExistingSession: false,
     },
   },
-  loan: { workflow: "yuantaLoanStatements", status: "skipped" },
+  loan: {
+    workflow: "yuantaLoanStatements",
+    status: "success",
+    output: loanOutput,
+  },
   creditCard: {
     workflow: "yuantaCreditCardStatements",
-    status: "skipped",
+    status: "success",
+    output: creditCardOutput,
   },
   fund: {
     workflow: "yuantaFundStatements",
@@ -226,9 +248,9 @@ assert.deepEqual(output, {
   },
 });
 
-const firstSelectedComponentCases = [
+const componentCases = [
   {
-    selection: "deposit",
+    typeId: "deposit",
     outputKey: "statements",
     workflowName: "yuantaStatements",
     output: {
@@ -239,7 +261,7 @@ const firstSelectedComponentCases = [
     },
   },
   {
-    selection: "foreign_currency",
+    typeId: "foreign_currency",
     outputKey: "foreignCurrency",
     workflowName: "yuantaForeignCurrencyStatements",
     output: {
@@ -252,7 +274,18 @@ const firstSelectedComponentCases = [
     },
   },
   {
-    selection: "loan",
+    typeId: "credit_card",
+    outputKey: "creditCard",
+    workflowName: "yuantaCreditCardStatements",
+    output: {
+      usedExistingSession: true,
+      replacedActiveSession: false,
+      count: 0,
+      files: [],
+    },
+  },
+  {
+    typeId: "loan",
     outputKey: "loan",
     workflowName: "yuantaLoanStatements",
     output: {
@@ -264,18 +297,7 @@ const firstSelectedComponentCases = [
     },
   },
   {
-    selection: "credit_card",
-    outputKey: "creditCard",
-    workflowName: "yuantaCreditCardStatements",
-    output: {
-      usedExistingSession: true,
-      replacedActiveSession: false,
-      count: 0,
-      files: [],
-    },
-  },
-  {
-    selection: "fund",
+    typeId: "fund",
     outputKey: "fund",
     workflowName: "yuantaFundStatements",
     output: {
@@ -286,6 +308,35 @@ const firstSelectedComponentCases = [
       count: 0,
       files: [],
     },
+  },
+] as const;
+const selectionScenarios = [
+  { name: "unset", persisted: undefined, include: {} },
+  {
+    name: "empty",
+    persisted: "",
+    include: {
+      statements: false,
+      foreignCurrency: false,
+      creditCard: false,
+      loan: false,
+      fund: false,
+    },
+  },
+  {
+    name: "subset",
+    persisted: "deposit,credit_card",
+    include: { statements: true, creditCard: true },
+  },
+  {
+    name: "unknown",
+    persisted: "foreign_currency,unknown",
+    include: { foreignCurrency: true },
+  },
+  {
+    name: "stale",
+    persisted: "legacy-old-type",
+    include: { loan: false },
   },
 ] as const;
 const authenticationCases = [
@@ -306,20 +357,22 @@ const authenticationCases = [
   },
 ] as const;
 
-for (const componentCase of firstSelectedComponentCases) {
+for (const selectionScenario of selectionScenarios) {
   for (const authenticationCase of authenticationCases) {
-    process.env[selectionKey] = componentCase.selection;
+    if (selectionScenario.persisted === undefined)
+      delete process.env[selectionKey];
+    else process.env[selectionKey] = selectionScenario.persisted;
     let authenticationCount = 0;
     const componentCalls: string[] = [];
     const componentOutputs = Object.fromEntries(
-      firstSelectedComponentCases.map(({ selection, output: componentOutput }) => [
-        selection,
+      componentCases.map(({ typeId, output: componentOutput }) => [
+        typeId,
         componentOutput,
       ]),
     );
-    const runComponent = (selection: string) => async () => {
-      componentCalls.push(selection);
-      return componentOutputs[selection];
+    const runComponent = (typeId: string) => async () => {
+      componentCalls.push(typeId);
+      return componentOutputs[typeId];
     };
 
     let scenarioOutput: Record<string, unknown>;
@@ -328,7 +381,7 @@ for (const componentCase of firstSelectedComponentCases) {
         ctx,
         {
           credentials,
-          include: {},
+          include: selectionScenario.include,
           prepareBetweenComponents: false,
           statements: {
             replaceActiveSession: authenticationCase.replacedActiveSession,
@@ -392,47 +445,43 @@ for (const componentCase of firstSelectedComponentCases) {
     assert.equal(
       authenticationCount,
       1,
-      `${authenticationCase.name}: ${componentCase.selection} authenticates once`,
+      `${authenticationCase.name}: ${selectionScenario.name} authenticates once`,
     );
-    assert.deepEqual(componentCalls, [componentCase.selection]);
-    const expectedOutput = {
-      ...componentCase.output,
-      ...(Object.hasOwn(componentCase.output, "usedExistingSession")
-        ? { usedExistingSession: authenticationCase.usedExistingSession }
-        : {}),
-      ...(Object.hasOwn(componentCase.output, "replacedActiveSession")
-        ? { replacedActiveSession: authenticationCase.replacedActiveSession }
-        : {}),
-    };
-    assert.deepEqual(scenarioOutput[componentCase.outputKey], {
-      workflow: componentCase.workflowName,
-      status: "success",
-      output: expectedOutput,
-    });
-  }
-}
-
-process.env[selectionKey] = "deposit";
-try {
-  await assert.rejects(
-    runYuantaAllStatements(
-      ctx,
+    assert.deepEqual(componentCalls, [
+      "deposit",
+      "foreign_currency",
+      "credit_card",
+      "loan",
+      "fund",
+    ]);
+    assert.deepEqual(
       {
-        credentials,
-        include: { statements: false },
-        prepareBetweenComponents: false,
-        statements: {},
-        foreignCurrency: {},
-        loan: {},
-        creditCard: {},
-        fund: {},
+        count: scenarioOutput.count,
+        succeeded: scenarioOutput.succeeded,
+        failed: scenarioOutput.failed,
+        skipped: scenarioOutput.skipped,
       },
-    ),
-    /Select at least one Yuanta statement type/,
-  );
-} finally {
-  if (previousSelection === undefined) delete process.env[selectionKey];
-  else process.env[selectionKey] = previousSelection;
+      { count: 5, succeeded: 5, failed: 0, skipped: 0 },
+    );
+    for (const componentCase of componentCases) {
+      const expectedOutput = {
+        ...componentCase.output,
+        ...(componentCase.typeId === "deposit" &&
+        Object.hasOwn(componentCase.output, "usedExistingSession")
+          ? { usedExistingSession: authenticationCase.usedExistingSession }
+          : {}),
+        ...(componentCase.typeId === "deposit" &&
+        Object.hasOwn(componentCase.output, "replacedActiveSession")
+          ? { replacedActiveSession: authenticationCase.replacedActiveSession }
+          : {}),
+      };
+      assert.deepEqual(scenarioOutput[componentCase.outputKey], {
+        workflow: componentCase.workflowName,
+        status: "success",
+        output: expectedOutput,
+      });
+    }
+  }
 }
 
 process.env[selectionKey] = "deposit,loan";

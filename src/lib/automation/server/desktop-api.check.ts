@@ -16,6 +16,10 @@ const enabledKey = `${credentialPrefix}ENABLED`;
 const userIdKey = `${credentialPrefix}USER_ID`;
 const accountKey = `${credentialPrefix}ACCOUNT`;
 const passwordKey = `${credentialPrefix}PASSWORD`;
+const yuantaEnabledKey = "LIBRETTO_CLOUD_YUANTA_ENABLED";
+const yuantaUserIdKey = "LIBRETTO_CLOUD_YUANTA_USER_ID";
+const yuantaAccountKey = "LIBRETTO_CLOUD_YUANTA_ACCOUNT";
+const yuantaPasswordKey = "LIBRETTO_CLOUD_YUANTA_PASSWORD";
 const certificatePathKey = "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH";
 let resetCredentialCodec: (() => void) | null = null;
 
@@ -28,7 +32,8 @@ try {
         AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
         [enabledKey]: true,
         LIBRETTO_CLOUD_ESUN_ENABLED: false,
-        LIBRETTO_CLOUD_YUANTA_ENABLED: false,
+        [yuantaEnabledKey]: true,
+        LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "deposit,retired_type",
         LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: false,
         LIBRETTO_CLOUD_CATHAY_ENABLED: false,
         LIBRETTO_CLOUD_HNCB_ENABLED: false,
@@ -50,6 +55,9 @@ try {
         [userIdKey]: "user",
         [accountKey]: "acct",
         [passwordKey]: "pw",
+        [yuantaUserIdKey]: "yuanta-user",
+        [yuantaAccountKey]: "yuanta-account",
+        [yuantaPasswordKey]: "yuanta-password",
         [certificatePathKey]: join(dir, "certificate.txt"),
       },
       null,
@@ -97,6 +105,29 @@ try {
     "loan",
   ]);
   assert.equal(fubonGroup?.statementSetupRequired, false);
+  const yuantaGroup = model.credentialGroups.find(
+    (group) => group.id === "yuanta",
+  );
+  assert.deepEqual(yuantaGroup?.selectedStatementTypeIds, [
+    "deposit",
+    "foreign_currency",
+    "credit_card",
+    "loan",
+    "fund",
+  ]);
+  assert.equal(yuantaGroup?.statementSetupRequired, false);
+
+  assert.deepEqual(
+    api.automationSaveCredentials({
+      LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "loan",
+    }),
+    { saved: true },
+  );
+  assert.equal(
+    JSON.parse(readFileSync("settings.json", "utf8"))
+      .LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES,
+    "deposit,foreign_currency,credit_card,loan,fund",
+  );
   assert.equal(model.automation.credentials[passwordKey], true);
   const yuantaSecuritiesGroup = model.credentialGroups.find(
     (group) => group.id === "yuanta-trade",

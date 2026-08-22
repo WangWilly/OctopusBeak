@@ -1,4 +1,10 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
@@ -11,6 +17,7 @@ import {
   disarmAutomationSessionTimeout,
   finalizeExactOwnedAutomationSession,
   finalizeOwnedAutomationSession,
+  isAutomationSessionCleanupPending,
   isExpectedLibrettoDaemon,
   ownAutomationSession,
   ownedAutomationSession,
@@ -19,11 +26,15 @@ import {
   type OwnedAutomationSession,
   type TimerDeps,
 } from "./session-lifecycle.ts";
-import { updateTaskRun, type AutomationTaskRun } from "./store.ts";
+import { taskRunById, updateTaskRun, type AutomationTaskRun } from "./store.ts";
 
 const SESSION_LOG_PREFIX_BYTES = 4_000;
 
-export type { FinalizeSessionDeps, OwnedAutomationSession, TimerDeps } from "./session-lifecycle.ts";
+export type {
+  FinalizeSessionDeps,
+  OwnedAutomationSession,
+  TimerDeps,
+} from "./session-lifecycle.ts";
 
 export type AutomationSessionDisposition = "retain" | "relinquish";
 
@@ -47,9 +58,10 @@ export type AutomationSessionCleanupResult = {
   cleanupFailed: boolean;
 };
 
-export type ForceQuitAutomationSessionResult = AutomationSessionCleanupResult & {
-  operationalError: unknown | null;
-};
+export type ForceQuitAutomationSessionResult =
+  AutomationSessionCleanupResult & {
+    operationalError: unknown | null;
+  };
 
 export function appendLog(logPath: string, chunk: string) {
   mkdirSync(dirname(logPath), { recursive: true });
@@ -103,12 +115,15 @@ export function sessionFromRun(run: AutomationTaskRun) {
       closeSync(descriptor);
     }
     const output = buffer.toString("utf8", 0, length);
-    const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
+    const session =
+      automationSessionFromLog(output) ?? resumeSessionFromLog(output);
     if (session) return session;
   } catch {
     // The bounded log tail remains the recovery source when the log file is unavailable.
   }
-  return automationSessionFromLog(run.logTail) ?? resumeSessionFromLog(run.logTail);
+  return (
+    automationSessionFromLog(run.logTail) ?? resumeSessionFromLog(run.logTail)
+  );
 }
 
 export function sessionPid(session: string) {
@@ -122,8 +137,10 @@ export function sessionPid(session: string) {
 function isLoopbackHttpEndpoint(endpoint: string) {
   try {
     const url = new URL(endpoint);
-    return url.protocol === "http:"
-      && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+    return (
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "[::1]")
+    );
   } catch {
     return false;
   }
@@ -158,7 +175,14 @@ export async function isLiveOwnedAutomationSession(
   } catch {
     return false;
   }
-  if (!state || state.session !== owner.session || state.status !== "paused" || !state.pid || owner.pid !== state.pid) return false;
+  if (
+    !state ||
+    state.session !== owner.session ||
+    state.status !== "paused" ||
+    !state.pid ||
+    owner.pid !== state.pid
+  )
+    return false;
   try {
     if (!deps.isExpectedDaemon(state.pid, owner.session)) return false;
   } catch {
@@ -178,10 +202,17 @@ export async function isLiveOwnedAutomationSession(
   }
 }
 
-export function automationSessionOwnerForRun(run: AutomationTaskRun): OwnedAutomationSession | null {
+export function automationSessionOwnerForRun(
+  run: AutomationTaskRun,
+): OwnedAutomationSession | null {
   const session = sessionFromRun(run);
   return session
-    ? { taskId: run.taskId, taskRunId: run.taskRunId, session, pid: sessionPid(session) }
+    ? {
+        taskId: run.taskId,
+        taskRunId: run.taskRunId,
+        session,
+        pid: sessionPid(session),
+      }
     : null;
 }
 
@@ -219,21 +250,43 @@ export function claimAutomationTaskRunSession(
   options: { resumeSession?: string; resumeFrom?: AutomationTaskRun } = {},
 ) {
   const current = ownedAutomationSession(owner.taskId);
+  const currentRun = current ? taskRunById(db, current.taskRunId) : null;
+  const currentRunIsTerminal =
+    currentRun?.status === "completed" ||
+    currentRun?.status === "partial" ||
+    currentRun?.status === "failed";
+  const currentHasExpectedDaemon = Boolean(
+    current?.pid !== null &&
+    current?.pid !== undefined &&
+    isExpectedLibrettoDaemon(current.pid, current.session),
+  );
+  const mayReplaceTerminalOwner = Boolean(
+    current &&
+    currentRunIsTerminal &&
+    !isAutomationSessionCleanupPending(current.session) &&
+    !currentHasExpectedDaemon,
+  );
   const resumeFrom = options.resumeFrom;
   let claimError: unknown = null;
   const isResumeHandoff = Boolean(
-    options.resumeSession
-      && options.resumeSession === owner.session
-      && resumeFrom?.status === "waiting_for_human"
-      && resumeFrom.taskId === owner.taskId
-      && resumeFrom.taskRunId !== taskRunId
-      && sessionFromRun(resumeFrom) === owner.session
-      && (!current
-        || (current.taskRunId === resumeFrom.taskRunId && current.session === owner.session)),
+    options.resumeSession &&
+    options.resumeSession === owner.session &&
+    resumeFrom?.status === "waiting_for_human" &&
+    resumeFrom.taskId === owner.taskId &&
+    resumeFrom.taskRunId !== taskRunId &&
+    sessionFromRun(resumeFrom) === owner.session &&
+    (!current ||
+      (current.taskRunId === resumeFrom.taskRunId &&
+        current.session === owner.session)),
   );
-  if ((!options.resumeSession || isResumeHandoff) && (!current || isResumeHandoff)) {
+  if (
+    (!options.resumeSession || isResumeHandoff) &&
+    (!current || isResumeHandoff || mayReplaceTerminalOwner)
+  ) {
     if (resumeFrom) {
-      const claimRejected = new Error("Automation session registry claim rejected");
+      const claimRejected = new Error(
+        "Automation session registry claim rejected",
+      );
       let registryClaimed = false;
       db.exec("BEGIN");
       try {
@@ -241,7 +294,9 @@ export function claimAutomationTaskRunSession(
           status: "failed",
           finishedAt: new Date().toISOString(),
           errorMessage: `Superseded by resume handoff: ${taskRunId}`,
-          logTail: tail(`${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`),
+          logTail: tail(
+            `${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`,
+          ),
         });
         if (!ownAutomationSession(owner)) throw claimRejected;
         registryClaimed = true;
@@ -252,7 +307,8 @@ export function claimAutomationTaskRunSession(
         try {
           db.exec("ROLLBACK");
         } finally {
-          if (registryClaimed) restoreAutomationSessionOwnership(owner, current ?? null);
+          if (registryClaimed)
+            restoreAutomationSessionOwnership(owner, current ?? null);
         }
         claimError = error;
       }
@@ -266,9 +322,11 @@ export function claimAutomationTaskRunSession(
     finishedAt: new Date().toISOString(),
     exitCode: null,
     signal: null,
-    errorMessage: claimError && errorMessage(claimError) !== "Automation session registry claim rejected"
-      ? `Automation session handoff failed: ${errorMessage(claimError)}`
-      : "Automation session is still closing. Try again after cleanup finishes.",
+    errorMessage:
+      claimError &&
+      errorMessage(claimError) !== "Automation session registry claim rejected"
+        ? `Automation session handoff failed: ${errorMessage(claimError)}`
+        : "Automation session is still closing. Try again after cleanup finishes.",
   });
   return false;
 }
@@ -277,8 +335,10 @@ export async function finalizeAutomationSession(
   owner: OwnedAutomationSession,
   workflowError: string | null,
   finalize: () => Promise<unknown> = async () => {
-    if (!await finalizeExactOwnedAutomationSession(owner)) {
-      throw new Error(`Automation session ownership changed for task: ${owner.taskId}`);
+    if (!(await finalizeExactOwnedAutomationSession(owner))) {
+      throw new Error(
+        `Automation session ownership changed for task: ${owner.taskId}`,
+      );
     }
   },
 ) {
@@ -307,7 +367,10 @@ export async function finalizeAutomationSessionForRun(
     return {
       session: null,
       pid: null,
-      errorMessage: appendCleanupError(workflowError, "Missing Libretto session identity"),
+      errorMessage: appendCleanupError(
+        workflowError,
+        "Missing Libretto session identity",
+      ),
       cleanupFailed: true,
     };
   }
@@ -324,12 +387,18 @@ export async function finalizeAutomationSessionForRun(
     };
   }
 
-  const result = await finalizeAutomationSession(owner, workflowError, async () => {
-    const finalized = await finalizeExactOwnedAutomationSession(owner);
-    if (!finalized) {
-      throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
-    }
-  });
+  const result = await finalizeAutomationSession(
+    owner,
+    workflowError,
+    async () => {
+      const finalized = await finalizeExactOwnedAutomationSession(owner);
+      if (!finalized) {
+        throw new Error(
+          `Automation session ownership changed for task: ${run.taskId}`,
+        );
+      }
+    },
+  );
   return { ...result, session: owner.session, pid: owner.pid };
 }
 
@@ -338,7 +407,10 @@ export async function forceQuitAutomationSessionForRun(
   dependencies: ForceQuitFinalizationDependencies = {},
 ): Promise<ForceQuitAutomationSessionResult> {
   const session = sessionFromRun(run);
-  if (!session) throw new Error(`Missing Libretto resume session for automation task: ${run.taskId}`);
+  if (!session)
+    throw new Error(
+      `Missing Libretto resume session for automation task: ${run.taskId}`,
+    );
   const deps = {
     readSessionState: readLibrettoSessionState,
     claimSession: claimAutomationSessionForCleanup,
@@ -356,7 +428,9 @@ export async function forceQuitAutomationSessionForRun(
   try {
     owner = { ...owner, pid: deps.readSessionState(session)?.pid ?? null };
     if (!deps.claimSession(owner)) {
-      throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
+      throw new Error(
+        `Automation session ownership changed for task: ${run.taskId}`,
+      );
     }
     let finalizeFailure: unknown = null;
     const cleanupResult = await finalizeAutomationSession(
@@ -364,8 +438,10 @@ export async function forceQuitAutomationSessionForRun(
       "Browser session force quit.",
       async () => {
         try {
-          if (!await deps.finalizeSession(owner)) {
-            throw new Error(`Automation session ownership changed for task: ${run.taskId}`);
+          if (!(await deps.finalizeSession(owner))) {
+            throw new Error(
+              `Automation session ownership changed for task: ${run.taskId}`,
+            );
           }
         } catch (error) {
           finalizeFailure = error;
@@ -380,7 +456,10 @@ export async function forceQuitAutomationSessionForRun(
     result = {
       session,
       pid: owner.pid,
-      errorMessage: appendCleanupError("Browser session force quit.", errorMessage(error)),
+      errorMessage: appendCleanupError(
+        "Browser session force quit.",
+        errorMessage(error),
+      ),
       cleanupFailed: true,
     };
   }

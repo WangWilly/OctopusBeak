@@ -38,6 +38,7 @@ import {
 import {
   activeTaskRuns,
   createTaskRun,
+  resumeHumanAssistanceContract,
   taskRunById,
   updateHumanAssistanceContract,
   updateTaskRun,
@@ -51,17 +52,24 @@ export type AutomationTaskExecutionOptions = {
   resumeSession?: string;
 };
 
-export function createAutomationSessionId(uuid: () => string = randomUUID): string {
+export function createAutomationSessionId(
+  uuid: () => string = randomUUID,
+): string {
   return validateLibrettoSessionName("ses-octopus-" + uuid());
 }
 
 export function resumeFailureMessage(output: string) {
-  return output.match(/Workflow failed after resume:\s*([^\r\n]+)/i)?.[1]?.trim() ?? null;
+  return (
+    output.match(/Workflow failed after resume:\s*([^\r\n]+)/i)?.[1]?.trim() ??
+    null
+  );
 }
 
 export function parseAutomationProgress(output: string) {
   let progress: number | null = null;
-  for (const match of output.matchAll(/automation-progress:\s*(\d+(?:\.\d+)?)/gi)) {
+  for (const match of output.matchAll(
+    /automation-progress:\s*(\d+(?:\.\d+)?)/gi,
+  )) {
     const value = Math.round(Number(match[1]));
     progress = Math.max(0, Math.min(100, value));
   }
@@ -140,23 +148,28 @@ function createAutomationTaskRunExecution(
   const env = automationProcessEnv();
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
-    ? options.resumeSession ?? createAutomationSessionId()
+    ? (options.resumeSession ?? createAutomationSessionId())
     : null;
-  const command = resolveTaskCommand(task, {
-    resumeSession: options.resumeSession,
-    session: options.resumeSession ? undefined : session ?? undefined,
-  }, env);
+  const command = resolveTaskCommand(
+    task,
+    {
+      resumeSession: options.resumeSession,
+      session: options.resumeSession ? undefined : (session ?? undefined),
+    },
+    env,
+  );
   if (task.id === "exchange-rates" && options.scheduledAtUtc) {
     if (command.command === "npm") command.args.push("--");
     command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
     command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
   }
   const resumeFrom = options.resumeSession
-    ? activeTaskRuns(taskDb).find((candidate) =>
-      candidate.taskId === task.id
-      && candidate.status === "waiting_for_human"
-      && sessionFromRun(candidate) === options.resumeSession
-    )
+    ? activeTaskRuns(taskDb).find(
+        (candidate) =>
+          candidate.taskId === task.id &&
+          candidate.status === "waiting_for_human" &&
+          sessionFromRun(candidate) === options.resumeSession,
+      )
     : undefined;
   const run = createTaskRun(taskDb, {
     taskId: task.id,
@@ -167,20 +180,27 @@ function createAutomationTaskRunExecution(
     maxAttempts,
     startedAt,
     logPath,
-    humanAssistanceContract: resumeFrom?.humanAssistanceContract ?? null,
+    humanAssistanceContract: resumeHumanAssistanceContract(
+      resumeFrom?.humanAssistanceContract,
+    ),
   });
-  const owner = session ? {
-    taskId: task.id,
-    taskRunId: run.taskRunId,
-    session,
-    pid: sessionPid(session),
-  } : null;
+  const owner = session
+    ? {
+        taskId: task.id,
+        taskRunId: run.taskRunId,
+        session,
+        pid: sessionPid(session),
+      }
+    : null;
   if (session) {
     appendLog(logPath, "automation-session: " + session + "\n");
-    if (!claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
-      resumeSession: options.resumeSession,
-      resumeFrom,
-    })) return null;
+    if (
+      !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
+        resumeSession: options.resumeSession,
+        resumeFrom,
+      })
+    )
+      return null;
   }
   return { task, taskDb, run, logPath, command, session, owner };
 }
@@ -202,7 +222,9 @@ async function executeAutomationTaskProcess(
   );
   let humanAssistanceReadOffset = 0;
   let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
-  const result = await new Promise<Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">>((resolve) => {
+  const result = await new Promise<
+    Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">
+  >((resolve) => {
     const recordOutputPersistenceError = (error: unknown) => {
       const line = `automation-output-write-failed: ${errorMessage(error)}`;
       console.error(line);
@@ -211,7 +233,11 @@ async function executeAutomationTaskProcess(
     };
     const outputBuffer = createAutomationOutputBuffer(
       () => {
-        if (!isForceQuitRun(taskRunById(execution.taskDb, execution.run.taskRunId))) {
+        if (
+          !isForceQuitRun(
+            taskRunById(execution.taskDb, execution.run.taskRunId),
+          )
+        ) {
           updateTaskRun(execution.taskDb, execution.run.taskRunId, {
             ...liveTaskRunUpdate(logTail),
           });
@@ -221,7 +247,9 @@ async function executeAutomationTaskProcess(
       recordOutputPersistenceError,
     );
     const onHumanAssistanceContract = (
-      latestHumanAssistanceContract: Parameters<typeof updateHumanAssistanceContract>[2],
+      latestHumanAssistanceContract: Parameters<
+        typeof updateHumanAssistanceContract
+      >[2],
     ) => {
       const contractJson = JSON.stringify(latestHumanAssistanceContract);
       if (contractJson === lastHumanAssistanceContractJson) return;
@@ -238,7 +266,9 @@ async function executeAutomationTaskProcess(
         outputPersistenceWarnings.push(warning);
       }
     };
-    const hostContractParser = createHumanAssistanceContractFrameParser(onHumanAssistanceContract);
+    const hostContractParser = createHumanAssistanceContractFrameParser(
+      onHumanAssistanceContract,
+    );
     const readHumanAssistanceFile = () => {
       try {
         const content = readFileSync(humanAssistancePath);
@@ -247,7 +277,9 @@ async function executeAutomationTaskProcess(
         humanAssistanceReadOffset = content.length;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          console.error(`human-assistance-contract-read-failed: ${errorMessage(error)}`);
+          console.error(
+            `human-assistance-contract-read-failed: ${errorMessage(error)}`,
+          );
         }
       }
     };
@@ -259,9 +291,12 @@ async function executeAutomationTaskProcess(
         { logTail, resumeFailure: detectedResumeFailure },
         chunk.toString("utf8"),
       );
-      statementSummary = parseStatementRunSummary(`${logTail}${output.logChunk}`)
-        ?? statementSummary;
-      for (const prerequisiteId of parseExternalPrerequisiteSignals(`${logTail}${output.logChunk}`)) {
+      statementSummary =
+        parseStatementRunSummary(`${logTail}${output.logChunk}`) ??
+        statementSummary;
+      for (const prerequisiteId of parseExternalPrerequisiteSignals(
+        `${logTail}${output.logChunk}`,
+      )) {
         externalPrerequisiteIds.add(prerequisiteId);
       }
       logTail = output.logTail;
@@ -320,7 +355,8 @@ async function executeAutomationTaskProcess(
 export function liveTaskRunUpdate(logTail: string) {
   const resumeFailure = resumeFailureMessage(logTail);
   if (resumeFailure) return { errorMessage: resumeFailure, logTail };
-  if (shouldMarkWaitingForHuman(logTail)) return { status: "waiting_for_human" as const, logTail };
+  if (shouldMarkWaitingForHuman(logTail))
+    return { status: "waiting_for_human" as const, logTail };
   return { logTail };
 }
 

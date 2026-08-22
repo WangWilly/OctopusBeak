@@ -10,6 +10,10 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
 } from "./cathay-domestic-deposit.ts";
 import {
+  CATHAY_HUMAN_ATTESTED_V1_MANIFEST,
+  isCathayHumanAttestationDurablyActive,
+} from "./cathay-human-attestation.ts";
+import {
   CTBC_DOMESTIC_DEPOSIT_CONTRACT,
   CTBC_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
   preflightCtbcDomesticDeposit,
@@ -46,7 +50,11 @@ import {
 } from "./sinopac-domestic-deposit.ts";
 import {
   YUANTA_DOMESTIC_DEPOSIT_CONTRACT,
+  YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
   YUANTA_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+  isYuantaHumanAttestationV2DurablyActive,
   preflightYuantaDomesticDeposit,
 } from "./yuanta-domestic-deposit.ts";
 
@@ -370,13 +378,114 @@ export function buildFubonDomesticDepositReadinessFromLedger(
   };
 }
 
+/**
+ * Promote Cathay only when its existing canonical domestic-deposit writer has
+ * committed financial rows and the separate observed-human attestation chain
+ * is active. Synthetic/source-only rows and an attestation manifest without a
+ * matching capture remain blocked.
+ */
+export function buildCathayDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("cathay");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN financial_accounts account_row
+             ON account_row.account_id = transaction_row.account_id
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           WHERE capture.authority_route = ?`,
+        )
+        .get(CATHAY_DOMESTIC_DEPOSIT_AUTHORITY) as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  if (durableCaptureCount === 0 || !isCathayHumanAttestationDurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: CATHAY_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: CATHAY_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: "canonical-human-attested",
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
+/**
+ * Promote Yuanta only when the explicit observed-human-attested route has
+ * both a durable active event and at least one durable financial transaction.
+ * Source-only evidence and telemetry never promote this entry.
+ */
+export function buildYuantaDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("yuanta");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN financial_accounts account_row
+             ON account_row.account_id = transaction_row.account_id
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           WHERE capture.authority_route = ?`,
+        )
+        .get(YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  if (durableCaptureCount === 0 || !isYuantaHumanAttestationV2DurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: YUANTA_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute,
+    contractVersion: YUANTA_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion,
+    capability: YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
 export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
   db: DatabaseSync,
 ): AdvertisedDomesticDepositReadinessGate {
   const entries = ADVERTISED_DOMESTIC_DEPOSIT_READINESS.map((entry) =>
     entry.sourceId === "fubon"
       ? buildFubonDomesticDepositReadinessFromLedger(db)
-      : entry,
+      : entry.sourceId === "cathay"
+        ? buildCathayDomesticDepositReadinessFromLedger(db)
+        : entry.sourceId === "yuanta"
+          ? buildYuantaDomesticDepositReadinessFromLedger(db)
+          : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }

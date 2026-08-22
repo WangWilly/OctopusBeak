@@ -10,11 +10,19 @@ import {
 
 const fubon = BANK_STATEMENT_CAPABILITIES.fubon;
 const esun = BANK_STATEMENT_CAPABILITIES.esun;
+const yuanta = BANK_STATEMENT_CAPABILITIES.yuanta;
 
 assert.deepEqual(allSupportedStatementTypeIds(fubon), [
   "deposit",
   "credit_card",
   "loan",
+]);
+assert.deepEqual(allSupportedStatementTypeIds(yuanta), [
+  "deposit",
+  "foreign_currency",
+  "credit_card",
+  "loan",
+  "fund",
 ]);
 
 assert.equal(

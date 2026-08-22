@@ -126,7 +126,7 @@ export function loadAutomationDesktopModel(
       const enabled = enabledGroups[group.id] !== false;
       const selectionSettings = { ...settings, [group.enabledKey]: enabled };
       const selection = isStatementSelectionGroup(group)
-        ? group.id === "fubon"
+        ? group.id === "fubon" || group.id === "yuanta"
           ? {
               selectedIds: allSupportedStatementTypeIds(group),
               needsSetup: false,
@@ -244,7 +244,12 @@ function assertAutomationTaskCanStartInModel(
         (candidate) => candidate.id === task.credentialGroupId,
       )
     : null;
-  if (group && isStatementSelectionGroup(group) && group.id !== "fubon") {
+  if (
+    group &&
+    isStatementSelectionGroup(group) &&
+    group.id !== "fubon" &&
+    group.id !== "yuanta"
+  ) {
     const modelGroup = model.credentialGroups.find(
       (candidate) => candidate.id === group.id,
     );
@@ -297,7 +302,7 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
     if (!isStatementSelectionGroup(group)) continue;
-    if (group.id === "fubon") {
+    if (group.id === "fubon" || group.id === "yuanta") {
       if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
         nextSettings[group.statementSelectionKey] =
           allSupportedStatementTypeIds(group).join(",");

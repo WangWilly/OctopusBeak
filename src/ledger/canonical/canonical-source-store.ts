@@ -416,6 +416,44 @@ function requireDate(value: string, label: string): string {
     throw new Error(`${label} must be a valid calendar date.`);
   return value;
 }
+
+function normalizeCathayAccountDate(value: string, label: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return requireDate(value, label);
+  }
+  const localSecond = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}$/.exec(value);
+  if (!localSecond) {
+    throw new Error(`${label} must be YYYY-MM-DD.`);
+  }
+  requireDateTime(value, `${label} date-time`);
+  return localSecond[1]!;
+}
+
+function normalizeCathayResponseDate(value: string, expected: string): string {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? value
+    : /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}$/.exec(value)?.[1];
+  if (!date) {
+    throw new Error(
+      "Cathay response date scope does not match the requested scope.",
+    );
+  }
+  try {
+    if (date === value) requireDate(date, "Cathay response date");
+    else requireDateTime(value, "Cathay response date-time");
+  } catch {
+    throw new Error(
+      "Cathay response date scope does not match the requested scope.",
+    );
+  }
+  if (date !== expected) {
+    throw new Error(
+      "Cathay response date scope does not match the requested scope.",
+    );
+  }
+  return date;
+}
+
 function requireDateTime(value: string, label: string): string {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value))
     throw new Error(`${label} must be YYYY-MM-DDTHH:mm:ss.`);
@@ -575,13 +613,11 @@ function validateCapture(
   const accountNo = requiredString(statement, "accountNumber");
   if (accountNo !== input.accountNo)
     throw new Error("Cathay account scope does not match the response.");
-  if (
-    requiredString(statement, "startDate") !== startDate ||
-    requiredString(statement, "endDate") !== endDate
-  )
-    throw new Error(
-      "Cathay response date scope does not match the requested scope.",
-    );
+  normalizeCathayResponseDate(
+    requiredString(statement, "startDate"),
+    startDate,
+  );
+  normalizeCathayResponseDate(requiredString(statement, "endDate"), endDate);
   const count = parseExactDecimalLexeme(requiredNumber(statement, "count"));
   if (count.scale !== 0 || count.coefficient < 0n)
     throw new Error("Cathay count must be a non-negative integer.");
@@ -612,8 +648,9 @@ function validateCapture(
       throw new Error("Cathay amount must be non-negative.");
     const balanceLexeme = requiredNumber(detail, "balance");
     const balance = parseExactDecimalLexeme(balanceLexeme);
-    const accountDate = requireDate(
-      requiredString(detail, "accountDate"),
+    const accountDateValue = requiredString(detail, "accountDate");
+    const accountDate = normalizeCathayAccountDate(
+      accountDateValue,
       "accountDate",
     );
     const transactionDateTime = requireDateTime(
@@ -639,7 +676,7 @@ function validateCapture(
     const direction = incomeLexeme === null ? "outflow" : "inflow";
     const payload: Record<string, string> = {
       sequenceNumber: sequenceLexeme,
-      accountDate,
+      accountDate: accountDateValue,
       txnDateTime: transactionDateTime,
       amount: amountLexeme,
       amountDirection: direction,
@@ -1110,7 +1147,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'tombstone'))",
-    "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range'))",
+    "absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'provider-explicit-no-data'))",
   )
   .replace(
     "posting_origin TEXT NOT NULL CHECK(posting_origin = 'provider_booked_history')",
@@ -1122,11 +1159,11 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
-    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR posting_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
-    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR semantic_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
@@ -1134,7 +1171,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
-    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR effective_time_rule_version LIKE 'synthetic-%')",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2324,6 +2361,16 @@ function validateCathayAuthorityRoute(
             AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1'
             AND registered.integration_namespace = 'fubon'
             AND registered.contract_version = 'human-attested-v1')
+          OR
+          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1'
+            AND registered.integration_namespace = 'yuanta'
+            AND registered.contract_version = 'human-attested-v1')
+          OR
+          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
+            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2'
+            AND registered.integration_namespace = 'yuanta'
+            AND registered.contract_version = 'human-attested-v2')
         )
     )`,
         )
@@ -3249,6 +3296,12 @@ function validateSelectedAssertionProvenance(
           OR
           (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1')
+          OR
+          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1')
+          OR
+          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
+            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2')
         )
     )`,
         )
@@ -4284,7 +4337,9 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /effective_time_rule_version TEXT NOT NULL CHECK\(effective_time_rule_version IN/.test(
       sql,
     ) &&
-    /posting_origin LIKE 'synthetic_%'/.test(sql)
+    /posting_origin LIKE 'synthetic_%'/.test(sql) &&
+    /yuanta\/domestic-deposit\/human-attested-v1/.test(sql) &&
+    /yuanta\/domestic-deposit\/human-attested-v2/.test(sql)
   )
     return;
   const before = Number(
@@ -4309,15 +4364,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR posting_rule_version LIKE 'synthetic-%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR semantic_rule_version LIKE 'synthetic-%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision = 'second'),
       time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR effective_time_rule_version LIKE 'synthetic-%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -4366,6 +4421,67 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     throw new Error(
       "Canonical v8 financial revision-schema rebuild lost legacy rows.",
     );
+}
+
+/** Add the explicit no-data authority used by observed human-attested
+ * providers without weakening the existing comparable-range meaning. SQLite
+ * CHECK constraints require a table rebuild, so preserve every existing row
+ * and index inside the caller's migration transaction. */
+function ensureCanonicalCaptureScopeSchema(db: DatabaseSync): void {
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'capture_scopes'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (/provider-explicit-no-data/.test(sql)) return;
+  const widenedSql = sql.replace(
+    "CHECK(absence_authority IN ('comparable-complete-range'))",
+    "CHECK(absence_authority IN ('comparable-complete-range', 'provider-explicit-no-data'))",
+  );
+  if (widenedSql === sql)
+    throw new Error(
+      "Canonical v8 capture scope schema is missing its absence-authority constraint.",
+    );
+  const indexes = (
+    db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'capture_scopes' AND sql IS NOT NULL",
+      )
+      .all() as Array<{ sql?: unknown }>
+  )
+    .map((row) => String(row.sql ?? ""))
+    .filter(Boolean);
+  const before = Number(
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM capture_scopes").get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  const widenedCreateSql = widenedSql.replace(
+    /CREATE TABLE [\"]?capture_scopes[\"]?/,
+    "CREATE TABLE capture_scopes_widened",
+  );
+  if (widenedCreateSql === widenedSql)
+    throw new Error(`Capture scope table SQL did not rename: ${sql}`);
+  db.exec(widenedCreateSql);
+  db.exec("INSERT INTO capture_scopes_widened SELECT * FROM capture_scopes");
+  db.exec("DROP TABLE capture_scopes");
+  db.exec("ALTER TABLE capture_scopes_widened RENAME TO capture_scopes");
+  for (const index of indexes) db.exec(index);
+  const after = Number(
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM capture_scopes").get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  if (after !== before)
+    throw new Error("Canonical v8 capture scope rebuild lost legacy rows.");
 }
 
 const SCHEMA_V8_SOURCE_EVIDENCE = `
@@ -4504,7 +4620,7 @@ function applyV8SourceEvidenceSchema(
       scope_kind TEXT NOT NULL CHECK(scope_kind IN ('bounded-range','point-in-time')),
       completeness TEXT NOT NULL CHECK(completeness IN ('complete-range','single-page')),
       completeness_basis TEXT NOT NULL, completeness_rule_version TEXT NOT NULL,
-      absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range')),
+      absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'provider-explicit-no-data')),
       contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL,
       page_count INTEGER NOT NULL CHECK(page_count > 0), terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
       commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
@@ -4796,6 +4912,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
+      ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureV7ProjectionSchema(db);
       db.exec("COMMIT");
@@ -4827,6 +4944,7 @@ function applySchemaMigration(
       rebuildCurrentTransactionFieldsForSharedAssertions(db);
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
+      ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
