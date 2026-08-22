@@ -57,8 +57,10 @@ function processCommand(pid: number) {
 
 export function isExpectedLibrettoDaemon(pid: number, session: string) {
   const command = processCommand(pid);
-  return command.includes("libretto/dist/cli/core/daemon/daemon.js")
-    && command.includes('\"session\":\"' + session + '\"');
+  return (
+    command.includes("libretto/dist/cli/core/daemon/daemon.js") &&
+    command.includes('\"session\":\"' + session + '\"')
+  );
 }
 
 export function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
@@ -69,7 +71,8 @@ export function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
     try {
       process.kill(pid, signal);
     } catch (fallbackError) {
-      if ((fallbackError as NodeJS.ErrnoException).code !== "ESRCH") throw fallbackError;
+      if ((fallbackError as NodeJS.ErrnoException).code !== "ESRCH")
+        throw fallbackError;
     }
   }
 }
@@ -86,7 +89,9 @@ async function settleWithin<T>(
   promise: Promise<T>,
   ms: number,
   timerDeps: TimerDeps,
-): Promise<{ timedOut: true } | { timedOut: false; value?: T; error?: unknown }> {
+): Promise<
+  { timedOut: true } | { timedOut: false; value?: T; error?: unknown }
+> {
   let timer: NodeJS.Timeout | number | undefined;
   const result = await Promise.race([
     promise.then(
@@ -105,14 +110,17 @@ function isExactOwner(
   current: OwnedAutomationSession | undefined,
   expected: Pick<OwnedAutomationSession, "taskId" | "taskRunId" | "session">,
 ) {
-  return current?.taskId === expected.taskId
-    && current.taskRunId === expected.taskRunId
-    && current.session === expected.session;
+  return (
+    current?.taskId === expected.taskId &&
+    current.taskRunId === expected.taskRunId &&
+    current.session === expected.session
+  );
 }
 
 export function ownAutomationSession(input: OwnedAutomationSession): boolean {
   const current = ownedByTask.get(input.taskId);
-  if (closingBySession.has(input.session) && !isExactOwner(current, input)) return false;
+  if (closingBySession.has(input.session) && !isExactOwner(current, input))
+    return false;
   ownedByTask.set(input.taskId, {
     ...input,
     pid: input.pid ?? (current?.session === input.session ? current.pid : null),
@@ -120,14 +128,22 @@ export function ownAutomationSession(input: OwnedAutomationSession): boolean {
   return true;
 }
 
-export function claimAutomationSessionForCleanup(input: OwnedAutomationSession): boolean {
+export function claimAutomationSessionForCleanup(
+  input: OwnedAutomationSession,
+): boolean {
   const current = ownedByTask.get(input.taskId);
   if (current && !isExactOwner(current, input)) return false;
   return ownAutomationSession(input);
 }
 
-export function ownedAutomationSession(taskId: string): OwnedAutomationSession | null {
+export function ownedAutomationSession(
+  taskId: string,
+): OwnedAutomationSession | null {
   return ownedByTask.get(taskId) ?? null;
+}
+
+export function isAutomationSessionCleanupPending(session: string): boolean {
+  return closingBySession.has(session);
 }
 
 export function restoreAutomationSessionOwnership(
@@ -171,7 +187,10 @@ async function closeOwnedSession(
   deps: FinalizeSessionDeps,
 ): Promise<void> {
   const { pid, readError } = readOwnedSessionPid(owned);
-  const { closeError, helperTerminationError } = await closeSessionHelper(owned.session, deps);
+  const { closeError, helperTerminationError } = await closeSessionHelper(
+    owned.session,
+    deps,
+  );
 
   if (pid === null) {
     if (closeError) {
@@ -193,7 +212,10 @@ function readOwnedSessionPid(owned: OwnedAutomationSession): {
 } {
   if (owned.pid !== null) return { pid: owned.pid, readError: null };
   try {
-    return { pid: readLibrettoSessionState(owned.session)?.pid ?? null, readError: null };
+    return {
+      pid: readLibrettoSessionState(owned.session)?.pid ?? null,
+      readError: null,
+    };
   } catch (readError) {
     return { pid: null, readError };
   }
@@ -205,10 +227,16 @@ async function closeSessionHelper(
 ): Promise<{ closeError: unknown; helperTerminationError: Error | null }> {
   const closeHandle = deps.startCloseSession?.(session) ?? {
     completion: deps.closeSession(session),
-    terminate: async () => { await deps.terminateCloseSession?.(session); },
+    terminate: async () => {
+      await deps.terminateCloseSession?.(session);
+    },
   };
   const timerDeps = deps.timerDeps ?? defaultTimerDeps;
-  const closeResult = await settleWithin(closeHandle.completion, CLOSE_TIMEOUT_MS, timerDeps);
+  const closeResult = await settleWithin(
+    closeHandle.completion,
+    CLOSE_TIMEOUT_MS,
+    timerDeps,
+  );
   let closeError: unknown;
   let helperTerminationError: Error | null = null;
   if (closeResult.timedOut) {
@@ -224,7 +252,8 @@ async function closeSessionHelper(
     }
     closeError = termination.timedOut
       ? helperTerminationError
-      : termination.error ?? new Error(`Libretto close timed out after ${CLOSE_TIMEOUT_MS}ms`);
+      : (termination.error ??
+        new Error(`Libretto close timed out after ${CLOSE_TIMEOUT_MS}ms`));
   } else {
     closeError = closeResult.error ?? null;
   }
@@ -258,7 +287,10 @@ function throwSessionFinalizationErrors(
   daemonError: Error | null,
 ): void {
   if (helperTerminationError && daemonError) {
-    throw new AggregateError([helperTerminationError, daemonError], helperTerminationError.message);
+    throw new AggregateError(
+      [helperTerminationError, daemonError],
+      helperTerminationError.message,
+    );
   }
   if (helperTerminationError) throw helperTerminationError;
   if (daemonError) throw daemonError;
@@ -302,12 +334,20 @@ export async function finalizeAllOwnedAutomationSessions(
   deps: FinalizeSessionDeps = defaultFinalizeDeps,
 ): Promise<void> {
   const results = await Promise.allSettled(
-    Array.from(ownedByTask.keys(), (taskId) => finalizeOwnedAutomationSession(taskId, deps)),
+    Array.from(ownedByTask.keys(), (taskId) =>
+      finalizeOwnedAutomationSession(taskId, deps),
+    ),
   );
   const errors = results
-    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    )
     .map((result) => result.reason);
-  if (errors.length) throw new AggregateError(errors, "Failed to finalize owned Libretto sessions");
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      "Failed to finalize owned Libretto sessions",
+    );
 }
 
 function startLibrettoClose(session: string): CloseSessionHandle {
@@ -331,13 +371,16 @@ function startLibrettoClose(session: string): CloseSessionHandle {
         resolve();
         return;
       }
-      reject(new Error(errorText || `libretto close exited with code ${exitCode}`));
+      reject(
+        new Error(errorText || `libretto close exited with code ${exitCode}`),
+      );
     });
   });
   return {
     completion,
     async terminate() {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
       await completion.catch(() => {});
     },
   };

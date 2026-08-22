@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -198,6 +199,231 @@ try {
   reopened.close();
 } finally {
   await rm(directory, { recursive: true, force: true });
+}
+
+const localSecondDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-cathay-local-second-"),
+);
+try {
+  const localSecondRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse
+    .replace('"startDate":"2025-08-17"', '"startDate":"2025-08-17T00:00:00"')
+    .replace('"endDate":"2026-08-17"', '"endDate":"2026-08-17T23:59:59"')
+    .replace(
+      '"accountDate":"2026-07-01"',
+      '"accountDate":"2026-07-01T00:00:01"',
+    )
+    .replace(
+      '"accountDate":"2026-07-02"',
+      '"accountDate":"2026-07-02T12:34:56"',
+    )
+    .replace(
+      '"accountDate":"2026-07-03"',
+      '"accountDate":"2026-07-03T23:59:59"',
+    );
+  const committed = await commitCathayDomesticDeposit(localSecondDirectory, {
+    ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    rawResponse: localSecondRaw,
+  });
+  const query = createCathayCanonicalFinancialQuery(localSecondDirectory);
+  const current = await query.current({ kind: "current" });
+  assert.equal(current.transactions.length, 3);
+  assert.deepEqual(
+    current.transactions.map((transaction) => transaction.effectiveOn).sort(),
+    ["2026-07-01", "2026-07-02", "2026-07-03"],
+  );
+  const historical = await query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(committed.commitSequence),
+    },
+  });
+  assert.deepEqual(
+    historical.transactions
+      .map((transaction) => transaction.effectiveOn)
+      .sort(),
+    ["2026-07-01", "2026-07-02", "2026-07-03"],
+  );
+  const lineage = await query.lineage({
+    kind: "lineage",
+    subject: { kind: "transaction", id: current.transactions[0]!.id },
+  });
+  assert.equal(lineage.entries.length, 1);
+  assert.equal(lineage.entries[0]?.revision.effectiveOn, "2026-07-01");
+  const reopened = await createCathayCanonicalFinancialQuery(
+    localSecondDirectory,
+  ).current({ kind: "current" });
+  assert.deepEqual(
+    reopened.transactions.map((transaction) => transaction.effectiveOn).sort(),
+    ["2026-07-01", "2026-07-02", "2026-07-03"],
+  );
+  const db = openCanonicalDatabase(localSecondDirectory, { readOnly: true });
+  try {
+    assert.equal(
+      db.prepare("SELECT response_digest FROM capture_scope_pages").get()
+        ?.response_digest,
+      createHash("sha256").update(localSecondRaw, "utf8").digest("hex"),
+    );
+    const sourcePayload = String(
+      db
+        .prepare(
+          "SELECT payload_json FROM source_records ORDER BY sequence_lexeme LIMIT 1",
+        )
+        .get()?.payload_json,
+    );
+    assert.match(sourcePayload, /2026-07-01T00:00:01/);
+    assert.doesNotMatch(sourcePayload, /private-account-date/);
+    const revisionRows = (
+      db
+        .prepare(
+          "SELECT effective_on, transaction_date_time_local FROM transaction_revisions ORDER BY effective_on",
+        )
+        .all() as Array<Record<string, unknown>>
+    ).map((row) => ({
+      effective_on: row.effective_on,
+      transaction_date_time_local: row.transaction_date_time_local,
+    }));
+    assert.deepEqual(revisionRows, [
+      {
+        effective_on: "2026-07-01",
+        transaction_date_time_local: "2026-07-01T09:00:00",
+      },
+      {
+        effective_on: "2026-07-02",
+        transaction_date_time_local: "2026-07-02T10:15:30",
+      },
+      {
+        effective_on: "2026-07-03",
+        transaction_date_time_local: "2026-07-03T11:45:00",
+      },
+    ]);
+  } finally {
+    db.close();
+  }
+} finally {
+  await rm(localSecondDirectory, { recursive: true, force: true });
+}
+
+for (const [label, startDateValue] of [
+  ["local-second-prefix-mismatch", "2025-08-18T00:00:00"],
+  ["datetime-minute", "2025-08-17T00:00"],
+  ["datetime-invalid-hour", "2025-08-17T24:00:00"],
+  ["datetime-invalid-minute", "2025-08-17T23:60:00"],
+  ["datetime-invalid-second", "2025-08-17T23:59:60"],
+  ["datetime-fractional", "2025-08-17T00:00:00.000+08:00"],
+  ["datetime-z", "2025-08-17T00:00:00Z"],
+  ["datetime-offset", "2025-08-17T00:00:00+08:00"],
+  ["datetime-space", "2025-08-17 00:00:00"],
+  ["datetime-garbage", "2025-08-17Tgarbage"],
+  ["datetime-short", "2025-08-17T00"],
+  ["invalid-calendar", "2025-02-30T00:00:00+08:00"],
+  ["compact", "20250817"],
+  ["slash", "2025/08/17"],
+  ["other", "private-date-shape"],
+] as const) {
+  const rejectedDirectory = await mkdtemp(
+    join(tmpdir(), `canonical-source-cathay-datetime-${label}-`),
+  );
+  try {
+    const rejectedStore = createCanonicalSourceStore(
+      join(rejectedDirectory, "canonical.sqlite"),
+    );
+    rejectedStore.close();
+    const rejectedRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace(
+      '"startDate":"2025-08-17"',
+      `"startDate":"${startDateValue}"`,
+    );
+    assert.throws(
+      () =>
+        commitCathayDomesticDeposit(rejectedDirectory, {
+          ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+          rawResponse: rejectedRaw,
+        }),
+      /response date scope|YYYY-MM-DD|valid calendar date/i,
+    );
+    const rejectedDb = openCanonicalDatabase(rejectedDirectory, {
+      readOnly: true,
+    });
+    try {
+      assert.equal(
+        rejectedDb
+          .prepare("SELECT COUNT(*) AS count FROM source_captures")
+          .get()?.count,
+        0,
+      );
+      assert.equal(
+        rejectedDb
+          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+          .get()?.count,
+        0,
+      );
+    } finally {
+      rejectedDb.close();
+    }
+  } finally {
+    await rm(rejectedDirectory, { recursive: true, force: true });
+  }
+}
+
+for (const [label, accountDateValue] of [
+  ["account-datetime-invalid-hour", "2026-07-01T24:00:00"],
+  ["account-datetime-invalid-minute", "2026-07-01T23:60:00"],
+  ["account-datetime-invalid-second", "2026-07-01T23:59:60"],
+  ["account-datetime-malformed", "2026-07-01Tgarbage"],
+  ["account-datetime-minute", "2026-07-01T00:00"],
+  ["account-datetime-fractional", "2026-07-01T00:00:00.000"],
+  ["account-datetime-z", "2026-07-01T00:00:00Z"],
+  ["account-datetime-offset", "2026-07-01T00:00:00+08:00"],
+  ["account-datetime-space", "2026-07-01 00:00:00"],
+  ["account-datetime-invalid-calendar", "2026-02-30T00:00:00"],
+  ["account-invalid-calendar", "2026-02-30"],
+  ["account-compact", "20260701"],
+  ["account-slash", "2026/07/01"],
+] as const) {
+  const rejectedDirectory = await mkdtemp(
+    join(tmpdir(), `canonical-source-cathay-account-date-${label}-`),
+  );
+  try {
+    const rejectedStore = createCanonicalSourceStore(
+      join(rejectedDirectory, "canonical.sqlite"),
+    );
+    rejectedStore.close();
+    const rejectedRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace(
+      '"accountDate":"2026-07-01"',
+      `"accountDate":"${accountDateValue}"`,
+    );
+    assert.throws(
+      () =>
+        commitCathayDomesticDeposit(rejectedDirectory, {
+          ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+          rawResponse: rejectedRaw,
+        }),
+      /accountDate|YYYY-MM-DD|valid calendar date/i,
+    );
+    const rejectedDb = openCanonicalDatabase(rejectedDirectory, {
+      readOnly: true,
+    });
+    try {
+      for (const table of [
+        "canonical_commits",
+        "source_captures",
+        "financial_transactions",
+        "transaction_revisions",
+      ]) {
+        assert.equal(
+          rejectedDb.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()
+            ?.count,
+          0,
+          `${table} remains empty after rejected accountDate`,
+        );
+      }
+    } finally {
+      rejectedDb.close();
+    }
+  } finally {
+    await rm(rejectedDirectory, { recursive: true, force: true });
+  }
 }
 
 const fenceDirectory = await mkdtemp(join(tmpdir(), "canonical-source-fence-"));
@@ -400,6 +626,14 @@ try {
   );
   assert.match(
     migratedRevisionSchema,
+    /yuanta\/domestic-deposit\/human-attested-v1/,
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /yuanta\/domestic-deposit\/human-attested-v2/,
+  );
+  assert.match(
+    migratedRevisionSchema,
     /CHECK\(semantic_rule_version IN .*synthetic-%/,
   );
   assert.match(
@@ -445,11 +679,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR posting_rule_version LIKE 'synthetic-%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR semantic_rule_version LIKE 'synthetic-%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -457,7 +691,7 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR effective_time_rule_version LIKE 'synthetic-%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);
@@ -507,6 +741,14 @@ try {
   );
   assert.match(
     widenedRevisionSchema,
+    /yuanta\/domestic-deposit\/human-attested-v1/,
+  );
+  assert.match(
+    widenedRevisionSchema,
+    /yuanta\/domestic-deposit\/human-attested-v2/,
+  );
+  assert.match(
+    widenedRevisionSchema,
     /CHECK\(semantic_rule_version IN .*synthetic-%/,
   );
   assert.equal(
@@ -542,6 +784,75 @@ try {
   );
 } finally {
   await rm(partialDirectory, { recursive: true, force: true });
+}
+
+const closedScopeDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-closed-scope-v8-"),
+);
+try {
+  const path = join(closedScopeDirectory, "canonical.sqlite");
+  await commitCathayDomesticDeposit(
+    closedScopeDirectory,
+    CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  );
+  const legacy = new DatabaseSync(path);
+  const currentScopeSchema = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'capture_scopes'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const closedScopeSchema = currentScopeSchema.replace(
+    "CHECK(absence_authority IN ('comparable-complete-range', 'provider-explicit-no-data'))",
+    "CHECK(absence_authority IN ('comparable-complete-range'))",
+  );
+  assert.notEqual(closedScopeSchema, currentScopeSchema);
+  const scopeIndexes = (
+    legacy
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'capture_scopes' AND sql IS NOT NULL",
+      )
+      .all() as Array<{ sql?: unknown }>
+  )
+    .map((row) => String(row.sql ?? ""))
+    .filter(Boolean);
+  legacy.exec("PRAGMA foreign_keys = OFF");
+  legacy.exec(
+    "CREATE TABLE capture_scopes_backup AS SELECT * FROM capture_scopes; DROP TABLE capture_scopes;",
+  );
+  legacy.exec(closedScopeSchema);
+  legacy.exec(
+    "INSERT INTO capture_scopes SELECT * FROM capture_scopes_backup; DROP TABLE capture_scopes_backup;",
+  );
+  for (const index of scopeIndexes) legacy.exec(index);
+  legacy.close();
+
+  const migratedScope = createCanonicalSourceStore(path);
+  const migratedScopeSchema = String(
+    (
+      migratedScope.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'capture_scopes'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  assert.match(migratedScopeSchema, /provider-explicit-no-data/);
+  assert.equal(
+    (
+      migratedScope.db
+        .prepare("SELECT COUNT(*) AS count FROM capture_scopes")
+        .get() as { count?: number }
+    ).count,
+    1,
+  );
+  validateCanonicalSourceStore(migratedScope);
+  migratedScope.close();
+} finally {
+  await rm(closedScopeDirectory, { recursive: true, force: true });
 }
 
 const orphanDirectory = await mkdtemp(

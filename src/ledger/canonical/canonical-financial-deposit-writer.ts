@@ -87,6 +87,9 @@ export type CanonicalFinancialDepositCapture = {
     timePrecision: string;
     timeOrigin: string;
     requireBalance: boolean;
+    /** Provider occurrence guarantees are forbidden for observed Yuanta routes. */
+    providerGuaranteed?: boolean;
+    occurrenceProviderGuaranteed?: boolean;
   };
   pages: readonly CanonicalFinancialDepositPage[];
   records: readonly CanonicalFinancialDepositRecord[];
@@ -152,6 +155,19 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       postingBasis: string;
       ruleVersion: string;
       effectiveTimeBasis: string;
+      currency?: string;
+      postingStatus?: string;
+      timeZone?: string;
+      timePrecision?: string;
+      completeness?: "complete-range" | "single-page";
+      completenessBasis?: string;
+      absenceAuthority?: string;
+      withdrawalPolicy?: "allow-inference" | "never-infer";
+      integrationNamespace?: string;
+      stream?: string;
+      recordKind?: string;
+      contractVersion?: string;
+      requireProviderGuaranteedFalse?: boolean;
     }
   > = {
     "cathay/domestic-deposit/v1": {
@@ -172,8 +188,52 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       ruleVersion: "fubon/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
     },
+    "yuanta/domestic-deposit/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/domestic-deposit/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      completeness: "complete-range",
+      completenessBasis: "exact-ui-range-terminal-download",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "domestic-deposit",
+      recordKind: "yuanta-domestic-deposit",
+      contractVersion: "human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta/domestic-deposit/human-attested-v2": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/domestic-deposit/human-attested-v2",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      completeness: "complete-range",
+      completenessBasis: "exact-ui-range-terminal-download",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "domestic-deposit",
+      recordKind: "yuanta-domestic-deposit",
+      contractVersion: "human-attested-v2",
+      requireProviderGuaranteedFalse: true,
+    },
   };
   const routeRule = routeRules[capture.authorityRoute];
+  if (
+    !routeRule &&
+    !capture.authorityRoute.startsWith("synthetic-") &&
+    !capture.authorityRoute.startsWith("synthetic/")
+  )
+    throw new Error("Unknown canonical financial authority route.");
   if (
     routeRule &&
     (capture.semantics.postingOrigin !== routeRule.postingOrigin ||
@@ -184,6 +244,83 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       capture.semantics.effectiveTimeRuleVersion !== routeRule.ruleVersion)
   )
     throw new Error("Financial semantics do not match the authority route.");
+  if (
+    routeRule?.requireProviderGuaranteedFalse &&
+    (capture.semantics.providerGuaranteed === true ||
+      capture.semantics.occurrenceProviderGuaranteed === true ||
+      (capture.semantics.providerGuaranteed !== false &&
+        capture.semantics.occurrenceProviderGuaranteed !== false))
+  )
+    throw new Error(
+      "Yuanta route requires provider and occurrence guarantees to be explicitly false.",
+    );
+  if (routeRule) {
+    const mismatches: string[] = [];
+    if (
+      routeRule.currency !== undefined &&
+      capture.identity.currency !== routeRule.currency
+    )
+      mismatches.push("currency");
+    if (
+      routeRule.postingStatus !== undefined &&
+      capture.semantics.postingStatus !== routeRule.postingStatus
+    )
+      mismatches.push("posting status");
+    if (
+      routeRule.timeZone !== undefined &&
+      capture.semantics.timeZone !== routeRule.timeZone
+    )
+      mismatches.push("time zone");
+    if (
+      routeRule.timePrecision !== undefined &&
+      capture.semantics.timePrecision !== routeRule.timePrecision
+    )
+      mismatches.push("time precision");
+    if (
+      routeRule.completeness !== undefined &&
+      capture.scope.completeness !== routeRule.completeness
+    )
+      mismatches.push("completeness");
+    if (
+      routeRule.completenessBasis !== undefined &&
+      capture.scope.completenessBasis !== routeRule.completenessBasis
+    )
+      mismatches.push("completeness basis");
+    if (
+      routeRule.absenceAuthority !== undefined &&
+      capture.scope.absenceAuthority !== routeRule.absenceAuthority
+    )
+      mismatches.push("absence authority");
+    if (
+      routeRule.withdrawalPolicy !== undefined &&
+      capture.scope.withdrawalPolicy !== routeRule.withdrawalPolicy
+    )
+      mismatches.push("withdrawal policy");
+    if (
+      routeRule.integrationNamespace !== undefined &&
+      capture.identity.integrationNamespace !== routeRule.integrationNamespace
+    )
+      mismatches.push("integration namespace");
+    if (
+      routeRule.stream !== undefined &&
+      capture.identity.stream !== routeRule.stream
+    )
+      mismatches.push("stream");
+    if (
+      routeRule.recordKind !== undefined &&
+      capture.identity.recordKind !== routeRule.recordKind
+    )
+      mismatches.push("record kind");
+    if (
+      routeRule.contractVersion !== undefined &&
+      capture.contractVersion !== routeRule.contractVersion
+    )
+      mismatches.push("contract version");
+    if (mismatches.length > 0)
+      throw new Error(
+        `Financial capture does not match the Yuanta route profile: ${mismatches.join(", ")}.`,
+      );
+  }
   if (
     capture.scope.withdrawalPolicy !== undefined &&
     capture.scope.withdrawalPolicy !== "allow-inference" &&

@@ -23,6 +23,7 @@ import {
   recentTaskRuns,
   taskRunById,
   updateHumanAssistanceContract,
+  updateTaskRun,
 } from "./store.ts";
 import {
   armAutomationSessionTimeout,
@@ -1450,6 +1451,191 @@ test("failed initial session claim persists failure before spawn", async () => {
   } finally {
     release();
     await closing;
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("a terminal force-ended owner without pending cleanup cannot fence the next start", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-terminal-owner-"));
+  const taskId = "fubon-all-statements";
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const previous = createTaskRun(db, {
+      taskId,
+      script: "libretto run",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-22T01:00:00.000Z",
+      logPath: join(ledgerDir, "terminal-owner.log"),
+      logTail:
+        "automation-session: ses-terminal-owner\nWorkflow paused. run `npx libretto resume --session ses-terminal-owner`.",
+    });
+    const previousOwner = {
+      taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-terminal-owner",
+      pid: null,
+    };
+    assert.equal(ownAutomationSession(previousOwner), true);
+    updateTaskRun(db, previous.taskRunId, {
+      status: "failed",
+      finishedAt: "2026-08-22T01:01:00.000Z",
+      errorMessage: "Browser session force quit.",
+    });
+
+    const next = createTaskRun(db, {
+      taskId,
+      script: "libretto run",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-22T01:02:00.000Z",
+      logPath: join(ledgerDir, "next-start.log"),
+    });
+    const nextOwner = {
+      taskId,
+      taskRunId: next.taskRunId,
+      session: "ses-next-start",
+      pid: null,
+    };
+
+    assert.equal(
+      claimRunAutomationSession(db, next.taskRunId, nextOwner),
+      true,
+    );
+    assert.equal(ownedAutomationSession(taskId)?.taskRunId, next.taskRunId);
+    assert.equal(taskRunById(db, next.taskRunId)?.status, "running");
+    db.close();
+  } finally {
+    await finalizeExactOwnedAutomationSession(
+      ownedAutomationSession(taskId) ?? {
+        taskId,
+        taskRunId: "absent",
+        session: "absent",
+      },
+      {
+        async closeSession() {},
+        isExpectedDaemon() {
+          return false;
+        },
+        signalProcessGroup() {},
+        async wait() {},
+      },
+    );
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("a terminal owner remains fenced only until its real cleanup settles", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-terminal-closing-"));
+  const taskId = "fubon-all-statements";
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const previous = createTaskRun(db, {
+      taskId,
+      script: "libretto run",
+      kind: "crawler",
+      status: "failed",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-22T02:00:00.000Z",
+      finishedAt: "2026-08-22T02:01:00.000Z",
+      logPath: join(ledgerDir, "terminal-closing.log"),
+      errorMessage: "Browser session force quit.",
+    });
+    const previousOwner = {
+      taskId,
+      taskRunId: previous.taskRunId,
+      session: "ses-terminal-closing",
+      pid: null,
+    };
+    assert.equal(ownAutomationSession(previousOwner), true);
+    const closing = finalizeExactOwnedAutomationSession(previousOwner, {
+      async closeSession() {
+        await blocked;
+      },
+      isExpectedDaemon() {
+        return false;
+      },
+      signalProcessGroup() {},
+      async wait() {},
+    });
+
+    const duringCleanup = createTaskRun(db, {
+      taskId,
+      script: "libretto run",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-22T02:01:01.000Z",
+      logPath: join(ledgerDir, "during-cleanup.log"),
+    });
+    assert.equal(
+      claimRunAutomationSession(db, duringCleanup.taskRunId, {
+        taskId,
+        taskRunId: duringCleanup.taskRunId,
+        session: "ses-during-cleanup",
+        pid: null,
+      }),
+      false,
+    );
+    assert.match(
+      taskRunById(db, duringCleanup.taskRunId)?.errorMessage ?? "",
+      /session.*closing/i,
+    );
+
+    release();
+    await closing;
+    const afterCleanup = createTaskRun(db, {
+      taskId,
+      script: "libretto run",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-22T02:01:02.000Z",
+      logPath: join(ledgerDir, "after-cleanup.log"),
+    });
+    assert.equal(
+      claimRunAutomationSession(db, afterCleanup.taskRunId, {
+        taskId,
+        taskRunId: afterCleanup.taskRunId,
+        session: "ses-after-cleanup",
+        pid: null,
+      }),
+      true,
+    );
+    assert.equal(
+      ownedAutomationSession(taskId)?.taskRunId,
+      afterCleanup.taskRunId,
+    );
+    assert.equal(taskRunById(db, previous.taskRunId)?.status, "failed");
+    db.close();
+  } finally {
+    release();
+    await finalizeExactOwnedAutomationSession(
+      ownedAutomationSession(taskId) ?? {
+        taskId,
+        taskRunId: "absent",
+        session: "absent",
+      },
+      {
+        async closeSession() {},
+        isExpectedDaemon() {
+          return false;
+        },
+        signalProcessGroup() {},
+        async wait() {},
+      },
+    );
     rmSync(ledgerDir, { recursive: true, force: true });
   }
 });

@@ -15,7 +15,7 @@ const retryResult = await retryableStage({
   reset: async () => {
     retryCalls.push("reset");
   },
-  pauseForHuman: async () => {
+  beforeHumanPause: async () => {
     retryCalls.push("pause");
   },
 });
@@ -28,6 +28,7 @@ let humanRuns = 0;
 const humanResult = await retryableStage({
   name: "foreign",
   session: "ses-human",
+  isHumanRepairable: () => true,
   run: async () => {
     humanCalls.push("run");
     humanRuns += 1;
@@ -37,7 +38,7 @@ const humanResult = await retryableStage({
   reset: async () => {
     humanCalls.push("reset");
   },
-  pauseForHuman: async () => {
+  pause: async () => {
     humanCalls.push("pause");
   },
 });
@@ -50,6 +51,7 @@ let resetFailureRuns = 0;
 const resetFailureResult = await retryableStage({
   name: "reset-failure",
   session: "ses-reset",
+  isHumanRepairable: () => true,
   run: async () => {
     resetFailureCalls.push("run");
     resetFailureRuns += 1;
@@ -60,7 +62,7 @@ const resetFailureResult = await retryableStage({
     resetFailureCalls.push("reset");
     throw new Error("stale session");
   },
-  pauseForHuman: async () => {
+  pause: async () => {
     resetFailureCalls.push("pause");
   },
 });
@@ -68,25 +70,59 @@ const resetFailureResult = await retryableStage({
 assert.equal(resetFailureResult, "reset-fixed");
 assert.deepEqual(resetFailureCalls, ["run", "reset", "pause", "run"]);
 
-const finalFailureCalls: string[] = [];
-let finalFailureRuns = 0;
+const repeatedFailureCalls: string[] = [];
+let repeatedFailureRuns = 0;
+const repeatedFailureResult = await retryableStage({
+  name: "repeated-failure",
+  session: "ses-repeated",
+  isHumanRepairable: () => true,
+  run: async () => {
+    repeatedFailureCalls.push("run");
+    repeatedFailureRuns += 1;
+    if (repeatedFailureRuns <= 3) {
+      throw new Error(`still-broken-${repeatedFailureRuns}`);
+    }
+    return "fixed-after-second-pause";
+  },
+  reset: async () => {
+    repeatedFailureCalls.push("reset");
+  },
+  pause: async () => {
+    repeatedFailureCalls.push("pause");
+  },
+});
+assert.equal(repeatedFailureResult, "fixed-after-second-pause");
+assert.deepEqual(repeatedFailureCalls, [
+  "run",
+  "reset",
+  "run",
+  "pause",
+  "run",
+  "pause",
+  "run",
+]);
+
+const terminalFailureCalls: string[] = [];
+let terminalFailureRuns = 0;
 await assert.rejects(
   () =>
     retryableStage({
-      name: "final-failure",
-      session: "ses-final",
+      name: "terminal-provider-error",
+      session: "ses-terminal",
+      isHumanRepairable: () => false,
       run: async () => {
-        finalFailureCalls.push("run");
-        finalFailureRuns += 1;
-        throw new Error(`still-broken-${finalFailureRuns}`);
+        terminalFailureCalls.push("run");
+        terminalFailureRuns += 1;
+        throw new Error(`terminal-provider-error-${terminalFailureRuns}`);
       },
       reset: async () => {
-        finalFailureCalls.push("reset");
+        terminalFailureCalls.push("reset");
       },
-      pauseForHuman: async () => {
-        finalFailureCalls.push("pause");
+      pause: async () => {
+        terminalFailureCalls.push("pause");
+        throw new Error("unexpected human pause");
       },
     }),
-  /still-broken-3/,
+  /terminal-provider-error-2/,
 );
-assert.deepEqual(finalFailureCalls, ["run", "reset", "run", "pause", "run"]);
+assert.deepEqual(terminalFailureCalls, ["run", "reset", "run"]);

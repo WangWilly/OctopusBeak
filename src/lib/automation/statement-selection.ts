@@ -104,8 +104,8 @@ export const BANK_STATEMENT_CAPABILITIES = {
     statementTypes: types(
       "deposit",
       "foreign_currency",
-      "loan",
       "credit_card",
+      "loan",
       "fund",
     ),
   },
