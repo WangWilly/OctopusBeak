@@ -53,6 +53,16 @@ assert.deepEqual(
     { id: "fund" },
   ],
 );
+const hncbStatements = taskById("hncb-statements");
+assert.ok(hncbStatements);
+assert.equal(hncbStatements.id, "hncb-statements");
+assert.equal(hncbStatements.script, "run:hncb-statements");
+assert.deepEqual(hncbStatements.command, [
+  "libretto",
+  "run",
+  "src/workflows/hncb-statements.ts",
+  "--headless",
+]);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")
     ?.statementTypes,

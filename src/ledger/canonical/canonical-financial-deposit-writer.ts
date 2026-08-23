@@ -226,6 +226,25 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       contractVersion: "human-attested-v2",
       requireProviderGuaranteedFalse: true,
     },
+    "hncb/domestic-deposit/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "hncb/domestic-deposit/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      completeness: "complete-range",
+      completenessBasis: "exact-ui-range-terminal-export",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "hncb",
+      stream: "domestic-deposit",
+      recordKind: "hncb-domestic-deposit",
+      contractVersion: "human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
   };
   const routeRule = routeRules[capture.authorityRoute];
   if (
@@ -252,7 +271,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         capture.semantics.occurrenceProviderGuaranteed !== false))
   )
     throw new Error(
-      "Yuanta route requires provider and occurrence guarantees to be explicitly false.",
+      `${capture.authorityRoute} route requires provider and occurrence guarantees to be explicitly false.`,
     );
   if (routeRule) {
     const mismatches: string[] = [];
@@ -318,7 +337,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       mismatches.push("contract version");
     if (mismatches.length > 0)
       throw new Error(
-        `Financial capture does not match the Yuanta route profile: ${mismatches.join(", ")}.`,
+        `Financial capture does not match the ${capture.authorityRoute} route profile: ${mismatches.join(", ")}.`,
       );
   }
   if (

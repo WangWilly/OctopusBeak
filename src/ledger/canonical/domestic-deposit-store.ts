@@ -298,6 +298,8 @@ export type DomesticDepositLineageRequest = {
   identityEpoch: number;
   stream: string;
   accountKey: string;
+  /** Optional source subject digest when accountKey is a provider account number. */
+  subjectDigest?: string;
   integrationNamespace?: string;
   sourceConnectionKey?: string;
   identityEpochKey?: string;
@@ -1306,7 +1308,7 @@ export function queryLineage(
       (transactions.length > 0
         ? LINEBANK_V13_RECORD_KIND
         : "linebank-domestic-deposit-source-record"),
-    subjectDigest: request.accountKey,
+    subjectDigest: request.subjectDigest ?? request.accountKey,
     occurrenceKey: request.sourceOccurrenceKey,
   });
   const base = domesticQueryResult(result);
