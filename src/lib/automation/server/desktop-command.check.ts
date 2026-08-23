@@ -74,10 +74,10 @@ assert.deepEqual(
 const cathay = taskById("cathay-all-statements");
 assert.ok(cathay);
 const cathayCommand = resolveTaskCommand(cathay, {}, env);
-assert.equal(cathayCommand.args.includes("--headless"), false);
-assert.equal(cathayCommand.args.filter((arg) => arg === "--headed").length, 1);
+assert.equal(cathayCommand.args.filter((arg) => arg === "--headless").length, 1);
+assert.equal(cathayCommand.args.includes("--headed"), false);
 assert.deepEqual(cathayCommand.args.slice(-3), [
-  "--headed",
+  "--headless",
   "--params",
   '{"telemetry":true}',
 ]);
@@ -88,7 +88,7 @@ assert.deepEqual(
     env,
   ).args.slice(-5),
   [
-    "--headed",
+    "--headless",
     "--params",
     '{"telemetry":true}',
     "--session",

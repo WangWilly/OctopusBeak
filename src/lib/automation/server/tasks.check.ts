@@ -38,7 +38,7 @@ assert.deepEqual(cathayAllStatements.command, [
   "libretto",
   "run",
   "src/workflows/cathay-all-statements.ts",
-  "--headed",
+  "--headless",
   "--params",
   '{"telemetry":true}',
 ]);
