@@ -20,6 +20,13 @@ import {
   type CanonicalSourceEvidence,
   type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-store.ts";
+import {
+  admitHncbDomesticDepositCaptureEvidence,
+  admitHncbDomesticDepositFinancialCapture,
+  commitCanonicalHncbDomesticDepositCapture,
+  HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+  getHncbHumanAttestedV1Manifest,
+} from "./hncb-domestic-deposit.ts";
 
 const token = (letter: string) => `sha256:${letter.repeat(64)}`;
 
@@ -634,6 +641,10 @@ try {
   );
   assert.match(
     migratedRevisionSchema,
+    /hncb\/domestic-deposit\/human-attested-v1/,
+  );
+  assert.match(
+    migratedRevisionSchema,
     /CHECK\(semantic_rule_version IN .*synthetic-%/,
   );
   assert.match(
@@ -679,11 +690,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR posting_rule_version LIKE 'synthetic-%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR semantic_rule_version LIKE 'synthetic-%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -691,10 +702,14 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2') OR effective_time_rule_version LIKE 'synthetic-%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);
+  assert.doesNotMatch(
+    closedRevisionSchema,
+    /hncb\/domestic-deposit\/human-attested-v1/,
+  );
   const beforeRevisionCount = Number(
     (
       legacy
@@ -746,6 +761,10 @@ try {
   assert.match(
     widenedRevisionSchema,
     /yuanta\/domestic-deposit\/human-attested-v2/,
+  );
+  assert.match(
+    widenedRevisionSchema,
+    /hncb\/domestic-deposit\/human-attested-v1/,
   );
   assert.match(
     widenedRevisionSchema,
@@ -945,4 +964,221 @@ try {
   assert.equal(after.commitSequence, before.commitSequence);
 } finally {
   await rm(mixedDirectory, { recursive: true, force: true });
+}
+
+const mixedMigrationDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-mixed-migration-v8-"),
+);
+try {
+  const path = join(mixedMigrationDirectory, "canonical.sqlite");
+  await commitCathayDomesticDeposit(
+    mixedMigrationDirectory,
+    CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  );
+  const hncbCaptureInput = {
+    evidenceVersion: "capture-evidence-v1" as const,
+    source: "hncb" as const,
+    product: "domestic-deposit" as const,
+    providerGuaranteed: false as const,
+    observedAt: "2026-08-20T12:00:00.000+08:00",
+    account: {
+      value: "SYNTHETIC-HNCB-MIGRATION-001",
+      label: "SYNTHETIC HNCB MIGRATION ACCOUNT",
+    },
+    queryRange: { startDate: "2026/08/01", endDate: "2026/08/20" },
+    downloads: [
+      {
+        filename: "hncb-migration.xls",
+        byteLength: 100,
+        contentDigest: token("h") as `sha256:${string}`,
+        columnNames: HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+        rows: [
+          {
+            rowOrdinal: 0,
+            values: [
+              "2026/08/02",
+              "09:10:11",
+              "2026/08/03",
+              "TWD",
+              "100",
+              "",
+              "900",
+              "MIGRATION DESCRIPTION",
+              "",
+              "",
+              "MIGRATION REFERENCE",
+            ],
+          },
+        ],
+        terminal: true,
+      },
+    ],
+    provenance: {
+      source: "hncb-ebank-domestic-deposit-html-workbook" as const,
+      encoding: "big5" as const,
+      responseBodyRetained: false as const,
+      semantics: "unresolved" as const,
+      accountSelector: "select#acct1" as const,
+      queryFormSelector: 'form[name="form1"]' as const,
+      downloadSelector: 'input[name="excel_download"]' as const,
+    },
+  };
+  const structural = admitHncbDomesticDepositCaptureEvidence(hncbCaptureInput);
+  assert.equal(structural.status, "admissible");
+  assert.ok(structural.capture);
+  const financialInput = {
+    capture: structural.capture,
+    captureId: "hncb-migration-financial-capture",
+    humanAttestation: getHncbHumanAttestedV1Manifest(),
+  };
+  assert.equal(
+    admitHncbDomesticDepositFinancialCapture(financialInput).status,
+    "admitted",
+  );
+  const mixed = createCanonicalSourceStore(path);
+  const cathayRevisionCount = Number(
+    (
+      mixed.db
+        .prepare(
+          "SELECT COUNT(*) AS value FROM transaction_revisions WHERE posting_rule_version = 'cathay/domestic-deposit/v1'",
+        )
+        .get() as { value?: number }
+    ).value ?? 0,
+  );
+  assert.ok(cathayRevisionCount > 0);
+  await commitCanonicalHncbDomesticDepositCapture(
+    {
+      db: mixed.db,
+      databasePath: mixed.databasePath,
+      commitClock: () => mixed.commitClock(),
+    },
+    financialInput,
+  );
+  const beforeMigrationRows = Number(
+    (
+      mixed.db
+        .prepare("SELECT COUNT(*) AS value FROM transaction_revisions")
+        .get() as { value?: number }
+    ).value ?? 0,
+  );
+  assert.equal(beforeMigrationRows, cathayRevisionCount + 1);
+  mixed.close();
+
+  const legacy = new DatabaseSync(path);
+  const currentRevisionSchema = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const closedRevisionSchema = currentRevisionSchema
+    .replace(
+      /CHECK\(posting_origin IN \([^)]*\) OR posting_origin LIKE 'synthetic_%'\)/,
+      "CHECK(posting_origin = 'provider_booked_history')",
+    )
+    .replace(
+      /CHECK\(posting_basis IN \([^)]*\) OR posting_basis LIKE 'synthetic_%'\)/,
+      "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
+    )
+    .replace(
+      /CHECK\(posting_rule_version IN \([^)]*\) OR posting_rule_version LIKE 'synthetic-%'\)/,
+      "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
+    )
+    .replace(
+      /CHECK\(semantic_rule_version IN \([^)]*\) OR semantic_rule_version LIKE 'synthetic-%'\)/,
+      "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
+    )
+    .replace(
+      "CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+      "CHECK(effective_time_basis = 'accounting')",
+    )
+    .replace(
+      /CHECK\(effective_time_rule_version IN \([^)]*\) OR effective_time_rule_version LIKE 'synthetic-%'\)/,
+      "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
+    );
+  assert.notEqual(closedRevisionSchema, currentRevisionSchema);
+  const sourceAssertionsView = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  legacy.exec("PRAGMA foreign_keys = OFF");
+  legacy.exec(
+    "DROP VIEW IF EXISTS source_assertions; DROP INDEX IF EXISTS idx_transaction_revisions_financial_time; DROP INDEX IF EXISTS idx_transaction_revisions_knowledge_time; DROP INDEX IF EXISTS idx_transaction_revisions_lineage; CREATE TABLE transaction_revisions_backup AS SELECT * FROM transaction_revisions; DROP TABLE transaction_revisions;",
+  );
+  legacy.exec(closedRevisionSchema);
+  // This fixture represents an older closed allowlist with rows written by
+  // both providers before the current migration widened the HNCB route.
+  legacy.exec("PRAGMA ignore_check_constraints = ON");
+  legacy.exec(
+    "INSERT INTO transaction_revisions SELECT * FROM transaction_revisions_backup; DROP TABLE transaction_revisions_backup;",
+  );
+  legacy.exec("PRAGMA ignore_check_constraints = OFF");
+  legacy.exec(sourceAssertionsView);
+  legacy.close();
+
+  const migrated = createCanonicalSourceStore(path);
+  try {
+    const widenedRevisionSchema = String(
+      (
+        migrated.db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    assert.match(
+      widenedRevisionSchema,
+      /hncb\/domestic-deposit\/human-attested-v1/,
+    );
+    assert.equal(
+      (
+        migrated.db
+          .prepare("SELECT COUNT(*) AS value FROM transaction_revisions")
+          .get() as { value?: number }
+      ).value,
+      beforeMigrationRows,
+    );
+    assert.equal(
+      (
+        migrated.db
+          .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
+          .get() as { value?: number }
+      ).value,
+      beforeMigrationRows,
+    );
+    assert.equal(
+      (
+        migrated.db
+          .prepare("SELECT COUNT(*) AS value FROM current_transactions")
+          .get() as { value?: number }
+      ).value,
+      beforeMigrationRows,
+    );
+    const routeCounts = migrated.db
+      .prepare(
+        "SELECT posting_rule_version AS route, COUNT(*) AS value FROM transaction_revisions GROUP BY posting_rule_version ORDER BY route",
+      )
+      .all() as Array<{ route?: string; value?: number }>;
+    assert.deepEqual(
+      routeCounts.map(({ route, value }) => ({ route, value })),
+      [
+        { route: "cathay/domestic-deposit/v1", value: cathayRevisionCount },
+        { route: "hncb/domestic-deposit/human-attested-v1", value: 1 },
+      ],
+    );
+    validateCanonicalSourceStore(migrated);
+  } finally {
+    migrated.close();
+  }
+} finally {
+  await rm(mixedMigrationDirectory, { recursive: true, force: true });
 }

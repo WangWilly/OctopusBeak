@@ -29,7 +29,11 @@ import {
 } from "./fubon-domestic-deposit.ts";
 import {
   HNCB_DOMESTIC_DEPOSIT_CONTRACT,
+  HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
   HNCB_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
+  HNCB_HUMAN_ATTESTED_V1_MANIFEST,
+  isHncbHumanAttestationDurablyActive,
   preflightHncbDomesticDeposit,
 } from "./hncb-domestic-deposit.ts";
 import {
@@ -475,6 +479,47 @@ export function buildYuantaDomesticDepositReadinessFromLedger(
   };
 }
 
+/** Promote HNCB only after an active durable observed attestation and a
+ * matching financial capture. Source-only/telemetry captures remain blocked. */
+export function buildHncbDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("hncb");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           WHERE capture.authority_route = ?`,
+        )
+        .get(HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as { count?: number }
+    ).count ?? 0,
+  );
+  if (durableCaptureCount === 0 || !isHncbHumanAttestationDurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: HNCB_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: HNCB_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
 export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
   db: DatabaseSync,
 ): AdvertisedDomesticDepositReadinessGate {
@@ -485,7 +530,9 @@ export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
         ? buildCathayDomesticDepositReadinessFromLedger(db)
         : entry.sourceId === "yuanta"
           ? buildYuantaDomesticDepositReadinessFromLedger(db)
-          : entry,
+          : entry.sourceId === "hncb"
+            ? buildHncbDomesticDepositReadinessFromLedger(db)
+            : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }
