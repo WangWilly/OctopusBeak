@@ -336,7 +336,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
       "libretto",
       "run",
       "src/workflows/cathay-all-statements.ts",
-      "--headed",
+      "--headless",
       "--params",
       '{"telemetry":true}',
     ],
