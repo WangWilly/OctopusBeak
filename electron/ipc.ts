@@ -1,7 +1,11 @@
-import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
 import {
-  createDataIssueIpcHandlers,
-} from "../src/lib/desktop/api.ts";
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  shell,
+  type OpenDialogOptions,
+} from "electron";
+import { createDataIssueIpcHandlers } from "../src/lib/desktop/api.ts";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
@@ -24,6 +28,7 @@ import {
   isClosedViewerSessionError,
   inspectHumanVerificationPoint,
   refreshCathayEmailOtpTarget,
+  refreshSinopacCaptchaTarget,
   refreshYuantaTradeChallengeSubmitTarget,
   sendHumanVerificationInput,
   shouldAutoResumeYuantaTradeCaptcha,
@@ -46,9 +51,7 @@ import {
   type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
-import {
-  readAutomationSettings,
-} from "../src/lib/automation/server/settings.ts";
+import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
   confirmDataIssueExclusion,
@@ -65,12 +68,17 @@ import {
   validateSystemSettings,
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
-import { isFiniteDisplayScale, trafficLightPositionForScale } from "./window-options.ts";
+import {
+  isFiniteDisplayScale,
+  trafficLightPositionForScale,
+} from "./window-options.ts";
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
 }: {
-  onSystemSettingsChanged?: (settings: SystemSettingsDto) => void | Promise<void>;
+  onSystemSettingsChanged?: (
+    settings: SystemSettingsDto,
+  ) => void | Promise<void>;
 } = {}) {
   const dataIssueHandlers = createDataIssueIpcHandlers({
     list: listDataIssues,
@@ -89,7 +97,9 @@ export function registerOctopusBeakIpc({
       trafficLightPositionForScale(percent),
     );
   });
-  ipcMain.handle("settings:load", () => systemSettings(readAutomationSettings()));
+  ipcMain.handle("settings:load", () =>
+    systemSettings(readAutomationSettings()),
+  );
   ipcMain.handle("settings:save", async (_event, input: SystemSettingsDto) => {
     const value = validateSystemSettings(input);
     writeAutomationSettings({
@@ -103,125 +113,212 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("overview:load", () => loadOverview());
   ipcMain.handle("assets:load", () => loadAssets());
   ipcMain.handle("liabilities:load", () => loadLiabilities());
-  ipcMain.handle("spending:load", (_event, input: SpendingLoadInput | undefined) =>
-    loadSpending(undefined, input)
+  ipcMain.handle(
+    "spending:load",
+    (_event, input: SpendingLoadInput | undefined) =>
+      loadSpending(undefined, input),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
     return { ok: true as const };
   });
-  ipcMain.handle("spending:updateTransactionOverride", (_event, input: SpendingOverrideUpdate) => {
-    updateSpendingTransactionOverride(input);
-    return { ok: true as const };
-  });
+  ipcMain.handle(
+    "spending:updateTransactionOverride",
+    (_event, input: SpendingOverrideUpdate) => {
+      updateSpendingTransactionOverride(input);
+      return { ok: true as const };
+    },
+  );
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
-    (_event, updates: Record<string, string>) => automationSaveCredentials(updates),
+    (_event, updates: Record<string, string>) =>
+      automationSaveCredentials(updates),
   );
-  ipcMain.handle("automation:selectCertificateFile", async (event, locale: "en" | "zh-TW") => {
-    const chinese = locale === "zh-TW";
-    const options: OpenDialogOptions = {
-      title: chinese ? "選擇憑證檔案" : "Choose certificate file",
-      properties: ["openFile"],
-      filters: [{ name: chinese ? "憑證檔案" : "Certificate files", extensions: [...CERTIFICATE_FILE_EXTENSIONS] }],
-    };
-    const owner = BrowserWindow.fromWebContents(event.sender);
-    const result = owner
-      ? await dialog.showOpenDialog(owner, options)
-      : await dialog.showOpenDialog(options);
-    if (result.canceled || !result.filePaths[0]) return { cancelled: true as const };
-    const validation = validateCertificateFilePath(result.filePaths[0]);
-    if (!validation.valid) return { cancelled: false as const, error: validation.reason };
-    return {
-      cancelled: false as const,
-      path: validation.path,
-      filename: validation.filename,
-    };
-  });
-  ipcMain.handle("automation:openSetupGuideLink", async (_event, groupId: string, linkId: string, locale: "en" | "zh-TW") => {
-    const guideLink = automationSetupGuideLink(groupId, linkId, locale);
-    if (!guideLink) throw new Error("Unknown or unsafe setup guide link.");
-    await shell.openExternal(guideLink.url);
-    return { ok: true as const };
-  });
-  ipcMain.handle("automation:run", (_event, taskId: string) => automationRun(taskId));
-  ipcMain.handle("automation:runMany", (_event, taskIds: string[]) => automationRunMany(taskIds));
-  ipcMain.handle("automation:resume", (_event, taskId: string) => automationResume(taskId));
-  ipcMain.handle("automation:cancel", (_event, taskId: string) => automationCancel(taskId));
+  ipcMain.handle(
+    "automation:selectCertificateFile",
+    async (event, locale: "en" | "zh-TW") => {
+      const chinese = locale === "zh-TW";
+      const options: OpenDialogOptions = {
+        title: chinese ? "選擇憑證檔案" : "Choose certificate file",
+        properties: ["openFile"],
+        filters: [
+          {
+            name: chinese ? "憑證檔案" : "Certificate files",
+            extensions: [...CERTIFICATE_FILE_EXTENSIONS],
+          },
+        ],
+      };
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const result = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths[0])
+        return { cancelled: true as const };
+      const validation = validateCertificateFilePath(result.filePaths[0]);
+      if (!validation.valid)
+        return { cancelled: false as const, error: validation.reason };
+      return {
+        cancelled: false as const,
+        path: validation.path,
+        filename: validation.filename,
+      };
+    },
+  );
+  ipcMain.handle(
+    "automation:openSetupGuideLink",
+    async (_event, groupId: string, linkId: string, locale: "en" | "zh-TW") => {
+      const guideLink = automationSetupGuideLink(groupId, linkId, locale);
+      if (!guideLink) throw new Error("Unknown or unsafe setup guide link.");
+      await shell.openExternal(guideLink.url);
+      return { ok: true as const };
+    },
+  );
+  ipcMain.handle("automation:run", (_event, taskId: string) =>
+    automationRun(taskId),
+  );
+  ipcMain.handle("automation:runMany", (_event, taskIds: string[]) =>
+    automationRunMany(taskIds),
+  );
+  ipcMain.handle("automation:resume", (_event, taskId: string) =>
+    automationResume(taskId),
+  );
+  ipcMain.handle("automation:cancel", (_event, taskId: string) =>
+    automationCancel(taskId),
+  );
   ipcMain.handle("automation:runHistory", () => automationRunHistory());
-  ipcMain.handle("automation:openExternalPrerequisite", async (_event, prerequisiteId: string) => {
-    const prerequisite = externalPrerequisiteById(prerequisiteId);
-    if (!prerequisite) throw new Error("Unknown or unsafe external prerequisite.");
-    await shell.openExternal(prerequisite.downloadUrl);
-    return { ok: true as const };
-  });
-  ipcMain.handle("automation:viewerScreenshot", async (_event, taskId: string) => {
-    const session = humanSessionForTask(taskId);
-    try {
-      return new Uint8Array(await captureSessionScreenshot(session));
-    } catch (error) {
-      if (isClosedViewerSessionError(error)) return null;
-      throw error;
-    }
-  });
-  ipcMain.handle("automation:viewerInspect", async (_event, taskId: string, point: unknown) => {
-    const session = humanSessionForTask(taskId);
-    const contract = humanAssistanceContractForTask(taskId);
-    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
-    const refreshedContractInput = await refreshCathayEmailOtpTarget(session, contract);
-    const refreshedContract = refreshedContractInput
-      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
-      : contract;
-    return inspectHumanVerificationPoint(session, point, refreshedContract);
-  });
-  ipcMain.handle("automation:viewerInput", async (_event, taskId: string, input: unknown) => {
-    const session = humanSessionForTask(taskId);
-    const contract = humanAssistanceContractForTask(taskId);
-    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
-    await sendHumanVerificationInput(session, input, contract);
-    const refreshedContractInput = await refreshYuantaTradeChallengeSubmitTarget(session, contract);
-    const refreshedContract = refreshedContractInput
-      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
-      : contract;
-    const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
-    const clickedTarget = typeof record.targetId === "string"
-      ? refreshedContract.targets.find((target) => target.id === record.targetId)
-      : undefined;
-    const shouldCheckYuantaCompletion = shouldCheckYuantaTradeCompletion(
-      record.type,
-      clickedTarget?.semanticId,
-    );
-    const verified = shouldCheckYuantaCompletion
-      && await waitForHumanAssistanceCompletion(session, refreshedContract);
-    const isTextInputOnCompletionTarget = record.type === "type"
-      && refreshedContract.completion.mode === "inline"
-      && typeof record.targetId === "string"
-      && refreshedContract.completion.targetIds.includes(record.targetId);
-    const updatedContract = verified
-      ? updateHumanAssistanceCompletionForTask(taskId, "verified")
-      : isTextInputOnCompletionTarget
-      ? updateHumanAssistanceCompletionForTask(taskId, "entered")
-      : refreshedContract;
-    const resumed = typeof record.targetId === "string"
-      && shouldAutoResumeYuantaTradeCaptcha(updatedContract, record.targetId, verified);
-    if (resumed) automationResume(taskId);
-    return { ok: true as const, contract: updatedContract, resumed };
-  });
-  ipcMain.handle("automation:viewerCompletionCheck", async (_event, taskId: string) => {
-    const session = humanSessionForTask(taskId);
-    const contract = humanAssistanceContractForTask(taskId);
-    if (!contract) throw new Error("Human assistance contract is missing; force quit this legacy run.");
-    const refreshedContractInput = await refreshYuantaTradeChallengeSubmitTarget(session, contract);
-    const refreshedContract = refreshedContractInput
-      ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
-      : contract;
-    const verified = await inspectHumanAssistanceCompletion(session, refreshedContract);
-    const updatedContract = verified
-      ? updateHumanAssistanceCompletionForTask(taskId, "verified")
-      : refreshedContract;
-    return { verified, contract: updatedContract };
-  });
+  ipcMain.handle(
+    "automation:openExternalPrerequisite",
+    async (_event, prerequisiteId: string) => {
+      const prerequisite = externalPrerequisiteById(prerequisiteId);
+      if (!prerequisite)
+        throw new Error("Unknown or unsafe external prerequisite.");
+      await shell.openExternal(prerequisite.downloadUrl);
+      return { ok: true as const };
+    },
+  );
+  ipcMain.handle(
+    "automation:viewerScreenshot",
+    async (_event, taskId: string) => {
+      const session = humanSessionForTask(taskId);
+      try {
+        return new Uint8Array(await captureSessionScreenshot(session));
+      } catch (error) {
+        if (isClosedViewerSessionError(error)) return null;
+        throw error;
+      }
+    },
+  );
+  ipcMain.handle(
+    "automation:viewerInspect",
+    async (_event, taskId: string, point: unknown) => {
+      const session = humanSessionForTask(taskId);
+      const contract = humanAssistanceContractForTask(taskId);
+      if (!contract)
+        throw new Error(
+          "Human assistance contract is missing; force quit this legacy run.",
+        );
+      const refreshedContractInput =
+        (await refreshCathayEmailOtpTarget(session, contract)) ??
+        (await refreshSinopacCaptchaTarget(session, contract));
+      const refreshedContract = refreshedContractInput
+        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        : contract;
+      return inspectHumanVerificationPoint(session, point, refreshedContract);
+    },
+  );
+  ipcMain.handle(
+    "automation:viewerInput",
+    async (_event, taskId: string, input: unknown) => {
+      const session = humanSessionForTask(taskId);
+      const contract = humanAssistanceContractForTask(taskId);
+      if (!contract)
+        throw new Error(
+          "Human assistance contract is missing; force quit this legacy run.",
+        );
+      const refreshedContractInput =
+        (await refreshCathayEmailOtpTarget(session, contract)) ??
+        (await refreshSinopacCaptchaTarget(session, contract));
+      const refreshedContract = refreshedContractInput
+        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        : contract;
+      await sendHumanVerificationInput(session, input, refreshedContract);
+      const refreshedYuantaContractInput =
+        await refreshYuantaTradeChallengeSubmitTarget(
+          session,
+          refreshedContract,
+        );
+      const refreshedYuantaContract = refreshedYuantaContractInput
+        ? updateHumanAssistanceContractForTask(
+            taskId,
+            refreshedYuantaContractInput,
+          )
+        : refreshedContract;
+      const record =
+        input && typeof input === "object"
+          ? (input as Record<string, unknown>)
+          : {};
+      const clickedTarget =
+        typeof record.targetId === "string"
+          ? refreshedYuantaContract.targets.find(
+              (target) => target.id === record.targetId,
+            )
+          : undefined;
+      const shouldCheckYuantaCompletion = shouldCheckYuantaTradeCompletion(
+        record.type,
+        clickedTarget?.semanticId,
+      );
+      const verified =
+        shouldCheckYuantaCompletion &&
+        (await waitForHumanAssistanceCompletion(
+          session,
+          refreshedYuantaContract,
+        ));
+      const isTextInputOnCompletionTarget =
+        record.type === "type" &&
+        refreshedYuantaContract.completion.mode === "inline" &&
+        typeof record.targetId === "string" &&
+        refreshedYuantaContract.completion.targetIds.includes(record.targetId);
+      const updatedContract = verified
+        ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+        : isTextInputOnCompletionTarget
+          ? updateHumanAssistanceCompletionForTask(taskId, "entered")
+          : refreshedYuantaContract;
+      const resumed =
+        typeof record.targetId === "string" &&
+        shouldAutoResumeYuantaTradeCaptcha(
+          updatedContract,
+          record.targetId,
+          verified,
+        );
+      if (resumed) automationResume(taskId);
+      return { ok: true as const, contract: updatedContract, resumed };
+    },
+  );
+  ipcMain.handle(
+    "automation:viewerCompletionCheck",
+    async (_event, taskId: string) => {
+      const session = humanSessionForTask(taskId);
+      const contract = humanAssistanceContractForTask(taskId);
+      if (!contract)
+        throw new Error(
+          "Human assistance contract is missing; force quit this legacy run.",
+        );
+      const refreshedContractInput =
+        await refreshYuantaTradeChallengeSubmitTarget(session, contract);
+      const refreshedContract = refreshedContractInput
+        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        : contract;
+      const verified = await inspectHumanAssistanceCompletion(
+        session,
+        refreshedContract,
+      );
+      const updatedContract = verified
+        ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+        : refreshedContract;
+      return { verified, contract: updatedContract };
+    },
+  );
   ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
     await forceQuitHumanSessionForTask(taskId);
     return { ok: true as const, closed: true };
@@ -230,8 +327,14 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("dataIssues:create", dataIssueHandlers.create);
   ipcMain.handle("dataIssues:load", dataIssueHandlers.load);
   ipcMain.handle("dataIssues:startDiagnosis", dataIssueHandlers.startDiagnosis);
-  ipcMain.handle("dataIssues:previewExclusion", dataIssueHandlers.previewExclusion);
-  ipcMain.handle("dataIssues:confirmExclusion", dataIssueHandlers.confirmExclusion);
+  ipcMain.handle(
+    "dataIssues:previewExclusion",
+    dataIssueHandlers.previewExclusion,
+  );
+  ipcMain.handle(
+    "dataIssues:confirmExclusion",
+    dataIssueHandlers.confirmExclusion,
+  );
   ipcMain.handle("dataIssues:previewRestore", dataIssueHandlers.previewRestore);
   ipcMain.handle("dataIssues:confirmRestore", dataIssueHandlers.confirmRestore);
 }

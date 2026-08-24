@@ -16,6 +16,9 @@ const enabledKey = `${credentialPrefix}ENABLED`;
 const userIdKey = `${credentialPrefix}USER_ID`;
 const accountKey = `${credentialPrefix}ACCOUNT`;
 const passwordKey = `${credentialPrefix}PASSWORD`;
+const sinopacUserIdKey = "LIBRETTO_CLOUD_SINOPAC_USER_ID";
+const sinopacAccountKey = "LIBRETTO_CLOUD_SINOPAC_ACCOUNT";
+const sinopacPasswordKey = "LIBRETTO_CLOUD_SINOPAC_PASSWORD";
 const yuantaEnabledKey = "LIBRETTO_CLOUD_YUANTA_ENABLED";
 const yuantaUserIdKey = "LIBRETTO_CLOUD_YUANTA_USER_ID";
 const yuantaAccountKey = "LIBRETTO_CLOUD_YUANTA_ACCOUNT";
@@ -39,7 +42,8 @@ try {
         LIBRETTO_CLOUD_HNCB_ENABLED: false,
         LIBRETTO_CLOUD_CTBC_ENABLED: false,
         LIBRETTO_CLOUD_POST_ENABLED: false,
-        LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
+        LIBRETTO_CLOUD_SINOPAC_ENABLED: true,
+        LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "stale-account-selection",
         LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
         LIBRETTO_CLOUD_EINVOICE_ENABLED: true,
       },
@@ -58,6 +62,9 @@ try {
         [yuantaUserIdKey]: "yuanta-user",
         [yuantaAccountKey]: "yuanta-account",
         [yuantaPasswordKey]: "yuanta-password",
+        [sinopacUserIdKey]: "sinopac-user",
+        [sinopacAccountKey]: "sinopac-account",
+        [sinopacPasswordKey]: "sinopac-password",
         [certificatePathKey]: join(dir, "certificate.txt"),
       },
       null,
@@ -116,6 +123,29 @@ try {
     "fund",
   ]);
   assert.equal(yuantaGroup?.statementSetupRequired, false);
+  const sinopacGroup = model.credentialGroups.find(
+    (group) => group.id === "sinopac",
+  );
+  assert.deepEqual(sinopacGroup?.selectedStatementTypeIds, ["accounts"]);
+  assert.equal(sinopacGroup?.statementSetupRequired, false);
+  assert.doesNotThrow(() =>
+    api.assertAutomationTaskCanStart("sinopac-statements", dir),
+  );
+  const startedSinopac = api.automationRunMany(
+    ["sinopac-statements", "sinopac-statements"],
+    dir,
+  );
+  assert.deepEqual(startedSinopac, { started: ["sinopac-statements"] });
+  const runner = await import("./runner.ts");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!runner.hasActiveAutomationTask()) break;
+    try {
+      await runner.cancelAutomationTask("sinopac-statements");
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
 
   assert.deepEqual(
     api.automationSaveCredentials({
@@ -127,6 +157,17 @@ try {
     JSON.parse(readFileSync("settings.json", "utf8"))
       .LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES,
     "deposit,foreign_currency,credit_card,loan,fund",
+  );
+  assert.deepEqual(
+    api.automationSaveCredentials({
+      LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "currency-usd",
+    }),
+    { saved: true },
+  );
+  assert.equal(
+    JSON.parse(readFileSync("settings.json", "utf8"))
+      .LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES,
+    "accounts",
   );
   assert.equal(model.automation.credentials[passwordKey], true);
   const yuantaSecuritiesGroup = model.credentialGroups.find(

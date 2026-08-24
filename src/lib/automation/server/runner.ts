@@ -192,7 +192,12 @@ export function startAutomationTask(
         (candidate) => candidate.id === task.credentialGroupId,
       )
     : null;
-  if (group && isStatementSelectionGroup(group) && group.id !== "fubon") {
+  if (
+    group &&
+    isStatementSelectionGroup(group) &&
+    group.id !== "fubon" &&
+    group.id !== "sinopac"
+  ) {
     selectStatementTypes(group, readAutomationSettings(), "strict");
   }
   claimTask(taskId);
@@ -218,7 +223,12 @@ export function startAutomationTasks(
           (candidate) => candidate.id === task.credentialGroupId,
         )
       : null;
-    if (group && isStatementSelectionGroup(group) && group.id !== "fubon") {
+    if (
+      group &&
+      isStatementSelectionGroup(group) &&
+      group.id !== "fubon" &&
+      group.id !== "sinopac"
+    ) {
       settings ??= readAutomationSettings();
       selectStatementTypes(group, settings, "strict");
     }

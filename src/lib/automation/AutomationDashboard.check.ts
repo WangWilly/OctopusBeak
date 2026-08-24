@@ -34,6 +34,25 @@ assert.match(source, /class="table-reveal"/);
 assert.match(source, /container\.animate\(/);
 assert.doesNotMatch(source, /class="task-row"[^>]*transition:disclosureSlide/);
 assert.match(source, /transition: transform 180ms ease/);
+assert.match(
+  source,
+  /import \{[\s\S]*mapViewerPointer,[\s\S]*shouldDispatchViewerClickBeforeType,[\s\S]*viewerOverlayAnchorForRect,[\s\S]*\} from "\$lib\/automation\/viewer-coordinate\.ts"/,
+);
+assert.match(
+  source,
+  /const imageRect = image\.getBoundingClientRect\(\);[\s\S]*?return mapViewerPointer\(/,
+);
+assert.doesNotMatch(
+  source,
+  /const frameRect = frame\?\.getBoundingClientRect\(\)/,
+);
+assert.match(source, /floatingInputAnchor\([\s\S]*targetRect/);
+assert.match(source, /floatingInputAnchor\(point, inspected\.rect\)/);
+assert.match(source, /transform: translate\(-50%, -50%\)/);
+assert.match(
+  source,
+  /shouldDispatchViewerClickBeforeType\(modes\) && !await sendViewerInput\(/,
+);
 assert.match(source, /class="inline-task-log"/);
 assert.doesNotMatch(source, /activeLogsOpen/);
 assert.doesNotMatch(source, /openActiveLogs/);

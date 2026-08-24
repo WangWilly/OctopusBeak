@@ -66,7 +66,7 @@ export type CanonicalFinancialDepositCapture = {
     completeness: "complete-range";
     completenessBasis: string;
     completenessRuleVersion: string;
-    absenceAuthority: string;
+    absenceAuthority: string | null;
     contractFingerprint: string;
     preflightFingerprint: string;
     pageCount: number;
@@ -168,6 +168,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       recordKind?: string;
       contractVersion?: string;
       requireProviderGuaranteedFalse?: boolean;
+      absenceAuthorityOnlyWhenEmpty?: boolean;
     }
   > = {
     "cathay/domestic-deposit/v1": {
@@ -245,6 +246,26 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       contractVersion: "human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
+    "sinopac/domestic-deposit/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "sinopac/domestic-deposit/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "minute",
+      completeness: "complete-range",
+      completenessBasis: "bounded-terminal-query",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "sinopac",
+      stream: "domestic-deposit",
+      recordKind: "sinopac-domestic-deposit",
+      contractVersion: "human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+      absenceAuthorityOnlyWhenEmpty: true,
+    },
   };
   const routeRule = routeRules[capture.authorityRoute];
   if (
@@ -305,11 +326,15 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       capture.scope.completenessBasis !== routeRule.completenessBasis
     )
       mismatches.push("completeness basis");
-    if (
-      routeRule.absenceAuthority !== undefined &&
-      capture.scope.absenceAuthority !== routeRule.absenceAuthority
-    )
-      mismatches.push("absence authority");
+    if (routeRule.absenceAuthority !== undefined) {
+      const expectedAbsenceAuthority = routeRule.absenceAuthorityOnlyWhenEmpty
+        ? capture.records.length === 0
+          ? routeRule.absenceAuthority
+          : null
+        : routeRule.absenceAuthority;
+      if (capture.scope.absenceAuthority !== expectedAbsenceAuthority)
+        mismatches.push("absence authority");
+    }
     if (
       routeRule.withdrawalPolicy !== undefined &&
       capture.scope.withdrawalPolicy !== routeRule.withdrawalPolicy
@@ -453,6 +478,7 @@ function latestLifecycle(
 function commitOnce(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
+  managesTransaction = true,
 ): CanonicalFinancialDepositCommitResult {
   if (!hasValidatedBrand(capture))
     throw new CanonicalFinancialDepositConflictError(
@@ -460,7 +486,7 @@ function commitOnce(
     );
   validateCapture(capture);
   const db = store.db;
-  db.exec("BEGIN IMMEDIATE");
+  if (managesTransaction) db.exec("BEGIN IMMEDIATE");
   try {
     if (
       db
@@ -1030,7 +1056,7 @@ function commitOnce(
       `INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)
        ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id`,
     ).run(commitId);
-    db.exec("COMMIT");
+    if (managesTransaction) db.exec("COMMIT");
     return {
       status: "canonical-live",
       canonicalAdmission: "admitted",
@@ -1048,11 +1074,12 @@ function commitOnce(
       ),
     };
   } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* preserve original failure */
-    }
+    if (managesTransaction)
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* preserve original failure */
+      }
     throw error;
   }
 }
@@ -1064,4 +1091,38 @@ export async function commitCanonicalFinancialDepositCapture(
   return withCanonicalWriterQueue(store.databasePath, () =>
     commitOnce(store, capture),
   );
+}
+
+/** Commit a provider's already-admitted account captures as one SQLite unit.
+ * A collision or overwrite in any later account rolls the entire batch back. */
+export async function commitCanonicalFinancialDepositCaptureBatch(
+  store: CanonicalFinancialDepositWriterStore,
+  captures: readonly CanonicalFinancialDepositValidatedCapture[],
+): Promise<CanonicalFinancialDepositCommitResult[]> {
+  if (captures.length === 0)
+    throw new Error("Financial deposit capture batch cannot be empty.");
+  return withCanonicalWriterQueue(store.databasePath, () => {
+    for (const capture of captures) {
+      if (!hasValidatedBrand(capture))
+        throw new CanonicalFinancialDepositConflictError(
+          "Financial deposit batch contains a capture outside the runtime-validated seam.",
+        );
+      validateCapture(capture);
+    }
+    store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const results = captures.map((capture) =>
+        commitOnce(store, capture, false),
+      );
+      store.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      try {
+        store.db.exec("ROLLBACK");
+      } catch {
+        /* preserve original failure */
+      }
+      throw error;
+    }
+  });
 }

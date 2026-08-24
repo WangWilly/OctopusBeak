@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -8,7 +9,27 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  admitSinopacDomesticDepositFinancialCapture,
+  admitSinopacStatementCaptureEvidence,
+  commitCanonicalSinopacDomesticDepositCaptureBatch,
+  createSinopacPersonalAuthority,
+  commitSinopacStatementSourceEvidenceBatch,
+  getSinopacHumanAttestedV1Manifest,
+  recordInitialSinopacHumanAttestationIfMissing,
+  SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+  type SinopacStatementCaptureEvidence,
+  type SinopacStatementValidatedCapture,
+} from "../ledger/canonical/sinopac-domestic-deposit.ts";
+import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { SINOPAC_CAPTCHA_INPUT_SELECTOR } from "../lib/automation/sinopac-captcha.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
 const TRANSACTION_URL =
@@ -61,6 +82,14 @@ const outputSchema = z.object({
   count: z.number().int().nonnegative(),
   rowCount: z.number().int().nonnegative(),
   downloads: z.array(downloadSchema),
+  skippedAccounts: z.array(
+    z.object({
+      accountId: z.string(),
+      currency: z.string(),
+      reason: z.literal("provider-explicit-no-data"),
+    }),
+  ),
+  status: z.enum(["source-only", "financial-admitted"]),
 });
 
 type SinopacCredentials = {
@@ -73,14 +102,17 @@ type Input = z.infer<typeof inputSchema> & {
   credentials: SinopacCredentials;
 };
 
-type DateRange = {
+export type DateRange = {
   startDate: string;
   endDate: string;
 };
 
-type SinopacDownload = z.infer<typeof downloadSchema>;
+export type SinopacDownload = z.infer<typeof downloadSchema>;
+type SinopacSkippedAccount = z.infer<
+  typeof outputSchema
+>["skippedAccounts"][number];
 
-type SinopacAccount = {
+export type SinopacAccount = {
   DataText?: string;
   DataValue?: string;
   DisplayText?: string;
@@ -92,12 +124,29 @@ type SinopacAccountResponse = {
   SubInfo?: SinopacAccount[];
 };
 
-type SinopacTransactionResponse = {
+export type SinopacTransactionResponse = {
   Header?: string;
   Message?: string;
   MaxMonth?: string;
   RecordCount?: string;
   SubInfo?: SinopacRawTransactionRow[];
+};
+
+export type SinopacStatementsRunDependencies = {
+  readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
+  queryTransactions?: (
+    account: SinopacAccount,
+    dateRange: DateRange,
+    businessDate: string,
+  ) => Promise<SinopacTransactionResponse>;
+  writeStatementFile?: (
+    account: SinopacAccount,
+    queryPeriods: string[],
+    rows: SinopacStatementRow[],
+  ) => Promise<SinopacDownload>;
+  canonicalSourceLedgerDir?: string;
+  /** Financial mutation is opt-in and never falls back to a generic ledger. */
+  canonicalFinancialLedgerDir?: string;
 };
 
 type SinopacRawTransactionRow = {
@@ -118,6 +167,21 @@ export type SinopacStatementRow = {
   sortKey: string;
   values: string[];
 };
+
+export const SINOPAC_LOGIN_URL = LOGIN_URL;
+
+/** Whether Libretto's preloaded startUrl is already the login entry page. */
+export function sinopacLoginEntryUrl(href: string): boolean {
+  try {
+    const current = new URL(href);
+    const entry = new URL(LOGIN_URL);
+    return (
+      current.origin === entry.origin && current.pathname === entry.pathname
+    );
+  } catch {
+    return false;
+  }
+}
 
 let lastTimestamp = 0;
 
@@ -217,21 +281,30 @@ function resolveDateRange(input: z.infer<typeof inputSchema>): DateRange {
 
 export function sinopacQueryWindows(
   dateRange: DateRange,
-  maxMonths = 3,
+  maxMonths = 1,
 ): DateRange[] {
+  // Keep the low-level argument for compatibility, but never permit a
+  // provider request wider than one calendar month.
+  const windowMonths =
+    Number.isSafeInteger(maxMonths) && maxMonths > 0
+      ? Math.min(maxMonths, 1)
+      : 1;
   const firstStart = dateFromYYYYMMDD(dateRange.startDate);
   let end = dateFromYYYYMMDD(dateRange.endDate);
   const windows: DateRange[] = [];
 
   while (end >= firstStart) {
-    const maxStart = addMonths(end, -maxMonths);
+    const maxStart = addMonths(end, -windowMonths);
     const start = maxStart > firstStart ? maxStart : firstStart;
     windows.push({
       startDate: formatYYYYMMDD(start),
       endDate: formatYYYYMMDD(end),
     });
     if (formatYYYYMMDD(start) === dateRange.startDate) break;
-    end = start;
+    // Keep adjacent provider requests disjoint.  A transaction at a window
+    // boundary is therefore never replayed merely because the provider
+    // accepts inclusive start/end dates.
+    end = addDays(start, -1);
   }
 
   return windows;
@@ -253,14 +326,15 @@ function amountColumns(value: string | undefined): [string, string] {
   return ["", amount];
 }
 
-function compareRowsDesc(left: SinopacStatementRow, right: SinopacStatementRow) {
+function compareRowsDesc(
+  left: SinopacStatementRow,
+  right: SinopacStatementRow,
+) {
   return right.sortKey.localeCompare(left.sortKey);
 }
 
-function dedupeRows(rows: SinopacStatementRow[]): SinopacStatementRow[] {
-  return Array.from(
-    new Map(rows.map((row) => [row.values.join("\u001f"), row])).values(),
-  ).sort(compareRowsDesc);
+function sortRows(rows: SinopacStatementRow[]): SinopacStatementRow[] {
+  return [...rows].sort(compareRowsDesc);
 }
 
 export function sinopacApiRowsToStatementRows(
@@ -312,7 +386,21 @@ function matchesFilters(account: SinopacAccount, filters: string[]): boolean {
   return filters.some((filter) => haystack.includes(filter.toLowerCase()));
 }
 
-function filterAccounts(
+export function sinopacSortAccounts(
+  accounts: readonly SinopacAccount[],
+): SinopacAccount[] {
+  return [...accounts].sort((left, right) => {
+    const currencyOrder = accountCurrency(left).localeCompare(
+      accountCurrency(right),
+    );
+    if (currencyOrder !== 0) return currencyOrder;
+    const idOrder = accountId(left).localeCompare(accountId(right));
+    if (idOrder !== 0) return idOrder;
+    return accountLabel(left).localeCompare(accountLabel(right));
+  });
+}
+
+export function sinopacFilterAccounts(
   accounts: SinopacAccount[],
   accountFilters: string[],
   currencyFilters: string[],
@@ -320,19 +408,25 @@ function filterAccounts(
   const currencies = new Set(
     currencyFilters.map((currency) => currency.toUpperCase()),
   );
-  return accounts.filter((account) => {
-    const currency = accountCurrency(account);
-    return (
-      accountId(account) &&
-      accountLabel(account) &&
-      matchesFilters(account, accountFilters) &&
-      (currencies.size === 0 || currencies.has(currency))
-    );
-  });
+  return sinopacSortAccounts(
+    accounts.filter((account) => {
+      const currency = accountCurrency(account);
+      return (
+        accountId(account) &&
+        accountLabel(account) &&
+        matchesFilters(account, accountFilters) &&
+        (currencies.size === 0 || currencies.has(currency))
+      );
+    }),
+  );
 }
 
-function accountListFromResponse(response: SinopacAccountResponse[]): SinopacAccount[] {
+function accountListFromResponse(
+  response: SinopacAccountResponse[],
+): SinopacAccount[] {
   const result = response[0];
+  if (result?.Header === "FAIL" && cleanText(result.Message) === "查無資料")
+    return [];
   if (result?.Header !== "SUCCESS") {
     throw new Error(
       `SinoPac account list failed: ${result?.Message ?? "unknown"}`,
@@ -401,10 +495,12 @@ async function dismissPasswordExpiryNotice(page: Page): Promise<void> {
     const dismiss = page.locator(selector).first();
     if (await dismiss.isVisible({ timeout: 5_000 }).catch(() => false)) {
       await dismiss.click();
-      await dismiss.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {});
-      await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(
-        () => {},
-      );
+      await dismiss
+        .waitFor({ state: "hidden", timeout: 10_000 })
+        .catch(() => {});
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: 10_000 })
+        .catch(() => {});
       return;
     }
   }
@@ -414,21 +510,30 @@ async function fillLoginForm(
   page: Page,
   credentials: SinopacCredentials,
 ): Promise<void> {
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  // Libretto preloads startUrl before the handler.  Only navigate when a CDP
+  // attachment or a signed-out page is elsewhere, avoiding duplicate login
+  // requests on normal workflow launches.
+  if (!sinopacLoginEntryUrl(page.url())) {
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  } else {
+    await page.waitForLoadState("domcontentloaded", { timeout: 60_000 });
+  }
   await page.locator("form#aspnetForm").waitFor({ timeout: 60_000 });
 
-  const loginInputs = page.locator("input.selectable:visible, input.tips:visible");
+  const loginInputs = page.locator(
+    "input.selectable:visible, input.tips:visible",
+  );
 
-  await loginInputs.first().fill(requireCredential(credentials, "sinopac_user_id"));
-  await loginInputs.nth(1).fill(
-    requireCredential(credentials, "sinopac_account"),
-  );
-  await loginInputs.nth(2).fill(
-    requireCredential(credentials, "sinopac_password"),
-  );
-  const captcha = page
-    .locator('input[placeholder="驗證碼"], input[id$="sino_keyword3"]')
-    .first();
+  await loginInputs
+    .first()
+    .fill(requireCredential(credentials, "sinopac_user_id"));
+  await loginInputs
+    .nth(1)
+    .fill(requireCredential(credentials, "sinopac_account"));
+  await loginInputs
+    .nth(2)
+    .fill(requireCredential(credentials, "sinopac_password"));
+  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
   await captcha.fill("");
   await captcha.focus();
 }
@@ -439,16 +544,32 @@ async function signInSinopac(
 ): Promise<void> {
   const { page, session } = ctx;
   await fillLoginForm(page, credentials);
-  const captcha = page
-    .locator('input[placeholder="驗證碼"], input[id$="sino_keyword3"]')
-    .first();
+  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
   await emitHumanAssistanceStage({
     stageId: "sinopac-login-captcha",
     title: "Enter the SinoPac CAPTCHA",
-    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "sinopac.login.captcha-input", modes: ["click", "type"], locator: captcha }],
-    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "sinopac.login.captcha-challenge" }],
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "sinopac.login.captcha-input",
+        modes: ["click", "type"],
+        locator: captcha,
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "sinopac.login.captcha-challenge",
+      },
+    ],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
   });
 
   console.log(sinopacManualAuthMessage(session));
@@ -473,7 +594,9 @@ async function openTransactionPage(page: Page): Promise<SinopacAccount[]> {
         response.request().method() === "POST",
       { timeout: 60_000 },
     )
-    .then(async (response) => (await response.json()) as SinopacAccountResponse[]);
+    .then(
+      async (response) => (await response.json()) as SinopacAccountResponse[],
+    );
   const detailLink = page
     .locator('a[title="往來明細"], a[href*="mma_transdetail"]')
     .first();
@@ -482,7 +605,9 @@ async function openTransactionPage(page: Page): Promise<SinopacAccount[]> {
   } else {
     await page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" });
   }
-  await page.locator("#StartDate").waitFor({ state: "visible", timeout: 60_000 });
+  await page
+    .locator("#StartDate")
+    .waitFor({ state: "visible", timeout: 60_000 });
   return accountListFromResponse(await accountResponse);
 }
 
@@ -505,9 +630,11 @@ class SinopacApiClient {
           status: number;
           responseText: string;
         };
-        const Xhr = (globalThis as unknown as {
-          XMLHttpRequest: new () => BrowserXhr;
-        }).XMLHttpRequest;
+        const Xhr = (
+          globalThis as unknown as {
+            XMLHttpRequest: new () => BrowserXhr;
+          }
+        ).XMLHttpRequest;
         return await new Promise((resolve, reject) => {
           const request = new Xhr();
           request.open("POST", path, true);
@@ -531,7 +658,8 @@ class SinopacApiClient {
               reject(error);
             }
           };
-          request.onerror = () => reject(new Error(`Network error for ${path}`));
+          request.onerror = () =>
+            reject(new Error(`Network error for ${path}`));
           request.send(bodyText);
         });
       },
@@ -558,6 +686,8 @@ class SinopacApiClient {
       body,
     );
     const result = response[0];
+    if (result?.Header === "FAIL" && cleanText(result.Message) === "查無資料")
+      return [];
     if (result?.Header !== "SUCCESS") {
       throw new Error(
         `SinoPac account list failed: ${result?.Message ?? "unknown"}`,
@@ -589,9 +719,12 @@ class SinopacApiClient {
     );
     const result = response[0];
     if (!result) throw new Error("SinoPac transaction response was empty.");
-    if (result.Header === "FAIL" && result.Message === "查無資料") return result;
+    if (result.Header === "FAIL" && cleanText(result.Message) === "查無資料")
+      return result;
     if (result.Header !== "SUCCESS") {
-      throw new Error(`SinoPac transactions failed: ${result.Message ?? "unknown"}`);
+      throw new Error(
+        `SinoPac transactions failed: ${result.Message ?? "unknown"}`,
+      );
     }
     return result;
   }
@@ -652,37 +785,252 @@ async function writeStatementFiles(
   };
 }
 
-async function downloadSinopacStatements(
+type PendingSinopacDownload = {
+  account: SinopacAccount;
+  queryPeriods: string[];
+  rows: SinopacStatementRow[];
+};
+
+function emptySinopacDigest(): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("base64url")}`;
+}
+
+function buildSinopacCapture(
+  account: SinopacAccount,
+  dateRange: DateRange,
+  observedAt: string,
+  pending: PendingSinopacDownload,
+  providerNoData: boolean,
+): SinopacStatementCaptureEvidence {
+  const currency = accountCurrency(account);
+  const product = currency === "TWD" ? "domestic-deposit" : "foreign-currency";
+  const csv = sinopacStatementRowsToCsv(pending.rows);
+  const hasRows = pending.rows.length > 0;
+  return {
+    evidenceVersion: "capture-evidence-v1",
+    source: "sinopac",
+    product,
+    providerGuaranteed: false,
+    observedAt,
+    account: {
+      value: accountId(account),
+      label: accountLabel(account),
+      currency,
+    },
+    queryRange: dateRange,
+    downloads: [
+      {
+        filename: hasRows
+          ? "sinopac-statement-export.csv"
+          : "provider-no-data.csv",
+        byteLength: hasRows ? Buffer.byteLength(csv) : 0,
+        contentDigest: hasRows
+          ? `sha256:${createHash("sha256").update(csv).digest("base64url")}`
+          : emptySinopacDigest(),
+        columnNames: SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+        rows: pending.rows.map((row, rowOrdinal) => ({
+          rowOrdinal,
+          values: row.values,
+        })),
+        queryPeriods: pending.queryPeriods,
+        terminal: true,
+      },
+    ],
+    ...(hasRows || !providerNoData
+      ? {}
+      : { zeroResultAuthority: "provider-explicit-no-data" as const }),
+    provenance: {
+      source: "sinopac-mma-json-statement-query",
+      responseBodyRetained: false,
+      semantics: "unresolved",
+      accountEndpoint: "ws_debitacct.ashx",
+      transactionEndpoint: "ws_transdetailMerge.ashx",
+    },
+  };
+}
+
+function sinopacCaptureId(observedAt: string): string {
+  return `sinopac-source-${createHash("sha256")
+    .update(`sinopac-source-capture-v1\0${observedAt}`)
+    .digest("hex")
+    .slice(0, 24)}-${Date.now()}`;
+}
+
+export async function runSinopacStatements(
   page: Page,
   input: z.infer<typeof inputSchema>,
   initialAccounts?: SinopacAccount[],
+  overrides: SinopacStatementsRunDependencies = {},
 ): Promise<z.infer<typeof outputSchema>> {
   const dateRange = resolveDateRange(input);
   const windows = sinopacQueryWindows(dateRange);
   const apiClient = new SinopacApiClient(page);
-  const accounts = filterAccounts(
-    initialAccounts ?? (await apiClient.fetchAccounts(dateRange)),
+  const accounts = sinopacFilterAccounts(
+    initialAccounts ??
+      (await (
+        overrides.readAccounts ?? ((range) => apiClient.fetchAccounts(range))
+      )(dateRange)),
     input.accountFilters,
     input.currencyFilters,
   );
 
   if (accounts.length === 0) {
-    throw new Error("No SinoPac accounts matched accountFilters/currencyFilters.");
+    if (
+      input.accountFilters.length === 0 &&
+      input.currencyFilters.length === 0
+    ) {
+      throw new StatementComponentAbsentError(
+        "SinoPac did not expose any bank account or currency for this login.",
+      );
+    }
+    throw new Error(
+      "No SinoPac accounts matched accountFilters/currencyFilters.",
+    );
+  }
+
+  const observedAt = new Date().toISOString();
+  const captureInputs: Array<{
+    capture: SinopacStatementValidatedCapture;
+    pending: PendingSinopacDownload;
+  }> = [];
+  const skippedAccounts: SinopacSkippedAccount[] = [];
+  for (const account of accounts) {
+    const rows: SinopacStatementRow[] = [];
+    let explicitNoData = true;
+    for (const window of windows) {
+      const response = await (
+        overrides.queryTransactions ??
+        ((candidate, range, businessDate) =>
+          apiClient.fetchTransactions(candidate, range, businessDate))
+      )(account, window, dateRange.endDate);
+      const windowRows = sinopacApiRowsToStatementRows(response.SubInfo ?? []);
+      if (
+        response.Header !== "FAIL" ||
+        cleanText(response.Message) !== "查無資料"
+      )
+        explicitNoData = false;
+      rows.push(...windowRows);
+    }
+    const pending: PendingSinopacDownload = {
+      account,
+      queryPeriods: windows.map(queryPeriod),
+      rows: sortRows(rows),
+    };
+    const structural = admitSinopacStatementCaptureEvidence(
+      buildSinopacCapture(
+        account,
+        dateRange,
+        observedAt,
+        pending,
+        explicitNoData,
+      ),
+    );
+    if (structural.status !== "admissible" || !structural.capture) {
+      throw new Error(
+        `SinoPac statement source admission blocked: ${structural.diagnostics.join(", ")}`,
+      );
+    }
+    captureInputs.push({ capture: structural.capture, pending });
+    if (explicitNoData) {
+      skippedAccounts.push({
+        accountId: accountId(account),
+        currency: accountCurrency(account),
+        reason: "provider-explicit-no-data",
+      });
+    }
+  }
+
+  // Commit only after every provider account reached a terminal result.  This
+  // prevents a later timeout/parser failure from leaving a partial source run.
+  const sourceLedgerDir =
+    overrides.canonicalSourceLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
+  const sourceStore = createCanonicalSourceStore(
+    canonicalSqlitePath(sourceLedgerDir),
+  );
+  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
+  const financialStore = financialLedgerDir
+    ? canonicalSqlitePath(financialLedgerDir) ===
+      canonicalSqlitePath(sourceLedgerDir)
+      ? sourceStore
+      : createCanonicalSourceStore(canonicalSqlitePath(financialLedgerDir))
+    : null;
+  const financialWriter: CanonicalFinancialDepositWriterStore | null =
+    financialStore
+      ? {
+          db: financialStore.db,
+          databasePath: financialStore.databasePath,
+          commitClock: () => financialStore.commitClock(),
+        }
+      : null;
+  let status: "source-only" | "financial-admitted" = "source-only";
+  try {
+    await commitSinopacStatementSourceEvidenceBatch(
+      sourceStore,
+      captureInputs.map(({ capture }) => capture),
+      sinopacCaptureId(observedAt),
+    );
+    if (financialWriter) {
+      const manifest = getSinopacHumanAttestedV1Manifest();
+      recordInitialSinopacHumanAttestationIfMissing(
+        financialWriter.db,
+        observedAt,
+      );
+      const personalAuthority = createSinopacPersonalAuthority(
+        financialWriter.db,
+      );
+      const financialInputs = captureInputs.flatMap(({ capture }, index) =>
+        capture.product === "domestic-deposit"
+          ? [
+              {
+                capture,
+                captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
+                humanAttestation: manifest,
+                personalAuthority,
+              },
+            ]
+          : [],
+      );
+      const admissions = financialInputs.map((input) =>
+        admitSinopacDomesticDepositFinancialCapture(input),
+      );
+      const blocked = admissions.find(
+        (admission) => admission.status !== "admitted",
+      );
+      if (blocked)
+        throw new Error(
+          `SinoPac domestic deposit financial admission failed: ${blocked.diagnostics.join(", ")}`,
+        );
+      if (financialInputs.length > 0) {
+        await commitCanonicalSinopacDomesticDepositCaptureBatch(
+          financialWriter,
+          financialInputs,
+        );
+        if (
+          admissions.some(
+            (admission) => (admission.capture?.records.length ?? 0) > 0,
+          )
+        )
+          status = "financial-admitted";
+      }
+    }
+  } finally {
+    if (financialStore && financialStore !== sourceStore)
+      financialStore.close();
+    sourceStore.close();
   }
 
   const downloads: SinopacDownload[] = [];
-  for (const account of accounts) {
-    const rows: SinopacStatementRow[] = [];
-    for (const window of windows) {
-      const response = await apiClient.fetchTransactions(
-        account,
-        window,
-        dateRange.endDate,
-      );
-      rows.push(...sinopacApiRowsToStatementRows(response.SubInfo ?? []));
-    }
+  for (const { pending } of captureInputs) {
+    if (pending.rows.length === 0) continue;
     downloads.push(
-      await writeStatementFiles(account, windows.map(queryPeriod), dedupeRows(rows)),
+      await (overrides.writeStatementFile ?? writeStatementFiles)(
+        pending.account,
+        pending.queryPeriods,
+        pending.rows,
+      ),
     );
   }
 
@@ -691,10 +1039,13 @@ async function downloadSinopacStatements(
     count: downloads.length,
     rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
     downloads,
+    skippedAccounts,
+    status,
   };
 }
 
 export default workflow("sinopacStatements", {
+  startUrl: LOGIN_URL,
   credentials: ["sinopac_user_id", "sinopac_account", "sinopac_password"],
   input: inputSchema,
   output: outputSchema,
@@ -718,7 +1069,10 @@ export default workflow("sinopacStatements", {
 
     console.log("automation-progress: 25");
     const accounts = await openTransactionPage(page);
-    const result = await downloadSinopacStatements(page, input, accounts);
+    const result = await runSinopacStatements(page, input, accounts, {
+      canonicalFinancialLedgerDir:
+        process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+    });
     console.log("automation-progress: 100");
     return result;
   },

@@ -64,6 +64,11 @@ assert.deepEqual(hncbStatements.command, [
   "--headless",
 ]);
 assert.deepEqual(
+  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "sinopac")
+    ?.statementTypes,
+  [{ id: "accounts" }],
+);
+assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")
     ?.statementTypes,
   [{ id: "deposit" }, { id: "credit_card" }, { id: "loan" }],
