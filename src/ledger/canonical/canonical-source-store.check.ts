@@ -645,6 +645,10 @@ try {
   );
   assert.match(
     migratedRevisionSchema,
+    /sinopac\/domestic-deposit\/human-attested-v1/,
+  );
+  assert.match(
+    migratedRevisionSchema,
     /CHECK\(semantic_rule_version IN .*synthetic-%/,
   );
   assert.match(
@@ -690,11 +694,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -702,7 +706,7 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);

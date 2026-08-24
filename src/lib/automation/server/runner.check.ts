@@ -115,6 +115,50 @@ test("batch starts allow Fubon without a persisted selection", async () => {
   }
 });
 
+test("manual SinoPac starts ignore persisted statement selection", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-sinopac-selection-"));
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    writeFileSync(
+      "settings.json",
+      JSON.stringify({
+        LIBRETTO_CLOUD_SINOPAC_ENABLED: true,
+        LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "stale-account-selection",
+      }),
+    );
+    assert.doesNotThrow(() => startAutomationTask("sinopac-statements", dir));
+    await settleStartedTask("sinopac-statements");
+    assert.equal(hasActiveAutomationTask(), false);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("batch starts allow SinoPac without a persisted selection", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-sinopac-batch-"));
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    writeFileSync(
+      "settings.json",
+      JSON.stringify({
+        LIBRETTO_CLOUD_SINOPAC_ENABLED: true,
+        LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "accounts,retired_type",
+      }),
+    );
+    assert.doesNotThrow(() =>
+      startAutomationTasks(["exchange-rates", "sinopac-statements"], dir),
+    );
+    await settleStartedTask("sinopac-statements");
+    assert.deepEqual(activeAutomationTaskIds(), []);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resume bypasses fresh statement-selection validation", async () => {
   const root = mkdtempSync(join(tmpdir(), "automation-resume-selection-"));
   const binDir = join(root, "bin");

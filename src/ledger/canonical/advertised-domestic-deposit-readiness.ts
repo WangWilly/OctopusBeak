@@ -49,7 +49,11 @@ import {
 } from "./post-domestic-deposit.ts";
 import {
   SINOPAC_DOMESTIC_DEPOSIT_CONTRACT,
+  SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
   SINOPAC_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
+  SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
+  isSinopacHumanAttestationDurablyActive,
   preflightSinopacDomesticDeposit,
 } from "./sinopac-domestic-deposit.ts";
 import {
@@ -520,6 +524,51 @@ export function buildHncbDomesticDepositReadinessFromLedger(
   };
 }
 
+/** Promote SinoPac domestic deposits only after an active durable observed
+ * attestation and a matching financial transaction. Foreign deposits remain
+ * source-only. */
+export function buildSinopacDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("sinopac");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           JOIN capture_scopes scope
+             ON scope.capture_id = capture.capture_id
+           WHERE capture.authority_route = ?
+             AND scope.absence_authority IS NULL`,
+        )
+        .get(SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as { count?: number }
+    ).count ?? 0,
+  );
+  if (durableCaptureCount === 0 || !isSinopacHumanAttestationDurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: SINOPAC_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: SINOPAC_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
 export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
   db: DatabaseSync,
 ): AdvertisedDomesticDepositReadinessGate {
@@ -532,7 +581,9 @@ export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
           ? buildYuantaDomesticDepositReadinessFromLedger(db)
           : entry.sourceId === "hncb"
             ? buildHncbDomesticDepositReadinessFromLedger(db)
-            : entry,
+            : entry.sourceId === "sinopac"
+              ? buildSinopacDomesticDepositReadinessFromLedger(db)
+              : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }

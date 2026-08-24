@@ -1015,7 +1015,7 @@ CREATE TABLE IF NOT EXISTS transaction_time_observations (
   observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16), transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
   revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id), source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), role TEXT NOT NULL CHECK(role IN ('accounting','occurred')),
-  local_value TEXT NOT NULL, time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'), time_precision TEXT NOT NULL CHECK(time_precision IN ('date','second')),
+  local_value TEXT NOT NULL, time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'), time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
   time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'), utc_instant_utc_us INTEGER NOT NULL,
   UNIQUE(revision_id, role)
 );
@@ -1159,19 +1159,23 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
-    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
-    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time'))",
   )
   .replace(
+    "time_precision TEXT NOT NULL CHECK(time_precision = 'second')",
+    "time_precision TEXT NOT NULL CHECK(time_precision IN ('minute','second'))",
+  )
+  .replace(
     "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
-    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2376,6 +2380,11 @@ function validateCathayAuthorityRoute(
             AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1'
             AND registered.integration_namespace = 'hncb'
             AND registered.contract_version = 'human-attested-v1')
+          OR
+          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1'
+            AND registered.integration_namespace = 'sinopac'
+            AND registered.contract_version = 'human-attested-v1')
         )
     )`,
         )
@@ -3310,6 +3319,9 @@ function validateSelectedAssertionProvenance(
           OR
           (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1')
+          OR
+          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1')
         )
     )`,
         )
@@ -4345,10 +4357,12 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /effective_time_rule_version TEXT NOT NULL CHECK\(effective_time_rule_version IN/.test(
       sql,
     ) &&
+    /time_precision TEXT NOT NULL CHECK\(time_precision IN/.test(sql) &&
     /posting_origin LIKE 'synthetic_%'/.test(sql) &&
     /yuanta\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /yuanta\/domestic-deposit\/human-attested-v2/.test(sql) &&
-    /hncb\/domestic-deposit\/human-attested-v1/.test(sql)
+    /hncb\/domestic-deposit\/human-attested-v1/.test(sql) &&
+    /sinopac\/domestic-deposit\/human-attested-v1/.test(sql)
   )
     return;
   const before = Number(
@@ -4373,15 +4387,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
-      time_precision TEXT NOT NULL CHECK(time_precision = 'second'),
+      time_precision TEXT NOT NULL CHECK(time_precision IN ('minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -8319,6 +8333,8 @@ export type CanonicalSourceRecord = {
   contentHash: string;
   compact: Record<string, unknown>;
 };
+export type CanonicalSourceAbsenceAuthority =
+  "comparable-complete-range" | "provider-explicit-no-data";
 export type CanonicalSourceEvidence = {
   captureId: string;
   integrationNamespace: string;
@@ -8336,6 +8352,7 @@ export type CanonicalSourceEvidence = {
     kind: "bounded-range" | "point-in-time";
     completeness: "complete-range" | "single-page";
     ruleVersion: string;
+    absenceAuthority?: CanonicalSourceAbsenceAuthority;
   };
   pages: CanonicalSourcePage[];
   records: CanonicalSourceRecord[];
@@ -8495,6 +8512,12 @@ function validateCanonicalSourceEvidence(
     evidence.scope.kind !== "point-in-time"
   )
     throw new Error("Source scope kind is unsupported.");
+  if (
+    evidence.scope.absenceAuthority !== undefined &&
+    evidence.scope.absenceAuthority !== "comparable-complete-range" &&
+    evidence.scope.absenceAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error("Source absence authority is unsupported.");
   requireSourceText(evidence.scope.ruleVersion, "Completeness rule version");
   if (!Array.isArray(evidence.pages) || evidence.pages.length === 0)
     throw new Error("At least one source page is required.");
@@ -8659,6 +8682,7 @@ function nextSourceKnowledgeTime(store: CanonicalSourceStore): number {
 function commitCanonicalSourceEvidenceOnce(
   store: CanonicalSourceStore,
   evidence: CanonicalValidatedSourceEvidence,
+  transactionBoundary = true,
 ): CanonicalSourceCommitResult {
   if (!hasCanonicalSourceBrand(evidence))
     throw new CanonicalSourceConflictError(
@@ -8666,7 +8690,7 @@ function commitCanonicalSourceEvidenceOnce(
     );
   validateCanonicalSourceEvidence(evidence);
   const db = store.db;
-  db.exec("BEGIN IMMEDIATE");
+  if (transactionBoundary) db.exec("BEGIN IMMEDIATE");
   try {
     if (
       db
@@ -8870,7 +8894,7 @@ function commitCanonicalSourceEvidenceOnce(
       .digest("hex");
     db.prepare(
       `INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, source_subject_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id)
-      VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 'contract-versioned-source-evidence', ?, NULL, ?, ?, ?, 1, ?)`,
+      VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 'contract-versioned-source-evidence', ?, ?, ?, ?, ?, 1, ?)`,
     ).run(
       scopeId,
       captureId,
@@ -8883,6 +8907,7 @@ function commitCanonicalSourceEvidenceOnce(
       evidence.scope.kind,
       evidence.scope.completeness,
       evidence.scope.ruleVersion,
+      evidence.scope.absenceAuthority ?? null,
       contractFingerprint,
       preflightFingerprint,
       evidence.pages.length,
@@ -8940,7 +8965,7 @@ function commitCanonicalSourceEvidenceOnce(
         "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
       ).run(sourceRecordId, captureId, commitId);
     }
-    db.exec("COMMIT");
+    if (transactionBoundary) db.exec("COMMIT");
     return {
       status: CANONICAL_SOURCE_STAGE,
       canonicalAdmission: CANONICAL_SOURCE_ADMISSION,
@@ -8958,10 +8983,12 @@ function commitCanonicalSourceEvidenceOnce(
       ),
     };
   } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* preserve original error */
+    if (transactionBoundary) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* preserve original error */
+      }
     }
     throw error;
   }
@@ -8973,6 +9000,35 @@ export function commitCanonicalSourceEvidence(
   return withCanonicalWriterQueue(store.databasePath, () =>
     commitCanonicalSourceEvidenceOnce(store, evidence),
   );
+}
+
+/** Commit several already-admitted source captures as one visibility unit.
+ * Every capture is validated and written under the same SQLite transaction, so
+ * a later conflict or storage error leaves no earlier capture durable. */
+export function commitCanonicalSourceEvidenceBatch(
+  store: CanonicalSourceStore,
+  evidences: readonly CanonicalValidatedSourceEvidence[],
+): Promise<CanonicalSourceCommitResult[]> {
+  if (evidences.length === 0)
+    throw new Error("Canonical source evidence batch cannot be empty.");
+  return withCanonicalWriterQueue(store.databasePath, () => {
+    const db = store.db;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const results = evidences.map((evidence) =>
+        commitCanonicalSourceEvidenceOnce(store, evidence, false),
+      );
+      db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* preserve original error */
+      }
+      throw error;
+    }
+  });
 }
 function canonicalSourceObservationRows(
   store: CanonicalSourceStore,

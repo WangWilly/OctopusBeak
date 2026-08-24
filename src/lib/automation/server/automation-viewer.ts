@@ -10,11 +10,17 @@ import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../yuanta-trade-captcha.ts";
+import {
+  SINOPAC_CAPTCHA_INPUT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+} from "../sinopac-captcha.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 };
 
 export type ViewerInput =
@@ -431,6 +437,43 @@ export async function refreshCathayEmailOtpTarget(
   return refreshTargetRect(contract, "cathay.login.email-otp-input", rect);
 }
 
+async function visibleSinopacCaptchaInput(page: Page) {
+  const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
+  const count = await input.count().catch(() => 0);
+  if (count !== 1) {
+    throw new Error("SinoPac CAPTCHA input is missing or ambiguous.");
+  }
+  if (!await input.isVisible().catch(() => false)) {
+    throw new Error("SinoPac CAPTCHA input is not visible.");
+  }
+  const rect = await input.boundingBox().catch(() => null);
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    throw new Error("SinoPac CAPTCHA input is not visible.");
+  }
+  return { input, rect };
+}
+
+export async function refreshSinopacCaptchaTargetFromPage(
+  page: Page,
+  contract: HumanAssistanceContract,
+): Promise<HumanAssistanceContractInput | null> {
+  if (!contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)) {
+    return null;
+  }
+  const { rect } = await visibleSinopacCaptchaInput(page);
+  return refreshTargetRect(contract, SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, rect);
+}
+
+export async function refreshSinopacCaptchaTarget(
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<HumanAssistanceContractInput | null> {
+  if (!contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)) {
+    return null;
+  }
+  return withPausedPage(session, (page) => refreshSinopacCaptchaTargetFromPage(page, contract));
+}
+
 export async function inspectHumanAssistanceCompletion(
   session: string,
   contract: HumanAssistanceContract,
@@ -599,6 +642,11 @@ async function fillHumanVerificationTarget(
   text: string,
 ): Promise<boolean> {
   if (!target.rect) throw new Error("Human verification target is not currently resolved.");
+  if (target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID) {
+    const { input } = await visibleSinopacCaptchaInput(page);
+    await input.fill(text);
+    return true;
+  }
   const element = await editableElementAtViewerPoint(page.mainFrame(), focusPointForViewerRect(target.rect));
   if (!element) return false;
   try {
@@ -616,7 +664,12 @@ async function sendNormalizedViewerInput(
 ) {
   await withPausedPage(session, async (page) => {
     if (input.type === "click") {
-      await page.mouse.click(input.x, input.y);
+      if (target?.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID) {
+        const { input: captcha } = await visibleSinopacCaptchaInput(page);
+        await captcha.click();
+      } else {
+        await page.mouse.click(input.x, input.y);
+      }
     } else if (input.type === "drag") {
       await page.mouse.move(input.x, input.y);
       await page.mouse.down();
