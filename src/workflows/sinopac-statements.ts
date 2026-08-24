@@ -384,17 +384,28 @@ export function buildSinopacForeignCurrencyCaptureInput(
   rows: readonly SinopacStatementRow[],
   dateRange: DateRange,
   observedAt = new Date().toISOString(),
+  captureOccurrenceId = "",
+  zeroResultAuthority?: "provider-explicit-no-data",
 ): ForeignCurrencyDepositCaptureInput {
   const accountNo = accountId(account);
   const currency = accountCurrency(account);
   if (!accountNo || !currency || currency === "TWD")
     throw new Error("SinoPac foreign capture requires a source-proven non-TWD account.");
+  if (
+    rows.length === 0 &&
+    zeroResultAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error(
+      "SinoPac foreign empty capture requires provider-explicit-no-data terminal evidence.",
+    );
   return {
     source: "sinopac",
     accountNo,
     sourceConnectionKey: "sinopac-foreign-current-login",
     identityEpochKey: "sinopac-foreign-current-identity",
     accountType: "depository",
+    captureOccurrenceId,
+    zeroResultAuthority,
     observedAt,
     startDate: formatSlashDate(dateRange.startDate).replaceAll("/", "-"),
     endDate: formatSlashDate(dateRange.endDate).replaceAll("/", "-"),
@@ -956,6 +967,7 @@ export async function runSinopacStatements(
   }
 
   const observedAt = new Date().toISOString();
+  const captureOccurrenceId = sinopacCaptureId(observedAt);
   const captureInputs: Array<{
     capture: SinopacStatementValidatedCapture;
     pending: PendingSinopacDownload;
@@ -1037,7 +1049,7 @@ export async function runSinopacStatements(
     await commitSinopacStatementSourceEvidenceBatch(
       sourceStore,
       captureInputs.map(({ capture }) => capture),
-      sinopacCaptureId(observedAt),
+      captureOccurrenceId,
     );
     if (financialWriter) {
       const manifest = getSinopacHumanAttestedV1Manifest();
@@ -1083,13 +1095,19 @@ export async function runSinopacStatements(
           status = "financial-admitted";
       }
       const foreignInputs = captureInputs.flatMap(({ capture, pending }) =>
-        capture.product === "foreign-currency" && pending.rows.length > 0
+        capture.product === "foreign-currency" &&
+        (pending.rows.length > 0 ||
+          capture.zeroResultAuthority === "provider-explicit-no-data")
           ? [
               buildSinopacForeignCurrencyCaptureInput(
                 pending.account,
                 pending.rows,
                 dateRange,
                 observedAt,
+                captureOccurrenceId,
+                capture.zeroResultAuthority === "provider-explicit-no-data"
+                  ? "provider-explicit-no-data"
+                  : undefined,
               ),
             ]
           : [],
