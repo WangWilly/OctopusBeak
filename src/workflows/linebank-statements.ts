@@ -759,16 +759,16 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
       const signedBalanceAfter = exactLinebankAmount(row.afTxBal, "balance");
       if (row.dpstWdrwDsCd !== "1" && row.dpstWdrwDsCd !== "2")
         throw new Error("LINE Bank foreign row lacks an explicit direction.");
-      if (row.dpstWdrwDsCd === "1" && signedAmount.startsWith("-"))
-        throw new Error("LINE Bank foreign amount sign conflicts with inflow direction.");
+      if (signedAmount.startsWith("-"))
+        throw new Error("LINE Bank foreign amount must be an unsigned exact magnitude; direction is separate evidence.");
       if (signedBalanceAfter.startsWith("-"))
         throw new Error("LINE Bank foreign negative balance is unsupported by the canonical contract.");
-      const amount = signedAmount.replace(/^-/, "");
+      const amount = signedAmount;
       const balanceAfter = signedBalanceAfter;
       const transactionDate = cleanText(row.txDt).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const transactionTime = formatTime(row.txTm);
       return {
-        sourceKey: `${accountNo}:${currency}:${String(row.txSeqNbr)}:${String(row.crrnDpstNthCnt)}`,
+        sourceKey: `${accountNo}:${currency}:${String(row.txSeqNbr)}:${String(row.crrnDpstNthCnt)}:${String(row.txDtm)}`,
         sequence: String(row.txSeqNbr),
         amount,
         direction: row.dpstWdrwDsCd === "1" ? "inflow" : "outflow",
@@ -780,6 +780,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
         sourcePayload: {
           transactionSequence: String(row.txSeqNbr),
           occurrenceCounter: String(row.crrnDpstNthCnt),
+          transactionEpochMilliseconds: String(row.txDtm),
           functionCode: row.bizTxFuncTpCd ?? "",
           transactionId: row.fxsTxId ?? "",
           signedAmount,

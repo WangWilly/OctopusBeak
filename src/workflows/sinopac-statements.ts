@@ -398,6 +398,7 @@ export function buildSinopacForeignCurrencyCaptureInput(
     throw new Error(
       "SinoPac foreign empty capture requires provider-explicit-no-data terminal evidence.",
     );
+  const duplicateOrdinals = new Map<string, number>();
   return {
     source: "sinopac",
     accountNo,
@@ -418,7 +419,16 @@ export function buildSinopacForeignCurrencyCaptureInput(
       if ((debit.length > 0) === (credit.length > 0))
         throw new Error("SinoPac foreign row must prove exactly one amount direction.");
       const dateValue = transactionDate.replaceAll("/", "-");
-      const sourceKey = `${accountNo}:${currency}:page:0:row:${rowOrdinal}`;
+      const normalizedRowEvidence = row.values.map((value) => cleanText(value));
+      const sourceRecordDigest = createHash("sha256")
+        .update(JSON.stringify({
+          sortKey: cleanText(row.sortKey),
+          values: normalizedRowEvidence,
+        }))
+        .digest("base64url");
+      const duplicateOrdinal = duplicateOrdinals.get(sourceRecordDigest) ?? 0;
+      duplicateOrdinals.set(sourceRecordDigest, duplicateOrdinal + 1);
+      const sourceKey = `${accountNo}:${currency}:record:${sourceRecordDigest}:duplicate:${duplicateOrdinal}`;
       const reportedRate = cleanText(row.values[8]);
       return {
         sourceKey,
@@ -443,6 +453,8 @@ export function buildSinopacForeignCurrencyCaptureInput(
         sourcePayload: {
           pageOrdinal: 0,
           rowOrdinal,
+          sourceRecordDigest,
+          duplicateOrdinal,
           memo: row.values[7] ?? "",
           reportedRate: row.values[8] ?? "",
         },

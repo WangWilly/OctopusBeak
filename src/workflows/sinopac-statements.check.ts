@@ -164,6 +164,20 @@ assert.equal(
   repeatedSinopacObservation.records[0]!.sourceKey,
   duplicateSinopacRows.records[0]!.sourceKey,
 );
+const differentSinopacRowAtSamePosition = buildSinopacForeignCurrencyCaptureInput(
+  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
+  [{
+    sortKey: "2026/08/23 09:10",
+    values: ["2026/08/23", "", "09:10", "different", "5.00", "", "105.00", "other", "31.40"],
+  }],
+  { startDate: "20260801", endDate: "20260823" },
+  "2026-08-24T14:30:00+08:00",
+  "sinopac-foreign-check-different-row",
+);
+assert.notEqual(
+  differentSinopacRowAtSamePosition.records[0]!.sourceKey,
+  repeatedSinopacObservation.records[0]!.sourceKey,
+);
 const sinopacOccurrenceDirectory = await mkdtemp(
   join(tmpdir(), "sinopac-foreign-occurrence-133-"),
 );
@@ -181,9 +195,13 @@ try {
     repeatedSinopacObservation,
   );
   assert.equal(repeatedOccurrenceCommit.provenanceCount, 2);
+  await commitForeignCurrencyDepositCapture(
+    occurrenceStore,
+    differentSinopacRowAtSamePosition,
+  );
   const current = queryForeignCurrencyDepositCurrent(occurrenceStore);
-  assert.equal(current.transactions.length, 2);
-  assert.equal(current.provenanceCount, 3);
+  assert.equal(current.transactions.length, 3);
+  assert.equal(current.provenanceCount, 4);
   occurrenceStore.close();
 } finally {
   await rm(sinopacOccurrenceDirectory, { recursive: true, force: true });
