@@ -380,7 +380,8 @@ export async function runAutomationTaskExecution(
       logPath: execution.logPath,
       ledgerDir,
     };
-    return await finalizeAutomationTaskRun(finalizationContext, result);
+    const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
+    return { status: finalized.status, taskRunId: execution.run.taskRunId };
   } finally {
     activeTaskChildren.delete(task.id);
   }

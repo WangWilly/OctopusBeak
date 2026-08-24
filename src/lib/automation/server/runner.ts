@@ -64,6 +64,7 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
+import { routeWaitingRunVerification } from "./verification-routing.ts";
 
 export { closeLibrettoSession };
 
@@ -421,7 +422,7 @@ export async function runAutomationTask(
   let db: ReturnType<typeof openLedgerDatabase> | null = null;
   try {
     db = openLedgerDatabase(ledgerDir);
-    return await runAutomationTaskExecution(
+    const execution = await runAutomationTaskExecution(
       task,
       db,
       ledgerDir,
@@ -430,6 +431,20 @@ export async function runAutomationTask(
         activeTaskRunIds.set(taskId, taskRunId);
       },
     );
+    if (execution.status === "waiting_for_human") {
+      const routing = await routeWaitingRunVerification({
+        taskId,
+        taskRunId: execution.taskRunId,
+        db,
+        scheduleResume: (session) => {
+          setImmediate(() => {
+            startAutomationResume(taskId, session, ledgerDir);
+          });
+        },
+      });
+      if (routing.kind === "failed") return { status: "failed" as const };
+    }
+    return { status: execution.status };
   } finally {
     activeTaskRunIds.delete(taskId);
     db?.close();

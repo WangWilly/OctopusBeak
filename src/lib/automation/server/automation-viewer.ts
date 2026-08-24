@@ -694,3 +694,54 @@ async function sendNormalizedViewerInput(
     }
   });
 }
+
+export async function captureChallengeImageForContract(
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<Buffer | null> {
+  const rect = contract.challengeImageRegion?.rect;
+  if (!rect) return null;
+  try {
+    return await withPausedPage(session, (page) =>
+      page.screenshot({
+        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        type: "png",
+      }),
+    );
+  } catch (error) {
+    if (viewerScreenshotErrorKind(error) === "unavailable") throw error;
+    return null;
+  }
+}
+
+export async function injectVerificationAnswer(
+  session: string,
+  contract: HumanAssistanceContract,
+  answer: string,
+) {
+  const focusTarget = contract.targets.find(
+    (candidate) =>
+      candidate.id === contract.focus.targetId &&
+      candidate.modes.includes("type"),
+  );
+  const target =
+    focusTarget ??
+    contract.targets.find((candidate) => candidate.modes.includes("type"));
+  if (!target) {
+    throw new Error("Verification contract declares no type target for the solver answer.");
+  }
+  await sendNormalizedViewerInput(session, { type: "type", text: answer }, target);
+}
+
+export async function clickVerificationTarget(
+  session: string,
+  contract: HumanAssistanceContract,
+  targetId: string,
+) {
+  const target = contract.targets.find((candidate) => candidate.id === targetId);
+  if (!target?.rect) {
+    throw new Error("Verification target is not resolved for the solver click.");
+  }
+  const point = focusPointForViewerRect(target.rect);
+  await sendNormalizedViewerInput(session, { type: "click", x: point.x, y: point.y }, target);
+}

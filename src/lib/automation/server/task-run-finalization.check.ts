@@ -17,6 +17,7 @@ import { taskById } from "./tasks.ts";
 import { liveTaskRunUpdate } from "./task-run-execution.ts";
 import {
   finalizeAutomationTaskRun,
+  finalizeFailedWaitingRun,
   finalizePersistedRun,
   type AutomationTaskProcessResult,
   type AutomationTaskRunFinalizationContext,
@@ -168,6 +169,37 @@ test("resume failure remains in flight until task-run finalization completes", a
     const persisted = taskRunById(db, run.taskRunId)!;
     assert.equal(persisted.status, "failed");
     assert.ok(persisted.finishedAt, "failed run must be finalized after its process exits");
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed waiting run finalizes with the solver exhaustion message", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-solver-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-08-08T08:00:00.000Z",
+      logPath: join(ledgerDir, "waiting.log"),
+    });
+    await finalizeFailedWaitingRun(
+      db,
+      taskRunById(db, run.taskRunId)!,
+      "Verification solver exhausted its attempts.",
+    );
+    const persisted = taskRunById(db, run.taskRunId)!;
+    assert.equal(persisted.status, "failed");
+    assert.match(
+      persisted.errorMessage ?? "",
+      /^Verification solver exhausted its attempts\./,
+    );
     db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
