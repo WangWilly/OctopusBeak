@@ -76,8 +76,10 @@
     "d3-force": "^3.0.0",
     "drizzle-orm": "^0.45.2",
     "libretto": "^0.6.45",
+    "onnxruntime-node": "^1.27.0",
     "parse5": "^8.0.1",
     "playwright": "^1.61.0",
+    "pngjs": "^7.0.0",
     "tesseract.js": "^7.0.0",
     "zod": "^4.4.3"
   },
@@ -90,6 +92,7 @@
     "@sveltejs/kit": "^2.68.0",
     "@types/d3-force": "^3.0.10",
     "@types/node": "^26.0.0",
+    "@types/pngjs": "^6.0.5",
     "electron": "^43.0.0",
     "layerchart": "^2.0.0",
     "svelte": "^5.56.4",
