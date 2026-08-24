@@ -45,7 +45,7 @@ const base = {
 
 const usdScopedCapture = createForeignCurrencyDepositCapture({
   ...base,
-  source: "sinopac",
+  source: "yuanta",
   captureCurrencyScope: { kind: "currency", currency: "USD" },
   records: [{
     sourceKey: "scope-usd-row",
@@ -58,7 +58,7 @@ const usdScopedCapture = createForeignCurrencyDepositCapture({
 });
 const jpyScopedCapture = createForeignCurrencyDepositCapture({
   ...base,
-  source: "sinopac",
+  source: "cathay",
   captureCurrencyScope: { kind: "currency", currency: "JPY" },
   records: [{
     sourceKey: "scope-jpy-row",

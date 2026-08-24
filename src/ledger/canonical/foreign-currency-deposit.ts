@@ -23,10 +23,12 @@ export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
  * a required source-proven currency. */
 export const FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY = null;
 
+/** Sources currently advertised for canonical foreign-currency Financial
+ * Transactions. SinoPac remains a source-evidence integration until it can
+ * prove a stable provider transaction identity. */
 export const FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS = [
   "yuanta",
   "cathay",
-  "sinopac",
   "linebank",
 ] as const;
 export type ForeignCurrencyDepositSourceId =
@@ -52,11 +54,6 @@ export const FOREIGN_CURRENCY_DEPOSIT_CONTRACTS: Readonly<
     ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.cathay,
     sourceId: "cathay",
     workflow: "cathayForeignStatements",
-  },
-  sinopac: {
-    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.sinopac,
-    sourceId: "sinopac",
-    workflow: "sinopacStatements",
   },
   linebank: {
     ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.linebank,

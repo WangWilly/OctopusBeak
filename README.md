@@ -66,10 +66,12 @@
 | 華南銀行（HNCB） | 台幣存款 |
 | 中國信託銀行（CTBC） | 台幣存款 |
 | 中華郵政（Post Office） | 台幣存款 |
-| 永豐銀行（SinoPac） | 台幣存款、外幣 |
+| 永豐銀行（SinoPac） | 台幣存款、外幣來源證據（外幣 canonical 交易尚未支援） |
 | LINE Bank | 台幣存款、外幣 |
 | 電子發票（E-Invoice） | 發票與消費品項 |
 | MAX / MaiCoin | 加密資產餘額與交易紀錄 |
+
+SinoPac 外幣對帳單仍可收集並保存為可追溯的來源證據；由於來源尚未證明穩定的交易 identity，系統不會把外幣列升格為 canonical Financial Transaction。外幣 canonical 交易目前只在元大、國泰世華與 LINE Bank 的 advertised readiness 中提供。
 
 ## 資料留在你的裝置
 

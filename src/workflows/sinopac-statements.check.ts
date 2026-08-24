@@ -13,15 +13,9 @@ import {
   sinopacSortAccounts,
   sinopacSignedInPageUrl,
   sinopacStatementRowsToCsv,
-  buildSinopacForeignCurrencyCaptureInput,
   SINOPAC_LOGIN_URL,
 } from "./sinopac-statements.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
-import {
-  admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCapture,
-  queryForeignCurrencyDepositCurrent,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
 
 assert.deepEqual(
   sinopacQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -96,155 +90,6 @@ assert.equal(
   sinopacManualAuthMessage("sinopac-demo"),
   "manual-auth-required: enter the SinoPac CAPTCHA in the browser, then run `npx libretto resume --session sinopac-demo`.",
 );
-
-const sinopacForeignCapture = buildSinopacForeignCurrencyCaptureInput(
-  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
-  [
-    {
-      sortKey: "2026/08/23 09:10",
-      values: [
-        "2026/08/23",
-        "",
-        "09:10",
-        "foreign deposit",
-        "",
-        "10.00",
-        "110.00",
-        "memo",
-        "31.50",
-      ],
-    },
-  ],
-  { startDate: "20260801", endDate: "20260823" },
-  "2026-08-24T12:00:00+08:00",
-  "sinopac-foreign-check-observation-1",
-);
-assert.equal(sinopacForeignCapture.accountType, "depository");
-assert.equal(
-  sinopacForeignCapture.records[0]!.sourceReportedRate?.rate,
-  "31.50",
-);
-assert.deepEqual(
-  admitForeignCurrencyDepositCapture(sinopacForeignCapture).records[0]!
-    .conversionEvidence?.sourceReportedRate?.amount,
-  { coefficient: "315", scale: 1 },
-);
-const duplicateSinopacRows = buildSinopacForeignCurrencyCaptureInput(
-  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
-  [{
-    sortKey: "2026/08/23 09:10",
-    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
-  }, {
-    sortKey: "2026/08/23 09:10",
-    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
-  }],
-  { startDate: "20260801", endDate: "20260823" },
-  "2026-08-24T12:30:00+08:00",
-  "sinopac-foreign-check-duplicates",
-);
-assert.notEqual(
-  duplicateSinopacRows.records[0]!.sourceKey,
-  duplicateSinopacRows.records[1]!.sourceKey,
-);
-assert.deepEqual(
-  duplicateSinopacRows.records.map((record) => record.sourcePayload?.rowOrdinal),
-  [0, 1],
-);
-const repeatedSinopacObservation = buildSinopacForeignCurrencyCaptureInput(
-  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
-  [{
-    sortKey: "2026/08/23 09:10",
-    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
-  }],
-  { startDate: "20260801", endDate: "20260823" },
-  "2026-08-24T13:30:00+08:00",
-  "sinopac-foreign-check-repeat-observation",
-);
-assert.equal(
-  repeatedSinopacObservation.records[0]!.sourceKey,
-  duplicateSinopacRows.records[0]!.sourceKey,
-);
-const differentSinopacRowAtSamePosition = buildSinopacForeignCurrencyCaptureInput(
-  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
-  [{
-    sortKey: "2026/08/23 09:10",
-    values: ["2026/08/23", "", "09:10", "different", "5.00", "", "105.00", "other", "31.40"],
-  }],
-  { startDate: "20260801", endDate: "20260823" },
-  "2026-08-24T14:30:00+08:00",
-  "sinopac-foreign-check-different-row",
-);
-assert.notEqual(
-  differentSinopacRowAtSamePosition.records[0]!.sourceKey,
-  repeatedSinopacObservation.records[0]!.sourceKey,
-);
-const sinopacOccurrenceDirectory = await mkdtemp(
-  join(tmpdir(), "sinopac-foreign-occurrence-133-"),
-);
-try {
-  const occurrenceStore = createCanonicalSourceStore(
-    join(sinopacOccurrenceDirectory, "canonical.sqlite"),
-  );
-  const firstOccurrenceCommit = await commitForeignCurrencyDepositCapture(
-    occurrenceStore,
-    duplicateSinopacRows,
-  );
-  assert.equal(firstOccurrenceCommit.provenanceCount, 2);
-  const repeatedOccurrenceCommit = await commitForeignCurrencyDepositCapture(
-    occurrenceStore,
-    repeatedSinopacObservation,
-  );
-  assert.equal(repeatedOccurrenceCommit.provenanceCount, 2);
-  await commitForeignCurrencyDepositCapture(
-    occurrenceStore,
-    differentSinopacRowAtSamePosition,
-  );
-  const current = queryForeignCurrencyDepositCurrent(occurrenceStore);
-  assert.equal(current.transactions.length, 3);
-  assert.equal(current.provenanceCount, 4);
-  occurrenceStore.close();
-} finally {
-  await rm(sinopacOccurrenceDirectory, { recursive: true, force: true });
-}
-const emptySinopacCapture = buildSinopacForeignCurrencyCaptureInput(
-  { DataText: "USD empty account", DataValue: "003", DisplayText: "USD" },
-  [],
-  { startDate: "20260801", endDate: "20260823" },
-  "2026-08-24T12:00:00+08:00",
-  "sinopac-foreign-check-empty-observation",
-  "provider-explicit-no-data",
-);
-assert.throws(
-  () =>
-    buildSinopacForeignCurrencyCaptureInput(
-      { DataText: "USD ambiguous account", DataValue: "004", DisplayText: "USD" },
-      [],
-      { startDate: "20260801", endDate: "20260823" },
-      "2026-08-24T12:00:00+08:00",
-      "sinopac-foreign-check-ambiguous-empty",
-    ),
-  /no-data|empty|terminal/i,
-);
-const sinopacEmptyDirectory = await mkdtemp(join(tmpdir(), "sinopac-foreign-empty-133-"));
-try {
-  const store = createCanonicalSourceStore(join(sinopacEmptyDirectory, "canonical.sqlite"));
-  const result = await commitForeignCurrencyDepositCapture(
-    store,
-    admitForeignCurrencyDepositCapture(emptySinopacCapture),
-  );
-  assert.equal(result.transactionCount, 0);
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  store.close();
-} finally {
-  await rm(sinopacEmptyDirectory, { recursive: true, force: true });
-}
 
 const sourceDir = await mkdtemp(join(tmpdir(), "sinopac-workflow-source-"));
 try {
@@ -361,8 +206,8 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        2,
-        "both TWD and foreign-currency accounts are financially admitted",
+        1,
+        "only the domestic SinoPac account is financially admitted",
       );
       assert.equal(
         Number(
@@ -374,14 +219,92 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        1,
-        "foreign currency has a canonical financial capture",
+        0,
+        "SinoPac foreign currency remains source-only",
       );
     } finally {
       financialStore.close();
     }
   } finally {
     await rm(financialDir, { recursive: true, force: true });
+  }
+  const foreignOnlyFinancialDir = await mkdtemp(
+    join(tmpdir(), "sinopac-workflow-foreign-source-only-"),
+  );
+  try {
+    const foreignOnlyResult = await runSinopacStatements(
+      {} as never,
+      {
+        startDate: "20260801",
+        endDate: "20260823",
+        accountFilters: [],
+        currencyFilters: [],
+      },
+      [accounts[1]!],
+      {
+        canonicalSourceLedgerDir: sourceDir,
+        canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+        queryTransactions: async () => ({
+          Header: "SUCCESS",
+          SubInfo: [
+            {
+              DataText1: "2026/08/02<br />09:10",
+              DataText2: "2026/08/02",
+              DataText3: "foreign source-only transaction",
+              DataText4: "-100",
+              DataText5: "900",
+            },
+          ],
+        }),
+        writeStatementFile: async (account, queryPeriods, rows) => ({
+          accountId: account.DataValue ?? "",
+          account: account.DataText ?? "",
+          currency: account.DisplayText ?? "",
+          kind: "foreign",
+          queryPeriods,
+          baseName: "foreign-source-only",
+          csvFilename: "foreign-source-only.csv",
+          csvPath: "foreign-source-only.csv",
+          csvBytes: 1,
+          jsonFilename: "foreign-source-only.json",
+          jsonPath: "foreign-source-only.json",
+          jsonBytes: 1,
+          rowCount: rows.length,
+        }),
+      },
+    );
+    assert.equal(foreignOnlyResult.status, "source-only");
+    const foreignOnlyStore = createCanonicalSourceStore(
+      join(foreignOnlyFinancialDir, "canonical.sqlite"),
+    );
+    try {
+      assert.equal(
+        Number(
+          (
+            foreignOnlyStore.db
+              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+      assert.equal(
+        Number(
+          (
+            foreignOnlyStore.db
+              .prepare(
+                "SELECT COUNT(*) AS count FROM source_captures WHERE stream = 'foreign-currency-deposit'",
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+    } finally {
+      foreignOnlyStore.close();
+    }
+  } finally {
+    await rm(foreignOnlyFinancialDir, { recursive: true, force: true });
   }
   const duplicateResult = await runSinopacStatements(
     {} as never,

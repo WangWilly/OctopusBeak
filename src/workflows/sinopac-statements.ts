@@ -25,10 +25,6 @@ import {
 } from "../ledger/canonical/sinopac-domestic-deposit.ts";
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import {
-  commitForeignCurrencyDepositCaptureBatch,
-  type ForeignCurrencyDepositCaptureInput,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
@@ -149,7 +145,8 @@ export type SinopacStatementsRunDependencies = {
     rows: SinopacStatementRow[],
   ) => Promise<SinopacDownload>;
   canonicalSourceLedgerDir?: string;
-  /** Financial mutation is opt-in and never falls back to a generic ledger. */
+  /** Domestic financial mutation is opt-in; foreign SinoPac evidence remains
+   * source-only even when a financial ledger is supplied. */
   canonicalFinancialLedgerDir?: string;
 };
 
@@ -369,98 +366,6 @@ export function sinopacApiRowsToStatementRows(
 
 export function sinopacStatementRowsToCsv(rows: SinopacStatementRow[]): string {
   return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
-}
-
-function exactSinopacAmount(value: string, label: string): string {
-  const normalized = cleanText(value).replace(/[ ,]/g, "");
-  if (!normalized || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
-    throw new Error(`SinoPac foreign ${label} is not an exact decimal.`);
-  return normalized;
-}
-
-/** Public source-row adapter for the foreign financial canonical seam. */
-export function buildSinopacForeignCurrencyCaptureInput(
-  account: SinopacAccount,
-  rows: readonly SinopacStatementRow[],
-  dateRange: DateRange,
-  observedAt = new Date().toISOString(),
-  captureOccurrenceId = "",
-  zeroResultAuthority?: "provider-explicit-no-data",
-): ForeignCurrencyDepositCaptureInput {
-  const accountNo = accountId(account);
-  const currency = accountCurrency(account);
-  if (!accountNo || !currency || currency === "TWD")
-    throw new Error("SinoPac foreign capture requires a source-proven non-TWD account.");
-  if (
-    rows.length === 0 &&
-    zeroResultAuthority !== "provider-explicit-no-data"
-  )
-    throw new Error(
-      "SinoPac foreign empty capture requires provider-explicit-no-data terminal evidence.",
-    );
-  const duplicateOrdinals = new Map<string, number>();
-  return {
-    source: "sinopac",
-    accountNo,
-    sourceConnectionKey: "sinopac-foreign-current-login",
-    identityEpochKey: "sinopac-foreign-current-identity",
-    accountType: "depository",
-    captureCurrencyScope: { kind: "currency", currency },
-    captureOccurrenceId,
-    zeroResultAuthority,
-    observedAt,
-    startDate: formatSlashDate(dateRange.startDate).replaceAll("/", "-"),
-    endDate: formatSlashDate(dateRange.endDate).replaceAll("/", "-"),
-    completeness: "complete-range",
-    records: rows.map((row, rowOrdinal) => {
-      const [transactionDate, , transactionTime, description, withdrawal, deposit, balance] = row.values;
-      const debit = cleanText(withdrawal);
-      const credit = cleanText(deposit);
-      if ((debit.length > 0) === (credit.length > 0))
-        throw new Error("SinoPac foreign row must prove exactly one amount direction.");
-      const dateValue = transactionDate.replaceAll("/", "-");
-      const normalizedRowEvidence = row.values.map((value) => cleanText(value));
-      const sourceRecordDigest = createHash("sha256")
-        .update(JSON.stringify({
-          sortKey: cleanText(row.sortKey),
-          values: normalizedRowEvidence,
-        }))
-        .digest("base64url");
-      const duplicateOrdinal = duplicateOrdinals.get(sourceRecordDigest) ?? 0;
-      duplicateOrdinals.set(sourceRecordDigest, duplicateOrdinal + 1);
-      const sourceKey = `${accountNo}:${currency}:record:${sourceRecordDigest}:duplicate:${duplicateOrdinal}`;
-      const reportedRate = cleanText(row.values[8]);
-      return {
-        sourceKey,
-        amount: exactSinopacAmount(debit || credit, "amount"),
-        direction: debit.length > 0 ? "outflow" : "inflow",
-        currencyEvidence: { kind: "scope" as const, currency },
-        balanceAfter: exactSinopacAmount(balance ?? "", "balance"),
-        sourceTime: {
-          localDate: dateValue,
-          localTime: transactionTime || undefined,
-        },
-        originalAmount: { amount: exactSinopacAmount(debit || credit, "original amount"), currency },
-        sourceReportedRate: reportedRate
-          ? {
-              rate: exactSinopacAmount(reportedRate, "reported rate"),
-              baseCurrency: currency,
-              quoteCurrency: "TWD",
-              observedOn: dateValue,
-            }
-          : null,
-        description: description || null,
-        sourcePayload: {
-          pageOrdinal: 0,
-          rowOrdinal,
-          sourceRecordDigest,
-          duplicateOrdinal,
-          memo: row.values[7] ?? "",
-          reportedRate: row.values[8] ?? "",
-        },
-      };
-    }),
-  };
 }
 
 function accountLabel(account: SinopacAccount): string {
@@ -1069,7 +974,10 @@ export async function runSinopacStatements(
       captureInputs.map(({ capture }) => capture),
       captureOccurrenceId,
     );
-    if (financialWriter) {
+    if (
+      financialWriter &&
+      captureInputs.some(({ capture }) => capture.product === "domestic-deposit")
+    ) {
       const manifest = getSinopacHumanAttestedV1Manifest();
       recordInitialSinopacHumanAttestationIfMissing(
         financialWriter.db,
@@ -1112,31 +1020,9 @@ export async function runSinopacStatements(
         )
           status = "financial-admitted";
       }
-      const foreignInputs = captureInputs.flatMap(({ capture, pending }) =>
-        capture.product === "foreign-currency" &&
-        (pending.rows.length > 0 ||
-          capture.zeroResultAuthority === "provider-explicit-no-data")
-          ? [
-              buildSinopacForeignCurrencyCaptureInput(
-                pending.account,
-                pending.rows,
-                dateRange,
-                observedAt,
-                captureOccurrenceId,
-                capture.zeroResultAuthority === "provider-explicit-no-data"
-                  ? "provider-explicit-no-data"
-                  : undefined,
-              ),
-            ]
-          : [],
-      );
-      if (foreignInputs.length > 0) {
-        await commitForeignCurrencyDepositCaptureBatch(
-          financialWriter,
-          foreignInputs,
-        );
-        status = "financial-admitted";
-      }
+      // SinoPac foreign captures remain durable source evidence only. The
+      // provider has not established a stable transaction occurrence key, so
+      // no foreign row may cross the canonical Financial Transaction writer.
     }
   } finally {
     if (financialStore && financialStore !== sourceStore)
