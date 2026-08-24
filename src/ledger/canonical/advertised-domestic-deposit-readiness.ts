@@ -663,6 +663,43 @@ export function buildSinopacDomesticDepositReadinessFromLedger(
   };
 }
 
+/** LINE Bank's versioned fixture proves the adapter contract, while release
+ * readiness additionally requires a durable complete-range v13 capture in the
+ * selected ledger. A zero-row capture is sufficient because completeness is
+ * carried by the persisted scope rather than inferred from transaction rows. */
+export function buildLineBankDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const fixtureReady = buildReadinessEntry("linebank");
+  const durableCaptureCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(DISTINCT capture.capture_id) AS count
+           FROM source_captures capture
+           JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+           WHERE capture.authority_route = ?
+             AND capture.completeness_rule_version = ?
+             AND scope.completeness = 'complete-range'`,
+        )
+        .get(
+          LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_AUTHORITY,
+          LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_AUTHORITY,
+        ) as { count?: number }
+    ).count ?? 0,
+  );
+  if (durableCaptureCount === 0) {
+    return {
+      ...fixtureReady,
+      capability: "preflight-only",
+      liveValidation: "pending",
+      providerGuaranteed: false,
+      blockers: ["live-validation-pending"],
+    };
+  }
+  return { ...fixtureReady, providerGuaranteed: false };
+}
+
 export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
   db: DatabaseSync,
 ): AdvertisedDomesticDepositReadinessGate {
@@ -681,7 +718,9 @@ export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
                 ? buildPostDomesticDepositReadinessFromLedger(db)
                 : entry.sourceId === "sinopac"
                   ? buildSinopacDomesticDepositReadinessFromLedger(db)
-                  : entry,
+                  : entry.sourceId === "linebank"
+                    ? buildLineBankDomesticDepositReadinessFromLedger(db)
+                    : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }

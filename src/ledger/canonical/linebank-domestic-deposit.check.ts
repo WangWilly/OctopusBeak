@@ -1969,6 +1969,23 @@ assert.equal(admittedV13.liveValidation, "complete");
 assert.deepEqual(admittedV13.financialAdmissionBlockers, []);
 assert.equal(JSON.stringify(admittedV13).includes("SYNTHETIC"), false);
 
+const observedEmptyRoleV13 = validateLineBankHumanAttestedV13Capture({
+  ...v13Input,
+  captureId: "synthetic-v13-observed-empty-role",
+  pages: v13Input.pages.map((page) => ({
+    ...page,
+    source: {
+      ...page.source,
+      jntAcctMbrTpCd: "",
+      jntMbrListCnt: 0,
+      totJntAcctMbrCnt: 0,
+      isSecuAcctBndg: false,
+    },
+  })),
+});
+assert.equal(observedEmptyRoleV13.status, "admissible");
+assert.equal(observedEmptyRoleV13.capture?.records.length, 2);
+
 const isolatedV13 = validateLineBankHumanAttestedV13Capture({
   ...v13Input,
   captureId: "synthetic-v13-isolated-posted",
