@@ -206,21 +206,21 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        1,
-        "only the TWD account is financially admitted",
+        2,
+        "both TWD and foreign-currency accounts are financially admitted",
       );
       assert.equal(
         Number(
           (
             financialStore.db
               .prepare(
-                "SELECT COUNT(*) AS count FROM source_captures WHERE stream = 'foreign-currency'",
+                "SELECT COUNT(*) AS count FROM source_captures WHERE stream = 'foreign-currency-deposit'",
               )
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        0,
-        "foreign currency remains source-only in the source ledger",
+        1,
+        "foreign currency has a canonical financial capture",
       );
     } finally {
       financialStore.close();

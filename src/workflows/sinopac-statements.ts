@@ -25,6 +25,10 @@ import {
 } from "../ledger/canonical/sinopac-domestic-deposit.ts";
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import {
+  commitForeignCurrencyDepositCaptureBatch,
+  type ForeignCurrencyDepositCaptureInput,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
+import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
@@ -365,6 +369,59 @@ export function sinopacApiRowsToStatementRows(
 
 export function sinopacStatementRowsToCsv(rows: SinopacStatementRow[]): string {
   return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
+}
+
+function exactSinopacAmount(value: string, label: string): string {
+  const normalized = cleanText(value).replace(/[ ,]/g, "");
+  if (!normalized || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
+    throw new Error(`SinoPac foreign ${label} is not an exact decimal.`);
+  return normalized;
+}
+
+/** Public source-row adapter for the foreign financial canonical seam. */
+export function buildSinopacForeignCurrencyCaptureInput(
+  account: SinopacAccount,
+  rows: readonly SinopacStatementRow[],
+  dateRange: DateRange,
+  observedAt = new Date().toISOString(),
+): ForeignCurrencyDepositCaptureInput {
+  const accountNo = accountId(account);
+  const currency = accountCurrency(account);
+  if (!accountNo || !currency || currency === "TWD")
+    throw new Error("SinoPac foreign capture requires a source-proven non-TWD account.");
+  return {
+    source: "sinopac",
+    accountNo,
+    sourceConnectionKey: "sinopac-foreign-current-login",
+    identityEpochKey: "sinopac-foreign-current-identity",
+    observedAt,
+    startDate: formatSlashDate(dateRange.startDate).replaceAll("/", "-"),
+    endDate: formatSlashDate(dateRange.endDate).replaceAll("/", "-"),
+    completeness: "complete-range",
+    records: rows.map((row) => {
+      const [transactionDate, , transactionTime, description, withdrawal, deposit, balance] = row.values;
+      const debit = cleanText(withdrawal);
+      const credit = cleanText(deposit);
+      if ((debit.length > 0) === (credit.length > 0))
+        throw new Error("SinoPac foreign row must prove exactly one amount direction.");
+      const dateValue = transactionDate.replaceAll("/", "-");
+      const sourceKey = `${accountNo}:${currency}:${dateValue}:${transactionTime}:${description}:${debit}:${credit}`;
+      return {
+        sourceKey,
+        amount: exactSinopacAmount(debit || credit, "amount"),
+        direction: debit.length > 0 ? "outflow" : "inflow",
+        currencyEvidence: { kind: "scope" as const, currency },
+        balanceAfter: exactSinopacAmount(balance ?? "", "balance"),
+        sourceTime: {
+          localDate: dateValue,
+          localTime: transactionTime || undefined,
+        },
+        originalAmount: { amount: exactSinopacAmount(debit || credit, "original amount"), currency },
+        description: description || null,
+        sourcePayload: { memo: row.values[7] ?? "", reportedRate: row.values[8] ?? "" },
+      };
+    }),
+  };
 }
 
 function accountLabel(account: SinopacAccount): string {
@@ -1014,6 +1071,25 @@ export async function runSinopacStatements(
           )
         )
           status = "financial-admitted";
+      }
+      const foreignInputs = captureInputs.flatMap(({ capture, pending }) =>
+        capture.product === "foreign-currency" && pending.rows.length > 0
+          ? [
+              buildSinopacForeignCurrencyCaptureInput(
+                pending.account,
+                pending.rows,
+                dateRange,
+                observedAt,
+              ),
+            ]
+          : [],
+      );
+      if (foreignInputs.length > 0) {
+        await commitForeignCurrencyDepositCaptureBatch(
+          financialWriter,
+          foreignInputs,
+        );
+        status = "financial-admitted";
       }
     }
   } finally {
