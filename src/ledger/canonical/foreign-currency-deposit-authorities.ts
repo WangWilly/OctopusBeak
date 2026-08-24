@@ -11,12 +11,6 @@ export const FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA = {
     integrationNamespace: "cathay",
     recordKind: "cathay-foreign-currency-deposit",
   },
-  sinopac: {
-    authorityRoute: "sinopac/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/sinopac/v1",
-    integrationNamespace: "sinopac",
-    recordKind: "sinopac-foreign-currency-deposit",
-  },
   linebank: {
     authorityRoute: "linebank/foreign-currency/deposit/v1",
     contractVersion: "foreign-currency/linebank/v1",

@@ -588,7 +588,10 @@ function sourceEvidenceForCapture(
       startDate: sourceDate(capture.queryRange.startDate),
       endDate: sourceDate(capture.queryRange.endDate),
       kind: "bounded-range",
-      completeness: "single-page",
+      completeness:
+        capture.product === "foreign-currency"
+          ? "complete-range"
+          : "single-page",
       ruleVersion,
       ...(capture.zeroResultAuthority === "provider-explicit-no-data"
         ? { absenceAuthority: "provider-explicit-no-data" as const }
@@ -614,7 +617,10 @@ function sourceEvidenceForCapture(
         ),
         currency: capture.account.currency,
         zeroResultAuthority: capture.zeroResultAuthority ?? null,
-        completeness: "unproven",
+        completeness:
+          capture.product === "foreign-currency"
+            ? "terminal-complete-range"
+            : "unproven",
       },
     })),
     records: pages.flatMap(({ download, pageOrdinal }) =>
@@ -626,6 +632,10 @@ function sourceEvidenceForCapture(
           String(row.rowOrdinal),
           ...cells,
         );
+        // This digest is retained only to link immutable source evidence and
+        // its provenance. SinoPac foreign rows never use it as a Financial
+        // Transaction identity because the provider has not established a
+        // stable occurrence key contract.
         return {
           occurrenceKey: sinopacDigest(
             `sinopac-${capture.product}-occurrence-v1`,
