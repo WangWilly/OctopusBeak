@@ -78,6 +78,7 @@
     "libretto": "^0.6.45",
     "parse5": "^8.0.1",
     "playwright": "^1.61.0",
+    "tesseract.js": "^7.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

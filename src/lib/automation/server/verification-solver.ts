@@ -72,9 +72,3 @@ export async function solveVerificationChallenge(
   }
   return { status: "exhausted" };
 }
-
-export const stubVerificationSolver: VerificationSolver = {
-  async solve() {
-    return { answer: "", confidence: 0 };
-  },
-};
