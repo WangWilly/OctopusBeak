@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
 import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
+import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 
 export type FinancialDepositAmount = {
   coefficient: string;
@@ -407,75 +408,27 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       contractVersion: "human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
-    "yuanta/foreign-currency/deposit/v1": {
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "foreign-currency/yuanta/v1",
-      effectiveTimeBasis: "transaction-time",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      completeness: "complete-range",
-      completenessBasis: "foreign-currency-terminal-complete-range",
-      absenceAuthority: "provider-explicit-no-data",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "yuanta",
-      stream: "foreign-currency-deposit",
-      recordKind: "yuanta-foreign-currency-deposit",
-      contractVersion: "foreign-currency/yuanta/v1",
-      requireProviderGuaranteedFalse: true,
-    },
-    "cathay/foreign-currency/deposit/v1": {
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "foreign-currency/cathay/v1",
-      effectiveTimeBasis: "transaction-time",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      completeness: "complete-range",
-      completenessBasis: "foreign-currency-terminal-complete-range",
-      absenceAuthority: "provider-explicit-no-data",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "cathay",
-      stream: "foreign-currency-deposit",
-      recordKind: "cathay-foreign-currency-deposit",
-      contractVersion: "foreign-currency/cathay/v1",
-      requireProviderGuaranteedFalse: true,
-    },
-    "sinopac/foreign-currency/deposit/v1": {
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "foreign-currency/sinopac/v1",
-      effectiveTimeBasis: "transaction-time",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      completeness: "complete-range",
-      completenessBasis: "foreign-currency-terminal-complete-range",
-      absenceAuthority: "provider-explicit-no-data",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "sinopac",
-      stream: "foreign-currency-deposit",
-      recordKind: "sinopac-foreign-currency-deposit",
-      contractVersion: "foreign-currency/sinopac/v1",
-      requireProviderGuaranteedFalse: true,
-    },
-    "linebank/foreign-currency/deposit/v1": {
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "foreign-currency/linebank/v1",
-      effectiveTimeBasis: "transaction-time",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      completeness: "complete-range",
-      completenessBasis: "foreign-currency-terminal-complete-range",
-      absenceAuthority: "provider-explicit-no-data",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "linebank",
-      stream: "foreign-currency-deposit",
-      recordKind: "linebank-foreign-currency-deposit",
-      contractVersion: "foreign-currency/linebank/v1",
-      requireProviderGuaranteedFalse: true,
-    },
   };
+  for (const metadata of Object.values(
+    FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA,
+  ))
+    routeRules[metadata.authorityRoute] = {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: metadata.contractVersion,
+      effectiveTimeBasis: "transaction-time",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      completeness: "complete-range",
+      completenessBasis: "foreign-currency-terminal-complete-range",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: metadata.integrationNamespace,
+      stream: "foreign-currency-deposit",
+      recordKind: metadata.recordKind,
+      contractVersion: metadata.contractVersion,
+      requireProviderGuaranteedFalse: true,
+    };
   const routeRule = routeRules[capture.authorityRoute];
   if (
     !routeRule &&
@@ -588,10 +541,29 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   validateOpaque(capture.identity.sourceConnectionKey, "Source connection key");
   validateOpaque(capture.identity.identityEpochKey, "Identity epoch key");
   validateOpaque(capture.identity.subjectDigest, "Subject digest");
-  for (const page of capture.pages) {
+  let capturedRowCount = 0;
+  let terminalPageCount = 0;
+  for (const [pageIndex, page] of capture.pages.entries()) {
     if (page.pageOrdinal < 0 || page.pageOrdinal >= capture.scope.pageCount)
       throw new Error("Capture page ordinal is invalid.");
+    if (isForeignCurrencyCapture && page.pageOrdinal !== pageIndex)
+      throw new Error("Foreign capture page ordinals must be contiguous from zero.");
+    if (!Number.isSafeInteger(page.rowCount) || page.rowCount < 0)
+      throw new Error("Capture page row count is invalid.");
+    capturedRowCount += page.rowCount;
+    if (page.terminal) {
+      terminalPageCount += 1;
+      if (isForeignCurrencyCapture && pageIndex !== capture.pages.length - 1)
+        throw new Error("Foreign capture cannot contain pages after its terminal page.");
+    }
   }
+  if (
+    isForeignCurrencyCapture &&
+    (terminalPageCount !== 1 || !capture.pages.at(-1)?.terminal)
+  )
+    throw new Error("Foreign complete-range capture requires exactly one final terminal page.");
+  if (isForeignCurrencyCapture && capturedRowCount !== capture.records.length)
+    throw new Error("Foreign capture page row count does not match admitted records.");
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
@@ -1435,6 +1407,29 @@ function commitOnce(
       `INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)
        ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id`,
     ).run(commitId);
+    const provenanceCount =
+      capture.records.length === 0
+        ? 0
+        : Number(
+            (
+              db
+                .prepare(
+                  `SELECT COUNT(*) AS count
+                   FROM assertion_provenance provenance
+                   JOIN assertions assertion
+                     ON assertion.assertion_id = provenance.assertion_id
+                   JOIN financial_transactions transaction_row
+                     ON transaction_row.transaction_id = assertion.transaction_id
+                   WHERE transaction_row.account_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM source_records affected_record
+                       WHERE affected_record.capture_id = ?
+                         AND affected_record.occurrence_key = transaction_row.source_sequence
+                     )`,
+                )
+                .get(accountId, captureId) as { count?: number }
+            ).count ?? 0,
+          );
     if (managesTransaction) db.exec("COMMIT");
     return {
       status: "canonical-live",
@@ -1442,15 +1437,7 @@ function commitOnce(
       captureId: capture.captureId,
       commitSequence,
       transactionCount: capture.records.length,
-      provenanceCount: Number(
-        (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM source_captures WHERE record_kind = ?",
-            )
-            .get(capture.identity.recordKind) as { count?: number }
-        ).count ?? 0,
-      ),
+      provenanceCount,
     };
   } catch (error) {
     if (managesTransaction)

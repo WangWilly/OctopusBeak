@@ -9,6 +9,7 @@ import {
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
+import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-deposit-authorities.ts";
 
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
@@ -2332,7 +2333,7 @@ function validateGenerationExactAmounts(
   }
 }
 
-function validateCathayAuthorityRoute(
+function validateCanonicalAuthorityRoutes(
   db: DatabaseSync,
   generationId: number,
 ): void {
@@ -2401,11 +2402,7 @@ function validateCathayAuthorityRoute(
           OR
           (capture.stream = 'foreign-currency-deposit'
             AND registered.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (
-              'yuanta/foreign-currency/deposit/v1',
-              'cathay/foreign-currency/deposit/v1',
-              'sinopac/foreign-currency/deposit/v1',
-              'linebank/foreign-currency/deposit/v1')
+            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
             AND capture.completeness_rule_version LIKE 'foreign-currency/%'
             AND registered.contract_version = capture.completeness_rule_version)
         )
@@ -2419,12 +2416,13 @@ function validateCathayAuthorityRoute(
           CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_INTEGRATION_NAMESPACE,
           CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
+          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
         ) as { count?: number }
     ).count ?? 0,
   );
   if (invalid !== 0)
     throw new Error(
-      "Canonical v7 projection contains an unregistered or invalid Cathay authority route.",
+      "Canonical v7 projection contains an unregistered or invalid financial authority route.",
     );
 }
 
@@ -3356,11 +3354,7 @@ function validateSelectedAssertionProvenance(
             AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1')
           OR
           (capture.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (
-              'yuanta/foreign-currency/deposit/v1',
-              'cathay/foreign-currency/deposit/v1',
-              'sinopac/foreign-currency/deposit/v1',
-              'linebank/foreign-currency/deposit/v1')
+            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
             AND capture.completeness_rule_version LIKE 'foreign-currency/%')
         )
     )`,
@@ -3371,6 +3365,7 @@ function validateSelectedAssertionProvenance(
           CATHAY_DOMESTIC_DEPOSIT_STREAM,
           CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
           CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
         ) as { count?: number }
     ).count ?? 0,
   );
@@ -4329,7 +4324,7 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
     );
   validateProjectionGenerationProvenance(db, generationId);
   validateGenerationExactAmounts(db, generationId);
-  validateCathayAuthorityRoute(db, generationId);
+  validateCanonicalAuthorityRoutes(db, generationId);
   const activeCutoff = Number(
     (
       db
@@ -6795,7 +6790,7 @@ function rebuildCathayCanonicalProjectionOnce(
     validateGenerationFieldCompleteness(db, generation, cutoff);
     validateSelectedAssertionProvenance(db, generation, cutoff);
     validateGenerationExactAmounts(db, generation);
-    validateCathayAuthorityRoute(db, generation);
+    validateCanonicalAuthorityRoutes(db, generation);
     validateGenerationFieldIntegrity(db, generation);
     validateGenerationLifecycleCoordinates(db, generation);
     validateUserAssertionProvenanceAuthority(db);

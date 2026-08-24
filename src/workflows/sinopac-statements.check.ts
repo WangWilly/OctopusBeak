@@ -20,6 +20,7 @@ import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source
 import {
   admitForeignCurrencyDepositCapture,
   commitForeignCurrencyDepositCapture,
+  queryForeignCurrencyDepositCurrent,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 
 assert.deepEqual(
@@ -149,6 +150,44 @@ assert.deepEqual(
   duplicateSinopacRows.records.map((record) => record.sourcePayload?.rowOrdinal),
   [0, 1],
 );
+const repeatedSinopacObservation = buildSinopacForeignCurrencyCaptureInput(
+  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
+  [{
+    sortKey: "2026/08/23 09:10",
+    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
+  }],
+  { startDate: "20260801", endDate: "20260823" },
+  "2026-08-24T13:30:00+08:00",
+  "sinopac-foreign-check-repeat-observation",
+);
+assert.equal(
+  repeatedSinopacObservation.records[0]!.sourceKey,
+  duplicateSinopacRows.records[0]!.sourceKey,
+);
+const sinopacOccurrenceDirectory = await mkdtemp(
+  join(tmpdir(), "sinopac-foreign-occurrence-133-"),
+);
+try {
+  const occurrenceStore = createCanonicalSourceStore(
+    join(sinopacOccurrenceDirectory, "canonical.sqlite"),
+  );
+  const firstOccurrenceCommit = await commitForeignCurrencyDepositCapture(
+    occurrenceStore,
+    duplicateSinopacRows,
+  );
+  assert.equal(firstOccurrenceCommit.provenanceCount, 2);
+  const repeatedOccurrenceCommit = await commitForeignCurrencyDepositCapture(
+    occurrenceStore,
+    repeatedSinopacObservation,
+  );
+  assert.equal(repeatedOccurrenceCommit.provenanceCount, 2);
+  const current = queryForeignCurrencyDepositCurrent(occurrenceStore);
+  assert.equal(current.transactions.length, 2);
+  assert.equal(current.provenanceCount, 3);
+  occurrenceStore.close();
+} finally {
+  await rm(sinopacOccurrenceDirectory, { recursive: true, force: true });
+}
 const emptySinopacCapture = buildSinopacForeignCurrencyCaptureInput(
   { DataText: "USD empty account", DataValue: "003", DisplayText: "USD" },
   [],
