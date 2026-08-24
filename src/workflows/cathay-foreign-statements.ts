@@ -388,6 +388,9 @@ export function buildCathayForeignCurrencyCaptureInput(
   zeroResultAuthority?: "provider-explicit-no-data",
 ): ForeignCurrencyDepositCaptureInput {
   const bounds = dateRangeBounds(dateRange);
+  const baseCaptureOccurrenceId = captureOccurrenceId.trim();
+  if (!baseCaptureOccurrenceId)
+    throw new Error("Cathay foreign capture occurrence identity is required.");
   const currencyCode = cleanText(statement.currencyCode ?? currency).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currencyCode))
     throw new Error("Cathay foreign statement lacks a source currency.");
@@ -407,7 +410,7 @@ export function buildCathayForeignCurrencyCaptureInput(
     identityEpochKey: "cathay-foreign-current-identity",
     accountType: "depository",
     captureCurrencyScope: { kind: "currency", currency: currencyCode },
-    captureOccurrenceId: `${captureOccurrenceId}:${currencyCode}`,
+    captureOccurrenceId: `${baseCaptureOccurrenceId}:${currencyCode}`,
     zeroResultAuthority: resolvedZeroResultAuthority,
     observedAt,
     startDate: bounds.startDate,
