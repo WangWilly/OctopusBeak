@@ -32,6 +32,7 @@ for (const fixture of FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1) {
 
 const base = {
   accountNo: "SOURCE-ACCOUNT-133",
+  accountType: "depository",
   sourceConnectionKey: "login-session-133",
   identityEpochKey: "identity-epoch-133",
   observedAt: "2026-08-24T12:00:00+08:00",
@@ -64,6 +65,10 @@ const usd = createForeignCurrencyDepositCapture({
   ],
 });
 const admittedUsd = admitForeignCurrencyDepositCapture(usd);
+assert.deepEqual(admittedUsd.records[0]!.amount, {
+  coefficient: "315",
+  scale: 0,
+});
 assert.equal(admittedUsd.records[0]!.sourceTime.precision, "date");
 assert.equal(
   admittedUsd.records[0]!.sourceTime.timeOrigin,
@@ -98,7 +103,7 @@ assert.equal(
 );
 assert.deepEqual(
   conflicted.records[0]!.amount,
-  { coefficient: "31500", scale: 2 },
+  { coefficient: "315", scale: 0 },
 );
 
 const jpy = createForeignCurrencyDepositCapture({
@@ -152,7 +157,7 @@ try {
     )
     .get() as { count?: number; currency?: string };
   assert.equal(accountRows.count, 1);
-  assert.equal(accountRows.currency, "MULTI");
+  assert.equal(accountRows.currency, null);
   const current = queryForeignCurrencyDepositCurrent(store, {
     accountNo: base.accountNo,
   });
@@ -163,13 +168,20 @@ try {
   );
   assert.equal(current.transactions[0]!.originalCurrency, "USD");
   assert.equal(current.transactions[0]!.conversion?.comparison, "consistent");
+  assert.deepEqual(current.transactions[0]!.conversion?.sourceReportedRate?.amount, {
+    coefficient: "315",
+    scale: 1,
+  });
   assert.equal(current.transactions[0]!.timePrecision, "date");
   assert.equal(current.transactions[1]!.timePrecision, "minute");
   assert.equal(
     current.transactions[0]!.conversion?.bookedAmount.coefficient,
-    "31500",
+    "315",
   );
-  assert.equal(current.transactions[0]!.conversion?.bookedAmount.scale, 2);
+  assert.equal(current.transactions[0]!.conversion?.bookedAmount.scale, 0);
+  assert.equal(current.transactions[0]!.assertion?.origin, "source");
+  assert.equal(Boolean(current.transactions[0]!.sourceRecord?.payloadJson), true);
+  assert.equal(current.transactions[0]!.lifecycleEvents?.[0]!.kind, "observed");
 
   const historical = queryForeignCurrencyDepositHistorical(store, {
     knowledgeAt: firstCommit.commitSequence,
@@ -181,6 +193,12 @@ try {
   });
   assert.equal(lineage.transactions.length, 1);
   assert.equal(lineage.provenanceCount, 1);
+  assert.equal(Boolean(lineage.transactions[0]!.assertion?.revisionId), true);
+  assert.equal(lineage.transactions[0]!.sourceRecord?.scopeProof?.completeness, "complete-range");
+  assert.deepEqual(
+    lineage.transactions[0]!.lifecycleEvents?.map((event) => event.kind),
+    ["observed"],
+  );
   store.close();
 } finally {
   await rm(directory, { recursive: true, force: true });
@@ -213,3 +231,32 @@ try {
 } finally {
   await rm(atomicDirectory, { recursive: true, force: true });
 }
+
+assert.throws(
+  () =>
+    createForeignCurrencyDepositCapture({
+      ...base,
+      source: "yuanta",
+      records: [
+        {
+          sourceKey: "row-denomination-check-133",
+          amount: "1.00",
+          direction: "inflow",
+          currencyEvidence: { kind: "row", currency: "ZZZ" },
+          balanceAfter: "2.00",
+          sourceTime: { localDate: "2026-08-02" },
+        },
+      ],
+    }),
+  /ISO 4217/i,
+);
+assert.throws(
+  () =>
+    createForeignCurrencyDepositCapture({
+      ...base,
+      identityEpochKey: "",
+      source: "yuanta",
+      records: [],
+    }),
+  /identity epoch/i,
+);

@@ -394,6 +394,7 @@ export function buildSinopacForeignCurrencyCaptureInput(
     accountNo,
     sourceConnectionKey: "sinopac-foreign-current-login",
     identityEpochKey: "sinopac-foreign-current-identity",
+    accountType: "depository",
     observedAt,
     startDate: formatSlashDate(dateRange.startDate).replaceAll("/", "-"),
     endDate: formatSlashDate(dateRange.endDate).replaceAll("/", "-"),
@@ -406,6 +407,7 @@ export function buildSinopacForeignCurrencyCaptureInput(
         throw new Error("SinoPac foreign row must prove exactly one amount direction.");
       const dateValue = transactionDate.replaceAll("/", "-");
       const sourceKey = `${accountNo}:${currency}:${dateValue}:${transactionTime}:${description}:${debit}:${credit}`;
+      const reportedRate = cleanText(row.values[8]);
       return {
         sourceKey,
         amount: exactSinopacAmount(debit || credit, "amount"),
@@ -417,6 +419,14 @@ export function buildSinopacForeignCurrencyCaptureInput(
           localTime: transactionTime || undefined,
         },
         originalAmount: { amount: exactSinopacAmount(debit || credit, "original amount"), currency },
+        sourceReportedRate: reportedRate
+          ? {
+              rate: exactSinopacAmount(reportedRate, "reported rate"),
+              baseCurrency: currency,
+              quoteCurrency: "TWD",
+              observedOn: dateValue,
+            }
+          : null,
         description: description || null,
         sourcePayload: { memo: row.values[7] ?? "", reportedRate: row.values[8] ?? "" },
       };

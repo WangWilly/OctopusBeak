@@ -3,6 +3,7 @@ import type { ForeignCurrencyDepositCaptureInput } from "./foreign-currency-depo
 /** Synthetic, versioned source contracts used by readiness and admission checks. */
 const shared = {
   accountNo: "FIXTURE-ACCOUNT-133",
+  accountType: "depository",
   sourceConnectionKey: "fixture-login-133",
   identityEpochKey: "fixture-identity-133",
   observedAt: "2026-08-24T12:00:00+08:00",
@@ -62,4 +63,3 @@ export const FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 = [
   SINOPAC_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1,
   LINEBANK_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1,
 ] as const;
-

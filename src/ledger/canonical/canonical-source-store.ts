@@ -988,7 +988,7 @@ CREATE TABLE IF NOT EXISTS source_records (
 CREATE TABLE IF NOT EXISTS financial_accounts (
   account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16), source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
   identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id), stream TEXT NOT NULL, account_no TEXT NOT NULL,
-  account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')), currency TEXT NOT NULL,
+  account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')), currency TEXT,
   created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), UNIQUE(source_connection_id, identity_epoch_id, stream, account_no)
 );
 CREATE TABLE IF NOT EXISTS financial_transactions (
@@ -4565,6 +4565,61 @@ function ensureCanonicalTimeObservationSchema(db: DatabaseSync): void {
     );
 }
 
+/** Multi-currency Financial Accounts do not have an account-level ISO
+ * denomination.  Older canonical ledgers declared this column NOT NULL;
+ * rebuild it transactionally so the nullable scope is available without
+ * changing any existing domestic account values. */
+function ensureFinancialAccountCurrencySchema(db: DatabaseSync): void {
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'financial_accounts'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (!/currency TEXT NOT NULL/.test(sql)) return;
+  const before = Number(
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM financial_accounts").get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  db.exec(`
+    CREATE TABLE financial_accounts_widened (
+      account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16),
+      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+      stream TEXT NOT NULL,
+      account_no TEXT NOT NULL,
+      account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')),
+      currency TEXT,
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(source_connection_id, identity_epoch_id, stream, account_no)
+    );
+    INSERT INTO financial_accounts_widened(
+      account_id, source_connection_id, identity_epoch_id, stream, account_no,
+      account_type, currency, created_commit_id
+    ) SELECT
+      account_id, source_connection_id, identity_epoch_id, stream, account_no,
+      account_type, currency, created_commit_id
+    FROM financial_accounts;
+    DROP TABLE financial_accounts;
+    ALTER TABLE financial_accounts_widened RENAME TO financial_accounts;
+  `);
+  const after = Number(
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM financial_accounts").get() as {
+        count?: number;
+      }
+    ).count ?? 0,
+  );
+  if (after !== before)
+    throw new Error("Financial account currency widening lost legacy rows.");
+}
+
 /**
  * Conversion evidence is deliberately a separate one-to-one relation from a
  * transaction revision.  A booked amount remains the canonical transaction
@@ -5011,6 +5066,7 @@ function migrateV7ToV8(
     // constraints. Widen those tables while this migration owns the
     // transaction and has foreign-key checks disabled; doing it only after
     // the migration returns makes SQLite reject the old child references.
+    ensureFinancialAccountCurrencySchema(db);
     ensureCanonicalFinancialRevisionSchema(db);
     ensureCanonicalTimeObservationSchema(db);
     ensureForeignCurrencyConversionSchema(db);
@@ -5107,6 +5163,7 @@ function applySchemaMigration(
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
+      ensureFinancialAccountCurrencySchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureCanonicalTimeObservationSchema(db);
       ensureForeignCurrencyConversionSchema(db);
@@ -5141,6 +5198,7 @@ function applySchemaMigration(
       convertV6CompatibilityTables(db);
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
+      ensureFinancialAccountCurrencySchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureCanonicalTimeObservationSchema(db);
       ensureForeignCurrencyConversionSchema(db);
@@ -5758,6 +5816,7 @@ export function openCanonicalDatabase(
       // foreign capture can be admitted.
       ensureCanonicalFinancialRevisionSchema(db);
       ensureCanonicalTimeObservationSchema(db);
+      ensureFinancialAccountCurrencySchema(db);
       // The conversion-evidence relation is additive and intentionally does
       // not bump the canonical schema version; old domestic ledgers remain
       // readable while newly admitted foreign captures get durable evidence.
@@ -8804,6 +8863,7 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     applySchemaMigration(db);
     ensureCanonicalFinancialRevisionSchema(db);
     ensureCanonicalTimeObservationSchema(db);
+    ensureFinancialAccountCurrencySchema(db);
     ensureForeignCurrencyConversionSchema(db);
     configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
     if (path !== ":memory:") verifyCanonicalRuntime(db);

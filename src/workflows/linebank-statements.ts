@@ -694,6 +694,8 @@ export function linebankStatementRowsToCsv(
 }
 
 function exactLinebankAmount(value: number | string | undefined, label: string): string {
+  if (typeof value === "number")
+    throw new Error(`LINE Bank foreign ${label} must remain an exact decimal string.`);
   const lexeme = transactionAmountLexeme(value).replace(/^-/, "");
   if (!lexeme) throw new Error(`LINE Bank foreign row is missing ${label}.`);
   return lexeme;
@@ -712,11 +714,19 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
   const accountNo = linebankAccountKey(input.account);
   if (!accountNo) throw new Error("LINE Bank foreign account identity is incomplete.");
   const rows = input.pages.flatMap((page) => page.rows);
+  const identityEpoch = input.pages[0]?.source?.opnDtm;
+  if (
+    typeof identityEpoch !== "number" ||
+    !Number.isSafeInteger(identityEpoch) ||
+    identityEpoch < 0
+  )
+    throw new Error("LINE Bank foreign capture requires a source identity epoch.");
   return {
     source: "linebank",
     accountNo,
     sourceConnectionKey: "linebank-foreign-current-login",
-    identityEpochKey: String(input.pages[0]?.source?.opnDtm ?? "current"),
+    identityEpochKey: String(identityEpoch),
+    accountType: "depository",
     observedAt: input.observedAt ?? new Date().toISOString(),
     startDate: formatSlashDate(input.dateRange.startDate).replaceAll("/", "-"),
     endDate: formatSlashDate(input.dateRange.endDate).replaceAll("/", "-"),
