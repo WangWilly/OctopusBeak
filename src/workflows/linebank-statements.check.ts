@@ -947,6 +947,7 @@ const linebankForeignCapture = buildLinebankForeignCurrencyCaptureInput({
   dateRange: { startDate: "20260801", endDate: "20260823" },
   pages: [linebankForeignPage],
   observedAt: "2026-08-24T12:00:00+08:00",
+  captureOccurrenceId: "linebank-foreign-check-observation-2",
 });
 assert.equal(linebankForeignCapture.accountType, "depository");
 assert.equal(linebankForeignCapture.records[0]!.currencyEvidence.currency, "USD");

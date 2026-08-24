@@ -121,6 +121,8 @@ type CathayForeignTransferInfo = {
 type CathayForeignTransferResult = {
   currencyCode?: string;
   transferInfos?: CathayForeignTransferInfo[];
+  /** Set only when the successful provider response explicitly covers this currency. */
+  zeroResultAuthority?: "provider-explicit-no-data";
 };
 
 const statementHeaders = [
@@ -350,6 +352,22 @@ function exactCathayAmount(value: number | string | null | undefined, label: str
   return normalized;
 }
 
+function cathaySequence(value: number | string | undefined): string {
+  if (value === undefined || value === null)
+    throw new Error("Cathay foreign row lacks source sequence identity.");
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value))
+      throw new Error(
+        "Cathay foreign numeric sequence must be a safe integer; exact identifiers must be strings.",
+      );
+    return String(value);
+  }
+  const sequence = cleanText(value);
+  if (!sequence)
+    throw new Error("Cathay foreign row lacks source sequence identity.");
+  return sequence;
+}
+
 function cathayDirection(value: string | undefined): "inflow" | "outflow" {
   const type = cleanText(value).toUpperCase();
   if (type === "D" || type.includes("DEBIT") || /支出|扣|提出|轉出|匯出|買/.test(type))
@@ -366,24 +384,36 @@ export function buildCathayForeignCurrencyCaptureInput(
   dateRange: CathayForeignDateRange,
   statement: CathayForeignTransferResult,
   observedAt = new Date().toISOString(),
+  captureOccurrenceId = "",
+  zeroResultAuthority?: "provider-explicit-no-data",
 ): ForeignCurrencyDepositCaptureInput {
   const bounds = dateRangeBounds(dateRange);
   const currencyCode = cleanText(statement.currencyCode ?? currency).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currencyCode))
     throw new Error("Cathay foreign statement lacks a source currency.");
+  const resolvedZeroResultAuthority =
+    zeroResultAuthority ?? statement.zeroResultAuthority;
+  if (
+    (statement.transferInfos?.length ?? 0) === 0 &&
+    resolvedZeroResultAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error(
+      "Cathay foreign empty capture requires provider-explicit-no-data terminal evidence.",
+    );
   return {
     source: "cathay",
     accountNo: account.account,
     sourceConnectionKey: "cathay-foreign-current-login",
     identityEpochKey: "cathay-foreign-current-identity",
     accountType: "depository",
+    captureOccurrenceId: `${captureOccurrenceId}:${currencyCode}`,
+    zeroResultAuthority: resolvedZeroResultAuthority,
     observedAt,
     startDate: bounds.startDate,
     endDate: bounds.endDate,
     completeness: "complete-range",
     records: (statement.transferInfos ?? []).map((info) => {
-      const sequence = info.sequenceNumber == null ? "" : String(info.sequenceNumber);
-      if (!sequence) throw new Error("Cathay foreign row lacks source sequence identity.");
+      const sequence = cathaySequence(info.sequenceNumber);
       const amount = exactCathayAmount(info.amount, "amount");
       const balanceAfter = exactCathayAmount(info.balance, "balance");
       const observedDate = normalizeDate(info.transferDate ?? info.txntDate).replaceAll("/", "-");
@@ -487,7 +517,12 @@ class CathayForeignApiClient {
       },
     );
 
-    return response.content?.transferDetails ?? [];
+    return (response.content?.transferDetails ?? []).map((statement) => ({
+      ...statement,
+      ...(statement.transferInfos?.length === 0
+        ? { zeroResultAuthority: "provider-explicit-no-data" as const }
+        : {}),
+    }));
   }
 
   private async apiPost<T>(
@@ -666,6 +701,7 @@ export default workflow("cathayForeignStatements", {
 
     await signInCathay(ctx, input.credentials, input.trustDevice);
     const foreignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
+    const captureOccurrenceId = randomUUID();
     const downloads = await downloadCathayForeignStatements(
       page,
       input.dateRange,
@@ -673,13 +709,19 @@ export default workflow("cathayForeignStatements", {
       input.currencyFilters,
       undefined,
       (account, currency, statement) => {
-        if ((statement.transferInfos?.length ?? 0) > 0)
+        if (
+          (statement.transferInfos?.length ?? 0) > 0 ||
+          statement.zeroResultAuthority === "provider-explicit-no-data"
+        )
           foreignCaptures.push(
             buildCathayForeignCurrencyCaptureInput(
               account,
               currency,
               input.dateRange,
               statement,
+              new Date().toISOString(),
+              captureOccurrenceId,
+              statement.zeroResultAuthority,
             ),
           );
       },

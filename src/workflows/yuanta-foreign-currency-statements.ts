@@ -1,4 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
@@ -89,6 +90,7 @@ type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
 
 type SourceDownloadMetadata = {
+  accountValue: string;
   account: string;
   currency: string;
   filename: string;
@@ -782,8 +784,16 @@ export function buildYuantaForeignCurrencyCaptureInput(
   input: WorkflowInput,
   accountNo: string,
   observedAt = new Date().toISOString(),
+  captureOccurrenceId = "",
+  zeroResultAuthority?: "provider-explicit-no-data",
 ): ForeignCurrencyDepositCaptureInput {
-  if (rows.length === 0) throw new Error("Yuanta foreign capture has no rows.");
+  if (
+    rows.length === 0 &&
+    zeroResultAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error(
+      "Yuanta foreign empty capture requires provider-explicit-no-data terminal evidence.",
+    );
   const range = sourceDateRange(input);
   return {
     source: "yuanta",
@@ -791,6 +801,8 @@ export function buildYuantaForeignCurrencyCaptureInput(
     sourceConnectionKey: "yuanta-foreign-current-login",
     identityEpochKey: "yuanta-foreign-current-identity",
     accountType: "depository",
+    captureOccurrenceId,
+    zeroResultAuthority,
     observedAt,
     ...range,
     completeness: "complete-range",
@@ -893,6 +905,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
         );
         rows.push(...download.rows);
         sourceDownloads.push({
+          accountValue: account.value,
           account: maskedAccount,
           currency: currency.label,
           filename: download.filename,
@@ -912,7 +925,8 @@ export default workflow("yuantaForeignCurrencyStatements", {
 
     const financialLedgerDir =
       process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-    if (financialLedgerDir && rows.length > 0) {
+    if (financialLedgerDir) {
+      const captureOccurrenceId = randomUUID();
       const financialStore = createCanonicalSourceStore(
         canonicalSqlitePath(financialLedgerDir),
       );
@@ -923,9 +937,26 @@ export default workflow("yuantaForeignCurrencyStatements", {
           accountRows.push(row);
           grouped.set(row.accountValue, accountRows);
         }
-        const captures = [...grouped.entries()].map(([accountNo, accountRows]) =>
-          buildYuantaForeignCurrencyCaptureInput(accountRows, input, accountNo),
-        );
+        const captures = accounts.map((account) => {
+          const accountRows = grouped.get(account.value) ?? [];
+          const accountDownloads = sourceDownloads.filter(
+            (download) => download.accountValue === account.value,
+          );
+          const zeroResultAuthority =
+            accountRows.length === 0 &&
+            accountDownloads.length > 0 &&
+            accountDownloads.every((download) => download.rowCount === 0)
+              ? ("provider-explicit-no-data" as const)
+              : undefined;
+          return buildYuantaForeignCurrencyCaptureInput(
+            accountRows,
+            input,
+            account.value,
+            new Date().toISOString(),
+            captureOccurrenceId,
+            zeroResultAuthority,
+          );
+        });
         await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
       } finally {
         financialStore.close();

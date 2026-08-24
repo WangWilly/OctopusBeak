@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
-import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  admitForeignCurrencyDepositCapture,
+  commitForeignCurrencyDepositCapture,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
+import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -154,6 +161,7 @@ const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
   { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
+  "yuanta-foreign-check-observation-1",
 );
 assert.equal(yuantaForeignCapture.accountType, "depository");
 assert.equal(yuantaForeignCapture.records[0]!.currencyEvidence.currency, "USD");
@@ -182,6 +190,36 @@ assert.throws(
       { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
+      "yuanta-foreign-check-observation-invalid",
     ),
   /source currency/i,
 );
+
+const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
+  [],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-empty-133",
+  "2026-08-24T12:00:00+08:00",
+  "yuanta-foreign-check-empty-observation",
+  "provider-explicit-no-data",
+);
+const yuantaEmptyDirectory = await mkdtemp(join(tmpdir(), "yuanta-foreign-empty-133-"));
+try {
+  const store = createCanonicalSourceStore(join(yuantaEmptyDirectory, "canonical.sqlite"));
+  const result = await commitForeignCurrencyDepositCapture(
+    store,
+    admitForeignCurrencyDepositCapture(emptyYuantaCapture),
+  );
+  assert.equal(result.transactionCount, 0);
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  store.close();
+} finally {
+  await rm(yuantaEmptyDirectory, { recursive: true, force: true });
+}
