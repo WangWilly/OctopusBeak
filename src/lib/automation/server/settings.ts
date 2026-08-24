@@ -8,6 +8,10 @@ import {
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 import { automationFlagEnabled } from "../statement-selection.ts";
+import {
+  type VerificationActor,
+  verificationActorForSource,
+} from "../verification-config.ts";
 import { systemSettings } from "../../settings/system-settings.ts";
 
 export const AUTOMATION_ENV_PATH = ".env";
@@ -38,6 +42,17 @@ export function automationGroupEnabledStatus(
     AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
       group.id,
       envFlagEnabled(settings[group.enabledKey] ?? legacy[group.enabledKey] ?? env[group.enabledKey]),
+    ]),
+  );
+}
+
+export function automationGroupVerificationActors(
+  settings: AutomationSettingsFile = readAutomationSettings(),
+): Record<string, VerificationActor> {
+  return Object.fromEntries(
+    AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
+      group.id,
+      verificationActorForSource(group.verificationActorKey, settings),
     ]),
   );
 }

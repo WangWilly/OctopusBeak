@@ -6,6 +6,7 @@ import type {
   AutomationTaskSummary,
 } from "../types.ts";
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
+import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.ts";
 
 export type {
   AutomationCredentialGroup,
@@ -803,6 +804,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       displayName: localized("E-Invoice", "電子發票（E-Invoice）"),
       searchAliases: ["E-Invoice", "電子發票", "發票"],
       enabledKey: "LIBRETTO_CLOUD_EINVOICE_ENABLED",
+      verificationActorKey: "LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR",
       credentialFields: [
         field(
           "LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER",
@@ -1204,6 +1206,14 @@ const AUTOMATION_STATEMENT_SELECTION_KEYS =
     group.statementSelectionKey ? [group.statementSelectionKey] : [],
   );
 
+const AUTOMATION_VERIFICATION_ACTOR_KEYS = AUTOMATION_CREDENTIAL_GROUPS.flatMap(
+  (group) => (group.verificationActorKey ? [group.verificationActorKey] : []),
+);
+
+const AUTOMATION_CONFIDENCE_THRESHOLD_KEYS = Object.values(
+  VERIFICATION_CONFIDENCE_THRESHOLD_KEYS,
+);
+
 export const AUTOMATION_NON_SECRET_KEYS = [
   "SYSTEM_TIMEZONE",
   "EXCHANGE_RATE_UPDATE_TIME",
@@ -1211,6 +1221,8 @@ export const AUTOMATION_NON_SECRET_KEYS = [
   "MAX_SUB_ACCOUNT",
   ...AUTOMATION_ENABLED_KEYS,
   ...AUTOMATION_STATEMENT_SELECTION_KEYS,
+  ...AUTOMATION_VERIFICATION_ACTOR_KEYS,
+  ...AUTOMATION_CONFIDENCE_THRESHOLD_KEYS,
 ] as const;
 
 const nonSecretCredentialKeys = new Set<string>(["MAX_SUB_ACCOUNT"]);

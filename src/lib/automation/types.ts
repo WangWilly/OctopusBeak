@@ -80,6 +80,7 @@ export type AutomationCredentialGroup = {
   setupGuide: AutomationSetupGuide;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];
+  verificationActorKey?: string;
 };
 
 export type StatementTypeCapability = { id: string };
