@@ -801,6 +801,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
     sourceConnectionKey: "yuanta-foreign-current-login",
     identityEpochKey: "yuanta-foreign-current-identity",
     accountType: "depository",
+    captureCurrencyScope: { kind: "multi-currency" },
     captureOccurrenceId,
     zeroResultAuthority,
     observedAt,
@@ -815,10 +816,13 @@ export function buildYuantaForeignCurrencyCaptureInput(
       const localDate = toAsciiDigits(values[2] ?? "").replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const localTime = toAsciiDigits(values[3] ?? "");
       const rowCurrency = currencyCode(values[4] ?? "", row.queryCurrencyValue);
+      const providerSequence = stripSpreadsheetTextPrefix(values[0] ?? "").trim();
+      if (!providerSequence)
+        throw new Error("Yuanta foreign row lacks provider sequence identity.");
       const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
       return {
-        sourceKey: `${accountNo}:${rowCurrency}:${values[0]}:${values[1]}:${values[2]}:${values[3]}:${values[9] ?? ""}`,
-        sequence: values[0] || undefined,
+        sourceKey: `${accountNo}:${rowCurrency}:sequence:${providerSequence}`,
+        sequence: providerSequence,
         amount: exactCell(debit || credit, "amount"),
         direction: debit.length > 0 ? "outflow" : "inflow",
         currencyEvidence: {
@@ -847,7 +851,11 @@ export function buildYuantaForeignCurrencyCaptureInput(
             }
           : null,
         description: values[5] || null,
-        sourcePayload: { transactionInfo: values[9] ?? "", reportedRate: reportedRateText },
+        sourcePayload: {
+          providerSequence,
+          transactionInfo: values[9] ?? "",
+          reportedRate: reportedRateText,
+        },
       };
     }),
   };

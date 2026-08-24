@@ -404,20 +404,21 @@ export function buildSinopacForeignCurrencyCaptureInput(
     sourceConnectionKey: "sinopac-foreign-current-login",
     identityEpochKey: "sinopac-foreign-current-identity",
     accountType: "depository",
+    captureCurrencyScope: { kind: "currency", currency },
     captureOccurrenceId,
     zeroResultAuthority,
     observedAt,
     startDate: formatSlashDate(dateRange.startDate).replaceAll("/", "-"),
     endDate: formatSlashDate(dateRange.endDate).replaceAll("/", "-"),
     completeness: "complete-range",
-    records: rows.map((row) => {
+    records: rows.map((row, rowOrdinal) => {
       const [transactionDate, , transactionTime, description, withdrawal, deposit, balance] = row.values;
       const debit = cleanText(withdrawal);
       const credit = cleanText(deposit);
       if ((debit.length > 0) === (credit.length > 0))
         throw new Error("SinoPac foreign row must prove exactly one amount direction.");
       const dateValue = transactionDate.replaceAll("/", "-");
-      const sourceKey = `${accountNo}:${currency}:${dateValue}:${transactionTime}:${description}:${debit}:${credit}`;
+      const sourceKey = `${accountNo}:${currency}:${captureOccurrenceId}:page:0:row:${rowOrdinal}`;
       const reportedRate = cleanText(row.values[8]);
       return {
         sourceKey,
@@ -439,7 +440,12 @@ export function buildSinopacForeignCurrencyCaptureInput(
             }
           : null,
         description: description || null,
-        sourcePayload: { memo: row.values[7] ?? "", reportedRate: row.values[8] ?? "" },
+        sourcePayload: {
+          pageOrdinal: 0,
+          rowOrdinal,
+          memo: row.values[7] ?? "",
+          reportedRate: row.values[8] ?? "",
+        },
       };
     }),
   };

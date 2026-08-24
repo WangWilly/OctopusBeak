@@ -21,6 +21,7 @@ function fixture(
   return {
     ...shared,
     source,
+    captureCurrencyScope: { kind: "currency", currency },
     records: [
       {
         sourceKey: `${source}-fixture-${sequence}`,
