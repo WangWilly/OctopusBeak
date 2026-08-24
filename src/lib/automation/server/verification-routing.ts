@@ -11,6 +11,7 @@ import {
   solveVerificationChallenge,
   verificationPlanForContract,
   type SolveOutcome,
+  type VerificationSelectionPoint,
   type VerificationSolver,
 } from "./verification-solver.ts";
 import { localVerificationSolver } from "./text-captcha-solver.ts";
@@ -18,6 +19,7 @@ import {
   captureChallengeImageForContract,
   clickVerificationTarget,
   injectVerificationAnswer,
+  injectVerificationSelections,
 } from "./automation-viewer.ts";
 import { finalizeFailedWaitingRun } from "./task-run-finalization.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
@@ -36,6 +38,11 @@ export type VerificationRoutingDependencies = {
     session: string,
     contract: HumanAssistanceContract,
     answer: string,
+  ) => Promise<void>;
+  injectSelections: (
+    session: string,
+    contract: HumanAssistanceContract,
+    selections: readonly VerificationSelectionPoint[],
   ) => Promise<void>;
   clickTarget: (
     session: string,
@@ -88,6 +95,8 @@ export async function routeVerificationActor(input: {
         deps.captureChallengeImage(input.session, contract!),
       injectAnswer: (answer) =>
         deps.injectAnswer(input.session, contract!, answer),
+      injectSelections: (selections) =>
+        deps.injectSelections(input.session, contract!, selections),
     });
   } catch {
     await deps.finalizeFailed("Verification solver failed to solve the challenge.");
@@ -109,6 +118,7 @@ export async function routeWaitingRunVerification(input: {
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
+  injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
   finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
   settings?: AutomationSettingsFile;
@@ -147,6 +157,7 @@ export async function routeWaitingRunVerification(input: {
     captureChallengeImage:
       input.captureChallengeImage ?? captureChallengeImageForContract,
     injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
+    injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
     resume: (session) => {
       input.scheduleResume(session);
