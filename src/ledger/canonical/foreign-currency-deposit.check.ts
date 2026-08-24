@@ -453,6 +453,25 @@ for (const mutate of [
   );
 }
 
+for (const mutatePages of [
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.pages[0]!.terminal = false;
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.pages[0]!.pageOrdinal = 1;
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.pages[0]!.rowCount = 0;
+  },
+]) {
+  const incomplete = structuredClone(usd);
+  mutatePages(incomplete);
+  assert.throws(
+    () => admitForeignCurrencyDepositCapture(incomplete),
+    /terminal|page ordinal|row count|records|complete/i,
+  );
+}
+
 const defensiveDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-defensive-133-"));
 try {
   const defensiveStore = createCanonicalSourceStore(

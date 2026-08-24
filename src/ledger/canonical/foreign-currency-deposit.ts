@@ -14,6 +14,7 @@ import {
   type FinancialDepositSourceTime,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 
 export const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
@@ -43,31 +44,23 @@ export const FOREIGN_CURRENCY_DEPOSIT_CONTRACTS: Readonly<
   Record<ForeignCurrencyDepositSourceId, ForeignCurrencyContract>
 > = {
   yuanta: {
+    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.yuanta,
     sourceId: "yuanta",
-    authorityRoute: "yuanta/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/yuanta/v1",
-    recordKind: "yuanta-foreign-currency-deposit",
     workflow: "yuantaForeignCurrencyStatements",
   },
   cathay: {
+    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.cathay,
     sourceId: "cathay",
-    authorityRoute: "cathay/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/cathay/v1",
-    recordKind: "cathay-foreign-currency-deposit",
     workflow: "cathayForeignStatements",
   },
   sinopac: {
+    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.sinopac,
     sourceId: "sinopac",
-    authorityRoute: "sinopac/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/sinopac/v1",
-    recordKind: "sinopac-foreign-currency-deposit",
     workflow: "sinopacStatements",
   },
   linebank: {
+    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.linebank,
     sourceId: "linebank",
-    authorityRoute: "linebank/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/linebank/v1",
-    recordKind: "linebank-foreign-currency-deposit",
     workflow: "linebankStatements",
   },
 };

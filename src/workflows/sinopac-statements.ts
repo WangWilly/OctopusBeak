@@ -418,7 +418,7 @@ export function buildSinopacForeignCurrencyCaptureInput(
       if ((debit.length > 0) === (credit.length > 0))
         throw new Error("SinoPac foreign row must prove exactly one amount direction.");
       const dateValue = transactionDate.replaceAll("/", "-");
-      const sourceKey = `${accountNo}:${currency}:${captureOccurrenceId}:page:0:row:${rowOrdinal}`;
+      const sourceKey = `${accountNo}:${currency}:page:0:row:${rowOrdinal}`;
       const reportedRate = cleanText(row.values[8]);
       return {
         sourceKey,
