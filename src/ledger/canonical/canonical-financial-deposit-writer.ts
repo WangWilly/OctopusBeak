@@ -220,6 +220,8 @@ function validateSourceTime(
     throw new Error("Financial record time origin is invalid.");
   if (value.precision !== "date" && value.timeOrigin === "defaulted_local_midnight")
     throw new Error("Only date precision may default to local midnight.");
+  if (value.precision === "date" && value.timeOrigin !== "defaulted_local_midnight")
+    throw new Error("Date precision must use the defaulted local midnight time origin.");
   const expectedEpoch = Date.parse(`${value.localDate}T${value.localTime}+08:00`);
   if (!Number.isSafeInteger(value.epochMilliseconds) || value.epochMilliseconds !== expectedEpoch)
     throw new Error("Financial record source instant does not match its local time evidence.");
