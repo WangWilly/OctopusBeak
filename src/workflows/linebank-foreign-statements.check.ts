@@ -59,6 +59,34 @@ assert.throws(
     buildLinebankForeignCurrencyCaptureInput({
       account,
       dateRange: { startDate: "20260801", endDate: "20260824" },
+      pages: [{
+        pageNbr: 1,
+        pageCnt: 1,
+        totTxCnt: 1,
+        txCnt: 1,
+        rows: [{
+          txSeqNbr: "2",
+          txDt: "20260802",
+          txTm: "091011",
+          txDtm,
+          dpstWdrwDsCd: "1",
+          txAmt: "-10.25",
+          afTxBal: "100.25",
+          crrnDpstNthCnt: 1,
+          bizTxFuncTpNm: "invalid signed inflow",
+        }],
+        source: { acctNbr: "LINE-FOREIGN-133", arrId: "ARR-133", opnDtm: 133 },
+        responseCode: "200",
+      }],
+      captureOccurrenceId: "linebank-foreign-sign-conflict",
+    }),
+  /sign|direction|negative/i,
+);
+assert.throws(
+  () =>
+    buildLinebankForeignCurrencyCaptureInput({
+      account,
+      dateRange: { startDate: "20260801", endDate: "20260824" },
       pages: [{ ...inputPagesWithoutEpoch() }],
     }),
   /identity epoch|source account identity/i,

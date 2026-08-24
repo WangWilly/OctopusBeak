@@ -696,7 +696,7 @@ export function linebankStatementRowsToCsv(
 function exactLinebankAmount(value: number | string | undefined, label: string): string {
   if (typeof value === "number")
     throw new Error(`LINE Bank foreign ${label} must remain an exact decimal string.`);
-  const lexeme = transactionAmountLexeme(value).replace(/^-/, "");
+  const lexeme = transactionAmountLexeme(value);
   if (!lexeme) throw new Error(`LINE Bank foreign row is missing ${label}.`);
   return lexeme;
 }
@@ -755,10 +755,16 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
     completeness: "complete-range",
     records: rows.map((row) => {
       linebankValidateSourceOccurrenceFields(row);
-      const amount = exactLinebankAmount(row.txAmt, "amount");
-      const balanceAfter = exactLinebankAmount(row.afTxBal, "balance");
+      const signedAmount = exactLinebankAmount(row.txAmt, "amount");
+      const signedBalanceAfter = exactLinebankAmount(row.afTxBal, "balance");
       if (row.dpstWdrwDsCd !== "1" && row.dpstWdrwDsCd !== "2")
         throw new Error("LINE Bank foreign row lacks an explicit direction.");
+      if (row.dpstWdrwDsCd === "1" && signedAmount.startsWith("-"))
+        throw new Error("LINE Bank foreign amount sign conflicts with inflow direction.");
+      if (signedBalanceAfter.startsWith("-"))
+        throw new Error("LINE Bank foreign negative balance is unsupported by the canonical contract.");
+      const amount = signedAmount.replace(/^-/, "");
+      const balanceAfter = signedBalanceAfter;
       const transactionDate = cleanText(row.txDt).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const transactionTime = formatTime(row.txTm);
       return {
@@ -776,6 +782,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
           occurrenceCounter: String(row.crrnDpstNthCnt),
           functionCode: row.bizTxFuncTpCd ?? "",
           transactionId: row.fxsTxId ?? "",
+          signedAmount,
         },
       };
     }),
