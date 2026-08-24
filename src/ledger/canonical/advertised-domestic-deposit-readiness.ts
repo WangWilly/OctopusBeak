@@ -44,9 +44,15 @@ import {
 } from "./linebank-domestic-deposit.ts";
 import {
   POST_DOMESTIC_DEPOSIT_CONTRACT,
+  POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
   POST_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
   preflightPostDomesticDeposit,
 } from "./post-domestic-deposit.ts";
+import {
+  POST_HUMAN_ATTESTED_V1_MANIFEST,
+  isPostHumanAttestationDurablyActive,
+} from "./post-human-attestation.ts";
 import {
   SINOPAC_DOMESTIC_DEPOSIT_CONTRACT,
   SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -524,6 +530,47 @@ export function buildHncbDomesticDepositReadinessFromLedger(
   };
 }
 
+/** Promote Post only after a non-empty financial capture and an active durable
+ * 1A/2A/3A attestation. Source-only and zero-result captures remain blocked. */
+export function buildPostDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("post");
+  const durableTransactionCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM financial_transactions transaction_row
+           JOIN source_records source_record
+             ON source_record.source_record_id = (
+               SELECT revision.source_record_id
+               FROM transaction_revisions revision
+               WHERE revision.transaction_id = transaction_row.transaction_id
+               ORDER BY revision.revision_number DESC LIMIT 1
+             )
+           JOIN source_captures capture
+             ON capture.capture_id = source_record.capture_id
+           WHERE capture.authority_route = ?`,
+        )
+        .get(POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as { count?: number }
+    ).count ?? 0,
+  );
+  if (durableTransactionCount === 0 || !isPostHumanAttestationDurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: POST_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: POST_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
 /** Promote SinoPac domestic deposits only after an active durable observed
  * attestation and a matching financial transaction. Foreign deposits remain
  * source-only. */
@@ -581,9 +628,11 @@ export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
           ? buildYuantaDomesticDepositReadinessFromLedger(db)
           : entry.sourceId === "hncb"
             ? buildHncbDomesticDepositReadinessFromLedger(db)
-            : entry.sourceId === "sinopac"
-              ? buildSinopacDomesticDepositReadinessFromLedger(db)
-              : entry,
+            : entry.sourceId === "post"
+              ? buildPostDomesticDepositReadinessFromLedger(db)
+              : entry.sourceId === "sinopac"
+                ? buildSinopacDomesticDepositReadinessFromLedger(db)
+                : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }

@@ -1081,6 +1081,8 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
       "run",
       "src/workflows/post-statements.ts",
       "--headless",
+      "--params",
+      '{"telemetry":true}',
     ],
     kind: "crawler",
     credentialGroupId: "post",

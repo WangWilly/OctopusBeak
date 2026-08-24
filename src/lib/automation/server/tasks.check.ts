@@ -63,6 +63,18 @@ assert.deepEqual(hncbStatements.command, [
   "src/workflows/hncb-statements.ts",
   "--headless",
 ]);
+const postStatements = taskById("post-statements");
+assert.ok(postStatements);
+assert.equal(postStatements.id, "post-statements");
+assert.equal(postStatements.script, "run:post-statements");
+assert.deepEqual(postStatements.command, [
+  "libretto",
+  "run",
+  "src/workflows/post-statements.ts",
+  "--headless",
+  "--params",
+  '{"telemetry":true}',
+]);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "sinopac")
     ?.statementTypes,

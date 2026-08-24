@@ -266,6 +266,24 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       requireProviderGuaranteedFalse: true,
       absenceAuthorityOnlyWhenEmpty: true,
     },
+    "post/domestic-deposit/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "post/domestic-deposit/human-attested-v1",
+      effectiveTimeBasis: "accounting",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      completeness: "complete-range",
+      completenessBasis: "accepted-range-terminal-http-200-nonempty-item",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "post",
+      stream: "domestic-deposit",
+      recordKind: "post-domestic-deposit",
+      contractVersion: "human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
   };
   const routeRule = routeRules[capture.authorityRoute];
   if (
