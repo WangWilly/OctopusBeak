@@ -13,8 +13,13 @@ import {
   sinopacSortAccounts,
   sinopacSignedInPageUrl,
   sinopacStatementRowsToCsv,
+  runSinopacIdentityValidation,
+  sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
 } from "./sinopac-statements.ts";
+import {
+  type SinopacIdentityRawRow,
+} from "./sinopac-identity-evidence.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 assert.deepEqual(
@@ -572,3 +577,114 @@ assert.equal(
   sinopacStatementRowsToCsv(rows),
   '帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註,匯率\n2025/09/29,2025/09/29,06:01,電子交易,109,,"9,029",一卡通Money自動儲值 iPASS MO,31.2\n2025/10/21,2025/10/21,00:13,利息存入,,6,"9,035",,\n',
 );
+
+const identityInput = sinopacIdentityValidationSchema.parse({
+  startDate: "20250825",
+  endDate: "20260824",
+  currency: "USD",
+  overlapStartDate: "20260224",
+  overlapEndDate: "20260824",
+});
+assert.equal(identityInput.currency, "USD");
+assert.equal(
+  sinopacIdentityValidationSchema.safeParse({
+    startDate: "20250825",
+    endDate: "20260824",
+    currency: "TWD",
+  }).success,
+  false,
+);
+
+const identityRows: SinopacIdentityRawRow[] = [
+  {
+    DataText1: "2026/08/20 09:00",
+    DataText2: "2026/08/20",
+    DataText3: "synthetic row one",
+    DataText4: "100.00",
+    DataText5: "900.00",
+    DataText6: "candidate-one",
+    DataText7: "31.1",
+    DataText8: "note-one",
+    DataText9: "candidate-nine-one",
+    DataText10: "candidate-ten-one",
+    DataText11: "candidate-eleven-one",
+  },
+  {
+    DataText1: "2026/08/21 10:00",
+    DataText2: "2026/08/21",
+    DataText3: "synthetic row two",
+    DataText4: "200.00",
+    DataText5: "700.00",
+    DataText6: "candidate-two",
+    DataText7: "31.2",
+    DataText8: "note-two",
+    DataText9: "candidate-nine-two",
+    DataText10: "candidate-ten-two",
+    DataText11: "candidate-eleven-two",
+  },
+];
+const identityResponse = {
+  Header: "SUCCESS",
+  RecordCount: "3",
+  SubInfo: [identityRows[0]!, identityRows[1]!, identityRows[0]!],
+};
+let identityQueryCount = 0;
+const identityPage = {
+  url: () => SINOPAC_LOGIN_URL,
+  context: () => ({ cookies: async () => [] }),
+  locator: () => ({
+    all: async () => [],
+    count: async () => 0,
+  }),
+  getByText: () => ({ count: async () => 0 }),
+  evaluate: async (expression: unknown) => {
+    if (typeof expression === "string") {
+      return {
+        botGlobal: false,
+        fetchSource: "function fetch() { [native code] }",
+        openSource: "function open() { [native code] }",
+      };
+    }
+    identityQueryCount += 1;
+    return [identityResponse];
+  },
+} as never;
+const identitySummary = await runSinopacIdentityValidation(
+  identityPage,
+  identityInput,
+  [{ DataText: "USD account", DataValue: "002", DisplayText: "USD" }],
+);
+assert.equal(identitySummary.mode, "identity-validation");
+assert.equal(identitySummary.captures.length, 3);
+assert.equal(identitySummary.exactRepeat.rowSetEqual, true);
+assert.equal(identitySummary.overlap.rightRowsContained, true);
+assert.equal(identitySummary.captures[0]?.duplicateCompleteRowsExist, true);
+assert.equal(
+  identitySummary.candidateFields.DataText6?.populationByCapture["exact-repeat-1"]
+    .uniqueWithinCapture,
+  false,
+);
+assert.equal(
+  identitySummary.candidateFields.DataText6?.exactRepeat.stableForMatchedRows,
+  true,
+);
+assert.deepEqual(identitySummary.siteAssessment, {
+  botProtectionDetected: false,
+  fetchXhrWrapperCategory: { fetch: "native", xhr: "native" },
+  challengeType: "none",
+});
+assert.deepEqual(identitySummary.sideEffects, {
+  canonicalCommits: false,
+  statementFilesWritten: false,
+  rawValuesReturned: false,
+});
+assert.equal(
+  identityQueryCount,
+  sinopacQueryWindows({ startDate: "20250825", endDate: "20260824" }).length *
+    2 +
+    sinopacQueryWindows({ startDate: "20260224", endDate: "20260824" }).length,
+);
+const redactedIdentitySummary = JSON.stringify(identitySummary);
+assert.equal(redactedIdentitySummary.includes("candidate-one"), false);
+assert.equal(redactedIdentitySummary.includes("USD account"), false);
+assert.equal(redactedIdentitySummary.includes("002"), false);
