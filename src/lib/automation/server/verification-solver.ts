@@ -6,10 +6,24 @@ import {
 
 export const MAX_SOLVE_ATTEMPTS = 3;
 
-export type VerificationSolverResult = {
+export type VerificationSelectionPoint = {
+  x: number;
+  y: number;
+};
+
+export type TextVerificationAnswer = {
   answer: string;
   confidence: number;
 };
+
+export type SelectionVerificationAnswer = {
+  selections: readonly VerificationSelectionPoint[];
+  confidence: number;
+};
+
+export type VerificationSolverResult =
+  | TextVerificationAnswer
+  | SelectionVerificationAnswer;
 
 export type VerificationSolver = {
   solve(input: {
@@ -49,6 +63,9 @@ export type SolveDependencies = {
   solver: VerificationSolver;
   captureChallengeImage: () => Promise<Buffer | null>;
   injectAnswer: (answer: string) => Promise<void>;
+  injectSelections?: (
+    selections: readonly VerificationSelectionPoint[],
+  ) => Promise<void>;
 };
 
 export type SolveOutcome =
@@ -67,7 +84,17 @@ export async function solveVerificationChallenge(
       challengeKind: deps.challengeKind,
     });
     if (result.confidence < deps.confidenceThreshold) continue;
-    await deps.injectAnswer(result.answer);
+    if ("selections" in result) {
+      if (result.selections.length === 0) continue;
+      if (!deps.injectSelections) {
+        throw new Error(
+          "Verification solver returned a selection answer but no selection injection is available.",
+        );
+      }
+      await deps.injectSelections(result.selections);
+    } else {
+      await deps.injectAnswer(result.answer);
+    }
     return { status: "solved" };
   }
   return { status: "exhausted" };

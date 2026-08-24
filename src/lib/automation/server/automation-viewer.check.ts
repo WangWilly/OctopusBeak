@@ -25,6 +25,7 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+  clickVerificationSelectionsOnPage,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 import {
@@ -409,3 +410,16 @@ assert.equal(selectViewerPage([
   { url: () => "devtools://devtools/bundled/inspector.html" },
   { url: () => "https://last.example" },
 ])?.url(), "https://last.example");
+
+const selectionClicks: Array<[number, number]> = [];
+await clickVerificationSelectionsOnPage({
+  mouse: {
+    click: async (x: number, y: number) => {
+      selectionClicks.push([x, y]);
+    },
+  },
+} as never, { x: 100, y: 200, width: 300, height: 200 }, [
+  { x: 10, y: 20 },
+  { x: 50.6, y: 80.4 },
+]);
+assert.deepEqual(selectionClicks, [[110, 220], [151, 280]]);

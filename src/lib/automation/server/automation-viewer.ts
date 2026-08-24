@@ -6,6 +6,7 @@ import type {
   HumanVerificationTarget,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
+import type { VerificationSelectionPoint } from "./verification-solver.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
@@ -744,4 +745,31 @@ export async function clickVerificationTarget(
   }
   const point = focusPointForViewerRect(target.rect);
   await sendNormalizedViewerInput(session, { type: "click", x: point.x, y: point.y }, target);
+}
+
+export async function clickVerificationSelectionsOnPage(
+  page: Page,
+  rect: HumanVerificationRect,
+  selections: readonly VerificationSelectionPoint[],
+) {
+  for (const selection of selections) {
+    await page.mouse.click(
+      Math.round(rect.x + selection.x),
+      Math.round(rect.y + selection.y),
+    );
+  }
+}
+
+export async function injectVerificationSelections(
+  session: string,
+  contract: HumanAssistanceContract,
+  selections: readonly VerificationSelectionPoint[],
+) {
+  const rect = contract.challengeImageRegion?.rect;
+  if (!rect) {
+    throw new Error("Verification contract declares no challenge image region for the solver selections.");
+  }
+  await withPausedPage(session, (page) =>
+    clickVerificationSelectionsOnPage(page, rect, selections),
+  );
 }

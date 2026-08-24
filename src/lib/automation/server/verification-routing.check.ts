@@ -48,6 +48,18 @@ function textCaptchaContract(): HumanAssistanceContract {
   });
 }
 
+function imageSelectionContract(): HumanAssistanceContract {
+  return contract({
+    challengeKind: "image-selection",
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "provider.login.captcha-image",
+      rect: { x: 0, y: 0, width: 300, height: 300 },
+    },
+  });
+}
+
 const confidentSolver = (answer: string, confidence: number): VerificationSolver => ({
   async solve() {
     return { answer, confidence };
@@ -57,6 +69,7 @@ const confidentSolver = (answer: string, confidence: number): VerificationSolver
 function trackDependencies(overrides: Partial<VerificationRoutingDependencies> = {}) {
   const calls: string[] = [];
   const injected: string[] = [];
+  const injectedSelections: Array<readonly { x: number; y: number }[]> = [];
   const resumed: string[] = [];
   const clicked: string[] = [];
   const failed: string[] = [];
@@ -69,6 +82,10 @@ function trackDependencies(overrides: Partial<VerificationRoutingDependencies> =
     injectAnswer: overrides.injectAnswer ?? (async (_session, _contract, answer) => {
       calls.push("inject");
       injected.push(answer);
+    }),
+    injectSelections: overrides.injectSelections ?? (async (_session, _contract, selections) => {
+      calls.push("inject-selections");
+      injectedSelections.push(selections);
     }),
     clickTarget: overrides.clickTarget ?? (async (_session, _contract, targetId) => {
       calls.push("click");
@@ -83,7 +100,7 @@ function trackDependencies(overrides: Partial<VerificationRoutingDependencies> =
       failed.push(message);
     }),
   };
-  return { calls, injected, resumed, clicked, failed, dependencies };
+  return { calls, injected, injectedSelections, resumed, clicked, failed, dependencies };
 }
 
 test("a human actor keeps the existing contract and never touches the solver", async () => {
@@ -112,6 +129,26 @@ test("a solver actor solves an inline challenge and resumes", async () => {
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
   assert.deepEqual(tracked.injected, ["A1B2"]);
   assert.deepEqual(tracked.resumed, ["ses-solver"]);
+});
+
+test("a solver actor injects a selection answer as click coordinates and resumes", async () => {
+  const tracked = trackDependencies({
+    solver: {
+      async solve() {
+        return { selections: [{ x: 10, y: 20 }], confidence: 0.95 };
+      },
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: imageSelectionContract(),
+    session: "ses-solver",
+    confidenceThreshold: 0.9,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "resumed" });
+  assert.deepEqual(tracked.calls, ["capture", "inject-selections", "resume"]);
+  assert.deepEqual(tracked.injectedSelections, [[{ x: 10, y: 20 }]]);
 });
 
 test("an exhausted solve finalizes the run as failed", async () => {
@@ -157,6 +194,7 @@ test("an absent challenge proceeds without a solve or a pause", async () => {
     injectAnswer: async (_session, _contract, answer) => {
       injected.push(answer);
     },
+    injectSelections: async () => {},
     clickTarget: async () => {},
     resume: () => {
       calls.push("resume");

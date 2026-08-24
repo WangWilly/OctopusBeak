@@ -164,3 +164,96 @@ test("an absent challenge stops solving immediately", async () => {
   assert.deepEqual(outcome, { status: "absent" });
   assert.equal(solves, 0);
 });
+
+test("a selection answer is injected as the matched click coordinates", async () => {
+  const selections = [
+    { x: 10, y: 20 },
+    { x: 40, y: 50 },
+  ];
+  const injectedSelections: Array<readonly { x: number; y: number }[]> = [];
+  const solver: VerificationSolver = {
+    async solve() {
+      return { selections, confidence: 0.95 };
+    },
+  };
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "image-selection",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {
+      throw new Error("text injection must not run for a selection answer");
+    },
+    injectSelections: async (received) => {
+      injectedSelections.push(received);
+    },
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injectedSelections, [selections]);
+});
+
+test("a below-threshold selection is withheld and never injected", async () => {
+  let solves = 0;
+  const injectedSelections: Array<readonly { x: number; y: number }[]> = [];
+  const solver: VerificationSolver = {
+    async solve() {
+      solves += 1;
+      return { selections: [{ x: 5, y: 5 }], confidence: 0.2 };
+    },
+  };
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "image-selection",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    injectSelections: async (received) => {
+      injectedSelections.push(received);
+    },
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.equal(solves, MAX_SOLVE_ATTEMPTS);
+  assert.deepEqual(injectedSelections, []);
+});
+
+test("an empty selection set is withheld like a failed attempt", async () => {
+  let solves = 0;
+  const injectedSelections: Array<readonly { x: number; y: number }[]> = [];
+  const solver: VerificationSolver = {
+    async solve() {
+      solves += 1;
+      return { selections: [], confidence: 0.95 };
+    },
+  };
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "image-selection",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    injectSelections: async (received) => {
+      injectedSelections.push(received);
+    },
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.equal(solves, MAX_SOLVE_ATTEMPTS);
+  assert.deepEqual(injectedSelections, []);
+});
+
+test("a selection answer without an injection handler is rejected", async () => {
+  const solver: VerificationSolver = {
+    async solve() {
+      return { selections: [{ x: 1, y: 1 }], confidence: 0.95 };
+    },
+  };
+  await assert.rejects(
+    solveVerificationChallenge({
+      challengeKind: "image-selection",
+      confidenceThreshold: 0.9,
+      solver,
+      captureChallengeImage: async () => image,
+      injectAnswer: async () => {},
+    }),
+    /no selection injection is available/,
+  );
+});
