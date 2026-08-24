@@ -1159,11 +1159,11 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
-    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
-    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
@@ -1175,7 +1175,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
-    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2381,6 +2381,11 @@ function validateCathayAuthorityRoute(
             AND registered.integration_namespace = 'hncb'
             AND registered.contract_version = 'human-attested-v1')
           OR
+          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1'
+            AND registered.integration_namespace = 'ctbc'
+            AND registered.contract_version = 'human-attested-v1')
+          OR
           (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1'
             AND registered.integration_namespace = 'sinopac'
@@ -3324,6 +3329,9 @@ function validateSelectedAssertionProvenance(
           OR
           (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1')
+          OR
+          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
+            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1')
           OR
           (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1')
@@ -4370,6 +4378,7 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /yuanta\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /yuanta\/domestic-deposit\/human-attested-v2/.test(sql) &&
     /hncb\/domestic-deposit\/human-attested-v1/.test(sql) &&
+    /ctbc\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /sinopac\/domestic-deposit\/human-attested-v1/.test(sql)
   )
     return;
@@ -4395,15 +4404,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -5757,6 +5766,12 @@ export interface CathayCanonicalFinancialQuery {
     request: CathayCanonicalLineageQueryRequest,
   ): Promise<CathayCanonicalLineageQueryResult>;
 }
+/** Provider-scoped reader over the shared canonical financial projection. */
+export type CanonicalFinancialQuery = CathayCanonicalFinancialQuery;
+export type CanonicalFinancialQueryProfile = {
+  integrationNamespace: string;
+  postingRuleVersion: string;
+};
 export type CathayCommitTransactionResult = {
   transactionId: string;
   revisionId: string;
@@ -7989,9 +8004,20 @@ function addSelectedFields(
 
 class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQuery {
   private readonly ledgerDir: string;
+  private readonly profile: CanonicalFinancialQueryProfile;
 
-  constructor(ledgerDir: string) {
+  constructor(ledgerDir: string, profile: CanonicalFinancialQueryProfile) {
     this.ledgerDir = ledgerDir;
+    this.profile = {
+      integrationNamespace: requireSourceText(
+        profile.integrationNamespace,
+        "Canonical financial integration namespace",
+      ),
+      postingRuleVersion: requireSourceText(
+        profile.postingRuleVersion,
+        "Canonical financial posting rule version",
+      ),
+    };
   }
   async current(
     _request: CathayCanonicalCurrentQueryRequest,
@@ -8007,10 +8033,10 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                FROM financial_accounts account
                JOIN source_connections connection
                  ON connection.source_connection_id = account.source_connection_id
-               WHERE connection.integration_namespace = 'cathay'
+               WHERE connection.integration_namespace = ?
                ORDER BY account.account_no`,
             )
-            .all() as Record<string, unknown>[]
+            .all(this.profile.integrationNamespace) as Record<string, unknown>[]
         ).map((row) => ({
           id: idToString(row.id),
           accountNo: String(row.accountNo),
@@ -8037,10 +8063,10 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN canonical_commits projection_cutoff ON projection_cutoff.commit_id = state.commit_id
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
-        WHERE r.posting_rule_version = 'cathay/domestic-deposit/v1'
+        WHERE r.posting_rule_version = ?
         ORDER BY a.account_no, t.source_sequence`,
           )
-          .all() as Record<string, unknown>[];
+          .all(this.profile.postingRuleVersion) as Record<string, unknown>[];
         const projection = db
           .prepare(
             `SELECT c.commit_sequence FROM current_projection_state state
@@ -8097,7 +8123,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
         JOIN assertions sa ON sa.revision_id = r.revision_id AND sa.origin = 'source'
-        WHERE r.posting_rule_version = 'cathay/domestic-deposit/v1'
+        WHERE r.posting_rule_version = ?
           AND r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
@@ -8105,6 +8131,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           )
           .all(
             knowledgeAt,
+            this.profile.postingRuleVersion,
             request.cutoff.financialAt,
             knowledgeAt,
             request.cutoff.financialAt,
@@ -8312,7 +8339,17 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
 export function createCathayCanonicalFinancialQuery(
   ledgerDir: string,
 ): CathayCanonicalFinancialQuery {
-  return new CathayCanonicalFinancialQueryAdapter(ledgerDir);
+  return createCanonicalFinancialQuery(ledgerDir, {
+    integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
+    postingRuleVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  });
+}
+
+export function createCanonicalFinancialQuery(
+  ledgerDir: string,
+  profile: CanonicalFinancialQueryProfile,
+): CanonicalFinancialQuery {
+  return new CathayCanonicalFinancialQueryAdapter(ledgerDir, profile);
 }
 
 /** Generic, source-only evidence seam shared by integration adapters. */

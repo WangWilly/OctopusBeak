@@ -15,9 +15,15 @@ import {
 } from "./cathay-human-attestation.ts";
 import {
   CTBC_DOMESTIC_DEPOSIT_CONTRACT,
+  CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+  CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
   CTBC_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
   preflightCtbcDomesticDeposit,
 } from "./ctbc-domestic-deposit.ts";
+import {
+  CTBC_HUMAN_ATTESTED_V1_MANIFEST,
+  isCtbcHumanAttestationDurablyActive,
+} from "./ctbc-human-attestation.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_CONTRACT,
   FUBON_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
@@ -530,6 +536,47 @@ export function buildHncbDomesticDepositReadinessFromLedger(
   };
 }
 
+/** Promote CTBC only after a matching non-empty financial capture and an
+ * active durable observed-human-attested-v1 event chain. */
+export function buildCtbcDomesticDepositReadinessFromLedger(
+  db: DatabaseSync,
+): AdvertisedDomesticDepositReadinessEntry {
+  const base = buildReadinessEntry("ctbc");
+  const durableTransactionCount = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+         FROM financial_transactions transaction_row
+         JOIN source_records source_record
+           ON source_record.source_record_id = (
+             SELECT revision.source_record_id
+             FROM transaction_revisions revision
+             WHERE revision.transaction_id = transaction_row.transaction_id
+             ORDER BY revision.revision_number DESC LIMIT 1
+           )
+         JOIN source_captures capture
+           ON capture.capture_id = source_record.capture_id
+         WHERE capture.authority_route = ?`,
+        )
+        .get(CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY) as { count?: number }
+    ).count ?? 0,
+  );
+  if (durableTransactionCount === 0 || !isCtbcHumanAttestationDurablyActive(db))
+    return base;
+  return {
+    ...base,
+    authority: CTBC_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    contractVersion: CTBC_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    capability: CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS,
+    fixtureEvidence: "canonical-versioned-human-attested",
+    liveValidation: "complete",
+    providerGuaranteed: false,
+    semanticBlockers: [],
+    blockers: [],
+  };
+}
+
 /** Promote Post only after a non-empty financial capture and an active durable
  * 1A/2A/3A attestation. Source-only and zero-result captures remain blocked. */
 export function buildPostDomesticDepositReadinessFromLedger(
@@ -628,11 +675,13 @@ export function evaluateAdvertisedDomesticDepositReadinessFromLedger(
           ? buildYuantaDomesticDepositReadinessFromLedger(db)
           : entry.sourceId === "hncb"
             ? buildHncbDomesticDepositReadinessFromLedger(db)
-            : entry.sourceId === "post"
-              ? buildPostDomesticDepositReadinessFromLedger(db)
-              : entry.sourceId === "sinopac"
-                ? buildSinopacDomesticDepositReadinessFromLedger(db)
-                : entry,
+            : entry.sourceId === "ctbc"
+              ? buildCtbcDomesticDepositReadinessFromLedger(db)
+              : entry.sourceId === "post"
+                ? buildPostDomesticDepositReadinessFromLedger(db)
+                : entry.sourceId === "sinopac"
+                  ? buildSinopacDomesticDepositReadinessFromLedger(db)
+                  : entry,
   );
   return evaluateAdvertisedDomesticDepositReadiness(entries);
 }

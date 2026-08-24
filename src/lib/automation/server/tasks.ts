@@ -1065,6 +1065,8 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
       "run",
       "src/workflows/ctbc-statements.ts",
       "--headless",
+      "--params",
+      '{"telemetry":true}',
     ],
     kind: "crawler",
     credentialGroupId: "ctbc",

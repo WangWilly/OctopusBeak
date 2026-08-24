@@ -7,6 +7,25 @@ import {
 } from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import {
+  admitCtbcDomesticDepositCaptureEvidence,
+  admitCtbcDomesticDepositFinancialCapture,
+  commitCanonicalCtbcDomesticDepositCaptureBatch,
+  commitCtbcDomesticDepositSourceEvidenceBatch,
+  CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+  type CtbcDomesticDepositCaptureEvidence,
+  type CtbcDomesticDepositValidatedEvidence,
+} from "../ledger/canonical/ctbc-domestic-deposit.ts";
+import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
+  getCtbcHumanAttestedV1Manifest,
+} from "../ledger/canonical/ctbc-human-attestation.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -31,6 +50,7 @@ const inputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).optional(),
+  telemetry: z.boolean().optional(),
 });
 
 const statementFileSchema = z.object({
@@ -51,6 +71,8 @@ const outputSchema = z.object({
   count: z.number().int().nonnegative(),
   rowCount: z.number().int().nonnegative(),
   downloads: z.array(statementFileSchema),
+  sourceCaptureCount: z.number().int().nonnegative(),
+  status: z.enum(["absent", "source-only", "financial-admitted"]),
 });
 
 type CtbcCredentials = {
@@ -119,8 +141,50 @@ type CtbcDetailData = {
   nextKey?: string;
 };
 
+type CtbcAmountClass = "empty" | "valid-zero" | "valid-nonzero" | "invalid";
+
+export type CtbcDetailTelemetry = {
+  rowCount: number;
+  nextKey: "empty" | "present";
+  accountingDateShapes: Record<string, number>;
+  transactionDateShapes: Record<string, number>;
+  amountPairs: Record<string, number>;
+};
+
 type CtbcResourceCapture<T> = {
   body: CtbcResourceResponse<T>;
+};
+
+export type CtbcObservedRangeResponse = {
+  rangeOrdinal: number;
+  startDate: string;
+  endDate: string;
+  code: "0000" | "9201";
+  nextKey: string | null;
+  terminal: boolean;
+  rows: CtbcStatementRow[];
+};
+
+export type CtbcObservedAccountCapture = {
+  accountId: string;
+  queryPeriods: string[];
+  expectedRangeCount: number;
+  responses: CtbcObservedRangeResponse[];
+};
+
+type CtbcCollectedStatements = {
+  output: Omit<CtbcStatementsOutput, "sourceCaptureCount" | "status">;
+  captures: CtbcObservedAccountCapture[];
+};
+
+export type CtbcStatementsRunDependencies = {
+  collectStatements?: (
+    page: Page,
+    input: z.infer<typeof inputSchema>,
+  ) => Promise<CtbcCollectedStatements>;
+  canonicalSourceLedgerDir?: string;
+  canonicalFinancialLedgerDir?: string;
+  observedAt?: string;
 };
 
 export type CtbcStatementRow = {
@@ -183,8 +247,54 @@ function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
-function amountText(displayValue: string | undefined, rawValue: string | undefined) {
+function amountText(
+  displayValue: string | undefined,
+  rawValue: string | undefined,
+) {
   return cleanText(displayValue) || cleanText(rawValue);
+}
+
+function amountClass(value: string): CtbcAmountClass {
+  const clean = cleanText(value).replace(/,/g, "");
+  if (!clean) return "empty";
+  if (!/^-?\d+(?:\.\d+)?$/.test(clean)) return "invalid";
+  return Number(clean) === 0 ? "valid-zero" : "valid-nonzero";
+}
+
+function dateShape(value: string | undefined): string {
+  const clean = cleanText(value);
+  if (!clean) return "empty";
+  if (/^\d{4}\/\d{2}\/\d{2}$/.test(clean)) return "slash-date";
+  if (/^\d{8}$/.test(clean)) return "compact-date";
+  if (/^\d{4}-\d{2}-\d{2}/.test(clean)) return "date-time-prefix";
+  return "other";
+}
+
+function increment(counts: Record<string, number>, key: string): void {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
+export function ctbcDetailTelemetry(
+  data: CtbcDetailData | undefined,
+): CtbcDetailTelemetry {
+  const accountingDateShapes: Record<string, number> = {};
+  const transactionDateShapes: Record<string, number> = {};
+  const amountPairs: Record<string, number> = {};
+  const rows = data?.detailList ?? [];
+  for (const row of rows) {
+    increment(accountingDateShapes, dateShape(row.actDtFull));
+    increment(transactionDateShapes, dateShape(row.trnDtFull));
+    const outflow = amountText(row.dbAmtDisplay, row.dbAmt);
+    const inflow = amountText(row.crAmtDisplay, row.crAmt);
+    increment(amountPairs, `${amountClass(outflow)}|${amountClass(inflow)}`);
+  }
+  return {
+    rowCount: rows.length,
+    nextKey: cleanText(data?.nextKey) ? "present" : "empty",
+    accountingDateShapes,
+    transactionDateShapes,
+    amountPairs,
+  };
 }
 
 function slashDate(value: string | undefined): string {
@@ -294,7 +404,12 @@ async function finishCtbcSignIn(page: Page): Promise<void> {
       continue;
     }
 
-    if (await page.locator("#btnHeaderLogout").isVisible().catch(() => false)) {
+    if (
+      await page
+        .locator("#btnHeaderLogout")
+        .isVisible()
+        .catch(() => false)
+    ) {
       return;
     }
 
@@ -382,9 +497,12 @@ async function nextCtbcResource<T>(
   resource: string,
   options: { allowNoData?: boolean } = {},
 ): Promise<CtbcResourceCapture<T>> {
-  const response = await page.waitForResponse(isCtbcResourceResponse(resource), {
-    timeout: 60_000,
-  });
+  const response = await page.waitForResponse(
+    isCtbcResourceResponse(resource),
+    {
+      timeout: 60_000,
+    },
+  );
   const body = (await response.json()) as CtbcResourceResponse<T>;
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
     requireCtbcOk(body, resource);
@@ -392,12 +510,22 @@ async function nextCtbcResource<T>(
   return { body };
 }
 
-function detailsFromCapture(capture: CtbcResourceCapture<CtbcDetailData>) {
+function detailsFromCapture(
+  capture: CtbcResourceCapture<CtbcDetailData>,
+  telemetry = false,
+) {
+  if (telemetry) {
+    console.log("ctbc-domestic-detail-telemetry", {
+      responseClass:
+        capture.body.code === NO_DATA_CODE ? "provider-no-data" : "ok",
+      ...ctbcDetailTelemetry(capture.body.rsData),
+    });
+  }
   if (capture.body.code === NO_DATA_CODE) return [];
   return capture.body.rsData?.detailList ?? [];
 }
 
-async function openDomesticDetailsPage(page: Page) {
+async function openDomesticDetailsPage(page: Page, telemetry = false) {
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
     page,
     "/twrbc-deposit/qu002/010",
@@ -415,7 +543,7 @@ async function openDomesticDetailsPage(page: Page) {
   ]);
   return {
     data: bootstrap.body.rsData ?? {},
-    initialDetails: detailsFromCapture(initialDetails),
+    initialCapture: initialDetails,
   };
 }
 
@@ -427,7 +555,10 @@ function detailAccountOptions(page: Page): Locator {
   return page.locator("a.dropdown-item").filter({ hasText: "帳戶餘額" });
 }
 
-function accountFromOptionText(text: string, optionIndex: number): CtbcAccount | null {
+function accountFromOptionText(
+  text: string,
+  optionIndex: number,
+): CtbcAccount | null {
   const accountId = text.match(/\d{10,16}/)?.[0] ?? "";
   if (!accountId) return null;
   return {
@@ -441,25 +572,51 @@ async function readDetailAccountOptions(
   page: Page,
   fallbackAccounts: CtbcAccount[],
 ): Promise<CtbcAccount[]> {
-  await detailAccountDropdown(page).click();
-  await detailAccountOptions(page).first().waitFor({
-    state: "visible",
-    timeout: 60_000,
-  });
+  const dropdown = detailAccountDropdown(page);
+  if (!(await dropdown.isVisible().catch(() => false))) {
+    return resolveCtbcAccountScope([], fallbackAccounts);
+  }
+  await dropdown.click();
+  const optionVisible = await detailAccountOptions(page)
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!optionVisible) {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    return resolveCtbcAccountScope([], fallbackAccounts);
+  }
 
   const count = await detailAccountOptions(page).count();
   const accounts: CtbcAccount[] = [];
   for (let index = 0; index < count; index += 1) {
-    const text = cleanText(await detailAccountOptions(page).nth(index).textContent());
+    const text = cleanText(
+      await detailAccountOptions(page).nth(index).textContent(),
+    );
     const account = accountFromOptionText(text, index);
     if (account) accounts.push(account);
   }
   await page.keyboard.press("Escape");
 
-  return accounts.length > 0 ? accounts : fallbackAccounts;
+  return resolveCtbcAccountScope(accounts, fallbackAccounts);
 }
 
-async function selectDetailAccount(page: Page, account: CtbcAccount) {
+export function resolveCtbcAccountScope(
+  uiAccounts: CtbcAccount[],
+  fallbackAccounts: CtbcAccount[],
+): CtbcAccount[] {
+  if (uiAccounts.length > 0) return uiAccounts;
+  if (fallbackAccounts.length <= 1) return fallbackAccounts;
+  throw new Error(
+    "CTBC account selector did not expose stable options for every account.",
+  );
+}
+
+async function selectDetailAccount(
+  page: Page,
+  account: CtbcAccount,
+  telemetry = false,
+) {
   if (account.optionIndex === undefined) {
     throw new Error(`No CTBC page option index for ${account.label}.`);
   }
@@ -485,7 +642,7 @@ async function selectDetailAccount(page: Page, account: CtbcAccount) {
 
   return {
     data: bootstrap.body.rsData ?? {},
-    initialDetails: detailsFromCapture(initialDetails),
+    initialCapture: initialDetails,
   };
 }
 
@@ -511,7 +668,11 @@ function accountsFromBootstrap(data: CtbcBootstrapData): CtbcAccount[] {
     });
   }
 
-  return [...new Map(accounts.map((account) => [account.accountId, account])).values()];
+  return [
+    ...new Map(
+      accounts.map((account) => [account.accountId, account]),
+    ).values(),
+  ];
 }
 
 function filterAccounts(
@@ -553,9 +714,11 @@ function monthTabs(page: Page): Locator {
 
 async function captureVisibleMonthDetails(
   page: Page,
-  initialDetails: CtbcDetailRow[],
-): Promise<CtbcDetailRow[]> {
-  const detailRows = [...initialDetails];
+  initialCapture: CtbcResourceCapture<CtbcDetailData>,
+  telemetry = false,
+): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
+  const captures = [initialCapture];
+  detailsFromCapture(initialCapture, telemetry);
   const tabs = monthTabs(page);
   await tabs.first().waitFor({ state: "visible", timeout: 60_000 });
 
@@ -567,26 +730,52 @@ async function captureVisibleMonthDetails(
       { allowNoData: true },
     );
     await tabs.nth(index).click();
-    detailRows.push(...detailsFromCapture(await detailPromise));
+    const capture = await detailPromise;
+    detailsFromCapture(capture, telemetry);
+    captures.push(capture);
   }
 
-  return detailRows;
+  return captures;
 }
 
 async function accountRowsFromCurrentPage(
   page: Page,
   account: CtbcAccount,
   bootstrap: CtbcBootstrapData,
-  initialDetails: CtbcDetailRow[],
+  initialCapture: CtbcResourceCapture<CtbcDetailData>,
   input: z.infer<typeof inputSchema>,
-): Promise<{ queryPeriods: string[]; rows: CtbcStatementRow[] }> {
-  const detailRows = await captureVisibleMonthDetails(page, initialDetails);
-  const rows = ctbcDetailRowsToStatementRows(account, detailRows).filter((row) =>
-    rowWithinDateRange(row, input),
+): Promise<{
+  queryPeriods: string[];
+  rows: CtbcStatementRow[];
+  responses: CtbcObservedRangeResponse[];
+}> {
+  const captures = await captureVisibleMonthDetails(
+    page,
+    initialCapture,
+    input.telemetry,
   );
+  const ranges = bootstrap.dateRanges ?? [];
+  const responses = captures.map((capture, rangeOrdinal) => {
+    const code = capture.body.code === NO_DATA_CODE ? NO_DATA_CODE : "0000";
+    const nextKey = cleanText(capture.body.rsData?.nextKey) || null;
+    const range = ranges[rangeOrdinal];
+    return {
+      rangeOrdinal,
+      startDate: slashDate(range?.firstDateYYYYMMDD),
+      endDate: slashDate(range?.lastDateYYYYMMDD),
+      code,
+      nextKey,
+      terminal: nextKey === null,
+      rows: ctbcDetailRowsToStatementRows(account, detailsFromCapture(capture)),
+    } satisfies CtbcObservedRangeResponse;
+  });
+  const rows = responses
+    .flatMap((response) => response.rows)
+    .filter((row) => rowWithinDateRange(row, input));
   return {
     queryPeriods: queryPeriodsForBootstrap(bootstrap, input),
     rows,
+    responses,
   };
 }
 
@@ -639,49 +828,230 @@ async function writeStatementFiles(
 async function downloadCtbcStatements(
   page: Page,
   input: z.infer<typeof inputSchema>,
-): Promise<CtbcStatementsOutput> {
-  const opened = await openDomesticDetailsPage(page);
+): Promise<CtbcCollectedStatements> {
+  const opened = await openDomesticDetailsPage(page, input.telemetry);
   const allAccounts = await readDetailAccountOptions(
     page,
     accountsFromBootstrap(opened.data),
   );
   const accounts = filterAccounts(allAccounts, input.accountFilters);
 
+  if (input.telemetry) {
+    console.log("ctbc-domestic-account-scope-telemetry", {
+      providerAccountCount: accountsFromBootstrap(opened.data).length,
+      uiAccountCount: allAccounts.length,
+      selectedAccountCount: accounts.length,
+      dateRangeCount: opened.data.dateRanges?.length ?? 0,
+    });
+  }
+
   if (accounts.length === 0) {
-    throw new Error("No CTBC domestic-currency accounts matched accountFilters.");
+    return {
+      output: { count: 0, rowCount: 0, downloads: [] },
+      captures: [],
+    };
   }
 
   const downloads: CtbcDownload[] = [];
+  const captures: CtbcObservedAccountCapture[] = [];
   let currentOptionIndex = 0;
   for (const account of accounts) {
     let bootstrap = opened.data;
-    let initialDetails = opened.initialDetails;
+    let initialCapture = opened.initialCapture;
 
-    if (account.optionIndex !== undefined && account.optionIndex !== currentOptionIndex) {
-      const selected = await selectDetailAccount(page, account);
+    if (
+      account.optionIndex !== undefined &&
+      account.optionIndex !== currentOptionIndex
+    ) {
+      const selected = await selectDetailAccount(
+        page,
+        account,
+        input.telemetry,
+      );
       bootstrap = selected.data;
-      initialDetails = selected.initialDetails;
+      initialCapture = selected.initialCapture;
       currentOptionIndex = account.optionIndex;
     }
 
-    const { queryPeriods, rows } = await accountRowsFromCurrentPage(
+    const { queryPeriods, rows, responses } = await accountRowsFromCurrentPage(
       page,
       account,
       bootstrap,
-      initialDetails,
+      initialCapture,
       input,
     );
     downloads.push(await writeStatementFiles(account, queryPeriods, rows));
+    captures.push({
+      accountId: account.accountId,
+      queryPeriods,
+      expectedRangeCount: bootstrap.dateRanges?.length ?? 0,
+      responses,
+    });
   }
 
   return {
-    count: downloads.length,
-    rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-    downloads,
+    output: {
+      count: downloads.length,
+      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+      downloads,
+    },
+    captures,
+  };
+}
+
+function ctbcObservedAt(now = Date.now()): string {
+  return new Date(now + 8 * 60 * 60 * 1_000)
+    .toISOString()
+    .replace("Z", "+08:00");
+}
+
+function buildCtbcCapture(
+  observed: CtbcObservedAccountCapture,
+  observedAt: string,
+): CtbcDomesticDepositCaptureEvidence {
+  const starts = observed.responses
+    .map((response) => response.startDate)
+    .sort();
+  const ends = observed.responses.map((response) => response.endDate).sort();
+  return {
+    evidenceVersion: CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+    source: "ctbc",
+    product: "domestic-deposit",
+    providerGuaranteed: false,
+    observedAt,
+    account: { accountId: observed.accountId },
+    queryRange: {
+      startDate: starts[0] ?? "",
+      endDate: ends.at(-1) ?? "",
+    },
+    responses: observed.responses.map((response) => ({
+      rangeOrdinal: response.rangeOrdinal,
+      startDate: response.startDate,
+      endDate: response.endDate,
+      code: response.code,
+      nextKey: response.nextKey,
+      terminal: response.terminal,
+      rows: response.rows.map((row, rowOrdinal) => ({
+        rowOrdinal,
+        values: row.values,
+      })),
+    })),
+    provenance: {
+      source: "ctbc-ebmw-qu002-011-natural-response",
+      rangeInventorySource: "ctbc-ebmw-qu002-010-dateRanges",
+      expectedRangeCount: observed.expectedRangeCount,
+      responseBodyRetained: false,
+      authority: "personal-main",
+    },
+  };
+}
+
+export async function runCtbcStatements(
+  page: Page,
+  input: z.infer<typeof inputSchema>,
+  overrides: CtbcStatementsRunDependencies = {},
+): Promise<CtbcStatementsOutput> {
+  const collected = await (
+    overrides.collectStatements ?? downloadCtbcStatements
+  )(page, input);
+  if (collected.captures.length === 0) {
+    return {
+      ...collected.output,
+      sourceCaptureCount: 0,
+      status: "absent",
+    };
+  }
+
+  const observedAt = overrides.observedAt ?? ctbcObservedAt();
+  const captures: CtbcDomesticDepositValidatedEvidence[] = [];
+  for (const observed of collected.captures) {
+    const admission = admitCtbcDomesticDepositCaptureEvidence(
+      buildCtbcCapture(observed, observedAt),
+    );
+    if (admission.status !== "admissible" || !admission.capture) {
+      throw new Error(
+        `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+      );
+    }
+    captures.push(admission.capture);
+  }
+
+  const sourceLedgerDir =
+    overrides.canonicalSourceLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
+  const sourceStore = createCanonicalSourceStore(
+    canonicalSqlitePath(sourceLedgerDir),
+  );
+  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
+  const financialDatabasePath = financialLedgerDir
+    ? canonicalSqlitePath(financialLedgerDir)
+    : null;
+  const financialStore = financialDatabasePath
+    ? financialDatabasePath === canonicalSqlitePath(sourceLedgerDir)
+      ? sourceStore
+      : createCanonicalSourceStore(financialDatabasePath)
+    : null;
+  const financialWriter: CanonicalFinancialDepositWriterStore | null =
+    financialStore
+      ? {
+          db: financialStore.db,
+          databasePath: financialStore.databasePath,
+          commitClock: () => financialStore.commitClock(),
+        }
+      : null;
+  const financialUsesSourceStore = financialStore === sourceStore;
+  const captureEntries = captures.map((capture, index) => ({
+    capture,
+    captureId: `ctbc-${observedAt}-${index}`,
+  }));
+  let status: CtbcStatementsOutput["status"] = "source-only";
+
+  try {
+    if (!financialWriter || !financialUsesSourceStore) {
+      await commitCtbcDomesticDepositSourceEvidenceBatch(
+        sourceStore,
+        captureEntries,
+      );
+    }
+    if (financialWriter) {
+      const manifest = getCtbcHumanAttestedV1Manifest();
+      const financialInputs = captureEntries.map(({ capture, captureId }) => ({
+        capture,
+        captureId: `ctbc-financial-${captureId}`,
+        humanAttestation: manifest,
+      }));
+      const admissions = financialInputs.map(
+        admitCtbcDomesticDepositFinancialCapture,
+      );
+      if (admissions.every((admission) => admission.status === "admitted")) {
+        await commitCanonicalCtbcDomesticDepositCaptureBatch(
+          financialWriter,
+          financialInputs,
+        );
+        status = "financial-admitted";
+      } else if (financialUsesSourceStore) {
+        await commitCtbcDomesticDepositSourceEvidenceBatch(
+          sourceStore,
+          captureEntries,
+        );
+      }
+    }
+  } finally {
+    if (financialStore && !financialUsesSourceStore) financialStore.close();
+    sourceStore.close();
+  }
+
+  return {
+    ...collected.output,
+    sourceCaptureCount: captures.length,
+    status,
   };
 }
 
 export default workflow("ctbcStatements", {
+  startUrl: LOGIN_URL,
   credentials: ["ctbc_user_id", "ctbc_account", "ctbc_password"],
   input: inputSchema,
   output: outputSchema,
@@ -703,7 +1073,11 @@ export default workflow("ctbcStatements", {
     });
 
     console.log("automation-progress: 25");
-    const result = await downloadCtbcStatements(page, input);
+    const result = await runCtbcStatements(page, input, {
+      canonicalFinancialLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
+        ? process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR
+        : undefined,
+    });
     console.log("automation-progress: 100");
     return result;
   },
