@@ -63,6 +63,18 @@ assert.deepEqual(hncbStatements.command, [
   "src/workflows/hncb-statements.ts",
   "--headless",
 ]);
+const ctbcStatements = taskById("ctbc-statements");
+assert.ok(ctbcStatements);
+assert.equal(ctbcStatements.id, "ctbc-statements");
+assert.equal(ctbcStatements.script, "run:ctbc-statements");
+assert.deepEqual(ctbcStatements.command, [
+  "libretto",
+  "run",
+  "src/workflows/ctbc-statements.ts",
+  "--headless",
+  "--params",
+  '{"telemetry":true}',
+]);
 const postStatements = taskById("post-statements");
 assert.ok(postStatements);
 assert.equal(postStatements.id, "post-statements");
