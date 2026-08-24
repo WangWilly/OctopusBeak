@@ -2347,9 +2347,12 @@ function validateCathayAuthorityRoute(
       JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
       JOIN source_authority_routes registered ON registered.authority_route = capture.authority_route
       WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
-        AND capture.stream = ? AND registered.stream = ?
+        AND (
+          (capture.stream = ? AND registered.stream = ?)
+          OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
+        )
         AND source_assertion.producer_id = capture.authority_route
-        AND source_assertion.rule_lineage = capture.authority_route
+        AND source_assertion.rule_lineage IN (capture.authority_route, revision.semantic_rule_version)
         AND (
           (capture.authority_route = ?
             AND capture.completeness_rule_version = ?
@@ -2395,6 +2398,16 @@ function validateCathayAuthorityRoute(
             AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1'
             AND registered.integration_namespace = 'post'
             AND registered.contract_version = 'human-attested-v1')
+          OR
+          (capture.stream = 'foreign-currency-deposit'
+            AND registered.stream = 'foreign-currency-deposit'
+            AND capture.authority_route IN (
+              'yuanta/foreign-currency/deposit/v1',
+              'cathay/foreign-currency/deposit/v1',
+              'sinopac/foreign-currency/deposit/v1',
+              'linebank/foreign-currency/deposit/v1')
+            AND capture.completeness_rule_version LIKE 'foreign-currency/%'
+            AND registered.contract_version = capture.completeness_rule_version)
         )
     )`,
         )
@@ -3311,7 +3324,10 @@ function validateSelectedAssertionProvenance(
         AND provenance_commit.commit_kind = 'source_capture'
         AND provenance_commit.authority_route = capture.authority_route
         AND capture.commit_id = provenance.commit_id
-        AND capture.stream = ?
+        AND (
+          capture.stream = ?
+          OR capture.stream = 'foreign-currency-deposit'
+        )
         AND (
           (capture.authority_route = ? AND capture.completeness_rule_version = ?)
           OR
@@ -3338,6 +3354,14 @@ function validateSelectedAssertionProvenance(
           OR
           (capture.authority_route = 'post/domestic-deposit/human-attested-v1'
             AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1')
+          OR
+          (capture.stream = 'foreign-currency-deposit'
+            AND capture.authority_route IN (
+              'yuanta/foreign-currency/deposit/v1',
+              'cathay/foreign-currency/deposit/v1',
+              'sinopac/foreign-currency/deposit/v1',
+              'linebank/foreign-currency/deposit/v1')
+            AND capture.completeness_rule_version LIKE 'foreign-currency/%')
         )
     )`,
         )
@@ -4379,7 +4403,16 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /yuanta\/domestic-deposit\/human-attested-v2/.test(sql) &&
     /hncb\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /ctbc\/domestic-deposit\/human-attested-v1/.test(sql) &&
-    /sinopac\/domestic-deposit\/human-attested-v1/.test(sql)
+    /sinopac\/domestic-deposit\/human-attested-v1/.test(sql) &&
+    /posting_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /semantic_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /effective_time_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
+      sql,
+    ) &&
+    /time_origin TEXT NOT NULL CHECK\(time_origin IN \('source_reported','defaulted_local_midnight'\)\)/.test(
+      sql,
+    )
   )
     return;
   const before = Number(
@@ -4404,15 +4437,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
-      time_precision TEXT NOT NULL CHECK(time_precision IN ('minute','second')),
-      time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+      time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
+      time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -4479,6 +4512,9 @@ function ensureCanonicalTimeObservationSchema(db: DatabaseSync): void {
   if (
     /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
       sql,
+    ) &&
+    /time_origin TEXT NOT NULL CHECK\(time_origin IN \('source_reported','defaulted_local_midnight'\)\)/.test(
+      sql,
     )
   )
     return;
@@ -4500,7 +4536,7 @@ function ensureCanonicalTimeObservationSchema(db: DatabaseSync): void {
       local_value TEXT NOT NULL,
       time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'),
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
-      time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+      time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       utc_instant_utc_us INTEGER NOT NULL,
       UNIQUE(revision_id, role)
     );
@@ -4527,6 +4563,51 @@ function ensureCanonicalTimeObservationSchema(db: DatabaseSync): void {
     throw new Error(
       "Canonical time observation widening changed the row count.",
     );
+}
+
+/**
+ * Conversion evidence is deliberately a separate one-to-one relation from a
+ * transaction revision.  A booked amount remains the canonical transaction
+ * amount while original amount/rates are retained as source evidence; no
+ * conversion arithmetic is allowed to rewrite the booked value.
+ */
+function ensureForeignCurrencyConversionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transaction_conversion_evidence (
+      conversion_id BLOB PRIMARY KEY CHECK(length(conversion_id) = 16),
+      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      original_amount_coefficient TEXT,
+      original_amount_scale INTEGER CHECK(original_amount_scale IS NULL OR original_amount_scale >= 0),
+      original_currency TEXT,
+      booked_amount_coefficient TEXT NOT NULL,
+      booked_amount_scale INTEGER NOT NULL CHECK(booked_amount_scale >= 0),
+      booked_currency TEXT NOT NULL,
+      source_reported_rate_coefficient TEXT,
+      source_reported_rate_scale INTEGER CHECK(source_reported_rate_scale IS NULL OR source_reported_rate_scale >= 0),
+      source_reported_rate_base_currency TEXT,
+      source_reported_rate_quote_currency TEXT,
+      source_reported_rate_date TEXT,
+      implied_rate_coefficient TEXT,
+      implied_rate_scale INTEGER CHECK(implied_rate_scale IS NULL OR implied_rate_scale >= 0),
+      implied_rate_base_currency TEXT,
+      implied_rate_quote_currency TEXT,
+      implied_rate_date TEXT,
+      comparison TEXT NOT NULL CHECK(comparison IN ('consistent','conflicted','not-comparable')),
+      fee_amount_coefficient TEXT,
+      fee_amount_scale INTEGER CHECK(fee_amount_scale IS NULL OR fee_amount_scale >= 0),
+      fee_currency TEXT,
+      evidence_origin TEXT NOT NULL,
+      UNIQUE(revision_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_transaction_conversion_evidence_transaction
+      ON transaction_conversion_evidence(transaction_id, revision_id);
+    CREATE INDEX IF NOT EXISTS idx_transaction_conversion_evidence_source_record
+      ON transaction_conversion_evidence(source_record_id, capture_id);
+  `);
 }
 
 /** Add the explicit no-data authority used by observed human-attested
@@ -4926,6 +5007,13 @@ function migrateV7ToV8(
     db.exec("BEGIN IMMEDIATE");
   }
   try {
+    // Legacy v1-v7 paths can still carry the pre-foreign-currency revision
+    // constraints. Widen those tables while this migration owns the
+    // transaction and has foreign-key checks disabled; doing it only after
+    // the migration returns makes SQLite reject the old child references.
+    ensureCanonicalFinancialRevisionSchema(db);
+    ensureCanonicalTimeObservationSchema(db);
+    ensureForeignCurrencyConversionSchema(db);
     applyV8SourceEvidenceSchema(db, injectMigrationFailure, cleanupStaleV8);
     validateV8SourceEvidenceSchema(db);
     db.prepare(
@@ -5021,6 +5109,7 @@ function applySchemaMigration(
       ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureCanonicalTimeObservationSchema(db);
+      ensureForeignCurrencyConversionSchema(db);
       ensureV7ProjectionSchema(db);
       db.exec("COMMIT");
       db.exec("PRAGMA foreign_keys = ON");
@@ -5054,6 +5143,7 @@ function applySchemaMigration(
       ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
       ensureCanonicalTimeObservationSchema(db);
+      ensureForeignCurrencyConversionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
       db.exec("PRAGMA foreign_keys = ON");
@@ -5662,6 +5752,16 @@ export function openCanonicalDatabase(
     });
     if (!options.readOnly) {
       applySchemaMigration(db, options);
+      // Fresh v0 databases reach v8 through the historical migration path,
+      // which predates the additive foreign-currency precision/rule allowlist.
+      // Apply the same widening pass used by existing v8 ledgers before any
+      // foreign capture can be admitted.
+      ensureCanonicalFinancialRevisionSchema(db);
+      ensureCanonicalTimeObservationSchema(db);
+      // The conversion-evidence relation is additive and intentionally does
+      // not bump the canonical schema version; old domestic ledgers remain
+      // readable while newly admitted foreign captures get durable evidence.
+      ensureForeignCurrencyConversionSchema(db);
       configureCanonicalRuntime(db, {
         busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000,
       });
@@ -8702,6 +8802,9 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
   try {
     configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
     applySchemaMigration(db);
+    ensureCanonicalFinancialRevisionSchema(db);
+    ensureCanonicalTimeObservationSchema(db);
+    ensureForeignCurrencyConversionSchema(db);
     configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
     if (path !== ":memory:") verifyCanonicalRuntime(db);
     validateV8SourceEvidenceSchema(db);

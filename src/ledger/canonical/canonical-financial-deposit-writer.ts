@@ -13,6 +13,30 @@ export type FinancialDepositSourceTime = {
   localTime: string;
   timeZone: string;
   epochMilliseconds: number;
+  /** The provider's precision is record-level evidence (not an account default). */
+  precision?: "date" | "minute" | "second";
+  /** Date-only providers are normalized to local midnight with this explicit origin. */
+  timeOrigin?: "source_reported" | "defaulted_local_midnight";
+};
+
+export type CanonicalFinancialDepositRate = {
+  amount: FinancialDepositAmount;
+  baseCurrency: string;
+  quoteCurrency: string;
+  observedOn?: string | null;
+};
+
+export type CanonicalFinancialDepositConversionEvidence = {
+  originalAmount: FinancialDepositAmount | null;
+  originalCurrency: string | null;
+  bookedAmount: FinancialDepositAmount;
+  bookedCurrency: string;
+  sourceReportedRate: CanonicalFinancialDepositRate | null;
+  impliedRate: CanonicalFinancialDepositRate | null;
+  comparison: "consistent" | "conflicted" | "not-comparable";
+  feeAmount?: FinancialDepositAmount | null;
+  feeCurrency?: string | null;
+  evidenceOrigin: string;
 };
 
 export type CanonicalFinancialDepositPage = {
@@ -41,6 +65,8 @@ export type CanonicalFinancialDepositRecord = {
   sourceTime: FinancialDepositSourceTime;
   effectiveOn: string;
   transactionDateTimeLocal: string;
+  description?: string | null;
+  conversionEvidence?: CanonicalFinancialDepositConversionEvidence | null;
 };
 
 export type CanonicalFinancialDepositCapture = {
@@ -304,6 +330,74 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       contractVersion: "human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
+    "yuanta/foreign-currency/deposit/v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "foreign-currency/yuanta/v1",
+      effectiveTimeBasis: "transaction-time",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      completeness: "complete-range",
+      completenessBasis: "foreign-currency-terminal-complete-range",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "foreign-currency-deposit",
+      recordKind: "yuanta-foreign-currency-deposit",
+      contractVersion: "foreign-currency/yuanta/v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "cathay/foreign-currency/deposit/v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "foreign-currency/cathay/v1",
+      effectiveTimeBasis: "transaction-time",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      completeness: "complete-range",
+      completenessBasis: "foreign-currency-terminal-complete-range",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "cathay",
+      stream: "foreign-currency-deposit",
+      recordKind: "cathay-foreign-currency-deposit",
+      contractVersion: "foreign-currency/cathay/v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "sinopac/foreign-currency/deposit/v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "foreign-currency/sinopac/v1",
+      effectiveTimeBasis: "transaction-time",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      completeness: "complete-range",
+      completenessBasis: "foreign-currency-terminal-complete-range",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "sinopac",
+      stream: "foreign-currency-deposit",
+      recordKind: "sinopac-foreign-currency-deposit",
+      contractVersion: "foreign-currency/sinopac/v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "linebank/foreign-currency/deposit/v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "foreign-currency/linebank/v1",
+      effectiveTimeBasis: "transaction-time",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      completeness: "complete-range",
+      completenessBasis: "foreign-currency-terminal-complete-range",
+      absenceAuthority: "provider-explicit-no-data",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "linebank",
+      stream: "foreign-currency-deposit",
+      recordKind: "linebank-foreign-currency-deposit",
+      contractVersion: "foreign-currency/linebank/v1",
+      requireProviderGuaranteedFalse: true,
+    },
   };
   const routeRule = routeRules[capture.authorityRoute];
   if (
@@ -435,6 +529,17 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     collisions.add(record.collisionKey);
     if (capture.semantics.requireBalance && record.balanceAfter === null)
       throw new Error("Financial record lacks an exact balance.");
+    if (record.conversionEvidence) {
+      if (
+        record.conversionEvidence.bookedAmount.coefficient !==
+          record.amount.coefficient ||
+        record.conversionEvidence.bookedAmount.scale !== record.amount.scale ||
+        record.conversionEvidence.bookedCurrency !== record.currency
+      )
+        throw new Error(
+          "Conversion evidence booked amount must match the canonical transaction.",
+        );
+    }
   }
 }
 
@@ -708,10 +813,14 @@ function commitOnce(
       ) as
       | { account_id?: unknown; currency?: unknown; account_type?: unknown }
       | undefined;
+    const isForeignCurrencyRoute = capture.authorityRoute.includes(
+      "/foreign-currency/",
+    );
     if (
       existingAccount &&
-      (existingAccount.currency !== capture.identity.currency ||
-        existingAccount.account_type !== capture.identity.accountType)
+      (existingAccount.account_type !== capture.identity.accountType ||
+        (!isForeignCurrencyRoute &&
+          existingAccount.currency !== capture.identity.currency))
     )
       throw new CanonicalFinancialDepositConflictError(
         "Financial account classification conflict is forbidden.",
@@ -824,7 +933,7 @@ function commitOnce(
           source_record_id, capture_id, source_subject_id, commit_id, record_kind,
           sequence_lexeme, provider_key, content_hash, occurrence_key,
           collision_key, description, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         sourceRecordId,
         captureId,
@@ -836,6 +945,7 @@ function commitOnce(
         record.contentHash,
         record.occurrenceKey,
         record.collisionKey,
+        record.description ?? null,
         record.compactJson,
       );
       db.prepare(
@@ -889,7 +999,7 @@ function commitOnce(
             semantic_rule_version, effective_on, transaction_date_time_local,
             time_zone, time_precision, time_origin, effective_time_basis,
             effective_time_rule_version, utc_instant_utc_us
-          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           revisionId,
           transactionId,
@@ -904,14 +1014,15 @@ function commitOnce(
           capture.semantics.postingOrigin,
           capture.semantics.postingBasis,
           capture.semantics.postingRuleVersion,
+          record.description ?? null,
           capture.semantics.economicStatus,
           capture.semantics.administrativeState,
           capture.semantics.semanticRuleVersion,
           record.effectiveOn,
           record.transactionDateTimeLocal,
           capture.semantics.timeZone,
-          capture.semantics.timePrecision,
-          capture.semantics.timeOrigin,
+          record.sourceTime.precision ?? capture.semantics.timePrecision,
+          record.sourceTime.timeOrigin ?? capture.semantics.timeOrigin,
           capture.semantics.effectiveTimeBasis,
           capture.semantics.effectiveTimeRuleVersion,
           record.sourceTime.epochMilliseconds * 1_000,
@@ -930,10 +1041,54 @@ function commitOnce(
           commitId,
           record.transactionDateTimeLocal,
           capture.semantics.timeZone,
-          capture.semantics.timePrecision,
-          capture.semantics.timeOrigin,
+          record.sourceTime.precision ?? capture.semantics.timePrecision,
+          record.sourceTime.timeOrigin ?? capture.semantics.timeOrigin,
           record.sourceTime.epochMilliseconds * 1_000,
         );
+        if (record.conversionEvidence) {
+          const conversion = record.conversionEvidence;
+          db.prepare(
+            `INSERT INTO transaction_conversion_evidence(
+              conversion_id, transaction_id, revision_id, source_record_id,
+              capture_id, commit_id, original_amount_coefficient,
+              original_amount_scale, original_currency, booked_amount_coefficient,
+              booked_amount_scale, booked_currency, source_reported_rate_coefficient,
+              source_reported_rate_scale, source_reported_rate_base_currency,
+              source_reported_rate_quote_currency, source_reported_rate_date,
+              implied_rate_coefficient, implied_rate_scale, implied_rate_base_currency,
+              implied_rate_quote_currency, implied_rate_date, comparison,
+              fee_amount_coefficient, fee_amount_scale, fee_currency, evidence_origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+          ).run(
+            id(),
+            transactionId,
+            revisionId,
+            sourceRecordId,
+            captureId,
+            commitId,
+            conversion.originalAmount?.coefficient ?? null,
+            conversion.originalAmount?.scale ?? null,
+            conversion.originalCurrency,
+            conversion.bookedAmount.coefficient,
+            conversion.bookedAmount.scale,
+            conversion.bookedCurrency,
+            conversion.sourceReportedRate?.amount.coefficient ?? null,
+            conversion.sourceReportedRate?.amount.scale ?? null,
+            conversion.sourceReportedRate?.baseCurrency ?? null,
+            conversion.sourceReportedRate?.quoteCurrency ?? null,
+            conversion.sourceReportedRate?.observedOn ?? null,
+            conversion.impliedRate?.amount.coefficient ?? null,
+            conversion.impliedRate?.amount.scale ?? null,
+            conversion.impliedRate?.baseCurrency ?? null,
+            conversion.impliedRate?.quoteCurrency ?? null,
+            conversion.impliedRate?.observedOn ?? null,
+            conversion.comparison,
+            conversion.feeAmount?.coefficient ?? null,
+            conversion.feeAmount?.scale ?? null,
+            conversion.feeCurrency ?? null,
+            conversion.evidenceOrigin,
+          );
+        }
         assertionId = id();
         db.prepare(
           `INSERT INTO assertions(
