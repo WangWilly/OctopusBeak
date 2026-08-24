@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { StatementComponentResult } from "../lib/automation/statement-run-summary.js";
 import {
   BANK_STATEMENT_CAPABILITIES,
-  selectStatementTypes,
+  allSupportedStatementTypeIds,
 } from "../lib/automation/statement-selection.js";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
@@ -17,10 +17,12 @@ import yuantaCreditCardStatements from "./yuanta-credit-card-statements.js";
 import yuantaForeignCurrencyStatements from "./yuanta-foreign-currency-statements.js";
 import yuantaFundStatements from "./yuanta-fund-statements.js";
 import yuantaLoanStatements from "./yuanta-loan-statements.js";
-import yuantaStatements, {
+import yuantaStatements from "./yuanta-statements.js";
+import {
   authenticateYuantaBank,
   type YuantaCredentials,
-} from "./yuanta-statements.js";
+  YUANTA_ENTRY_URL,
+} from "./yuanta-auth.ts";
 
 type BrowserScope = Page | Frame;
 
@@ -261,7 +263,9 @@ async function hasCreditCardBillsPage(page: Page): Promise<boolean> {
       const hasMonthLink = await hasAttachedLocator(
         scope.locator('a[onclick*="queryMonth("]'),
       );
-      const hasTable = await hasAttachedLocator(scope.locator("table.rwdTable"));
+      const hasTable = await hasAttachedLocator(
+        scope.locator("table.rwdTable"),
+      );
       if (hasMonthLink && hasTable) return true;
     }
     await page.waitForTimeout(250);
@@ -455,183 +459,171 @@ export async function runYuantaAllStatements(
   rawInput: unknown,
   overrides: Partial<typeof yuantaAllStatementsDependencies> = {},
 ) {
-    const {
-      yuantaStatements,
-      yuantaForeignCurrencyStatements,
-      yuantaLoanStatements,
-      yuantaCreditCardStatements,
-      yuantaFundStatements,
-      authenticateYuantaBank,
-      prepareForComponent,
-    } = { ...yuantaAllStatementsDependencies, ...overrides };
-    const input = rawInput as WorkflowInput;
-    const credentials = input.credentials;
-    const include = input.include;
-    const prepare = input.prepareBetweenComponents;
-    console.log("automation-progress: 0");
+  const {
+    yuantaStatements,
+    yuantaForeignCurrencyStatements,
+    yuantaLoanStatements,
+    yuantaCreditCardStatements,
+    yuantaFundStatements,
+    authenticateYuantaBank,
+    prepareForComponent,
+  } = { ...yuantaAllStatementsDependencies, ...overrides };
+  const input = rawInput as WorkflowInput;
+  const credentials = input.credentials;
+  const prepare = input.prepareBetweenComponents;
+  console.log("automation-progress: 0");
 
-    const includeByType: Record<string, boolean | undefined> = {
-      deposit: include.statements,
-      foreign_currency: include.foreignCurrency,
-      loan: include.loan,
-      credit_card: include.creditCard,
-      fund: include.fund,
+  // Yuanta exposes the complete product registry for every run. The `include`
+  // object is retained in the input schema for compatibility with persisted
+  // desktop state, but it must never suppress a supported product.
+  const selectedIds = allSupportedStatementTypeIds(
+    BANK_STATEMENT_CAPABILITIES.yuanta,
+  );
+  const firstSelectedId = selectedIds[0];
+  if (!firstSelectedId)
+    throw new Error("Select at least one Yuanta statement type.");
+  const componentInputByType: Record<string, unknown> = {
+    deposit: input.statements,
+    foreign_currency: input.foreignCurrency,
+    loan: input.loan,
+    credit_card: input.creditCard,
+    fund: input.fund,
+  };
+  const replaceActiveSession = asRecord(
+    componentInputByType[firstSelectedId],
+  ).replaceActiveSession;
+  const authenticationResult = await authenticateYuantaBank(
+    ctx,
+    credentials ?? {},
+    typeof replaceActiveSession === "boolean" ? replaceActiveSession : true,
+  );
+  const run = await runSelectedStatements(selectedIds, [
+    {
+      typeId: "deposit",
+      run: () =>
+        yuantaStatements.run(
+          ctx,
+          withCredentials(input.statements, credentials),
+        ),
+    },
+    {
+      typeId: "foreign_currency",
+      prepare: () =>
+        prepare
+          ? prepareForComponent(ctx, "foreignCurrency")
+          : Promise.resolve(),
+      run: () =>
+        yuantaForeignCurrencyStatements.run(
+          ctx,
+          withCredentials(input.foreignCurrency, credentials),
+        ),
+    },
+    {
+      typeId: "credit_card",
+      prepare: () =>
+        prepare ? prepareForComponent(ctx, "creditCard") : Promise.resolve(),
+      run: () =>
+        yuantaCreditCardStatements.run(
+          ctx,
+          withCredentials(input.creditCard, credentials),
+        ),
+    },
+    {
+      typeId: "loan",
+      prepare: () =>
+        prepare ? prepareForComponent(ctx, "loan") : Promise.resolve(),
+      run: () =>
+        yuantaLoanStatements.run(ctx, withCredentials(input.loan, credentials)),
+    },
+    // The existing fund workflow logs out in its finally block, so keep it last.
+    {
+      typeId: "fund",
+      prepare: () =>
+        prepare ? prepareForComponent(ctx, "fund") : Promise.resolve(),
+      run: () =>
+        yuantaFundStatements.run(ctx, withCredentials(input.fund, credentials)),
+    },
+  ]);
+  const firstSelectedOutput = run.outputs[firstSelectedId];
+  if (
+    authenticationResult &&
+    firstSelectedOutput &&
+    typeof firstSelectedOutput === "object" &&
+    !Array.isArray(firstSelectedOutput)
+  ) {
+    run.outputs[firstSelectedId] = {
+      ...firstSelectedOutput,
+      ...(Object.hasOwn(firstSelectedOutput, "usedExistingSession")
+        ? {
+            usedExistingSession: authenticationResult.usedExistingSession,
+          }
+        : {}),
+      ...(Object.hasOwn(firstSelectedOutput, "replacedActiveSession")
+        ? {
+            replacedActiveSession: authenticationResult.replacedActiveSession,
+          }
+        : {}),
     };
-    const selectedIds = selectStatementTypes(
-      BANK_STATEMENT_CAPABILITIES.yuanta,
-      process.env,
-      "strict",
-    ).selectedIds.filter((typeId) => includeByType[typeId] !== false);
-    const firstSelectedId = selectedIds[0];
-    if (!firstSelectedId) throw new Error("Select at least one Yuanta statement type.");
-    const componentInputByType: Record<string, unknown> = {
-      deposit: input.statements,
-      foreign_currency: input.foreignCurrency,
-      loan: input.loan,
-      credit_card: input.creditCard,
-      fund: input.fund,
-    };
-    const replaceActiveSession = asRecord(
-      componentInputByType[firstSelectedId],
-    ).replaceActiveSession;
-    const authenticationResult = await authenticateYuantaBank(
-      ctx,
-      credentials ?? {},
-      typeof replaceActiveSession === "boolean" ? replaceActiveSession : true,
-    );
-    const run = await runSelectedStatements(selectedIds, [
-      {
-        typeId: "deposit",
-        run: () =>
-          yuantaStatements.run(
-            ctx,
-            withCredentials(input.statements, credentials),
-          ),
-      },
-      {
-        typeId: "foreign_currency",
-        prepare: () =>
-          prepare
-            ? prepareForComponent(ctx, "foreignCurrency")
-            : Promise.resolve(),
-        run: () =>
-          yuantaForeignCurrencyStatements.run(
-            ctx,
-            withCredentials(input.foreignCurrency, credentials),
-          ),
-      },
-      {
-        typeId: "loan",
-        prepare: () =>
-          prepare ? prepareForComponent(ctx, "loan") : Promise.resolve(),
-        run: () =>
-          yuantaLoanStatements.run(
-            ctx,
-            withCredentials(input.loan, credentials),
-          ),
-      },
-      {
-        typeId: "credit_card",
-        prepare: () =>
-          prepare ? prepareForComponent(ctx, "creditCard") : Promise.resolve(),
-        run: () =>
-          yuantaCreditCardStatements.run(
-            ctx,
-            withCredentials(input.creditCard, credentials),
-          ),
-      },
-      // The existing fund workflow logs out in its finally block, so keep it last.
-      {
-        typeId: "fund",
-        prepare: () =>
-          prepare ? prepareForComponent(ctx, "fund") : Promise.resolve(),
-        run: () =>
-          yuantaFundStatements.run(
-            ctx,
-            withCredentials(input.fund, credentials),
-          ),
-      },
-    ]);
-    const firstSelectedOutput = run.outputs[firstSelectedId];
-    if (
-      authenticationResult &&
-      firstSelectedOutput &&
-      typeof firstSelectedOutput === "object" &&
-      !Array.isArray(firstSelectedOutput)
-    ) {
-      run.outputs[firstSelectedId] = {
-        ...firstSelectedOutput,
-        ...(Object.hasOwn(firstSelectedOutput, "usedExistingSession")
-          ? {
-              usedExistingSession: authenticationResult.usedExistingSession,
-            }
-          : {}),
-        ...(Object.hasOwn(firstSelectedOutput, "replacedActiveSession")
-          ? {
-              replacedActiveSession:
-                authenticationResult.replacedActiveSession,
-            }
-          : {}),
-      };
-    }
-    console.log("automation-progress: 100");
+  }
+  console.log("automation-progress: 100");
 
-    const [
-      statementsResult,
-      foreignCurrencyResult,
-      loanResult,
-      creditCardResult,
-      fundResult,
-    ] = run.results;
-    const statements = toComponentRun(
-      yuantaStatements.name,
-      statementsResult,
-      run.outputs.deposit,
-    );
-    const foreignCurrency = toComponentRun(
-      yuantaForeignCurrencyStatements.name,
-      foreignCurrencyResult,
-      run.outputs.foreign_currency,
-    );
-    const loan = toComponentRun(
-      yuantaLoanStatements.name,
-      loanResult,
-      run.outputs.loan,
-    );
-    const creditCard = toComponentRun(
-      yuantaCreditCardStatements.name,
-      creditCardResult,
-      run.outputs.credit_card,
-    );
-    const fund = toComponentRun(
-      yuantaFundStatements.name,
-      fundResult,
-      run.outputs.fund,
-    );
-    const succeeded = run.results.filter(
-      (result) => result.status === "success",
-    ).length;
-    const failed = run.results.filter(
-      (result) => result.status === "failed",
-    ).length;
-    const skipped = run.results.filter(
-      (result) => result.status === "skipped",
-    ).length;
+  const [
+    statementsResult,
+    foreignCurrencyResult,
+    creditCardResult,
+    loanResult,
+    fundResult,
+  ] = run.results;
+  const statements = toComponentRun(
+    yuantaStatements.name,
+    statementsResult,
+    run.outputs.deposit,
+  );
+  const foreignCurrency = toComponentRun(
+    yuantaForeignCurrencyStatements.name,
+    foreignCurrencyResult,
+    run.outputs.foreign_currency,
+  );
+  const loan = toComponentRun(
+    yuantaLoanStatements.name,
+    loanResult,
+    run.outputs.loan,
+  );
+  const creditCard = toComponentRun(
+    yuantaCreditCardStatements.name,
+    creditCardResult,
+    run.outputs.credit_card,
+  );
+  const fund = toComponentRun(
+    yuantaFundStatements.name,
+    fundResult,
+    run.outputs.fund,
+  );
+  const succeeded = run.results.filter(
+    (result) => result.status === "success",
+  ).length;
+  const failed = run.results.filter(
+    (result) => result.status === "failed",
+  ).length;
+  const skipped = run.results.filter(
+    (result) => result.status === "skipped",
+  ).length;
 
-    return {
-      count: succeeded,
-      succeeded,
-      failed,
-      skipped,
-      statements,
-      foreignCurrency,
-      loan,
-      creditCard,
-      fund,
-    };
+  return {
+    count: succeeded,
+    succeeded,
+    failed,
+    skipped,
+    statements,
+    foreignCurrency,
+    loan,
+    creditCard,
+    fund,
+  };
 }
 
 export default workflow("yuantaAllStatements", {
+  startUrl: YUANTA_ENTRY_URL,
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
   output: outputSchema,

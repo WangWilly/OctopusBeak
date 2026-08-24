@@ -3,30 +3,31 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import {
   BANK_STATEMENT_CAPABILITIES,
-  selectStatementTypes,
+  allSupportedStatementTypeIds,
 } from "../lib/automation/statement-selection.js";
 import {
   activateControlWithoutPointer,
   keepBrowserWindowOutOfForeground,
-} from "./browser-interaction.js";
+} from "./browser-interaction.ts";
 import {
   fubonCreditCardStatementsInputSchema,
   fubonCreditCardStatementsOutputSchema,
   runFubonCreditCardStatements,
-} from "./fubon-credit-card-statements.js";
+} from "./fubon-credit-card-statements.ts";
 import {
   fubonLoanStatementsInputSchema,
   fubonLoanStatementsOutputSchema,
   runFubonLoanStatements,
-} from "./fubon-loan-statements.js";
+} from "./fubon-loan-statements.ts";
 import {
   type FubonCredentials,
   fubonStatementsInputSchema,
   fubonStatementsOutputSchema,
   runFubonStatements,
   signInFubon,
-} from "./fubon-statements.js";
-import { runSelectedStatements } from "./run-selected-statements.js";
+} from "./fubon-statements.ts";
+import { runSelectedStatements } from "./run-selected-statements.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 
 const inputSchema = z.object({
   statements: fubonStatementsInputSchema.default(() =>
@@ -44,6 +45,15 @@ const outputSchema = z.object({
   statements: fubonStatementsOutputSchema.optional(),
   creditCards: fubonCreditCardStatementsOutputSchema.optional(),
   loans: fubonLoanStatementsOutputSchema.optional(),
+  componentResults: z.array(
+    z.object({
+      typeId: z.string(),
+      status: z.enum(["success", "failed", "skipped"]),
+      skipReason: z.enum(["absent", "not_selected"]).optional(),
+      fileCount: z.number().int().nonnegative().optional(),
+      error: z.string().optional(),
+    }),
+  ),
 });
 
 type Input = z.infer<typeof inputSchema> & {
@@ -132,6 +142,70 @@ const fubonAllStatementsDependencies = {
   signOutFubon,
 };
 
+const FUBON_SOURCE_LEDGER_DIR_ENV = "OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR";
+const FUBON_FINANCIAL_LEDGER_DIR_ENV =
+  "OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR";
+const FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV =
+  "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
+
+function readFubonLedgerDirectory(envName: string): string | undefined {
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
+    throw new Error(`Invalid Fubon ledger directory in ${envName}.`);
+  }
+  return raw;
+}
+
+/**
+ * Resolve the combined workflow's two ledger destinations.
+ *
+ * Source evidence is always enabled. The old generic canonical-ledger
+ * variable is retained only as a financial opt-in alias; it must never be
+ * silently reused as the source destination by this caller. If both financial
+ * aliases are configured with different paths, fail before login so the run
+ * cannot write to an unintended ledger.
+ */
+function resolveFubonLedgerOverrides(): {
+  canonicalLedgerDir: string;
+  canonicalFinancialLedgerDir?: string;
+} {
+  const sourceLedgerDir =
+    readFubonLedgerDirectory(FUBON_SOURCE_LEDGER_DIR_ENV) ??
+    readFubonLedgerDirectory("LEDGER_DIR") ??
+    DEFAULT_LEDGER_DIR;
+  const financialLedgerDirs: Array<readonly [string, string]> = [];
+  for (const [envName, directory] of [
+    [
+      FUBON_FINANCIAL_LEDGER_DIR_ENV,
+      readFubonLedgerDirectory(FUBON_FINANCIAL_LEDGER_DIR_ENV),
+    ] as const,
+    [
+      FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV,
+      readFubonLedgerDirectory(FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV),
+    ] as const,
+  ]) {
+    if (directory !== undefined) financialLedgerDirs.push([envName, directory]);
+  }
+  const uniqueFinancialLedgerDirs = [
+    ...new Set(financialLedgerDirs.map(([, directory]) => directory)),
+  ];
+  if (uniqueFinancialLedgerDirs.length > 1) {
+    throw new Error(
+      `Ambiguous Fubon financial ledger directories configured in ${financialLedgerDirs
+        .map(([envName]) => envName)
+        .join(", ")}.`,
+    );
+  }
+
+  return {
+    canonicalLedgerDir: sourceLedgerDir,
+    ...(uniqueFinancialLedgerDirs[0]
+      ? { canonicalFinancialLedgerDir: uniqueFinancialLedgerDirs[0] }
+      : {}),
+  };
+}
+
 export async function runFubonAllStatements(
   ctx: LibrettoWorkflowContext,
   rawInput: unknown,
@@ -150,17 +224,13 @@ export async function runFubonAllStatements(
   const input = rawInput as Input;
   const { page, session } = ctx;
   console.log("automation-progress: 0");
-  const selectedIds = selectStatementTypes(
+  // Fubon exposes product availability at runtime. Persisted Settings selections
+  // are intentionally ignored; always probe every currently supported component
+  // in registry order and let explicit provider absence become skipped_absent.
+  const selectedIds = allSupportedStatementTypeIds(
     BANK_STATEMENT_CAPABILITIES.fubon,
-    process.env,
-    "strict",
-  ).selectedIds;
-  if (!selectedIds.length) throw new Error("Select at least one Fubon statement type.");
-
-  page.on("dialog", async (dialog) => {
-    console.warn("bank-dialog", { type: dialog.type() });
-    await dialog.accept();
-  });
+  );
+  const ledgerOverrides = resolveFubonLedgerOverrides();
 
   await signInFubon(page, session, input.credentials);
   await keepBrowserWindowOutOfForeground(page);
@@ -173,7 +243,7 @@ export async function runFubonAllStatements(
         typeId: "deposit",
         run: () =>
           runSectionOutOfForeground(page, "statements", () =>
-            runFubonStatements(page, input.statements),
+            runFubonStatements(page, input.statements, ledgerOverrides),
           ),
       },
       {
@@ -195,14 +265,12 @@ export async function runFubonAllStatements(
 
     return {
       statements: run.outputs.deposit as
-        | z.infer<typeof fubonStatementsOutputSchema>
-        | undefined,
+        z.infer<typeof fubonStatementsOutputSchema> | undefined,
       creditCards: run.outputs.credit_card as
-        | z.infer<typeof fubonCreditCardStatementsOutputSchema>
-        | undefined,
+        z.infer<typeof fubonCreditCardStatementsOutputSchema> | undefined,
       loans: run.outputs.loan as
-        | z.infer<typeof fubonLoanStatementsOutputSchema>
-        | undefined,
+        z.infer<typeof fubonLoanStatementsOutputSchema> | undefined,
+      componentResults: run.results,
     };
   } finally {
     stopSessionKeepAlive();

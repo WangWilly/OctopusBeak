@@ -35,8 +35,14 @@ async function main() {
     assert.equal(fs.existsSync(path.join(root, ".libretto")), true);
     assert.equal(fs.existsSync(path.join(root, "downloads")), true);
     assert.equal(fs.existsSync(path.join(root, "data", "ledger")), true);
-    assert.equal(fs.existsSync(path.join(root, "data", "automation", "logs")), true);
-    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, "utf8")), defaultSettings);
+    assert.equal(
+      fs.existsSync(path.join(root, "data", "automation", "logs")),
+      true,
+    );
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(settingsPath, "utf8")),
+      defaultSettings,
+    );
     const existingSettingsText = `${JSON.stringify({ CUSTOM_SETTING: "keep-me" }, null, 2)}\n`;
     fs.writeFileSync(settingsPath, existingSettingsText, "utf8");
     ensureDataRoot(root);
@@ -50,30 +56,43 @@ async function main() {
       appRoot: missingBrowsersAppRoot,
       electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
     });
-    if (originalBrowsersPath === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (originalBrowsersPath === undefined)
+      delete process.env.PLAYWRIGHT_BROWSERS_PATH;
     else process.env.PLAYWRIGHT_BROWSERS_PATH = originalBrowsersPath;
     assert.equal(env.NODE_ENV, "production");
     assert.equal(env.LEDGER_DIR, path.join(root, "data", "ledger"));
+    assert.equal(
+      env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR,
+      path.join(root, "data", "ledger"),
+    );
+    assert.equal(
+      env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+      path.join(root, "data", "ledger"),
+    );
     assert.equal(env.OCTOPUSBEAK_DESKTOP, "1");
     assert.equal(env.OCTOPUSBEAK_APP_ROOT, missingBrowsersAppRoot);
     assert.equal(env.OCTOPUSBEAK_USER_DATA, root);
-    assert.equal(env.OCTOPUSBEAK_NODE_PATH, "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak");
+    assert.equal(
+      env.OCTOPUSBEAK_NODE_PATH,
+      "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
+    );
     assert.equal(env.LIBRETTO_REPO_ROOT, root);
     assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, "/tmp/inherited-playwright");
 
     const packagedAppRoot = path.join(root, "packaged-app");
-    const packagedBrowsersPath = path.join(packagedAppRoot, "node_modules", "playwright-core", ".local-browsers");
+    const packagedBrowsersPath = path.join(
+      packagedAppRoot,
+      "node_modules",
+      "playwright-core",
+      ".local-browsers",
+    );
     fs.mkdirSync(packagedBrowsersPath, { recursive: true });
     const packagedEnv = buildDesktopEnv({
       userData: root,
       appRoot: packagedAppRoot,
       electronPath: "/Applications/OctopusBeak.app/Contents/MacOS/OctopusBeak",
     });
-    assert.equal(
-      packagedEnv.PLAYWRIGHT_BROWSERS_PATH,
-      packagedBrowsersPath,
-    );
-
+    assert.equal(packagedEnv.PLAYWRIGHT_BROWSERS_PATH, packagedBrowsersPath);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

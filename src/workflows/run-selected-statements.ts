@@ -10,6 +10,19 @@ type StatementComponent = {
   fileCount?: (output: unknown) => number;
 };
 
+/**
+ * Thrown only when a component has an explicit provider/DOM absence signal.
+ * Navigation, timeout, authentication and parser errors must remain failures.
+ */
+export class StatementComponentAbsentError extends Error {
+  readonly skipReason = "absent" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "StatementComponentAbsentError";
+  }
+}
+
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
@@ -49,7 +62,16 @@ export async function runSelectedStatements(
       });
     } catch (error) {
       const message = errorMessage(error);
-      results.push({ typeId: component.typeId, status: "failed", error: message });
+      results.push(
+        error instanceof StatementComponentAbsentError
+          ? {
+              typeId: component.typeId,
+              status: "skipped",
+              skipReason: "absent",
+              error: message,
+            }
+          : { typeId: component.typeId, status: "failed", error: message },
+      );
       console.error("bank-statement-component-failed", {
         typeId: component.typeId,
         durationMs: Date.now() - startedAt,

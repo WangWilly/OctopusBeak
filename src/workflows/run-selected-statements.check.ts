@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { parseStatementRunSummary } from "../lib/automation/statement-run-summary.ts";
-import { runSelectedStatements } from "./run-selected-statements.ts";
+import {
+  runSelectedStatements,
+  StatementComponentAbsentError,
+} from "./run-selected-statements.ts";
 
 const calls: string[] = [];
 const summaryLines: string[] = [];
@@ -16,41 +19,44 @@ console.log = (...args: unknown[]) => {
 };
 console.error = () => undefined;
 
-const run = await runSelectedStatements(["deposit", "loan", "fund"], [
-  {
-    typeId: "deposit",
-    run: async () => {
-      calls.push("deposit");
-      return { count: 2 };
+const run = await runSelectedStatements(
+  ["deposit", "loan", "fund"],
+  [
+    {
+      typeId: "deposit",
+      run: async () => {
+        calls.push("deposit");
+        return { count: 2 };
+      },
+      fileCount: (value) => (value as { count: number }).count,
     },
-    fileCount: (value) => (value as { count: number }).count,
-  },
-  {
-    typeId: "credit_card",
-    run: async () => {
-      calls.push("credit_card");
-      return {};
+    {
+      typeId: "credit_card",
+      run: async () => {
+        calls.push("credit_card");
+        return {};
+      },
     },
-  },
-  {
-    typeId: "loan",
-    prepare: async () => {
-      calls.push("prepare-loan");
-      throw new Error("loan navigation unavailable");
+    {
+      typeId: "loan",
+      prepare: async () => {
+        calls.push("prepare-loan");
+        throw new Error("loan navigation unavailable");
+      },
+      run: async () => {
+        calls.push("loan");
+        return {};
+      },
     },
-    run: async () => {
-      calls.push("loan");
-      return {};
+    {
+      typeId: "fund",
+      run: async () => {
+        calls.push("fund");
+        return { count: 1 };
+      },
     },
-  },
-  {
-    typeId: "fund",
-    run: async () => {
-      calls.push("fund");
-      return { count: 1 };
-    },
-  },
-]);
+  ],
+);
 
 console.log = originalLog;
 console.error = originalError;
@@ -78,7 +84,10 @@ const oversizedError = "full component diagnostic ".repeat(500);
 const oversizedSummaryLines: string[] = [];
 const componentErrors: Array<Record<string, unknown>> = [];
 console.log = (...args: unknown[]) => {
-  if (typeof args[0] === "string" && args[0].startsWith("automation-statement-summary: ")) {
+  if (
+    typeof args[0] === "string" &&
+    args[0].startsWith("automation-statement-summary: ")
+  ) {
     oversizedSummaryLines.push(args[0]);
   }
 };
@@ -86,20 +95,71 @@ console.error = (...args: unknown[]) => {
   componentErrors.push(args[1] as Record<string, unknown>);
 };
 try {
-  await runSelectedStatements(["loan"], [
-    {
-      typeId: "loan",
-      run: async () => {
-        throw new Error(oversizedError);
+  await runSelectedStatements(
+    ["loan"],
+    [
+      {
+        typeId: "loan",
+        run: async () => {
+          throw new Error(oversizedError);
+        },
       },
-    },
-  ]);
+    ],
+  );
 } finally {
   console.log = originalLog;
   console.error = originalError;
 }
 
 assert.equal(componentErrors[0]?.message, oversizedError);
-const oversizedSummary = parseStatementRunSummary(oversizedSummaryLines[0] ?? "");
+const oversizedSummary = parseStatementRunSummary(
+  oversizedSummaryLines[0] ?? "",
+);
 assert.equal(oversizedSummary?.status, "failed");
-assert.ok((oversizedSummary?.results[0]?.error?.length ?? 0) < oversizedError.length);
+assert.ok(
+  (oversizedSummary?.results[0]?.error?.length ?? 0) < oversizedError.length,
+);
+
+const absentSummaryLines: string[] = [];
+console.log = (...args: unknown[]) => {
+  if (
+    typeof args[0] === "string" &&
+    args[0].startsWith("automation-statement-summary: ")
+  ) {
+    absentSummaryLines.push(args[0]);
+  }
+};
+try {
+  const absentRun = await runSelectedStatements(
+    ["loan"],
+    [
+      {
+        typeId: "loan",
+        run: async () => {
+          throw new StatementComponentAbsentError(
+            "No loan account is available.",
+          );
+        },
+      },
+    ],
+  );
+  assert.deepEqual(absentRun.results, [
+    {
+      typeId: "loan",
+      status: "skipped",
+      skipReason: "absent",
+      error: "No loan account is available.",
+    },
+  ]);
+  assert.equal(
+    parseStatementRunSummary(absentSummaryLines[0] ?? "")?.status,
+    "completed",
+  );
+  assert.equal(
+    parseStatementRunSummary(absentSummaryLines[0] ?? "")?.results[0]
+      ?.skipReason,
+    "absent",
+  );
+} finally {
+  console.log = originalLog;
+}

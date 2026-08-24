@@ -1,30 +1,21 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
-import type { Dialog, Frame, Locator, Page } from "playwright";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   clickAndWaitForNavigation,
   hasAttachedLocator,
 } from "./browser-interaction.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import { dismissYuantaBankNotice } from "./yuanta-statements.js";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import {
+  authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  type YuantaCredentials,
+} from "./yuanta-auth.ts";
 
-const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 
 type BrowserScope = Page | Frame;
-
-type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
 
 type LoanAccountOption = {
   label: string;
@@ -111,21 +102,11 @@ const statementHeaders = [
 
 const sourceStatementColumnCount = 6;
 
-function requireCredential(
-  credentials: YuantaCredentials,
-  name: keyof YuantaCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function toAsciiDigits(value: string): string {
@@ -145,25 +126,19 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function matchesFilter(
-  option: { label: string; value: string },
-  filters: string[],
-): boolean {
-  if (filters.length === 0) return true;
-
-  const normalizedLabel = toAsciiDigits(option.label).toLowerCase();
-  const normalizedValue = toAsciiDigits(option.value).toLowerCase();
-  const optionDigits = digitsOnly(`${option.label} ${option.value}`);
-
-  return filters.some((filter) => {
-    const normalizedFilter = toAsciiDigits(filter).toLowerCase().trim();
-    const filterDigits = digitsOnly(filter);
-    return (
-      normalizedLabel.includes(normalizedFilter) ||
-      normalizedValue.includes(normalizedFilter) ||
-      (filterDigits.length > 0 && optionDigits.endsWith(filterDigits))
-    );
-  });
+function isUnavailableAccountOption(value: string, label: string): boolean {
+  const normalizedValue = value.trim().toLowerCase();
+  const normalizedLabel = cleanText(label).toLowerCase();
+  if (
+    !normalizedValue ||
+    ["0", "-1", "none", "null", "undefined"].includes(normalizedValue)
+  ) {
+    return true;
+  }
+  return (
+    /^(?:請|请)?選擇(?:貸款)?帳戶$/.test(normalizedLabel) ||
+    /^(?:無|无)(?:可用)?(?:貸款)?帳戶$/.test(normalizedLabel)
+  );
 }
 
 function describeDateRange(input: WorkflowInput): string {
@@ -203,7 +178,11 @@ function parseDateSortValue(value: string): number | null {
   );
   if (!match) return null;
 
-  const time = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const time = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+  );
   return Number.isFinite(time) ? time : null;
 }
 
@@ -239,7 +218,11 @@ async function writeLoanStatementsFile(
   rows: StatementRow[],
   sourceTables: SourceTable[],
 ): Promise<TableFile> {
-  const downloadsDir = join(process.cwd(), "downloads", "yuanta-loan-statements");
+  const downloadsDir = join(
+    process.cwd(),
+    "downloads",
+    "yuanta-loan-statements",
+  );
   await mkdir(downloadsDir, { recursive: true });
 
   const baseName = `loan-statements-${nextTimestamp()}`;
@@ -361,156 +344,6 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
-async function fillLoginForm(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const userId = requireCredential(credentials, "yuanta_user_id");
-  const account = requireCredential(credentials, "yuanta_account");
-  const password = requireCredential(credentials, "yuanta_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const loginFrame = await waitForFrame(page, "main");
-  const userIdField = loginFrame.locator("#custidMask");
-  await userIdField.fill(userId);
-  await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
-  await loginFrame.locator("#gcode").focus();
-}
-
-async function maskUserId(loginFrame: Frame): Promise<void> {
-  await loginFrame.evaluate(() => {
-    const yuanTaWindow = window as typeof window & { maskID?: () => void };
-    if (typeof yuanTaWindow.maskID !== "function") {
-      throw new Error("YuanTa login page did not expose maskID().");
-    }
-    yuanTaWindow.maskID();
-  });
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (!hiddenUserId.trim()) {
-    throw new Error("YuanTa login page did not populate hidden custid.");
-  }
-}
-
-async function restoreUserIdForSubmit(
-  loginFrame: Frame,
-  userId: string,
-): Promise<void> {
-  const normalizedUserId = userId.trim();
-  await loginFrame.locator("#custid").evaluate((element, value) => {
-    (element as HTMLInputElement).value = value;
-  }, normalizedUserId);
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (hiddenUserId !== normalizedUserId) {
-    throw new Error("YuanTa login page did not restore hidden custid.");
-  }
-}
-
-async function fillReadonlyLoginInput(
-  field: Locator,
-  value: string,
-): Promise<void> {
-  await field.click({ force: true });
-  await field.evaluate((element) => element.removeAttribute("readonly"));
-  await field.fill(value);
-}
-
-async function submitLogin(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const loginFrame = await waitForFrame(page, "main");
-  await restoreUserIdForSubmit(
-    loginFrame,
-    requireCredential(credentials, "yuanta_user_id"),
-  );
-  await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
-}
-
-async function isSignedIn(page: Page): Promise<boolean> {
-  const hasLoanForm = await findLoanStatementForm(page, 3_000)
-    .then(() => true)
-    .catch(() => false);
-  if (hasLoanForm) return true;
-
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("#menu_loansummary")
-        .or(candidate.locator("#menu_loantransactiondetails"))
-        .or(candidate.locator('a[onclick*="loantransactiondetails"]'))
-        .first(),
-    "YuanTa signed-in loan navigation",
-    3_000,
-  )
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function waitForSignedInState(
-  page: Page,
-  getLastDialogMessage: () => string,
-  replaceActiveSession: boolean,
-): Promise<boolean> {
-  const deadline = Date.now() + 120_000;
-  let replacedActiveSession = false;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return replacedActiveSession;
-
-    const loginFrame = page.frame({ name: "main" });
-    const activeSessionPrompt =
-      loginFrame &&
-      (await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .isVisible()
-        .catch(() => false));
-    if (loginFrame && activeSessionPrompt) {
-      if (!replaceActiveSession) {
-        throw new Error(
-          "YuanTa reports another active session. Re-run with replaceActiveSession=true to continue.",
-        );
-      }
-
-      await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .click({ force: true });
-      replacedActiveSession = true;
-      await settleAfterNavigation(page);
-      continue;
-    }
-
-    const stillOnLogin =
-      loginFrame &&
-      (await loginFrame
-        .locator("#custidMask, #custnoInput, #custcode, #gcode")
-        .first()
-        .isVisible()
-        .catch(() => false));
-    const dialogMessage = getLastDialogMessage();
-    if (stillOnLogin && dialogMessage) {
-      throw new Error(`YuanTa login failed: ${dialogMessage}`);
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  const dialogMessage = getLastDialogMessage();
-  throw new Error(
-    dialogMessage
-      ? `Timed out waiting for YuanTa signed-in state after dialog: ${dialogMessage}`
-      : "Timed out waiting for YuanTa signed-in state.",
-  );
-}
-
 async function findLoanStatementForm(
   page: Page,
   timeoutMs = 60_000,
@@ -587,7 +420,10 @@ async function readCurrentCid(page: Page): Promise<string> {
   return cid;
 }
 
-async function chooseDateRange(page: Page, input: WorkflowInput): Promise<void> {
+async function chooseDateRange(
+  page: Page,
+  input: WorkflowInput,
+): Promise<void> {
   const scope = await findLoanStatementForm(page);
 
   if (input.customDateRange) {
@@ -609,30 +445,33 @@ async function chooseDateRange(page: Page, input: WorkflowInput): Promise<void> 
   await link.click({ force: true });
 }
 
-async function readLoanAccountOptions(
+export async function readYuantaLoanAccountOptions(
   page: Page,
-  filters: string[],
+  _filters: string[] = [],
 ): Promise<LoanAccountOption[]> {
   const scope = await findLoanStatementForm(page);
   const options = scope.locator("#acctno option");
   const count = await options.count();
-  const accounts: LoanAccountOption[] = [];
+  const availableAccounts: LoanAccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await option.getAttribute("value")) ?? "";
     const label = cleanText(await option.textContent());
-    if (!value || value === "0" || /請選擇/.test(label)) continue;
+    if (isUnavailableAccountOption(value, label)) continue;
 
     const account = { label, value };
-    if (matchesFilter(account, filters)) accounts.push(account);
+    availableAccounts.push(account);
   }
 
-  if (accounts.length === 0) {
-    throw new Error("No loan account options matched the input.");
+  if (availableAccounts.length === 0) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa loan account is available for this login.",
+    );
   }
-
-  return accounts;
+  // Account filters are legacy persisted UI state. Yuanta loan capture
+  // always includes every visible account; provider absence is the only skip.
+  return availableAccounts;
 }
 
 async function queryLoanAccount(
@@ -699,66 +538,22 @@ export default workflow("yuantaLoanStatements", {
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: YuantaCredentials })
-      .credentials;
-    let lastBankDialogMessage = "";
-    let replacedActiveSession = false;
-
-    const acceptBankDialog = async (dialog: Dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    };
-    page.on("dialog", acceptBankDialog);
-
-    const authResult = await librettoAuthenticate(ctx, {
+    const { page } = ctx;
+    const credentials = (
+      input as typeof input & { credentials: YuantaCredentials }
+    ).credentials;
+    const authResult = await sharedAuthenticateYuantaBank(
+      ctx,
       credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-        const captchaFrame = await waitForFrame(authPage, "main");
-        await dismissYuantaBankNotice(captchaFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
-          contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-        });
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            authSession +
-            "`.",
-        );
-        await pause(authSession);
-        const loginFrame = await waitForFrame(authPage, "main");
-        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
-          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
-        }
-        const loginButtonVisible =
-          loginFrame &&
-          (await loginFrame
-            .locator('a[href="javascript:doPreLogin();"]')
-            .isVisible()
-            .catch(() => false));
-        if (loginButtonVisible) {
-          await submitLogin(authPage, signInCredentials as YuantaCredentials);
-        }
-        replacedActiveSession = await waitForSignedInState(
-          authPage,
-          () => lastBankDialogMessage,
-          input.replaceActiveSession,
-        );
-      },
-    }).finally(() => page.off("dialog", acceptBankDialog));
+      input.replaceActiveSession,
+    );
+    const replacedActiveSession = authResult.replacedActiveSession;
 
     await openLoanStatementPage(page);
-    const accounts = await readLoanAccountOptions(page, input.loanAccountFilters);
+    const accounts = await readYuantaLoanAccountOptions(
+      page,
+      input.loanAccountFilters,
+    );
     const rows: StatementRow[] = [];
     const sourceTables: SourceTable[] = [];
     const nextTimestamp = createTimestampGenerator();

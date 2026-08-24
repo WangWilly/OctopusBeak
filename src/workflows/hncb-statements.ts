@@ -1,4 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import {
@@ -10,6 +11,23 @@ import {
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
+import {
+  admitHncbDomesticDepositCaptureEvidence,
+  admitHncbDomesticDepositFinancialCapture,
+  commitHncbDomesticDepositSourceEvidenceBatch,
+  commitCanonicalHncbDomesticDepositCapture,
+  HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+  HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+  getHncbHumanAttestedV1Manifest,
+  type HncbDomesticDepositCaptureEvidence,
+  type HncbDomesticDepositValidatedEvidence,
+} from "../ledger/canonical/hncb-domestic-deposit.ts";
+import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const BANK_ENTRY_URL =
@@ -51,6 +69,7 @@ const outputSchema = z.object({
   usedExistingSession: z.boolean(),
   count: z.number().int().nonnegative(),
   downloads: z.array(downloadSchema),
+  status: z.enum(["financial-admitted", "source-only"]).default("source-only"),
 });
 
 type BrowserScope = Page | Frame;
@@ -80,6 +99,33 @@ type ParsedStatement = {
   queryPeriod: string;
   currency: string;
   rows: string[][];
+};
+
+type HncbStatementDownload = ParsedStatement & {
+  filename: string;
+  byteLength: number;
+  contentDigest: `sha256:${string}`;
+};
+
+export type HncbStatementsRunDependencies = {
+  usedExistingSession?: boolean;
+  readAccountOptions?: (
+    page: Page,
+    filters: string[],
+  ) => Promise<AccountOption[]>;
+  queryAccount?: (
+    page: Page,
+    account: AccountOption,
+    dateRange: WorkflowOutput["dateRange"],
+  ) => Promise<Frame | null>;
+  downloadStatement?: (
+    page: Page,
+    fallbackAccount: string,
+    resultFrame: Frame,
+  ) => Promise<HncbStatementDownload>;
+  writeStatementFile?: typeof writeStatementFile;
+  canonicalSourceLedgerDir?: string;
+  canonicalFinancialLedgerDir?: string;
 };
 
 const sourceTransactionHeaders = [
@@ -226,7 +272,7 @@ function metadataValue(rows: string[][], label: string): string {
 
 function workbookSheetsFromHtml(content: string): string[][][] {
   return parseHtmlTableMatrices(content).map((rows) =>
-    rows.map((row) => row.map((cell) => cleanText(cell)))
+    rows.map((row) => row.map((cell) => cleanText(cell))),
   );
 }
 
@@ -268,10 +314,16 @@ export function normalizeHncbTransactionRows(rows: string[][]): string[][] {
   const headerIndex = findTransactionHeaderIndex(rows);
   return rows
     .slice(headerIndex + 1)
-    .map((row) => sourceTransactionHeaders.map((_, index) => cleanText(row[index])))
-    .map((row) => row.map((value, index) =>
-      index === 0 || index === 2 ? normalizeHncbTransactionDate(value) : value
-    ))
+    .map((row) =>
+      sourceTransactionHeaders.map((_, index) => cleanText(row[index])),
+    )
+    .map((row) =>
+      row.map((value, index) =>
+        index === 0 || index === 2
+          ? normalizeHncbTransactionDate(value)
+          : value,
+      ),
+    )
     .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
 }
 
@@ -318,7 +370,10 @@ function compareRowsByTransactionTimeDesc(left: string[], right: string[]) {
   return rightTime - leftTime;
 }
 
-function matchesAccountFilter(account: AccountOption, filters: string[]): boolean {
+function matchesAccountFilter(
+  account: AccountOption,
+  filters: string[],
+): boolean {
   if (filters.length === 0) return true;
   const label = account.label.toLowerCase();
   const value = account.value.toLowerCase();
@@ -335,15 +390,29 @@ function matchesAccountFilter(account: AccountOption, filters: string[]): boolea
   });
 }
 
-async function readBig5DownloadAsUtf8(download: Download): Promise<string> {
+type DownloadText = {
+  content: string;
+  byteLength: number;
+  contentDigest: `sha256:${string}`;
+};
+
+async function readBig5DownloadAsUtf8(
+  download: Download,
+): Promise<DownloadText> {
   const stream = await download.createReadStream();
-  if (!stream) throw new Error("Could not read HNCB statement download stream.");
+  if (!stream)
+    throw new Error("Could not read HNCB statement download stream.");
 
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  return big5Decoder.decode(Buffer.concat(chunks));
+  const bytes = Buffer.concat(chunks);
+  return {
+    content: big5Decoder.decode(bytes),
+    byteLength: bytes.byteLength,
+    contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
+  };
 }
 
 async function waitForFrame(
@@ -395,14 +464,49 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
+function normalizedPathname(pathname: string): string {
+  const normalized = pathname.replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+/**
+ * Libretto preloads a workflow's `startUrl`. Query strings and fragments can
+ * differ across bank shells, but a different origin or normalized path is a
+ * different login document and must be opened explicitly.
+ */
+export function isHncbLoginEntryUrl(url: string): boolean {
+  try {
+    const expected = new URL(BANK_ENTRY_URL);
+    const actual = new URL(url);
+    return (
+      actual.origin === expected.origin &&
+      normalizedPathname(actual.pathname) ===
+        normalizedPathname(expected.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureHncbLoginEntry(page: Page): Promise<void> {
+  if (!isHncbLoginEntryUrl(page.url()))
+    await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
+}
+
 async function fillLoginForm(
   page: Page,
   credentials: HncbCredentials,
 ): Promise<void> {
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-  await page.locator("#USERIDTEXT").fill(requireCredential(credentials, "hncb_user_id"));
-  await page.locator("#NICKNAME").fill(requireCredential(credentials, "hncb_account"));
-  await page.locator("#password").fill(requireCredential(credentials, "hncb_password"));
+  await ensureHncbLoginEntry(page);
+  await page
+    .locator("#USERIDTEXT")
+    .fill(requireCredential(credentials, "hncb_user_id"));
+  await page
+    .locator("#NICKNAME")
+    .fill(requireCredential(credentials, "hncb_account"));
+  await page
+    .locator("#password")
+    .fill(requireCredential(credentials, "hncb_password"));
   await page.locator("#TrxCaptchaKey").focus();
 }
 
@@ -415,10 +519,28 @@ async function signInHncb(
   await emitHumanAssistanceStage({
     stageId: "hncb-login-captcha",
     title: "Enter the HNCB CAPTCHA",
-    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "hncb.login.captcha-input", modes: ["click", "type"], locator: page.locator("#TrxCaptchaKey") }],
-    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "hncb.login.captcha-challenge" }],
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "hncb.login.captcha-input",
+        modes: ["click", "type"],
+        locator: page.locator("#TrxCaptchaKey"),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "hncb.login.captcha-challenge",
+      },
+    ],
     completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
   });
 
   console.log(
@@ -434,7 +556,9 @@ async function signInHncb(
     await accountField.fill(requireCredential(credentials, "hncb_account"));
   }
   if (!(await page.locator("#TrxCaptchaKey").inputValue()).trim()) {
-    throw new Error("HNCB CAPTCHA is empty. Enter it in the browser before resuming.");
+    throw new Error(
+      "HNCB CAPTCHA is empty. Enter it in the browser before resuming.",
+    );
   }
   await page.locator("li#WannaLogin a").click();
   await waitForSignedInState(page);
@@ -492,7 +616,7 @@ async function waitForAccountSelect(
 function querySubmitLink(mainFrame: Frame): Locator {
   return mainFrame
     .locator('a[href="javascript:doSubmit()"]')
-    .or(mainFrame.locator('a[href="javascript:doSubmit(\'0\')"]'))
+    .or(mainFrame.locator("a[href=\"javascript:doSubmit('0')\"]"))
     .first();
 }
 
@@ -510,7 +634,10 @@ async function waitForStatementForm(
 
 export async function ensureHncbStatementForm(
   page: Page,
-  waitForForm: (page: Page, timeoutMs?: number) => Promise<Frame> = waitForStatementForm,
+  waitForForm: (
+    page: Page,
+    timeoutMs?: number,
+  ) => Promise<Frame> = waitForStatementForm,
   reopenForm: (page: Page) => Promise<Frame> = openFirstStatementDetail,
 ): Promise<Frame> {
   return await waitForForm(page, 5_000).catch(async () => {
@@ -590,7 +717,11 @@ async function readAccountOptions(
   return accounts;
 }
 
-async function selectDate(mainFrame: Frame, prefix: "S" | "E", date: DateParts) {
+async function selectDate(
+  mainFrame: Frame,
+  prefix: "S" | "E",
+  date: DateParts,
+) {
   await mainFrame
     .locator(`select[name="${prefix}_Year"]`)
     .selectOption(rocYearValue(date.year));
@@ -635,7 +766,7 @@ async function downloadCurrentStatement(
   page: Page,
   fallbackAccount: string,
   resultFrame?: Frame,
-): Promise<ParsedStatement> {
+): Promise<HncbStatementDownload> {
   const mainFrame = resultFrame ?? (await waitForStatementResult(page));
   if (!mainFrame) {
     throw new Error("Cannot download an empty HNCB statement result.");
@@ -645,9 +776,11 @@ async function downloadCurrentStatement(
   const popup = await popupPromise;
 
   try {
-    await popup.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {
-      // The popup is just a download target; the explicit submit below is decisive.
-    });
+    await popup
+      .waitForLoadState("domcontentloaded", { timeout: 10_000 })
+      .catch(() => {
+        // The popup is just a download target; the explicit submit below is decisive.
+      });
 
     const downloadPromise = popup.waitForEvent("download", { timeout: 60_000 });
     await popup.evaluate(() => {
@@ -658,10 +791,13 @@ async function downloadCurrentStatement(
       popupWindow.doSubmit();
     });
     const download = await downloadPromise;
-    return parseStatementExport(
-      await readBig5DownloadAsUtf8(download),
-      fallbackAccount,
-    );
+    const downloaded = await readBig5DownloadAsUtf8(download);
+    return {
+      ...parseStatementExport(downloaded.content, fallbackAccount),
+      filename: download.suggestedFilename(),
+      byteLength: downloaded.byteLength,
+      contentDigest: downloaded.contentDigest,
+    };
   } finally {
     await popup.close().catch(() => undefined);
   }
@@ -680,7 +816,11 @@ async function writeStatementFile(
   const csvPath = join(outputDir, csvFilename);
   const jsonPath = join(outputDir, jsonFilename);
 
-  await writeFile(csvPath, rowsToCsv([sourceTransactionHeaders, ...rows]), "utf8");
+  await writeFile(
+    csvPath,
+    rowsToCsv([sourceTransactionHeaders, ...rows]),
+    "utf8",
+  );
   await writeFile(
     jsonPath,
     `${JSON.stringify(
@@ -720,14 +860,255 @@ async function logoutFromHncb(page: Page): Promise<void> {
   });
 }
 
+function hncbObservedAt(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  })
+    .formatToParts(date)
+    .reduce<Record<string, string>>((result, part) => {
+      if (part.type !== "literal") result[part.type] = part.value;
+      return result;
+    }, {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
+}
+
+function emptyDownloadDigest(): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("base64url")}`;
+}
+
+function buildHncbCapture(
+  account: AccountOption,
+  dateRange: WorkflowOutput["dateRange"],
+  observedAt: string,
+  statement?: HncbStatementDownload,
+): HncbDomesticDepositCaptureEvidence {
+  const noData = statement === undefined;
+  return {
+    evidenceVersion: HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+    source: "hncb",
+    product: "domestic-deposit",
+    providerGuaranteed: false,
+    observedAt,
+    account: { value: account.value, label: account.label },
+    queryRange: dateRange,
+    downloads: [
+      {
+        filename: statement?.filename ?? "provider-no-data.xls",
+        byteLength: statement?.byteLength ?? 0,
+        contentDigest: statement?.contentDigest ?? emptyDownloadDigest(),
+        columnNames: HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+        rows:
+          statement?.rows.map((values, rowOrdinal) => ({
+            rowOrdinal,
+            values,
+          })) ?? [],
+        terminal: true,
+      },
+    ],
+    ...(noData
+      ? { zeroResultAuthority: "provider-explicit-no-data" as const }
+      : {}),
+    provenance: {
+      source: "hncb-ebank-domestic-deposit-html-workbook",
+      encoding: "big5",
+      responseBodyRetained: false,
+      semantics: "unresolved",
+      accountSelector: "select#acct1",
+      queryFormSelector: 'form[name="form1"]',
+      downloadSelector: 'input[name="excel_download"]',
+    },
+  };
+}
+
+function hncbCaptureId(observedAt: string): string {
+  return `hncb-source-${createHash("sha256")
+    .update(`hncb-source-capture-v1\0${observedAt}`)
+    .digest("hex")
+    .slice(0, 24)}-${Date.now()}`;
+}
+
+/**
+ * Execute one authenticated HNCB domestic-deposit collection.  Every
+ * visible account reaches a terminal export or explicit provider no-data
+ * result before the single source-only commit boundary is crossed.
+ */
+export async function runHncbStatements(
+  page: Page,
+  input: WorkflowInput,
+  overrides: HncbStatementsRunDependencies = {},
+): Promise<WorkflowOutput> {
+  const readAccounts =
+    overrides.readAccountOptions ??
+    (async (candidatePage: Page, filters: string[]) =>
+      readAccountOptions(
+        await ensureHncbStatementForm(candidatePage),
+        filters,
+      ));
+  const query = overrides.queryAccount ?? queryAccountStatements;
+  const download = overrides.downloadStatement ?? downloadCurrentStatement;
+  const write = overrides.writeStatementFile ?? writeStatementFile;
+  const sourceLedgerDir =
+    overrides.canonicalSourceLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
+  const sourceStore = createCanonicalSourceStore(
+    canonicalSqlitePath(sourceLedgerDir),
+  );
+  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
+  const financialDatabasePath = financialLedgerDir
+    ? canonicalSqlitePath(financialLedgerDir)
+    : null;
+  const financialStore = financialDatabasePath
+    ? financialDatabasePath === canonicalSqlitePath(sourceLedgerDir)
+      ? sourceStore
+      : createCanonicalSourceStore(financialDatabasePath)
+    : null;
+  const financialWriter: CanonicalFinancialDepositWriterStore | null =
+    financialStore
+      ? {
+          db: financialStore.db,
+          databasePath: financialStore.databasePath,
+          commitClock: () => financialStore.commitClock(),
+        }
+      : null;
+  const financialUsesSourceStore = financialStore === sourceStore;
+  const dateRange = resolveDateRange(input);
+  const observedAt = hncbObservedAt();
+  const captures: HncbDomesticDepositValidatedEvidence[] = [];
+  const downloads: StatementDownload[] = [];
+
+  try {
+    const accounts = await readAccounts(page, input.accountFilters);
+    for (const account of accounts) {
+      const resultFrame = await query(page, account, dateRange);
+      if (!resultFrame) {
+        console.warn("hncb-account-no-statement-data", {
+          account: account.label,
+        });
+        const structural = admitHncbDomesticDepositCaptureEvidence(
+          buildHncbCapture(account, dateRange, observedAt),
+        );
+        if (structural.status !== "admissible" || !structural.capture)
+          throw new Error(
+            `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+          );
+        captures.push(structural.capture);
+        continue;
+      }
+      const statement = await download(page, account.label, resultFrame);
+      const structural = admitHncbDomesticDepositCaptureEvidence(
+        buildHncbCapture(account, dateRange, observedAt, statement),
+      );
+      if (structural.status !== "admissible" || !structural.capture)
+        throw new Error(
+          `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+        );
+      captures.push(structural.capture);
+      downloads.push(await write(input.outputDir, statement));
+    }
+    if (captures.length === 0)
+      throw new Error("No HNCB accounts reached a terminal source result.");
+    const captureId = hncbCaptureId(observedAt);
+    let status: WorkflowOutput["status"] = "source-only";
+    if (!financialWriter || !financialUsesSourceStore) {
+      await commitHncbDomesticDepositSourceEvidenceBatch(
+        sourceStore,
+        captures,
+        captureId,
+      );
+    }
+    if (financialWriter) {
+      const manifest = getHncbHumanAttestedV1Manifest();
+      const financialInputs = captures.map((capture, index) => ({
+        capture,
+        input: {
+          capture,
+          captureId: `hncb-financial-${captureId}-${index}`,
+          humanAttestation: manifest,
+        },
+      }));
+      const admissions = financialInputs.map(({ input }) => ({
+        input,
+        admission: admitHncbDomesticDepositFinancialCapture(input),
+      }));
+      const sourceOnlyCaptures: HncbDomesticDepositValidatedEvidence[] = [];
+      for (const { capture, admission } of admissions.map((entry, index) => ({
+        ...entry,
+        capture: captures[index]!,
+      }))) {
+        if (admission.status !== "admitted") {
+          const allowedSourceOnly = admission.diagnostics.every((diagnostic) =>
+            [
+              "human-attestation-missing",
+              "human-attestation-mismatch",
+              "human-attestation-revoked",
+              "unsupported-currency",
+              "authority-shared-account",
+              "authority-semantics-unproven",
+              "completeness-semantics-unproven",
+              "zero-result-authority-unproven",
+              "terminal-evidence-missing",
+            ].includes(diagnostic),
+          );
+          if (!allowedSourceOnly) {
+            if (financialUsesSourceStore)
+              await commitHncbDomesticDepositSourceEvidenceBatch(
+                sourceStore,
+                captures,
+                captureId,
+              );
+            throw new Error(
+              `HNCB domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
+            );
+          }
+          sourceOnlyCaptures.push(capture);
+          continue;
+        }
+      }
+      for (const { input, admission } of admissions) {
+        if (admission.status !== "admitted" || !admission.capture) continue;
+        await commitCanonicalHncbDomesticDepositCapture(financialWriter, input);
+        if ((admission.capture?.records.length ?? 0) > 0)
+          status = "financial-admitted";
+      }
+      if (financialUsesSourceStore && sourceOnlyCaptures.length > 0)
+        await commitHncbDomesticDepositSourceEvidenceBatch(
+          sourceStore,
+          sourceOnlyCaptures,
+          `${captureId}-source-only`,
+        );
+    }
+    return {
+      dateRange,
+      usedExistingSession: overrides.usedExistingSession ?? false,
+      count: downloads.length,
+      downloads,
+      status,
+    };
+  } finally {
+    if (financialStore && !financialUsesSourceStore) financialStore.close();
+    sourceStore.close();
+  }
+}
+
 export default workflow("hncbStatements", {
+  startUrl: BANK_ENTRY_URL,
   credentials: ["hncb_user_id", "hncb_account", "hncb_password"],
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
     const { page } = ctx;
-    const credentials = (input as typeof input & { credentials: HncbCredentials })
-      .credentials;
+    const credentials = (
+      input as typeof input & { credentials: HncbCredentials }
+    ).credentials;
     console.log("automation-progress: 0");
 
     page.on("dialog", async (dialog) => {
@@ -745,44 +1126,16 @@ export default workflow("hncbStatements", {
     console.log("automation-progress: 30");
 
     try {
-      const dateRange = resolveDateRange(input);
       const firstResultFrame = await openFirstStatementDetail(page);
-      const accounts = await readAccountOptions(
-        firstResultFrame,
-        input.accountFilters,
-      );
-      const downloads: StatementDownload[] = [];
-
-      for (const account of accounts) {
-        const resultFrame = await queryAccountStatements(
-          page,
-          account,
-          dateRange,
-        );
-        if (!resultFrame) {
-          console.warn("hncb-account-no-statement-data", {
-            account: account.label,
-          });
-          continue;
-        }
-        const statement = await downloadCurrentStatement(
-          page,
-          account.label,
-          resultFrame,
-        );
-        downloads.push(await writeStatementFile(input.outputDir, statement));
-        console.log(
-          `automation-progress: ${40 + Math.round((downloads.length / accounts.length) * 55)}`,
-        );
-      }
-      console.log("automation-progress: 100");
-
-      return {
-        dateRange,
+      const output = await runHncbStatements(page, input, {
         usedExistingSession: authResult.usedProfile,
-        count: downloads.length,
-        downloads,
-      };
+        canonicalFinancialLedgerDir:
+          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+        readAccountOptions: async () =>
+          readAccountOptions(firstResultFrame, input.accountFilters),
+      });
+      console.log("automation-progress: 100");
+      return output;
     } finally {
       await logoutFromHncb(page).catch((error: unknown) => {
         console.warn("hncb-logout-failed", {

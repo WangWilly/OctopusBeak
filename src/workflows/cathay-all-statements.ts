@@ -16,7 +16,9 @@ import { runSelectedStatements } from "./run-selected-statements.js";
 
 const statementTypeSchema = z
   .enum(["domestic", "foreign_currency", "foreign"])
-  .transform((type) => type === "foreign" ? "foreign_currency" as const : type);
+  .transform((type) =>
+    type === "foreign" ? ("foreign_currency" as const) : type,
+  );
 const outputStatementTypeSchema = z.enum(["domestic", "foreign"]);
 
 const dateRangeSchema = z.enum([
@@ -36,6 +38,7 @@ function createInputSchema() {
     foreignAccountFilters: z.array(z.string()).optional(),
     currencyFilters: z.array(z.string()).default([]),
     trustDevice: z.boolean().default(false),
+    telemetry: z.boolean().default(false),
   });
 }
 
@@ -116,7 +119,8 @@ export async function runCathayAllStatements(
   const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
     .map((type) => type.id)
     .filter((typeId) => requestedIds.has(typeId));
-  if (!selectedIds.length) throw new Error("Select at least one Cathay statement type.");
+  if (!selectedIds.length)
+    throw new Error("Select at least one Cathay statement type.");
   console.log("automation-progress: 0");
 
   page.on("dialog", async (dialog) => {
@@ -151,6 +155,7 @@ export async function runCathayAllStatements(
               input.dateRange,
               input.domesticAccountFilters ?? input.accountFilters,
               cathaySession,
+              { telemetry: input.telemetry },
             ),
         });
         return downloads.map((download) => ({
@@ -191,11 +196,9 @@ export async function runCathayAllStatements(
   ]);
   const downloads = [
     ...((run.outputs.domestic as
-      | z.infer<typeof domesticDownloadSchema>[]
-      | undefined) ?? []),
+      z.infer<typeof domesticDownloadSchema>[] | undefined) ?? []),
     ...((run.outputs.foreign_currency as
-      | z.infer<typeof foreignDownloadSchema>[]
-      | undefined) ?? []),
+      z.infer<typeof foreignDownloadSchema>[] | undefined) ?? []),
   ];
   const statementTypes: Array<z.infer<typeof outputStatementTypeSchema>> =
     selectedIds.map((typeId) =>
