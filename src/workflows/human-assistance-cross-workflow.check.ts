@@ -19,42 +19,116 @@ const providerWorkflows = [
   "post-statements.ts",
 ] as const;
 
+const sharedProviderAssistanceWorkflows = new Set([
+  "yuanta-statements.ts",
+  "yuanta-credit-card-statements.ts",
+  "yuanta-loan-statements.ts",
+  "yuanta-fund-statements.ts",
+  "yuanta-foreign-currency-statements.ts",
+]);
+
+function rechecksInlineVerificationInput(source: string): boolean {
+  if (source.includes("inputValue()).trim()")) return true;
+
+  const assignedInputValue =
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+[\s\S]{0,400}?\.inputValue\(\)[\s\S]{0,120}?;/g;
+  for (const match of source.matchAll(assignedInputValue)) {
+    const valueName = match[1];
+    if (!valueName || match.index === undefined) continue;
+    const continuation = source.slice(
+      match.index + match[0].length,
+      match.index + match[0].length + 240,
+    );
+    const escapedValueName = valueName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (
+      new RegExp(`if\\s*\\(\\s*!${escapedValueName}\\.trim\\(\\)\\s*\\)`).test(
+        continuation,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 test("all modelable human-assisted workflows publish a contract-backed stage", async () => {
-  const sources = await Promise.all(providerWorkflows.map(async (file) => [
-    file,
-    await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
-  ] as const));
+  const sources = await Promise.all(
+    providerWorkflows.map(
+      async (file) =>
+        [
+          file,
+          await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
+        ] as const,
+    ),
+  );
+  const sharedYuantaAuth = await readFile(
+    new URL("./yuanta-auth.ts", import.meta.url),
+    "utf8",
+  );
   for (const [file, source] of sources) {
-    assert.match(source, /emitHumanAssistanceStage/, `${file} must publish a human assistance stage`);
-    assert.doesNotMatch(source, /human-assistance-contract:\s*\{[^}]*captcha/i, `${file} must not put raw CAPTCHA data in a contract signal`);
+    const focusSource = sharedProviderAssistanceWorkflows.has(file)
+      ? sharedYuantaAuth
+      : source;
+    assert.match(
+      focusSource,
+      /emitHumanAssistanceStage/,
+      `${file} must publish a human assistance stage`,
+    );
+    assert.doesNotMatch(
+      focusSource,
+      /human-assistance-contract:\s*\{[^}]*captcha/i,
+      `${file} must not put raw CAPTCHA data in a contract signal`,
+    );
   }
 });
 
 test("provider verification focus keeps the challenge readable", async () => {
-  const sources = await Promise.all(providerWorkflows.map(async (file) => [
-    file,
-    await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
-  ] as const));
+  const sources = await Promise.all(
+    providerWorkflows.map(
+      async (file) =>
+        [
+          file,
+          await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
+        ] as const,
+    ),
+  );
+  const sharedYuantaAuth = await readFile(
+    new URL("./yuanta-auth.ts", import.meta.url),
+    "utf8",
+  );
   const violations: string[] = [];
   for (const [file, source] of sources) {
-    const zooms = [...source.matchAll(/initialZoom:\s*([0-9]+(?:\.[0-9]+)?)/g)]
-      .map((match) => Number(match[1]));
+    const focusSource = sharedProviderAssistanceWorkflows.has(file)
+      ? sharedYuantaAuth
+      : source;
+    const zooms = [
+      ...focusSource.matchAll(/initialZoom:\s*([0-9]+(?:\.[0-9]+)?)/g),
+    ].map((match) => Number(match[1]));
     if (zooms.length === 0) violations.push(`${file}: missing focus zoom`);
     if (zooms.some((zoom) => zoom > 1.25)) {
       violations.push(`${file}: ${zooms.join(", ")}`);
     }
   }
-  assert.deepEqual(violations, [], "provider verification focus must keep the challenge readable");
+  assert.deepEqual(
+    violations,
+    [],
+    "provider verification focus must keep the challenge readable",
+  );
 });
 
 test("inline verification stages re-check the declared field before continuing", async () => {
-  const sources = await Promise.all(providerWorkflows.map(async (file) => [
-    file,
-    await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
-  ] as const));
+  const sources = await Promise.all(
+    providerWorkflows.map(
+      async (file) =>
+        [
+          file,
+          await readFile(new URL(`./${file}`, import.meta.url), "utf8"),
+        ] as const,
+    ),
+  );
   const missingInputChecks = sources
     .filter(([, source]) => source.includes('completion: { mode: "inline"'))
-    .filter(([, source]) => !source.includes("inputValue()).trim()"))
+    .filter(([, source]) => !rechecksInlineVerificationInput(source))
     .map(([file]) => file);
   assert.deepEqual(
     missingInputChecks,
@@ -63,17 +137,52 @@ test("inline verification stages re-check the declared field before continuing",
   );
 });
 
+test("inline verification check recognizes a deadline-wrapped value probe", () => {
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      const currentValue = await withDeadline(
+        "completion probe",
+        currentInput.inputValue(),
+      );
+      if (!currentValue.trim()) throw new Error("empty");
+    `),
+    true,
+  );
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      const currentValue = await withDeadline(
+        "completion probe",
+        currentInput.inputValue(),
+      );
+      submit();
+    `),
+    false,
+  );
+});
+
 test("Yuanta Trade keeps checkbox and later challenge as separate declared stages", async () => {
   const [source, captchaSelectors] = await Promise.all([
     readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8"),
-    readFile(new URL("../lib/automation/yuanta-trade-captcha.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../lib/automation/yuanta-trade-captcha.ts", import.meta.url),
+      "utf8",
+    ),
   ]);
   assert.match(source, /yuanta-trade-captcha-checkbox/);
   assert.match(source, /yuanta-trade-captcha-challenge/);
   assert.match(source, /\.check-area/);
-  assert.match(source, /from "\.\.\/lib\/automation\/yuanta-trade-captcha\.ts"/);
-  assert.match(captchaSelectors, /#modalYCaptchaV2, #captchaModal, \.captcha-modal/);
+  assert.match(
+    source,
+    /from "\.\.\/lib\/automation\/yuanta-trade-captcha\.ts"/,
+  );
+  assert.match(
+    captchaSelectors,
+    /#modalYCaptchaV2, #captchaModal, \.captcha-modal/,
+  );
   assert.match(captchaSelectors, /\.y-captcha-image:visible/);
-  assert.match(source, /completion: \{ mode: "independent", targetIds: challengeTargets\.map/);
+  assert.match(
+    source,
+    /completion: \{ mode: "independent", targetIds: challengeTargets\.map/,
+  );
   assert.match(source, /maxChallengeRetries = 2/);
 });

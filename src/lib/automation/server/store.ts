@@ -76,6 +76,17 @@ type CreateTaskRunInput = {
   humanAssistanceContract?: HumanAssistanceContract | null;
 };
 
+/**
+ * A resumed workflow must re-publish any assistance stage it still needs.
+ * An entered/verified contract belongs to the preceding pause and must not
+ * describe a later pause if the workflow reaches another human boundary.
+ */
+export function resumeHumanAssistanceContract(
+  contract: HumanAssistanceContract | null | undefined,
+): HumanAssistanceContract | null {
+  return contract?.completion.status === "pending" ? contract : null;
+}
+
 function nullableString(value: unknown) {
   return value === null || value === undefined ? null : String(value);
 }
@@ -101,7 +112,9 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
     logPath: String(row.log_path),
     logTail: String(row.log_tail),
     recordJson: String(row.record_json),
-    humanAssistanceContract: parseHumanAssistanceContract(String(row.record_json)),
+    humanAssistanceContract: parseHumanAssistanceContract(
+      String(row.record_json),
+    ),
   };
 }
 
@@ -110,7 +123,9 @@ function taskRunRecordJson(run: AutomationTaskRun) {
   return JSON.stringify(record);
 }
 
-function rowToTaskPrerequisiteNotice(row: Record<string, unknown>): AutomationTaskPrerequisiteNoticeRecord {
+function rowToTaskPrerequisiteNotice(
+  row: Record<string, unknown>,
+): AutomationTaskPrerequisiteNoticeRecord {
   return {
     noticeId: String(row.notice_id),
     taskId: String(row.task_id),
@@ -159,18 +174,27 @@ export function upsertTaskPrerequisiteNotice(
     errorMessage?: string | null;
   },
 ) {
-  const existing = db.prepare(`
+  const existing = db
+    .prepare(
+      `
     SELECT record_json
     FROM automation_task_prerequisite_notices
     WHERE task_id = ? AND prerequisite_id = ?
-  `).get(input.taskId, input.prerequisiteId) as { record_json: string } | undefined;
+  `,
+    )
+    .get(input.taskId, input.prerequisiteId) as
+    { record_json: string } | undefined;
   const history = noticeHistory(existing?.record_json ?? "{}");
   const lastDetection = history.detections.at(-1);
   if (lastDetection?.taskRunId !== input.taskRunId) {
-    history.detections.push({ taskRunId: input.taskRunId, detectedAt: input.detectedAt });
+    history.detections.push({
+      taskRunId: input.taskRunId,
+      detectedAt: input.detectedAt,
+    });
   }
   const noticeId = `automation-prerequisite:${input.taskId}:${input.prerequisiteId}`;
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO automation_task_prerequisite_notices (
       notice_id, task_id, prerequisite_id, latest_task_run_id,
       first_detected_at, last_detected_at, latest_error_message,
@@ -183,7 +207,8 @@ export function upsertTaskPrerequisiteNotice(
       resolved_at = NULL,
       resolved_by_task_run_id = NULL,
       record_json = excluded.record_json
-  `).run(
+  `,
+  ).run(
     noticeId,
     input.taskId,
     input.prerequisiteId,
@@ -191,26 +216,41 @@ export function upsertTaskPrerequisiteNotice(
     history.detections[0]?.detectedAt ?? input.detectedAt,
     input.detectedAt,
     input.errorMessage ?? null,
-    noticeRecordJson({ taskId: input.taskId, prerequisiteId: input.prerequisiteId }, history),
+    noticeRecordJson(
+      { taskId: input.taskId, prerequisiteId: input.prerequisiteId },
+      history,
+    ),
   );
 }
 
-export function activeTaskPrerequisiteNotices(db: LedgerDatabase): AutomationTaskPrerequisiteNoticeRecord[] {
-  const rows = db.prepare(`
+export function activeTaskPrerequisiteNotices(
+  db: LedgerDatabase,
+): AutomationTaskPrerequisiteNoticeRecord[] {
+  const rows = db
+    .prepare(
+      `
     SELECT *
     FROM automation_task_prerequisite_notices
     WHERE resolved_at IS NULL
     ORDER BY last_detected_at DESC
-  `).all() as Record<string, unknown>[];
+  `,
+    )
+    .all() as Record<string, unknown>[];
   return rows.map(rowToTaskPrerequisiteNotice);
 }
 
-export function allTaskPrerequisiteNotices(db: LedgerDatabase): AutomationTaskPrerequisiteNoticeRecord[] {
-  const rows = db.prepare(`
+export function allTaskPrerequisiteNotices(
+  db: LedgerDatabase,
+): AutomationTaskPrerequisiteNoticeRecord[] {
+  const rows = db
+    .prepare(
+      `
     SELECT *
     FROM automation_task_prerequisite_notices
     ORDER BY last_detected_at DESC
-  `).all() as Record<string, unknown>[];
+  `,
+    )
+    .all() as Record<string, unknown>[];
   return rows.map(rowToTaskPrerequisiteNotice);
 }
 
@@ -220,11 +260,15 @@ export function resolveTaskPrerequisiteNotices(
   resolvedByTaskRunId: string,
   resolvedAt: string,
 ) {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT *
     FROM automation_task_prerequisite_notices
     WHERE task_id = ? AND resolved_at IS NULL
-  `).all(taskId) as Record<string, unknown>[];
+  `,
+    )
+    .all(taskId) as Record<string, unknown>[];
   const update = db.prepare(`
     UPDATE automation_task_prerequisite_notices
     SET resolved_at = ?, resolved_by_task_run_id = ?, record_json = ?
@@ -237,7 +281,10 @@ export function resolveTaskPrerequisiteNotices(
     update.run(
       resolvedAt,
       resolvedByTaskRunId,
-      noticeRecordJson({ taskId: notice.taskId, prerequisiteId: notice.prerequisiteId }, history),
+      noticeRecordJson(
+        { taskId: notice.taskId, prerequisiteId: notice.prerequisiteId },
+        history,
+      ),
       notice.noticeId,
     );
   }
@@ -245,15 +292,21 @@ export function resolveTaskPrerequisiteNotices(
 
 export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
   const taskRunId = randomUUID();
-  const record = { taskRunId, ...input, humanAssistanceContract: input.humanAssistanceContract ?? null };
-  db.prepare(`
+  const record = {
+    taskRunId,
+    ...input,
+    humanAssistanceContract: input.humanAssistanceContract ?? null,
+  };
+  db.prepare(
+    `
     INSERT INTO automation_task_runs (
       task_run_id, task_id, script, kind, status, attempt, max_attempts,
       started_at, finished_at, exit_code, signal, error_message, log_path,
       log_tail, record_json
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     taskRunId,
     input.taskId,
     input.script,
@@ -276,21 +329,34 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
 export function updateTaskRun(
   db: LedgerDatabase,
   taskRunId: string,
-  update: Partial<Pick<AutomationTaskRun, "status" | "finishedAt" | "exitCode" | "signal" | "errorMessage" | "logTail" | "humanAssistanceContract">>,
+  update: Partial<
+    Pick<
+      AutomationTaskRun,
+      | "status"
+      | "finishedAt"
+      | "exitCode"
+      | "signal"
+      | "errorMessage"
+      | "logTail"
+      | "humanAssistanceContract"
+    >
+  >,
 ) {
-  const row = db.prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?").get(taskRunId) as
-    | Record<string, unknown>
-    | undefined;
+  const row = db
+    .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
+    .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
   const next = {
     ...rowToTaskRun(row),
     ...update,
   };
-  db.prepare(`
+  db.prepare(
+    `
     UPDATE automation_task_runs
     SET status = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
     WHERE task_run_id = ?
-  `).run(
+  `,
+  ).run(
     next.status,
     next.finishedAt,
     next.exitCode,
@@ -337,24 +403,30 @@ export function updateHumanAssistanceCompletion(
 }
 
 export function taskRunById(db: LedgerDatabase, taskRunId: string) {
-  const row = db.prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?").get(taskRunId) as
-    | Record<string, unknown>
-    | undefined;
+  const row = db
+    .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
+    .get(taskRunId) as Record<string, unknown> | undefined;
   return row ? rowToTaskRun(row) : null;
 }
 
 export function activeTaskRuns(db: LedgerDatabase): AutomationTaskRun[] {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT *
     FROM automation_task_runs
     WHERE status IN ('running', 'waiting_for_human')
     ORDER BY started_at ASC
-  `).all() as Record<string, unknown>[];
+  `,
+    )
+    .all() as Record<string, unknown>[];
   return rows.map(rowToTaskRun);
 }
 
 export function latestTaskRuns(db: LedgerDatabase) {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT run.*
     FROM automation_task_runs run
     JOIN (
@@ -363,25 +435,35 @@ export function latestTaskRuns(db: LedgerDatabase) {
       GROUP BY task_id
     ) latest
     ON latest.task_id = run.task_id AND latest.started_at = run.started_at
-  `).all() as Record<string, unknown>[];
+  `,
+    )
+    .all() as Record<string, unknown>[];
 
-  return Object.fromEntries(rows.map((row) => {
-    const taskRun = rowToTaskRun(row);
-    return [taskRun.taskId, taskRun];
-  }));
+  return Object.fromEntries(
+    rows.map((row) => {
+      const taskRun = rowToTaskRun(row);
+      return [taskRun.taskId, taskRun];
+    }),
+  );
 }
 
 export function todayTaskRunIds(
   db: LedgerDatabase,
   input: { startUtc: Date; endUtc: Date },
 ) {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT DISTINCT task_id
     FROM automation_task_runs
     WHERE started_at >= ?
       AND started_at < ?
     ORDER BY task_id
-  `).all(input.startUtc.toISOString(), input.endUtc.toISOString()) as { task_id: string }[];
+  `,
+    )
+    .all(input.startUtc.toISOString(), input.endUtc.toISOString()) as {
+    task_id: string;
+  }[];
   return rows.map((row) => row.task_id);
 }
 
@@ -390,18 +472,29 @@ export function hasSuccessfulTaskRunSince(
   taskId: string,
   occurrence: string,
 ) {
-  return Boolean(db.prepare(`
+  return Boolean(
+    db
+      .prepare(
+        `
     SELECT 1
     FROM automation_task_runs
     WHERE task_id = ?
       AND status = 'completed'
       AND finished_at >= ?
     LIMIT 1
-  `).get(taskId, occurrence));
+  `,
+      )
+      .get(taskId, occurrence),
+  );
 }
 
-export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskHistoryRow[] {
-  const rows = db.prepare(`
+export function recentTaskRuns(
+  db: LedgerDatabase,
+  limit = 100,
+): AutomationTaskHistoryRow[] {
+  const rows = db
+    .prepare(
+      `
     SELECT
       task_run_id,
       task_id,
@@ -417,7 +510,9 @@ export function recentTaskRuns(db: LedgerDatabase, limit = 100): AutomationTaskH
     FROM automation_task_runs
     ORDER BY started_at DESC
     LIMIT ?
-  `).all(limit) as Record<string, unknown>[];
+  `,
+    )
+    .all(limit) as Record<string, unknown>[];
   return rows.map((row) => ({
     taskRunId: String(row.task_run_id),
     taskId: String(row.task_id),
@@ -439,7 +534,9 @@ export function importGateStatus(
 ) {
   const warnings: { taskId: string; failedTypeIds: readonly string[] }[] = [];
   const missingTaskIds = input.dependencyIds.filter((taskId) => {
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT status, log_tail
       FROM automation_task_runs
       WHERE task_id = ?
@@ -448,17 +545,19 @@ export function importGateStatus(
         AND started_at < ?
       ORDER BY started_at DESC
       LIMIT 1
-    `).get(taskId, input.startUtc.toISOString(), input.endUtc.toISOString()) as
-      | { status: "completed" | "partial"; log_tail: string }
-      | undefined;
+    `,
+      )
+      .get(taskId, input.startUtc.toISOString(), input.endUtc.toISOString()) as
+      { status: "completed" | "partial"; log_tail: string } | undefined;
     if (!row) return true;
     if (row.status === "partial") {
       const summary = parseStatementRunSummary(row.log_tail);
       warnings.push({
         taskId,
-        failedTypeIds: summary?.results
-          .filter((result) => result.status === "failed")
-          .map((result) => result.typeId) ?? [],
+        failedTypeIds:
+          summary?.results
+            .filter((result) => result.status === "failed")
+            .map((result) => result.typeId) ?? [],
       });
     }
     return false;

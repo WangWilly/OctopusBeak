@@ -37,7 +37,8 @@ const en = {
     assetAccountCount: (count: number) => `${count} asset accounts`,
     debtAccountCount: (count: number) => `${count} debt accounts`,
     page: (current: number, total: number) => `Page ${current} / ${total}`,
-    pagerCount: (start: number, end: number, total: number) => `${start}-${end} of ${total}`,
+    pagerCount: (start: number, end: number, total: number) =>
+      `${start}-${end} of ${total}`,
     all: "All",
     retry: "Retry",
   },
@@ -66,7 +67,8 @@ const en = {
     liabilityExposure: "Liability exposure",
     dailyAssetChanges: "Daily asset changes",
     dailyAssetChangesBaseCurrency: "Daily asset changes base currency",
-    exchangeRatesMissingNative: "Missing exchange rates · showing native currencies",
+    exchangeRatesMissingNative:
+      "Missing exchange rates · showing native currencies",
     exchangeRatesThrough: (date: string) => `Rates through ${date}`,
     portfolioFlow: "Portfolio flow",
     portfolioFlowBaseCurrency: "Portfolio flow base currency",
@@ -80,7 +82,8 @@ const en = {
     balanceHistoryAria: "Asset balance history",
     assetBalance: "Asset balance",
     assetBalanceCurrency: "Asset balance currency",
-    sideSub: (accounts: number, currencies: number) => `${accounts} accounts / ${currencies} currencies`,
+    sideSub: (accounts: number, currencies: number) =>
+      `${accounts} accounts / ${currencies} currencies`,
     metricAssetValue: "Asset value",
     metricLargestAccount: "Largest account",
     metricLiquidCash: "Liquid cash",
@@ -96,7 +99,8 @@ const en = {
     debtBalance: "Debt balance",
     debtBalanceCurrency: "Debt balance currency",
     debtExposure: "Debt exposure",
-    sideSub: (accounts: number, currencies: number) => `${accounts} debt accounts / ${currencies} currencies`,
+    sideSub: (accounts: number, currencies: number) =>
+      `${accounts} debt accounts / ${currencies} currencies`,
     metricTotalDebt: "Total debt",
     metricLargestFacility: "Largest facility",
     metricCardBalance: "Card balance",
@@ -106,7 +110,8 @@ const en = {
     eyebrow: "Data issues",
     title: "Reported data problems",
     sideLabel: "Case status",
-    reportProblemHint: "Create a persistent case to review and exclude one import version.",
+    reportProblemHint:
+      "Create a persistent case to review and exclude one import version.",
     reportProblem: "Report data problem",
     account: "Account",
     field: "Field",
@@ -136,9 +141,12 @@ const en = {
     afterRestore: "After restore",
     excludedRows: "Rows excluded",
     retainedRows: "Rows retained by another source",
-    excludedRowsExplanation: (count: number) => `${count} physical imported rows owned by this exact source version will become inactive.`,
-    retainedRowsExplanation: (count: number) => `${count} logical duplicate rows remain visible because another active source version supports their complete projections.`,
-    affectedAccountsExplanation: (count: number) => `${count} accounts depend on this source for a visible value or shared capture validity, including unchanged fallback values.`,
+    excludedRowsExplanation: (count: number) =>
+      `${count} physical imported rows owned by this exact source version will become inactive.`,
+    retainedRowsExplanation: (count: number) =>
+      `${count} logical duplicate rows remain visible because another active source version supports their complete projections.`,
+    affectedAccountsExplanation: (count: number) =>
+      `${count} accounts depend on this source for a visible value or shared capture validity, including unchanged fallback values.`,
     reason: "Quarantine reason",
     acknowledgement: "I reviewed the impact above",
     confirmExclusion: "Exclude incorrect import",
@@ -151,14 +159,16 @@ const en = {
     eventRestore: "Source version restored",
     eventBlocked: "blocked",
     eventFailed: "failed",
-    operationFailed: "The operation could not be completed. Ledger data was not changed. Try again.",
+    operationFailed:
+      "The operation could not be completed. Ledger data was not changed. Try again.",
     noOperations: "No operations recorded.",
     noIssues: "No reported data issues.",
     noSources: "No active import versions are available for this account.",
     statusFilter: "Filter case status",
     restoreImport: "Restore this import",
     confirmRestore: "Confirm restore",
-    restoreBlocked: "Restore is blocked because newer active account data exists.",
+    restoreBlocked:
+      "Restore is blocked because newer active account data exists.",
     viewIssue: "View issue",
     back: "Back",
     backToAccount: "Back to account",
@@ -171,7 +181,8 @@ const en = {
     eyebrow: "Spending",
     title: "Personal spending",
     sideLabel: "Monthly spend",
-    sideSub: (month: string, count: number) => `${month} / ${count} confirmed records`,
+    sideSub: (month: string, count: number) =>
+      `${month} / ${count} confirmed records`,
     monthlyEyebrow: "Monthly spend",
     monthlyTitle: "Monthly spending",
     monthlyChartAria: "Monthly spending by category",
@@ -187,11 +198,17 @@ const en = {
     includePending: "Include pending",
     pendingAmount: "Pending",
     chartDragHint: "Drag or horizontal scroll to browse · Pinch to zoom",
-    chartVisibleRange: (start: string, end: string) => `Visible: ${start}–${end}`,
+    chartVisibleRange: (start: string, end: string) =>
+      `Visible: ${start}–${end}`,
     chartReset: "Reset view",
     chartRangeAria: "Chart range",
     chartRangeLabel: (months: number) => `${months} months`,
-    datasetStatus: (invoices: number, accounts: number, start: string, end: string) =>
+    datasetStatus: (
+      invoices: number,
+      accounts: number,
+      start: string,
+      end: string,
+    ) =>
       `${start}-${end} / ${invoices} invoices and ${accounts} account records`,
     monthSelectorAria: "Select month",
     action: "Action",
@@ -213,10 +230,12 @@ const en = {
     ledgerTransaction: "Transaction",
     ledgerAmount: "Amount",
     newestFirst: "Newest first",
-    excludedDisclosure: (count: number) => `${count} automatically excluded records are not in the total`,
+    excludedDisclosure: (count: number) =>
+      `${count} automatically excluded records are not in the total`,
     reviewExcluded: "Review and edit",
     hideExcluded: "Hide excluded",
-    excludedButtonAria: (count: number) => `${count} automatically excluded transactions`,
+    excludedButtonAria: (count: number) =>
+      `${count} automatically excluded transactions`,
     excludedTooltip: (count: number) =>
       `${count} transactions are not included in daily totals. Click to review and edit.`,
     daySummary: (total: string, excluded: number, pending: number) =>
@@ -261,7 +280,8 @@ const en = {
       `${label}, ${date}, ${amount}, review transaction`,
     noRecordsTitle: "No matching records",
     noRecordsBody: "Choose another category or review excluded records.",
-    sourceCount: (invoices: number, accounts: number) => `${invoices} invoices / ${accounts} account records`,
+    sourceCount: (invoices: number, accounts: number) =>
+      `${invoices} invoices / ${accounts} account records`,
     itemCount: (count: number) => `${count} items`,
     categoryFilterAria: "Filter by spending category",
     sourceFilterAria: "Filter by spending source",
@@ -280,7 +300,8 @@ const en = {
     invoiceRowAria: (invoice: string, seller: string, amount: string) =>
       `${invoice}, ${seller}, ${amount}, view details`,
     noSpendingTitle: "No spending yet",
-    noSpendingBody: "Confirmed invoices and account spending will appear here after import.",
+    noSpendingBody:
+      "Confirmed invoices and account spending will appear here after import.",
     noInvoicesTitle: "No matching invoices",
     noInvoicesBody: "Choose another spending category to view invoices.",
     noChartData: "No spending data for this period.",
@@ -344,7 +365,8 @@ const en = {
     paginationAria: "Daily history pagination",
     prev: "Prev",
     next: "Next",
-    rateDates: (dates: string[]) => `${dates.length === 1 ? "Rate date" : "Rate dates"}: ${dates.join(", ")}`,
+    rateDates: (dates: string[]) =>
+      `${dates.length === 1 ? "Rate date" : "Rate dates"}: ${dates.join(", ")}`,
     missingExchangeRate: "Missing exchange rate; showing native currencies",
   },
   allocation: {
@@ -355,7 +377,8 @@ const en = {
     empty: (currency: string) => `No ${currency} data yet.`,
   },
   chart: {
-    trendAria: (label: string, currency: string) => `${label} trend ${currency}`,
+    trendAria: (label: string, currency: string) =>
+      `${label} trend ${currency}`,
     labelAria: (label: string, currency: string) => `${label} ${currency}`,
     legendAria: (label: string) => `${label} legend`,
     noHistory: (currency: string) => `No ${currency} history`,
@@ -392,7 +415,8 @@ const en = {
     units: "Units",
     value: "Value",
     noRows: "No asset positions for this account.",
-    collapseReturnDetails: (symbol: string) => `Collapse ${symbol} return details`,
+    collapseReturnDetails: (symbol: string) =>
+      `Collapse ${symbol} return details`,
     expandReturnDetails: (symbol: string) => `Expand ${symbol} return details`,
   },
   automation: {
@@ -409,7 +433,8 @@ const en = {
     needsAttention: "Needs attention",
     attentionTasks: "tasks to review",
     task: "Task",
-    historyTaskCount: (count: number) => `${count} ${count === 1 ? "task" : "tasks"}`,
+    historyTaskCount: (count: number) =>
+      `${count} ${count === 1 ? "task" : "tasks"}`,
     status: "Status",
     progress: "Progress",
     latestTime: (timezone: string) => `Latest (${timezone})`,
@@ -426,15 +451,19 @@ const en = {
     startSync: "Start sync",
     stopAll: "Stop all",
     startImportHeading: "Start import",
-    runningTaskHeading: (count: number) => `${count} ${count === 1 ? "task is" : "tasks are"} running`,
+    runningTaskHeading: (count: number) =>
+      `${count} ${count === 1 ? "task is" : "tasks are"} running`,
     syncDialogTitle: "Run tasks together",
-    syncDialogDescription: (count: number) => `${count} independent ${count === 1 ? "task" : "tasks"} will start at the same time.`,
-    credentialsReady: (ready: number, total: number) => `${ready} / ${total} sign-in details ready`,
+    syncDialogDescription: (count: number) =>
+      `${count} independent ${count === 1 ? "task" : "tasks"} will start at the same time.`,
+    credentialsReady: (ready: number, total: number) =>
+      `${ready} / ${total} sign-in details ready`,
     confirmStopAll: "Stop all running tasks?",
     collectStage: "Collect statements",
     importStage: "Import transactions",
     syncStage: "Sync data",
-    showAllTasks: (count: number) => `Show all ${count} ${count === 1 ? "task" : "tasks"}`,
+    showAllTasks: (count: number) =>
+      `Show all ${count} ${count === 1 ? "task" : "tasks"}`,
     collapseTasks: "Collapse tasks",
     expandStage: (stage: string) => `Expand ${stage}`,
     collapseStage: (stage: string) => `Collapse ${stage}`,
@@ -449,19 +478,28 @@ const en = {
     chooseCertificateFile: "Choose certificate file",
     selectedCertificateFile: (filename: string) => `Selected: ${filename}`,
     chooseAnotherCertificateFile: "Choose another file",
-    missingCertificateFile: "The certificate file can’t be found. Choose it again.",
+    missingCertificateFile:
+      "The certificate file can’t be found. Choose it again.",
     invalidCertificateExtension: "Choose a .pfx or .p12 certificate file.",
-    unreadableCertificateFile: "The certificate file can’t be read. Choose another file.",
+    unreadableCertificateFile:
+      "The certificate file can’t be read. Choose another file.",
     saveCredentialsFailed: "Sign-in details couldn’t be saved. Try again.",
     statementsToCollect: "Statements to collect",
     selectAllStatements: "Select all",
-    statementSelectionHelp: (bank: string) => `Choose at least one while ${bank} is enabled.`,
-    selectOneStatementType: (bank: string) => `Select at least one ${bank} statement type.`,
+    statementSelectionHelp: (bank: string) =>
+      `Choose at least one while ${bank} is enabled.`,
+    statementSelectionAllSupported: (bank: string) =>
+      `${bank} automatically collects every supported account type; these selections do not change execution.`,
+    selectOneStatementType: (bank: string) =>
+      `Select at least one ${bank} statement type.`,
     needsSetup: "Needs setup",
-    selectedStatementCount: (selected: number, total: number) => `${selected} of ${total} selected`,
-    partialImportWarning: "Some statement types failed; available files can still be imported.",
+    selectedStatementCount: (selected: number, total: number) =>
+      `${selected} of ${total} selected`,
+    partialImportWarning:
+      "Some statement types failed; available files can still be imported.",
     prerequisiteNoticesTitle: "Action required before running again",
-    prerequisiteNoticeDescription: "Install the required external component, then use Run again for each affected task.",
+    prerequisiteNoticeDescription:
+      "Install the required external component, then use Run again for each affected task.",
     prerequisiteDownload: "Download official installer",
     prerequisiteRunAgain: "Run again",
     prerequisiteTechnicalDetails: "Technical details",
@@ -529,8 +567,10 @@ const en = {
       Cancel: "Cancel",
       Configure: "Configure",
     },
-    progressRunning: (attempt: number, maxAttempts: number) => `Running attempt ${attempt}/${maxAttempts}`,
-    progressRetrying: (attempt: number, maxAttempts: number) => `Retrying attempt ${attempt}/${maxAttempts}`,
+    progressRunning: (attempt: number, maxAttempts: number) =>
+      `Running attempt ${attempt}/${maxAttempts}`,
+    progressRetrying: (attempt: number, maxAttempts: number) =>
+      `Retrying attempt ${attempt}/${maxAttempts}`,
     progressWaiting: "Waiting for human",
     progressCompleted: "Completed",
     progressPartial: "Partially completed",
@@ -571,7 +611,8 @@ const en = {
     languageHeading: "Welcome",
     languagePrompt: "Choose your language",
     introductionTitle: "Ready to let go? Let your data fall into place.",
-    introductionBody: "See the whole picture clearly, organize every detail intelligently, and feel at ease with your finances.",
+    introductionBody:
+      "See the whole picture clearly, organize every detail intelligently, and feel at ease with your finances.",
     overviewTitle: "Beautiful clear view",
     overviewBody: "Net asset in one place",
     assetsTitle: "Organized transactions",
@@ -579,7 +620,8 @@ const en = {
     spendingTitle: "Financial diary",
     spendingBody: "Live fully, spend with confidence",
     automationTitle: "Ready to let go?",
-    automationBody: "Collect your financial records risk-free—no more entering them into spreadsheets by hand.",
+    automationBody:
+      "Collect your financial records risk-free—no more entering them into spreadsheets by hand.",
     credentialsNote: "Sign-in details stay on this device",
     startSetup: "Start setup",
     maybeLater: "Maybe later",
@@ -592,39 +634,79 @@ const en = {
   },
   onboarding: {
     welcomeTitle: "Build your first local overview",
-    welcomeBody: "Connect one source, collect its data, import it locally, and see the result in Overview.",
+    welcomeBody:
+      "Connect one source, collect its data, import it locally, and see the result in Overview.",
     automationTitle: "Open Automation",
-    automationBody: "This is where OctopusBeak collects and imports your financial data.",
+    automationBody:
+      "This is where OctopusBeak collects and imports your financial data.",
     credentialsTitle: "Choose your first data source",
-    credentialsBody: "Start with one bank or service. You can add the others after your first import. Sign-in details stay on this Mac.",
-    chooseSourceCopy: { title: "Choose your first bank", body: "Choose one bank for your first import. You can add other sources after it is complete." },
-    enableSourceCopy: { title: "Enable this data source", body: "Turn on Enabled before entering sign-in details." },
-    enterCredentialsCopy: { title: "Enter sign-in details", body: "Enter the highlighted fields. You must enter them again for this setup; saved values are not used to skip this step." },
-    selectStatementsCopy: { title: "Confirm what to import", body: "Choose the account data to collect this time, then continue to save." },
-    saveCredentialsCopy: { title: "Save and start importing", body: "Saving immediately starts this bank's first data collection." },
+    credentialsBody:
+      "Start with one bank or service. You can add the others after your first import. Sign-in details stay on this Mac.",
+    chooseSourceCopy: {
+      title: "Choose your first bank",
+      body: "Choose one bank for your first import. You can add other sources after it is complete.",
+    },
+    enableSourceCopy: {
+      title: "Enable this data source",
+      body: "Turn on Enabled before entering sign-in details.",
+    },
+    enterCredentialsCopy: {
+      title: "Enter sign-in details",
+      body: "Enter the highlighted fields. You must enter them again for this setup; saved values are not used to skip this step.",
+    },
+    selectStatementsCopy: {
+      title: "Confirm what to import",
+      body: "Choose the account data to collect this time, then continue to save.",
+    },
+    saveCredentialsCopy: {
+      title: "Save and start importing",
+      body: "Saving immediately starts this bank's first data collection.",
+    },
     collectionTitle: "Collect your first statement",
-    collectionBody: "Run the selected source. The guide will wait while the task works.",
+    collectionBody:
+      "Run the selected source. The guide will wait while the task works.",
     assistTitle: "Complete verification",
-    assistBody: "Finish the CAPTCHA, OTP, email, or certificate step in Assist, then the collection will continue.",
-    openAssistCopy: { title: "Complete bank verification", body: "Open Assist to complete the CAPTCHA, OTP, or other verification required by the bank." },
-    chooseVerificationCopy: { title: "Select the verification control", body: "Select the CAPTCHA, verification code, or OTP control directly in the bank screenshot." },
-    enterVerificationCopy: { title: "Enter the verification code", body: "Enter the code shown or received on your phone, then submit it to the bank page." },
-    resumeCollectionCopy: { title: "Confirm verification is complete", body: "After the bank page completes verification, resume data collection." },
-    verificationViewerAria: "Bank verification screen. Use a pointer to select a verification control in the bank page.",
-    clickVerificationField: "Click the verification control in the bank screen.",
+    assistBody:
+      "Finish the CAPTCHA, OTP, email, or certificate step in Assist, then the collection will continue.",
+    openAssistCopy: {
+      title: "Complete bank verification",
+      body: "Open Assist to complete the CAPTCHA, OTP, or other verification required by the bank.",
+    },
+    chooseVerificationCopy: {
+      title: "Select the verification control",
+      body: "Select the CAPTCHA, verification code, or OTP control directly in the bank screenshot.",
+    },
+    enterVerificationCopy: {
+      title: "Enter the verification code",
+      body: "Enter the code shown or received on your phone, then submit it to the bank page.",
+    },
+    resumeCollectionCopy: {
+      title: "Confirm verification is complete",
+      body: "After the bank page completes verification, resume data collection.",
+    },
+    verificationViewerAria:
+      "Bank verification screen. Use a pointer to select a verification control in the bank page.",
+    clickVerificationField:
+      "Click the verification control in the bank screen.",
     collectionFailedTitle: "Collection needs attention",
-    collectionFailedBody: "Open Logs to review the failure, then retry the same source.",
+    collectionFailedBody:
+      "Open Logs to review the failure, then retry the same source.",
     importTitle: "Import into the local ledger",
-    importBody: "The source is ready. Start the existing import task to add it to your local ledger.",
+    importBody:
+      "The source is ready. Start the existing import task to add it to your local ledger.",
     importFailedTitle: "Import needs attention",
-    importFailedBody: "Open Logs, fix the reported issue, and retry the import.",
+    importFailedBody:
+      "Open Logs, fix the reported issue, and retry the import.",
     overviewTitle: "See your first result",
-    overviewBody: "Open Overview to confirm the imported account and latest import time.",
+    overviewBody:
+      "Open Overview to confirm the imported account and latest import time.",
     overviewEmptyTitle: "The import finished, but no account is visible",
-    overviewEmptyBody: "Return to Automation and review the import log before completing setup.",
+    overviewEmptyBody:
+      "Return to Automation and review the import log before completing setup.",
     completeTitle: "Your first overview is ready",
     completeBody: "You can finish here or add another data source.",
-    stepLabel: (current: number, total: number) => `Step ${current} of ${total}`,
+    stepLabel: (current: number, total: number) =>
+      `Step ${current} of ${total}`,
     back: "Back",
     pause: "Pause onboarding",
     continue: "Continue onboarding",
@@ -658,7 +740,8 @@ const en = {
     systemSettings: "System settings",
     scheduleSettings: "Timezone & schedule",
     languageDisplaySettings: "Language & display",
-    systemSettingsDescription: "Set the timezone used for timestamps and the daily exchange-rate update time.",
+    systemSettingsDescription:
+      "Set the timezone used for timestamps and the daily exchange-rate update time.",
     systemTimezone: "System timezone",
     exchangeRateUpdateTime: "Exchange-rate update time",
     saving: "Saving...",
@@ -667,11 +750,13 @@ const en = {
     hour: "Hour",
     minute: "Minute",
     meridiem: "AM/PM",
-    settingsSaveFailed: (message: string) => `Could not save settings: ${message}`,
+    settingsSaveFailed: (message: string) =>
+      `Could not save settings: ${message}`,
     displaySize: "Display size",
     displaySizeDescription: "Adjust the overall size of OctopusBeak.",
     displayScaleAria: "Display scale",
-    scaleRange: (min: number, max: number) => `Minimum ${min}% · Maximum ${max}%`,
+    scaleRange: (min: number, max: number) =>
+      `Minimum ${min}% · Maximum ${max}%`,
     keyboardShortcuts: "Keyboard shortcuts",
     decreaseScale: "Decrease display size",
     increaseScale: "Increase display size",
@@ -781,7 +866,8 @@ const zh: typeof en = {
     balanceHistoryAria: "資產餘額歷史",
     assetBalance: "資產餘額",
     assetBalanceCurrency: "資產餘額幣別",
-    sideSub: (accounts, currencies) => `${accounts} 個帳戶 / ${currencies} 種幣別`,
+    sideSub: (accounts, currencies) =>
+      `${accounts} 個帳戶 / ${currencies} 種幣別`,
     metricAssetValue: "資產價值",
     metricLargestAccount: "最大帳戶",
     metricLiquidCash: "流動現金",
@@ -797,7 +883,8 @@ const zh: typeof en = {
     debtBalance: "負債餘額",
     debtBalanceCurrency: "負債餘額幣別",
     debtExposure: "負債曝險",
-    sideSub: (accounts, currencies) => `${accounts} 個負債帳戶 / ${currencies} 種幣別`,
+    sideSub: (accounts, currencies) =>
+      `${accounts} 個負債帳戶 / ${currencies} 種幣別`,
     metricTotalDebt: "總負債",
     metricLargestFacility: "最大額度",
     metricCardBalance: "卡片餘額",
@@ -837,9 +924,12 @@ const zh: typeof en = {
     afterRestore: "還原後",
     excludedRows: "實際排除",
     retainedRows: "由其他來源保留",
-    excludedRowsExplanation: (count) => `此來源版本擁有的 ${count} 筆實際匯入資料列將停用。`,
-    retainedRowsExplanation: (count) => `${count} 筆邏輯重複資料列仍由另一個有效來源版本提供完整投影，因此維持顯示。`,
-    affectedAccountsExplanation: (count) => `${count} 個帳戶的顯示值或共用擷取有效性依賴此來源，包括數值未變的備援結果。`,
+    excludedRowsExplanation: (count) =>
+      `此來源版本擁有的 ${count} 筆實際匯入資料列將停用。`,
+    retainedRowsExplanation: (count) =>
+      `${count} 筆邏輯重複資料列仍由另一個有效來源版本提供完整投影，因此維持顯示。`,
+    affectedAccountsExplanation: (count) =>
+      `${count} 個帳戶的顯示值或共用擷取有效性依賴此來源，包括數值未變的備援結果。`,
     reason: "停用原因",
     acknowledgement: "我已確認上述影響範圍",
     confirmExclusion: "排除錯誤匯入",
@@ -914,11 +1004,13 @@ const zh: typeof en = {
     ledgerTransaction: "交易",
     ledgerAmount: "金額",
     newestFirst: "依日期由新到舊",
-    excludedDisclosure: (count) => `另有 ${count} 筆自動排除交易 · 不計入每日合計`,
+    excludedDisclosure: (count) =>
+      `另有 ${count} 筆自動排除交易 · 不計入每日合計`,
     reviewExcluded: "查看與修改",
     hideExcluded: "收起排除交易",
     excludedButtonAria: (count) => `${count} 筆自動排除交易`,
-    excludedTooltip: (count) => `${count} 筆交易不計入每日合計。點擊可查看與修改。`,
+    excludedTooltip: (count) =>
+      `${count} 筆交易不計入每日合計。點擊可查看與修改。`,
     daySummary: (total, excluded, pending) =>
       `已確認 ${total}${excluded ? ` · 排除 ${excluded} 筆` : ""}${pending ? ` · 待確認 ${pending} 筆` : ""}`,
     invoiceStatus: "發票",
@@ -957,10 +1049,12 @@ const zh: typeof en = {
     excludeDecision: "排除支出",
     cancel: "取消",
     confirm: "確認",
-    reviewTransactionAria: (label, date, amount) => `${label}，${date}，${amount}，檢視交易`,
+    reviewTransactionAria: (label, date, amount) =>
+      `${label}，${date}，${amount}，檢視交易`,
     noRecordsTitle: "沒有符合的紀錄",
     noRecordsBody: "切換其他消費類別，或查看自動排除交易。",
-    sourceCount: (invoices, accounts) => `${invoices} 張發票 / ${accounts} 筆帳戶支出`,
+    sourceCount: (invoices, accounts) =>
+      `${invoices} 張發票 / ${accounts} 筆帳戶支出`,
     itemCount: (count) => `${count} 個品項`,
     categoryFilterAria: "依消費種類篩選",
     sourceFilterAria: "依消費來源篩選",
@@ -976,7 +1070,8 @@ const zh: typeof en = {
       other: "其他服務",
     },
     viewDetails: "查看明細",
-    invoiceRowAria: (invoice, seller, amount) => `${invoice}，${seller}，${amount}，查看明細`,
+    invoiceRowAria: (invoice, seller, amount) =>
+      `${invoice}，${seller}，${amount}，查看明細`,
     noSpendingTitle: "尚無消費資料",
     noSpendingBody: "匯入確認後的發票與帳戶支出就會顯示在這裡。",
     noInvoicesTitle: "沒有符合的發票",
@@ -1153,13 +1248,17 @@ const zh: typeof en = {
     saveCredentialsFailed: "無法儲存登入資料，請再試一次。",
     statementsToCollect: "要抓取的帳戶資料",
     selectAllStatements: "全選",
-    statementSelectionHelp: (bank) => `${bank} 啟用時，請至少選擇一種帳戶型態。`,
+    statementSelectionHelp: (bank) =>
+      `${bank} 啟用時，請至少選擇一種帳戶型態。`,
+    statementSelectionAllSupported: (bank) =>
+      `${bank} 會自動抓取目前支援的所有帳戶資料；此處選擇不會影響執行。`,
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
     selectedStatementCount: (selected, total) => `已選 ${selected}/${total}`,
     partialImportWarning: "部分帳戶資料抓取失敗；仍可匯入已成功下載的檔案。",
     prerequisiteNoticesTitle: "執行前需要處理",
-    prerequisiteNoticeDescription: "請先安裝必要的外部元件，再對每個受影響的任務按「重新執行」。",
+    prerequisiteNoticeDescription:
+      "請先安裝必要的外部元件，再對每個受影響的任務按「重新執行」。",
     prerequisiteDownload: "下載官方安裝程式",
     prerequisiteRunAgain: "重新執行",
     prerequisiteTechnicalDetails: "技術細節",
@@ -1227,8 +1326,10 @@ const zh: typeof en = {
       Cancel: "取消",
       Configure: "設定",
     },
-    progressRunning: (attempt, maxAttempts) => `執行第 ${attempt}/${maxAttempts} 次`,
-    progressRetrying: (attempt, maxAttempts) => `重試第 ${attempt}/${maxAttempts} 次`,
+    progressRunning: (attempt, maxAttempts) =>
+      `執行第 ${attempt}/${maxAttempts} 次`,
+    progressRetrying: (attempt, maxAttempts) =>
+      `重試第 ${attempt}/${maxAttempts} 次`,
     progressWaiting: "等待人工處理",
     progressCompleted: "已完成",
     progressPartial: "部分完成",
@@ -1290,25 +1391,56 @@ const zh: typeof en = {
   },
   onboarding: {
     welcomeTitle: "建立第一個本機總覽",
-    welcomeBody: "連結一個資料來源、完成收集並匯入本機帳本，最後在總覽看見結果。",
+    welcomeBody:
+      "連結一個資料來源、完成收集並匯入本機帳本，最後在總覽看見結果。",
     automationTitle: "前往自動化",
     automationBody: "OctopusBeak 會在這裡收集並匯入你的財務資料。",
     credentialsTitle: "選擇第一個資料來源",
-    credentialsBody: "先設定一間銀行或服務，第一次匯入完成後再加入其他來源。登入資料只保存在這台 Mac。",
-    chooseSourceCopy: { title: "選擇第一間銀行", body: "選擇一間要完成首次匯入的銀行；完成後仍可加入其他來源。" },
-    enableSourceCopy: { title: "啟用這個資料來源", body: "輸入登入資訊前，請先開啟「已啟用」。" },
-    enterCredentialsCopy: { title: "輸入登入資料", body: "請在目前反白的欄位輸入資料。本次必須重新輸入，不會以已儲存的值略過。" },
-    selectStatementsCopy: { title: "確認匯入範圍", body: "選擇這次要抓取的帳戶資料，再繼續儲存。" },
-    saveCredentialsCopy: { title: "儲存並開始匯入", body: "儲存後會立即執行這間銀行的首次資料收集。" },
+    credentialsBody:
+      "先設定一間銀行或服務，第一次匯入完成後再加入其他來源。登入資料只保存在這台 Mac。",
+    chooseSourceCopy: {
+      title: "選擇第一間銀行",
+      body: "選擇一間要完成首次匯入的銀行；完成後仍可加入其他來源。",
+    },
+    enableSourceCopy: {
+      title: "啟用這個資料來源",
+      body: "輸入登入資訊前，請先開啟「已啟用」。",
+    },
+    enterCredentialsCopy: {
+      title: "輸入登入資料",
+      body: "請在目前反白的欄位輸入資料。本次必須重新輸入，不會以已儲存的值略過。",
+    },
+    selectStatementsCopy: {
+      title: "確認匯入範圍",
+      body: "選擇這次要抓取的帳戶資料，再繼續儲存。",
+    },
+    saveCredentialsCopy: {
+      title: "儲存並開始匯入",
+      body: "儲存後會立即執行這間銀行的首次資料收集。",
+    },
     collectionTitle: "收集第一份帳務資料",
     collectionBody: "執行選定的資料來源；工作進行時，引導會留在這一步等待。",
     assistTitle: "完成人工驗證",
-    assistBody: "在 Assist 完成 CAPTCHA、OTP、Email 或憑證驗證，收集工作就會繼續。",
-    openAssistCopy: { title: "完成銀行驗證", body: "開啟操作畫面，完成 CAPTCHA、OTP 或銀行要求的驗證。" },
-    chooseVerificationCopy: { title: "點選驗證控制項", body: "直接點選銀行畫面中的 CAPTCHA、驗證碼或 OTP 控制項。" },
-    enterVerificationCopy: { title: "輸入驗證碼", body: "輸入畫面或手機收到的驗證碼，按送出套用到銀行頁面。" },
-    resumeCollectionCopy: { title: "確認驗證完成", body: "銀行頁面完成驗證後，繼續資料收集。" },
-    verificationViewerAria: "銀行驗證操作畫面。請使用滑鼠或觸控板點選銀行頁面中的驗證控制。",
+    assistBody:
+      "在 Assist 完成 CAPTCHA、OTP、Email 或憑證驗證，收集工作就會繼續。",
+    openAssistCopy: {
+      title: "完成銀行驗證",
+      body: "開啟操作畫面，完成 CAPTCHA、OTP 或銀行要求的驗證。",
+    },
+    chooseVerificationCopy: {
+      title: "點選驗證控制項",
+      body: "直接點選銀行畫面中的 CAPTCHA、驗證碼或 OTP 控制項。",
+    },
+    enterVerificationCopy: {
+      title: "輸入驗證碼",
+      body: "輸入畫面或手機收到的驗證碼，按送出套用到銀行頁面。",
+    },
+    resumeCollectionCopy: {
+      title: "確認驗證完成",
+      body: "銀行頁面完成驗證後，繼續資料收集。",
+    },
+    verificationViewerAria:
+      "銀行驗證操作畫面。請使用滑鼠或觸控板點選銀行頁面中的驗證控制。",
     clickVerificationField: "請點選銀行畫面中的驗證控制項",
     collectionFailedTitle: "收集工作需要處理",
     collectionFailedBody: "先開啟 Logs 查看失敗原因，再重試相同資料來源。",
@@ -1418,14 +1550,24 @@ export type Translation = typeof en;
 
 export function normalizeLocale(value: unknown): Locale {
   const text = String(value ?? "").toLowerCase();
-  if (text === "zh-tw" || text === "zh-hant" || text.startsWith("zh-") || text === "zh") return "zh-TW";
+  if (
+    text === "zh-tw" ||
+    text === "zh-hant" ||
+    text.startsWith("zh-") ||
+    text === "zh"
+  )
+    return "zh-TW";
   if (text === "en" || text.startsWith("en-")) return "en";
   return "en";
 }
 
 function readLocale(): Locale {
-  if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
-    const browserLanguage = typeof navigator !== "undefined" ? navigator.language : "en";
+  if (
+    typeof localStorage !== "undefined" &&
+    typeof localStorage.getItem === "function"
+  ) {
+    const browserLanguage =
+      typeof navigator !== "undefined" ? navigator.language : "en";
     return normalizeLocale(localStorage.getItem(storageKey) ?? browserLanguage);
   }
   return "en";
@@ -1443,8 +1585,12 @@ export function translateKnownLabel(dictionary: Translation, value: string) {
 }
 
 locale.subscribe((value) => {
-  if (typeof localStorage !== "undefined" && typeof localStorage.setItem === "function") {
+  if (
+    typeof localStorage !== "undefined" &&
+    typeof localStorage.setItem === "function"
+  ) {
     localStorage.setItem(storageKey, value);
   }
-  if (typeof document !== "undefined") document.documentElement.lang = value === "zh-TW" ? "zh-Hant" : "en";
+  if (typeof document !== "undefined")
+    document.documentElement.lang = value === "zh-TW" ? "zh-Hant" : "en";
 });

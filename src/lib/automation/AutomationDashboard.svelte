@@ -19,6 +19,11 @@
     firstInvalidCredentialGroup,
   } from "$lib/automation/credential-setup.ts";
   import { credentialInputValue } from "$lib/automation/credential-redaction.ts";
+  import {
+    mapViewerPointer,
+    shouldDispatchViewerClickBeforeType,
+    viewerOverlayAnchorForRect,
+  } from "$lib/automation/viewer-coordinate.ts";
   import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -185,6 +190,7 @@
   $: onboardingNeedsStatements = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup?.statementTypes?.length
+    && selectedCredentialGroup.id !== "fubon"
     && (
       !(statementSelectionDrafts[selectedCredentialGroup.id]?.length)
       || !statementSelectionConfirmed
@@ -406,6 +412,7 @@
 
   function credentialGroupStatus(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation) {
     if (!enabled) return dictionary.common.disabled;
+    if (group.id === "fubon") return dictionary.common.enabled;
     if (group.statementSetupRequired && group.selectedStatementTypeIds.length) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length && !selectedCount) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
@@ -775,12 +782,17 @@
     try {
       const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
       if (humanTask?.id !== taskId || requestId !== viewerRequestId) return;
-      if (!bytes) return;
+      if (!bytes) {
+        if (!viewerImageUrl) viewerError = $t.automation.screenshotUnavailable;
+        return;
+      }
       if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
       viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
       viewerError = "";
     } catch (error) {
-      if (humanTask?.id === taskId && requestId === viewerRequestId) viewerError = error instanceof Error ? error.message : String(error);
+      if (humanTask?.id === taskId && requestId === viewerRequestId && !viewerImageUrl) {
+        viewerError = $t.automation.screenshotUnavailable;
+      }
     }
   }
 
@@ -939,46 +951,59 @@
       : null;
   }
 
+  function viewerImageLayoutOffset(image: HTMLImageElement, focus: HTMLElement) {
+    let left = 0;
+    let top = 0;
+    let current: HTMLElement | null = image;
+    while (current && current !== focus) {
+      left += current.offsetLeft;
+      top += current.offsetTop;
+      current = current.offsetParent instanceof HTMLElement ? current.offsetParent : null;
+    }
+    return current === focus ? { left, top } : { left: 0, top: 0 };
+  }
+
   function pointerPoint(event: Pick<PointerEvent, "clientX" | "clientY"> & { currentTarget: EventTarget | null }) {
     const image = viewerImageFromEvent(event);
     if (!image) return null;
-    const frame = image.closest(".viewer-frame") as HTMLElement | null;
     const focus = image.closest(".viewer-focus") as HTMLElement | null;
-    const frameRect = frame?.getBoundingClientRect() ?? image.getBoundingClientRect();
-    const imageWidth = image.clientWidth;
-    const imageHeight = image.clientHeight;
-    if (!image.naturalWidth || !image.naturalHeight || !imageWidth || !imageHeight) return null;
-
-    const focusStyle = focus ? getComputedStyle(focus) : null;
-    const transform = focusStyle?.transform.match(/^matrix\(([^)]+)\)$/)?.[1]
-      .split(",")
-      .map(Number);
-    const scaleX = transform?.[0] && Number.isFinite(transform[0]) ? transform[0] : 1;
-    const scaleY = transform?.[3] && Number.isFinite(transform[3]) ? transform[3] : 1;
-    const transformOrigin = (focusStyle?.transformOrigin ?? "0px 0px")
-      .split(" ")
-      .map((value) => Number.parseFloat(value));
-    const originX = Number.isFinite(transformOrigin[0]) ? transformOrigin[0] : 0;
-    const originY = Number.isFinite(transformOrigin[1]) ? transformOrigin[1] : 0;
-    const imageLeft = frameRect.left + (frameRect.width - imageWidth) / 2;
-    const imageTop = frameRect.top + (frameRect.height - imageHeight) / 2;
-    const localX = (event.clientX - imageLeft - originX * (1 - scaleX)) / scaleX;
-    const localY = (event.clientY - imageTop - originY * (1 - scaleY)) / scaleY;
-    return {
-      x: localX * (image.naturalWidth / imageWidth),
-      y: localY * (image.naturalHeight / imageHeight),
-      left: localX,
-      top: localY,
-      frameWidth: imageWidth,
-      frameHeight: imageHeight,
-    };
+    const imageRect = image.getBoundingClientRect();
+    const layoutWidth = image.clientWidth;
+    const layoutHeight = image.clientHeight;
+    if (!image.naturalWidth || !image.naturalHeight || !layoutWidth || !layoutHeight) return null;
+    const layoutOffset = focus ? viewerImageLayoutOffset(image, focus) : { left: 0, top: 0 };
+    return mapViewerPointer({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      imageRect,
+      naturalWidth: image.naturalWidth,
+      naturalHeight: image.naturalHeight,
+      layoutWidth,
+      layoutHeight,
+      layoutLeft: layoutOffset.left,
+      layoutTop: layoutOffset.top,
+      frameWidth: focus?.clientWidth ?? layoutWidth,
+      frameHeight: focus?.clientHeight ?? layoutHeight,
+    });
   }
 
-  function floatingInputAnchor(point: NonNullable<ReturnType<typeof pointerPoint>>) {
-    return {
-      left: Math.min(Math.max(point.left + 12, 12), Math.max(12, point.frameWidth - 300)),
-      top: Math.min(Math.max(point.top, 36), Math.max(36, point.frameHeight - 36)),
-    };
+  function floatingInputAnchor(
+    point: NonNullable<ReturnType<typeof pointerPoint>>,
+    targetRect: { x: number; y: number; width: number; height: number },
+  ) {
+    return viewerOverlayAnchorForRect({
+      targetRect,
+      naturalWidth: point.naturalWidth,
+      naturalHeight: point.naturalHeight,
+      layoutWidth: point.layoutWidth,
+      layoutHeight: point.layoutHeight,
+      layoutLeft: point.layoutLeft,
+      layoutTop: point.layoutTop,
+      frameWidth: point.frameWidth,
+      frameHeight: point.frameHeight,
+      overlayWidth: 288,
+      overlayHeight: 44,
+    });
   }
 
   function handleViewerPointerDown(event: PointerEvent) {
@@ -1033,7 +1058,7 @@
     const inspected = await inspectViewerPoint({ x: point.x, y: point.y });
     if (!inspected?.targetId || inspected.contractVersion === undefined) return;
     const modes = inspected.modes ?? [];
-    if (modes.includes("click") && !await sendViewerInput({
+    if (shouldDispatchViewerClickBeforeType(modes) && !await sendViewerInput({
       type: "click",
       x: point.x,
       y: point.y,
@@ -1044,8 +1069,11 @@
       assistInteracted = true;
       return;
     }
+    if (!inspected.rect) return;
+    const anchor = floatingInputAnchor(point, inspected.rect);
+    if (!anchor) return;
     floatingInput = {
-      ...floatingInputAnchor(point),
+      ...anchor,
       value: "",
       targetId: inspected.targetId,
       contractVersion: inspected.contractVersion,
@@ -1629,7 +1657,12 @@
                 {/if}
               {/each}
             </div>
-            {#if selectedCredentialGroup.statementTypes?.length}
+            {#if selectedCredentialGroup.id === "fubon" && selectedCredentialGroup.statementTypes?.length}
+              <fieldset class="statement-selection" id="fubon-statement-selection" tabindex="-1">
+                <legend>{$t.automation.statementsToCollect}</legend>
+                <p id="fubon-statement-help">{$t.automation.statementSelectionAllSupported(credentialGroupName(selectedCredentialGroup))}</p>
+              </fieldset>
+            {:else if selectedCredentialGroup.statementTypes?.length}
               <fieldset
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
@@ -1842,23 +1875,34 @@
               onpointerup={handleViewerPointerUp}
               onpointercancel={handleViewerPointerCancel}
             >
-              <img
-                class="viewer-image"
-                data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
-                  ? "automation-assist"
-                  : undefined}
-                data-onboarding-action="choose-verification-control"
-                src={viewerImageUrl}
-                alt={$t.automation.pausedBrowser}
-                draggable="false"
-                tabindex="-1"
-                onload={(event) => {
-                  const image = event.currentTarget as HTMLImageElement;
-                  viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
-                  viewerError = "";
-                }}
-                onerror={() => (viewerError = $t.automation.screenshotUnavailable)}
-              />
+              {#if viewerImageUrl}
+                <img
+                  class="viewer-image"
+                  data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
+                    ? "automation-assist"
+                    : undefined}
+                  data-onboarding-action="choose-verification-control"
+                  src={viewerImageUrl}
+                  alt={$t.automation.pausedBrowser}
+                  draggable="false"
+                  tabindex="-1"
+                  onload={(event) => {
+                    const image = event.currentTarget as HTMLImageElement;
+                    viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
+                    viewerError = "";
+                  }}
+                  onerror={() => {
+                    URL.revokeObjectURL(viewerImageUrl);
+                    viewerImageUrl = "";
+                    viewerImageSize = { width: 0, height: 0 };
+                    viewerError = $t.automation.screenshotUnavailable;
+                  }}
+                />
+              {:else}
+                <div class="viewer-screenshot-placeholder" role="status" aria-live="polite">
+                  {viewerError || $t.automation.screenshotUnavailable}
+                </div>
+              {/if}
             </button>
           {#if onboardingStep === "assist" && humanTask && guideAssistViewer}
             <div class="verification-viewer-tooltip" role="tooltip">
@@ -3367,6 +3411,16 @@
     user-select: none;
   }
 
+  .viewer-screenshot-placeholder {
+    display: grid;
+    width: 100%;
+    min-height: 180px;
+    place-items: center;
+    padding: var(--space-6);
+    color: color-mix(in oklch, white 76%, transparent);
+    text-align: center;
+  }
+
   .viewer-image:focus,
   .viewer-image:focus-visible {
     outline: 3px solid var(--accent);
@@ -3446,7 +3500,7 @@
     border-radius: calc(var(--radius) + 6px);
     background: rgb(255 255 255 / 0.16);
     box-shadow: var(--shadow);
-    transform: translateY(-50%);
+    transform: translate(-50%, -50%);
     backdrop-filter: blur(3px);
     transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, backdrop-filter 0.18s ease;
   }

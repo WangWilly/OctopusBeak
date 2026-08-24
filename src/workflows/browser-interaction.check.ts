@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  activateControlWithoutPointer,
   clickAndWaitForNavigation,
   hasAttachedLocator,
 } from "./browser-interaction.ts";
@@ -42,10 +43,16 @@ const navigation = new Promise<void>((resolve) => {
 });
 let clicked = false;
 let completed = false;
-let seenNavigationOptions: { waitUntil: "domcontentloaded"; timeout: number } | null = null;
+let seenNavigationOptions: {
+  waitUntil: "domcontentloaded";
+  timeout: number;
+} | null = null;
 let seenSelector: string | null = null;
 const navigationScope = {
-  waitForNavigation: (options: { waitUntil: "domcontentloaded"; timeout: number }) => {
+  waitForNavigation: (options: {
+    waitUntil: "domcontentloaded";
+    timeout: number;
+  }) => {
     seenNavigationOptions = options;
     return navigation;
   },
@@ -66,9 +73,41 @@ const pendingNavigation = clickAndWaitForNavigation(
 await new Promise<void>((resolve) => setImmediate(resolve));
 assert.equal(clicked, true);
 assert.equal(completed, false);
-assert.deepEqual(seenNavigationOptions, { waitUntil: "domcontentloaded", timeout: 60_000 });
+assert.deepEqual(seenNavigationOptions, {
+  waitUntil: "domcontentloaded",
+  timeout: 60_000,
+});
 assert.equal(seenSelector, "#submitbutton");
 
 finishNavigation();
 await pendingNavigation;
 assert.equal(completed, true);
+
+let evaluateCalled = false;
+let dispatchType: string | null = null;
+let dispatchOptions: { signal?: AbortSignal; timeout?: number } | null = null;
+const dispatchSignal = new AbortController().signal;
+await activateControlWithoutPointer(
+  {
+    evaluate: async () => {
+      evaluateCalled = true;
+    },
+    dispatchEvent: async (
+      type: string,
+      _eventInit: unknown,
+      options: { signal?: AbortSignal; timeout?: number },
+    ) => {
+      dispatchType = type;
+      dispatchOptions = options;
+    },
+  } as never,
+  { signal: dispatchSignal, timeout: 0 },
+);
+assert.equal(evaluateCalled, false);
+assert.equal(dispatchType, "click");
+const seenDispatchOptions = dispatchOptions as unknown as {
+  signal?: AbortSignal;
+  timeout?: number;
+};
+assert.equal(seenDispatchOptions.signal, dispatchSignal);
+assert.equal(seenDispatchOptions.timeout, 0);

@@ -13,9 +13,11 @@ registerHooks({
   },
 });
 
-const { hasUntraversedPager, submitCreditCardMonthOptions } = await import(
-  "./yuanta-credit-card-statements.ts"
-);
+const {
+  hasUntraversedPager,
+  isCreditCardProductAbsentText,
+  submitCreditCardMonthOptions,
+} = await import("./yuanta-credit-card-statements.ts");
 
 const noPagerResponse = `
   <table class="rwdTable"><tr><td>本期帳單</td></tr></table>
@@ -28,6 +30,8 @@ const pagerResponse = `
 
 assert.equal(hasUntraversedPager(noPagerResponse), false);
 assert.equal(hasUntraversedPager(pagerResponse), true);
+assert.equal(isCreditCardProductAbsentText("目前未持有信用卡"), true);
+assert.equal(isCreditCardProductAbsentText("查無資料"), false);
 
 const submitted: number[] = [];
 const handled: number[] = [];

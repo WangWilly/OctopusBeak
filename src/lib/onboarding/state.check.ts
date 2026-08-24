@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import type { AutomationDesktopModel, CredentialGroupDto } from "../desktop/api.ts";
+import type {
+  AutomationDesktopModel,
+  CredentialGroupDto,
+} from "../desktop/api.ts";
 import type { AutomationTaskRow } from "../automation/types.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
 import { singleSourceUpdates } from "../automation/credential-setup.ts";
@@ -39,9 +42,15 @@ import {
 
 class MemoryStorage {
   values = new Map<string, string>();
-  getItem(key: string) { return this.values.get(key) ?? null; }
-  setItem(key: string, value: string) { this.values.set(key, value); }
-  removeItem(key: string) { this.values.delete(key); }
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
 }
 
 const task = (
@@ -74,7 +83,10 @@ const task = (
 const fubonGroup: CredentialGroupDto = {
   id: "fubon",
   label: "Fubon",
-  displayName: { en: "Taipei Fubon Bank", "zh-TW": "台北富邦銀行（Taipei Fubon Bank）" },
+  displayName: {
+    en: "Taipei Fubon Bank",
+    "zh-TW": "台北富邦銀行（Taipei Fubon Bank）",
+  },
   searchAliases: ["Fubon", "富邦"],
   enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
   credentialKeys: ["USER", "PASSWORD"],
@@ -123,11 +135,17 @@ const maicoinGroup: CredentialGroupDto = {
   statementSelectionKey: "MAICOIN_TYPES",
 };
 
-const overview = (accounts = 0, importedAt: string | null = null): OverviewPageDto => ({
+const overview = (
+  accounts = 0,
+  importedAt: string | null = null,
+): OverviewPageDto => ({
   importedAt,
   summary: [],
   dailyHistory: [],
-  accounts: Array.from({ length: accounts }, (_, index) => ({ id: String(index) } as never)),
+  accounts: Array.from(
+    { length: accounts },
+    (_, index) => ({ id: String(index) }) as never,
+  ),
   sankey: null,
   sankeyExchangeRates: [],
   sankeyLatestExchangeRateDate: null,
@@ -137,15 +155,26 @@ const overview = (accounts = 0, importedAt: string | null = null): OverviewPageD
 
 const automation = (
   selectedTask: AutomationTaskRow,
-  importTask = task({ id: "import-downloads-csv", kind: "import", status: "locked", primaryAction: "Locked", canRun: false }),
+  importTask = task({
+    id: "import-downloads-csv",
+    kind: "import",
+    status: "locked",
+    primaryAction: "Locked",
+    canRun: false,
+  }),
 ): AutomationDesktopModel => ({
   automation: {
     businessDate: "2026-07-23",
     active: selectedTask.isActive || importTask.isActive,
-    activeTaskCount: Number(selectedTask.isActive) + Number(importTask.isActive),
+    activeTaskCount:
+      Number(selectedTask.isActive) + Number(importTask.isActive),
     parallelRunnableTaskIds: [],
     credentials: { USER: true, PASSWORD: true },
-    importGate: { locked: true, missingTaskIds: [selectedTask.id], warnings: [] },
+    importGate: {
+      locked: true,
+      missingTaskIds: [selectedTask.id],
+      warnings: [],
+    },
     externalPrerequisiteNotices: [],
     tasks: [selectedTask, importTask],
   },
@@ -181,7 +210,8 @@ const context = (
       accounts: overviewData.accounts,
       importedAt: overviewData.importedAt,
     },
-    overviewLoadedForImportFinishedAt: options.overviewLoadedForImportFinishedAt ?? null,
+    overviewLoadedForImportFinishedAt:
+      options.overviewLoadedForImportFinishedAt ?? null,
   };
 };
 
@@ -203,9 +233,22 @@ const selectedCrawler = task({
 
 assert.equal(ONBOARDING_STORAGE_KEY, "octopusbeak-onboarding-v2");
 assert.equal(createOnboardingState().version, 2);
-assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", {}), "USER");
-assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", { USER: "demo-user" }), "PASSWORD");
-assert.equal(nextOnboardingCredentialKey(["USER", "PASSWORD"], "PASSWORD", { PASSWORD: "secret" }), null);
+assert.equal(
+  nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", {}),
+  "USER",
+);
+assert.equal(
+  nextOnboardingCredentialKey(["USER", "PASSWORD"], "USER", {
+    USER: "demo-user",
+  }),
+  "PASSWORD",
+);
+assert.equal(
+  nextOnboardingCredentialKey(["USER", "PASSWORD"], "PASSWORD", {
+    PASSWORD: "secret",
+  }),
+  null,
+);
 assert.deepEqual(
   previousOnboardingCredentialState(["USER", "PASSWORD"], {
     selectedCredentialGroupId: "fubon",
@@ -220,11 +263,15 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  previousOnboardingCredentialState(["USER", "PASSWORD"], {
-    selectedCredentialGroupId: "fubon",
-    targetKey: null,
-    statementSelectionConfirmed: true,
-  }, true),
+  previousOnboardingCredentialState(
+    ["USER", "PASSWORD"],
+    {
+      selectedCredentialGroupId: "fubon",
+      targetKey: null,
+      statementSelectionConfirmed: true,
+    },
+    true,
+  ),
   {
     selectedCredentialGroupId: "fubon",
     targetKey: null,
@@ -233,11 +280,15 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  previousOnboardingCredentialState([], {
-    selectedCredentialGroupId: "fubon",
-    targetKey: null,
-    statementSelectionConfirmed: false,
-  }, true),
+  previousOnboardingCredentialState(
+    [],
+    {
+      selectedCredentialGroupId: "fubon",
+      targetKey: null,
+      statementSelectionConfirmed: false,
+    },
+    true,
+  ),
   {
     selectedCredentialGroupId: "",
     targetKey: null,
@@ -253,27 +304,85 @@ assert.equal(
   }).closeCredentials,
   true,
 );
-assert.deepEqual(singleSourceUpdates(
-  [fubonGroup, esunGroup, maicoinGroup],
-  "fubon",
-  new Set(["fubon", "esun"]),
-), {
-  LIBRETTO_CLOUD_FUBON_ENABLED: "true",
-  LIBRETTO_CLOUD_ESUN_ENABLED: "false",
-});
-assert.equal(resolveOnboardingStep(context(selectedCrawler, { route: "overview" }), state), "automation-nav");
+assert.deepEqual(
+  singleSourceUpdates(
+    [fubonGroup, esunGroup, maicoinGroup],
+    "fubon",
+    new Set(["fubon", "esun"]),
+  ),
+  {
+    LIBRETTO_CLOUD_FUBON_ENABLED: "true",
+    LIBRETTO_CLOUD_ESUN_ENABLED: "false",
+  },
+);
+assert.equal(
+  resolveOnboardingStep(context(selectedCrawler, { route: "overview" }), state),
+  "automation-nav",
+);
 assert.equal(onboardingCanGoBack("automation-nav"), false);
 assert.equal(onboardingCanGoBack("credentials"), true);
 assert.equal(onboardingCanGoBack("assist"), true);
 assert.equal(onboardingCanGoBack("collection"), false);
 assert.equal(onboardingCanGoBack("import"), false);
-assert.equal(resolveOnboardingStep(context(selectedCrawler), createOnboardingState()), "credentials");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "running", isActive: true }), state), "collection");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "waiting_for_human", humanSession: "fubon" }), state), "assist");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "failed", ranToday: true }), state), "collection-failed");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "partial", ranToday: true }, { gateLocked: true }), state), "collection");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "partial", ranToday: true }, { gateLocked: false }), state), "import");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "completed", ranToday: true }, { gateLocked: false }), state), "import");
+assert.equal(
+  resolveOnboardingStep(context(selectedCrawler), createOnboardingState()),
+  "credentials",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context({ ...selectedCrawler, status: "running", isActive: true }),
+    state,
+  ),
+  "collection",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context({
+      ...selectedCrawler,
+      status: "waiting_for_human",
+      humanSession: "fubon",
+    }),
+    state,
+  ),
+  "assist",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context({ ...selectedCrawler, status: "failed", ranToday: true }),
+    state,
+  ),
+  "collection-failed",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "partial", ranToday: true },
+      { gateLocked: true },
+    ),
+    state,
+  ),
+  "collection",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "partial", ranToday: true },
+      { gateLocked: false },
+    ),
+    state,
+  ),
+  "import",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "completed", ranToday: true },
+      { gateLocked: false },
+    ),
+    state,
+  ),
+  "import",
+);
 
 const completedImport = task({
   id: "import-downloads-csv",
@@ -283,19 +392,28 @@ const completedImport = task({
   latestStartedAt: "2026-07-23T08:06:00.000Z",
   latestFinishedAt: "2026-07-23T08:07:00.000Z",
 });
-assert.equal(resolveOnboardingStep(context({
-  ...selectedCrawler,
-  status: "completed",
-  ranToday: true,
-  latestStartedAt: "2026-07-23T07:00:00.000Z",
-  latestFinishedAt: "2026-07-23T07:30:00.000Z",
-}, {
-  gateLocked: false,
-  importTask: {
-    ...completedImport,
-    latestStartedAt: "2026-07-23T07:31:00.000Z",
-  },
-}), freshState), "collection");
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      {
+        ...selectedCrawler,
+        status: "completed",
+        ranToday: true,
+        latestStartedAt: "2026-07-23T07:00:00.000Z",
+        latestFinishedAt: "2026-07-23T07:30:00.000Z",
+      },
+      {
+        gateLocked: false,
+        importTask: {
+          ...completedImport,
+          latestStartedAt: "2026-07-23T07:31:00.000Z",
+        },
+      },
+    ),
+    freshState,
+  ),
+  "collection",
+);
 const freshCrawler = {
   ...selectedCrawler,
   status: "completed" as const,
@@ -309,106 +427,241 @@ const freshImporter = {
   latestFinishedAt: "2026-07-23T08:07:00.000Z",
 };
 test("stale completed import cannot suppress Automation navigation", () => {
-  assert.equal(resolveOnboardingStep(context(freshCrawler, {
-    route: "overview",
-    gateLocked: false,
-    importTask: {
-      ...freshImporter,
-      latestStartedAt: "2026-07-23T08:04:00.000Z",
-    },
-  }), freshState), "automation-nav");
+  assert.equal(
+    resolveOnboardingStep(
+      context(freshCrawler, {
+        route: "overview",
+        gateLocked: false,
+        importTask: {
+          ...freshImporter,
+          latestStartedAt: "2026-07-23T08:04:00.000Z",
+        },
+      }),
+      freshState,
+    ),
+    "automation-nav",
+  );
 });
 
 test("stale failed import cannot report a fresh import failure", () => {
-  assert.equal(resolveOnboardingStep(context(freshCrawler, {
-    gateLocked: false,
-    importTask: {
-      ...freshImporter,
-      status: "failed",
-      latestStartedAt: "2026-07-23T08:04:00.000Z",
-    },
-  }), freshState), "import");
+  assert.equal(
+    resolveOnboardingStep(
+      context(freshCrawler, {
+        gateLocked: false,
+        importTask: {
+          ...freshImporter,
+          status: "failed",
+          latestStartedAt: "2026-07-23T08:04:00.000Z",
+        },
+      }),
+      freshState,
+    ),
+    "import",
+  );
 });
 
-assert.equal(resolveOnboardingStep(context(freshCrawler, {
-  gateLocked: false,
-  importTask: freshImporter,
-  accounts: 1,
-  overviewLoadedForImportFinishedAt: freshImporter.latestFinishedAt,
-}), freshState), "overview");
-assert.equal(resolveOnboardingStep(context(freshCrawler, {
-  gateLocked: false,
-  importTask: {
-    ...freshImporter,
-    latestStartedAt: "2026-07-23T08:04:00.000Z",
-  },
-}), freshState), "import");
-assert.equal(resolveOnboardingStep(context({
-  ...selectedCrawler,
-  status: "waiting_for_human",
-  latestStartedAt: "2026-07-23T07:00:00.000Z",
-}, { gateLocked: false }), freshState), "collection");
-assert.equal(resolveOnboardingStep(context({
-  ...selectedCrawler,
-  status: "waiting_for_human",
-}, { gateLocked: false }), freshState), "assist");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "completed", ranToday: true }, {
-  importTask: completedImport,
-  accounts: 0,
-}), state), "overview");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "completed", ranToday: true }, {
-  route: "overview",
-  importTask: completedImport,
-  accounts: 0,
-  overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
-}), state), "overview-empty");
-assert.equal(resolveOnboardingStep(context({ ...selectedCrawler, status: "completed", ranToday: true }, {
-  route: "overview",
-  importTask: completedImport,
-  accounts: 1,
-  overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
-}), state), "complete");
-assert.equal(resolveOnboardingStep(context(selectedCrawler), { ...state, status: "paused" }), "hidden");
-assert.equal(resolveOnboardingStep(context(selectedCrawler), { ...state, status: "completed" }), "hidden");
+assert.equal(
+  resolveOnboardingStep(
+    context(freshCrawler, {
+      gateLocked: false,
+      importTask: freshImporter,
+      accounts: 1,
+      overviewLoadedForImportFinishedAt: freshImporter.latestFinishedAt,
+    }),
+    freshState,
+  ),
+  "overview",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(freshCrawler, {
+      gateLocked: false,
+      importTask: {
+        ...freshImporter,
+        latestStartedAt: "2026-07-23T08:04:00.000Z",
+      },
+    }),
+    freshState,
+  ),
+  "import",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      {
+        ...selectedCrawler,
+        status: "waiting_for_human",
+        latestStartedAt: "2026-07-23T07:00:00.000Z",
+      },
+      { gateLocked: false },
+    ),
+    freshState,
+  ),
+  "collection",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      {
+        ...selectedCrawler,
+        status: "waiting_for_human",
+      },
+      { gateLocked: false },
+    ),
+    freshState,
+  ),
+  "assist",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "completed", ranToday: true },
+      {
+        importTask: completedImport,
+        accounts: 0,
+      },
+    ),
+    state,
+  ),
+  "overview",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "completed", ranToday: true },
+      {
+        route: "overview",
+        importTask: completedImport,
+        accounts: 0,
+        overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+      },
+    ),
+    state,
+  ),
+  "overview-empty",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context(
+      { ...selectedCrawler, status: "completed", ranToday: true },
+      {
+        route: "overview",
+        importTask: completedImport,
+        accounts: 1,
+        overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+      },
+    ),
+    state,
+  ),
+  "complete",
+);
+assert.equal(
+  resolveOnboardingStep(context(selectedCrawler), {
+    ...state,
+    status: "paused",
+  }),
+  "hidden",
+);
+assert.equal(
+  resolveOnboardingStep(context(selectedCrawler), {
+    ...state,
+    status: "completed",
+  }),
+  "hidden",
+);
 
-assert.equal(hasExistingProductData(context(selectedCrawler, { accounts: 1 })), true);
-assert.equal(hasExistingProductData(context(selectedCrawler, { importedAt: "2026-07-22T06:00:00.000Z" })), true);
-assert.equal(hasExistingProductData(context(selectedCrawler, { importTask: completedImport })), true);
-assert.equal(hasExistingProductData(context(selectedCrawler, {
-  importTask: { ...completedImport, status: "failed" },
-})), false);
+assert.equal(
+  hasExistingProductData(context(selectedCrawler, { accounts: 1 })),
+  true,
+);
+assert.equal(
+  hasExistingProductData(
+    context(selectedCrawler, { importedAt: "2026-07-22T06:00:00.000Z" }),
+  ),
+  true,
+);
+assert.equal(
+  hasExistingProductData(
+    context(selectedCrawler, { importTask: completedImport }),
+  ),
+  true,
+);
+assert.equal(
+  hasExistingProductData(
+    context(selectedCrawler, {
+      importTask: { ...completedImport, status: "failed" },
+    }),
+  ),
+  false,
+);
 assert.equal(hasExistingProductData(context(selectedCrawler)), false);
-assert.deepEqual(targetForOnboardingStep("credentials", state), { kind: "credentials" });
+assert.deepEqual(targetForOnboardingStep("credentials", state), {
+  kind: "credentials",
+});
 assert.deepEqual(targetForOnboardingStep("assist", state), { kind: "assist" });
 assert.equal(onboardingStepNumber("assist"), 3);
 assert.equal(onboardingStepNumber("import-failed"), 4);
 assert.equal(onboardingCopyKey("collection-failed"), "collectionFailed");
 assert.equal(onboardingCopyKey("overview-empty"), "overviewEmpty");
 assert.equal(onboardingCopyKey("hidden"), null);
-assert.deepEqual(
-  targetForOnboardingStep("collection", state),
-  { kind: "task", taskId: "fubon", action: "primary" },
-);
+assert.deepEqual(targetForOnboardingStep("collection", state), {
+  kind: "task",
+  taskId: "fubon",
+  action: "primary",
+});
 
-const automationDashboard = readFileSync("src/lib/automation/AutomationDashboard.svelte", "utf8");
-const dashboardShell = readFileSync("src/lib/shared-shell/components/DashboardShell.svelte", "utf8");
-const overviewDashboard = readFileSync("src/lib/overview/OverviewDashboard.svelte", "utf8");
-const onboardingCoach = readFileSync("src/lib/onboarding/OnboardingCoach.svelte", "utf8");
-const onboardingStateSource = readFileSync("src/lib/onboarding/state.ts", "utf8");
-const targetObserverSource = readFileSync("src/lib/onboarding/target-observer.ts", "utf8");
+const automationDashboard = readFileSync(
+  "src/lib/automation/AutomationDashboard.svelte",
+  "utf8",
+);
+const dashboardShell = readFileSync(
+  "src/lib/shared-shell/components/DashboardShell.svelte",
+  "utf8",
+);
+const overviewDashboard = readFileSync(
+  "src/lib/overview/OverviewDashboard.svelte",
+  "utf8",
+);
+const onboardingCoach = readFileSync(
+  "src/lib/onboarding/OnboardingCoach.svelte",
+  "utf8",
+);
+const onboardingStateSource = readFileSync(
+  "src/lib/onboarding/state.ts",
+  "utf8",
+);
+const targetObserverSource = readFileSync(
+  "src/lib/onboarding/target-observer.ts",
+  "utf8",
+);
 const page = readFileSync("src/routes/+page.svelte", "utf8");
-const settingsPage = readFileSync("src/lib/settings/SettingsPage.svelte", "utf8");
+const settingsPage = readFileSync(
+  "src/lib/settings/SettingsPage.svelte",
+  "utf8",
+);
 const i18n = readFileSync("src/lib/i18n/i18n.ts", "utf8");
 for (const source of [automationDashboard, dashboardShell, overviewDashboard]) {
   assert.match(source, /data-onboarding/);
 }
 assert.match(automationDashboard, /buildCredentialSetupPlan/);
-assert.match(onboardingStateSource, /export function settleAssistTextSubmission/);
+assert.match(
+  onboardingStateSource,
+  /export function settleAssistTextSubmission/,
+);
 assert.match(targetObserverSource, /export function activateOnboardingTarget/);
 assert.match(i18n, /welcomeTitle: "Build your first local overview"/);
-assert.match(automationDashboard, /class="viewer-frame"[\s\S]*?data-onboarding-action="choose-verification-control"/);
-assert.match(automationDashboard, /class="viewer-floating-input"[\s\S]*?data-onboarding-action="enter-verification"/);
-assert.match(automationDashboard, /resumeHumanViewer[\s\S]*?data-onboarding-action="resume-collection"/);
+assert.match(
+  automationDashboard,
+  /class="viewer-frame"[\s\S]*?data-onboarding-action="choose-verification-control"/,
+);
+assert.match(
+  automationDashboard,
+  /class="viewer-floating-input"[\s\S]*?data-onboarding-action="enter-verification"/,
+);
+assert.match(
+  automationDashboard,
+  /resumeHumanViewer[\s\S]*?data-onboarding-action="resume-collection"/,
+);
 assert.match(automationDashboard, /humanTask[\s\S]*?assistInteracted/);
 assert.match(
   automationDashboard,
@@ -416,70 +669,130 @@ assert.match(
 );
 const activeTaskJumpSource = automationDashboard.slice(
   automationDashboard.indexOf('class="active-task-jump"'),
-  automationDashboard.indexOf("</button>", automationDashboard.indexOf('class="active-task-jump"')),
+  automationDashboard.indexOf(
+    "</button>",
+    automationDashboard.indexOf('class="active-task-jump"'),
+  ),
 );
 assert.doesNotMatch(activeTaskJumpSource, /data-onboarding=/);
 assert.match(onboardingCoach, /\.human-viewer-modal \.viewer-floating-input/);
-assert.match(onboardingCoach, /if \(copyKey === "assist"\)[\s\S]*?targetAction/);
-assert.match(onboardingCoach, /\$: key = visible \? onboardingCopyKey\(step\) : null;/);
-assert.match(onboardingCoach, /coachCopy\(\$t,\s*key,\s*target\?\.dataset\.onboardingAction\)/);
-assert.match(onboardingCoach, /function primaryLabel\([\s\S]*nextStep: OnboardingStep,[\s\S]*dictionary: Translation,[\s\S]*nextRoute: OnboardingRoute/);
-assert.match(onboardingCoach, /\{primaryLabel\(step, \$t, route, target\?\.dataset\.onboardingAction\)\}/);
+assert.match(
+  onboardingCoach,
+  /if \(copyKey === "assist"\)[\s\S]*?targetAction/,
+);
+assert.match(
+  onboardingCoach,
+  /\$: key = visible \? onboardingCopyKey\(step\) : null;/,
+);
+assert.match(
+  onboardingCoach,
+  /coachCopy\(\$t,\s*key,\s*target\?\.dataset\.onboardingAction\)/,
+);
+assert.match(
+  onboardingCoach,
+  /function primaryLabel\([\s\S]*nextStep: OnboardingStep,[\s\S]*dictionary: Translation,[\s\S]*nextRoute: OnboardingRoute/,
+);
+assert.match(
+  onboardingCoach,
+  /\{primaryLabel\(step, \$t, route, target\?\.dataset\.onboardingAction\)\}/,
+);
 assert.match(onboardingCoach, /animation: guide-idle 1\.2s step-end infinite;/);
 assert.doesNotMatch(onboardingCoach, /steps\(2,\s*end\)/);
-assert.match(onboardingCoach, /import \{ placeOnboardingCoach \} from "\.\/placement\.ts";/);
-assert.match(onboardingCoach, /\$: coachPosition = targetRect[\s\S]*placeOnboardingCoach\(/);
+assert.match(
+  onboardingCoach,
+  /import \{ placeOnboardingCoach \} from "\.\/placement\.ts";/,
+);
+assert.match(
+  onboardingCoach,
+  /\$: coachPosition = targetRect[\s\S]*placeOnboardingCoach\(/,
+);
 assert.match(onboardingCoach, /viewportWidth = innerWidth;/);
 assert.match(onboardingCoach, /\{#if targetRect && coachPosition/);
 assert.match(onboardingCoach, /bind:clientWidth=\{null, measureCoachWidth\}/);
 assert.match(onboardingCoach, /bind:clientHeight=\{null, measureCoachHeight\}/);
-assert.match(onboardingCoach, /--coach-left:\$\{coachPosition\.left\}px;--coach-top:\$\{coachPosition\.top\}px/);
+assert.match(
+  onboardingCoach,
+  /--coach-left:\$\{coachPosition\.left\}px;--coach-top:\$\{coachPosition\.top\}px/,
+);
 assert.match(onboardingCoach, /top: var\(--coach-top\);/);
 assert.match(onboardingCoach, /left: var\(--coach-left\);/);
 assert.match(onboardingCoach, /class:corner=\{coachPosition\?\.compact\}/);
 assert.match(onboardingCoach, /class:fallback=\{!targetRect\}/);
 assert.match(onboardingCoach, /class="interaction-blocker missing-target"/);
-assert.match(onboardingCoach, /\.coach\.fallback\s*\{[\s\S]*?right: 24px;[\s\S]*?bottom: 24px;/);
+assert.match(
+  onboardingCoach,
+  /\.coach\.fallback\s*\{[\s\S]*?right: 24px;[\s\S]*?bottom: 24px;/,
+);
 assert.match(onboardingCoach, /max-height: calc\(100vh - 48px\);/);
 assert.match(onboardingCoach, /overflow-y: auto;/);
-assert.match(onboardingCoach, /\.coach\.corner \{[\s\S]*height: var\(--coach-height\);/);
-assert.match(onboardingCoach, /\.coach\.corner \.coach-actions \.primary \{[\s\S]*display: inline-flex;/);
+assert.match(
+  onboardingCoach,
+  /\.coach\.corner \{[\s\S]*height: var\(--coach-height\);/,
+);
+assert.match(
+  onboardingCoach,
+  /\.coach\.corner \.coach-actions \.primary \{[\s\S]*display: inline-flex;/,
+);
 assert.doesNotMatch(onboardingCoach, /transition:[^;]*(top|left)/);
-assert.doesNotMatch(onboardingCoach, /class:above=\{placeAbove\}|\.coach\.above/);
+assert.doesNotMatch(
+  onboardingCoach,
+  /class:above=\{placeAbove\}|\.coach\.above/,
+);
 assert.doesNotMatch(onboardingCoach, /bind:this=\{coach\}/);
 assert.match(page, /<OnboardingCoach/);
 assert.match(settingsPage, /export let onboardingStatus/);
 assert.match(
   i18n,
-  /openAssistCopy: \{ title: "完成銀行驗證", body: "開啟操作畫面，完成 CAPTCHA、OTP 或銀行要求的驗證。" \}/,
+  /openAssistCopy:\s*\{\s*title: "完成銀行驗證",\s*body: "開啟操作畫面，完成 CAPTCHA、OTP 或銀行要求的驗證。",?\s*\}/,
 );
 assert.match(
   i18n,
-  /chooseVerificationCopy: \{ title: "點選驗證控制項", body: "直接點選銀行畫面中的 CAPTCHA、驗證碼或 OTP 控制項。" \}/,
+  /chooseVerificationCopy:\s*\{\s*title: "點選驗證控制項",\s*body: "直接點選銀行畫面中的 CAPTCHA、驗證碼或 OTP 控制項。",?\s*\}/,
 );
 assert.match(
   i18n,
-  /enterVerificationCopy: \{ title: "輸入驗證碼", body: "輸入畫面或手機收到的驗證碼，按送出套用到銀行頁面。" \}/,
+  /enterVerificationCopy:\s*\{\s*title: "輸入驗證碼",\s*body: "輸入畫面或手機收到的驗證碼，按送出套用到銀行頁面。",?\s*\}/,
 );
 assert.match(
   i18n,
-  /resumeCollectionCopy: \{ title: "確認驗證完成", body: "銀行頁面完成驗證後，繼續資料收集。" \}/,
+  /resumeCollectionCopy:\s*\{\s*title: "確認驗證完成",\s*body: "銀行頁面完成驗證後，繼續資料收集。",?\s*\}/,
 );
 assert.match(i18n, /resumeCollection: "已完成驗證，繼續收集"/);
 assert.doesNotMatch(onboardingCoach, /assistTargetInModal/);
 assert.match(onboardingCoach, /class="interaction-blocker top"/);
-assert.match(onboardingCoach, /document\.documentElement\.style\.overflow = "hidden"/);
+assert.match(
+  onboardingCoach,
+  /document\.documentElement\.style\.overflow = "hidden"/,
+);
 assert.match(onboardingCoach, /nextTarget\.scrollIntoView/);
-assert.match(onboardingCoach, /\.guide \{[\s\S]*?width: 32px;[\s\S]*?height: 32px;/);
-assert.match(onboardingCoach, /event\.key === "Escape" && !event\.defaultPrevented/);
-assert.match(automationDashboard, /<svelte:window onkeydowncapture=\{handleWindowKeydown\}/);
-assert.match(automationDashboard, /event\.stopImmediatePropagation\(\);[\s\S]*?floatingInput = null;/);
+assert.match(
+  onboardingCoach,
+  /\.guide \{[\s\S]*?width: 32px;[\s\S]*?height: 32px;/,
+);
+assert.match(
+  onboardingCoach,
+  /event\.key === "Escape" && !event\.defaultPrevented/,
+);
+assert.match(
+  automationDashboard,
+  /<svelte:window onkeydowncapture=\{handleWindowKeydown\}/,
+);
+assert.match(
+  automationDashboard,
+  /event\.stopImmediatePropagation\(\);[\s\S]*?floatingInput = null;/,
+);
 assert.match(
   automationDashboard,
   /<nav[\s\S]*?data-onboarding=\{onboardingSourceSelection[\s\S]*?data-onboarding-action="select-source"/,
 );
-assert.match(automationDashboard, /ononboardingadvance=\{advanceOnboardingCredential\}/);
-assert.match(automationDashboard, /ononboardingback=\{backOnboardingCredential\}/);
+assert.match(
+  automationDashboard,
+  /ononboardingadvance=\{advanceOnboardingCredential\}/,
+);
+assert.match(
+  automationDashboard,
+  /ononboardingback=\{backOnboardingCredential\}/,
+);
 assert.match(automationDashboard, /ononboardingback=\{backOnboardingAssist\}/);
 assert.match(
   automationDashboard,
@@ -500,8 +813,14 @@ assert.match(
 assert.match(onboardingCoach, /targetAction === "enable-source"/);
 assert.match(i18n, /enableSource: "Enable this source"/);
 assert.match(i18n, /enableSource: "啟用這個來源"/);
-assert.match(onboardingCoach, /new CustomEvent\("onboardingback", \{ bubbles: true, cancelable: true \}\)/);
-assert.match(onboardingCoach, /\{#if canGoBack\}[\s\S]*?onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/);
+assert.match(
+  onboardingCoach,
+  /new CustomEvent\("onboardingback", \{ bubbles: true, cancelable: true \}\)/,
+);
+assert.match(
+  onboardingCoach,
+  /\{#if canGoBack\}[\s\S]*?onclick=\{back\}>\{\$t\.onboarding\.back\}<\/button>/,
+);
 assert.match(page, /onBack=\{backOnboarding\}/);
 assert.doesNotMatch(page, /history\.back\(\)/);
 assert.match(i18n, /back: "Back"/);
@@ -513,31 +832,39 @@ writeOnboardingState(storage, state);
 assert.deepEqual(readOnboardingState(storage), state);
 storage.setItem(ONBOARDING_STORAGE_KEY, "{broken");
 assert.equal(readOnboardingState(storage), null);
-storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ version: 2, status: "active" }));
+storage.setItem(
+  ONBOARDING_STORAGE_KEY,
+  JSON.stringify({ version: 2, status: "active" }),
+);
 assert.equal(readOnboardingState(storage), null);
-storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({
-  ...state,
-  sourceConfiguredAt: "July 23, 2026",
-}));
+storage.setItem(
+  ONBOARDING_STORAGE_KEY,
+  JSON.stringify({
+    ...state,
+    sourceConfiguredAt: "July 23, 2026",
+  }),
+);
 assert.equal(readOnboardingState(storage), null);
 
 test("onboarding discloses hidden collection and import targets", () => {
-  const collectionTasks = Array.from({ length: 6 }, (_, index) => task({
-    id: `collection-${index}`,
-    kind: "crawler",
-    credentialGroupId: `group-${index}`,
-  }));
+  const collectionTasks = Array.from({ length: 6 }, (_, index) =>
+    task({
+      id: `collection-${index}`,
+      kind: "crawler",
+      credentialGroupId: `group-${index}`,
+    }),
+  );
   const importRow = task({ id: "import-downloads-csv", kind: "import" });
   const tasks = [...collectionTasks, importRow];
 
-  assert.deepEqual(
-    onboardingTaskDisclosure("collection", "group-5", tasks),
-    { stageId: "collect", showAllCollectTasks: true },
-  );
-  assert.deepEqual(
-    onboardingTaskDisclosure("import", "group-5", tasks),
-    { stageId: "import", showAllCollectTasks: false },
-  );
+  assert.deepEqual(onboardingTaskDisclosure("collection", "group-5", tasks), {
+    stageId: "collect",
+    showAllCollectTasks: true,
+  });
+  assert.deepEqual(onboardingTaskDisclosure("import", "group-5", tasks), {
+    stageId: "import",
+    showAllCollectTasks: false,
+  });
   assert.deepEqual(
     onboardingTaskDisclosure("overview-empty", "group-5", tasks),
     { stageId: "import", showAllCollectTasks: false },
@@ -546,8 +873,14 @@ test("onboarding discloses hidden collection and import targets", () => {
 });
 
 test("coach relocalizes when a disclosed target mounts", () => {
-  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  const observerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "MutationObserver");
+  const documentDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "document",
+  );
+  const observerDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "MutationObserver",
+  );
   let mountedTarget: HTMLElement | null = null;
   let notifyMutation: () => void = () => {
     assert.fail("observer was not initialized");
@@ -581,7 +914,9 @@ test("coach relocalizes when a disclosed target mounts", () => {
 
   try {
     const targets: Array<HTMLElement | null> = [];
-    const stop = observeOnboardingTarget("[data-onboarding]", (target) => targets.push(target));
+    const stop = observeOnboardingTarget("[data-onboarding]", (target) =>
+      targets.push(target),
+    );
     assert.deepEqual(targets, [null]);
     assert.deepEqual(observedOptions, {
       childList: true,
@@ -598,9 +933,11 @@ test("coach relocalizes when a disclosed target mounts", () => {
     assert.equal(disconnected, true);
     assert.match(onboardingCoach, /observeOnboardingTarget/);
   } finally {
-    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    if (documentDescriptor)
+      Object.defineProperty(globalThis, "document", documentDescriptor);
     else Reflect.deleteProperty(globalThis, "document");
-    if (observerDescriptor) Object.defineProperty(globalThis, "MutationObserver", observerDescriptor);
+    if (observerDescriptor)
+      Object.defineProperty(globalThis, "MutationObserver", observerDescriptor);
     else Reflect.deleteProperty(globalThis, "MutationObserver");
   }
 });
@@ -611,23 +948,39 @@ test("browser adapter maps semantic onboarding targets to DOM selectors", () => 
     '[data-onboarding="automation-credentials"]',
   );
   assert.equal(
-    selectorForOnboardingTarget({ kind: "task", taskId: "fubon", action: "primary" }),
-    '[data-onboarding-group="fubon"][data-onboarding-action="primary"],'
-      + '[data-onboarding-task="fubon"][data-onboarding-action="primary"]',
+    selectorForOnboardingTarget({
+      kind: "task",
+      taskId: "fubon",
+      action: "primary",
+    }),
+    '[data-onboarding-group="fubon"][data-onboarding-action="primary"],' +
+      '[data-onboarding-task="fubon"][data-onboarding-action="primary"]',
   );
   assert.equal(
-    selectorForOnboardingTarget({ kind: "overview-empty", route: "automation" }),
+    selectorForOnboardingTarget({
+      kind: "overview-empty",
+      route: "automation",
+    }),
     '[data-onboarding-task="import-downloads-csv"][data-onboarding-action="logs"]',
   );
 });
 
 test("coach remeasures its target after modal animation", () => {
-  assert.match(onboardingCoach, /addEventListener\("animationend", updateRect, true\)/);
-  assert.match(onboardingCoach, /removeEventListener\("animationend", updateRect, true\)/);
+  assert.match(
+    onboardingCoach,
+    /addEventListener\("animationend", updateRect, true\)/,
+  );
+  assert.match(
+    onboardingCoach,
+    /removeEventListener\("animationend", updateRect, true\)/,
+  );
 });
 
 test("coach remeasures an asynchronously loaded verification image", () => {
-  assert.match(onboardingCoach, /targetResizeObserver = new ResizeObserver\(updateRect\)/);
+  assert.match(
+    onboardingCoach,
+    /targetResizeObserver = new ResizeObserver\(updateRect\)/,
+  );
   assert.match(onboardingCoach, /targetResizeObserver\.observe\(nextTarget\)/);
   assert.match(onboardingCoach, /targetResizeObserver\?\.disconnect\(\)/);
 });
@@ -637,9 +990,15 @@ test("coach measures only while a target selector is active", () => {
     onboardingCoach.indexOf("function watchTarget"),
     onboardingCoach.indexOf("function updateRect"),
   );
-  assert.match(watchTargetSource, /if \(!selector\) \{[\s\S]*stopListening\(\);[\s\S]*return;/);
+  assert.match(
+    watchTargetSource,
+    /if \(!selector\) \{[\s\S]*stopListening\(\);[\s\S]*return;/,
+  );
   assert.match(watchTargetSource, /addEventListener\("resize", updateRect\)/);
-  assert.match(watchTargetSource, /function stopListening\(\)[\s\S]*listening = false;/);
+  assert.match(
+    watchTargetSource,
+    /function stopListening\(\)[\s\S]*listening = false;/,
+  );
 });
 
 test("failed viewer text input keeps the value retryable and Resume locked", () => {
@@ -655,23 +1014,47 @@ test("failed viewer text input keeps the value retryable and Resume locked", () 
 });
 
 test("Assist Resume stays locked until a successful interaction settles", () => {
-  const inline = { mode: "inline" as const, targetIds: ["captcha-input"], status: "pending" as const };
-  const independent = { mode: "independent" as const, targetIds: ["captcha"], status: "pending" as const };
+  const inline = {
+    mode: "inline" as const,
+    targetIds: ["captcha-input"],
+    status: "pending" as const,
+  };
+  const independent = {
+    mode: "independent" as const,
+    targetIds: ["captcha"],
+    status: "pending" as const,
+  };
   assert.equal(canResumeAssist(false, false, inline), false);
   assert.equal(canResumeAssist(false, true, inline), false);
   assert.equal(canResumeAssist(true, true, inline), false);
   assert.equal(canResumeAssist(true, false, inline), false);
-  assert.equal(canResumeAssist(true, false, { ...inline, status: "entered" }), true);
+  assert.equal(
+    canResumeAssist(true, false, { ...inline, status: "entered" }),
+    true,
+  );
   assert.equal(canResumeAssist(true, false, independent), false);
-  assert.equal(canResumeAssist(true, false, { ...independent, status: "verified" }), true);
+  assert.equal(
+    canResumeAssist(true, false, { ...independent, status: "verified" }),
+    true,
+  );
   assert.equal(canResumeAssist(true, false, null), false);
 });
 
 test("independent verification keeps the Assist viewer guided until it is verified", () => {
-  const independent = { mode: "independent" as const, targetIds: ["captcha"], status: "pending" as const };
+  const independent = {
+    mode: "independent" as const,
+    targetIds: ["captcha"],
+    status: "pending" as const,
+  };
   assert.equal(shouldGuideAssistViewer(false, false, independent), true);
   assert.equal(shouldGuideAssistViewer(true, false, independent), true);
-  assert.equal(shouldGuideAssistViewer(true, false, { ...independent, status: "verified" }), false);
+  assert.equal(
+    shouldGuideAssistViewer(true, false, {
+      ...independent,
+      status: "verified",
+    }),
+    false,
+  );
   assert.match(
     automationDashboard,
     /data-onboarding=\{onboardingStep === "assist" && humanTask && guideAssistViewer/,
@@ -684,16 +1067,29 @@ test("independent verification keeps the Assist viewer guided until it is verifi
 
 test("Assist drag unlocks Resume only after successful viewer input", () => {
   const settleAssistDrag = (
-    onboardingState as unknown as { settleAssistDrag?: (succeeded: boolean) => boolean }
+    onboardingState as unknown as {
+      settleAssistDrag?: (succeeded: boolean) => boolean;
+    }
   ).settleAssistDrag;
   assert.equal(typeof settleAssistDrag, "function");
   if (!settleAssistDrag) return;
 
-  const completion = { mode: "independent" as const, targetIds: ["captcha"], status: "verified" as const };
-  assert.equal(canResumeAssist(settleAssistDrag(false), false, completion), false);
-  assert.equal(canResumeAssist(settleAssistDrag(true), false, completion), true);
+  const completion = {
+    mode: "independent" as const,
+    targetIds: ["captcha"],
+    status: "verified" as const,
+  };
   assert.equal(
-    automationDashboard.match(/data-onboarding-action="resume-collection"/g)?.length,
+    canResumeAssist(settleAssistDrag(false), false, completion),
+    false,
+  );
+  assert.equal(
+    canResumeAssist(settleAssistDrag(true), false, completion),
+    true,
+  );
+  assert.equal(
+    automationDashboard.match(/data-onboarding-action="resume-collection"/g)
+      ?.length,
     1,
   );
   const pointerUpSource = automationDashboard.slice(
@@ -716,8 +1112,8 @@ test("pointer-only verification target is focused without an inert synthetic cli
   let clicked = 0;
   const target = {
     dataset: { onboardingAction: "choose-verification-control" },
-    focus: () => focused += 1,
-    click: () => clicked += 1,
+    focus: () => (focused += 1),
+    click: () => (clicked += 1),
   } as unknown as HTMLElement;
   activateOnboardingTarget(target);
   assert.deepEqual({ focused, clicked }, { focused: 1, clicked: 0 });
@@ -728,15 +1124,20 @@ test("pointer-only verification target is focused without an inert synthetic cli
 });
 
 test("completed verification text can advance from the coach button", () => {
-  const inputDescriptor = Object.getOwnPropertyDescriptor(globalThis, "HTMLInputElement");
+  const inputDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "HTMLInputElement",
+  );
   let submitted = 0;
   let focused = 0;
 
   class FakeInputElement {
     dataset = { onboardingAction: "enter-verification" };
     value = "123456";
-    form = { requestSubmit: () => submitted += 1 };
-    focus() { focused += 1; }
+    form = { requestSubmit: () => (submitted += 1) };
+    focus() {
+      focused += 1;
+    }
     click() {}
   }
 
@@ -748,7 +1149,8 @@ test("completed verification text can advance from the coach button", () => {
     activateOnboardingTarget(new FakeInputElement() as unknown as HTMLElement);
     assert.deepEqual({ focused, submitted }, { focused: 1, submitted: 1 });
   } finally {
-    if (inputDescriptor) Object.defineProperty(globalThis, "HTMLInputElement", inputDescriptor);
+    if (inputDescriptor)
+      Object.defineProperty(globalThis, "HTMLInputElement", inputDescriptor);
     else Reflect.deleteProperty(globalThis, "HTMLInputElement");
   }
 });
@@ -757,7 +1159,7 @@ test("interactive onboarding fields receive focus as soon as their target change
   let focused = 0;
   const target = {
     dataset: { onboardingAction: "enter-credentials" },
-    focus: () => focused += 1,
+    focus: () => (focused += 1),
   } as unknown as HTMLElement;
 
   assert.equal(focusOnboardingTarget(target), true);
@@ -778,19 +1180,28 @@ test("verification screenshot exposes a clear keyboard focus path", () => {
     automationDashboard.indexOf('class="viewer-expand-action"'),
   );
   assert.match(viewerImageSource, /alt=\{\$t\.automation\.pausedBrowser\}/);
-  assert.doesNotMatch(viewerImageSource, /aria-label=\{\$t\.onboarding\.verificationViewerAria\}/);
+  assert.doesNotMatch(
+    viewerImageSource,
+    /aria-label=\{\$t\.onboarding\.verificationViewerAria\}/,
+  );
   assert.match(automationDashboard, /\.viewer-image:focus-visible/);
   assert.match(onboardingCoach, /activateOnboardingTarget\(target\)/);
   assert.match(
     onboardingCoach,
     /targetAction === "choose-verification-control"[\s\S]*?showPrimaryAction = false/,
   );
-  assert.match(onboardingCoach, /\{#if showPrimaryAction\}[\s\S]*?class="button primary"/);
+  assert.match(
+    onboardingCoach,
+    /\{#if showPrimaryAction\}[\s\S]*?class="button primary"/,
+  );
   assert.match(
     automationDashboard,
     /class="verification-viewer-tooltip"[\s\S]*?role="tooltip"[\s\S]*?\$t\.onboarding\.clickVerificationField/,
   );
-  assert.match(automationDashboard, /\.verification-viewer-tooltip\s*\{[\s\S]*?pointer-events: none;/);
+  assert.match(
+    automationDashboard,
+    /\.verification-viewer-tooltip\s*\{[\s\S]*?pointer-events: none;/,
+  );
 });
 
 test("credential onboarding advances with Enter and focuses the next input", () => {
@@ -807,7 +1218,10 @@ test("credential onboarding advances with Enter and focuses the next input", () 
   assert.match(keydownSource, /event\.preventDefault\(\)/);
   assert.match(keydownSource, /void advanceOnboardingCredential\(\)/);
   assert.match(advanceSource, /await tick\(\)/);
-  assert.match(advanceSource, /getElementById\(`credential-input-\$\{nextKey\}`\)\?\.focus\(\)/);
+  assert.match(
+    advanceSource,
+    /getElementById\(`credential-input-\$\{nextKey\}`\)\?\.focus\(\)/,
+  );
   assert.match(
     automationDashboard,
     /id=\{`credential-input-\$\{key\}`\}[\s\S]*?onkeydown=\{\(event\) => handleOnboardingCredentialKeydown\(key, event\)\}/,
@@ -823,8 +1237,14 @@ test("opening first-run credentials leaves the source unselected", () => {
     automationDashboard.indexOf("function selectCredentialGroup"),
     automationDashboard.indexOf("async function runTask"),
   );
-  assert.match(openCredentialsSource, /remembered = onboardingSelectedCredentialGroupId/);
-  assert.match(openCredentialsSource, /onboardingSourceSelection\s*\? remembered && collectionGroupIds\.has\(remembered\) \? remembered : ""/);
+  assert.match(
+    openCredentialsSource,
+    /remembered = onboardingSelectedCredentialGroupId/,
+  );
+  assert.match(
+    openCredentialsSource,
+    /onboardingSourceSelection\s*\? remembered && collectionGroupIds\.has\(remembered\) \? remembered : ""/,
+  );
   assert.match(
     selectCredentialGroupSource,
     /if \(onboardingSourceSelection && onboardingSingleSource && groupId\)/,
@@ -832,7 +1252,10 @@ test("opening first-run credentials leaves the source unselected", () => {
 });
 
 test("coach keeps observing when its selector has not changed", () => {
-  assert.match(onboardingCoach, /let watchedSelector: string \| null \| undefined/);
+  assert.match(
+    onboardingCoach,
+    /let watchedSelector: string \| null \| undefined/,
+  );
   assert.match(
     onboardingCoach,
     /function watchTarget\(selector: string \| null\) \{\s*if \(selector === watchedSelector\) return;\s*watchedSelector = selector;/,
@@ -842,7 +1265,7 @@ test("coach keeps observing when its selector has not changed", () => {
 test("credentials opener is the onboarding target only while the modal is closed", () => {
   const credentialsOpener = automationDashboard.slice(
     automationDashboard.indexOf('<svelte:fragment slot="topbar-actions">'),
-    automationDashboard.indexOf('<div class:sync-sheet-open'),
+    automationDashboard.indexOf("<div class:sync-sheet-open"),
   );
   assert.match(
     credentialsOpener,
@@ -852,42 +1275,79 @@ test("credentials opener is the onboarding target only while the modal is closed
 
 test("credentials onboarding requires source, credentials, statements, then save", () => {
   assert.match(automationDashboard, /data-onboarding-action="select-source"/);
-  assert.match(automationDashboard, /data-onboarding-action="enter-credentials"/);
-  assert.match(automationDashboard, /data-onboarding-action="select-statements"/);
-  assert.match(automationDashboard, /onboardingCredentialsReady[\s\S]*?data-onboarding-action="save-credentials"/);
-  assert.match(automationDashboard, /onOnboardingSourceSaved\(\{[\s\S]*selectedCredentialGroupId: savedGroupId,[\s\S]*sourceConfiguredAt:/);
-  assert.match(automationDashboard, /savedGroupId[\s\S]*?automation\.tasks\.find/);
+  assert.match(
+    automationDashboard,
+    /data-onboarding-action="enter-credentials"/,
+  );
+  assert.match(
+    automationDashboard,
+    /data-onboarding-action="select-statements"/,
+  );
+  assert.match(
+    automationDashboard,
+    /onboardingCredentialsReady[\s\S]*?data-onboarding-action="save-credentials"/,
+  );
+  assert.match(
+    automationDashboard,
+    /onOnboardingSourceSaved\(\{[\s\S]*selectedCredentialGroupId: savedGroupId,[\s\S]*sourceConfiguredAt:/,
+  );
+  assert.match(
+    automationDashboard,
+    /savedGroupId[\s\S]*?automation\.tasks\.find/,
+  );
   assert.match(automationDashboard, /automation\.run\(selectedTask\.id\)/);
-  assert.match(onboardingCoach, /select-source[\s\S]*?enter-credentials[\s\S]*?select-statements/);
+  assert.match(
+    onboardingCoach,
+    /select-source[\s\S]*?enter-credentials[\s\S]*?select-statements/,
+  );
 });
 
 test("credentials onboarding requires current-session input and statement selection", () => {
-  assert.match(automationDashboard, /selectedCredentialGroup\.credentialKeys\.find\([\s\S]*?!credentialDrafts\[key\]\?\.trim\(\)/);
-  assert.doesNotMatch(automationDashboard, /!automation\.credentials\[key\]\s*&&\s*!credentialDrafts/);
+  assert.match(
+    automationDashboard,
+    /selectedCredentialGroup\.credentialKeys\.find\([\s\S]*?!credentialDrafts\[key\]\?\.trim\(\)/,
+  );
+  assert.doesNotMatch(
+    automationDashboard,
+    /!automation\.credentials\[key\]\s*&&\s*!credentialDrafts/,
+  );
   assert.match(automationDashboard, /statementSelectionConfirmed/);
-  assert.match(automationDashboard, /toggleStatementType[\s\S]*?statementSelectionConfirmed\s*=/);
-  assert.match(automationDashboard, /selectAllStatementTypes[\s\S]*?statementSelectionConfirmed\s*=/);
+  assert.match(
+    automationDashboard,
+    /toggleStatementType[\s\S]*?statementSelectionConfirmed\s*=/,
+  );
+  assert.match(
+    automationDashboard,
+    /selectAllStatementTypes[\s\S]*?statementSelectionConfirmed\s*=/,
+  );
 });
 
 test("credentials Save rejects incomplete onboarding and allows ready or ordinary submission", () => {
-  const candidate = (onboardingState as unknown as {
-    canSubmitCredentials?: (onboarding: boolean, ready: boolean) => boolean;
-  }).canSubmitCredentials;
+  const candidate = (
+    onboardingState as unknown as {
+      canSubmitCredentials?: (onboarding: boolean, ready: boolean) => boolean;
+    }
+  ).canSubmitCredentials;
   assert.equal(typeof candidate, "function");
   const canSubmitCredentials = candidate!;
-  assert.deepEqual([
-    canSubmitCredentials(true, false),
-    canSubmitCredentials(true, true),
-    canSubmitCredentials(false, false),
-  ], [false, true, true]);
+  assert.deepEqual(
+    [
+      canSubmitCredentials(true, false),
+      canSubmitCredentials(true, true),
+      canSubmitCredentials(false, false),
+    ],
+    [false, true, true],
+  );
 
   const saveCredentialsSource = automationDashboard.slice(
     automationDashboard.indexOf("async function saveCredentials"),
     automationDashboard.indexOf("async function refreshViewerImage"),
   );
   const saveButtonSource = automationDashboard.slice(
-    automationDashboard.indexOf('data-onboarding-action="save-credentials"') - 300,
-    automationDashboard.indexOf('data-onboarding-action="save-credentials"') + 100,
+    automationDashboard.indexOf('data-onboarding-action="save-credentials"') -
+      300,
+    automationDashboard.indexOf('data-onboarding-action="save-credentials"') +
+      100,
   );
   assert.match(
     saveCredentialsSource,
@@ -925,21 +1385,32 @@ test("cross-midnight collection and import advance from fresh timestamps and ter
     "import",
   );
   assert.equal(
-    resolveOnboardingStep(context(crossMidnightCrawler, {
-      gateLocked: false,
-      importTask: crossMidnightImporter,
-      accounts: 1,
-      overviewLoadedForImportFinishedAt: crossMidnightImporter.latestFinishedAt,
-    }), crossMidnightState),
+    resolveOnboardingStep(
+      context(crossMidnightCrawler, {
+        gateLocked: false,
+        importTask: crossMidnightImporter,
+        accounts: 1,
+        overviewLoadedForImportFinishedAt:
+          crossMidnightImporter.latestFinishedAt,
+      }),
+      crossMidnightState,
+    ),
     "overview",
   );
 });
 
 test("route freshness marker lets cross-midnight empty Overview resolve while stale import stays blocked", () => {
-  assert.doesNotMatch(page, /importer\?\.status === "completed" && importer\.ranToday/);
-  const candidate = (onboardingState as unknown as {
-    completedImportFinishedAt?: (tasks: readonly AutomationTaskRow[]) => string | null;
-  }).completedImportFinishedAt;
+  assert.doesNotMatch(
+    page,
+    /importer\?\.status === "completed" && importer\.ranToday/,
+  );
+  const candidate = (
+    onboardingState as unknown as {
+      completedImportFinishedAt?: (
+        tasks: readonly AutomationTaskRow[],
+      ) => string | null;
+    }
+  ).completedImportFinishedAt;
   assert.equal(typeof candidate, "function");
   const completedImportFinishedAt = candidate!;
   const crossMidnightState = {
@@ -958,54 +1429,84 @@ test("route freshness marker lets cross-midnight empty Overview resolve while st
     latestStartedAt: "2026-07-24T00:02:00.000Z",
     latestFinishedAt: "2026-07-24T00:03:00.000Z",
   };
-  const marker = completedImportFinishedAt([crossMidnightCrawler, crossMidnightImporter]);
+  const marker = completedImportFinishedAt([
+    crossMidnightCrawler,
+    crossMidnightImporter,
+  ]);
 
   assert.equal(marker, crossMidnightImporter.latestFinishedAt);
-  assert.equal(resolveOnboardingStep(context(crossMidnightCrawler, {
-    route: "overview",
-    gateLocked: false,
-    importTask: crossMidnightImporter,
-    accounts: 0,
-    overviewLoadedForImportFinishedAt: marker,
-  }), crossMidnightState), "overview-empty");
+  assert.equal(
+    resolveOnboardingStep(
+      context(crossMidnightCrawler, {
+        route: "overview",
+        gateLocked: false,
+        importTask: crossMidnightImporter,
+        accounts: 0,
+        overviewLoadedForImportFinishedAt: marker,
+      }),
+      crossMidnightState,
+    ),
+    "overview-empty",
+  );
 
   const staleImporter = {
     ...crossMidnightImporter,
     ranToday: true,
     latestStartedAt: "2026-07-24T00:00:59.999Z",
   };
-  assert.equal(resolveOnboardingStep(context(crossMidnightCrawler, {
-    route: "overview",
-    gateLocked: false,
-    importTask: staleImporter,
-    accounts: 0,
-    overviewLoadedForImportFinishedAt: completedImportFinishedAt([
-      crossMidnightCrawler,
-      staleImporter,
-    ]),
-  }), crossMidnightState), "automation-nav");
-  assert.match(page, /completedImportFinishedAt\(automation\.data\.automation\.tasks\)/);
+  assert.equal(
+    resolveOnboardingStep(
+      context(crossMidnightCrawler, {
+        route: "overview",
+        gateLocked: false,
+        importTask: staleImporter,
+        accounts: 0,
+        overviewLoadedForImportFinishedAt: completedImportFinishedAt([
+          crossMidnightCrawler,
+          staleImporter,
+        ]),
+      }),
+      crossMidnightState,
+    ),
+    "automation-nav",
+  );
+  assert.match(
+    page,
+    /completedImportFinishedAt\(automation\.data\.automation\.tasks\)/,
+  );
 });
 
 test("freshness timestamps still block stale collection and import history", () => {
-  assert.deepEqual({
-    collection: resolveOnboardingStep(context({
-      ...freshCrawler,
-      ranToday: true,
-      latestStartedAt: "2026-07-23T07:59:59.999Z",
-    }, { gateLocked: false }), freshState),
-    import: resolveOnboardingStep(context(freshCrawler, {
-      gateLocked: false,
-      importTask: {
-        ...freshImporter,
-        ranToday: true,
-        latestStartedAt: "2026-07-23T08:04:59.999Z",
-      },
-    }), freshState),
-  }, {
-    collection: "collection",
-    import: "import",
-  });
+  assert.deepEqual(
+    {
+      collection: resolveOnboardingStep(
+        context(
+          {
+            ...freshCrawler,
+            ranToday: true,
+            latestStartedAt: "2026-07-23T07:59:59.999Z",
+          },
+          { gateLocked: false },
+        ),
+        freshState,
+      ),
+      import: resolveOnboardingStep(
+        context(freshCrawler, {
+          gateLocked: false,
+          importTask: {
+            ...freshImporter,
+            ranToday: true,
+            latestStartedAt: "2026-07-23T08:04:59.999Z",
+          },
+        }),
+        freshState,
+      ),
+    },
+    {
+      collection: "collection",
+      import: "import",
+    },
+  );
 });
 
 test("fresh milestones advance in order while stale runs stay blocked", () => {
@@ -1021,60 +1522,102 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
     accounts: 1,
     overviewLoadedForImportFinishedAt: freshImporter.latestFinishedAt,
   };
-  assert.deepEqual([
-    resolveOnboardingStep(context({
-      ...selectedCrawler,
-      latestStartedAt: null,
-      latestFinishedAt: null,
-    }), freshState),
-    resolveOnboardingStep(context({ ...selectedCrawler, status: "running", isActive: true }), freshState),
-    resolveOnboardingStep(context({ ...selectedCrawler, status: "waiting_for_human" }), freshState),
-    resolveOnboardingStep(context(freshCrawler, { gateLocked: false }), freshState),
-    resolveOnboardingStep(context(freshCrawler, {
-      gateLocked: false,
-      importTask: freshImportRunning,
-    }), freshState),
-    resolveOnboardingStep(context(freshCrawler, {
-      gateLocked: false,
-      importTask: freshImporter,
-      accounts: 1,
-    }), freshState),
-    resolveOnboardingStep(context(freshCrawler, refreshedOverview), freshState),
-    resolveOnboardingStep(context(freshCrawler, {
-      ...refreshedOverview,
-      route: "overview",
-    }), freshState),
-  ], [
-    "collection",
-    "collection",
-    "assist",
-    "import",
-    "import",
-    "overview",
-    "overview",
-    "complete",
-  ]);
+  assert.deepEqual(
+    [
+      resolveOnboardingStep(
+        context({
+          ...selectedCrawler,
+          latestStartedAt: null,
+          latestFinishedAt: null,
+        }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context({ ...selectedCrawler, status: "running", isActive: true }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context({ ...selectedCrawler, status: "waiting_for_human" }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context(freshCrawler, { gateLocked: false }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context(freshCrawler, {
+          gateLocked: false,
+          importTask: freshImportRunning,
+        }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context(freshCrawler, {
+          gateLocked: false,
+          importTask: freshImporter,
+          accounts: 1,
+        }),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context(freshCrawler, refreshedOverview),
+        freshState,
+      ),
+      resolveOnboardingStep(
+        context(freshCrawler, {
+          ...refreshedOverview,
+          route: "overview",
+        }),
+        freshState,
+      ),
+    ],
+    [
+      "collection",
+      "collection",
+      "assist",
+      "import",
+      "import",
+      "overview",
+      "overview",
+      "complete",
+    ],
+  );
 
-  assert.deepEqual({
-    staleCrawler: resolveOnboardingStep(context({
-      ...freshCrawler,
-      latestStartedAt: "2026-07-23T07:00:00.000Z",
-    }, { gateLocked: false }), freshState),
-    staleImporter: resolveOnboardingStep(context(freshCrawler, {
-      gateLocked: false,
-      importTask: {
-        ...freshImporter,
-        latestStartedAt: "2026-07-23T08:04:00.000Z",
-      },
-    }), freshState),
-  }, {
-    staleCrawler: "collection",
-    staleImporter: "import",
-  });
+  assert.deepEqual(
+    {
+      staleCrawler: resolveOnboardingStep(
+        context(
+          {
+            ...freshCrawler,
+            latestStartedAt: "2026-07-23T07:00:00.000Z",
+          },
+          { gateLocked: false },
+        ),
+        freshState,
+      ),
+      staleImporter: resolveOnboardingStep(
+        context(freshCrawler, {
+          gateLocked: false,
+          importTask: {
+            ...freshImporter,
+            latestStartedAt: "2026-07-23T08:04:00.000Z",
+          },
+        }),
+        freshState,
+      ),
+    },
+    {
+      staleCrawler: "collection",
+      staleImporter: "import",
+    },
+  );
 });
 
 test("onboarding collection advances only from task outcome, never Assist interaction", () => {
-  assert.equal(onboardingTaskSucceeded({ status: "waiting_for_human" }, false), false);
+  assert.equal(
+    onboardingTaskSucceeded({ status: "waiting_for_human" }, false),
+    false,
+  );
   assert.equal(onboardingTaskSucceeded({ status: "failed" }, false), false);
   assert.equal(onboardingTaskSucceeded({ status: "completed" }, true), true);
   assert.equal(onboardingTaskSucceeded({ status: "partial" }, true), false);
@@ -1084,7 +1627,11 @@ test("onboarding collection advances only from task outcome, never Assist intera
 test("restart narrows sources only on an empty installation", () => {
   const restarted = createOnboardingState();
   assert.equal(
-    shouldNarrowOnboardingSources(context(selectedCrawler), restarted, "credentials"),
+    shouldNarrowOnboardingSources(
+      context(selectedCrawler),
+      restarted,
+      "credentials",
+    ),
     true,
   );
   assert.equal(
@@ -1123,7 +1670,10 @@ test("overview-empty recovers through Automation and Import Logs without a route
       overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
     },
   );
-  assert.equal(resolveOnboardingStep(emptyAfterImport, state), "overview-empty");
+  assert.equal(
+    resolveOnboardingStep(emptyAfterImport, state),
+    "overview-empty",
+  );
   assert.deepEqual(
     targetForOnboardingStep("overview-empty", state, "overview"),
     { kind: "overview-empty", route: "overview" },
@@ -1155,7 +1705,10 @@ test("completed import refreshes stale Overview before confirming empty", () => 
 
   assert.equal(resolveOnboardingStep(staleOverview, state), "overview");
   assert.equal(resolveOnboardingStep(freshOverview, state), "overview-empty");
-  assert.equal(resolveOnboardingStep(confirmedEmptyBackOnAutomation, state), "overview-empty");
+  assert.equal(
+    resolveOnboardingStep(confirmedEmptyBackOnAutomation, state),
+    "overview-empty",
+  );
 });
 
 test("onboarding keeps the complete provider list, provider selection, and save advance active", () => {
@@ -1168,17 +1721,30 @@ test("onboarding keeps the complete provider list, provider selection, and save 
     automationDashboard.indexOf("async function refreshViewerImage"),
   );
 
-  assert.deepEqual({
-    prop: automationDashboard.includes("export let onboardingSourceSelection = false"),
-    completeProviderList: !automationDashboard.includes("!onboardingSourceSelection || collectionGroupIds.has(group.id)"),
-    initialProvider: openCredentialsSource.includes("onboardingSourceSelection\n        ? remembered"),
-    savedProvider: saveCredentialsSource.includes("if (onboardingSourceSelection && savedGroupId)"),
-    pageWiring: page.includes('onboardingSourceSelection={onboardingStep === "credentials"}'),
-  }, {
-    prop: true,
-    completeProviderList: true,
-    initialProvider: true,
-    savedProvider: true,
-    pageWiring: true,
-  });
+  assert.deepEqual(
+    {
+      prop: automationDashboard.includes(
+        "export let onboardingSourceSelection = false",
+      ),
+      completeProviderList: !automationDashboard.includes(
+        "!onboardingSourceSelection || collectionGroupIds.has(group.id)",
+      ),
+      initialProvider: openCredentialsSource.includes(
+        "onboardingSourceSelection\n        ? remembered",
+      ),
+      savedProvider: saveCredentialsSource.includes(
+        "if (onboardingSourceSelection && savedGroupId)",
+      ),
+      pageWiring: page.includes(
+        'onboardingSourceSelection={onboardingStep === "credentials"}',
+      ),
+    },
+    {
+      prop: true,
+      completeProviderList: true,
+      initialProvider: true,
+      savedProvider: true,
+      pageWiring: true,
+    },
+  );
 });

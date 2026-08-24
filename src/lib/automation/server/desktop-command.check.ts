@@ -45,6 +45,65 @@ assert.deepEqual(
   ["--session", "ses-octopus-123"],
 );
 
+const yuanta = taskById("yuanta-all-statements");
+assert.ok(yuanta);
+assert.deepEqual(resolveTaskCommand(yuanta, {}, env).args.slice(-2), [
+  "--params",
+  '{"statements":{"telemetry":true}}',
+]);
+assert.deepEqual(
+  resolveTaskCommand(yuanta, { session: "ses-octopus-123" }, env).args.slice(
+    -4,
+  ),
+  [
+    "--params",
+    '{"statements":{"telemetry":true}}',
+    "--session",
+    "ses-octopus-123",
+  ],
+);
+assert.deepEqual(
+  resolveTaskCommand(
+    yuanta,
+    { resumeSession: "ses-octopus-123" },
+    env,
+  ).args.slice(-3),
+  ["resume", "--session", "ses-octopus-123"],
+);
+
+const cathay = taskById("cathay-all-statements");
+assert.ok(cathay);
+const cathayCommand = resolveTaskCommand(cathay, {}, env);
+assert.equal(cathayCommand.args.filter((arg) => arg === "--headless").length, 1);
+assert.equal(cathayCommand.args.includes("--headed"), false);
+assert.deepEqual(cathayCommand.args.slice(-3), [
+  "--headless",
+  "--params",
+  '{"telemetry":true}',
+]);
+assert.deepEqual(
+  resolveTaskCommand(
+    cathay,
+    { session: "ses-octopus-123" },
+    env,
+  ).args.slice(-5),
+  [
+    "--headless",
+    "--params",
+    '{"telemetry":true}',
+    "--session",
+    "ses-octopus-123",
+  ],
+);
+assert.deepEqual(
+  resolveTaskCommand(
+    cathay,
+    { resumeSession: "ses-octopus-123" },
+    env,
+  ).args.slice(-3),
+  ["resume", "--session", "ses-octopus-123"],
+);
+
 const importTask = taskById("import-downloads-csv");
 assert.ok(importTask);
 assert.deepEqual(

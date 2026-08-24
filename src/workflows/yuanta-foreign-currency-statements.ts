@@ -1,29 +1,20 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
-import type { Dialog, Download, Frame, Locator, Page } from "playwright";
+import { workflow, type LibrettoWorkflowContext } from "libretto";
+import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import { dismissYuantaBankNotice } from "./yuanta-statements.js";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import {
+  authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  type YuantaCredentials,
+} from "./yuanta-auth.ts";
 
-const BANK_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
-
-type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
 
 type AccountOption = {
   label: string;
@@ -135,21 +126,11 @@ const foreignCurrencyTransactionHeaders = [
 const downloadedForeignCurrencyHeaders =
   foreignCurrencyTransactionHeaders.slice(2);
 
-function requireCredential(
-  credentials: YuantaCredentials,
-  name: keyof YuantaCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function toAsciiDigits(value: string): string {
@@ -193,10 +174,12 @@ function stripSpreadsheetTextPrefix(value: string): string {
 }
 
 function isRepeatedHeaderRow(values: string[]): boolean {
-  return values.length === downloadedForeignCurrencyHeaders.length &&
+  return (
+    values.length === downloadedForeignCurrencyHeaders.length &&
     values.every(
       (value, index) => value === downloadedForeignCurrencyHeaders[index],
-    );
+    )
+  );
 }
 
 function parseTransactionSortTime(values: string[]): number | null {
@@ -309,7 +292,9 @@ async function writeForeignCurrencyTransactionsFile(
   const jsonPath = join(downloadsDir, jsonFilename);
   const accounts = [...new Set(rows.map((row) => row.accountLabel))];
   const currencies = [
-    ...new Set(rows.map((row) => stripSpreadsheetTextPrefix(row.values[4] ?? ""))),
+    ...new Set(
+      rows.map((row) => stripSpreadsheetTextPrefix(row.values[4] ?? "")),
+    ),
   ].filter((currency) => currency.length > 0);
 
   await writeFile(csvPath, foreignCurrencyTransactionsToCsv(rows), "utf8");
@@ -378,25 +363,26 @@ function matchesFilter(
   });
 }
 
+function isUnavailableOption(value: string, label: string): boolean {
+  const normalizedValue = value.trim().toLowerCase();
+  const normalizedLabel = cleanText(label).toLowerCase();
+  if (
+    !normalizedValue ||
+    ["0", "-1", "none", "null", "undefined"].includes(normalizedValue)
+  ) {
+    return true;
+  }
+  return (
+    /^(?:請|请)?選擇(?:帳戶|账戶|幣別|币别)?$/.test(normalizedLabel) ||
+    /^(?:無|无)(?:可用)?(?:帳戶|账戶|幣別|币别)$/.test(normalizedLabel)
+  );
+}
+
 function describeDateRange(input: WorkflowInput): string {
   if (input.customDateRange) {
     return `${input.customDateRange.startDate}-${input.customDateRange.endDate}`;
   }
   return dateRangeLabels[input.dateRange];
-}
-
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
 }
 
 async function findScopeWithSelector(
@@ -455,159 +441,6 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
-async function fillLoginForm(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const userId = requireCredential(credentials, "yuanta_user_id");
-  const account = requireCredential(credentials, "yuanta_account");
-  const password = requireCredential(credentials, "yuanta_password");
-
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-
-  const loginFrame = await waitForFrame(page, "main");
-  const userIdField = loginFrame.locator("#custidMask");
-  await userIdField.fill(userId);
-  await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
-  await loginFrame.locator("#gcode").focus();
-}
-
-async function maskUserId(loginFrame: Frame): Promise<void> {
-  await loginFrame.evaluate(() => {
-    const yuanTaWindow = window as typeof window & { maskID?: () => void };
-    if (typeof yuanTaWindow.maskID !== "function") {
-      throw new Error("YuanTa login page did not expose maskID().");
-    }
-    yuanTaWindow.maskID();
-  });
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (!hiddenUserId.trim()) {
-    throw new Error("YuanTa login page did not populate hidden custid.");
-  }
-}
-
-async function restoreUserIdForSubmit(
-  loginFrame: Frame,
-  userId: string,
-): Promise<void> {
-  const normalizedUserId = userId.trim();
-  await loginFrame.locator("#custid").evaluate((element, value) => {
-    (element as HTMLInputElement).value = value;
-  }, normalizedUserId);
-
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
-  if (hiddenUserId !== normalizedUserId) {
-    throw new Error("YuanTa login page did not restore hidden custid.");
-  }
-}
-
-async function fillReadonlyLoginInput(
-  field: Locator,
-  value: string,
-): Promise<void> {
-  await field.click({ force: true });
-  await field.evaluate((element) => element.removeAttribute("readonly"));
-  await field.fill(value);
-}
-
-async function submitLogin(
-  page: Page,
-  credentials: YuantaCredentials,
-): Promise<void> {
-  const loginFrame = await waitForFrame(page, "main");
-  await restoreUserIdForSubmit(
-    loginFrame,
-    requireCredential(credentials, "yuanta_user_id"),
-  );
-  await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
-}
-
-async function isSignedIn(page: Page): Promise<boolean> {
-  const hasForeignForm = await findScopeWithSelector(page, "#acctno", 3_000)
-    .then(() => true)
-    .catch(() => false);
-  if (hasForeignForm) return true;
-
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("#submenuAreaFX")
-        .or(
-          candidate
-            .locator('a[onclick*="fxtransactiondetails"]')
-            .filter({ hasText: "外幣交易明細查詢" }),
-        )
-        .first(),
-    "YuanTa signed-in foreign-currency navigation",
-    3_000,
-  )
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function waitForSignedInState(
-  page: Page,
-  getLastDialogMessage: () => string,
-  replaceActiveSession: boolean,
-): Promise<boolean> {
-  const deadline = Date.now() + 120_000;
-  let replacedActiveSession = false;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return replacedActiveSession;
-
-    const loginFrame = page.frame({ name: "main" });
-    const activeSessionPrompt =
-      loginFrame &&
-      (await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .isVisible()
-        .catch(() => false));
-    if (loginFrame && activeSessionPrompt) {
-      if (!replaceActiveSession) {
-        throw new Error(
-          "YuanTa reports another active session. Re-run with replaceActiveSession=true to continue.",
-        );
-      }
-
-      await loginFrame
-        .locator("#reloginBT")
-        .or(loginFrame.locator("a").filter({ hasText: "立即登入" }))
-        .first()
-        .click({ force: true });
-      replacedActiveSession = true;
-      await settleAfterNavigation(page);
-      continue;
-    }
-
-    const stillOnLogin =
-      loginFrame &&
-      (await loginFrame
-        .locator("#custidMask, #custnoInput, #custcode, #gcode")
-        .first()
-        .isVisible()
-        .catch(() => false));
-    const dialogMessage = getLastDialogMessage();
-    if (stillOnLogin && dialogMessage) {
-      throw new Error(`YuanTa login failed: ${dialogMessage}`);
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  const dialogMessage = getLastDialogMessage();
-  throw new Error(
-    dialogMessage
-      ? `Timed out waiting for YuanTa signed-in state after dialog: ${dialogMessage}`
-      : "Timed out waiting for YuanTa signed-in state.",
-  );
-}
-
 async function openForeignCurrencyDetailsPage(
   page: Page,
 ): Promise<BrowserScope> {
@@ -628,9 +461,7 @@ async function openForeignCurrencyDetailsPage(
   }
 
   const demandDepositLink = await firstVisibleLocator(
-    summaryScope
-      .locator("#submenu_innerFX a")
-      .filter({ hasText: "活期明細" }),
+    summaryScope.locator("#submenu_innerFX a").filter({ hasText: "活期明細" }),
     "YuanTa foreign-currency demand-deposit details link",
   );
   await demandDepositLink.click({ force: true });
@@ -696,7 +527,10 @@ async function clickForeignCurrencyDetailsLink(
   return true;
 }
 
-async function chooseDateRange(page: Page, input: WorkflowInput): Promise<void> {
+async function chooseDateRange(
+  page: Page,
+  input: WorkflowInput,
+): Promise<void> {
   const scope = await findScopeWithSelector(page, "#acctno");
 
   if (input.customDateRange) {
@@ -735,41 +569,48 @@ async function waitForCurrencyOptions(
   throw new Error("Timed out waiting for YuanTa currency options.");
 }
 
-async function selectAccount(page: Page, account: AccountOption): Promise<void> {
+async function selectAccount(
+  page: Page,
+  account: AccountOption,
+): Promise<void> {
   const scope = await findScopeWithSelector(page, "#acctno");
   await scope.locator("#acctno").selectOption(account.value);
   await waitForCurrencyOptions(page, scope);
 }
 
-async function readAccountOptions(
+export async function readYuantaForeignCurrencyAccountOptions(
   page: Page,
-  filters: string[],
+  _filters: string[] = [],
 ): Promise<AccountOption[]> {
   const scope = await findScopeWithSelector(page, "#acctno");
   const options = scope.locator("#acctno option");
   const count = await options.count();
-  const accounts: AccountOption[] = [];
+  const availableAccounts: AccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await option.getAttribute("value")) ?? "";
     const label = cleanText(await option.textContent());
-    if (!value || /請選擇/.test(label)) continue;
+    if (isUnavailableOption(value, label)) continue;
 
     const account = { label, value };
-    if (matchesFilter(account, filters)) accounts.push(account);
+    availableAccounts.push(account);
   }
 
-  if (accounts.length === 0) {
-    throw new Error("No foreign-currency account options matched the input.");
+  if (availableAccounts.length === 0) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa foreign-currency account is available for this login.",
+    );
   }
-
-  return accounts;
+  // Account filters are legacy persisted UI state. Yuanta foreign-currency
+  // capture always includes every visible account; provider absence is the
+  // only skip.
+  return availableAccounts;
 }
 
-async function readCurrencyOptions(
+export async function readYuantaForeignCurrencyOptions(
   page: Page,
-  filters: string[],
+  filters: string[] = [],
 ): Promise<CurrencyOption[]> {
   const scope = await findScopeWithSelector(page, "#acctno");
   await waitForCurrencyOptions(page, scope);
@@ -782,8 +623,14 @@ async function readCurrencyOptions(
     const option = options.nth(index);
     const value = (await option.getAttribute("value")) ?? "";
     const label = cleanText(await option.textContent());
-    if (!value || /請選擇/.test(label)) continue;
+    if (isUnavailableOption(value, label)) continue;
     currencies.push({ label, value });
+  }
+
+  if (currencies.length === 0) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa foreign-currency position is available for this account.",
+    );
   }
 
   if (filters.length === 0) {
@@ -810,7 +657,9 @@ async function waitForCsvDownloadLink(page: Page): Promise<void> {
         .filter({ hasText: "下載CSV檔" }),
     "YuanTa foreign-currency CSV download link",
   );
-  await scope.locator("#resultdiv").waitFor({ state: "visible", timeout: 60_000 });
+  await scope
+    .locator("#resultdiv")
+    .waitFor({ state: "visible", timeout: 60_000 });
   await scope
     .locator("a.order_2.m_color_check")
     .filter({ hasText: "下載CSV檔" })
@@ -830,7 +679,9 @@ async function queryAccountCurrency(
   const scope = await findScopeWithSelector(page, "#acctno");
   await scope.locator('select[name="currency"]').selectOption(currency.value);
   await chooseDateRange(page, input);
-  await scope.locator("#channelType").selectOption(channelTypeValues[input.channelType]);
+  await scope
+    .locator("#channelType")
+    .selectOption(channelTypeValues[input.channelType]);
   await scope.locator("#submitbutton").click();
   await settleAfterNavigation(page);
   await waitForCsvDownloadLink(page);
@@ -865,7 +716,11 @@ async function downloadTransactionRows(
   const content = await readBig5DownloadAsUtf8(download);
   return {
     filename,
-    rows: transactionRowsFromDownloadedCsv(content, accountLabel, currencyLabel),
+    rows: transactionRowsFromDownloadedCsv(
+      content,
+      accountLabel,
+      currencyLabel,
+    ),
   };
 }
 
@@ -874,77 +729,33 @@ export default workflow("yuantaForeignCurrencyStatements", {
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (input as typeof input & { credentials: YuantaCredentials })
-      .credentials;
-    let lastBankDialogMessage = "";
-    let replacedActiveSession = false;
-
-    const acceptBankDialog = async (dialog: Dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    };
-    page.on("dialog", acceptBankDialog);
-
-    const authResult = await librettoAuthenticate(ctx, {
+    const { page } = ctx;
+    const credentials = (
+      input as typeof input & { credentials: YuantaCredentials }
+    ).credentials;
+    const authResult = await sharedAuthenticateYuantaBank(
+      ctx,
       credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as YuantaCredentials);
-        const captchaFrame = await waitForFrame(authPage, "main");
-        await dismissYuantaBankNotice(captchaFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "yuanta-bank.login.captcha-input", modes: ["click", "type"], locator: captchaFrame.locator("#gcode") }],
-          contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "yuanta-bank.login.captcha-challenge" }],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-        });
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            authSession +
-            "`.",
-        );
-        await pause(authSession);
-        const loginFrame = await waitForFrame(authPage, "main");
-        if (!(await loginFrame.locator("#gcode").inputValue()).trim()) {
-          throw new Error("YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.");
-        }
-        if (!(await isSignedIn(authPage))) {
-          const stillOnLogin =
-            loginFrame &&
-            (await loginFrame
-              .locator("#custidMask, #custnoInput, #custcode, #gcode")
-              .first()
-              .isVisible()
-              .catch(() => false));
-          if (stillOnLogin) {
-            await submitLogin(authPage, signInCredentials as YuantaCredentials);
-          }
-        }
-        replacedActiveSession = await waitForSignedInState(
-          authPage,
-          () => lastBankDialogMessage,
-          input.replaceActiveSession,
-        );
-      },
-    }).finally(() => page.off("dialog", acceptBankDialog));
+      input.replaceActiveSession,
+    );
+    const replacedActiveSession = authResult.replacedActiveSession;
 
     await openForeignCurrencyDetailsPage(page);
 
-    const accounts = await readAccountOptions(page, input.accountFilters);
+    const accounts = await readYuantaForeignCurrencyAccountOptions(
+      page,
+      input.accountFilters,
+    );
     const rows: ForeignCurrencyTransactionRow[] = [];
     const sourceDownloads: SourceDownloadMetadata[] = [];
     const nextTimestamp = createTimestampGenerator();
 
     for (const account of accounts) {
       await selectAccount(page, account);
-      const currencies = await readCurrencyOptions(page, input.currencyFilters);
+      const currencies = await readYuantaForeignCurrencyOptions(
+        page,
+        input.currencyFilters,
+      );
 
       for (const currency of currencies) {
         const maskedAccount = maskAccountLabel(account.label);

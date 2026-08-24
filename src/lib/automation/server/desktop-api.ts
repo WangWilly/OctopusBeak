@@ -8,6 +8,7 @@ import {
 } from "./tasks.ts";
 import {
   isStatementSelectionGroup,
+  allSupportedStatementTypeIds,
   selectStatementTypes,
 } from "../statement-selection.ts";
 import {
@@ -58,7 +59,8 @@ function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
     const prerequisite = taskById(notice.taskId)?.externalPrerequisites?.find(
       (candidate) => candidate.id === notice.prerequisiteId,
     );
-    if (!prerequisite || !isValidExternalPrerequisiteMetadata(prerequisite)) return [];
+    if (!prerequisite || !isValidExternalPrerequisiteMetadata(prerequisite))
+      return [];
     return [{ ...notice, prerequisite }];
   });
 }
@@ -66,19 +68,29 @@ function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
 function currentCredentialState() {
   const settings = readAutomationSettings();
   const credentials = readAutomationCredentialsFile();
-  const status = credentialStatusFromValues(credentials, AUTOMATION_CREDENTIAL_KEYS);
+  const status = credentialStatusFromValues(
+    credentials,
+    AUTOMATION_CREDENTIAL_KEYS,
+  );
   const fileNames: Record<string, string> = {};
   const invalidFileKeys: string[] = [];
-  const invalidFileReasons: Record<string, "invalid-extension" | "missing-or-unreadable"> = {};
+  const invalidFileReasons: Record<
+    string,
+    "invalid-extension" | "missing-or-unreadable"
+  > = {};
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
-    const settingValue = typeof settings[key] === "string" ? settings[key].trim() : "";
-    const storedValue = credentials[key]?.trim()
-      || settingValue
-      || process.env[key]?.trim()
-      || "";
+    const settingValue =
+      typeof settings[key] === "string" ? settings[key].trim() : "";
+    const storedValue =
+      credentials[key]?.trim() ||
+      settingValue ||
+      process.env[key]?.trim() ||
+      "";
     if (certificateFileCredentialKeys.has(key)) {
       if (storedValue) fileNames[key] = certificateFilename(storedValue);
-      const validation = storedValue ? validateCertificateFilePath(storedValue) : null;
+      const validation = storedValue
+        ? validateCertificateFilePath(storedValue)
+        : null;
       status[key] = validation?.valid === true;
       if (storedValue && validation?.valid === false) {
         invalidFileKeys.push(key);
@@ -92,14 +104,19 @@ function currentCredentialState() {
   return { status, fileNames, invalidFileKeys, invalidFileReasons };
 }
 
-export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger"): AutomationDesktopModel {
+export function loadAutomationDesktopModel(
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): AutomationDesktopModel {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
   const credentialState = currentCredentialState();
   const db = openLedgerDatabase(ledgerDir);
   try {
     const activeTaskIds = activeAutomationTaskIds();
-    const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+    const range = businessDayUtcRange(
+      undefined,
+      automationBusinessTimezone(settings),
+    );
     const importGate = importGateStatus(db, {
       dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
       startUtc: range.startUtc,
@@ -109,7 +126,14 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
       const enabled = enabledGroups[group.id] !== false;
       const selectionSettings = { ...settings, [group.enabledKey]: enabled };
       const selection = isStatementSelectionGroup(group)
-        ? selectStatementTypes(group, selectionSettings, "display")
+        ? group.id === "fubon" ||
+          group.id === "yuanta" ||
+          group.id === "sinopac"
+          ? {
+              selectedIds: allSupportedStatementTypeIds(group),
+              needsSetup: false,
+            }
+          : selectStatementTypes(group, selectionSettings, "display")
         : { selectedIds: [], needsSetup: false };
       return {
         ...group,
@@ -132,7 +156,11 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
         activeTaskIds,
         credentials: credentialState.status,
         importGate,
-        setupRequiredGroupIds: new Set(credentialGroups.filter((group) => group.statementSetupRequired).map((group) => group.id)),
+        setupRequiredGroupIds: new Set(
+          credentialGroups
+            .filter((group) => group.statementSetupRequired)
+            .map((group) => group.id),
+        ),
         externalPrerequisiteNotices: pagePrerequisiteNotices(db),
         active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
         businessDate: range.businessDate,
@@ -146,8 +174,11 @@ export function loadAutomationDesktopModel(ledgerDir = process.env.LEDGER_DIR ??
 
 export function externalPrerequisiteById(prerequisiteId: string) {
   for (const task of AUTOMATION_TASKS) {
-    const prerequisite = task.externalPrerequisites?.find((candidate) => candidate.id === prerequisiteId);
-    if (prerequisite && isValidExternalPrerequisiteMetadata(prerequisite)) return prerequisite;
+    const prerequisite = task.externalPrerequisites?.find(
+      (candidate) => candidate.id === prerequisiteId,
+    );
+    if (prerequisite && isValidExternalPrerequisiteMetadata(prerequisite))
+      return prerequisite;
   }
   return null;
 }
@@ -157,43 +188,74 @@ export function automationSetupGuideLink(
   linkId: string,
   locale: "en" | "zh-TW" = "zh-TW",
 ) {
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === groupId);
-  const guideLink = group?.setupGuide.links.find((candidate) => candidate.id === linkId);
+  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
+    (candidate) => candidate.id === groupId,
+  );
+  const guideLink = group?.setupGuide.links.find(
+    (candidate) => candidate.id === linkId,
+  );
   if (!guideLink) return null;
-  const selectedUrl = locale === "en" && guideLink.englishUrl
-    ? guideLink.englishUrl
-    : guideLink.url;
+  const selectedUrl =
+    locale === "en" && guideLink.englishUrl
+      ? guideLink.englishUrl
+      : guideLink.url;
   try {
     const url = new URL(selectedUrl);
-    if (url.protocol !== "https:" || !guideLink.allowedHosts.includes(url.hostname)) return null;
+    if (
+      url.protocol !== "https:" ||
+      !guideLink.allowedHosts.includes(url.hostname)
+    )
+      return null;
   } catch {
     return null;
   }
   return { ...guideLink, url: selectedUrl };
 }
 
-function missingCredentialKeys(taskId: string, status = currentCredentialState().status) {
+function missingCredentialKeys(
+  taskId: string,
+  status = currentCredentialState().status,
+) {
   const task = taskById(taskId);
   if (!task) return [];
-  return task.credentialKeys.filter((key) => !optionalCredentialKeys.has(key) && !status[key]);
+  return task.credentialKeys.filter(
+    (key) => !optionalCredentialKeys.has(key) && !status[key],
+  );
 }
 
-function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDesktopModel) {
+function assertAutomationTaskCanStartInModel(
+  taskId: string,
+  model: AutomationDesktopModel,
+) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status === "waiting_for_human") {
-    throw new Error("Task is waiting for human input. Resume or force quit it first.");
+    throw new Error(
+      "Task is waiting for human input. Resume or force quit it first.",
+    );
   }
   if (row.status === "locked") {
-    throw new Error("Import is locked until all crawler dependencies complete for the business day.");
+    throw new Error(
+      "Import is locked until all crawler dependencies complete for the business day.",
+    );
   }
   const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
+    ? AUTOMATION_CREDENTIAL_GROUPS.find(
+        (candidate) => candidate.id === task.credentialGroupId,
+      )
     : null;
-  if (group && isStatementSelectionGroup(group)) {
-    const modelGroup = model.credentialGroups.find((candidate) => candidate.id === group.id);
+  if (
+    group &&
+    isStatementSelectionGroup(group) &&
+    group.id !== "fubon" &&
+    group.id !== "yuanta" &&
+    group.id !== "sinopac"
+  ) {
+    const modelGroup = model.credentialGroups.find(
+      (candidate) => candidate.id === group.id,
+    );
     const selectionSettings = {
       ...readAutomationSettings(),
       ...(modelGroup ? { [group.enabledKey]: modelGroup.enabled } : {}),
@@ -201,16 +263,28 @@ function assertAutomationTaskCanStartInModel(taskId: string, model: AutomationDe
     selectStatementTypes(group, selectionSettings, "strict");
   }
   const missing = missingCredentialKeys(taskId, model.automation.credentials);
-  if (missing.length > 0) throw new Error(`Missing credentials: ${missing.join(", ")}`);
+  if (missing.length > 0)
+    throw new Error(`Missing credentials: ${missing.join(", ")}`);
   return task;
 }
 
-export function assertAutomationTasksCanStart(taskIds: readonly string[], model: AutomationDesktopModel) {
-  return [...new Set(taskIds)].map((taskId) => assertAutomationTaskCanStartInModel(taskId, model));
+export function assertAutomationTasksCanStart(
+  taskIds: readonly string[],
+  model: AutomationDesktopModel,
+) {
+  return [...new Set(taskIds)].map((taskId) =>
+    assertAutomationTaskCanStartInModel(taskId, model),
+  );
 }
 
-export function assertAutomationTaskCanStart(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
-  return assertAutomationTaskCanStartInModel(taskId, loadAutomationDesktopModel(ledgerDir));
+export function assertAutomationTaskCanStart(
+  taskId: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  return assertAutomationTaskCanStartInModel(
+    taskId,
+    loadAutomationDesktopModel(ledgerDir),
+  );
 }
 
 export function automationSaveCredentials(updates: Record<string, string>) {
@@ -231,34 +305,62 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   const nextSettings = { ...readAutomationSettings(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
     if (!isStatementSelectionGroup(group)) continue;
+    if (
+      group.id === "fubon" ||
+      group.id === "yuanta" ||
+      group.id === "sinopac"
+    ) {
+      if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
+        nextSettings[group.statementSelectionKey] =
+          allSupportedStatementTypeIds(group).join(",");
+      }
+      continue;
+    }
     const selection = selectStatementTypes(group, nextSettings, "strict");
     if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
-      nextSettings[group.statementSelectionKey] = selection.selectedIds.join(",");
+      nextSettings[group.statementSelectionKey] =
+        selection.selectedIds.join(",");
     }
   }
-  const nextCredentials = Object.keys(split.credentials).length > 0
-    ? {
-      ...readAutomationCredentialsFile(),
-      ...split.credentials,
-    }
-    : undefined;
+  const nextCredentials =
+    Object.keys(split.credentials).length > 0
+      ? {
+          ...readAutomationCredentialsFile(),
+          ...split.credentials,
+        }
+      : undefined;
   writeAutomationConfigFiles(nextSettings, nextCredentials);
   return { saved: true as const };
 }
 
-export function automationRun(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+export function automationRun(
+  taskId: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
   startAutomationTask(task.id, ledgerDir);
   return { started: task.id };
 }
 
-export function automationRunMany(taskIds: string[], ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
-  if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
+export function automationRunMany(
+  taskIds: string[],
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
+  if (
+    !Array.isArray(taskIds) ||
+    taskIds.some((taskId) => typeof taskId !== "string")
+  ) {
     throw new TypeError("Task IDs must be an array of strings.");
   }
   if (taskIds.length === 0) return { started: [] as string[] };
-  const tasks = assertAutomationTasksCanStart(taskIds, loadAutomationDesktopModel(ledgerDir));
-  startAutomationTasks(tasks.map((task) => task.id), ledgerDir);
+  const tasks = assertAutomationTasksCanStart(
+    taskIds,
+    loadAutomationDesktopModel(ledgerDir),
+  );
+  startAutomationTasks(
+    tasks.map((task) => task.id),
+    ledgerDir,
+  );
   return { started: tasks.map((task) => task.id) };
 }
 
@@ -266,7 +368,9 @@ export function automationCancel(taskId: string) {
   return cancelAutomationTask(taskId);
 }
 
-export function automationRunHistory(ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+export function automationRunHistory(
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
   const db = openLedgerDatabase(ledgerDir);
   try {
     return recentTaskRuns(db, 100);
@@ -279,26 +383,39 @@ export function assertHumanAssistanceCompletionCanResume(
   completion: HumanAssistanceCompletion | null | undefined,
 ) {
   if (!completion) {
-    throw new Error("Human assistance contract is missing; force quit this legacy run.");
+    throw new Error(
+      "Human assistance contract is missing; force quit this legacy run.",
+    );
   }
   if (completion.mode === "inline" && completion.status !== "entered") {
-    throw new Error("Human verification input is incomplete. Enter the verification input before Resume.");
+    throw new Error(
+      "Human verification input is incomplete. Enter the verification input before Resume.",
+    );
   }
   if (completion.mode === "independent" && completion.status !== "verified") {
-    throw new Error("Human verification is incomplete. Run Check verification before Resume.");
+    throw new Error(
+      "Human verification is incomplete. Run Check verification before Resume.",
+    );
   }
 }
 
-export function automationResume(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
+export function automationResume(
+  taskId: string,
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   const model = loadAutomationDesktopModel(ledgerDir);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
-  if (row.status !== "waiting_for_human") throw new Error("Task is not waiting for human input.");
-  assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
+  if (row.status !== "waiting_for_human")
+    throw new Error("Task is not waiting for human input.");
+  assertHumanAssistanceCompletionCanResume(
+    row.humanAssistanceContract?.completion,
+  );
   const session = resumeSessionFromLog(row.logTail);
-  if (!session) throw new Error("Missing Libretto resume session in latest log.");
+  if (!session)
+    throw new Error("Missing Libretto resume session in latest log.");
   startAutomationResume(task.id, session, ledgerDir);
   return { resumed: task.id };
 }

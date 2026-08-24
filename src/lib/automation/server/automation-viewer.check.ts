@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
+  viewerScreenshotErrorKind,
   isNestedFrameElement,
   humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
@@ -12,6 +13,7 @@ import {
   normalizeViewerInput,
   normalizeViewerPoint,
   refreshTargetRect,
+  refreshSinopacCaptchaTargetFromPage,
   selectAllShortcut,
   selectViewerPage,
   shouldAutoResumeYuantaTradeCaptcha,
@@ -21,6 +23,8 @@ import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 import {
@@ -38,6 +42,9 @@ assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
 assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
 assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
 assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
+assert.equal(viewerScreenshotErrorKind(new Error("No CDP endpoint available for Libretto session ses-ist4.")), "unavailable");
+assert.equal(viewerScreenshotErrorKind(new Error("browserType.connectOverCDP: socket hang up")), "transient");
+assert.equal(viewerScreenshotErrorKind(new Error("Unexpected screenshot failure")), "failed");
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
@@ -165,6 +172,51 @@ assert.deepEqual(
 assert.equal(
   refreshTargetRect(humanContract, "captcha.input", humanContract.targets[0]!.rect!),
   null,
+);
+
+const sinopacContract: HumanAssistanceContract = {
+  schemaVersion: 1,
+  version: 1,
+  stageId: "sinopac-login-captcha",
+  title: "Complete CAPTCHA",
+  targets: [{
+    id: "sinopac-captcha-input",
+    label: "CAPTCHA input",
+    semanticId: SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+    modes: ["click", "type"],
+    rect: { x: 589.03125, y: 447, width: 122, height: 35 },
+  }],
+  contextRegions: [],
+  completion: { mode: "inline", targetIds: ["sinopac-captcha-input"], status: "pending" },
+  focus: { targetId: "sinopac-captcha-input", contextRegionIds: [] },
+};
+const sinopacLocator = {
+  count: async () => 1,
+  isVisible: async () => true,
+  boundingBox: async () => ({ x: 589.03125, y: 487.5, width: 122, height: 35 }),
+};
+const sinopacPage = {
+  locator: (selector: string) => {
+    assert.equal(selector, SINOPAC_CAPTCHA_INPUT_SELECTOR);
+    return sinopacLocator;
+  },
+};
+const refreshedSinopac = await refreshSinopacCaptchaTargetFromPage(
+  sinopacPage as never,
+  sinopacContract,
+);
+assert.equal(refreshedSinopac?.targets[0]?.rect?.y, 487.5);
+await assert.rejects(
+  () => refreshSinopacCaptchaTargetFromPage({
+    locator: () => ({ ...sinopacLocator, count: async () => 2 }),
+  } as never, sinopacContract),
+  /missing or ambiguous/,
+);
+await assert.rejects(
+  () => refreshSinopacCaptchaTargetFromPage({
+    locator: () => ({ ...sinopacLocator, isVisible: async () => false }),
+  } as never, sinopacContract),
+  /not visible/,
 );
 const focusCalls: Array<[number, number]> = [];
 await focusHumanVerificationTarget({
