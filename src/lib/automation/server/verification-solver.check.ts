@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   MAX_SOLVE_ATTEMPTS,
   solveVerificationChallenge,
-  stubVerificationSolver,
   verificationPlanForContract,
   type VerificationSolver,
 } from "./verification-solver.ts";
@@ -164,9 +163,4 @@ test("an absent challenge stops solving immediately", async () => {
   });
   assert.deepEqual(outcome, { status: "absent" });
   assert.equal(solves, 0);
-});
-
-test("the stub solver is never confident", async () => {
-  const result = await stubVerificationSolver.solve({ image, challengeKind: "text-captcha" });
-  assert.equal(result.confidence, 0);
 });

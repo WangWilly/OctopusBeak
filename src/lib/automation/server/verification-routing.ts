@@ -9,11 +9,11 @@ import {
 } from "../verification-config.ts";
 import {
   solveVerificationChallenge,
-  stubVerificationSolver,
   verificationPlanForContract,
   type SolveOutcome,
   type VerificationSolver,
 } from "./verification-solver.ts";
+import { localVerificationSolver } from "./text-captcha-solver.ts";
 import {
   captureChallengeImageForContract,
   clickVerificationTarget,
@@ -50,6 +50,8 @@ export type VerificationRoutingOutcome =
   | { kind: "human" }
   | { kind: "resumed" }
   | { kind: "failed" };
+
+const defaultLocalSolver = localVerificationSolver();
 
 export async function routeVerificationActor(input: {
   actor: VerificationActor;
@@ -141,7 +143,7 @@ export async function routeWaitingRunVerification(input: {
     : undefined;
 
   const dependencies: VerificationRoutingDependencies = {
-    solver: input.solver ?? stubVerificationSolver,
+    solver: input.solver ?? defaultLocalSolver,
     captureChallengeImage:
       input.captureChallengeImage ?? captureChallengeImageForContract,
     injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
