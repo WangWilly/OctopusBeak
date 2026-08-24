@@ -82,7 +82,8 @@ export type CanonicalFinancialDepositCapture = {
     subjectDigest: string;
     accountNo: string;
     accountType: string;
-    currency: string;
+    /** Nullable for a source-proven multi-currency account. */
+    currency: string | null;
   };
   observedAt: string;
   scope: {
@@ -174,6 +175,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     throw new Error("Capture page count does not match scope.");
   if (capture.pages.length === 0)
     throw new Error("At least one capture page is required.");
+  if (!capture.identity.accountType.trim())
+    throw new Error("Financial account type is required.");
+  if (capture.identity.currency === "MULTI")
+    throw new Error("Financial account currency cannot use the MULTI sentinel.");
   const routeRules: Record<
     string,
     {
