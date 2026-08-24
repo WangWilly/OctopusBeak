@@ -14,11 +14,18 @@ export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
   "failed",
 ] as const;
 
+export const VERIFICATION_CHALLENGE_KINDS = [
+  "text-captcha",
+  "image-selection",
+  "checkbox",
+] as const;
+
 export const HUMAN_ASSISTANCE_HOST_FD_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_FD";
 export const HUMAN_ASSISTANCE_HOST_PATH_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_PATH";
 
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
+export type VerificationChallengeKind = typeof VERIFICATION_CHALLENGE_KINDS[number];
 
 export type HumanVerificationRect = {
   x: number;
@@ -40,6 +47,13 @@ export type VerificationContextRegion = {
   label: string;
   semanticId: string;
   rect?: HumanVerificationRect | null;
+};
+
+export type VerificationChallengeImageRegion = {
+  id: string;
+  label: string;
+  semanticId: string;
+  rect: HumanVerificationRect;
 };
 
 export type HumanAssistanceCompletion = {
@@ -65,6 +79,8 @@ export type HumanAssistanceContractInput = {
   contextRegions: readonly VerificationContextRegion[];
   completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
+  challengeKind?: VerificationChallengeKind;
+  challengeImageRegion?: VerificationChallengeImageRegion;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -96,6 +112,16 @@ function assertTarget(target: HumanVerificationTarget) {
     if (!HUMAN_VERIFICATION_INTERACTION_MODES.includes(mode)) {
       throw new Error(`Invalid human assistance contract: target ${target.id} has mode ${mode}.`);
     }
+  }
+}
+
+function assertChallengeImageRegion(region: VerificationChallengeImageRegion) {
+  nonEmpty(region.id, "challenge image region id");
+  nonEmpty(region.label, `challenge image region ${region.id} label`);
+  nonEmpty(region.semanticId, `challenge image region ${region.id} semanticId`);
+  const rect = region.rect;
+  if (!rect || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+    throw new Error(`Invalid human assistance contract: challenge image region ${region.semanticId} cannot be resolved.`);
   }
 }
 
@@ -140,6 +166,12 @@ export function createHumanAssistanceContract(
   if (input.focus.initialZoom !== undefined && (!Number.isFinite(input.focus.initialZoom) || input.focus.initialZoom <= 0)) {
     throw new Error("Invalid human assistance contract: initialZoom must be positive.");
   }
+  if (input.challengeKind !== undefined && !VERIFICATION_CHALLENGE_KINDS.includes(input.challengeKind)) {
+    throw new Error(`Invalid human assistance contract: unknown challenge kind ${input.challengeKind}.`);
+  }
+  if (input.challengeImageRegion !== undefined) {
+    assertChallengeImageRegion(input.challengeImageRegion);
+  }
 
   return {
     schemaVersion: HUMAN_ASSISTANCE_SCHEMA_VERSION,
@@ -158,6 +190,8 @@ export function createHumanAssistanceContract(
       contextRegionIds: [...input.focus.contextRegionIds],
       ...(input.focus.initialZoom === undefined ? {} : { initialZoom: input.focus.initialZoom }),
     },
+    ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
+    ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
   };
 }
 

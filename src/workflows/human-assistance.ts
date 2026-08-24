@@ -7,6 +7,8 @@ import {
   type HumanAssistanceContractInput,
   type HumanVerificationTarget,
   type VerificationContextRegion,
+  type VerificationChallengeImageRegion,
+  type VerificationChallengeKind,
   type HumanAssistanceFocus,
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
@@ -19,6 +21,10 @@ export type WorkflowHumanAssistanceContextRegion = Omit<VerificationContextRegio
   locator?: Pick<Locator, "boundingBox">;
 };
 
+export type WorkflowChallengeImageRegion = Omit<VerificationChallengeImageRegion, "rect"> & {
+  locator: Pick<Locator, "boundingBox">;
+};
+
 export type WorkflowHumanAssistanceStage = {
   stageId: string;
   title: string;
@@ -26,6 +32,8 @@ export type WorkflowHumanAssistanceStage = {
   contextRegions: readonly WorkflowHumanAssistanceContextRegion[];
   completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
+  challengeKind?: VerificationChallengeKind;
+  challengeImageRegion?: WorkflowChallengeImageRegion;
 };
 
 export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
@@ -78,6 +86,16 @@ export async function emitHumanAssistanceStage(
     contextRegions.push({ ...descriptor, ...(rect ? { rect } : {}) });
   }
 
+  let challengeImageRegion: VerificationChallengeImageRegion | undefined;
+  if (stage.challengeImageRegion) {
+    const rect = await stage.challengeImageRegion.locator.boundingBox().catch(() => null);
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      throw new Error(`Verification challenge image region cannot be resolved: ${stage.challengeImageRegion.semanticId}`);
+    }
+    const { locator: _locator, ...descriptor } = stage.challengeImageRegion;
+    challengeImageRegion = { ...descriptor, rect };
+  }
+
   const contract: HumanAssistanceContractInput = {
     stageId: stage.stageId,
     title: stage.title,
@@ -85,6 +103,8 @@ export async function emitHumanAssistanceStage(
     contextRegions,
     completion: stage.completion,
     focus: stage.focus,
+    ...(stage.challengeKind === undefined ? {} : { challengeKind: stage.challengeKind }),
+    ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
   };
   return publishHumanAssistanceContract(contract, publish);
 }

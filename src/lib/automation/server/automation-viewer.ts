@@ -418,6 +418,8 @@ export function refreshTargetRect(
     contextRegions: contract.contextRegions,
     completion: contract.completion,
     focus: contract.focus,
+    ...(contract.challengeKind === undefined ? {} : { challengeKind: contract.challengeKind }),
+    ...(contract.challengeImageRegion === undefined ? {} : { challengeImageRegion: contract.challengeImageRegion }),
   };
 }
 
@@ -555,6 +557,8 @@ export async function refreshYuantaTradeChallengeSubmitTarget(
       status: "pending",
     },
     focus: contract.focus,
+    ...(contract.challengeKind === undefined ? {} : { challengeKind: contract.challengeKind }),
+    ...(contract.challengeImageRegion === undefined ? {} : { challengeImageRegion: contract.challengeImageRegion }),
   };
 }
 
