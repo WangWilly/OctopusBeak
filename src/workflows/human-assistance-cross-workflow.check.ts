@@ -27,6 +27,30 @@ const sharedProviderAssistanceWorkflows = new Set([
   "yuanta-foreign-currency-statements.ts",
 ]);
 
+function rechecksInlineVerificationInput(source: string): boolean {
+  if (source.includes("inputValue()).trim()")) return true;
+
+  const assignedInputValue =
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+[\s\S]{0,400}?\.inputValue\(\)[\s\S]{0,120}?;/g;
+  for (const match of source.matchAll(assignedInputValue)) {
+    const valueName = match[1];
+    if (!valueName || match.index === undefined) continue;
+    const continuation = source.slice(
+      match.index + match[0].length,
+      match.index + match[0].length + 240,
+    );
+    const escapedValueName = valueName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (
+      new RegExp(`if\\s*\\(\\s*!${escapedValueName}\\.trim\\(\\)\\s*\\)`).test(
+        continuation,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 test("all modelable human-assisted workflows publish a contract-backed stage", async () => {
   const sources = await Promise.all(
     providerWorkflows.map(
@@ -104,12 +128,35 @@ test("inline verification stages re-check the declared field before continuing",
   );
   const missingInputChecks = sources
     .filter(([, source]) => source.includes('completion: { mode: "inline"'))
-    .filter(([, source]) => !source.includes("inputValue()).trim()"))
+    .filter(([, source]) => !rechecksInlineVerificationInput(source))
     .map(([file]) => file);
   assert.deepEqual(
     missingInputChecks,
     [],
     "inline verification must confirm the declared field is non-empty after Assist Resume",
+  );
+});
+
+test("inline verification check recognizes a deadline-wrapped value probe", () => {
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      const currentValue = await withDeadline(
+        "completion probe",
+        currentInput.inputValue(),
+      );
+      if (!currentValue.trim()) throw new Error("empty");
+    `),
+    true,
+  );
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      const currentValue = await withDeadline(
+        "completion probe",
+        currentInput.inputValue(),
+      );
+      submit();
+    `),
+    false,
   );
 });
 
