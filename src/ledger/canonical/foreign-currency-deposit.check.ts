@@ -160,6 +160,8 @@ assert.equal(
     ?.comparison,
   "conflicted",
 );
+assert.equal(conflicted.records[0]!.sourceTime.precision, "second");
+assert.equal(conflicted.records[0]!.sourceTime.timeOrigin, "source_reported");
 assert.deepEqual(
   conflicted.records[0]!.amount,
   { coefficient: "315", scale: 0 },
@@ -420,6 +422,14 @@ assert.throws(
       records: [],
     }),
   /capture occurrence identity/i,
+);
+
+const datePrecisionWithReportedTime = structuredClone(usd);
+datePrecisionWithReportedTime.records[0]!.sourceTime.timeOrigin =
+  "source_reported";
+assert.throws(
+  () => admitForeignCurrencyDepositCapture(datePrecisionWithReportedTime),
+  /date precision|local midnight|time origin/i,
 );
 
 for (const mutate of [

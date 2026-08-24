@@ -54,9 +54,42 @@ assert.equal(
   admitForeignCurrencyDepositCapture(input).records[0]!.currency,
   "USD",
 );
-assert.throws(
-  () =>
-    buildLinebankForeignCurrencyCaptureInput({
+const laterTxDtm = linebankEpochMillisecondsFromSourceDateTime(
+  "20260802",
+  "091012",
+);
+const distinctLinebankOccurrence = buildLinebankForeignCurrencyCaptureInput({
+  account,
+  dateRange: { startDate: "20260801", endDate: "20260824" },
+  pages: [{
+    pageNbr: 1,
+    pageCnt: 1,
+    totTxCnt: 1,
+    txCnt: 1,
+    rows: [{
+      txSeqNbr: "1",
+      txDt: "20260802",
+      txTm: "091012",
+      txDtm: laterTxDtm,
+      dpstWdrwDsCd: "1",
+      txAmt: "10.25",
+      afTxBal: "100.25",
+      crrnDpstNthCnt: 1,
+      bizTxFuncTpNm: "foreign deposit",
+    }],
+    source: { acctNbr: "LINE-FOREIGN-133", arrId: "ARR-133", opnDtm: 133 },
+    responseCode: "200",
+  }],
+  captureOccurrenceId: "linebank-foreign-check-distinct-txdtm",
+});
+assert.notEqual(
+  distinctLinebankOccurrence.records[0]!.sourceKey,
+  input.records[0]!.sourceKey,
+);
+for (const directionCode of ["1", "2"] as const) {
+  assert.throws(
+    () =>
+      buildLinebankForeignCurrencyCaptureInput({
       account,
       dateRange: { startDate: "20260801", endDate: "20260824" },
       pages: [{
@@ -69,7 +102,7 @@ assert.throws(
           txDt: "20260802",
           txTm: "091011",
           txDtm,
-          dpstWdrwDsCd: "1",
+          dpstWdrwDsCd: directionCode,
           txAmt: "-10.25",
           afTxBal: "100.25",
           crrnDpstNthCnt: 1,
@@ -79,9 +112,10 @@ assert.throws(
         responseCode: "200",
       }],
       captureOccurrenceId: "linebank-foreign-sign-conflict",
-    }),
-  /sign|direction|negative/i,
-);
+      }),
+    /sign|direction|negative|unsigned/i,
+  );
+}
 assert.throws(
   () =>
     buildLinebankForeignCurrencyCaptureInput({
