@@ -35,6 +35,7 @@ const base = {
   accountType: "depository",
   sourceConnectionKey: "login-session-133",
   identityEpochKey: "identity-epoch-133",
+  captureOccurrenceId: "capture-observation-133-a",
   observedAt: "2026-08-24T12:00:00+08:00",
   startDate: "2026-08-01",
   endDate: "2026-08-24",
@@ -158,6 +159,49 @@ try {
     .get() as { count?: number; currency?: string };
   assert.equal(accountRows.count, 1);
   assert.equal(accountRows.currency, null);
+  const repeatedObservation = createForeignCurrencyDepositCapture({
+    ...base,
+    captureOccurrenceId: "capture-observation-133-b",
+    source: "yuanta",
+    records: [
+      {
+        sourceKey: "YUANTA-ROW-USD-1",
+        sequence: "1",
+        amount: "315.00",
+        direction: "inflow",
+        currencyEvidence: { kind: "row", currency: "TWD" },
+        balanceAfter: "1315.00",
+        sourceTime: { localDate: "2026-08-02" },
+        originalAmount: { amount: "10", currency: "USD" },
+        sourceReportedRate: {
+          rate: "31.50",
+          baseCurrency: "USD",
+          quoteCurrency: "TWD",
+          observedOn: "2026-08-02",
+        },
+        description: "foreign deposit",
+      },
+    ],
+  });
+  assert.notEqual(repeatedObservation.captureId, usd.captureId);
+  assert.equal(
+    repeatedObservation.records[0]!.contentHash,
+    usd.records[0]!.contentHash,
+  );
+  await commitForeignCurrencyDepositCapture(
+    store,
+    admitForeignCurrencyDepositCapture(repeatedObservation),
+  );
+  assert.equal(
+    Number(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS count FROM source_captures")
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    3,
+  );
   const current = queryForeignCurrencyDepositCurrent(store, {
     accountNo: base.accountNo,
   });
@@ -192,7 +236,7 @@ try {
     occurrenceKey: admittedUsd.records[0]!.occurrenceKey,
   });
   assert.equal(lineage.transactions.length, 1);
-  assert.equal(lineage.provenanceCount, 1);
+  assert.equal(lineage.provenanceCount, 2);
   assert.equal(Boolean(lineage.transactions[0]!.assertion?.revisionId), true);
   assert.equal(lineage.transactions[0]!.sourceRecord?.scopeProof?.completeness, "complete-range");
   assert.deepEqual(
@@ -259,4 +303,14 @@ assert.throws(
       records: [],
     }),
   /identity epoch/i,
+);
+assert.throws(
+  () =>
+    createForeignCurrencyDepositCapture({
+      ...base,
+      captureOccurrenceId: "",
+      source: "yuanta",
+      records: [],
+    }),
+  /capture occurrence identity/i,
 );

@@ -137,6 +137,10 @@ export type ForeignCurrencyDepositCaptureInput = {
   /** A source terminal response is required; absence is not inferred. */
   completeness: "complete-range";
   records: readonly ForeignCurrencyDepositRecordInput[];
+  /** Explicit run/observation identity. Content hashes are not Capture identity. */
+  captureOccurrenceId: string;
+  /** Empty results are admissible only when the terminal source response says no data. */
+  zeroResultAuthority?: "provider-explicit-no-data";
   captureId?: string;
   accountType: string;
   /** Accepted for provenance only; it is never used to fill row currency. */
@@ -557,12 +561,24 @@ export function createForeignCurrencyDepositCapture(
   if (!accountNo) throw new Error("Source-proven account number is required.");
   if (typeof input.identityEpochKey !== "string" || !input.identityEpochKey.trim())
     throw new Error("Source identity epoch key is required.");
+  if (
+    typeof input.captureOccurrenceId !== "string" ||
+    !input.captureOccurrenceId.trim()
+  )
+    throw new Error("Foreign capture occurrence identity is required.");
   if (typeof input.accountType !== "string" || !input.accountType.trim())
     throw new Error("Source account type is required.");
   if (input.accountType !== "depository")
     throw new Error("Foreign-currency deposit account type must be depository.");
   if (input.completeness !== "complete-range")
     throw new Error("Foreign capture requires a terminal complete-range proof.");
+  if (
+    input.records.length === 0 &&
+    input.zeroResultAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error(
+      "Empty foreign capture requires provider-explicit-no-data terminal evidence.",
+    );
   const startDate = date(input.startDate, "Capture start date");
   const endDate = date(input.endDate, "Capture end date");
   if (startDate > endDate) throw new Error("Capture scope is inverted.");
@@ -588,7 +604,7 @@ export function createForeignCurrencyDepositCapture(
   const captureId =
     input.captureId ??
     `foreign-${contract.sourceId}-${token(
-      `${input.sourceConnectionKey}:${input.identityEpochKey}:${accountNo}:${startDate}:${endDate}:${responseDigest}`,
+      `${input.sourceConnectionKey}:${input.identityEpochKey}:${input.captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}`,
     ).slice("sha256:".length)}`;
   return {
     captureId,

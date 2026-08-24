@@ -17,7 +17,10 @@ import {
   SINOPAC_LOGIN_URL,
 } from "./sinopac-statements.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
-import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
+import {
+  admitForeignCurrencyDepositCapture,
+  commitForeignCurrencyDepositCapture,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
 
 assert.deepEqual(
   sinopacQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -113,6 +116,7 @@ const sinopacForeignCapture = buildSinopacForeignCurrencyCaptureInput(
   ],
   { startDate: "20260801", endDate: "20260823" },
   "2026-08-24T12:00:00+08:00",
+  "sinopac-foreign-check-observation-1",
 );
 assert.equal(sinopacForeignCapture.accountType, "depository");
 assert.equal(
@@ -124,6 +128,45 @@ assert.deepEqual(
     .conversionEvidence?.sourceReportedRate?.amount,
   { coefficient: "315", scale: 1 },
 );
+const emptySinopacCapture = buildSinopacForeignCurrencyCaptureInput(
+  { DataText: "USD empty account", DataValue: "003", DisplayText: "USD" },
+  [],
+  { startDate: "20260801", endDate: "20260823" },
+  "2026-08-24T12:00:00+08:00",
+  "sinopac-foreign-check-empty-observation",
+  "provider-explicit-no-data",
+);
+assert.throws(
+  () =>
+    buildSinopacForeignCurrencyCaptureInput(
+      { DataText: "USD ambiguous account", DataValue: "004", DisplayText: "USD" },
+      [],
+      { startDate: "20260801", endDate: "20260823" },
+      "2026-08-24T12:00:00+08:00",
+      "sinopac-foreign-check-ambiguous-empty",
+    ),
+  /no-data|empty|terminal/i,
+);
+const sinopacEmptyDirectory = await mkdtemp(join(tmpdir(), "sinopac-foreign-empty-133-"));
+try {
+  const store = createCanonicalSourceStore(join(sinopacEmptyDirectory, "canonical.sqlite"));
+  const result = await commitForeignCurrencyDepositCapture(
+    store,
+    admitForeignCurrencyDepositCapture(emptySinopacCapture),
+  );
+  assert.equal(result.transactionCount, 0);
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  store.close();
+} finally {
+  await rm(sinopacEmptyDirectory, { recursive: true, force: true });
+}
 
 const sourceDir = await mkdtemp(join(tmpdir(), "sinopac-workflow-source-"));
 try {
