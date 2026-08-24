@@ -78,6 +78,22 @@ import {
   preflightYuantaDomesticDeposit,
 } from "./yuanta-domestic-deposit.ts";
 
+// Kept as a compatibility re-export for existing readiness consumers. The
+// foreign inventory has its own module and derives contract metadata from the
+// canonical foreign contract registry.
+export {
+  ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS,
+  ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS,
+  advertisedForeignCurrencyDepositSourceIds,
+  evaluateAdvertisedForeignCurrencyDepositReadiness,
+  isAdvertisedForeignCurrencyDepositEntryReleaseReady,
+} from "./advertised-foreign-currency-deposit-readiness.ts";
+export type {
+  AdvertisedForeignCurrencyDepositReadinessEntry,
+  AdvertisedForeignCurrencyDepositReadinessGate,
+  AdvertisedForeignCurrencyDepositSourceId,
+} from "./advertised-foreign-currency-deposit-readiness.ts";
+
 const DOMESTIC_DEPOSIT_STATEMENT_TYPE_IDS = new Set([
   "deposit",
   "domestic",
@@ -326,186 +342,6 @@ function buildReadinessEntry(
 /** Executable release inventory derived from the advertised registry and source manifests. */
 export const ADVERTISED_DOMESTIC_DEPOSIT_READINESS =
   ADVERTISED_DOMESTIC_DEPOSIT_SOURCE_IDS.map(buildReadinessEntry);
-
-/**
- * Foreign-currency deposit integrations share the canonical financial-store
- * boundary, but their contract inventory is intentionally independent from
- * the domestic readiness inventory above.  In particular, an `accounts`
- * capability advertises both domestic and foreign account surfaces, whereas
- * Yuanta/Cathay expose a dedicated `foreign_currency` statement type.
- */
-const FOREIGN_CURRENCY_DEPOSIT_STATEMENT_TYPE_IDS = new Set([
-  "foreign_currency",
-  "foreign",
-  "accounts",
-]);
-
-export type AdvertisedForeignCurrencyDepositSourceId =
-  | "yuanta"
-  | "cathay"
-  | "sinopac"
-  | "linebank";
-
-export type AdvertisedForeignCurrencyDepositReadinessEntry = {
-  sourceId: AdvertisedForeignCurrencyDepositSourceId;
-  advertisedName: string;
-  workflow: string;
-  authority: string;
-  contractVersion: string;
-  fixtureEvidence: "canonical-versioned-synthetic";
-  accountBoundary: "source-proven-account";
-  currencyScope: "row-or-typed-scope";
-  amountDirection: "source-proven-debit-credit";
-  timePrecision: "source-preserved-date-minute-second";
-  completeness: "terminal-complete-range";
-  blockers: readonly [];
-};
-
-export type AdvertisedForeignCurrencyDepositReadinessGate = {
-  status: "blocked" | "release-ready";
-  releaseReady: boolean;
-  advertisedSourceCount: number;
-  unreadySourceIds: AdvertisedForeignCurrencyDepositSourceId[];
-};
-
-export function advertisedForeignCurrencyDepositSourceIds(
-  registry: StatementCapabilityRegistry,
-): AdvertisedForeignCurrencyDepositSourceId[] {
-  const advertised = Object.values(registry)
-    .filter((group) =>
-      group.statementTypes.some((type) =>
-        FOREIGN_CURRENCY_DEPOSIT_STATEMENT_TYPE_IDS.has(type.id),
-      ),
-    )
-    .map((group) => group.id)
-    .filter(
-      (sourceId): sourceId is AdvertisedForeignCurrencyDepositSourceId =>
-        sourceId === "yuanta" ||
-        sourceId === "cathay" ||
-        sourceId === "sinopac" ||
-        sourceId === "linebank",
-    );
-  return advertised;
-}
-
-const FOREIGN_CURRENCY_DEPOSIT_CONTRACTS: Record<
-  AdvertisedForeignCurrencyDepositSourceId,
-  Omit<AdvertisedForeignCurrencyDepositReadinessEntry, "sourceId" | "advertisedName">
-> = {
-  yuanta: {
-    workflow: "yuantaForeignCurrencyStatements",
-    authority: "yuanta/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/yuanta/v1",
-    fixtureEvidence: "canonical-versioned-synthetic",
-    accountBoundary: "source-proven-account",
-    currencyScope: "row-or-typed-scope",
-    amountDirection: "source-proven-debit-credit",
-    timePrecision: "source-preserved-date-minute-second",
-    completeness: "terminal-complete-range",
-    blockers: [],
-  },
-  cathay: {
-    workflow: "cathayForeignStatements",
-    authority: "cathay/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/cathay/v1",
-    fixtureEvidence: "canonical-versioned-synthetic",
-    accountBoundary: "source-proven-account",
-    currencyScope: "row-or-typed-scope",
-    amountDirection: "source-proven-debit-credit",
-    timePrecision: "source-preserved-date-minute-second",
-    completeness: "terminal-complete-range",
-    blockers: [],
-  },
-  sinopac: {
-    workflow: "sinopacStatements",
-    authority: "sinopac/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/sinopac/v1",
-    fixtureEvidence: "canonical-versioned-synthetic",
-    accountBoundary: "source-proven-account",
-    currencyScope: "row-or-typed-scope",
-    amountDirection: "source-proven-debit-credit",
-    timePrecision: "source-preserved-date-minute-second",
-    completeness: "terminal-complete-range",
-    blockers: [],
-  },
-  linebank: {
-    workflow: "linebankStatements",
-    authority: "linebank/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/linebank/v1",
-    fixtureEvidence: "canonical-versioned-synthetic",
-    accountBoundary: "source-proven-account",
-    currencyScope: "row-or-typed-scope",
-    amountDirection: "source-proven-debit-credit",
-    timePrecision: "source-preserved-date-minute-second",
-    completeness: "terminal-complete-range",
-    blockers: [],
-  },
-};
-
-const foreignCurrencyRegistrySourceIds = advertisedForeignCurrencyDepositSourceIds(
-  BANK_STATEMENT_CAPABILITIES,
-);
-
-if (
-  foreignCurrencyRegistrySourceIds.length !== 4 ||
-  !["yuanta", "cathay", "sinopac", "linebank"].every((sourceId) =>
-    foreignCurrencyRegistrySourceIds.includes(
-      sourceId as AdvertisedForeignCurrencyDepositSourceId,
-    ),
-  )
-) {
-  throw new Error(
-    "Advertised foreign-currency deposit registry coverage is incomplete.",
-  );
-}
-
-export const ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS =
-  foreignCurrencyRegistrySourceIds;
-
-export const ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS =
-  ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS.map(
-    (sourceId): AdvertisedForeignCurrencyDepositReadinessEntry => {
-      const advertised = Object.values(BANK_STATEMENT_CAPABILITIES).find(
-        (group) => group.id === sourceId,
-      );
-      if (!advertised)
-        throw new Error(`Missing advertised foreign source ${sourceId}.`);
-      return {
-        sourceId,
-        advertisedName: advertised.label,
-        ...FOREIGN_CURRENCY_DEPOSIT_CONTRACTS[sourceId],
-      };
-    },
-  );
-
-export function evaluateAdvertisedForeignCurrencyDepositReadiness(
-  entries: readonly AdvertisedForeignCurrencyDepositReadinessEntry[] =
-    ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS,
-): AdvertisedForeignCurrencyDepositReadinessGate {
-  const unreadySourceIds = entries
-    .filter((entry) => !isAdvertisedForeignCurrencyDepositEntryReleaseReady(entry))
-    .map((entry) => entry.sourceId);
-  return {
-    status: unreadySourceIds.length === 0 ? "release-ready" : "blocked",
-    releaseReady: unreadySourceIds.length === 0,
-    advertisedSourceCount: entries.length,
-    unreadySourceIds,
-  };
-}
-
-export function isAdvertisedForeignCurrencyDepositEntryReleaseReady(
-  entry: AdvertisedForeignCurrencyDepositReadinessEntry,
-): boolean {
-  return (
-    entry.fixtureEvidence === "canonical-versioned-synthetic" &&
-    entry.accountBoundary === "source-proven-account" &&
-    entry.currencyScope === "row-or-typed-scope" &&
-    entry.amountDirection === "source-proven-debit-credit" &&
-    entry.timePrecision === "source-preserved-date-minute-second" &&
-    entry.completeness === "terminal-complete-range" &&
-    entry.blockers.length === 0
-  );
-}
 
 export type AdvertisedDomesticDepositReadinessGate = {
   status: "blocked" | "release-ready";

@@ -13,9 +13,11 @@ import {
   sinopacSortAccounts,
   sinopacSignedInPageUrl,
   sinopacStatementRowsToCsv,
+  buildSinopacForeignCurrencyCaptureInput,
   SINOPAC_LOGIN_URL,
 } from "./sinopac-statements.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
 
 assert.deepEqual(
   sinopacQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -89,6 +91,38 @@ assert.deepEqual(
 assert.equal(
   sinopacManualAuthMessage("sinopac-demo"),
   "manual-auth-required: enter the SinoPac CAPTCHA in the browser, then run `npx libretto resume --session sinopac-demo`.",
+);
+
+const sinopacForeignCapture = buildSinopacForeignCurrencyCaptureInput(
+  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
+  [
+    {
+      sortKey: "2026/08/23 09:10",
+      values: [
+        "2026/08/23",
+        "",
+        "09:10",
+        "foreign deposit",
+        "",
+        "10.00",
+        "110.00",
+        "memo",
+        "31.50",
+      ],
+    },
+  ],
+  { startDate: "20260801", endDate: "20260823" },
+  "2026-08-24T12:00:00+08:00",
+);
+assert.equal(sinopacForeignCapture.accountType, "depository");
+assert.equal(
+  sinopacForeignCapture.records[0]!.sourceReportedRate?.rate,
+  "31.50",
+);
+assert.deepEqual(
+  admitForeignCurrencyDepositCapture(sinopacForeignCapture).records[0]!
+    .conversionEvidence?.sourceReportedRate?.amount,
+  { coefficient: "315", scale: 1 },
 );
 
 const sourceDir = await mkdtemp(join(tmpdir(), "sinopac-workflow-source-"));

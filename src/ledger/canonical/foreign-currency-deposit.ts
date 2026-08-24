@@ -17,7 +17,10 @@ import {
 
 export const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
-export const FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY = "MULTI" as const;
+/** A foreign-currency account has no single denomination.  Its currency is
+ * therefore intentionally nullable; each admitted transaction still carries
+ * a required source-proven currency. */
+export const FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY = null;
 
 export const FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS = [
   "yuanta",
@@ -127,7 +130,7 @@ export type ForeignCurrencyDepositCaptureInput = {
   source: ForeignCurrencyDepositSourceId;
   accountNo: string;
   sourceConnectionKey: string;
-  identityEpochKey?: string;
+  identityEpochKey: string;
   observedAt: string;
   startDate: string;
   endDate: string;
@@ -135,7 +138,7 @@ export type ForeignCurrencyDepositCaptureInput = {
   completeness: "complete-range";
   records: readonly ForeignCurrencyDepositRecordInput[];
   captureId?: string;
-  accountType?: string;
+  accountType: string;
   /** Accepted for provenance only; it is never used to fill row currency. */
   accountDefaultCurrency?: string;
 };
@@ -183,6 +186,59 @@ export type ForeignCurrencyTransaction = {
   revisionId: string;
   commitSequence: number;
   supportState: "supported" | "withdrawn";
+  assertion?: ForeignCurrencyAssertionLineage | null;
+  sourceRecord?: ForeignCurrencySourceRecord | null;
+  lifecycleEvents?: ForeignCurrencyLifecycleEvent[];
+  provenance?: ForeignCurrencyProvenance[];
+};
+
+export type ForeignCurrencyAssertionLineage = {
+  id: string;
+  revisionId: string;
+  origin: "source";
+  producerId: string;
+  ruleLineage: string;
+  commitSequence: number;
+};
+
+export type ForeignCurrencyScopeProof = {
+  id: string;
+  accountId: string;
+  accountNo: string;
+  stream: string;
+  scopeStart: string;
+  scopeEnd: string;
+  completeness: string;
+  contractFingerprint: string;
+  preflightFingerprint: string;
+};
+
+export type ForeignCurrencySourceRecord = {
+  id: string;
+  captureId: string;
+  sequence: string;
+  description: string | null;
+  payloadJson: string;
+  /** Short alias used by the lineage contract; both fields carry the same
+   * compact, non-replay payload. */
+  payload: string;
+  scopeProof: ForeignCurrencyScopeProof | null;
+};
+
+export type ForeignCurrencyLifecycleEvent = {
+  id: string;
+  kind: "observed" | "withdrawn" | "restored" | "superseded";
+  commitSequence: number;
+  scopeProof: Pick<
+    ForeignCurrencyScopeProof,
+    "id" | "completeness" | "contractFingerprint" | "preflightFingerprint"
+  > | null;
+};
+
+export type ForeignCurrencyProvenance = {
+  sourceRecordId: string;
+  captureId: string | null;
+  commitSequence: number;
 };
 
 export type ForeignCurrencyQueryResult = {
@@ -195,6 +251,19 @@ export type ForeignCurrencyQueryResult = {
 
 type Exact = FinancialDepositAmount & { value: bigint };
 
+function normalizeExactParts(
+  coefficient: string,
+  scale: number,
+): { coefficient: string; scale: number } {
+  let normalizedCoefficient = coefficient.replace(/^0+(?=\d)/, "") || "0";
+  let normalizedScale = scale;
+  while (normalizedScale > 0 && normalizedCoefficient.endsWith("0")) {
+    normalizedCoefficient = normalizedCoefficient.slice(0, -1) || "0";
+    normalizedScale -= 1;
+  }
+  return { coefficient: normalizedCoefficient, scale: normalizedScale };
+}
+
 function exact(value: string | FinancialDepositAmount, label: string): Exact {
   if (typeof value === "number")
     throw new Error(`${label} must remain an exact decimal string.`);
@@ -202,10 +271,10 @@ function exact(value: string | FinancialDepositAmount, label: string): Exact {
     if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))
       throw new Error(`${label} must be a non-negative exact decimal.`);
     const [whole, fraction = ""] = value.split(".");
+    const normalized = normalizeExactParts(`${whole}${fraction}`, fraction.length);
     return {
-      coefficient: `${whole}${fraction}`,
-      scale: fraction.length,
-      value: BigInt(`${whole}${fraction}`),
+      ...normalized,
+      value: BigInt(normalized.coefficient),
     };
   }
   if (
@@ -216,12 +285,34 @@ function exact(value: string | FinancialDepositAmount, label: string): Exact {
     value.scale < 0
   )
     throw new Error(`${label} must be an exact coefficient/scale amount.`);
-  return { coefficient: value.coefficient, scale: value.scale, value: BigInt(value.coefficient) };
+  const normalized = normalizeExactParts(value.coefficient, value.scale);
+  return { ...normalized, value: BigInt(normalized.coefficient) };
 }
 
+const ISO_4217_CURRENCY_CODES = new Set([
+  "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
+  "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV",
+  "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHE", "CHF",
+  "CHW", "CLF", "CLP", "CNY", "COP", "COU", "CRC", "CUC", "CUP", "CVE",
+  "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD",
+  "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD",
+  "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD",
+  "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD",
+  "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA",
+  "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MXV",
+  "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB",
+  "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB",
+  "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SLL",
+  "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT",
+  "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "USN",
+  "UYI", "UYU", "UYW", "UZS", "VED", "VES", "VND", "VUV", "WST", "XAF",
+  "XAG", "XAU", "XBA", "XBB", "XBC", "XBD", "XCD", "XDR", "XOF", "XPD",
+  "XPF", "XPT", "XSU", "XTS", "XUA", "XXX", "YER", "ZAR", "ZMW", "ZWL",
+]);
+
 function currency(value: string, label: string): string {
-  if (!/^[A-Z]{3}$/.test(value))
-    throw new Error(`${label} must be an uppercase ISO currency code.`);
+  if (!/^[A-Z]{3}$/.test(value) || !ISO_4217_CURRENCY_CODES.has(value))
+    throw new Error(`${label} must be a valid ISO 4217 currency code.`);
   return value;
 }
 
@@ -464,6 +555,12 @@ export function createForeignCurrencyDepositCapture(
   if (!contract) throw new Error("Unsupported foreign-currency source.");
   const accountNo = input.accountNo.trim();
   if (!accountNo) throw new Error("Source-proven account number is required.");
+  if (typeof input.identityEpochKey !== "string" || !input.identityEpochKey.trim())
+    throw new Error("Source identity epoch key is required.");
+  if (typeof input.accountType !== "string" || !input.accountType.trim())
+    throw new Error("Source account type is required.");
+  if (input.accountType !== "depository")
+    throw new Error("Foreign-currency deposit account type must be depository.");
   if (input.completeness !== "complete-range")
     throw new Error("Foreign capture requires a terminal complete-range proof.");
   const startDate = date(input.startDate, "Capture start date");
@@ -491,7 +588,7 @@ export function createForeignCurrencyDepositCapture(
   const captureId =
     input.captureId ??
     `foreign-${contract.sourceId}-${token(
-      `${input.sourceConnectionKey}:${input.identityEpochKey ?? "current"}:${accountNo}:${startDate}:${endDate}:${responseDigest}`,
+      `${input.sourceConnectionKey}:${input.identityEpochKey}:${accountNo}:${startDate}:${endDate}:${responseDigest}`,
     ).slice("sha256:".length)}`;
   return {
     captureId,
@@ -500,14 +597,13 @@ export function createForeignCurrencyDepositCapture(
     identity: {
       integrationNamespace: contract.sourceId,
       sourceConnectionKey: token(input.sourceConnectionKey),
-      identityEpochKey: token(input.identityEpochKey ?? "current"),
+      identityEpochKey: token(input.identityEpochKey),
       stream: FOREIGN_CURRENCY_DEPOSIT_STREAM,
       recordKind: contract.recordKind,
       subjectDigest: token(`${accountNo}:${contract.recordKind}`),
       accountNo,
-      accountType: input.accountType ?? "depository",
-      // MULTI marks account classification only. Every transaction row still
-      // carries its source-proven denomination and is queried independently.
+      accountType: input.accountType,
+      // There is no account-level currency for this multi-currency stream.
       currency: FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY,
     },
     observedAt: input.observedAt,
@@ -675,7 +771,140 @@ function mapTransaction(row: Record<string, unknown>): ForeignCurrencyTransactio
     sourceRecordId: hex(row.source_record_id),
     revisionId: hex(row.revision_id),
     commitSequence: Number(row.commit_sequence),
-    supportState: "supported",
+    supportState:
+      row.support_state === "withdrawn" ? "withdrawn" : "supported",
+  };
+}
+
+function enrichTransaction(
+  db: DatabaseSync,
+  row: Record<string, unknown>,
+  transaction: ForeignCurrencyTransaction,
+  knowledgeAt?: number,
+): ForeignCurrencyTransaction {
+  const assertionRow = db
+    .prepare(
+      `SELECT assertion.assertion_id, assertion.revision_id, assertion.origin,
+          assertion.producer_id, assertion.rule_lineage, commit_row.commit_sequence
+       FROM assertions assertion
+       JOIN canonical_commits commit_row ON commit_row.commit_id = assertion.created_commit_id
+       WHERE assertion.revision_id = ? AND assertion.origin = 'source'
+       ORDER BY commit_row.commit_sequence, assertion.assertion_id LIMIT 1`,
+    )
+    .get(row.revision_id as Uint8Array) as Record<string, unknown> | undefined;
+  const assertion = assertionRow
+    ? {
+        id: hex(assertionRow.assertion_id),
+        revisionId: hex(assertionRow.revision_id),
+        origin: "source" as const,
+        producerId: String(assertionRow.producer_id),
+        ruleLineage: String(assertionRow.rule_lineage),
+        commitSequence: Number(assertionRow.commit_sequence),
+      }
+    : null;
+  const lifecycleRows = assertionRow
+    ? (db
+        .prepare(
+          `SELECT event.event_id, event.event_kind, commit_row.commit_sequence,
+              scope.scope_id, scope.completeness, scope.contract_fingerprint,
+              scope.preflight_fingerprint
+           FROM assertion_transitions event
+           JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+           LEFT JOIN capture_scopes scope ON scope.scope_id = event.scope_id
+           WHERE event.assertion_id = ? ${knowledgeAt === undefined ? "" : "AND commit_row.commit_sequence <= ?"}
+           ORDER BY commit_row.commit_sequence, event.event_id`,
+        )
+        .all(
+          assertionRow.assertion_id as Uint8Array,
+          ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
+        ) as Array<Record<string, unknown>>)
+    : [];
+  const lifecycleEvents = lifecycleRows.map((event) => ({
+    id: hex(event.event_id),
+    kind: event.event_kind as ForeignCurrencyLifecycleEvent["kind"],
+    commitSequence: Number(event.commit_sequence),
+    scopeProof:
+      event.scope_id == null
+        ? null
+        : {
+            id: hex(event.scope_id),
+            completeness: String(event.completeness),
+            contractFingerprint: String(event.contract_fingerprint),
+            preflightFingerprint: String(event.preflight_fingerprint),
+          },
+  }));
+  const sourceRecordRow = db
+    .prepare(
+      `SELECT source_record.source_record_id, source_record.capture_id,
+          source_record.sequence_lexeme, source_record.description,
+          source_record.payload_json, scope.scope_id, scope.account_id,
+          scope.account_no, scope.stream, scope.scope_start, scope.scope_end,
+          scope.completeness, scope.contract_fingerprint, scope.preflight_fingerprint
+       FROM source_records source_record
+       LEFT JOIN source_record_scopes record_scope
+         ON record_scope.source_record_id = source_record.source_record_id
+       LEFT JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id
+       WHERE source_record.source_record_id = ?
+       ORDER BY scope.scope_id LIMIT 1`,
+    )
+    .get(row.source_record_id as Uint8Array) as Record<string, unknown> | undefined;
+  const sourceRecord = sourceRecordRow
+    ? {
+        id: hex(sourceRecordRow.source_record_id),
+        captureId: hex(sourceRecordRow.capture_id),
+        sequence: String(sourceRecordRow.sequence_lexeme),
+        description:
+          sourceRecordRow.description == null
+            ? null
+            : String(sourceRecordRow.description),
+        payloadJson: String(sourceRecordRow.payload_json),
+        payload: String(sourceRecordRow.payload_json),
+        scopeProof:
+          sourceRecordRow.scope_id == null
+            ? null
+            : {
+                id: hex(sourceRecordRow.scope_id),
+                accountId: hex(sourceRecordRow.account_id),
+                accountNo: String(sourceRecordRow.account_no),
+                stream: String(sourceRecordRow.stream),
+                scopeStart: String(sourceRecordRow.scope_start),
+                scopeEnd: String(sourceRecordRow.scope_end),
+                completeness: String(sourceRecordRow.completeness),
+                contractFingerprint: String(sourceRecordRow.contract_fingerprint),
+                preflightFingerprint: String(sourceRecordRow.preflight_fingerprint),
+              },
+      }
+    : null;
+  const provenanceRows = assertionRow
+    ? (db
+        .prepare(
+          `SELECT provenance.source_record_id, source_record.capture_id,
+              commit_row.commit_sequence
+           FROM assertion_provenance provenance
+           LEFT JOIN source_records source_record
+             ON source_record.source_record_id = provenance.source_record_id
+           JOIN canonical_commits commit_row ON commit_row.commit_id = provenance.commit_id
+           WHERE provenance.assertion_id = ? ${knowledgeAt === undefined ? "" : "AND commit_row.commit_sequence <= ?"}
+           ORDER BY commit_row.commit_sequence, provenance.source_record_id`,
+        )
+        .all(
+          assertionRow.assertion_id as Uint8Array,
+          ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
+        ) as Array<Record<string, unknown>>)
+    : [];
+  const provenance = provenanceRows.map((item) => ({
+    sourceRecordId: hex(item.source_record_id),
+    captureId: item.capture_id == null ? null : hex(item.capture_id),
+    commitSequence: Number(item.commit_sequence),
+  }));
+  const latestLifecycle = lifecycleEvents.at(-1);
+  return {
+    ...transaction,
+    supportState: latestLifecycle?.kind === "withdrawn" ? "withdrawn" : "supported",
+    assertion,
+    sourceRecord,
+    lifecycleEvents,
+    provenance,
   };
 }
 
@@ -683,7 +912,16 @@ function queryRows(
   db: DatabaseSync,
   where: string,
   params: SQLInputValue[],
+  options: {
+    includeCurrent: boolean;
+    knowledgeAt?: number;
+    orderBy?: "financial" | "lineage";
+  },
 ): ForeignCurrencyTransaction[] {
+  const currentJoin = options.includeCurrent
+    ? `JOIN current_transactions current_row ON current_row.transaction_id = transaction_row.transaction_id
+         AND current_row.revision_id = revision.revision_id`
+    : "";
   const rows = db
     .prepare(
       `SELECT
@@ -707,6 +945,8 @@ function queryRows(
          source_record.source_record_id,
          source_capture.authority_route,
          commit_row.commit_sequence,
+         revision.revision_number,
+         source_assertion.assertion_id,
          conversion.original_amount_coefficient,
          conversion.original_amount_scale,
          conversion.original_currency,
@@ -727,21 +967,35 @@ function queryRows(
          conversion.fee_amount_coefficient,
          conversion.fee_amount_scale,
          conversion.fee_currency,
-         conversion.evidence_origin
+         conversion.evidence_origin,
+         COALESCE((SELECT CASE WHEN lifecycle.event_kind = 'withdrawn' THEN 'withdrawn' ELSE 'supported' END
+           FROM assertion_transitions lifecycle
+           JOIN canonical_commits lifecycle_commit ON lifecycle_commit.commit_id = lifecycle.commit_id
+           JOIN assertions lifecycle_assertion ON lifecycle_assertion.assertion_id = lifecycle.assertion_id
+           WHERE lifecycle_assertion.revision_id = revision.revision_id
+             ${options.knowledgeAt === undefined ? "" : "AND lifecycle_commit.commit_sequence <= ?"}
+           ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC LIMIT 1), 'supported') AS support_state
        FROM financial_transactions transaction_row
        JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
        JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
-       JOIN current_transactions current_row ON current_row.transaction_id = transaction_row.transaction_id
-         AND current_row.revision_id = revision.revision_id
+       ${currentJoin}
        JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
        JOIN source_captures source_capture ON source_capture.capture_id = revision.capture_id
        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       LEFT JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id
+         AND source_assertion.origin = 'source'
        LEFT JOIN transaction_conversion_evidence conversion ON conversion.revision_id = revision.revision_id
        WHERE account_row.stream = ? AND ${where}
-       ORDER BY revision.effective_on, revision.utc_instant_utc_us, transaction_row.source_sequence`,
+       ORDER BY ${options.orderBy === "lineage" ? "commit_row.commit_sequence, revision.revision_number" : "revision.effective_on, revision.utc_instant_utc_us, transaction_row.source_sequence"}`,
     )
-    .all(FOREIGN_CURRENCY_DEPOSIT_STREAM, ...params) as Array<Record<string, unknown>>;
-  return rows.map(mapTransaction);
+    .all(
+      ...(options.knowledgeAt === undefined ? [] : [options.knowledgeAt]),
+      FOREIGN_CURRENCY_DEPOSIT_STREAM,
+      ...params,
+    ) as Array<Record<string, unknown>>;
+  return rows.map((row) =>
+    enrichTransaction(db, row, mapTransaction(row), options.knowledgeAt),
+  );
 }
 
 export function queryForeignCurrencyDepositCurrent(
@@ -758,7 +1012,9 @@ export function queryForeignCurrencyDepositCurrent(
     predicates.push("revision.currency = ?");
     params.push(currency(options.currency, "Query currency"));
   }
-  const transactions = queryRows(store.db, predicates.join(" AND "), params);
+  const transactions = queryRows(store.db, predicates.join(" AND "), params, {
+    includeCurrent: true,
+  });
   return {
     status: "canonical-live",
     transactions,
@@ -779,27 +1035,23 @@ export function queryForeignCurrencyDepositHistorical(
        JOIN canonical_commits commit_at ON commit_at.commit_id = revision_at.commit_id
        WHERE revision_at.transaction_id = transaction_row.transaction_id
          AND commit_at.commit_sequence <= ?
+         ${request.effectiveAt === undefined ? "" : "AND revision_at.effective_on <= ?"}
        ORDER BY commit_at.commit_sequence DESC LIMIT 1
      )`,
-    `NOT EXISTS (
-       SELECT 1 FROM assertion_transitions transition
-       JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
-       JOIN assertions transition_assertion ON transition_assertion.assertion_id = transition.assertion_id
-       WHERE transition_assertion.transaction_id = transaction_row.transaction_id
-         AND transition_commit.commit_sequence <= ?
-         AND transition.event_kind = 'withdrawn'
-     )`,
   ];
-  const params: SQLInputValue[] = [request.knowledgeAt, request.knowledgeAt];
+  const params: SQLInputValue[] = [request.knowledgeAt];
+  if (request.effectiveAt !== undefined) {
+    const effectiveAt = date(request.effectiveAt, "Historical effective date");
+    params.push(effectiveAt);
+  }
   if (request.accountNo !== undefined) {
     predicates.push("account_row.account_no = ?");
     params.push(request.accountNo);
   }
-  if (request.effectiveAt !== undefined) {
-    predicates.push("revision.effective_on <= ?");
-    params.push(date(request.effectiveAt, "Historical effective date"));
-  }
-  const transactions = queryRows(store.db, predicates.join(" AND "), params);
+  const transactions = queryRows(store.db, predicates.join(" AND "), params, {
+    includeCurrent: false,
+    knowledgeAt: request.knowledgeAt,
+  });
   return {
     status: "canonical-live",
     transactions,
@@ -820,67 +1072,20 @@ export function queryForeignCurrencyDepositLineage(
     predicates.push("account_row.account_no = ?");
     params.push(request.accountNo);
   }
-  const rows = store.db
-    .prepare(
-      `SELECT
-         transaction_row.transaction_id,
-         account_row.account_id,
-         account_row.account_no,
-         transaction_row.source_sequence,
-         revision.amount_coefficient,
-         revision.amount_scale,
-         revision.currency,
-         revision.direction,
-         revision.effective_on,
-         revision.transaction_date_time_local,
-         revision.time_zone,
-         revision.time_precision,
-         revision.time_origin,
-         revision.utc_instant_utc_us,
-         revision.description,
-         revision.revision_id,
-         revision.capture_id,
-         source_record.source_record_id,
-         source_capture.authority_route,
-         commit_row.commit_sequence,
-         conversion.original_amount_coefficient,
-         conversion.original_amount_scale,
-         conversion.original_currency,
-         conversion.booked_amount_coefficient,
-         conversion.booked_amount_scale,
-         conversion.booked_currency,
-         conversion.source_reported_rate_coefficient,
-         conversion.source_reported_rate_scale,
-         conversion.source_reported_rate_base_currency,
-         conversion.source_reported_rate_quote_currency,
-         conversion.source_reported_rate_date,
-         conversion.implied_rate_coefficient,
-         conversion.implied_rate_scale,
-         conversion.implied_rate_base_currency,
-         conversion.implied_rate_quote_currency,
-         conversion.implied_rate_date,
-         conversion.comparison,
-         conversion.fee_amount_coefficient,
-         conversion.fee_amount_scale,
-         conversion.fee_currency,
-         conversion.evidence_origin
-       FROM financial_transactions transaction_row
-       JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
-       JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
-       JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
-       JOIN source_captures source_capture ON source_capture.capture_id = revision.capture_id
-       JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
-       LEFT JOIN transaction_conversion_evidence conversion ON conversion.revision_id = revision.revision_id
-       WHERE account_row.stream = ? AND ${predicates.join(" AND ")}
-       ORDER BY commit_row.commit_sequence, revision.revision_number`,
-    )
-    .all(FOREIGN_CURRENCY_DEPOSIT_STREAM, ...params) as Array<Record<string, unknown>>;
-  const transactions = rows.map(mapTransaction);
+  const transactions = queryRows(
+    store.db,
+    predicates.join(" AND "),
+    params,
+    { includeCurrent: false, orderBy: "lineage" },
+  );
   return {
     status: "canonical-live",
     transactions,
     records: transactions,
-    provenanceCount: rows.length,
+    provenanceCount: transactions.reduce(
+      (count, transaction) => count + (transaction.provenance?.length ?? 0),
+      0,
+    ),
   };
 }
 

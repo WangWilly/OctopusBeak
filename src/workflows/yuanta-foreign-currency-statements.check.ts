@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -16,6 +17,7 @@ registerHooks({
 const {
   readYuantaForeignCurrencyAccountOptions,
   readYuantaForeignCurrencyOptions,
+  buildYuantaForeignCurrencyCaptureInput,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
@@ -124,4 +126,62 @@ assert.deepEqual(
     ),
   ),
   [{ value: "ALL", label: "全部幣別" }],
+);
+
+const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
+  [
+    {
+      accountLabel: "外幣綜合存款",
+      accountValue: "fx-1",
+      queryCurrencyLabel: "全部幣別",
+      queryCurrencyValue: "ALL",
+      values: [
+        "1",
+        "20260823",
+        "20260823",
+        "09:10",
+        "USD",
+        "外幣存入",
+        "",
+        "10.00",
+        "110.00",
+        "交易資訊",
+        "31.50",
+      ],
+      sortTime: null,
+    },
+  ],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-1",
+  "2026-08-24T12:00:00+08:00",
+);
+assert.equal(yuantaForeignCapture.accountType, "depository");
+assert.equal(yuantaForeignCapture.records[0]!.currencyEvidence.currency, "USD");
+assert.equal(
+  yuantaForeignCapture.records[0]!.sourceReportedRate?.rate,
+  "31.50",
+);
+assert.deepEqual(
+  admitForeignCurrencyDepositCapture(yuantaForeignCapture).records[0]!
+    .conversionEvidence?.sourceReportedRate?.amount,
+  { coefficient: "315", scale: 1 },
+);
+assert.throws(
+  () =>
+    buildYuantaForeignCurrencyCaptureInput(
+      [
+        {
+          accountLabel: "外幣綜合存款",
+          accountValue: "fx-1",
+          queryCurrencyLabel: "全部幣別",
+          queryCurrencyValue: "ALL",
+          values: ["1", "20260823", "20260823", "09:10", "", "存入", "", "10", "110", "", "31.5"],
+          sortTime: null,
+        },
+      ],
+      { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      "fx-1",
+      "2026-08-24T12:00:00+08:00",
+    ),
+  /source currency/i,
 );

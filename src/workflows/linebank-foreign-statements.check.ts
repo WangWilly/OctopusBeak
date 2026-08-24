@@ -8,6 +8,7 @@ import {
 } from "./linebank-statements.ts";
 import {
   commitForeignCurrencyDepositCapture,
+  admitForeignCurrencyDepositCapture,
   queryForeignCurrencyDepositCurrent,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
@@ -48,6 +49,29 @@ const input = buildLinebankForeignCurrencyCaptureInput({
 });
 assert.equal(input.records[0]!.currencyEvidence.currency, "USD");
 assert.equal(input.records[0]!.direction, "inflow");
+assert.equal(
+  admitForeignCurrencyDepositCapture(input).records[0]!.currency,
+  "USD",
+);
+assert.throws(
+  () =>
+    buildLinebankForeignCurrencyCaptureInput({
+      account,
+      dateRange: { startDate: "20260801", endDate: "20260824" },
+      pages: [{ ...inputPagesWithoutEpoch() }],
+    }),
+  /identity epoch/i,
+);
+
+function inputPagesWithoutEpoch() {
+  return {
+    pageNbr: 1,
+    pageCnt: 1,
+    totTxCnt: 0,
+    txCnt: 0,
+    rows: [],
+  };
+}
 
 const directory = await mkdtemp(join(tmpdir(), "linebank-foreign-133-"));
 try {
@@ -58,4 +82,3 @@ try {
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
-

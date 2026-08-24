@@ -769,9 +769,11 @@ function exactCell(value: string, label: string): string {
 }
 
 function currencyCode(label: string, value: string): string {
-  const candidate = `${value} ${label}`.toUpperCase().match(/\b[A-Z]{3}\b/);
-  if (!candidate) throw new Error("Yuanta foreign row lacks a source currency.");
-  return candidate[0];
+  const rowCandidate = label.toUpperCase().match(/\b[A-Z]{3}\b/)?.[0];
+  if (rowCandidate && rowCandidate !== "ALL") return rowCandidate;
+  const typedCandidate = value.toUpperCase().match(/\b[A-Z]{3}\b/)?.[0];
+  if (typedCandidate && typedCandidate !== "ALL") return typedCandidate;
+  throw new Error("Yuanta foreign row lacks a source currency.");
 }
 
 /** Public workflow-to-canonical seam used by browser runs and deterministic checks. */
@@ -788,6 +790,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
     accountNo,
     sourceConnectionKey: "yuanta-foreign-current-login",
     identityEpochKey: "yuanta-foreign-current-identity",
+    accountType: "depository",
     observedAt,
     ...range,
     completeness: "complete-range",
@@ -800,6 +803,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
       const localDate = toAsciiDigits(values[2] ?? "").replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const localTime = toAsciiDigits(values[3] ?? "");
       const rowCurrency = currencyCode(values[4] ?? "", row.queryCurrencyValue);
+      const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
       return {
         sourceKey: `${accountNo}:${rowCurrency}:${values[0]}:${values[1]}:${values[2]}:${values[3]}:${values[9] ?? ""}`,
         sequence: values[0] || undefined,
@@ -822,8 +826,16 @@ export function buildYuantaForeignCurrencyCaptureInput(
           amount: exactCell(debit || credit, "original amount"),
           currency: rowCurrency,
         },
+        sourceReportedRate: reportedRateText
+          ? {
+              rate: exactCell(reportedRateText, "reported rate"),
+              baseCurrency: rowCurrency,
+              quoteCurrency: "TWD",
+              observedOn: localDate,
+            }
+          : null,
         description: values[5] || null,
-        sourcePayload: { transactionInfo: values[9] ?? "", reportedRate: values[10] ?? "" },
+        sourcePayload: { transactionInfo: values[9] ?? "", reportedRate: reportedRateText },
       };
     }),
   };

@@ -342,6 +342,8 @@ function formatDate(date: Date): string {
 function exactCathayAmount(value: number | string | null | undefined, label: string): string {
   if (value === null || value === undefined || String(value).trim() === "")
     throw new Error(`Cathay foreign row is missing ${label}.`);
+  if (typeof value === "number")
+    throw new Error(`Cathay foreign ${label} must remain an exact decimal string.`);
   const normalized = String(value).replace(/[ ,]/g, "");
   if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
     throw new Error(`Cathay foreign ${label} is not an exact decimal.`);
@@ -374,6 +376,7 @@ export function buildCathayForeignCurrencyCaptureInput(
     accountNo: account.account,
     sourceConnectionKey: "cathay-foreign-current-login",
     identityEpochKey: "cathay-foreign-current-identity",
+    accountType: "depository",
     observedAt,
     startDate: bounds.startDate,
     endDate: bounds.endDate,
@@ -386,6 +389,7 @@ export function buildCathayForeignCurrencyCaptureInput(
       const observedDate = normalizeDate(info.transferDate ?? info.txntDate).replaceAll("/", "-");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDate))
         throw new Error("Cathay foreign row lacks a source transaction date.");
+      const reportedRateText = cleanText(info.exRate);
       return {
         sourceKey: `${account.account}:${currencyCode}:${sequence}`,
         sequence,
@@ -395,6 +399,14 @@ export function buildCathayForeignCurrencyCaptureInput(
         balanceAfter,
         sourceTime: { localDate: observedDate, precision: "date" as const },
         originalAmount: { amount, currency: currencyCode },
+        sourceReportedRate: reportedRateText
+          ? {
+              rate: exactCathayAmount(reportedRateText, "reported rate"),
+              baseCurrency: currencyCode,
+              quoteCurrency: "TWD",
+              observedOn: observedDate,
+            }
+          : null,
         description: foreignSummary(info) || null,
         sourcePayload: { memo: info.memo ?? "", exchangeRate: info.exRate ?? "" },
       };
@@ -403,7 +415,11 @@ export function buildCathayForeignCurrencyCaptureInput(
 }
 
 class CathayForeignApiClient {
-  constructor(private page: Page) {}
+  private readonly page: Page;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
 
   async fetchForeignAccounts(
     session: CathaySession,
