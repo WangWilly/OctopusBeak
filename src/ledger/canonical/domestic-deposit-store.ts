@@ -15,6 +15,8 @@ import type { LineBankHumanAttestedV13Capture } from "./linebank-domestic-deposi
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
+  type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
 
@@ -1051,6 +1053,22 @@ export async function commitCanonicalLineBankFinancialCapture(
       commitClock: () => store.sourceStore.commitClock(),
     },
     normalizeLineBankFinancialCapture(capture),
+  );
+}
+
+/** Commit every validated LINE Bank account/range capture atomically. */
+export async function commitCanonicalLineBankFinancialCaptureBatch(
+  store: DomesticDepositStore,
+  captures: readonly LineBankHumanAttestedV13ValidatedCapture[],
+): Promise<CanonicalFinancialDepositCommitResult[]> {
+  ensureOpen(store);
+  return commitCanonicalFinancialDepositCaptureBatch(
+    {
+      db: store.db,
+      databasePath: store.databasePath,
+      commitClock: () => store.sourceStore.commitClock(),
+    },
+    captures.map(normalizeLineBankFinancialCapture),
   );
 }
 

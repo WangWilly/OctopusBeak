@@ -1,4 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   librettoAuthenticate,
@@ -7,12 +8,13 @@ import {
 } from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
+import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/domestic-deposit-store.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
 const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
-export const LINEBANK_MANUAL_LOGIN_TIMEOUT_MS = 120_000;
+export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
 const statementHeaders = [
   "帳務日期",
@@ -58,6 +60,7 @@ const outputSchema = z.object({
   }),
   count: z.number().int().nonnegative(),
   rowCount: z.number().int().nonnegative(),
+  canonicalCaptureCount: z.number().int().nonnegative(),
   downloads: z.array(downloadSchema),
 });
 
@@ -789,7 +792,7 @@ export async function linebankAutoDismissApprovedAlert(
   await button.click();
   await dialog.waitFor({
     state: "hidden",
-    timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+    timeout: LINEBANK_LOGIN_TIMEOUT_MS,
   });
   if ((await visibleMatches(dialogs)).length !== 0) {
     throw new Error("LINE Bank alert dialog remained visible after dismissal.");
@@ -807,38 +810,53 @@ export async function linebankIsSignedIn(page: Page): Promise<boolean> {
   return (await firstVisibleMatch(transactionLinkLocator(page))) !== null;
 }
 
-/**
- * Wait for the person to complete LINE Bank login and any CAPTCHA in the
- * visible browser. Credentials remain a declared workflow contract, but this
- * callback never reads, fills, logs, or submits them.
- */
-export async function linebankWaitForManualSignIn(page: Page): Promise<void> {
+function requireLineBankCredential(
+  credentials: LineBankCredentials,
+  key: keyof LineBankCredentials,
+): string {
+  const value = credentials[key]?.trim();
+  if (!value) throw new Error(`${key} credential is required.`);
+  return value;
+}
+
+/** Sign in from a clean headless session using the declared device-local credentials. */
+export async function linebankSignIn(
+  page: Page,
+  credentials: LineBankCredentials,
+): Promise<void> {
   if (await linebankIsSignedIn(page)) return;
+
+  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
+  const userId = requireLineBankCredential(credentials, "linebank_account");
+  const password = requireLineBankCredential(credentials, "linebank_password");
   if (new URL(page.url()).pathname !== "/login") {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
   }
 
-  // Wait for human CAPTCHA/login completion; see https://libretto.sh/docs/libretto-cloud-hosting/stealth.
-  const deadline = Date.now() + LINEBANK_MANUAL_LOGIN_TIMEOUT_MS;
-  const remainingTimeout = () => Math.max(1, deadline - Date.now());
-  await page.waitForURL((url) => url.pathname !== "/login", {
-    timeout: remainingTimeout(),
+  await page.locator("#nationalId").fill(nationalId);
+  await page.locator("#userId").fill(userId);
+  await page.locator("#pw").fill(password);
+
+  const loginButtons = page.getByRole("button", {
+    name: "登入友善網路銀行",
+    exact: true,
   });
-  if (!(await linebankIsSignedIn(page))) {
-    const marker = authenticatedMarkerLocator(page).first();
-    await marker.waitFor({
-      state: "visible",
-      timeout: remainingTimeout(),
-    });
+  if ((await loginButtons.count()) !== 1) {
+    throw new Error("LINE Bank login requires exactly one submit button.");
   }
-  if (
-    !(await linebankIsSignedIn(page)) ||
-    new URL(page.url()).pathname === "/login"
-  ) {
-    throw new Error(
-      "LINE Bank manual sign-in did not reach an authenticated page.",
-    );
+  const loginButton = loginButtons.first();
+  if (!(await loginButton.isVisible().catch(() => false))) {
+    throw new Error("LINE Bank login submit button is not visible.");
   }
+  await loginButton.click();
+
+  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await linebankAutoDismissApprovedAlert(page);
+    if (await linebankIsSignedIn(page)) return;
+    await page.waitForTimeout(250);
+  }
+  throw new Error("Timed out waiting for LINE Bank signed-in state.");
 }
 
 /** Enter the transaction stage only after authentication has completed. */
@@ -846,7 +864,7 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/transaction") {
     await page.locator("#account-dropdown").waitFor({
       state: "visible",
-      timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+      timeout: LINEBANK_LOGIN_TIMEOUT_MS,
     });
     return;
   }
@@ -855,7 +873,7 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   if (transactionLink) {
     await Promise.all([
       page.waitForURL((url) => url.pathname === "/transaction", {
-        timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+        timeout: LINEBANK_LOGIN_TIMEOUT_MS,
       }),
       transactionLink.click(),
     ]);
@@ -864,7 +882,7 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   }
   await page.locator("#account-dropdown").waitFor({
     state: "visible",
-    timeout: LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+    timeout: LINEBANK_LOGIN_TIMEOUT_MS,
   });
 }
 
@@ -1042,6 +1060,49 @@ async function writeStatementFiles(
   };
 }
 
+/** Build the privacy-bounded v13 canonical capture for one personal TWD
+ * account/range. Shared-member captures remain outside the first admission
+ * contract and are skipped without affecting statement downloads. */
+export async function linebankHumanAttestedCapture(input: {
+  account: LineBankAccount;
+  dateRange: DateRange;
+  pages: LineBankTransactionPage[];
+  captureId: string;
+  observedAt: string;
+}): Promise<LineBankHumanAttestedV13ValidatedCapture | null> {
+  const source = input.pages[0]?.source;
+  const {
+    LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+    LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+    linebankHumanAttestedV13AuthorityKind,
+    validateLineBankHumanAttestedV13Capture,
+  } = await import("../ledger/canonical/linebank-domestic-deposit.ts");
+  if (
+    !source ||
+    linebankHumanAttestedV13AuthorityKind(source) !== "personal-main"
+  ) {
+    return null;
+  }
+  const validation = validateLineBankHumanAttestedV13Capture({
+    account: input.account,
+    scope: input.dateRange,
+    pages: input.pages,
+    captureId: input.captureId,
+    sourceConnection: "accessibility.linebank.com.tw",
+    identityEpoch: Number(source.opnDtm),
+    observedAt: input.observedAt,
+    sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+    humanAttestation: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+    authority: { kind: "personal-main", membershipEffectiveDate: null },
+  });
+  if (validation.status !== "admissible" || !validation.capture) {
+    throw new Error(
+      `LINE Bank canonical capture rejected: ${validation.diagnostics.join(",") || "unknown"}`,
+    );
+  }
+  return validation.capture;
+}
+
 async function downloadLineBankStatements(
   page: Page,
   input: z.infer<typeof inputSchema>,
@@ -1062,14 +1123,24 @@ async function downloadLineBankStatements(
   }
 
   const downloads: LineBankDownload[] = [];
+  const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
   for (const account of accounts) {
     const rows: LineBankStatementRow[] = [];
     for (const window of windows) {
+      const pages = await apiClient.fetchTransactionPages(account, window);
       rows.push(
-        ...linebankApiRowsToStatementRows(
-          await apiClient.fetchTransactions(account, window),
-        ),
+        ...linebankApiRowsToStatementRows(pages.flatMap((page) => page.rows)),
       );
+      if (linebankAccountCurrency(account) === "TWD") {
+        const capture = await linebankHumanAttestedCapture({
+          account,
+          dateRange: window,
+          pages,
+          captureId: `linebank-${randomUUID()}`,
+          observedAt: new Date().toISOString(),
+        });
+        if (capture) canonicalCaptures.push(capture);
+      }
     }
     downloads.push(
       await writeStatementFiles(
@@ -1080,21 +1151,36 @@ async function downloadLineBankStatements(
     );
   }
 
+  const financialLedgerDir =
+    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
+  if (financialLedgerDir && canonicalCaptures.length > 0) {
+    const {
+      commitCanonicalLineBankFinancialCaptureBatch,
+      createDomesticDepositStore,
+    } = await import("../ledger/canonical/domestic-deposit-store.ts");
+    const store = createDomesticDepositStore(
+      join(financialLedgerDir, "canonical.sqlite"),
+    );
+    try {
+      await commitCanonicalLineBankFinancialCaptureBatch(
+        store,
+        canonicalCaptures,
+      );
+    } finally {
+      store.close();
+    }
+  }
+
   return {
     dateRange,
     count: downloads.length,
     rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+    canonicalCaptureCount:
+      financialLedgerDir === undefined ? 0 : canonicalCaptures.length,
     downloads,
   };
 }
 
-/**
- * Manual-auth exception: librettoAuthenticate remains the authentication
- * boundary and the credential declaration is retained for workflow metadata
- * and runtime compatibility, but LINE Bank credentials are never read,
- * filled, submitted, or logged here. The human completes login/CAPTCHA; only
- * then does automation proceed from the visible authenticated state.
- */
 export default workflow("linebankStatements", {
   startUrl: LOGIN_URL,
   credentials: ["linebank_user_id", "linebank_account", "linebank_password"],
@@ -1110,7 +1196,7 @@ export default workflow("linebankStatements", {
       credentials: input.credentials,
       isSignedIn: async () => await linebankIsSignedIn(page),
       signIn: async (signInContext) => {
-        await linebankWaitForManualSignIn(signInContext.page);
+        await linebankSignIn(signInContext.page, input.credentials);
       },
     });
 

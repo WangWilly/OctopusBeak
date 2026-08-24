@@ -4463,6 +4463,72 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     );
 }
 
+/** Add minute precision to existing v8 observation tables. SinoPac reports
+ * transaction-local time at minute precision; older v8 ledgers admitted that
+ * value in revisions but still rejected the matching observation row. */
+function ensureCanonicalTimeObservationSchema(db: DatabaseSync): void {
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_time_observations'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (
+    /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
+      sql,
+    )
+  )
+    return;
+  const before = Number(
+    (
+      db
+        .prepare("SELECT COUNT(*) AS count FROM transaction_time_observations")
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  db.exec(`
+    CREATE TABLE transaction_time_observations_widened (
+      observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      role TEXT NOT NULL CHECK(role IN ('accounting','occurred')),
+      local_value TEXT NOT NULL,
+      time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Taipei'),
+      time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
+      time_origin TEXT NOT NULL CHECK(time_origin = 'source_reported'),
+      utc_instant_utc_us INTEGER NOT NULL,
+      UNIQUE(revision_id, role)
+    );
+    INSERT INTO transaction_time_observations_widened(
+      observation_id, transaction_id, revision_id, source_record_id, commit_id,
+      role, local_value, time_zone, time_precision, time_origin,
+      utc_instant_utc_us
+    ) SELECT
+      observation_id, transaction_id, revision_id, source_record_id, commit_id,
+      role, local_value, time_zone, time_precision, time_origin,
+      utc_instant_utc_us
+    FROM transaction_time_observations;
+    DROP TABLE transaction_time_observations;
+    ALTER TABLE transaction_time_observations_widened RENAME TO transaction_time_observations;
+  `);
+  const after = Number(
+    (
+      db
+        .prepare("SELECT COUNT(*) AS count FROM transaction_time_observations")
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  if (after !== before)
+    throw new Error(
+      "Canonical time observation widening changed the row count.",
+    );
+}
+
 /** Add the explicit no-data authority used by observed human-attested
  * providers without weakening the existing comparable-range meaning. SQLite
  * CHECK constraints require a table rebuild, so preserve every existing row
@@ -4954,6 +5020,7 @@ function applySchemaMigration(
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
+      ensureCanonicalTimeObservationSchema(db);
       ensureV7ProjectionSchema(db);
       db.exec("COMMIT");
       db.exec("PRAGMA foreign_keys = ON");
@@ -4986,6 +5053,7 @@ function applySchemaMigration(
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
       ensureCanonicalFinancialRevisionSchema(db);
+      ensureCanonicalTimeObservationSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
       db.exec("PRAGMA foreign_keys = ON");

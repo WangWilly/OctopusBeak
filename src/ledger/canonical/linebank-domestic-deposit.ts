@@ -1170,12 +1170,20 @@ function v13Diagnostic(
   if (!diagnostics.includes(code)) diagnostics.push(code);
 }
 
-function v13SourceRole(
+export function linebankHumanAttestedV13AuthorityKind(
   source: LineBankTransactionPage["source"],
 ): "personal-main" | "shared-member" | null {
   if (!source || typeof source.jntAcctMbrTpCd !== "string") return null;
   if (source.jntAcctMbrTpCd === "personal-main-account") return "personal-main";
   if (source.jntAcctMbrTpCd === "shared-member") return "shared-member";
+  if (
+    source.jntAcctMbrTpCd === "" &&
+    source.jntMbrListCnt === 0 &&
+    source.totJntAcctMbrCnt === 0 &&
+    source.isSecuAcctBndg === false
+  ) {
+    return "personal-main";
+  }
   return null;
 }
 
@@ -1344,7 +1352,7 @@ export function validateLineBankHumanAttestedV13Capture(
       ) {
         v13Diagnostic(diagnostics, "identity-epoch-mismatch");
       }
-      const role = v13SourceRole(page.source);
+      const role = linebankHumanAttestedV13AuthorityKind(page.source);
       if (role === null) v13Diagnostic(diagnostics, "authority-role-unknown");
       if (role === "shared-member")
         v13Diagnostic(diagnostics, "authority-shared-account");

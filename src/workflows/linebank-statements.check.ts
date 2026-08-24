@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  LINEBANK_MANUAL_LOGIN_TIMEOUT_MS,
+  LINEBANK_LOGIN_TIMEOUT_MS,
   linebankAccountCurrency,
   linebankAccountKey,
   linebankApiRowsToStatementRows,
   linebankEnsureTransactionPage,
   linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
+  linebankHumanAttestedCapture,
   linebankQueryWindows,
   linebankSortStatementRows,
+  linebankSignIn,
   linebankStatementRowsToCsv,
   linebankTransactionPageFromResponse,
   linebankValidateSourceOccurrenceFields,
   linebankValidateTransactionTime,
   linebankValidateTransactionPageSequence,
   linebankAutoDismissApprovedAlert,
-  linebankWaitForManualSignIn,
 } from "./linebank-statements.ts";
+import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
 
 assert.deepEqual(
   linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -46,7 +51,153 @@ assert.equal(linebankAccountCurrency({ acctNbr: "1", currCd: "usd" }), "USD");
 assert.equal(linebankAccountKey({ acctNbr: "12", arrId: "3" }), "12:3");
 assert.equal(linebankAccountKey({ acctNbr: "12" }), "");
 
-assert.equal(LINEBANK_MANUAL_LOGIN_TIMEOUT_MS, 120_000);
+assert.equal(LINEBANK_LOGIN_TIMEOUT_MS, 120_000);
+
+const canonicalTemplate =
+  LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.rows[0]!;
+const canonicalCapture = await linebankHumanAttestedCapture({
+  account: {
+    ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,
+    currCd: "TWD",
+  },
+  dateRange: { startDate: "20260701", endDate: "20260731" },
+  captureId: "synthetic-linebank-workflow-capture",
+  observedAt: "2026-08-24T13:00:00.000Z",
+  pages: [
+    {
+      pageNbr: 1,
+      pageCnt: 1000,
+      totTxCnt: 2,
+      txCnt: 2,
+      responseCode: "200",
+      source: {
+        ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source,
+        opnDtm: 1700000000000,
+        jntAcctMbrTpCd: "personal-main-account",
+        jntMbrListCnt: 0,
+        totJntAcctMbrCnt: 0,
+        isSecuAcctBndg: false,
+      },
+      rows: [
+        {
+          ...canonicalTemplate,
+          txSeqNbr: "10",
+          crrnDpstNthCnt: 1,
+          txDt: "20260705",
+          txTm: "143738",
+          txDtm: 1783233458000,
+          dpstWdrwDsCd: "1",
+          txAmt: "100",
+          afTxBal: "1000",
+          cncdTxYn: "N",
+          cnclTxYn: "N",
+        },
+        {
+          ...canonicalTemplate,
+          txSeqNbr: "10",
+          crrnDpstNthCnt: 2,
+          txDt: "20260705",
+          txTm: "143739",
+          txDtm: 1783233459000,
+          dpstWdrwDsCd: "2",
+          txAmt: "100",
+          afTxBal: "900",
+          cncdTxYn: "N",
+          cnclTxYn: "N",
+        },
+      ],
+    },
+  ],
+});
+assert.equal(canonicalCapture?.canonicalAdmission, "admitted");
+assert.equal(canonicalCapture?.records.length, 2);
+const observedEmptyRoleCapture = await linebankHumanAttestedCapture({
+  account: {
+    ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,
+    currCd: "TWD",
+  },
+  dateRange: { startDate: "20260701", endDate: "20260731" },
+  captureId: "synthetic-linebank-observed-empty-role",
+  observedAt: "2026-08-24T13:00:00.000Z",
+  pages: canonicalCapture
+    ? [
+        {
+          ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!,
+          pageNbr: 1,
+          pageCnt: 1000,
+          responseCode: "200",
+          source: {
+            ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source,
+            opnDtm: 1700000000000,
+            jntAcctMbrTpCd: "",
+            jntMbrListCnt: 0,
+            totJntAcctMbrCnt: 0,
+            isSecuAcctBndg: false,
+          },
+          rows: canonicalCapture.records.map((record, index) => ({
+            ...canonicalTemplate,
+            txSeqNbr: String(index + 1),
+            crrnDpstNthCnt: index + 1,
+            txDt: record.sourceTime.localDate,
+            txTm: record.sourceTime.localTime,
+            txDtm: record.sourceTime.epochMilliseconds,
+            dpstWdrwDsCd: record.sourceDirectionCode,
+            txAmt: record.amount.coefficient,
+            afTxBal: record.balanceAfter!.coefficient,
+            cncdTxYn: "N",
+            cnclTxYn: "N",
+          })),
+          txCnt: canonicalCapture.records.length,
+          totTxCnt: canonicalCapture.records.length,
+        },
+      ]
+    : [],
+});
+assert.equal(observedEmptyRoleCapture?.canonicalAdmission, "admitted");
+const canonicalDirectory = await mkdtemp(
+  join(tmpdir(), "linebank-workflow-canonical-check-"),
+);
+try {
+  const {
+    commitCanonicalLineBankFinancialCaptureBatch,
+    createDomesticDepositStore,
+    queryCurrent,
+  } = await import("../ledger/canonical/domestic-deposit-store.ts");
+  const store = createDomesticDepositStore(
+    join(canonicalDirectory, "canonical.sqlite"),
+  );
+  try {
+    const committed = await commitCanonicalLineBankFinancialCaptureBatch(
+      store,
+      [canonicalCapture!],
+    );
+    assert.equal(committed.length, 1);
+    assert.equal(committed[0]?.transactionCount, 2);
+    assert.equal(queryCurrent(store).transactions.length, 2);
+  } finally {
+    store.close();
+  }
+} finally {
+  await rm(canonicalDirectory, { recursive: true, force: true });
+}
+assert.equal(
+  await linebankHumanAttestedCapture({
+    account: LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,
+    dateRange: { startDate: "20260701", endDate: "20260731" },
+    captureId: "synthetic-linebank-shared-skip",
+    observedAt: "2026-08-24T13:00:00.000Z",
+    pages: [
+      {
+        ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!,
+        source: {
+          ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source,
+          jntAcctMbrTpCd: "shared-member",
+        },
+      },
+    ],
+  }),
+  null,
+);
 
 const rootLinkNodes = [false, true];
 const rootLinkLocator = {
@@ -94,49 +245,87 @@ const transactionPage = {
 } as never;
 assert.equal(await linebankIsSignedIn(transactionPage), true);
 
-const manualEvents: string[] = [];
-let manualUrl = "https://accessibility.linebank.com.tw/";
-let manualSignedIn = false;
-const manualLinkLocator = {
+const signInEvents: string[] = [];
+let signInUrl = "https://accessibility.linebank.com.tw/";
+let signedIn = false;
+const signInLinkLocator = {
   async count() {
     return 1;
   },
   nth() {
     return {
       async isVisible() {
-        return manualSignedIn;
+        return signedIn;
       },
     };
   },
 };
-const manualPage = {
-  url: () => manualUrl,
-  getByRole: () => manualLinkLocator,
-  async goto(url: string) {
-    manualEvents.push(`goto:${url}`);
-    manualUrl = url;
+const noDialogLocator = {
+  async count() {
+    return 0;
   },
-  async waitForURL(
-    predicate: (url: URL) => boolean,
-    options: { timeout?: number },
-  ) {
-    manualEvents.push(`wait-url:${options.timeout}`);
-    manualUrl = "https://accessibility.linebank.com.tw/";
-    manualSignedIn = true;
-    assert.equal(predicate(new URL(manualUrl)), true);
+};
+const credentialField = (selector: string) => ({
+  async fill(value: string) {
+    signInEvents.push(`fill:${selector}:${value}`);
+  },
+});
+const signInButton = {
+  async isVisible() {
+    return true;
+  },
+  async click() {
+    signInEvents.push("click:login");
+    signInUrl = "https://accessibility.linebank.com.tw/";
+    signedIn = true;
+  },
+};
+const signInButtonLocator = {
+  async count() {
+    return 1;
+  },
+  first() {
+    return signInButton;
+  },
+};
+const signInPage = {
+  url: () => signInUrl,
+  locator: (selector: string) => credentialField(selector),
+  getByRole: (role: string) => {
+    if (role === "alertdialog") return noDialogLocator;
+    if (role === "button") return signInButtonLocator;
+    return signInLinkLocator;
+  },
+  async goto(url: string) {
+    signInEvents.push(`goto:${url}`);
+    signInUrl = url;
+  },
+  async waitForTimeout(timeout: number) {
+    signInEvents.push(`wait:${timeout}`);
   },
 } as never;
-await linebankWaitForManualSignIn(manualPage);
-assert.deepEqual(manualEvents, [
+await linebankSignIn(signInPage, {
+  linebank_user_id: "synthetic-national-id",
+  linebank_account: "synthetic-user-id",
+  linebank_password: "synthetic-password",
+});
+assert.deepEqual(signInEvents, [
   "goto:https://accessibility.linebank.com.tw/login",
-  "wait-url:120000",
+  "fill:#nationalId:synthetic-national-id",
+  "fill:#userId:synthetic-user-id",
+  "fill:#pw:synthetic-password",
+  "click:login",
 ]);
 
-manualEvents.length = 0;
-manualUrl = "https://accessibility.linebank.com.tw/";
-manualSignedIn = true;
-await linebankWaitForManualSignIn(manualPage);
-assert.deepEqual(manualEvents, []);
+signInEvents.length = 0;
+signInUrl = "https://accessibility.linebank.com.tw/";
+signedIn = true;
+await linebankSignIn(signInPage, {
+  linebank_user_id: "synthetic-national-id",
+  linebank_account: "synthetic-user-id",
+  linebank_password: "synthetic-password",
+});
+assert.deepEqual(signInEvents, []);
 
 const alreadyTransactionPage = {
   url: () => "https://accessibility.linebank.com.tw/transaction",
@@ -145,22 +334,16 @@ const alreadyTransactionPage = {
     return transactionDropdown;
   },
 } as never;
-await linebankWaitForManualSignIn(alreadyTransactionPage);
-assert.deepEqual(manualEvents, []);
-
-const timeoutPage = {
-  url: () => "https://accessibility.linebank.com.tw/login",
-  async waitForURL(
-    _predicate: (url: URL) => boolean,
-    options: { timeout?: number },
-  ) {
-    assert.equal(options.timeout, LINEBANK_MANUAL_LOGIN_TIMEOUT_MS);
-    throw new Error("Timeout 120000ms exceeded");
-  },
-} as never;
+signedIn = false;
+signInUrl = "https://accessibility.linebank.com.tw/login";
 await assert.rejects(
-  () => linebankWaitForManualSignIn(timeoutPage),
-  /Timeout 120000ms exceeded/,
+  () =>
+    linebankSignIn(signInPage, {
+      linebank_user_id: "synthetic-national-id",
+      linebank_account: "",
+      linebank_password: "synthetic-password",
+    }),
+  /linebank_account credential is required/,
 );
 
 const noAlertLocator = {
@@ -203,7 +386,7 @@ const dialogLocator = {
       },
       async waitFor(options: { state?: string; timeout?: number }) {
         assert.equal(options.state, "hidden");
-        assert.equal(options.timeout, LINEBANK_MANUAL_LOGIN_TIMEOUT_MS);
+        assert.equal(options.timeout, LINEBANK_LOGIN_TIMEOUT_MS);
         assert.equal(dialogVisible, false);
       },
       getByRole: () => dialogButtonLocator,

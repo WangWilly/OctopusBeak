@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-selection.ts";
 import { ADVERTISED_DOMESTIC_DEPOSIT_SEMANTIC_BLOCKERS } from "./advertised-domestic-deposit-preflight.ts";
 import {
@@ -7,12 +10,18 @@ import {
   LINEBANK_DOMESTIC_DEPOSIT_HISTORICAL_REVALIDATION_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_OBSERVED_TIME_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_OCCURRENCE_MATCHING_EVIDENCE,
+  validateLineBankHumanAttestedV13Fixture,
 } from "./linebank-domestic-deposit.ts";
+import {
+  commitCanonicalLineBankFinancialCapture,
+  createDomesticDepositStore,
+} from "./domestic-deposit-store.ts";
 import {
   ADVERTISED_DOMESTIC_DEPOSIT_READINESS,
   ADVERTISED_DOMESTIC_DEPOSIT_SOURCE_IDS,
   advertisedDomesticDepositSourceIds,
   assertAdvertisedDomesticDepositManifestCoverage,
+  buildLineBankDomesticDepositReadinessFromLedger,
   evaluateAdvertisedDomesticDepositReadiness,
   isAdvertisedDomesticDepositEntryReleaseReady,
   type AdvertisedDomesticDepositReadinessEntry,
@@ -140,6 +149,33 @@ assert.equal(linebank.fixtureEvidence, "canonical-versioned-human-attested");
 assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(linebank), true);
 assert.deepEqual(linebank.semanticBlockers, []);
 assert.deepEqual(linebank.blockers, []);
+
+const linebankReleaseDirectory = await mkdtemp(
+  join(tmpdir(), "linebank-release-readiness-check-"),
+);
+try {
+  const store = createDomesticDepositStore(
+    join(linebankReleaseDirectory, "canonical.sqlite"),
+  );
+  try {
+    const before = buildLineBankDomesticDepositReadinessFromLedger(store.db);
+    assert.equal(before.capability, "preflight-only");
+    assert.equal(before.liveValidation, "pending");
+    assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(before), false);
+    const admitted = validateLineBankHumanAttestedV13Fixture();
+    assert.equal(admitted.status, "admissible");
+    await commitCanonicalLineBankFinancialCapture(store, admitted.capture!);
+    const after = buildLineBankDomesticDepositReadinessFromLedger(store.db);
+    assert.equal(after.capability, "canonical-live");
+    assert.equal(after.liveValidation, "complete");
+    assert.equal(after.providerGuaranteed, false);
+    assert.equal(isAdvertisedDomesticDepositEntryReleaseReady(after), true);
+  } finally {
+    store.close();
+  }
+} finally {
+  await rm(linebankReleaseDirectory, { recursive: true, force: true });
+}
 
 for (const entry of ADVERTISED_DOMESTIC_DEPOSIT_READINESS) {
   assert.ok(entry.authority.length > 0, entry.sourceId);

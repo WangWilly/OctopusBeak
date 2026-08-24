@@ -684,6 +684,20 @@ try {
         .get() as { sql?: unknown } | undefined
     )?.sql ?? "",
   );
+  const currentObservationSchema = String(
+    (
+      legacy
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_time_observations'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const closedObservationSchema = currentObservationSchema.replace(
+    "CHECK(time_precision IN ('date','minute','second'))",
+    "CHECK(time_precision IN ('date','second'))",
+  );
+  assert.notEqual(closedObservationSchema, currentObservationSchema);
   const closedRevisionSchema = currentRevisionSchema
     .replace(
       "CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%')",
@@ -721,6 +735,13 @@ try {
         .get() as { count?: number }
     ).count ?? 0,
   );
+  const beforeObservationCount = Number(
+    (
+      legacy
+        .prepare("SELECT COUNT(*) AS count FROM transaction_time_observations")
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
   const sourceAssertionsView = String(
     (
       legacy
@@ -738,6 +759,13 @@ try {
   legacy.exec(closedRevisionSchema);
   legacy.exec(
     "INSERT INTO transaction_revisions SELECT * FROM transaction_revisions_backup; DROP TABLE transaction_revisions_backup;",
+  );
+  legacy.exec(
+    "CREATE TABLE transaction_time_observations_backup AS SELECT * FROM transaction_time_observations; DROP TABLE transaction_time_observations;",
+  );
+  legacy.exec(closedObservationSchema);
+  legacy.exec(
+    "INSERT INTO transaction_time_observations SELECT * FROM transaction_time_observations_backup; DROP TABLE transaction_time_observations_backup;",
   );
   legacy.exec(sourceAssertionsView);
   legacy.close();
@@ -783,6 +811,31 @@ try {
       ).count ?? 0,
     ),
     beforeRevisionCount,
+  );
+  const widenedObservationSchema = String(
+    (
+      migratedClosed.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_time_observations'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  assert.match(
+    widenedObservationSchema,
+    /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/,
+  );
+  assert.equal(
+    Number(
+      (
+        migratedClosed.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM transaction_time_observations",
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    beforeObservationCount,
   );
   const widenedQuery = await createCathayCanonicalFinancialQuery(
     closedRevisionDirectory,
