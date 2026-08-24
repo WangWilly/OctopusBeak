@@ -6,7 +6,15 @@ export type VerificationActor = typeof VERIFICATION_ACTORS[number];
 
 export const DEFAULT_VERIFICATION_ACTOR: VerificationActor = "human";
 
+export const DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD = 0.9;
+
 export type SolverChallengeKind = Exclude<VerificationChallengeKind, "checkbox">;
+
+export function isSolverChallengeKind(
+  kind: VerificationChallengeKind | undefined,
+): kind is SolverChallengeKind {
+  return kind === "text-captcha" || kind === "image-selection";
+}
 
 export const VERIFICATION_CONFIDENCE_THRESHOLD_KEYS: Record<
   SolverChallengeKind,
