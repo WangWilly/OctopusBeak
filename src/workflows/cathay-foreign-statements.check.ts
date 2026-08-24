@@ -53,6 +53,29 @@ assert.deepEqual(
     ?.sourceReportedRate?.amount,
   { coefficient: "315", scale: 1 },
 );
+for (const missingOccurrence of [undefined, "   "] as const) {
+  assert.throws(
+    () =>
+      buildCathayForeignCurrencyCaptureInput(
+        { account: "CATHAY-FOREIGN-133" },
+        "USD",
+        "one_week",
+        {
+          currencyCode: "USD",
+          transferInfos: [{
+            sequenceNumber: "missing-occurrence",
+            transferDate: "2026-08-23",
+            debitCreditType: "C",
+            amount: "10.00",
+            balance: "110.00",
+          }],
+        },
+        "2026-08-24T12:00:00+08:00",
+        missingOccurrence,
+      ),
+    /capture occurrence identity/i,
+  );
+}
 assert.throws(
   () =>
     buildCathayForeignCurrencyCaptureInput(
