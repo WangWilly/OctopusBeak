@@ -136,6 +136,10 @@ export type ForeignCurrencyDepositCaptureInput = {
   endDate: string;
   /** A source terminal response is required; absence is not inferred. */
   completeness: "complete-range";
+  /** Typed denomination boundary for this provider request. */
+  captureCurrencyScope:
+    | { kind: "currency"; currency: string }
+    | { kind: "multi-currency" };
   records: readonly ForeignCurrencyDepositRecordInput[];
   /** Explicit run/observation identity. Content hashes are not Capture identity. */
   captureOccurrenceId: string;
@@ -420,8 +424,7 @@ function divideToTerminatingDecimal(numerator: Exact, denominator: Exact): Finan
   if (denominatorValue !== 1n) return null;
   const scale = Math.max(twos, fives);
   const coefficient = numeratorValue * 2n ** BigInt(scale - twos) * 5n ** BigInt(scale - fives);
-  const text = coefficient.toString().replace(/0+$/, "") || "0";
-  return { coefficient: text, scale: Math.max(0, scale - (coefficient.toString().length - text.length)) };
+  return normalizeExactParts(coefficient.toString(), scale);
 }
 
 function rate(value: ForeignCurrencyRateInput): CanonicalFinancialDepositRate {
@@ -520,6 +523,7 @@ function buildRecord(
     amount: { coefficient: booked.coefficient, scale: booked.scale },
     balanceAfter: { coefficient: balance.coefficient, scale: balance.scale },
     currency: rowCurrency,
+    direction: input.direction,
     currencyEvidence: input.currencyEvidence,
     sourceTime,
     originalAmount: input.originalAmount ?? null,
@@ -583,6 +587,21 @@ export function createForeignCurrencyDepositCapture(
   const endDate = date(input.endDate, "Capture end date");
   if (startDate > endDate) throw new Error("Capture scope is inverted.");
   const records = input.records.map((record) => buildRecord(record, contract));
+  const captureCurrencyScope =
+    input.captureCurrencyScope.kind === "currency"
+      ? {
+          kind: "currency" as const,
+          currency: currency(
+            input.captureCurrencyScope.currency,
+            "Capture scope currency",
+          ),
+        }
+      : { kind: "multi-currency" as const };
+  if (
+    captureCurrencyScope.kind === "currency" &&
+    records.some((record) => record.currency !== captureCurrencyScope.currency)
+  )
+    throw new Error("Foreign source row currency falls outside its typed capture scope.");
   if (
     records.some(
       (record) => record.effectiveOn < startDate || record.effectiveOn > endDate,
@@ -590,7 +609,7 @@ export function createForeignCurrencyDepositCapture(
   )
     throw new Error("Foreign source row falls outside the complete capture scope.");
   const scopeFingerprint = token(
-    `${contract.contractVersion}:${accountNo}:${startDate}:${endDate}`,
+    `${contract.contractVersion}:${accountNo}:${startDate}:${endDate}:${canonicalJson(captureCurrencyScope)}`,
   );
   const responseDigest = token(records.map((record) => record.contentHash).join("|"));
   const first = records[0]?.sourceTime ?? {
@@ -604,7 +623,7 @@ export function createForeignCurrencyDepositCapture(
   const captureId =
     input.captureId ??
     `foreign-${contract.sourceId}-${token(
-      `${input.sourceConnectionKey}:${input.identityEpochKey}:${input.captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}`,
+      `${input.sourceConnectionKey}:${input.identityEpochKey}:${input.captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}:${canonicalJson(captureCurrencyScope)}`,
     ).slice("sha256:".length)}`;
   return {
     captureId,
@@ -668,6 +687,7 @@ export function createForeignCurrencyDepositCapture(
           accountNo,
           startDate,
           endDate,
+          captureCurrencyScope,
           currencyScope: "row-or-typed-scope",
           completeness: "complete-range",
         }),
@@ -1035,7 +1055,10 @@ export function queryForeignCurrencyDepositCurrent(
     status: "canonical-live",
     transactions,
     records: transactions,
-    provenanceCount: transactions.length,
+    provenanceCount: transactions.reduce(
+      (count, transaction) => count + (transaction.provenance?.length ?? 0),
+      0,
+    ),
   };
 }
 
@@ -1072,7 +1095,10 @@ export function queryForeignCurrencyDepositHistorical(
     status: "canonical-live",
     transactions,
     records: transactions,
-    provenanceCount: transactions.length,
+    provenanceCount: transactions.reduce(
+      (count, transaction) => count + (transaction.provenance?.length ?? 0),
+      0,
+    ),
   };
 }
 

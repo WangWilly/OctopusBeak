@@ -128,6 +128,27 @@ assert.deepEqual(
     .conversionEvidence?.sourceReportedRate?.amount,
   { coefficient: "315", scale: 1 },
 );
+const duplicateSinopacRows = buildSinopacForeignCurrencyCaptureInput(
+  { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
+  [{
+    sortKey: "2026/08/23 09:10",
+    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
+  }, {
+    sortKey: "2026/08/23 09:10",
+    values: ["2026/08/23", "", "09:10", "duplicate", "", "10.00", "110.00", "memo", "31.50"],
+  }],
+  { startDate: "20260801", endDate: "20260823" },
+  "2026-08-24T12:30:00+08:00",
+  "sinopac-foreign-check-duplicates",
+);
+assert.notEqual(
+  duplicateSinopacRows.records[0]!.sourceKey,
+  duplicateSinopacRows.records[1]!.sourceKey,
+);
+assert.deepEqual(
+  duplicateSinopacRows.records.map((record) => record.sourcePayload?.rowOrdinal),
+  [0, 1],
+);
 const emptySinopacCapture = buildSinopacForeignCurrencyCaptureInput(
   { DataText: "USD empty account", DataValue: "003", DisplayText: "USD" },
   [],

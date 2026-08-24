@@ -746,6 +746,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
     sourceConnectionKey: "linebank-foreign-current-login",
     identityEpochKey: String(identityEpoch),
     accountType: "depository",
+    captureCurrencyScope: { kind: "currency", currency },
     captureOccurrenceId: input.captureOccurrenceId ?? "",
     zeroResultAuthority,
     observedAt: input.observedAt ?? new Date().toISOString(),

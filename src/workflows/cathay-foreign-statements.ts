@@ -406,6 +406,7 @@ export function buildCathayForeignCurrencyCaptureInput(
     sourceConnectionKey: "cathay-foreign-current-login",
     identityEpochKey: "cathay-foreign-current-identity",
     accountType: "depository",
+    captureCurrencyScope: { kind: "currency", currency: currencyCode },
     captureOccurrenceId: `${captureOccurrenceId}:${currencyCode}`,
     zeroResultAuthority: resolvedZeroResultAuthority,
     observedAt,

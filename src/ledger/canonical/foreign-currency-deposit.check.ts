@@ -40,7 +40,36 @@ const base = {
   startDate: "2026-08-01",
   endDate: "2026-08-24",
   completeness: "complete-range" as const,
+  captureCurrencyScope: { kind: "multi-currency" as const },
 };
+
+const usdScopedCapture = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "sinopac",
+  captureCurrencyScope: { kind: "currency", currency: "USD" },
+  records: [{
+    sourceKey: "scope-usd-row",
+    amount: "1",
+    direction: "inflow",
+    currencyEvidence: { kind: "scope", currency: "USD" },
+    balanceAfter: "1",
+    sourceTime: { localDate: "2026-08-02" },
+  }],
+});
+const jpyScopedCapture = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "sinopac",
+  captureCurrencyScope: { kind: "currency", currency: "JPY" },
+  records: [{
+    sourceKey: "scope-jpy-row",
+    amount: "1",
+    direction: "inflow",
+    currencyEvidence: { kind: "scope", currency: "JPY" },
+    balanceAfter: "1",
+    sourceTime: { localDate: "2026-08-02" },
+  }],
+});
+assert.notEqual(usdScopedCapture.captureId, jpyScopedCapture.captureId);
 
 const usd = createForeignCurrencyDepositCapture({
   ...base,
@@ -76,6 +105,35 @@ assert.equal(
   "defaulted_local_midnight",
 );
 assert.equal(admittedUsd.records[0]!.conversionEvidence?.comparison, "consistent");
+
+const correctedDirection = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "yuanta",
+  captureOccurrenceId: "capture-observation-133-direction-correction",
+  records: [
+    {
+      sourceKey: "YUANTA-ROW-USD-1",
+      sequence: "1",
+      amount: "315.00",
+      direction: "outflow",
+      currencyEvidence: { kind: "row", currency: "TWD" },
+      balanceAfter: "1315.00",
+      sourceTime: { localDate: "2026-08-02" },
+      originalAmount: { amount: "10", currency: "USD" },
+      sourceReportedRate: {
+        rate: "31.50",
+        baseCurrency: "USD",
+        quoteCurrency: "TWD",
+        observedOn: "2026-08-02",
+      },
+      description: "foreign deposit",
+    },
+  ],
+});
+assert.notEqual(
+  correctedDirection.records[0]!.contentHash,
+  usd.records[0]!.contentHash,
+);
 const conflicted = createForeignCurrencyDepositCapture({
   ...base,
   source: "cathay",
@@ -105,6 +163,27 @@ assert.equal(
 assert.deepEqual(
   conflicted.records[0]!.amount,
   { coefficient: "315", scale: 0 },
+);
+
+const wholeNumberImpliedRate = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "cathay",
+  captureId: "cathay-foreign-whole-rate-133",
+  records: [
+    {
+      sourceKey: "CATHAY-WHOLE-RATE-1",
+      amount: "100",
+      direction: "inflow",
+      currencyEvidence: { kind: "row", currency: "TWD" },
+      balanceAfter: "1415",
+      sourceTime: { localDate: "2026-08-02" },
+      originalAmount: { amount: "10", currency: "USD" },
+    },
+  ],
+});
+assert.deepEqual(
+  wholeNumberImpliedRate.records[0]!.conversionEvidence?.impliedRate?.amount,
+  { coefficient: "10", scale: 0 },
 );
 
 const jpy = createForeignCurrencyDepositCapture({
@@ -206,6 +285,7 @@ try {
     accountNo: base.accountNo,
   });
   assert.equal(current.transactions.length, 2);
+  assert.equal(current.provenanceCount, 3);
   assert.deepEqual(
     current.transactions.map((transaction) => transaction.currency),
     ["TWD", "JPY"],
@@ -246,6 +326,33 @@ try {
   store.close();
 } finally {
   await rm(directory, { recursive: true, force: true });
+}
+
+const revisionDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-revision-133-"));
+try {
+  const revisionStore = createCanonicalSourceStore(
+    join(revisionDirectory, "canonical.sqlite"),
+  );
+  await commitForeignCurrencyDepositCapture(revisionStore, admittedUsd);
+  await commitForeignCurrencyDepositCapture(
+    revisionStore,
+    admitForeignCurrencyDepositCapture(correctedDirection),
+  );
+  const current = queryForeignCurrencyDepositCurrent(revisionStore, {
+    accountNo: base.accountNo,
+  });
+  assert.equal(current.transactions.length, 1);
+  assert.equal(current.transactions[0]!.direction, "outflow");
+  const lineage = queryForeignCurrencyDepositLineage(revisionStore, {
+    occurrenceKey: admittedUsd.records[0]!.occurrenceKey,
+  });
+  assert.deepEqual(
+    lineage.transactions.map((transaction) => transaction.direction),
+    ["inflow", "outflow"],
+  );
+  revisionStore.close();
+} finally {
+  await rm(revisionDirectory, { recursive: true, force: true });
 }
 
 const atomicDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-atomic-133-"));
@@ -314,3 +421,67 @@ assert.throws(
     }),
   /capture occurrence identity/i,
 );
+
+for (const mutate of [
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.amount.coefficient = "not-decimal";
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.amount.scale = -1;
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.currency = "ZZZ";
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.direction = "sideways";
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.direction = "outflow";
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.records[0]!.sourceTime.localDate = "2026-02-30";
+  },
+  (capture: ReturnType<typeof createForeignCurrencyDepositCapture>) => {
+    capture.identity.accountType = "credit";
+  },
+]) {
+  const malformed = structuredClone(usd);
+  mutate(malformed);
+  assert.throws(
+    () => admitForeignCurrencyDepositCapture(malformed),
+    /amount|scale|currency|direction|date|account type|depository|payload|financial facts/i,
+  );
+}
+
+const defensiveDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-defensive-133-"));
+try {
+  const defensiveStore = createCanonicalSourceStore(
+    join(defensiveDirectory, "canonical.sqlite"),
+  );
+  const admittedThenCorrupted = admitForeignCurrencyDepositCapture(
+    structuredClone(correctedDirection),
+  );
+  admittedThenCorrupted.records[0]!.conversionEvidence!.bookedAmount.coefficient =
+    "not-decimal";
+  await assert.rejects(
+    () =>
+      commitForeignCurrencyDepositCapture(
+        defensiveStore,
+        admittedThenCorrupted,
+      ),
+    /exact|amount|decimal/i,
+  );
+  assert.equal(
+    Number(
+      (
+        defensiveStore.db
+          .prepare("SELECT COUNT(*) AS count FROM source_captures")
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    0,
+  );
+  defensiveStore.close();
+} finally {
+  await rm(defensiveDirectory, { recursive: true, force: true });
+}

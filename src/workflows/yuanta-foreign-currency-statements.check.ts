@@ -174,6 +174,38 @@ assert.deepEqual(
     .conversionEvidence?.sourceReportedRate?.amount,
   { coefficient: "315", scale: 1 },
 );
+const yuantaCorrectedMutableFacts = buildYuantaForeignCurrencyCaptureInput(
+  [
+    {
+      accountLabel: "外幣綜合存款",
+      accountValue: "fx-1",
+      queryCurrencyLabel: "全部幣別",
+      queryCurrencyValue: "ALL",
+      values: [
+        "1",
+        "20260824",
+        "20260824",
+        "10:30",
+        "USD",
+        "更正後說明",
+        "10.00",
+        "",
+        "100.00",
+        "更正後交易資訊",
+        "31.60",
+      ],
+      sortTime: null,
+    },
+  ],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-1",
+  "2026-08-24T13:00:00+08:00",
+  "yuanta-foreign-check-observation-2",
+);
+assert.equal(
+  yuantaCorrectedMutableFacts.records[0]!.sourceKey,
+  yuantaForeignCapture.records[0]!.sourceKey,
+);
 assert.throws(
   () =>
     buildYuantaForeignCurrencyCaptureInput(
