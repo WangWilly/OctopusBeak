@@ -113,44 +113,53 @@ const canonicalInput = fubonCreditCardStatementsInputSchema.parse({
     ],
   },
 });
-const canonicalCaptures = buildFubonCanonicalCreditCardCaptures({
-  captureId: "capture-synthetic",
-  observedAt: "2026-08-25T00:00:00.000Z",
-  statementRows: [
-    {
-      statement_period: "period-1",
-      card_number: "1234",
-      consume_date: "115/01/03",
-      posting_date: "115/01/04",
-      description: "SYNTHETIC A",
-      twd_amount: "10.00",
-    },
-    {
-      statement_period: "period-1",
-      card_number: "5678",
-      consume_date: "115/01/05",
-      posting_date: "115/01/06",
-      description: "SYNTHETIC B",
-      twd_amount: "20.00",
-    },
-  ],
-  unbilledRows: [
-    {
-      statement_period: "unbilled",
-      card_number: "123456******1234",
-      consume_date: "115/07/03",
-      posting_date: "115/07/04",
-      description: "SYNTHETIC C",
-      twd_amount: "-5.00",
-    },
-  ],
-  summaries,
-  gridStates: Array.from({ length: 7 }, () => ({
+const canonicalStatementRows = [
+  {
+    statement_period: "period-1",
+    card_number: "1234",
+    card_label: "正卡 1234",
+    consume_date: "115/01/03",
+    posting_date: "115/01/04",
+    description: "SYNTHETIC A",
+    twd_amount: "10.00",
+  },
+  {
+    statement_period: "period-1",
+    card_number: "5678",
+    card_label: "正卡 5678",
+    consume_date: "115/01/05",
+    posting_date: "115/01/06",
+    description: "SYNTHETIC B",
+    twd_amount: "20.00",
+  },
+];
+const canonicalUnbilledRows = [
+  {
+    statement_period: "unbilled",
+    card_number: "123456******1234",
+    consume_date: "115/07/03",
+    posting_date: "115/07/04",
+    description: "SYNTHETIC C",
+    twd_amount: "-5.00",
+  },
+];
+const canonicalGridStates = [2, 0, 0, 0, 0, 0, 1].map(
+  (sourceDeclaredRowCount) => ({
     currentPage: "1",
     currentPageSize: String(2_147_483_647),
-  })),
+    sourceDeclaredRowCount,
+  }),
+);
+const canonicalBuildOptions = {
+  captureId: "capture-synthetic",
+  observedAt: "2026-08-25T00:00:00.000Z",
+  statementRows: canonicalStatementRows,
+  unbilledRows: canonicalUnbilledRows,
+  summaries,
+  gridStates: canonicalGridStates,
   input: canonicalInput,
-});
+};
+const canonicalCaptures = buildFubonCanonicalCreditCardCaptures(canonicalBuildOptions);
 assert.equal(canonicalCaptures.length, 2);
 assert.notEqual(
   canonicalCaptures[0]?.identity.accountNaturalKey,
@@ -163,12 +172,59 @@ assert.equal(canonicalCaptures[0]?.transactions[1]?.direction, "outflow");
 assert.throws(
   () =>
     buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      statementRows: canonicalStatementRows.map((row, index) =>
+        index === 0 ? { ...row, card_label: "正卡 附卡 1234" } : row,
+      ),
+    }),
+  /unambiguous|role/i,
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      gridStates: canonicalGridStates.map((state, index) =>
+        index === 0 ? { ...state, currentPageSize: "100" } : state,
+      ),
+    }),
+  /terminal|grid/i,
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      gridStates: canonicalGridStates.map((state, index) =>
+        index === 0 ? { ...state, sourceDeclaredRowCount: 3 } : state,
+      ),
+    }),
+  /totals|drift|partition/i,
+);
+const repeatedWorkflowCaptures = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-identical-occurrences",
+  statementRows: [canonicalStatementRows[0]!, canonicalStatementRows[0]!, canonicalStatementRows[1]!],
+  gridStates: canonicalGridStates.map((state, index) =>
+    index === 0 ? { ...state, sourceDeclaredRowCount: 3 } : state,
+  ),
+});
+const repeatedWorkflowRows = repeatedWorkflowCaptures[0]!.transactions.filter(
+  (row) => row.description === "SYNTHETIC A",
+);
+assert.deepEqual(
+  repeatedWorkflowRows.map((row) => row.occurrenceIndex),
+  [0, 1],
+);
+assert.notEqual(repeatedWorkflowRows[0]!.sourceKey, repeatedWorkflowRows[1]!.sourceKey);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
       captureId: "capture-unmapped",
       observedAt: "2026-08-25T00:00:00.000Z",
       statementRows: [
         {
           statement_period: "period-1",
           card_number: "9999",
+          card_label: "正卡 9999",
           consume_date: "115/01/03",
           posting_date: "115/01/04",
           description: "SYNTHETIC UNMAPPED",
@@ -177,15 +233,16 @@ assert.throws(
       ],
       unbilledRows: [],
       summaries,
-      gridStates: Array.from({ length: 7 }, () => ({
+      gridStates: [1, 0, 0, 0, 0, 0, 0].map((sourceDeclaredRowCount) => ({
         currentPage: "1",
         currentPageSize: String(2_147_483_647),
+        sourceDeclaredRowCount,
       })),
       input: canonicalInput,
     }),
   /mapping|observed card/i,
 );
-const { commitFubonCreditCardCaptureBatch, queryFubonCreditCardCurrent } =
+const { commitFubonCreditCardCaptureBatch } =
   await import("../ledger/canonical/fubon-credit-card.ts");
 const { createCanonicalSourceStore } =
   await import("../ledger/canonical/canonical-source-store.ts");
@@ -196,13 +253,15 @@ try {
     canonicalCaptures,
   );
   assert.equal(committed.length, 2);
-  const current = queryFubonCreditCardCurrent(canonicalStore);
-  assert.equal(current.accounts.length, 2);
-  assert.equal(current.captures.length, 2);
-  assert.deepEqual(
-    current.accounts.map((account) => account.statements.length),
-    [6, 6],
-  );
+  const sharedCount = (table: string): number =>
+    Number(
+      (canonicalStore.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+        value?: number;
+      }).value ?? 0,
+    );
+  assert.equal(sharedCount("financial_accounts"), 2);
+  assert.equal(sharedCount("source_captures"), 2);
+  assert.equal(sharedCount("fubon_credit_statement_details"), 12);
 } finally {
   canonicalStore.close();
 }
