@@ -45,6 +45,10 @@ export const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
     cards: "card-instruments-under-attested-account",
     posting: "posting-date-present-means-posted",
     billing: "billed-or-unbilled-independent-of-posting",
+    transactionIdentity:
+      "immutable-normalized-content-tuple-plus-contiguous-observed-occurrence-index",
+    occurrenceOrdering:
+      "complete-capture-observed-source-order-human-attested-not-provider-guaranteed",
     statements: "issuer-settled-cycle-summary-only",
     relations: "explicit-source-linkage-only",
     completeness:
@@ -88,6 +92,14 @@ const manifestFingerprint = (): `sha256:${string}` =>
         sourceCaptureFingerprint:
           FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.provenance
             .sourceCaptureFingerprint,
+        transactionIdentity:
+          FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics
+            .transactionIdentity,
+        occurrenceOrdering:
+          FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics
+            .occurrenceOrdering,
+        providerGuaranteed: false,
+        occurrenceProviderGuaranteed: false,
       }),
     )
     .digest("base64url")}`;
@@ -334,6 +346,19 @@ export function latestFubonCreditCardHumanAttestationEvent(
 ): FubonCreditCardHumanAttestationEvent | null {
   const events = readEvents(db);
   return events.at(-1) ?? null;
+}
+
+export function peekFubonCreditCardHumanAttestationStatus(
+  db: DatabaseSync,
+): "active" | "revoked" | null {
+  const exists = db
+    .prepare(
+      `SELECT 1 AS value FROM sqlite_master
+       WHERE type = 'table' AND name = 'fubon_credit_card_attestation_events'`,
+    )
+    .get() as { value?: number } | undefined;
+  if (!exists) return null;
+  return latestFubonCreditCardHumanAttestationEvent(db)?.manifestStatus ?? null;
 }
 
 export function recordInitialFubonCreditCardHumanAttestationIfMissing(
