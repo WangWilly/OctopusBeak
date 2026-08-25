@@ -9,6 +9,13 @@ export type GrayImage = {
 export const UPSCALE_FACTOR = 3;
 export const MIN_REGION_PIXELS = 40;
 
+export type CaptchaPreprocessStep =
+  | "grayscale"
+  | "upscaled"
+  | "blurred"
+  | "binarized"
+  | "denoised";
+
 export function decodeGrayImage(buffer: Buffer): GrayImage {
   const png = PNG.sync.read(buffer);
   const data = new Uint8Array(png.width * png.height);
@@ -168,12 +175,21 @@ export function denoise(image: GrayImage, minRegionPixels: number): GrayImage {
   return { width, height, data };
 }
 
-export function preprocessCaptchaImage(buffer: Buffer): Buffer {
+export function preprocessCaptchaImage(
+  buffer: Buffer,
+  onStep?: (step: CaptchaPreprocessStep, image: Buffer) => void,
+): Buffer {
   const decoded = decodeGrayImage(buffer);
+  onStep?.("grayscale", encodeGrayImage(decoded));
   const upscaled = upscaleImage(decoded, UPSCALE_FACTOR);
+  onStep?.("upscaled", encodeGrayImage(upscaled));
   const blurred = boxBlur(upscaled);
+  onStep?.("blurred", encodeGrayImage(blurred));
   const threshold = otsuThreshold(blurred);
   const binary = binarize(blurred, threshold);
+  onStep?.("binarized", encodeGrayImage(binary));
   const denoised = denoise(binary, MIN_REGION_PIXELS);
-  return encodeGrayImage(denoised);
+  const output = encodeGrayImage(denoised);
+  onStep?.("denoised", output);
+  return output;
 }
