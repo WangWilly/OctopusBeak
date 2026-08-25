@@ -7,6 +7,7 @@ import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   getFubonCreditCardHumanAttestedV1Manifest,
   restoreFubonCreditCardHumanAttestedV1,
+  revokeFubonCreditCardHumanAttestedV1,
 } from "./fubon-credit-card-human-attestation.ts";
 import {
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
@@ -17,12 +18,10 @@ import {
   type FubonCreditCardTransactionInput,
 } from "./fubon-credit-card.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalFinancialQuery } from "./canonical-source-store.ts";
 import {
   commitFubonCreditCardCapture,
   ensureFubonCreditCardSchema,
-  queryFubonCreditCardCurrent,
-  queryFubonCreditCardHistorical,
-  queryFubonCreditCardLineage,
 } from "./fubon-credit-card.ts";
 
 const completeness = {
@@ -35,6 +34,30 @@ const completeness = {
   unbilledRowCount: 1,
   recordCount: 2,
   settledSummaryEvidencePresent: true,
+  grids: [
+    ...[1, 0, 0, 0, 0, 0].map((count, index) => ({
+      kind: "billed" as const,
+      period: `period-${index + 1}`,
+      currentPage: 1,
+      pageSize: 2_147_483_647,
+      maximumPageSize: 2_147_483_647,
+      capturedRowCount: count,
+      sourceDeclaredRowCount: count,
+      sourceDeclaredScopeRowCount: count,
+      terminal: true,
+    })),
+    {
+      kind: "unbilled" as const,
+      period: "unbilled",
+      currentPage: 1,
+      pageSize: 2_147_483_647,
+      maximumPageSize: 2_147_483_647,
+      capturedRowCount: 1,
+      sourceDeclaredRowCount: 1,
+      sourceDeclaredScopeRowCount: 1,
+      terminal: true,
+    },
+  ],
 } as const;
 
 const primaryInstrument = {
@@ -42,6 +65,11 @@ const primaryInstrument = {
   cardMask: "****1234",
   productName: "SYNTHETIC PLATINUM",
   role: "primary" as const,
+  evidence: {
+    kind: "explicit-instrument-role" as const,
+    sourceRecordKey: "instrument-role-primary-a",
+    contractVersion: "fubon/credit-card/human-attested-v1",
+  },
 };
 
 function transaction(
@@ -49,6 +77,7 @@ function transaction(
 ): FubonCreditCardTransactionInput {
   return {
     sourceRecordKey: "row-purchase-a",
+    occurrenceIndex: 0,
     instrumentKey: primaryInstrument.instrumentKey,
     consumeDate: "2026-08-01",
     postingDate: "2026-08-02",
@@ -115,6 +144,43 @@ function capture(
   };
 }
 
+function repeatedOccurrenceCapture(
+  overrides: Partial<FubonCreditCardCaptureInput> = {},
+): FubonCreditCardCaptureInput {
+  return capture({
+    scope: {
+      ...capture().scope,
+      completeness: {
+        ...completeness,
+        periodRowCounts: [2, 0, 0, 0, 0, 0],
+        recordCount: 3,
+        grids: completeness.grids.map((grid, index) =>
+          index === 0
+            ? {
+                ...grid,
+                capturedRowCount: 2,
+                sourceDeclaredRowCount: 2,
+                sourceDeclaredScopeRowCount: 2,
+              }
+            : grid,
+        ),
+      },
+    },
+    transactions: [
+      transaction(),
+      transaction({ sourceRecordKey: "row-purchase-b", occurrenceIndex: 1 }),
+      capture().transactions[1]!,
+    ],
+    statements: [
+      {
+        ...capture().statements[0]!,
+        transactionSourceKeys: ["row-purchase-a", "row-purchase-b"],
+      },
+    ],
+    ...overrides,
+  });
+}
+
 test("Fubon v1 contract is human-attested and keeps cards subordinate to an opaque account", () => {
   assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute, FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute);
   assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.providerGuaranteed, false);
@@ -133,9 +199,21 @@ test("Fubon v1 contract is human-attested and keeps cards subordinate to an opaq
     buildFubonCreditCardAccountIdentityKey(left.identity),
     buildFubonCreditCardAccountIdentityKey(right.identity),
   );
-  assert.match(buildFubonCreditCardAccountIdentityKey(left.identity), /credit-card:portfolio-a$/);
+  assert.match(buildFubonCreditCardAccountIdentityKey(left.identity), /^sha256:/);
   assert.equal(admitFubonCreditCardCapture(left).identity.accountType, "credit");
   assert.equal(admitFubonCreditCardCapture(left).identity.accountSubtype, "credit_card");
+  assert.notEqual(
+    buildFubonCreditCardAccountIdentityKey({
+      sourceConnectionKey: "a:b",
+      identityEpochKey: "c",
+      humanAttestedAccountKey: "account",
+    }),
+    buildFubonCreditCardAccountIdentityKey({
+      sourceConnectionKey: "a",
+      identityEpochKey: "b:c",
+      humanAttestedAccountKey: "account",
+    }),
+  );
 });
 
 test("billing status is independent and excluded from the transaction identity tuple", () => {
@@ -200,6 +278,29 @@ test("full six-period plus unbilled terminal grid evidence is required", () => {
         ),
       /complete|period|terminal|count|summary|unbilled/i,
     );
+  for (const gridOverride of [
+    { currentPage: 2 },
+    { pageSize: 100 },
+    { terminal: false },
+    { sourceDeclaredRowCount: 2 },
+    { sourceDeclaredScopeRowCount: 0 },
+  ]) {
+    const grids = completeness.grids.map((grid, index) =>
+      index === 0 ? { ...grid, ...gridOverride } : grid,
+    );
+    assert.throws(
+      () =>
+        admitFubonCreditCardCapture(
+          capture({
+            scope: {
+              ...capture().scope,
+              completeness: { ...completeness, grids },
+            },
+          }),
+        ),
+      /terminal|maximum-page|count|evidence/i,
+    );
+  }
 });
 
 test("only issuer settled-cycle summaries may establish Statements", () => {
@@ -225,9 +326,26 @@ test("only issuer settled-cycle summaries may establish Statements", () => {
         ),
       /settled|statement evidence/i,
     );
+  assert.throws(
+    () =>
+      admitFubonCreditCardCapture(
+        capture({
+          statements: [
+            {
+              ...capture().statements[0]!,
+              transactionSourceKeys: ["row-unbilled-a"],
+            },
+          ],
+        }),
+      ),
+    /billed|statement/i,
+  );
 });
 
-test("duplicate source identity collides within one capture and unsupported card semantics fail closed", () => {
+test("stable occurrence ordinal admits identical genuine rows and rejects reused identity", () => {
+  const admitted = admitFubonCreditCardCapture(repeatedOccurrenceCapture());
+  assert.equal(admitted.transactions.length, 3);
+  assert.notEqual(admitted.transactions[0]!.sourceKey, admitted.transactions[1]!.sourceKey);
   assert.throws(
     () =>
       admitFubonCreditCardCapture(
@@ -237,11 +355,28 @@ test("duplicate source identity collides within one capture and unsupported card
       ),
     /collision|duplicate|identity/i,
   );
+});
+
+test("all instrument roles require explicit source evidence", () => {
+  for (const role of ["primary", "supplementary", "virtual", "replacement"] as const) {
+    const instrument = {
+      ...primaryInstrument,
+      role,
+      evidence: {
+        ...primaryInstrument.evidence,
+        sourceRecordKey: `role-${role}`,
+      },
+    };
+    assert.equal(
+      admitFubonCreditCardCapture(capture({ instruments: [instrument] })).instruments[0]!.role,
+      role,
+    );
+  }
   assert.throws(
     () =>
       admitFubonCreditCardCapture(
         capture({
-          instruments: [{ ...primaryInstrument, role: "supplementary" }],
+          instruments: [{ ...primaryInstrument, role: "supplementary", evidence: undefined }],
         }),
       ),
     /instrument|supplementary|evidence/i,
@@ -304,7 +439,7 @@ test("restores the attestation state after the focused event check", () => {
   assert.equal(getFubonCreditCardHumanAttestedV1Manifest().status, "active");
 });
 
-test("persistence keeps one authority, pins statement membership, and records provenance", async () => {
+test("persistence uses the shared canonical spine and typed credit extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-canonical-"));
   const databasePath = join(directory, "canonical.sqlite");
   const store = createCanonicalSourceStore(databasePath);
@@ -340,29 +475,26 @@ test("persistence keeps one authority, pins statement membership, and records pr
 
     const count = (table: string): number =>
       Number((store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as { value?: number }).value ?? 0);
-    assert.equal(count("fubon_credit_accounts"), 2);
-    assert.equal(count("fubon_credit_card_instruments"), 2);
-    assert.equal(count("fubon_credit_card_captures"), 3);
-    assert.equal(count("fubon_credit_card_transactions"), 4);
-    assert.equal(count("fubon_credit_card_transaction_revisions"), 4);
-    assert.equal(count("fubon_credit_card_current_transactions"), 4);
-    assert.equal(count("fubon_credit_card_transaction_provenance"), 6);
-    assert.equal(count("fubon_credit_card_billing_observations"), 6);
-    assert.equal(count("fubon_credit_statements"), 2);
-    assert.equal(count("fubon_credit_statement_revisions"), 2);
-    assert.equal(count("fubon_credit_statement_memberships"), 2);
-    assert.equal(count("fubon_credit_statement_provenance"), 3);
-    assert.equal(count("fubon_credit_transaction_relations"), 0);
-    const accountFlags = store.db.prepare(
-      `SELECT provider_guaranteed, occurrence_provider_guaranteed
-       FROM fubon_credit_accounts ORDER BY account_natural_key`,
-    ).all() as Array<{ provider_guaranteed?: number; occurrence_provider_guaranteed?: number }>;
-    assert.deepEqual(accountFlags.map((row) => ({ ...row })), [
-      { provider_guaranteed: 0, occurrence_provider_guaranteed: 0 },
-      { provider_guaranteed: 0, occurrence_provider_guaranteed: 0 },
-    ]);
+    assert.equal(count("financial_accounts"), 2);
+    assert.equal(count("source_captures"), 3);
+    assert.equal(count("source_records"), 6);
+    assert.equal(count("financial_transactions"), 4);
+    assert.equal(count("transaction_revisions"), 4);
+    assert.equal(count("assertions"), 4);
+    assert.equal(count("assertion_provenance"), 6);
+    assert.equal(count("fubon_credit_instrument_details"), 2);
+    assert.equal(count("fubon_credit_transaction_details"), 6);
+    assert.equal(count("fubon_credit_statement_details"), 2);
+    assert.equal(count("fubon_credit_statement_revision_details"), 2);
+    assert.equal(count("fubon_credit_statement_membership_details"), 2);
+    assert.equal(count("fubon_credit_relation_details"), 0);
+    assert.equal(
+      count("sqlite_master WHERE type = 'table' AND name = 'fubon_credit_accounts'"),
+      0,
+    );
     const posted = store.db.prepare(
-      `SELECT posting_status FROM fubon_credit_card_transaction_revisions
+      `SELECT posting_status FROM transaction_revisions
+       WHERE posting_rule_version = 'fubon/credit-card/human-attested-v1'
        ORDER BY revision_id`,
     ).all() as Array<{ posting_status?: string }>;
     assert.equal(posted.length, 4);
@@ -373,119 +505,131 @@ test("persistence keeps one authority, pins statement membership, and records pr
 
 });
 
-test("billed-to-unbilled observation and statement correction preserve old membership", async () => {
-  const store = createCanonicalSourceStore(":memory:");
+test("identical occurrences remain distinct while repeated captures add provenance", async () => {
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-occurrence-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
   try {
-    ensureFubonCreditCardSchema(store.db);
-    const firstCapture = capture();
-    const first = await commitFubonCreditCardCapture(
+    await commitFubonCreditCardCapture(
       store,
-      admitFubonCreditCardCapture(firstCapture),
+      admitFubonCreditCardCapture(repeatedOccurrenceCapture()),
     );
-    const correctedRows = [
-      transaction({
-        bookedAmount: "125.45",
-        correctionKey: "correction-a",
-        correctionEvidence: {
-          kind: "explicit-source-correction",
-          sourceRecordKey: "correction-source-a",
-          contractVersion: "fubon/credit-card/human-attested-v1",
-        },
-      }),
-      transaction({
-        sourceRecordKey: "row-unbilled-a",
-        consumeDate: "2026-08-20",
-        postingDate: "2026-08-21",
-        description: "SYNTHETIC TRANSIT",
-        bookedAmount: "20.00",
-        billingStatus: "billed",
-        statementKey: "statement-2026-07",
-      }),
-    ];
-    const second = await commitFubonCreditCardCapture(
+    await commitFubonCreditCardCapture(
       store,
       admitFubonCreditCardCapture(
-        capture({
-          captureId: "capture-correction",
-          transactions: correctedRows,
-          scope: {
-            ...firstCapture.scope,
-            completeness: {
-              ...completeness,
-              periodRowCounts: [2, 0, 0, 0, 0, 0],
-              unbilledRowCount: 0,
-              recordCount: 2,
-            },
-          },
-          statements: [
-            {
-              ...firstCapture.statements[0]!,
-              revisionKey: "statement-revision-2",
-              balance: "145.45",
-              transactionSourceKeys: ["row-purchase-a", "row-unbilled-a"],
-            },
-          ],
-        }),
+        repeatedOccurrenceCapture({ captureId: "capture-b" }),
       ),
     );
-    assert.ok(second.commitSequence > first.commitSequence);
-    const firstTransaction = store.db.prepare(
-      `SELECT transaction_id FROM fubon_credit_card_source_records
-       WHERE capture_id = ? AND source_record_key = ?`,
-    ).get(firstCapture.captureId, "row-purchase-a") as { transaction_id?: Uint8Array } | undefined;
-    assert.ok(firstTransaction?.transaction_id);
-    const currentAmount = store.db.prepare(
-      `SELECT r.booked_coefficient, r.booked_scale
-       FROM fubon_credit_card_current_transactions c
-       JOIN fubon_credit_card_transaction_revisions r ON r.revision_id = c.revision_id
-       WHERE c.transaction_id = ?`,
-    ).get(firstTransaction.transaction_id) as { booked_coefficient?: string; booked_scale?: number } | undefined;
-    assert.equal(currentAmount?.booked_coefficient, "12545");
-    assert.equal(Number(currentAmount?.booked_scale), 2);
-    const unbilledTransaction = store.db.prepare(
-      `SELECT transaction_id FROM fubon_credit_card_source_records
-       WHERE capture_id = ? AND source_record_key = ?`,
-    ).get("capture-correction", "row-unbilled-a") as { transaction_id?: Uint8Array } | undefined;
-    assert.ok(unbilledTransaction?.transaction_id);
-    const billing = store.db.prepare(
-      `SELECT billing_status FROM fubon_credit_card_billing_observations
-       WHERE transaction_id = ? ORDER BY commit_sequence DESC LIMIT 1`,
-    ).get(unbilledTransaction.transaction_id) as { billing_status?: string } | undefined;
-    assert.equal(billing?.billing_status, "billed");
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS value FROM fubon_credit_statement_revisions").get() as { value?: number }).value ?? 0),
-      2,
-    );
-    const latestStatement = store.db.prepare(
-      `SELECT balance_coefficient, balance_scale FROM fubon_credit_statement_revisions
-       ORDER BY revision_number DESC LIMIT 1`,
-    ).get() as { balance_coefficient?: string; balance_scale?: number } | undefined;
-    assert.equal(latestStatement?.balance_coefficient, "14545");
-    assert.equal(Number(latestStatement?.balance_scale), 2);
-
-    const oldMembership = store.db.prepare(
-      `SELECT m.transaction_revision_id FROM fubon_credit_statement_memberships m
-       JOIN fubon_credit_statement_revisions s ON s.statement_revision_id = m.statement_revision_id
-       WHERE s.revision_key = ? AND m.source_record_key = ?`,
-    ).get("statement-revision-1", "row-purchase-a") as { transaction_revision_id?: Uint8Array } | undefined;
-    const newMembership = store.db.prepare(
-      `SELECT m.transaction_revision_id FROM fubon_credit_statement_memberships m
-       JOIN fubon_credit_statement_revisions s ON s.statement_revision_id = m.statement_revision_id
-       WHERE s.revision_key = ? AND m.source_record_key = ?`,
-    ).get("statement-revision-2", "row-purchase-a") as { transaction_revision_id?: Uint8Array } | undefined;
-    assert.ok(oldMembership?.transaction_revision_id);
-    assert.ok(newMembership?.transaction_revision_id);
-    assert.notDeepEqual(oldMembership.transaction_revision_id, newMembership.transaction_revision_id);
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS value FROM fubon_credit_statement_memberships").get() as { value?: number }).value ?? 0),
-      3,
-    );
+    const count = (table: string): number =>
+      Number(
+        (store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+          value?: number;
+        }).value ?? 0,
+      );
+    assert.equal(count("financial_transactions"), 3);
+    assert.equal(count("transaction_revisions"), 3);
+    assert.equal(count("source_records"), 6);
+    assert.equal(count("assertion_provenance"), 6);
   } finally {
     store.close();
   }
 });
 
-test("typed current, historical, and lineage queries survive canonical reopen", async () => {
+test("Statement revisions pin billed membership and revision keys cannot be reused", async () => {
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-statement-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(capture()),
+    );
+    await assert.rejects(
+      commitFubonCreditCardCapture(
+        store,
+        admitFubonCreditCardCapture(
+          repeatedOccurrenceCapture({ captureId: "capture-b" }),
+        ),
+      ),
+      /revision key|membership/i,
+    );
+    const revised = repeatedOccurrenceCapture({ captureId: "capture-c" });
+    revised.statements = [
+      { ...revised.statements[0]!, revisionKey: "statement-revision-2" },
+    ];
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(revised),
+    );
+    const revisionCount = Number(
+      (store.db
+        .prepare(
+          "SELECT COUNT(*) AS value FROM fubon_credit_statement_revision_details",
+        )
+        .get() as { value?: number }).value ?? 0,
+    );
+    const membershipCount = Number(
+      (store.db
+        .prepare(
+          "SELECT COUNT(*) AS value FROM fubon_credit_statement_membership_details",
+        )
+        .get() as { value?: number }).value ?? 0,
+    );
+    assert.equal(revisionCount, 2);
+    assert.equal(membershipCount, 3);
+  } finally {
+    store.close();
+  }
+});
+
+test("durable revocation survives reopen until a durable restore event", async () => {
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-revocation-"));
+  const databasePath = join(directory, "canonical.sqlite");
+  const first = createCanonicalSourceStore(databasePath);
+  try {
+    await commitFubonCreditCardCapture(
+      first,
+      admitFubonCreditCardCapture(capture()),
+    );
+    revokeFubonCreditCardHumanAttestedV1(
+      "2026-08-25T04:00:00.000Z",
+      "durable focused revocation",
+      first.db,
+    );
+  } finally {
+    first.close();
+  }
+  restoreFubonCreditCardHumanAttestedV1(
+    "2026-08-25T04:01:00.000Z",
+    "simulate active code manifest after restart",
+  );
+  const reopened = createCanonicalSourceStore(databasePath);
+  try {
+    await assert.rejects(
+      commitFubonCreditCardCapture(
+        reopened,
+        admitFubonCreditCardCapture(capture({ captureId: "capture-b" })),
+      ),
+      /durable human attestation is revoked/i,
+    );
+    restoreFubonCreditCardHumanAttestedV1(
+      "2026-08-25T04:02:00.000Z",
+      "durable focused restore",
+      reopened.db,
+    );
+    await commitFubonCreditCardCapture(
+      reopened,
+      admitFubonCreditCardCapture(capture({ captureId: "capture-c" })),
+    );
+  } finally {
+    reopened.close();
+    if (getFubonCreditCardHumanAttestedV1Manifest().status === "revoked")
+      restoreFubonCreditCardHumanAttestedV1(
+        "2026-08-25T04:03:00.000Z",
+        "focused revocation cleanup",
+      );
+  }
+});
+
+test("generic current, historical, and lineage queries see Fubon after reopen", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-query-"));
   const databasePath = join(directory, "canonical.sqlite");
   const store = createCanonicalSourceStore(databasePath);
@@ -502,84 +646,39 @@ test("typed current, historical, and lineage queries survive canonical reopen", 
       admitFubonCreditCardCapture(capture({ captureId: "capture-b" })),
     );
 
-    const current = queryFubonCreditCardCurrent(store);
-    assert.equal(current.status, "canonical-live");
-    assert.equal(current.kind, "current");
-    assert.equal(current.accounts.length, 1);
-    assert.equal(current.accounts[0]?.instruments.length, 1);
-    assert.equal(current.accounts[0]?.transactions.length, 2);
-    assert.equal(current.accounts[0]?.transactions[0]?.bookedAmount, "123.45");
-    assert.equal(current.accounts[0]?.transactions[0]?.billingStatus, "billed");
-    assert.equal(current.accounts[0]?.transactions[1]?.billingStatus, "unbilled");
-    assert.equal(current.accounts[0]?.transactions[0]?.providerGuaranteed, false);
-    assert.equal(current.accounts[0]?.transactions[0]?.occurrenceProviderGuaranteed, false);
-    assert.equal(current.accounts[0]?.statements[0]?.currentRevision?.balance, "123.45");
-    assert.equal(current.accounts[0]?.statements[0]?.revisions.length, 1);
-    assert.equal(current.provenanceCount, 6);
-
-    const historical = queryFubonCreditCardHistorical(store, {
-      knowledgeAt: firstCommitSequence,
-    });
-    assert.equal(historical.status, "canonical-live");
-    assert.equal(historical.kind, "historical");
-    assert.equal(historical.knowledgeAt, firstCommitSequence);
-    assert.equal(historical.accounts.length, 1);
-    assert.equal(historical.accounts[0]?.transactions.length, 2);
-    assert.equal(historical.accounts[0]?.statements[0]?.revisions.length, 1);
-    assert.equal(historical.provenanceCount, 3);
-
-    const lineage = queryFubonCreditCardLineage(store, {
-      accountNaturalKey: current.accounts[0]!.accountNaturalKey,
-    });
-    assert.equal(lineage.status, "canonical-live");
-    assert.equal(lineage.kind, "lineage");
-    assert.equal(lineage.captures.length, 2);
-    assert.equal(lineage.transactions.length, 2);
-    assert.equal(lineage.provenance.length, 4);
-    assert.equal(lineage.statementMemberships.length, 1);
-    assert.equal(lineage.relations.length, 0);
   } finally {
     store.close();
   }
-
-  const reopened = createCanonicalSourceStore(databasePath);
-  try {
-    const current = queryFubonCreditCardCurrent(reopened);
-    assert.equal(current.accounts.length, 1);
-    assert.equal(current.accounts[0]?.transactions.length, 2);
-    assert.equal(current.provenanceCount, 6);
-  } finally {
-    reopened.close();
-  }
-});
-
-test("reopen rejects a Fubon-labelled commit without an exact durable credit capture", () => {
-  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-invalid-reopen-"));
-  const databasePath = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
-  try {
-    ensureFubonCreditCardSchema(store.db);
-    const commitId = randomBytes(16);
-    store.db.prepare(
-      `INSERT INTO canonical_commits(
-        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-      ) VALUES (?, 1, 1, 'fubon/credit-card/human-attested-v1', 'source_capture')`,
-    ).run(commitId);
-    store.db.prepare(
-      `INSERT INTO source_authority_routes(
-        authority_route, integration_namespace, stream, contract_version, created_commit_id
-      ) VALUES (
-        'fubon/credit-card/human-attested-v1', 'fubon', 'credit-card',
-        'fubon/credit-card/human-attested-v1', ?
-      )`,
-    ).run(commitId);
-  } finally {
-    store.close();
-  }
-  assert.throws(
-    () => createCanonicalSourceStore(databasePath),
-    /without durable source provenance evidence/i,
+  const query = createCanonicalFinancialQuery(directory, {
+    integrationNamespace: "fubon",
+    postingRuleVersion: "fubon/credit-card/human-attested-v1",
+  });
+  const current = await query.current({ kind: "current" });
+  assert.equal(current.accounts.length, 1);
+  assert.equal(current.accounts[0]?.accountType, "credit");
+  assert.equal(current.transactions.length, 2);
+  assert.ok(current.transactions.every((transaction) => transaction.timePrecision === "date"));
+  assert.ok(
+    current.transactions.every(
+      (transaction) =>
+        transaction.postingRuleVersion === "fubon/credit-card/human-attested-v1",
+    ),
   );
+  const historical = await query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(firstCommitSequence),
+    },
+  });
+  assert.equal(historical.transactions.length, 2);
+  const lineage = await query.lineage({
+    kind: "lineage",
+    subject: { kind: "transaction", id: current.transactions[0]!.id },
+  });
+  assert.equal(lineage.entries.length, 1);
+  assert.equal(lineage.entries[0]?.provenance.length, 2);
 });
 
 console.log("fubon-credit-card.check passed");

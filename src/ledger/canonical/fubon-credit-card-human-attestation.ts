@@ -364,7 +364,20 @@ export function revokeFubonCreditCardHumanAttestedV1(
 ): FubonCreditCardHumanAttestedV1Manifest {
   if (!/^\d{4}-\d{2}-\d{2}T/.test(at) || !reason.trim())
     throw new Error("Fubon credit-card attestation revocation requires time and reason.");
-  if (currentManifest.status === "revoked") return currentManifest;
+  if (currentManifest.status === "revoked") {
+    if (db && latestFubonCreditCardHumanAttestationEvent(db)?.manifestStatus === "active")
+      recordFubonCreditCardHumanAttestationEvent(db, {
+        attestationId: currentManifest.attestationId,
+        evidenceVersion: currentManifest.evidenceVersion,
+        eventKind: "revoked",
+        manifestStatus: "revoked",
+        eventAt: at,
+        reason: reason.trim(),
+        manifestFingerprint: manifestFingerprint(),
+        sequence: nextSequence(db),
+      });
+    return currentManifest;
+  }
   currentManifest = deepFreeze({
     ...currentManifest,
     status: "revoked" as const,
@@ -393,7 +406,20 @@ export function restoreFubonCreditCardHumanAttestedV1(
 ): FubonCreditCardHumanAttestedV1Manifest {
   if (!/^\d{4}-\d{2}-\d{2}T/.test(at) || !reason.trim())
     throw new Error("Fubon credit-card attestation restore requires time and reason.");
-  if (currentManifest.status === "active") return currentManifest;
+  if (currentManifest.status === "active") {
+    if (db && latestFubonCreditCardHumanAttestationEvent(db)?.manifestStatus === "revoked")
+      recordFubonCreditCardHumanAttestationEvent(db, {
+        attestationId: currentManifest.attestationId,
+        evidenceVersion: currentManifest.evidenceVersion,
+        eventKind: "restored",
+        manifestStatus: "active",
+        eventAt: at,
+        reason: reason.trim(),
+        manifestFingerprint: manifestFingerprint(),
+        sequence: nextSequence(db),
+      });
+    return currentManifest;
+  }
   currentManifest = deepFreeze({
     ...FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
     status: "active" as const,
