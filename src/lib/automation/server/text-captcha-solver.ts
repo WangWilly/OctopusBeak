@@ -1,6 +1,7 @@
 import { createWorker, OEM, PSM } from "tesseract.js";
 import type { VerificationSolver, VerificationSolverResult } from "./verification-solver.ts";
 import { preprocessCaptchaImage } from "./captcha-preprocess.ts";
+import { openCaptchaDebugSession } from "./captcha-debug.ts";
 
 export type TextRecognitionEngine = {
   recognize(image: Buffer): Promise<{ text: string; confidence: number }>;
@@ -52,10 +53,16 @@ function tesseractWorker() {
 export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
   async recognize(image) {
     const worker = await tesseractWorker();
-    const result = await worker.recognize(preprocessCaptchaImage(image));
-    return {
-      text: result.data.text ?? "",
-      confidence: (result.data.confidence ?? 0) / 100,
-    };
+    const debug = openCaptchaDebugSession();
+    debug?.writeImage("raw", image);
+    const processed = preprocessCaptchaImage(
+      image,
+      debug ? (step, buffer) => debug.writeImage(step, buffer) : undefined,
+    );
+    const result = await worker.recognize(processed);
+    const text = result.data.text ?? "";
+    const confidence = (result.data.confidence ?? 0) / 100;
+    debug?.writeResult(text, confidence);
+    return { text, confidence };
   },
 };

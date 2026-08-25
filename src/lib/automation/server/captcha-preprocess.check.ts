@@ -101,3 +101,17 @@ test("encodeGrayImage round-trips a grayscale image through PNG", () => {
   const decoded = decodeGrayImage(encodeGrayImage(image));
   assert.deepEqual(Array.from(decoded.data), [0, 255, 255, 0]);
 });
+
+test("preprocessCaptchaImage reports each step to the observer in order", () => {
+  const steps: string[] = [];
+  const png = new PNG({ width: 4, height: 2 });
+  png.data.fill(150);
+  preprocessCaptchaImage(PNG.sync.write(png), (step) => steps.push(step));
+  assert.deepEqual(steps, [
+    "grayscale",
+    "upscaled",
+    "blurred",
+    "binarized",
+    "denoised",
+  ]);
+});
