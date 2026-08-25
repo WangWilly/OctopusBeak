@@ -93,6 +93,24 @@ test("an unknown challenge character set is rejected with a clear error", () => 
   );
 });
 
+test("a challenge declaration carries its image preprocessing modes", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    imagePreprocessing: ["remove-interference-lines"],
+  }, 1);
+  assert.deepEqual(contract.imagePreprocessing, ["remove-interference-lines"]);
+});
+
+test("an unknown image preprocessing mode is rejected with a clear error", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      imagePreprocessing: ["provider-magic" as never],
+    }, 1),
+    /unknown image preprocessing mode provider-magic/,
+  );
+});
+
 test("a challenge declaration carries its prompt", () => {
   const contract = createHumanAssistanceContract({
     ...base,

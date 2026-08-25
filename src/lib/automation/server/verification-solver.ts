@@ -1,4 +1,8 @@
-import type { HumanAssistanceContract, ChallengeCharacterSet } from "../human-assistance.ts";
+import type {
+  CaptchaImagePreprocessingMode,
+  ChallengeCharacterSet,
+  HumanAssistanceContract,
+} from "../human-assistance.ts";
 import {
   isSolverChallengeKind,
   type SolverChallengeKind,
@@ -31,6 +35,7 @@ export type VerificationSolver = {
     challengeKind: SolverChallengeKind;
     prompt?: string;
     charset?: ChallengeCharacterSet;
+    imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   }): Promise<VerificationSolverResult>;
 };
 
@@ -70,6 +75,7 @@ export type SolveDependencies = {
   ) => Promise<void>;
   prompt?: string;
   charset?: ChallengeCharacterSet;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
 };
 
 export type SolveOutcome =
@@ -88,6 +94,7 @@ export async function solveVerificationChallenge(
       challengeKind: deps.challengeKind,
       prompt: deps.prompt,
       charset: deps.charset,
+      imagePreprocessing: deps.imagePreprocessing,
     });
     if (result.confidence < deps.confidenceThreshold) continue;
     if ("selections" in result) {

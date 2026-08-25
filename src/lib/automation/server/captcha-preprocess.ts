@@ -8,13 +8,46 @@ export type GrayImage = {
 
 export const UPSCALE_FACTOR = 3;
 export const MIN_REGION_PIXELS = 40;
+export const INTERFERENCE_LINE_MIN_COVERAGE = 0.7;
 
 export type CaptchaPreprocessStep =
   | "grayscale"
   | "upscaled"
   | "blurred"
   | "binarized"
+  | "lines-removed"
   | "denoised";
+
+export type CaptchaPreprocessOptions = {
+  removeInterferenceLines?: boolean;
+};
+
+type PixelBand = { start: number; end: number };
+
+function pixelBands(mask: Uint8Array): PixelBand[] {
+  const bands: PixelBand[] = [];
+  for (let start = 0; start < mask.length; start += 1) {
+    if (mask[start] !== 1) continue;
+    let end = start;
+    while (end + 1 < mask.length && mask[end + 1] === 1) end += 1;
+    bands.push({ start, end });
+    start = end;
+  }
+  return bands;
+}
+
+function expandLineMask(mask: Uint8Array, radius: number): Uint8Array {
+  const expanded = new Uint8Array(mask.length);
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index] !== 1) continue;
+    const start = Math.max(0, index - radius);
+    const end = Math.min(mask.length - 1, index + radius);
+    for (let candidate = start; candidate <= end; candidate += 1) {
+      expanded[candidate] = 1;
+    }
+  }
+  return expanded;
+}
 
 export function decodeGrayImage(buffer: Buffer): GrayImage {
   const png = PNG.sync.read(buffer);
@@ -175,9 +208,119 @@ export function denoise(image: GrayImage, minRegionPixels: number): GrayImage {
   return { width, height, data };
 }
 
+/**
+ * Remove axis-aligned grid lines that span most of the CAPTCHA image. The
+ * foreground polarity is inferred from the less common binary value so the
+ * operation works for both dark-on-light and light-on-dark challenges.
+ */
+export function removeInterferenceLines(
+  image: GrayImage,
+  minCoverage = INTERFERENCE_LINE_MIN_COVERAGE,
+): GrayImage {
+  if (!(minCoverage > 0 && minCoverage <= 1)) {
+    throw new Error("Interference-line coverage must be greater than 0 and at most 1.");
+  }
+  const { width, height } = image;
+  let blackPixels = 0;
+  let whitePixels = 0;
+  for (const value of image.data) {
+    if (value === 0) blackPixels += 1;
+    if (value === 255) whitePixels += 1;
+  }
+  const background = blackPixels >= whitePixels ? 0 : 255;
+  const foreground = background === 0 ? 255 : 0;
+  const horizontalLines = new Uint8Array(height);
+  const verticalLines = new Uint8Array(width);
+  const horizontalThreshold = Math.ceil(width * minCoverage);
+  const verticalThreshold = Math.ceil(height * minCoverage);
+
+  for (let y = 0; y < height; y += 1) {
+    let foregroundPixels = 0;
+    for (let x = 0; x < width; x += 1) {
+      if (image.data[y * width + x] === foreground) foregroundPixels += 1;
+    }
+    if (foregroundPixels >= horizontalThreshold) horizontalLines[y] = 1;
+  }
+  for (let x = 0; x < width; x += 1) {
+    let foregroundPixels = 0;
+    for (let y = 0; y < height; y += 1) {
+      if (image.data[y * width + x] === foreground) foregroundPixels += 1;
+    }
+    if (foregroundPixels >= verticalThreshold) verticalLines[x] = 1;
+  }
+
+  const horizontalLineArea = expandLineMask(horizontalLines, 2);
+  const verticalLineArea = expandLineMask(verticalLines, 2);
+
+  const data = new Uint8Array(image.data);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (
+        data[index] === foreground &&
+        (horizontalLineArea[y] === 1 || verticalLineArea[x] === 1)
+      ) {
+        data[index] = background;
+      }
+    }
+  }
+
+  // Reconnect glyph strokes cut by a removed line. A bridge is restored only
+  // when foreground remains on both sides of the entire detected line band.
+  const restored = new Uint8Array(data);
+  const bridgeRadius = 2;
+  const rowHasForeground = (y: number, x: number) => {
+    if (y < 0 || y >= height) return false;
+    for (
+      let nx = Math.max(0, x - bridgeRadius);
+      nx <= Math.min(width - 1, x + bridgeRadius);
+      nx += 1
+    ) {
+      if (data[y * width + nx] === foreground) return true;
+    }
+    return false;
+  };
+  const columnHasForeground = (x: number, y: number) => {
+    if (x < 0 || x >= width) return false;
+    for (
+      let ny = Math.max(0, y - bridgeRadius);
+      ny <= Math.min(height - 1, y + bridgeRadius);
+      ny += 1
+    ) {
+      if (data[ny * width + x] === foreground) return true;
+    }
+    return false;
+  };
+
+  for (const band of pixelBands(horizontalLineArea)) {
+    for (let x = 0; x < width; x += 1) {
+      if (
+        !rowHasForeground(band.start - 1, x) ||
+        !rowHasForeground(band.end + 1, x)
+      ) continue;
+      for (let y = band.start; y <= band.end; y += 1) {
+        restored[y * width + x] = foreground;
+      }
+    }
+  }
+  for (const band of pixelBands(verticalLineArea)) {
+    for (let y = 0; y < height; y += 1) {
+      if (
+        !columnHasForeground(band.start - 1, y) ||
+        !columnHasForeground(band.end + 1, y)
+      ) continue;
+      for (let x = band.start; x <= band.end; x += 1) {
+        restored[y * width + x] = foreground;
+      }
+    }
+  }
+  return { width, height, data: restored };
+}
+
 export function preprocessCaptchaImage(
   buffer: Buffer,
   onStep?: (step: CaptchaPreprocessStep, image: Buffer) => void,
+  options: CaptchaPreprocessOptions = {},
 ): Buffer {
   const decoded = decodeGrayImage(buffer);
   onStep?.("grayscale", encodeGrayImage(decoded));
@@ -188,7 +331,13 @@ export function preprocessCaptchaImage(
   const threshold = otsuThreshold(blurred);
   const binary = binarize(blurred, threshold);
   onStep?.("binarized", encodeGrayImage(binary));
-  const denoised = denoise(binary, MIN_REGION_PIXELS);
+  const lineCleaned = options.removeInterferenceLines
+    ? removeInterferenceLines(binary)
+    : binary;
+  if (options.removeInterferenceLines) {
+    onStep?.("lines-removed", encodeGrayImage(lineCleaned));
+  }
+  const denoised = denoise(lineCleaned, MIN_REGION_PIXELS);
   const output = encodeGrayImage(denoised);
   onStep?.("denoised", output);
   return output;

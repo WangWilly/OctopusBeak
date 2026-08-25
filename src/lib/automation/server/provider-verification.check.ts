@@ -132,6 +132,7 @@ function metadata() {
       rect: { x: 100, y: 200, width: 120, height: 48 },
     },
     charset: "digits" as const,
+    imagePreprocessing: ["remove-interference-lines"] as const,
     prompt: "Enter the digits shown.",
   };
 }
@@ -239,6 +240,7 @@ test("Cathay refresh resolves the live OTP geometry and preserves the contract m
   assert.deepEqual(input?.challengeImageRegion, metadata().challengeImageRegion);
   assert.equal(input?.challengeKind, "text-captcha");
   assert.equal(input?.charset, "digits");
+  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 
@@ -263,6 +265,7 @@ test("SinoPac refresh resolves the live CAPTCHA geometry", async () => {
   assert.deepEqual(selectors, [SINOPAC_CAPTCHA_INPUT_SELECTOR]);
   assert.deepEqual(input?.challengeImageRegion, metadata().challengeImageRegion);
   assert.equal(input?.charset, "digits");
+  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 
@@ -375,6 +378,7 @@ test("Yuanta refresh adds the dynamic submit target and preserves all metadata",
   assert.equal(input?.challengeKind, "text-captcha");
   assert.deepEqual(input?.challengeImageRegion, verificationContract.challengeImageRegion);
   assert.equal(input?.charset, "digits");
+  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 
@@ -405,4 +409,3 @@ test("Yuanta completion polling uses the injected wait seam", async () => {
   });
   assert.equal(inspections, 2);
 });
-

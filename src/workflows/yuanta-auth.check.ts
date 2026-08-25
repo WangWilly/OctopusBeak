@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import type { Page } from "playwright";
+import type { Frame, Page } from "playwright";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
-const { isYuantaSignedIn } = await import("./yuanta-auth.ts");
+const { isYuantaSignedIn, yuantaBankCaptchaAssistanceStage } = await import(
+  "./yuanta-auth.ts",
+);
 
 type FakeFrame = {
   frameName: string;
@@ -187,6 +190,45 @@ test("Yuanta products delegate authentication to the shared CAPTCHA seam", async
       assert.match(source, /yuanta-auth\.ts/);
     }
   }
+});
+
+test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observed GOTP image", async () => {
+  const selectors: string[] = [];
+  const loginFrame = {
+    locator: (selector: string) => {
+      selectors.push(selector);
+      const locator = {
+        boundingBox: async () =>
+          selector === "#gcode"
+            ? { x: 120, y: 537, width: 150, height: 50 }
+            : { x: 13, y: 537, width: 107, height: 50 },
+        first: () => locator,
+      };
+      return locator;
+    },
+  } as unknown as Frame;
+  const contract = await emitHumanAssistanceStage(
+    yuantaBankCaptchaAssistanceStage(loginFrame),
+    () => undefined,
+  );
+
+  assert.deepEqual(selectors, ["#gcode", 'img[src*="GOTP"]:visible']);
+  assert.equal(contract.challengeKind, "text-captcha");
+  assert.equal(contract.charset, "digits");
+  assert.deepEqual(contract.imagePreprocessing, ["remove-interference-lines"]);
+  assert.deepEqual(contract.challengeImageRegion, {
+    id: "captcha-image",
+    label: "CAPTCHA image",
+    semanticId: "yuanta-bank.login.captcha-image",
+    rect: { x: 13, y: 537, width: 107, height: 50 },
+  });
+  assert.equal(contract.targets[0]?.semanticId, "yuanta-bank.login.captcha-input");
+  assert.deepEqual(contract.targets[0]?.rect, {
+    x: 120,
+    y: 537,
+    width: 150,
+    height: 50,
+  });
 });
 
 // This regression must run through Libretto's actual TSX loader. The regular

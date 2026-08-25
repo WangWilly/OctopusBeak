@@ -115,6 +115,23 @@ test("the OCR solver forwards the character set to the engine", async () => {
   assert.equal(receivedCharset, "digits");
 });
 
+test("the OCR solver forwards image preprocessing modes to the engine", async () => {
+  let receivedModes: unknown;
+  const engine: TextRecognitionEngine = {
+    async recognize(_image, _charset, imagePreprocessing) {
+      receivedModes = imagePreprocessing;
+      return { text: "123", confidence: 0.9 };
+    },
+  };
+  await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+  });
+  assert.deepEqual(receivedModes, ["remove-interference-lines"]);
+});
+
 test("the OCR solver reads the image in memory without persisting or logging it", () => {
   const source = readFileSync(
     new URL("./text-captcha-solver.ts", import.meta.url),

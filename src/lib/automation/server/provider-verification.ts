@@ -97,6 +97,9 @@ function optionalContractMetadata(contract: HumanAssistanceContract) {
     ...(contract.challengeKind === undefined ? {} : { challengeKind: contract.challengeKind }),
     ...(contract.challengeImageRegion === undefined ? {} : { challengeImageRegion: contract.challengeImageRegion }),
     ...(contract.charset === undefined ? {} : { charset: contract.charset }),
+    ...(contract.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: contract.imagePreprocessing }),
     ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
   };
 }

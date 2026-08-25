@@ -169,6 +169,7 @@ const metadataContract: HumanAssistanceContract = {
     rect: { x: 800, y: 300, width: 120, height: 48 },
   },
   charset: "digits",
+  imagePreprocessing: ["remove-interference-lines"],
   prompt: "Enter the digits shown.",
 };
 const refreshedMetadataContract = refreshTargetRect(
@@ -179,6 +180,9 @@ const refreshedMetadataContract = refreshTargetRect(
 assert.equal(refreshedMetadataContract?.challengeKind, "text-captcha");
 assert.deepEqual(refreshedMetadataContract?.challengeImageRegion, metadataContract.challengeImageRegion);
 assert.equal(refreshedMetadataContract?.charset, "digits");
+assert.deepEqual(refreshedMetadataContract?.imagePreprocessing, [
+  "remove-interference-lines",
+]);
 assert.equal(refreshedMetadataContract?.prompt, "Enter the digits shown.");
 
 const focusCalls: Array<[number, number]> = [];
