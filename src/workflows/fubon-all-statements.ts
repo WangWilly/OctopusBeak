@@ -250,7 +250,14 @@ export async function runFubonAllStatements(
         typeId: "credit_card",
         run: () =>
           runSectionOutOfForeground(page, "creditCards", () =>
-            runFubonCreditCardStatements(page, input.creditCards),
+            runFubonCreditCardStatements(page, input.creditCards, {
+              ...(ledgerOverrides.canonicalFinancialLedgerDir
+                ? {
+                    canonicalFinancialLedgerDir:
+                      ledgerOverrides.canonicalFinancialLedgerDir,
+                  }
+                : {}),
+            }),
           ),
       },
       {

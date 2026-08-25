@@ -1,10 +1,20 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
+import {
+  admitFubonCreditCardCapture,
+  commitFubonCreditCardCaptureBatch,
+  type FubonCreditCardCaptureInput,
+  type FubonCreditCardValidatedCapture,
+} from "../ledger/canonical/fubon-credit-card.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -41,10 +51,22 @@ type CaptureMetadata =
 
 const periodOffsetSchema = z.number().int().min(1).max(6);
 
+const humanAttestedAccountSchema = z.object({
+  cardKey: z.string().regex(/^\d{4}$/),
+  humanAttestedAccountKey: z.string().min(3).max(128),
+});
+
+const canonicalHumanAttestationSchema = z.object({
+  sourceConnectionKey: z.string().min(3).max(128),
+  identityEpochKey: z.string().min(3).max(128),
+  accounts: z.array(humanAttestedAccountSchema).min(1),
+});
+
 const inputSchema = z.object({
   periodOffsets: z.array(periodOffsetSchema).min(1).default([1, 2, 3, 4, 5, 6]),
   statementCardLabels: z.array(z.string()).default([]),
   unbilledCardNumbers: z.array(z.string()).default([]),
+  canonicalHumanAttestation: canonicalHumanAttestationSchema.optional(),
 });
 
 const paymentStatusSchema = z.object({
@@ -82,6 +104,8 @@ const outputSchema = z.object({
     billedStatements: generatedCsvFileSchema,
     unbilledStatements: generatedCsvFileSchema,
   }),
+  canonicalAdmission: z.enum(["not-configured", "admitted"]),
+  canonicalCaptureCount: z.number().int().nonnegative(),
 });
 
 export {
@@ -97,6 +121,18 @@ type GeneratedCsvFile = z.infer<typeof generatedCsvFileSchema>;
 type StatementRowsResult = {
   rows: CsvRow[];
   paymentStatuses: PaymentStatus[];
+  summaries: StatementSummary[];
+};
+
+export type StatementSummary = {
+  cardKey: string;
+  period: string;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  balance: string;
+  minimumPayment?: string;
 };
 
 const periodTabs = [
@@ -640,6 +676,120 @@ async function readStatementPeriodLabel(scope: BrowserScope): Promise<string> {
   return cells[0] ?? "";
 }
 
+function isoFubonDate(value: string, label: string): string {
+  const normalized = toAsciiDigits(cleanText(value));
+  const match = normalized.match(/^(\d{3,4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})$/u);
+  if (!match) throw new Error(`Fubon ${label} is not an explicit source date.`);
+  const year = match[1]!.length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  const result = `${String(year).padStart(4, "0")}-${match[2]!.padStart(2, "0")}-${match[3]!.padStart(2, "0")}`;
+  const parsed = new Date(`${result}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== result)
+    throw new Error(`Fubon ${label} is not a valid source date.`);
+  return result;
+}
+
+function exactFubonAmount(value: string, label: string): { amount: string; signed: string } {
+  const normalized = toAsciiDigits(cleanText(value))
+    .replaceAll(",", "")
+    .replace(/(?:NT\$|TWD|新臺幣|台幣|元)/giu, "")
+    .trim();
+  const parentheses = /^\((\d+(?:\.\d+)?)\)$/u.exec(normalized);
+  const signed = parentheses ? `-${parentheses[1]}` : normalized;
+  if (!/^[+-]?\d+(?:\.\d+)?$/u.test(signed))
+    throw new Error(`Fubon ${label} is not an exact source amount.`);
+  return { amount: signed.replace(/^[+-]/u, ""), signed };
+}
+
+function normalizedSummaryHeader(value: string): string {
+  return cleanText(value).replace(/[：:\s]/gu, "");
+}
+
+function summaryValue(
+  values: ReadonlyMap<string, string>,
+  aliases: readonly string[],
+  label: string,
+): string {
+  for (const alias of aliases) {
+    const value = values.get(normalizedSummaryHeader(alias));
+    if (value) return value;
+  }
+  throw new Error(`Fubon settled statement summary is missing ${label}.`);
+}
+
+/** Convert the issuer summary table into the fields required for a settled
+ * Statement. No query-month or transaction date is used as a fallback. */
+export function parseFubonSettledStatementSummary(
+  headers: readonly string[],
+  cells: readonly string[],
+): StatementSummary {
+  const values = new Map<string, string>();
+  for (let index = 0; index < headers.length; index += 1) {
+    const header = normalizedSummaryHeader(headers[index] ?? "");
+    const value = cleanText(cells[index] ?? "");
+    if (header && value) values.set(header, value);
+  }
+  const cardKey = digitsOnly(
+    summaryValue(values, ["卡號", "信用卡號", "正卡卡號"], "primary card key"),
+  ).slice(-4);
+  if (!/^\d{4}$/u.test(cardKey))
+    throw new Error("Fubon settled statement summary lacks an explicit primary card key.");
+  const period = summaryValue(values, ["帳單年月"], "billing period");
+  const cycleRange = summaryValue(
+    values,
+    ["帳單週期", "帳單期間", "消費期間"],
+    "billing-cycle range",
+  );
+  const cycleDates = toAsciiDigits(cycleRange).match(
+    /(\d{3,4}[\/.\-]\d{1,2}[\/.\-]\d{1,2})\s*(?:~|～|至|－|—)\s*(\d{3,4}[\/.\-]\d{1,2}[\/.\-]\d{1,2})/u,
+  );
+  if (!cycleDates)
+    throw new Error("Fubon settled statement summary lacks an explicit billing-cycle range.");
+  const issueDate = isoFubonDate(
+    summaryValue(values, ["結帳日", "帳單日", "帳單日期"], "issue date"),
+    "statement issue date",
+  );
+  const dueDate = isoFubonDate(
+    summaryValue(values, ["繳款截止日", "繳款期限", "到期日"], "due date"),
+    "statement due date",
+  );
+  const balance = exactFubonAmount(
+    summaryValue(values, ["本期應繳總額", "應繳總額"], "balance"),
+    "statement balance",
+  ).amount;
+  const minimumRaw = [...["最低應繳金額", "最低應繳"]]
+    .map((alias) => values.get(normalizedSummaryHeader(alias)))
+    .find(Boolean);
+  return {
+    cardKey,
+    period,
+    cycleStart: isoFubonDate(cycleDates[1]!, "statement cycle start"),
+    cycleEnd: isoFubonDate(cycleDates[2]!, "statement cycle end"),
+    issueDate,
+    dueDate,
+    balance,
+    ...(minimumRaw
+      ? { minimumPayment: exactFubonAmount(minimumRaw, "statement minimum payment").amount }
+      : {}),
+  };
+}
+
+async function readSettledStatementSummaries(scope: BrowserScope): Promise<StatementSummary[]> {
+  const rows = statementSummaryTable(scope).locator("tr");
+  const count = await rows.count();
+  if (count < 2)
+    throw new Error("Fubon settled statement summary table is incomplete.");
+  const headers = await readCells(rows.nth(0));
+  const summaries: StatementSummary[] = [];
+  for (let index = 1; index < count; index += 1) {
+    const cells = await readCells(rows.nth(index));
+    if (cells.some(Boolean))
+      summaries.push(parseFubonSettledStatementSummary(headers, cells));
+  }
+  if (summaries.length === 0)
+    throw new Error("Fubon settled statement summary contains no account-scoped rows.");
+  return summaries;
+}
+
 function isStatementCardLabelRow(cells: string[]): boolean {
   const nonEmpty = cells.filter(Boolean);
   return (
@@ -703,7 +853,11 @@ async function readStatementRows(
   scope: BrowserScope,
   periodLabel: string,
   cardFilters: string[],
+  requireCanonicalSummary: boolean,
 ): Promise<StatementRowsResult> {
+  const summaries = requireCanonicalSummary
+    ? await readSettledStatementSummaries(scope)
+    : [];
   const rows = statementDetailsTable(scope).locator("tr");
   const count = await rows.count();
   const details: CsvRow[] = [];
@@ -760,6 +914,7 @@ async function readStatementRows(
   return {
     rows: details,
     paymentStatuses: paymentStatus ? [paymentStatus] : [],
+    summaries,
   };
 }
 
@@ -805,15 +960,198 @@ function cardKeyForRow(row: CsvRow): string {
   return digitsOnly(row.card_number ?? "").slice(-4);
 }
 
+function fubonCanonicalDigest(label: string, value: unknown): string {
+  return `${label}:sha256:${createHash("sha256")
+    .update(JSON.stringify(value))
+    .digest("base64url")}`;
+}
+
+function canonicalTransactionForRow(
+  row: CsvRow,
+  instrumentKey: string,
+): FubonCreditCardCaptureInput["transactions"][number] {
+  const consumeDate = isoFubonDate(row.consume_date ?? "", "consume date");
+  const postingDate = isoFubonDate(row.posting_date ?? "", "posting date");
+  const booked = exactFubonAmount(row.twd_amount ?? "", "booked amount");
+  if (/^[+-]?0(?:\.0+)?$/u.test(booked.signed))
+    throw new Error("Fubon zero-value credit-card rows cannot establish direction.");
+  const foreignCurrency = cleanText(row.foreign_currency).toUpperCase() || null;
+  const foreign = row.foreign_amount
+    ? exactFubonAmount(row.foreign_amount, "foreign amount")
+    : null;
+  if ((foreignCurrency === null) !== (foreign === null))
+    throw new Error("Fubon foreign currency and amount evidence must be complete together.");
+  const sourceRecordKey = fubonCanonicalDigest("fubon-credit-row-v1", [
+    instrumentKey,
+    consumeDate,
+    postingDate,
+    booked.signed,
+    foreignCurrency,
+    foreign?.signed ?? null,
+    cleanText(row.description),
+  ]);
+  return {
+    sourceRecordKey,
+    instrumentKey,
+    consumeDate,
+    postingDate,
+    postingStatus: "posted",
+    direction: booked.signed.startsWith("-") ? "outflow" : "inflow",
+    bookedAmount: booked.amount,
+    signedAmount: booked.signed,
+    bookedCurrency: "TWD",
+    foreignCurrency,
+    foreignAmount: foreign?.amount ?? null,
+    description: cleanText(row.description),
+    billingStatus: row.statement_period === "unbilled" ? "unbilled" : "billed",
+    ...(row.statement_period && row.statement_period !== "unbilled"
+      ? { statementKey: fubonCanonicalDigest("fubon-statement-v1", row.statement_period) }
+      : {}),
+  };
+}
+
+export function buildFubonCanonicalCreditCardCaptures(options: {
+  captureId: string;
+  observedAt: string;
+  statementRows: readonly CsvRow[];
+  unbilledRows: readonly CsvRow[];
+  summaries: readonly StatementSummary[];
+  gridStates: readonly GridState[];
+  input: FubonCreditCardStatementsInput;
+}): FubonCreditCardValidatedCapture[] {
+  const attestation = options.input.canonicalHumanAttestation;
+  if (!attestation) return [];
+  if (
+    options.input.periodOffsets.length !== periodTabs.length ||
+    !periodTabs.every((period) => options.input.periodOffsets.includes(period.offset)) ||
+    options.input.statementCardLabels.length !== 0 ||
+    options.input.unbilledCardNumbers.length !== 0 ||
+    options.gridStates.length !== 7 ||
+    options.gridStates.some(
+      (state) =>
+        state.currentPage !== "1" ||
+        state.currentPageSize !== String(2_147_483_647),
+    ) ||
+    options.summaries.length !== attestation.accounts.length * 6
+  )
+    throw new Error("Fubon canonical admission requires six unfiltered terminal billed grids plus unbilled.");
+
+  const mappings = new Map<string, string>();
+  const accountKeys = new Set<string>();
+  for (const account of attestation.accounts) {
+    if (mappings.has(account.cardKey))
+      throw new Error("Fubon human attestation maps one card key more than once.");
+    if (accountKeys.has(account.humanAttestedAccountKey))
+      throw new Error("Fubon v1 requires each independently billed primary card to have its own attested account key.");
+    mappings.set(account.cardKey, account.humanAttestedAccountKey);
+    accountKeys.add(account.humanAttestedAccountKey);
+  }
+  const allRows = [...options.statementRows, ...options.unbilledRows];
+  const observedCardKeys = new Set(allRows.map(cardKeyForRow));
+  if ([...observedCardKeys].some((key) => !/^\d{4}$/u.test(key) || !mappings.has(key)))
+    throw new Error("Fubon canonical admission requires an explicit human-attested account mapping for every observed card.");
+  if ([...mappings].some(([key]) => !observedCardKeys.has(key)))
+    throw new Error("Fubon human attestation contains a card that was not observed in the complete capture.");
+
+  return [...mappings].map(([cardKey, humanAttestedAccountKey]) => {
+    const instrumentKey = fubonCanonicalDigest("fubon-primary-card-v1", [
+      humanAttestedAccountKey,
+      cardKey,
+    ]);
+    const statementRows = options.statementRows.filter((row) => cardKeyForRow(row) === cardKey);
+    const unbilledRows = options.unbilledRows.filter((row) => cardKeyForRow(row) === cardKey);
+    const transactions = [...statementRows, ...unbilledRows].map((row) =>
+      canonicalTransactionForRow(row, instrumentKey),
+    );
+    const sourceRecordsByPeriod = new Map<string, string[]>();
+    for (let index = 0; index < statementRows.length; index += 1) {
+      const period = statementRows[index]!.statement_period ?? "";
+      const sourceRecordKey = transactions[index]!.sourceRecordKey;
+      const keys = sourceRecordsByPeriod.get(period) ?? [];
+      keys.push(sourceRecordKey);
+      sourceRecordsByPeriod.set(period, keys);
+    }
+    const accountSummaries = options.summaries.filter(
+      (summary) => summary.cardKey === cardKey,
+    );
+    if (
+      accountSummaries.length !== 6 ||
+      new Set(accountSummaries.map((summary) => summary.period)).size !== 6
+    )
+      throw new Error("Fubon canonical admission requires six distinct account-scoped settled summaries.");
+    const statements = accountSummaries.map((summary) => {
+      const statementKey = fubonCanonicalDigest("fubon-statement-v1", summary.period);
+      const transactionSourceKeys = sourceRecordsByPeriod.get(summary.period) ?? [];
+      return {
+        statementKey,
+        revisionKey: fubonCanonicalDigest("fubon-statement-revision-v1", [
+          summary,
+          [...transactionSourceKeys].sort(),
+        ]),
+        cycleStart: summary.cycleStart,
+        cycleEnd: summary.cycleEnd,
+        issueDate: summary.issueDate,
+        dueDate: summary.dueDate,
+        currency: "TWD",
+        balance: summary.balance,
+        ...(summary.minimumPayment ? { minimumPayment: summary.minimumPayment } : {}),
+        transactionSourceKeys,
+        evidence: {
+          kind: "issuer-settled-cycle-summary" as const,
+          sourceRecordKey: fubonCanonicalDigest("fubon-statement-summary-v1", summary),
+          settled: true as const,
+        },
+      };
+    });
+    const scopeDates = [
+      ...accountSummaries.flatMap((summary) => [summary.cycleStart, summary.cycleEnd]),
+      ...transactions.flatMap((transaction) => [transaction.consumeDate, transaction.postingDate ?? ""]),
+    ].filter(Boolean).sort();
+    const capture: FubonCreditCardCaptureInput = {
+      captureId: `${options.captureId}:${fubonCanonicalDigest("account-v1", humanAttestedAccountKey)}`,
+      identity: {
+        sourceConnectionKey: attestation.sourceConnectionKey,
+        identityEpochKey: attestation.identityEpochKey,
+        humanAttestedAccountKey,
+      },
+      observedAt: options.observedAt,
+      scope: {
+        startDate: scopeDates[0]!,
+        endDate: scopeDates.at(-1)!,
+        completeness: {
+          billedPeriods: accountSummaries.map((summary) => summary.period),
+          unbilledIncluded: true,
+          unfiltered: true,
+          terminalGrids: true,
+          rowCountsMatch: true,
+          periodRowCounts: accountSummaries.map(
+            (summary) => sourceRecordsByPeriod.get(summary.period)?.length ?? 0,
+          ),
+          unbilledRowCount: unbilledRows.length,
+          recordCount: transactions.length,
+          settledSummaryEvidencePresent: true,
+        },
+      },
+      instruments: [{ instrumentKey, role: "primary" }],
+      transactions,
+      statements,
+      relations: [],
+    };
+    return admitFubonCreditCardCapture(capture);
+  });
+}
+
 export async function runFubonCreditCardStatements(
   page: Page,
   input: FubonCreditCardStatementsInput,
+  overrides: { canonicalFinancialLedgerDir?: string } = {},
 ): Promise<FubonCreditCardStatementsOutput> {
   await openStatementDetailsPage(page);
 
   const statementRows: CsvRow[] = [];
   const statementPeriods: string[] = [];
   const paymentStatuses: PaymentStatus[] = [];
+  const summaries: StatementSummary[] = [];
   const gridStates: GridState[] = [];
   for (const periodOffset of input.periodOffsets) {
     const scope = await selectStatementPeriod(page, periodOffset);
@@ -823,9 +1161,11 @@ export async function runFubonCreditCardStatements(
       scope,
       periodLabel,
       input.statementCardLabels,
+      input.canonicalHumanAttestation !== undefined,
     );
     statementRows.push(...statementResult.rows);
     paymentStatuses.push(...statementResult.paymentStatuses);
+    summaries.push(...statementResult.summaries);
     gridStates.push(await gridState(scope));
   }
 
@@ -883,6 +1223,29 @@ export async function runFubonCreditCardStatements(
         },
       };
 
+  const canonicalCaptures = buildFubonCanonicalCreditCardCaptures({
+    captureId: capture.snapshotMode === "full" ? capture.captureId : randomUUID(),
+    observedAt:
+      capture.snapshotMode === "full" ? capture.capturedAt : new Date().toISOString(),
+    statementRows: sortedStatementRows,
+    unbilledRows: sortedUnbilledRows,
+    summaries,
+    gridStates,
+    input,
+  });
+  let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
+  if (overrides.canonicalFinancialLedgerDir && canonicalCaptures.length > 0) {
+    const store = createCanonicalSourceStore(
+      canonicalSqlitePath(overrides.canonicalFinancialLedgerDir),
+    );
+    try {
+      await commitFubonCreditCardCaptureBatch(store, canonicalCaptures);
+      canonicalAdmission = "admitted";
+    } finally {
+      store.close();
+    }
+  }
+
   const billedStatements = await writeCsvWithMetadata(
     "billed-statements",
     sortedStatementRows,
@@ -915,6 +1278,9 @@ export async function runFubonCreditCardStatements(
       billedStatements,
       unbilledStatements,
     },
+    canonicalAdmission,
+    canonicalCaptureCount:
+      canonicalAdmission === "admitted" ? canonicalCaptures.length : 0,
   };
 }
 
@@ -935,6 +1301,10 @@ export default workflow("fubonCreditCardStatements", {
     };
     await openCreditCardLoginForm(page);
     await completeFubonHumanLogin(page, session, values);
-    return await runFubonCreditCardStatements(page, input);
+    const financialLedgerDir = process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR?.trim() ||
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim();
+    return await runFubonCreditCardStatements(page, input, {
+      ...(financialLedgerDir ? { canonicalFinancialLedgerDir: financialLedgerDir } : {}),
+    });
   },
 });
