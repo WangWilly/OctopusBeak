@@ -27,6 +27,10 @@ export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
 export type VerificationChallengeKind = typeof VERIFICATION_CHALLENGE_KINDS[number];
 
+export const CHALLENGE_CHARACTER_SETS = ["digits", "alphanumeric"] as const;
+
+export type ChallengeCharacterSet = typeof CHALLENGE_CHARACTER_SETS[number];
+
 export type HumanVerificationRect = {
   x: number;
   y: number;
@@ -81,6 +85,7 @@ export type HumanAssistanceContractInput = {
   focus: HumanAssistanceFocus;
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: VerificationChallengeImageRegion;
+  charset?: ChallengeCharacterSet;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -169,6 +174,9 @@ export function createHumanAssistanceContract(
   if (input.challengeKind !== undefined && !VERIFICATION_CHALLENGE_KINDS.includes(input.challengeKind)) {
     throw new Error(`Invalid human assistance contract: unknown challenge kind ${input.challengeKind}.`);
   }
+  if (input.charset !== undefined && !CHALLENGE_CHARACTER_SETS.includes(input.charset)) {
+    throw new Error(`Invalid human assistance contract: unknown challenge character set ${input.charset}.`);
+  }
   if (input.challengeImageRegion !== undefined) {
     assertChallengeImageRegion(input.challengeImageRegion);
   }
@@ -192,6 +200,7 @@ export function createHumanAssistanceContract(
     },
     ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
     ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
+    ...(input.charset === undefined ? {} : { charset: input.charset }),
   };
 }
 

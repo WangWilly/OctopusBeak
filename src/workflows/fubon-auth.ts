@@ -1154,6 +1154,7 @@ async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
       },
     ],
     challengeKind: "text-captcha",
+    charset: "digits",
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",

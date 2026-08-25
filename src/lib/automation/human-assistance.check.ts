@@ -78,6 +78,21 @@ test("an unresolvable solver image region is rejected with a clear error", () =>
   );
 });
 
+test("a challenge declaration carries its character set", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    charset: "digits",
+  }, 1);
+  assert.equal(contract.charset, "digits");
+});
+
+test("an unknown challenge character set is rejected with a clear error", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({ ...base, charset: "hex" as never }, 1),
+    /unknown challenge character set hex/,
+  );
+});
+
 test("a solver image region missing its geometry is rejected with a clear error", () => {
   assert.throws(
     () => createHumanAssistanceContract({
