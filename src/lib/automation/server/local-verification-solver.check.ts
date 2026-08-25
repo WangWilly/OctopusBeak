@@ -39,10 +39,14 @@ test("the local solver routes image-selection to the vision engine", async () =>
   );
 });
 
-test("the local solver fails image-selection without a vision model", async () => {
+test("the local solver routes image-selection to the stub vision engine by default", async () => {
   const solver = localVerificationSolver();
-  await assert.rejects(
-    solver.solve({ image, challengeKind: "image-selection", prompt: "x" }),
-    /No vision model is configured for image-selection challenges/,
+  assert.deepEqual(
+    await solver.solve({
+      image,
+      challengeKind: "image-selection",
+      prompt: "traffic lights",
+    }),
+    { selections: [], confidence: 0 },
   );
 });

@@ -36,6 +36,7 @@ export type WorkflowHumanAssistanceStage = {
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: WorkflowChallengeImageRegion;
   charset?: ChallengeCharacterSet;
+  prompt?: string;
 };
 
 export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
@@ -107,6 +108,7 @@ export async function emitHumanAssistanceStage(
     ...(stage.challengeKind === undefined ? {} : { challengeKind: stage.challengeKind }),
     ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
     ...(stage.charset === undefined ? {} : { charset: stage.charset }),
+    ...(stage.prompt === undefined ? {} : { prompt: stage.prompt }),
   };
   return publishHumanAssistanceContract(contract, publish);
 }

@@ -86,6 +86,7 @@ export type HumanAssistanceContractInput = {
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: VerificationChallengeImageRegion;
   charset?: ChallengeCharacterSet;
+  prompt?: string;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -177,6 +178,9 @@ export function createHumanAssistanceContract(
   if (input.charset !== undefined && !CHALLENGE_CHARACTER_SETS.includes(input.charset)) {
     throw new Error(`Invalid human assistance contract: unknown challenge character set ${input.charset}.`);
   }
+  if (input.prompt !== undefined) {
+    nonEmpty(input.prompt, "prompt");
+  }
   if (input.challengeImageRegion !== undefined) {
     assertChallengeImageRegion(input.challengeImageRegion);
   }
@@ -201,6 +205,7 @@ export function createHumanAssistanceContract(
     ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
     ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
     ...(input.charset === undefined ? {} : { charset: input.charset }),
+    ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
   };
 }
 

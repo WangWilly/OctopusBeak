@@ -93,6 +93,21 @@ test("an unknown challenge character set is rejected with a clear error", () => 
   );
 });
 
+test("a challenge declaration carries its prompt", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    prompt: "選取包含紅綠燈的圖片",
+  }, 1);
+  assert.equal(contract.prompt, "選取包含紅綠燈的圖片");
+});
+
+test("an empty prompt is rejected with a clear error", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({ ...base, prompt: "  " }, 1),
+    /prompt must be non-empty/,
+  );
+});
+
 test("a solver image region missing its geometry is rejected with a clear error", () => {
   assert.throws(
     () => createHumanAssistanceContract({

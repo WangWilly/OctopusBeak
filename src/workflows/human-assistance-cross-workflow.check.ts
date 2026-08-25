@@ -186,3 +186,14 @@ test("Yuanta Trade keeps checkbox and later challenge as separate declared stage
   );
   assert.match(source, /maxChallengeRetries = 2/);
 });
+
+test("Yuanta Trade declares a checkbox click and a solver image-selection challenge", async () => {
+  const source = await readFile(
+    new URL("./yuanta-trade-statements.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /challengeKind: "checkbox"/);
+  assert.match(source, /challengeKind: "image-selection"/);
+  assert.match(source, /challengeImageRegion/);
+  assert.match(source, /prompt:/);
+});
