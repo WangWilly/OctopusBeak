@@ -29,6 +29,7 @@ export type VerificationSolver = {
   solve(input: {
     image: Buffer;
     challengeKind: SolverChallengeKind;
+    prompt?: string;
   }): Promise<VerificationSolverResult>;
 };
 
@@ -66,6 +67,7 @@ export type SolveDependencies = {
   injectSelections?: (
     selections: readonly VerificationSelectionPoint[],
   ) => Promise<void>;
+  prompt?: string;
 };
 
 export type SolveOutcome =
@@ -82,6 +84,7 @@ export async function solveVerificationChallenge(
     const result = await deps.solver.solve({
       image,
       challengeKind: deps.challengeKind,
+      prompt: deps.prompt,
     });
     if (result.confidence < deps.confidenceThreshold) continue;
     if ("selections" in result) {

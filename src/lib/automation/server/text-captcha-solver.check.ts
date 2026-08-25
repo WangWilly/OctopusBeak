@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
-  localVerificationSolver,
   normalizeCaptchaText,
   textCaptchaSolver,
   type TextRecognitionEngine,
@@ -57,19 +56,6 @@ test("normalizeCaptchaText keeps only alphanumeric characters, uppercased", () =
   assert.equal(normalizeCaptchaText("aB1-2 c\n"), "AB12C");
   assert.equal(normalizeCaptchaText(""), "");
   assert.equal(normalizeCaptchaText("!@#$"), "");
-});
-
-test("the local solver routes text-captcha to OCR and rejects image-selection", async () => {
-  const engine = engineReturning("xy", 0.8);
-  const solver = localVerificationSolver(engine);
-  assert.deepEqual(
-    await solver.solve({ image: fixtureImage, challengeKind: "text-captcha" }),
-    { answer: "XY", confidence: 0.8 },
-  );
-  await assert.rejects(
-    solver.solve({ image: fixtureImage, challengeKind: "image-selection" }),
-    /does not support challenge kind image-selection/,
-  );
 });
 
 test("the OCR solver reads the image in memory without persisting or logging it", () => {

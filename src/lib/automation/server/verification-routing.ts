@@ -14,7 +14,7 @@ import {
   type VerificationSelectionPoint,
   type VerificationSolver,
 } from "./verification-solver.ts";
-import { localVerificationSolver } from "./text-captcha-solver.ts";
+import { localVerificationSolver } from "./local-verification-solver.ts";
 import {
   captureChallengeImageForContract,
   clickVerificationTarget,
@@ -65,6 +65,7 @@ export async function routeVerificationActor(input: {
   contract: HumanAssistanceContract | null;
   session: string;
   confidenceThreshold: number | undefined;
+  prompt?: string;
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
   if (input.actor !== "solver") return { kind: "human" };
@@ -97,6 +98,7 @@ export async function routeVerificationActor(input: {
         deps.injectAnswer(input.session, contract!, answer),
       injectSelections: (selections) =>
         deps.injectSelections(input.session, contract!, selections),
+      prompt: input.prompt,
     });
   } catch {
     await deps.finalizeFailed("Verification solver failed to solve the challenge.");

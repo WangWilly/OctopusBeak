@@ -58,9 +58,3 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
     };
   },
 };
-
-export function localVerificationSolver(
-  engine: TextRecognitionEngine = tesseractTextRecognitionEngine,
-): VerificationSolver {
-  return textCaptchaSolver(engine);
-}
