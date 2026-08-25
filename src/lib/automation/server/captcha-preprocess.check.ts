@@ -9,6 +9,7 @@ import {
   encodeGrayImage,
   otsuThreshold,
   preprocessCaptchaImage,
+  removeInterferenceLines,
   upscaleImage,
   type GrayImage,
 } from "./captcha-preprocess.ts";
@@ -85,6 +86,29 @@ test("denoise removes small isolated dots but keeps a large block", () => {
   assert.equal(denoised.data[27], 0, "3x3 block kept");
 });
 
+test("removeInterferenceLines removes long grid lines without deleting compact glyphs", () => {
+  const image = solidGray(10, 10, 0);
+  for (let x = 0; x < image.width; x += 1) image.data[2 * image.width + x] = 255;
+  for (let y = 0; y < image.height; y += 1) image.data[y * image.width + 7] = 255;
+  for (let y = 5; y <= 7; y += 1) {
+    for (let x = 2; x <= 4; x += 1) image.data[y * image.width + x] = 255;
+  }
+
+  const cleaned = removeInterferenceLines(image);
+
+  assert.ok(
+    Array.from({ length: image.width }, (_, x) => cleaned.data[2 * image.width + x])
+      .every((value) => value === 0),
+    "horizontal grid line removed",
+  );
+  assert.ok(
+    Array.from({ length: image.height }, (_, y) => cleaned.data[y * image.width + 7])
+      .every((value) => value === 0),
+    "vertical grid line removed",
+  );
+  assert.equal(cleaned.data[6 * image.width + 3], 255, "compact glyph retained");
+});
+
 test("preprocessCaptchaImage returns a PNG buffer from a PNG buffer", () => {
   const png = new PNG({ width: 6, height: 2 });
   png.data.fill(200);
@@ -112,6 +136,25 @@ test("preprocessCaptchaImage reports each step to the observer in order", () => 
     "upscaled",
     "blurred",
     "binarized",
+    "denoised",
+  ]);
+});
+
+test("preprocessCaptchaImage reports Yuanta line removal when requested", () => {
+  const steps: string[] = [];
+  const png = new PNG({ width: 10, height: 10 });
+  png.data.fill(0);
+  preprocessCaptchaImage(
+    PNG.sync.write(png),
+    (step) => steps.push(step),
+    { removeInterferenceLines: true },
+  );
+  assert.deepEqual(steps, [
+    "grayscale",
+    "upscaled",
+    "blurred",
+    "binarized",
+    "lines-removed",
     "denoised",
   ]);
 });

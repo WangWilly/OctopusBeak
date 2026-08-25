@@ -4,7 +4,10 @@ import {
   type LibrettoWorkflowContext,
 } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 export const YUANTA_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const YUANTA_BANK_ORIGIN = new URL(YUANTA_ENTRY_URL).origin;
@@ -46,6 +49,46 @@ async function waitForMainFrame(
     await page.waitForTimeout(250);
   }
   throw new Error('Timed out waiting for frame "main".');
+}
+
+export function yuantaBankCaptchaAssistanceStage(
+  loginFrame: Frame,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "yuanta-bank-login-captcha",
+    title: "Enter the YuanTa Bank CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "yuanta-bank.login.captcha-input",
+        modes: ["click", "type"],
+        locator: loginFrame.locator("#gcode"),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "yuanta-bank.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "yuanta-bank.login.captcha-image",
+      locator: loginFrame.locator('img[src*="GOTP"]:visible').first(),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
 }
 
 function cidFromUrl(url: string): string | null {
@@ -324,32 +367,9 @@ export async function authenticateYuantaBank(
         await fillLoginForm(authPage, typedCredentials);
         let loginFrame = await waitForMainFrame(authPage);
         await dismissYuantaBankNotice(loginFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [
-            {
-              id: "captcha-input",
-              label: "CAPTCHA input",
-              semanticId: "yuanta-bank.login.captcha-input",
-              modes: ["click", "type"],
-              locator: loginFrame.locator("#gcode"),
-            },
-          ],
-          contextRegions: [
-            {
-              id: "captcha-challenge",
-              label: "CAPTCHA challenge and instructions",
-              semanticId: "yuanta-bank.login.captcha-challenge",
-            },
-          ],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: {
-            targetId: "captcha-input",
-            contextRegionIds: ["captcha-challenge"],
-            initialZoom: 1.15,
-          },
-        });
+        await emitHumanAssistanceStage(
+          yuantaBankCaptchaAssistanceStage(loginFrame),
+        );
         console.log(
           "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
             session +

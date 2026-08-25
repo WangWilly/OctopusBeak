@@ -1,5 +1,8 @@
 import { createWorker, OEM, PSM, type Page } from "tesseract.js";
-import type { ChallengeCharacterSet } from "../human-assistance.ts";
+import type {
+  CaptchaImagePreprocessingMode,
+  ChallengeCharacterSet,
+} from "../human-assistance.ts";
 import type { VerificationSolver, VerificationSolverResult } from "./verification-solver.ts";
 import { preprocessCaptchaImage } from "./captcha-preprocess.ts";
 import { openCaptchaDebugSession } from "./captcha-debug.ts";
@@ -8,6 +11,7 @@ export type TextRecognitionEngine = {
   recognize(
     image: Buffer,
     charset?: ChallengeCharacterSet,
+    imagePreprocessing?: readonly CaptchaImagePreprocessingMode[],
   ): Promise<{ text: string; confidence: number }>;
 };
 
@@ -52,13 +56,22 @@ function clampConfidence(value: number): number {
 
 export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSolver {
   return {
-    async solve({ image, challengeKind, charset }): Promise<VerificationSolverResult> {
+    async solve({
+      image,
+      challengeKind,
+      charset,
+      imagePreprocessing,
+    }): Promise<VerificationSolverResult> {
       if (challengeKind !== "text-captcha") {
         throw new Error(
           `OCR solver does not support challenge kind ${challengeKind}.`,
         );
       }
-      const recognition = await engine.recognize(image, charset);
+      const recognition = await engine.recognize(
+        image,
+        charset,
+        imagePreprocessing,
+      );
       const answer = normalizeCaptchaText(recognition.text);
       if (!answer) return { answer: "", confidence: 0 };
       return { answer, confidence: clampConfidence(recognition.confidence) };
@@ -85,7 +98,7 @@ function tesseractWorker() {
 }
 
 export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
-  async recognize(image, charset) {
+  async recognize(image, charset, imagePreprocessing) {
     const worker = await tesseractWorker();
     await worker.setParameters({
       tessedit_char_whitelist: tesseractWhitelist(charset ?? "alphanumeric"),
@@ -95,6 +108,11 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
     const processed = preprocessCaptchaImage(
       image,
       debug ? (step, buffer) => debug.writeImage(step, buffer) : undefined,
+      {
+        removeInterferenceLines: imagePreprocessing?.includes(
+          "remove-interference-lines",
+        ),
+      },
     );
     const result = await worker.recognize(processed, {}, {
       text: true,

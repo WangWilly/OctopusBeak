@@ -1,5 +1,9 @@
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
-import type { HumanAssistanceContract, ChallengeCharacterSet } from "../human-assistance.ts";
+import type {
+  CaptchaImagePreprocessingMode,
+  ChallengeCharacterSet,
+  HumanAssistanceContract,
+} from "../human-assistance.ts";
 import {
   DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
   challengeConfidenceThreshold,
@@ -67,6 +71,7 @@ export async function routeVerificationActor(input: {
   confidenceThreshold: number | undefined;
   prompt?: string;
   charset?: ChallengeCharacterSet;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
   if (input.actor !== "solver") return { kind: "human" };
@@ -101,6 +106,7 @@ export async function routeVerificationActor(input: {
         deps.injectSelections(input.session, contract!, selections),
       prompt: input.prompt,
       charset: input.charset,
+      imagePreprocessing: input.imagePreprocessing,
     });
   } catch {
     await deps.finalizeFailed("Verification solver failed to solve the challenge.");
@@ -175,6 +181,7 @@ export async function routeWaitingRunVerification(input: {
     session,
     confidenceThreshold,
     charset: contract?.charset,
+    imagePreprocessing: contract?.imagePreprocessing,
     prompt: contract?.prompt,
     dependencies,
   });

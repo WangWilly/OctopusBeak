@@ -31,6 +31,13 @@ export const CHALLENGE_CHARACTER_SETS = ["digits", "alphanumeric"] as const;
 
 export type ChallengeCharacterSet = typeof CHALLENGE_CHARACTER_SETS[number];
 
+export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
+  "remove-interference-lines",
+] as const;
+
+export type CaptchaImagePreprocessingMode =
+  typeof CAPTCHA_IMAGE_PREPROCESSING_MODES[number];
+
 export type HumanVerificationRect = {
   x: number;
   y: number;
@@ -86,6 +93,7 @@ export type HumanAssistanceContractInput = {
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: VerificationChallengeImageRegion;
   charset?: ChallengeCharacterSet;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   prompt?: string;
 };
 
@@ -178,6 +186,16 @@ export function createHumanAssistanceContract(
   if (input.charset !== undefined && !CHALLENGE_CHARACTER_SETS.includes(input.charset)) {
     throw new Error(`Invalid human assistance contract: unknown challenge character set ${input.charset}.`);
   }
+  if (input.imagePreprocessing !== undefined) {
+    uniqueIds(input.imagePreprocessing, "image preprocessing modes");
+    for (const mode of input.imagePreprocessing) {
+      if (!CAPTCHA_IMAGE_PREPROCESSING_MODES.includes(mode)) {
+        throw new Error(
+          `Invalid human assistance contract: unknown image preprocessing mode ${mode}.`,
+        );
+      }
+    }
+  }
   if (input.prompt !== undefined) {
     nonEmpty(input.prompt, "prompt");
   }
@@ -205,6 +223,9 @@ export function createHumanAssistanceContract(
     ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
     ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
     ...(input.charset === undefined ? {} : { charset: input.charset }),
+    ...(input.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...input.imagePreprocessing] }),
     ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
   };
 }

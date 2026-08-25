@@ -39,6 +39,7 @@ function contract(overrides: Partial<HumanAssistanceContract> = {}): HumanAssist
 function textCaptchaContract(): HumanAssistanceContract {
   return contract({
     challengeKind: "text-captcha",
+    charset: "digits",
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",
@@ -285,10 +286,13 @@ function createWaitingRun(
   return { taskRunId: run.taskRunId, taskId };
 }
 
-test("an unset source routes as human and leaves the run untouched", async () => {
+test("an unset Yuanta source routes as human and leaves the run untouched", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-human-"));
   try {
-    const run = createWaitingRun(ledgerDir, { contract: textCaptchaContract() });
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "yuanta-all-statements",
+      contract: textCaptchaContract(),
+    });
     const tracked = trackDependencies();
     const db = openLedgerDatabase(ledgerDir);
     const outcome = await routeWaitingRunVerification({
@@ -332,6 +336,61 @@ test("a solver source routes through the solver seam with configured threshold",
     db.close();
     assert.deepEqual(outcome, { kind: "resumed" });
     assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("a Yuanta source routes its digit CAPTCHA through the local solver seam and resumes", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-yuanta-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "yuanta-all-statements",
+      contract: {
+        ...textCaptchaContract(),
+        imagePreprocessing: ["remove-interference-lines"],
+      },
+    });
+    const solverInputs: Array<{
+      challengeKind: string;
+      charset?: string;
+      imagePreprocessing?: readonly string[];
+    }> = [];
+    const tracked = trackDependencies({
+      solver: {
+        async solve(input) {
+          solverInputs.push({
+            challengeKind: input.challengeKind,
+            charset: input.charset,
+            imagePreprocessing: input.imagePreprocessing,
+          });
+          return { answer: "1234", confidence: 0.95 };
+        },
+      },
+    });
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_YUANTA_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(solverInputs, [{
+      challengeKind: "text-captcha",
+      charset: "digits",
+      imagePreprocessing: ["remove-interference-lines"],
+    }]);
+    assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+    assert.deepEqual(tracked.injected, ["1234"]);
+    assert.deepEqual(tracked.resumed, ["ses-solver"]);
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }

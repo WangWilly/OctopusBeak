@@ -276,3 +276,22 @@ test("solveVerificationChallenge forwards the character set to the solver", asyn
   });
   assert.equal(receivedCharset, "digits");
 });
+
+test("solveVerificationChallenge forwards image preprocessing modes to the solver", async () => {
+  let receivedModes: unknown;
+  const solver: VerificationSolver = {
+    async solve({ imagePreprocessing }) {
+      receivedModes = imagePreprocessing;
+      return { answer: "123", confidence: 0.95 };
+    },
+  };
+  await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    imagePreprocessing: ["remove-interference-lines"],
+  });
+  assert.deepEqual(receivedModes, ["remove-interference-lines"]);
+});
