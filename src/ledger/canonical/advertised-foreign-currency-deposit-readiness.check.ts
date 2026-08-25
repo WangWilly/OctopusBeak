@@ -10,14 +10,15 @@ test("all advertised foreign-currency deposit integrations have complete version
   assert.deepEqual(ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS, [
     "yuanta",
     "cathay",
+    "sinopac",
     "linebank",
   ]);
-  assert.equal(ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS.length, 3);
+  assert.equal(ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS.length, 4);
   assert.equal(
     (
       ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS as readonly string[]
     ).includes("sinopac"),
-    false,
+    true,
   );
   assert.equal(
     evaluateAdvertisedForeignCurrencyDepositReadiness().releaseReady,

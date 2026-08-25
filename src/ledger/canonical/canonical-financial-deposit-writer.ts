@@ -415,7 +415,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA,
   ))
     routeRules[metadata.authorityRoute] = {
-      postingOrigin: "provider_booked_history",
+      postingOrigin: metadata.postingOrigin,
       postingBasis: "statement-posted-history",
       ruleVersion: metadata.contractVersion,
       effectiveTimeBasis: "transaction-time",
