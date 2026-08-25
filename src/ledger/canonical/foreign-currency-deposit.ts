@@ -24,12 +24,13 @@ export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY = null;
 
 /** Sources currently advertised for canonical foreign-currency Financial
- * Transactions. SinoPac remains a source-evidence integration until it can
- * prove a stable provider transaction identity. */
+ * Transactions. SinoPac uses an explicitly human-attested composite identity;
+ * it is never represented as a provider-guaranteed transaction identifier. */
 export const FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS = [
   "yuanta",
   "cathay",
   "linebank",
+  "sinopac",
 ] as const;
 export type ForeignCurrencyDepositSourceId =
   (typeof FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS)[number];
@@ -39,6 +40,7 @@ type ForeignCurrencyContract = {
   authorityRoute: string;
   contractVersion: string;
   recordKind: string;
+  postingOrigin: string;
   workflow: string;
 };
 
@@ -59,6 +61,11 @@ export const FOREIGN_CURRENCY_DEPOSIT_CONTRACTS: Readonly<
     ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.linebank,
     sourceId: "linebank",
     workflow: "linebankStatements",
+  },
+  sinopac: {
+    ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA.sinopac,
+    sourceId: "sinopac",
+    workflow: "sinopacStatements",
   },
 };
 
@@ -647,7 +654,7 @@ export function createForeignCurrencyDepositCapture(
     },
     semantics: {
       postingStatus: "posted",
-      postingOrigin: "provider_booked_history",
+      postingOrigin: contract.postingOrigin,
       postingBasis: "statement-posted-history",
       postingRuleVersion: contract.contractVersion,
       economicStatus: "normal",
