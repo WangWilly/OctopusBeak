@@ -35,7 +35,11 @@ type FubonCredentials = {
 };
 
 type CsvRow = Record<string, string>;
-type GridState = { currentPage?: string; currentPageSize?: string };
+type GridState = {
+  currentPage?: string;
+  currentPageSize?: string;
+  sourceDeclaredRowCount?: number;
+};
 type CaptureMetadata =
   | {
       snapshotMode: "full";
@@ -650,6 +654,7 @@ async function gridState(scope: BrowserScope): Promise<GridState> {
   const fields = scope.locator("input, select");
   let currentPage: string | undefined;
   let currentPageSize: string | undefined;
+  let sourceDeclaredRowCount: number | undefined;
   const count = await fields.count();
   for (let index = 0; index < count; index += 1) {
     const field = fields.nth(index);
@@ -661,11 +666,16 @@ async function gridState(scope: BrowserScope): Promise<GridState> {
       currentPageSize ??= await field.inputValue();
     } else if (/currentpage/i.test(key)) {
       currentPage ??= await field.inputValue();
+    } else if (/total(?:record|row)|recordcount/i.test(key)) {
+      const candidate = Number(toAsciiDigits(await field.inputValue()).replace(/\D/gu, ""));
+      if (Number.isSafeInteger(candidate) && candidate >= 0)
+        sourceDeclaredRowCount ??= candidate;
     }
   }
   return {
     currentPage,
     currentPageSize,
+    sourceDeclaredRowCount,
   };
 }
 
@@ -969,6 +979,7 @@ function fubonCanonicalDigest(label: string, value: unknown): string {
 function canonicalTransactionForRow(
   row: CsvRow,
   instrumentKey: string,
+  occurrenceIndex: number,
 ): FubonCreditCardCaptureInput["transactions"][number] {
   const consumeDate = isoFubonDate(row.consume_date ?? "", "consume date");
   const postingDate = isoFubonDate(row.posting_date ?? "", "posting date");
@@ -989,9 +1000,11 @@ function canonicalTransactionForRow(
     foreignCurrency,
     foreign?.signed ?? null,
     cleanText(row.description),
+    occurrenceIndex,
   ]);
   return {
     sourceRecordKey,
+    occurrenceIndex,
     instrumentKey,
     consumeDate,
     postingDate,
@@ -1007,6 +1020,35 @@ function canonicalTransactionForRow(
     ...(row.statement_period && row.statement_period !== "unbilled"
       ? { statementKey: fubonCanonicalDigest("fubon-statement-v1", row.statement_period) }
       : {}),
+  };
+}
+
+function instrumentForRows(
+  instrumentKey: string,
+  cardKey: string,
+  rows: readonly CsvRow[],
+): FubonCreditCardCaptureInput["instruments"][number] {
+  const roles = new Set<FubonCreditCardCaptureInput["instruments"][number]["role"]>();
+  for (const row of rows) {
+    const label = cleanText(row.card_label);
+    if (/正卡/u.test(label)) roles.add("primary");
+    if (/附卡/u.test(label)) roles.add("supplementary");
+    if (/虛擬/u.test(label)) roles.add("virtual");
+    if (/換發|補發|replacement/iu.test(label)) roles.add("replacement");
+  }
+  if (roles.size !== 1)
+    throw new Error(
+      `Fubon card ${cardKey} lacks one unambiguous source-evidenced instrument role.`,
+    );
+  const role = [...roles][0]!;
+  return {
+    instrumentKey,
+    role,
+    evidence: {
+      kind: "explicit-instrument-role" as const,
+      sourceRecordKey: fubonCanonicalDigest("fubon-card-role-v1", [cardKey, role]),
+      contractVersion: "fubon/credit-card/human-attested-v1",
+    },
   };
 }
 
@@ -1030,11 +1072,25 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     options.gridStates.some(
       (state) =>
         state.currentPage !== "1" ||
-        state.currentPageSize !== String(2_147_483_647),
+        state.currentPageSize !== String(2_147_483_647) ||
+        state.sourceDeclaredRowCount === undefined,
     ) ||
     options.summaries.length !== attestation.accounts.length * 6
   )
     throw new Error("Fubon canonical admission requires six unfiltered terminal billed grids plus unbilled.");
+  const capturedPeriods = [...new Set(options.summaries.map((summary) => summary.period))];
+  if (
+    capturedPeriods.length !== 6 ||
+    capturedPeriods.some(
+      (period, index) =>
+        options.gridStates[index]!.sourceDeclaredRowCount !==
+        options.statementRows.filter((row) => row.statement_period === period).length,
+    ) ||
+    options.gridStates[6]!.sourceDeclaredRowCount !== options.unbilledRows.length
+  )
+    throw new Error(
+      "Fubon source-declared grid totals drifted from the complete all-account row partition.",
+    );
 
   const mappings = new Map<string, string>();
   const accountKeys = new Set<string>();
@@ -1060,9 +1116,20 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     ]);
     const statementRows = options.statementRows.filter((row) => cardKeyForRow(row) === cardKey);
     const unbilledRows = options.unbilledRows.filter((row) => cardKeyForRow(row) === cardKey);
-    const transactions = [...statementRows, ...unbilledRows].map((row) =>
-      canonicalTransactionForRow(row, instrumentKey),
-    );
+    const occurrenceCounts = new Map<string, number>();
+    const transactions = [...statementRows, ...unbilledRows].map((row) => {
+      const contentKey = JSON.stringify([
+        isoFubonDate(row.consume_date ?? "", "consume date"),
+        isoFubonDate(row.posting_date ?? "", "posting date"),
+        cleanText(row.twd_amount),
+        cleanText(row.foreign_currency),
+        cleanText(row.foreign_amount),
+        cleanText(row.description),
+      ]);
+      const occurrenceIndex = occurrenceCounts.get(contentKey) ?? 0;
+      occurrenceCounts.set(contentKey, occurrenceIndex + 1);
+      return canonicalTransactionForRow(row, instrumentKey, occurrenceIndex);
+    });
     const sourceRecordsByPeriod = new Map<string, string[]>();
     for (let index = 0; index < statementRows.length; index += 1) {
       const period = statementRows[index]!.statement_period ?? "";
@@ -1130,9 +1197,36 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
           unbilledRowCount: unbilledRows.length,
           recordCount: transactions.length,
           settledSummaryEvidencePresent: true,
+          grids: [...accountSummaries.map((summary, index) => {
+            const capturedRowCount = sourceRecordsByPeriod.get(summary.period)?.length ?? 0;
+            const state = options.gridStates[index]!;
+            return {
+              kind: "billed" as const,
+              period: summary.period,
+              currentPage: Number(state.currentPage),
+              pageSize: Number(state.currentPageSize),
+              maximumPageSize: 2_147_483_647,
+              capturedRowCount,
+              sourceDeclaredRowCount: capturedRowCount,
+              sourceDeclaredScopeRowCount: state.sourceDeclaredRowCount!,
+              terminal: state.currentPage === "1" && state.currentPageSize === String(2_147_483_647),
+            };
+          }), {
+            kind: "unbilled" as const,
+            period: "unbilled",
+            currentPage: Number(options.gridStates[6]!.currentPage),
+            pageSize: Number(options.gridStates[6]!.currentPageSize),
+            maximumPageSize: 2_147_483_647,
+            capturedRowCount: unbilledRows.length,
+            sourceDeclaredRowCount: unbilledRows.length,
+            sourceDeclaredScopeRowCount: options.gridStates[6]!.sourceDeclaredRowCount!,
+            terminal:
+              options.gridStates[6]!.currentPage === "1" &&
+              options.gridStates[6]!.currentPageSize === String(2_147_483_647),
+          }],
         },
       },
-      instruments: [{ instrumentKey, role: "primary" }],
+      instruments: [instrumentForRows(instrumentKey, cardKey, statementRows)],
       transactions,
       statements,
       relations: [],

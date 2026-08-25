@@ -235,6 +235,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   const isForeignCurrencyCapture = capture.authorityRoute.includes(
     "/foreign-currency/",
   );
+  const isFubonCreditCardCapture =
+    capture.authorityRoute === "fubon/credit-card/human-attested-v1";
   validateText(capture.captureId, "Capture ID");
   validateText(capture.authorityRoute, "Authority route");
   validateText(capture.contractVersion, "Contract version");
@@ -294,6 +296,24 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       postingBasis: "statement-posted-history",
       ruleVersion: "fubon/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
+    },
+    "fubon/credit-card/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "fubon/credit-card/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "fubon",
+      stream: "credit-card",
+      recordKind: "fubon-credit-card-transaction",
+      contractVersion: "fubon/credit-card/human-attested-v1",
+      requireProviderGuaranteedFalse: true,
     },
     "yuanta/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
@@ -550,6 +570,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       throw new Error("Capture page ordinal is invalid.");
     if (isForeignCurrencyCapture && page.pageOrdinal !== pageIndex)
       throw new Error("Foreign capture page ordinals must be contiguous from zero.");
+    if (isFubonCreditCardCapture && page.pageOrdinal !== pageIndex)
+      throw new Error("Fubon credit-card grid ordinals must be contiguous from zero.");
     if (!Number.isSafeInteger(page.rowCount) || page.rowCount < 0)
       throw new Error("Capture page row count is invalid.");
     capturedRowCount += page.rowCount;
@@ -566,6 +588,15 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     throw new Error("Foreign complete-range capture requires exactly one final terminal page.");
   if (isForeignCurrencyCapture && capturedRowCount !== capture.records.length)
     throw new Error("Foreign capture page row count does not match admitted records.");
+  if (
+    isFubonCreditCardCapture &&
+    (capture.pages.length !== 7 ||
+      terminalPageCount !== 7 ||
+      capturedRowCount !== capture.records.length)
+  )
+    throw new Error(
+      "Fubon credit-card capture requires seven terminal grids with matching row counts.",
+    );
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
@@ -1466,6 +1497,10 @@ export async function commitCanonicalFinancialDepositCapture(
 export async function commitCanonicalFinancialDepositCaptureBatch(
   store: CanonicalFinancialDepositWriterStore,
   captures: readonly CanonicalFinancialDepositValidatedCapture[],
+  beforeCommit?: (
+    db: DatabaseSync,
+    results: readonly CanonicalFinancialDepositCommitResult[],
+  ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
   if (captures.length === 0)
     throw new Error("Financial deposit capture batch cannot be empty.");
@@ -1482,6 +1517,7 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
       const results = captures.map((capture) =>
         commitOnce(store, capture, false),
       );
+      beforeCommit?.(store.db, results);
       store.db.exec("COMMIT");
       return results;
     } catch (error) {

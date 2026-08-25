@@ -2350,6 +2350,7 @@ function validateCanonicalAuthorityRoutes(
       WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
         AND (
           (capture.stream = ? AND registered.stream = ?)
+          OR (capture.stream = 'credit-card' AND registered.stream = 'credit-card')
           OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
         )
         AND source_assertion.producer_id = capture.authority_route
@@ -2359,6 +2360,13 @@ function validateCanonicalAuthorityRoutes(
             AND capture.completeness_rule_version = ?
             AND registered.integration_namespace = ?
             AND registered.contract_version = ?)
+          OR
+          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
+            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1'
+            AND capture.stream = 'credit-card'
+            AND registered.stream = 'credit-card'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'fubon/credit-card/human-attested-v1')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
@@ -3324,10 +3332,15 @@ function validateSelectedAssertionProvenance(
         AND capture.commit_id = provenance.commit_id
         AND (
           capture.stream = ?
+          OR capture.stream = 'credit-card'
           OR capture.stream = 'foreign-currency-deposit'
         )
         AND (
           (capture.authority_route = ? AND capture.completeness_rule_version = ?)
+          OR
+          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
+            AND capture.stream = 'credit-card'
+            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
@@ -3662,7 +3675,7 @@ function projectionRelevantCommitCount(db: DatabaseSync): number {
 }
 
 function sourceOnlyCommitCount(db: DatabaseSync): number {
-  const sourceCaptureCount = Number(
+  return Number(
     (
       db
         .prepare(
@@ -3678,38 +3691,6 @@ function sourceOnlyCommitCount(db: DatabaseSync): number {
         .get() as { count?: number }
     ).count ?? 0,
   );
-  const hasFubonCreditCardCaptures = Number(
-    (
-      db.prepare(
-        `SELECT COUNT(*) AS count FROM sqlite_master
-         WHERE type = 'table' AND name = 'fubon_credit_card_captures'`,
-      ).get() as { count?: number }
-    ).count ?? 0,
-  ) === 1;
-  if (!hasFubonCreditCardCaptures) return sourceCaptureCount;
-  const fubonCreditCardCaptureCount = Number(
-    (
-      db.prepare(
-        `SELECT COUNT(*) AS count FROM canonical_commits commit_row
-         WHERE commit_row.commit_kind = 'source_capture'
-           AND commit_row.authority_route = 'fubon/credit-card/human-attested-v1'
-           AND EXISTS (
-             SELECT 1 FROM fubon_credit_card_captures capture
-             WHERE capture.commit_sequence = commit_row.commit_sequence
-               AND capture.authority_route = 'fubon/credit-card/human-attested-v1'
-               AND capture.contract_version = 'fubon/credit-card/human-attested-v1'
-           )
-           AND EXISTS (
-             SELECT 1 FROM source_authority_routes registered
-             WHERE registered.authority_route = commit_row.authority_route
-               AND registered.integration_namespace = 'fubon'
-               AND registered.stream = 'credit-card'
-               AND registered.contract_version = 'fubon/credit-card/human-attested-v1'
-           )`,
-      ).get() as { count?: number }
-    ).count ?? 0,
-  );
-  return sourceCaptureCount + fubonCreditCardCaptureCount;
 }
 
 const CANONICAL_FINANCIAL_PROJECTION_TABLES = [
@@ -4432,8 +4413,11 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /ctbc\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /sinopac\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /posting_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /posting_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
     /semantic_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /semantic_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
     /effective_time_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
+    /effective_time_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
     /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
       sql,
     ) &&
@@ -4464,15 +4448,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -5884,13 +5868,13 @@ export type CanonicalTransaction = {
   currency: "TWD";
   direction: "inflow" | "outflow";
   postingStatus: "posted";
-  postingOrigin: "provider_booked_history";
-  postingBasis: "query-status-success-with-accounting-date";
-  postingRuleVersion: "cathay/domestic-deposit/v1";
+  postingOrigin: "provider_booked_history" | "human_attested_history" | "human-attested";
+  postingBasis: string;
+  postingRuleVersion: string;
   assertionSupportState: CanonicalAssertionSupportState;
   economicStatus: CanonicalEconomicStatus;
   administrativeState: CanonicalAdministrativeState;
-  semanticRuleVersion: "cathay/domestic-deposit/v1";
+  semanticRuleVersion: string;
   displayLabel: string | null;
   displayLabelOrigin: "source" | "derived" | "user";
   displayLabelCommitSequence: number | null;
@@ -5898,12 +5882,12 @@ export type CanonicalTransaction = {
   noteOrigin: "derived" | "user" | null;
   noteCommitSequence: number | null;
   effectiveOn: string;
-  effectiveTimeBasis: "accounting";
-  effectiveTimeRuleVersion: "cathay/domestic-deposit/v1";
+  effectiveTimeBasis: "accounting" | "transaction-time";
+  effectiveTimeRuleVersion: string;
   transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE;
-  timePrecision: "second";
-  timeOrigin: "source_reported";
+  timePrecision: "date" | "minute" | "second";
+  timeOrigin: "source_reported" | "defaulted_local_midnight";
   utcInstantUtcUs: number;
   revisionId: string;
   commitSequence: number;
@@ -5915,8 +5899,8 @@ export type CathayCanonicalCurrentQueryResult = {
   accounts: Array<{
     id: string;
     accountNo: string;
-    currency: "TWD";
-    accountType: "depository";
+    currency: string;
+    accountType: "depository" | "credit" | "loan" | "investment" | "other";
   }>;
   transactions: CanonicalTransaction[];
   commitSequence: number;
@@ -8061,18 +8045,15 @@ function transactionFromRow(
     currency: "TWD",
     direction: row.direction as "inflow" | "outflow",
     postingStatus: row.posting_status as "posted",
-    postingOrigin: row.posting_origin as "provider_booked_history",
-    postingBasis:
-      row.posting_basis as "query-status-success-with-accounting-date",
-    postingRuleVersion:
-      row.posting_rule_version as "cathay/domestic-deposit/v1",
+    postingOrigin: row.posting_origin as CanonicalTransaction["postingOrigin"],
+    postingBasis: String(row.posting_basis),
+    postingRuleVersion: String(row.posting_rule_version),
     assertionSupportState:
       row.assertion_support_state === "withdrawn" ? "withdrawn" : "supported",
     economicStatus: row.economic_status as CanonicalEconomicStatus,
     administrativeState:
       row.administrative_state as CanonicalAdministrativeState,
-    semanticRuleVersion:
-      row.semantic_rule_version as "cathay/domestic-deposit/v1",
+    semanticRuleVersion: String(row.semantic_rule_version),
     displayLabel: selectedDisplay,
     displayLabelOrigin: selectedDisplayOrigin,
     displayLabelCommitSequence: selectedDisplayCommitSequence,
@@ -8080,13 +8061,13 @@ function transactionFromRow(
     noteOrigin: selectedNoteOrigin,
     noteCommitSequence: selectedNoteCommitSequence,
     effectiveOn: String(row.effective_on),
-    effectiveTimeBasis: row.effective_time_basis as "accounting",
-    effectiveTimeRuleVersion:
-      row.effective_time_rule_version as "cathay/domestic-deposit/v1",
+    effectiveTimeBasis:
+      row.effective_time_basis as CanonicalTransaction["effectiveTimeBasis"],
+    effectiveTimeRuleVersion: String(row.effective_time_rule_version),
     transactionDateTimeLocal: String(row.transaction_date_time_local),
-    timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
-    timePrecision: "second",
-    timeOrigin: "source_reported",
+    timeZone: String(row.time_zone) as typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
+    timePrecision: row.time_precision as CanonicalTransaction["timePrecision"],
+    timeOrigin: row.time_origin as CanonicalTransaction["timeOrigin"],
     utcInstantUtcUs: Number(row.utc_instant_utc_us),
     revisionId: idToString(row.revision_id),
     commitSequence: Number(row.commit_sequence),
@@ -8294,8 +8275,8 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         ).map((row) => ({
           id: idToString(row.id),
           accountNo: String(row.accountNo),
-          currency: "TWD" as const,
-          accountType: "depository" as const,
+          currency: String(row.currency),
+          accountType: row.accountType as CathayCanonicalCurrentQueryResult["accounts"][number]["accountType"],
         }));
         if (projectionRelevantCommitCount(db) === 0) {
           return {
