@@ -9,6 +9,7 @@ import {
   type VerificationContextRegion,
   type VerificationChallengeImageRegion,
   type VerificationChallengeKind,
+  type ChallengeCharacterSet,
   type HumanAssistanceFocus,
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
@@ -34,6 +35,7 @@ export type WorkflowHumanAssistanceStage = {
   focus: HumanAssistanceFocus;
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: WorkflowChallengeImageRegion;
+  charset?: ChallengeCharacterSet;
 };
 
 export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
@@ -104,6 +106,7 @@ export async function emitHumanAssistanceStage(
     focus: stage.focus,
     ...(stage.challengeKind === undefined ? {} : { challengeKind: stage.challengeKind }),
     ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
+    ...(stage.charset === undefined ? {} : { charset: stage.charset }),
   };
   return publishHumanAssistanceContract(contract, publish);
 }

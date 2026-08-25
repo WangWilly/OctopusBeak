@@ -1,4 +1,4 @@
-import type { HumanAssistanceContract } from "../human-assistance.ts";
+import type { HumanAssistanceContract, ChallengeCharacterSet } from "../human-assistance.ts";
 import {
   isSolverChallengeKind,
   type SolverChallengeKind,
@@ -30,6 +30,7 @@ export type VerificationSolver = {
     image: Buffer;
     challengeKind: SolverChallengeKind;
     prompt?: string;
+    charset?: ChallengeCharacterSet;
   }): Promise<VerificationSolverResult>;
 };
 
@@ -68,6 +69,7 @@ export type SolveDependencies = {
     selections: readonly VerificationSelectionPoint[],
   ) => Promise<void>;
   prompt?: string;
+  charset?: ChallengeCharacterSet;
 };
 
 export type SolveOutcome =
@@ -85,6 +87,7 @@ export async function solveVerificationChallenge(
       image,
       challengeKind: deps.challengeKind,
       prompt: deps.prompt,
+      charset: deps.charset,
     });
     if (result.confidence < deps.confidenceThreshold) continue;
     if ("selections" in result) {

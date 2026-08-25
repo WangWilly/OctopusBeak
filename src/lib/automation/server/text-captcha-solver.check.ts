@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
+  meanSymbolConfidence,
   normalizeCaptchaText,
+  tesseractWhitelist,
   textCaptchaSolver,
   type TextRecognitionEngine,
 } from "./text-captcha-solver.ts";
@@ -56,6 +58,61 @@ test("normalizeCaptchaText keeps only alphanumeric characters, uppercased", () =
   assert.equal(normalizeCaptchaText("aB1-2 c\n"), "AB12C");
   assert.equal(normalizeCaptchaText(""), "");
   assert.equal(normalizeCaptchaText("!@#$"), "");
+});
+
+test("tesseractWhitelist maps a named set to tesseract's whitelist string", () => {
+  assert.equal(tesseractWhitelist("digits"), "0123456789");
+  assert.equal(
+    tesseractWhitelist("alphanumeric"),
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  );
+});
+
+test("meanSymbolConfidence averages per-symbol confidences", () => {
+  const page = {
+    blocks: [
+      {
+        paragraphs: [
+          {
+            lines: [
+              {
+                words: [
+                  {
+                    symbols: [
+                      { text: "8", confidence: 56 },
+                      { text: "2", confidence: 90 },
+                      { text: "1", confidence: 92 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  } as unknown as Parameters<typeof meanSymbolConfidence>[0];
+  assert.equal(meanSymbolConfidence(page), (56 + 90 + 92) / 3);
+});
+
+test("meanSymbolConfidence returns null without any symbols", () => {
+  assert.equal(meanSymbolConfidence({ blocks: null } as never), null);
+});
+
+test("the OCR solver forwards the character set to the engine", async () => {
+  let receivedCharset: unknown;
+  const engine: TextRecognitionEngine = {
+    async recognize(_image, charset) {
+      receivedCharset = charset;
+      return { text: "123", confidence: 0.9 };
+    },
+  };
+  await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+  });
+  assert.equal(receivedCharset, "digits");
 });
 
 test("the OCR solver reads the image in memory without persisting or logging it", () => {

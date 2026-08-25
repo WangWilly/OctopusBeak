@@ -718,6 +718,7 @@ test("Fubon declares a solver-capable text CAPTCHA challenge", async () => {
     "utf8",
   );
   assert.match(source, /challengeKind: "text-captcha"/);
+  assert.match(source, /charset: "digits"/);
   assert.match(source, /challengeImageRegion/);
   assert.match(source, /fubon\.login\.captcha-image/);
   assert.match(source, /img\[src\*="captchaImage"\]:visible/);

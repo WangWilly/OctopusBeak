@@ -257,3 +257,22 @@ test("a selection answer without an injection handler is rejected", async () => 
     /no selection injection is available/,
   );
 });
+
+test("solveVerificationChallenge forwards the character set to the solver", async () => {
+  let receivedCharset: unknown;
+  const solver: VerificationSolver = {
+    async solve({ charset }) {
+      receivedCharset = charset;
+      return { answer: "123", confidence: 0.95 };
+    },
+  };
+  await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    charset: "digits",
+  });
+  assert.equal(receivedCharset, "digits");
+});
