@@ -15,17 +15,23 @@ assert.match(source, /ipcMain\.handle\("settings:save"/);
 assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
 assert.match(
   source,
-  /shouldCheckYuantaTradeCompletion\(\s*record\.type,\s*clickedTarget\?\.semanticId/,
-);
-assert.match(source, /refreshSinopacCaptchaTarget\(session, contract\)/);
-assert.match(
-  source,
-  /const refreshedContractInput =\s*\(await refreshCathayEmailOtpTarget\(session, contract\)\)\s*\?\?\s*\(await refreshSinopacCaptchaTarget\(session, contract\)\)/,
+  /shouldCheckProviderVerificationCompletion\(\s*record\.type,\s*clickedTarget\?\.semanticId/,
 );
 assert.match(
   source,
-  /const refreshedYuantaContractInput =\s*await refreshYuantaTradeChallengeSubmitTarget\(\s*session,\s*refreshedContract,?\s*\)/,
+  /await refreshProviderVerificationTarget\(session, contract\)/,
 );
+assert.match(
+  source,
+  /await sendProviderVerificationInput\(session, input, refreshedContract\)/,
+);
+assert.match(
+  source,
+  /await refreshProviderVerificationTarget\(\s*session,\s*refreshedContract,?\s*\)/,
+);
+assert.match(source, /shouldAutoResumeProviderVerification\(/);
+assert.doesNotMatch(source, /refreshCathayEmailOtpTarget|refreshSinopacCaptchaTarget|refreshYuantaTradeChallengeSubmitTarget/);
+assert.doesNotMatch(source, /shouldCheckYuantaTradeCompletion|shouldAutoResumeYuantaTradeCaptcha/);
 
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
