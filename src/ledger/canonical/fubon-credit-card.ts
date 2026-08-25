@@ -7,15 +7,11 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  withCanonicalSnapshot,
-  withCanonicalWriterQueue,
-} from "./canonical-runtime.ts";
-import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  getFubonCreditCardHumanAttestedV1Manifest,
   isFubonCreditCardHumanAttestedAccountKey,
   isFubonCreditCardHumanAttestedV1Active,
   isFubonCreditCardHumanAttestationDurablyActive,
+  peekFubonCreditCardHumanAttestationStatus,
   recordInitialFubonCreditCardHumanAttestationIfMissing,
 } from "./fubon-credit-card-human-attestation.ts";
 
@@ -218,7 +214,6 @@ export class FubonCreditCardAdmissionError extends Error {
     this.name = "FubonCreditCardAdmissionError";
   }
 }
-
 const VALIDATED_CAPTURES = new WeakSet<object>();
 
 function fail(message: string): never {
@@ -344,6 +339,29 @@ export function buildFubonCreditCardTransactionSourceKey(
     record.occurrenceIndex,
   ]);
   return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
+}
+
+export function buildFubonCreditCardStatementEvidenceKey(
+  identity: FubonCreditCardCaptureInput["identity"],
+  statement: Pick<
+    FubonCreditCardStatementInput,
+    "statementKey" | "cycleStart" | "cycleEnd"
+  >,
+): `sha256:${string}` {
+  const accountKey = text(
+    identity.humanAttestedAccountKey,
+    "Human-attested account key",
+  );
+  if (!isFubonCreditCardHumanAttestedAccountKey(accountKey))
+    fail("Statement evidence requires an opaque human-attested account key.");
+  const tuple = [
+    "fubon-credit-card-statement-summary-v1",
+    accountKey,
+    text(statement.statementKey, "Statement key"),
+    validDate(statement.cycleStart, "Statement cycle start"),
+    validDate(statement.cycleEnd, "Statement cycle end"),
+  ];
+  return `sha256:${createHash("sha256").update(JSON.stringify(tuple)).digest("base64url")}`;
 }
 
 function validateCompleteness(
@@ -488,6 +506,7 @@ function validateTransaction(
 }
 
 function validateStatement(
+  identity: FubonCreditCardCaptureInput["identity"],
   statement: FubonCreditCardStatementInput,
   transactions: ReadonlyMap<string, FubonCreditCardAdmittedTransaction>,
 ): FubonCreditCardAdmittedStatement {
@@ -509,6 +528,15 @@ function validateStatement(
     !evidence.sourceRecordKey.trim()
   )
     fail("Only issuer settled-cycle summary evidence may establish a Statement.");
+  if (
+    evidence.sourceRecordKey.trim() !==
+    buildFubonCreditCardStatementEvidenceKey(identity, {
+      statementKey,
+      cycleStart,
+      cycleEnd,
+    })
+  )
+    fail("Statement summary evidence is not scoped to this attested account and cycle.");
   for (const sourceKey of statement.transactionSourceKeys) {
     const transaction = transactions.get(sourceKey);
     if (!transaction)
@@ -604,8 +632,19 @@ export function admitFubonCreditCardCapture(
   const transactions: FubonCreditCardAdmittedTransaction[] = [];
   const sourceKeys = new Set<string>();
   const sourceRecordKeys = new Set<string>();
+  const occurrenceOrdinals = new Map<string, number>();
   const transactionsBySourceRecord = new Map<string, FubonCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
+    const contentIdentity = buildFubonCreditCardTransactionSourceKey(
+      capture.identity,
+      { ...record, occurrenceIndex: 0 },
+    );
+    const expectedOccurrenceIndex = occurrenceOrdinals.get(contentIdentity) ?? 0;
+    if (record.occurrenceIndex !== expectedOccurrenceIndex)
+      fail(
+        "Transaction occurrence indexes must be contiguous in complete observed source order.",
+      );
+    occurrenceOrdinals.set(contentIdentity, expectedOccurrenceIndex + 1);
     const normalized = validateTransaction(capture.identity, instruments, record);
     if (sourceRecordKeys.has(normalized.sourceRecordKey)) fail("Duplicate source record key.");
     if (sourceKeys.has(normalized.sourceKey)) fail("Transaction identity collision within one capture.");
@@ -614,12 +653,27 @@ export function admitFubonCreditCardCapture(
     sourceKeys.add(normalized.sourceKey);
     transactions.push(normalized);
   }
+  for (const instrument of instruments.values()) {
+    const evidenceKey = text(
+      instrument.evidence?.sourceRecordKey,
+      `${instrument.role} instrument role evidence source record key`,
+    );
+    const evidenceTransaction = transactionsBySourceRecord.get(evidenceKey);
+    if (!evidenceTransaction || evidenceTransaction.instrumentKey !== instrument.instrumentKey)
+      fail(
+        "Card instrument role evidence must reference a transaction source record for the same capture and instrument.",
+      );
+  }
   validateCompleteness(capture, transactions);
   if (!Array.isArray(capture.statements)) fail("Fubon credit-card statements are required.");
   const statements: FubonCreditCardAdmittedStatement[] = [];
   const statementKeys = new Set<string>();
   for (const statement of capture.statements) {
-    const normalized = validateStatement(statement, transactionsBySourceRecord);
+    const normalized = validateStatement(
+      capture.identity,
+      statement,
+      transactionsBySourceRecord,
+    );
     if (statementKeys.has(normalized.statementKey)) fail("Duplicate Statement key within one capture.");
     statementKeys.add(normalized.statementKey);
     statements.push(normalized);
@@ -673,204 +727,9 @@ export const isValidatedFubonCreditCardCapture = isAdmittedFubonCreditCardCaptur
 export type FubonCreditCardWriterStore = Pick<
   CanonicalSourceStore,
   "db" | "databasePath" | "commitClock"
->;
-
-const FUBON_CREDIT_CARD_SCHEMA = `
-CREATE TABLE IF NOT EXISTS fubon_credit_accounts (
-  account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16),
-  source_connection_key TEXT NOT NULL,
-  identity_epoch_key TEXT NOT NULL,
-  stream TEXT NOT NULL CHECK(stream = 'credit-card'),
-  human_attested_account_key TEXT NOT NULL,
-  account_natural_key TEXT NOT NULL UNIQUE,
-  account_type TEXT NOT NULL CHECK(account_type = 'credit'),
-  account_subtype TEXT NOT NULL CHECK(account_subtype = 'credit_card'),
-  provider_guaranteed INTEGER NOT NULL CHECK(provider_guaranteed = 0),
-  occurrence_provider_guaranteed INTEGER NOT NULL CHECK(occurrence_provider_guaranteed = 0),
-  created_commit_sequence INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_fubon_credit_accounts_scope
-  ON fubon_credit_accounts(source_connection_key, identity_epoch_key, stream, human_attested_account_key);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_instruments (
-  instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  instrument_key TEXT NOT NULL,
-  card_mask TEXT,
-  product_name TEXT,
-  role TEXT NOT NULL CHECK(role IN ('primary','supplementary','virtual','replacement')),
-  lifecycle TEXT,
-  created_commit_sequence INTEGER NOT NULL,
-  UNIQUE(account_id, instrument_key)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_instruments_account
-  ON fubon_credit_card_instruments(account_id, instrument_key);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_captures (
-  capture_id TEXT PRIMARY KEY,
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  observed_at TEXT NOT NULL,
-  scope_start TEXT NOT NULL,
-  scope_end TEXT NOT NULL,
-  completeness_json TEXT NOT NULL,
-  authority_route TEXT NOT NULL,
-  contract_version TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_transactions (
-  transaction_id BLOB PRIMARY KEY CHECK(length(transaction_id) = 16),
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  source_key TEXT NOT NULL,
-  created_commit_sequence INTEGER NOT NULL,
-  UNIQUE(account_id, source_key)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_transactions_account
-  ON fubon_credit_card_transactions(account_id, source_key);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_source_records (
-  source_record_id BLOB PRIMARY KEY CHECK(length(source_record_id) = 16),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  source_record_key TEXT NOT NULL,
-  source_key TEXT NOT NULL,
-  transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  compact_json TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  UNIQUE(capture_id, source_record_key)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_source_records_identity
-  ON fubon_credit_card_source_records(account_id, source_record_key, commit_sequence);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_transaction_revisions (
-  revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
-  transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  source_record_id BLOB NOT NULL REFERENCES fubon_credit_card_source_records(source_record_id),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  revision_number INTEGER NOT NULL,
-  instrument_key TEXT NOT NULL,
-  consume_date TEXT NOT NULL,
-  posting_date TEXT NOT NULL,
-  posting_status TEXT NOT NULL CHECK(posting_status = 'posted'),
-  direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')),
-  booked_coefficient TEXT NOT NULL,
-  booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0),
-  booked_currency TEXT NOT NULL,
-  foreign_coefficient TEXT,
-  foreign_scale INTEGER,
-  foreign_currency TEXT,
-  description TEXT NOT NULL,
-  normalized_description TEXT NOT NULL,
-  installment_key TEXT,
-  correction_key TEXT,
-  commit_sequence INTEGER NOT NULL,
-  UNIQUE(transaction_id, revision_number)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_revisions_transaction
-  ON fubon_credit_card_transaction_revisions(transaction_id, revision_number, commit_sequence);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_current_transactions (
-  transaction_id BLOB PRIMARY KEY REFERENCES fubon_credit_card_transactions(transaction_id),
-  revision_id BLOB NOT NULL REFERENCES fubon_credit_card_transaction_revisions(revision_id),
-  commit_sequence INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_transaction_provenance (
-  transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  source_record_id BLOB NOT NULL REFERENCES fubon_credit_card_source_records(source_record_id),
-  source_record_key TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  PRIMARY KEY(transaction_id, capture_id, source_record_id)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_transaction_provenance_capture
-  ON fubon_credit_card_transaction_provenance(capture_id, transaction_id);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_card_billing_observations (
-  observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
-  transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  source_record_id BLOB NOT NULL REFERENCES fubon_credit_card_source_records(source_record_id),
-  billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
-  statement_key TEXT,
-  commit_sequence INTEGER NOT NULL,
-  UNIQUE(transaction_id, capture_id, source_record_id)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_billing_latest
-  ON fubon_credit_card_billing_observations(transaction_id, commit_sequence, observation_id);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_statements (
-  statement_id BLOB PRIMARY KEY CHECK(length(statement_id) = 16),
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  statement_key TEXT NOT NULL,
-  created_commit_sequence INTEGER NOT NULL,
-  UNIQUE(account_id, statement_key)
-);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_revisions (
-  statement_revision_id BLOB PRIMARY KEY CHECK(length(statement_revision_id) = 16),
-  statement_id BLOB NOT NULL REFERENCES fubon_credit_statements(statement_id),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  revision_key TEXT NOT NULL,
-  revision_number INTEGER NOT NULL,
-  cycle_start TEXT NOT NULL,
-  cycle_end TEXT NOT NULL,
-  issue_date TEXT NOT NULL,
-  due_date TEXT NOT NULL,
-  currency TEXT NOT NULL,
-  balance_coefficient TEXT NOT NULL,
-  balance_scale INTEGER NOT NULL,
-  minimum_coefficient TEXT,
-  minimum_scale INTEGER,
-  evidence_source_record_key TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  UNIQUE(statement_id, revision_key),
-  UNIQUE(statement_id, revision_number)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_statement_revisions_statement
-  ON fubon_credit_statement_revisions(statement_id, revision_number, commit_sequence);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_memberships (
-  statement_revision_id BLOB NOT NULL REFERENCES fubon_credit_statement_revisions(statement_revision_id),
-  transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  transaction_revision_id BLOB NOT NULL REFERENCES fubon_credit_card_transaction_revisions(revision_id),
-  source_record_key TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  PRIMARY KEY(statement_revision_id, transaction_id)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_statement_memberships_transaction
-  ON fubon_credit_statement_memberships(transaction_id, statement_revision_id);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_provenance (
-  statement_revision_id BLOB NOT NULL REFERENCES fubon_credit_statement_revisions(statement_revision_id),
-  capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  evidence_source_record_key TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  PRIMARY KEY(statement_revision_id, capture_id, evidence_source_record_key)
-);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_transaction_relations (
-  relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
-  account_id BLOB NOT NULL REFERENCES fubon_credit_accounts(account_id),
-  relation_kind TEXT NOT NULL CHECK(relation_kind IN ('pending_to_posted','refund_of','reversal_of','transfer_counterpart','installment_of')),
-  from_transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  to_transaction_id BLOB NOT NULL REFERENCES fubon_credit_card_transactions(transaction_id),
-  evidence_source_record_key TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  CHECK(from_transaction_id <> to_transaction_id),
-  UNIQUE(account_id, relation_kind, from_transaction_id, to_transaction_id)
-);
-CREATE INDEX IF NOT EXISTS idx_fubon_credit_transaction_relations_endpoints
-  ON fubon_credit_transaction_relations(account_id, from_transaction_id, to_transaction_id, relation_kind);
-
-CREATE TABLE IF NOT EXISTS fubon_credit_sync_states (
-  account_id BLOB PRIMARY KEY REFERENCES fubon_credit_accounts(account_id),
-  stream TEXT NOT NULL CHECK(stream = 'credit-card'),
-  last_capture_id TEXT NOT NULL REFERENCES fubon_credit_card_captures(capture_id),
-  commit_sequence INTEGER NOT NULL
-);
-`;
+> & {
+  readonly beforeFubonCreditExtensionCommit?: (db: DatabaseSync) => void;
+};
 
 export function ensureFubonCreditCardSchema(db: DatabaseSync): void {
   db.exec(`
@@ -881,6 +740,13 @@ CREATE TABLE IF NOT EXISTS fubon_credit_instrument_details (
   role TEXT NOT NULL CHECK(role IN ('primary','supplementary','virtual','replacement')),
   lifecycle TEXT,
   UNIQUE(account_id, instrument_key)
+);
+CREATE TABLE IF NOT EXISTS fubon_credit_instrument_role_evidence (
+  instrument_id BLOB NOT NULL REFERENCES fubon_credit_instrument_details(instrument_id),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  PRIMARY KEY(instrument_id, capture_id, source_record_id)
 );
 CREATE TABLE IF NOT EXISTS fubon_credit_transaction_details (
   transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
@@ -918,6 +784,14 @@ CREATE TABLE IF NOT EXISTS fubon_credit_statement_membership_details (
   source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   PRIMARY KEY(statement_revision_id, transaction_id)
 );
+CREATE TABLE IF NOT EXISTS fubon_credit_statement_summary_evidence (
+  statement_revision_id BLOB NOT NULL REFERENCES fubon_credit_statement_revision_details(statement_revision_id),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  evidence_key TEXT NOT NULL,
+  PRIMARY KEY(statement_revision_id, capture_id),
+  UNIQUE(account_id, capture_id, evidence_key)
+);
 CREATE TABLE IF NOT EXISTS fubon_credit_relation_details (
   relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
   account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
@@ -927,153 +801,43 @@ CREATE TABLE IF NOT EXISTS fubon_credit_relation_details (
   evidence_source_record_key TEXT NOT NULL,
   UNIQUE(account_id, relation_kind, from_transaction_id, to_transaction_id)
 );
+CREATE TRIGGER IF NOT EXISTS fubon_credit_role_evidence_scope_guard
+BEFORE INSERT ON fubon_credit_instrument_role_evidence
+WHEN NOT EXISTS (
+  SELECT 1 FROM source_record_scopes scoped
+  JOIN source_records source_record
+    ON source_record.source_record_id = scoped.source_record_id
+  JOIN fubon_credit_instrument_details instrument
+    ON instrument.instrument_id = NEW.instrument_id
+  WHERE scoped.source_record_id = NEW.source_record_id
+    AND scoped.capture_id = NEW.capture_id
+    AND scoped.account_id = NEW.account_id
+    AND instrument.account_id = NEW.account_id
+    AND json_extract(source_record.payload_json, '$.instrumentKey') = instrument.instrument_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Fubon instrument role evidence crosses capture, account, or instrument scope');
+END;
+CREATE TRIGGER IF NOT EXISTS fubon_credit_summary_evidence_scope_guard
+BEFORE INSERT ON fubon_credit_statement_summary_evidence
+WHEN NOT EXISTS (
+  SELECT 1 FROM capture_scopes scoped
+  JOIN fubon_credit_statement_revision_details revision
+    ON revision.statement_revision_id = NEW.statement_revision_id
+  JOIN fubon_credit_statement_details statement
+    ON statement.statement_id = revision.statement_id
+  WHERE scoped.capture_id = NEW.capture_id
+    AND scoped.account_id = NEW.account_id
+    AND statement.account_id = NEW.account_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Fubon statement summary evidence crosses capture or account scope');
+END;
   `);
 }
 
 function canonicalId(): Buffer {
   return randomBytes(16);
-}
-
-function idText(value: unknown): string {
-  if (!(value instanceof Uint8Array) || value.byteLength !== 16)
-    throw new Error("Fubon credit-card canonical ID is invalid.");
-  const hex = Buffer.from(value).toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function idBytes(value: string): Buffer {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value))
-    throw new Error("Fubon credit-card canonical ID text is invalid.");
-  return Buffer.from(value.replaceAll("-", ""), "hex");
-}
-
-function exactText(amount: FubonCreditCardExactAmount): string {
-  if (amount.scale === 0) return amount.coefficient;
-  const coefficient = amount.coefficient.padStart(amount.scale + 1, "0");
-  return `${coefficient.slice(0, -amount.scale)}.${coefficient.slice(-amount.scale)}`;
-}
-
-function jsonHash(value: unknown): string {
-  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("base64url")}`;
-}
-
-function latestCommitSequence(db: DatabaseSync): number {
-  return Number(
-    (
-      db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as {
-        value?: number;
-      }
-    ).value ?? 0,
-  );
-}
-
-function nextCommitSequence(db: DatabaseSync): number {
-  return latestCommitSequence(db) + 1;
-}
-
-function commitKnowledgeTime(store: FubonCreditCardWriterStore): number {
-  const value = store.commitClock();
-  if (!Number.isSafeInteger(value) || value < 0)
-    throw new Error("Fubon credit-card commit clock returned an invalid value.");
-  const previous = Number(
-    (
-      store.db.prepare("SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits").get() as {
-        value?: number;
-      }
-    ).value ?? -1,
-  );
-  return Math.max(value, previous + 1);
-}
-
-function revisionMatches(
-  db: DatabaseSync,
-  revisionId: Uint8Array,
-  row: FubonCreditCardAdmittedTransaction,
-): boolean {
-  const current = db.prepare(
-    `SELECT instrument_key, consume_date, posting_date, posting_status, direction,
-            booked_coefficient, booked_scale, booked_currency, foreign_coefficient,
-            foreign_scale, foreign_currency, normalized_description, installment_key
-     FROM fubon_credit_card_transaction_revisions WHERE revision_id = ?`,
-  ).get(revisionId) as Record<string, unknown> | undefined;
-  if (!current) throw new Error("Fubon credit-card current revision is missing.");
-  return (
-    current.instrument_key === row.instrumentKey &&
-    current.consume_date === row.consumeDate &&
-    current.posting_date === row.postingDate &&
-    current.posting_status === "posted" &&
-    current.direction === row.direction &&
-    current.booked_coefficient === row.bookedAmount.coefficient &&
-    Number(current.booked_scale) === row.bookedAmount.scale &&
-    current.booked_currency === row.bookedCurrency &&
-    (current.foreign_coefficient ?? null) === (row.foreignAmount?.coefficient ?? null) &&
-    (current.foreign_scale == null ? null : Number(current.foreign_scale)) ===
-      (row.foreignAmount?.scale ?? null) &&
-    (current.foreign_currency ?? null) === (row.foreignCurrency ?? null) &&
-    current.normalized_description === row.normalizedDescription &&
-    (current.installment_key ?? null) === (row.installmentKey?.trim() || null)
-  );
-}
-
-function currentRevisionId(
-  db: DatabaseSync,
-  transactionId: Uint8Array,
-): Uint8Array {
-  const row = db.prepare(
-    "SELECT revision_id FROM fubon_credit_card_current_transactions WHERE transaction_id = ?",
-  ).get(transactionId) as { revision_id?: Uint8Array } | undefined;
-  if (!row?.revision_id) throw new Error("Fubon credit-card transaction projection is missing.");
-  return row.revision_id;
-}
-
-function insertTransactionRevision(
-  db: DatabaseSync,
-  values: {
-    transactionId: Uint8Array;
-    sourceRecordId: Uint8Array;
-    captureId: string;
-    row: FubonCreditCardAdmittedTransaction;
-    revisionNumber: number;
-    commitSequence: number;
-  },
-): Uint8Array {
-  const revisionId = canonicalId();
-  db.prepare(
-    `INSERT INTO fubon_credit_card_transaction_revisions(
-      revision_id, transaction_id, source_record_id, capture_id, revision_number,
-      instrument_key, consume_date, posting_date, posting_status, direction,
-      booked_coefficient, booked_scale, booked_currency, foreign_coefficient,
-      foreign_scale, foreign_currency, description, normalized_description,
-      installment_key, correction_key, commit_sequence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    revisionId,
-    values.transactionId,
-    values.sourceRecordId,
-    values.captureId,
-    values.revisionNumber,
-    values.row.instrumentKey,
-    values.row.consumeDate,
-    values.row.postingDate,
-    values.row.direction,
-    values.row.bookedAmount.coefficient,
-    values.row.bookedAmount.scale,
-    values.row.bookedCurrency,
-    values.row.foreignAmount?.coefficient ?? null,
-    values.row.foreignAmount?.scale ?? null,
-    values.row.foreignCurrency ?? null,
-    values.row.description,
-    values.row.normalizedDescription,
-    values.row.installmentKey?.trim() || null,
-    values.row.correctionKey ?? null,
-    values.commitSequence,
-  );
-  db.prepare(
-    `INSERT INTO fubon_credit_card_current_transactions(transaction_id, revision_id, commit_sequence)
-     VALUES (?, ?, ?)
-     ON CONFLICT(transaction_id) DO UPDATE SET revision_id = excluded.revision_id, commit_sequence = excluded.commit_sequence`,
-  ).run(values.transactionId, revisionId, values.commitSequence);
-  return revisionId;
 }
 
 export type FubonCreditCardCommitResult = {
@@ -1094,544 +858,6 @@ function hasValidatedCapture(
   return isAdmittedFubonCreditCardCapture(capture);
 }
 
-function accountIdForCapture(
-  db: DatabaseSync,
-  capture: FubonCreditCardValidatedCapture,
-  commitSequence: number,
-): Uint8Array {
-  const existing = db.prepare(
-    `SELECT account_id, source_connection_key, identity_epoch_key, stream,
-            human_attested_account_key, account_natural_key
-     FROM fubon_credit_accounts WHERE account_natural_key = ?`,
-  ).get(capture.identity.accountNaturalKey) as Record<string, unknown> | undefined;
-  if (existing) {
-    if (
-      existing.source_connection_key !== capture.identity.sourceConnectionKey ||
-      existing.identity_epoch_key !== capture.identity.identityEpochKey ||
-      existing.stream !== "credit-card" ||
-      existing.human_attested_account_key !== capture.identity.humanAttestedAccountKey
-    )
-      throw new FubonCreditCardAdmissionError("Fubon account identity scope drifted.");
-    return existing.account_id as Uint8Array;
-  }
-  const accountId = canonicalId();
-  db.prepare(
-    `INSERT INTO fubon_credit_accounts(
-      account_id, source_connection_key, identity_epoch_key, stream,
-      human_attested_account_key, account_natural_key, account_type,
-      account_subtype, provider_guaranteed, occurrence_provider_guaranteed,
-      created_commit_sequence
-    ) VALUES (?, ?, ?, 'credit-card', ?, ?, 'credit', 'credit_card', 0, 0, ?)`,
-  ).run(
-    accountId,
-    capture.identity.sourceConnectionKey,
-    capture.identity.identityEpochKey,
-    capture.identity.humanAttestedAccountKey,
-    capture.identity.accountNaturalKey,
-    commitSequence,
-  );
-  return accountId;
-}
-
-function addCardInstruments(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  capture: FubonCreditCardValidatedCapture,
-  commitSequence: number,
-): void {
-  for (const instrument of capture.instruments) {
-    const existing = db.prepare(
-      `SELECT role, lifecycle, card_mask, product_name
-       FROM fubon_credit_card_instruments
-       WHERE account_id = ? AND instrument_key = ?`,
-    ).get(accountId, instrument.instrumentKey) as Record<string, unknown> | undefined;
-    if (existing) {
-      if (existing.role !== instrument.role)
-        throw new FubonCreditCardAdmissionError("Card instrument role changed without a new identity epoch.");
-      continue;
-    }
-    db.prepare(
-      `INSERT INTO fubon_credit_card_instruments(
-        instrument_id, account_id, instrument_key, card_mask, product_name,
-        role, lifecycle, created_commit_sequence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      canonicalId(),
-      accountId,
-      instrument.instrumentKey,
-      instrument.cardMask ?? null,
-      instrument.productName ?? null,
-      instrument.role,
-      instrument.lifecycle ?? null,
-      commitSequence,
-    );
-  }
-}
-
-type SourceRecordLookup = {
-  source_record_id: Uint8Array;
-  source_key: string;
-  transaction_id: Uint8Array;
-};
-
-function insertSourceRecord(
-  db: DatabaseSync,
-  values: {
-    captureId: string;
-    accountId: Uint8Array;
-    row: FubonCreditCardAdmittedTransaction;
-    transactionId: Uint8Array;
-    commitSequence: number;
-  },
-): Uint8Array {
-  const sourceRecordId = canonicalId();
-  const compact = {
-    sourceRecordKey: values.row.sourceRecordKey,
-    sourceKey: values.row.sourceKey,
-    instrumentKey: values.row.instrumentKey,
-    consumeDate: values.row.consumeDate,
-    postingDate: values.row.postingDate,
-    direction: values.row.direction,
-    bookedAmount: values.row.bookedAmount,
-    bookedCurrency: values.row.bookedCurrency,
-    foreignAmount: values.row.foreignAmount,
-    foreignCurrency: values.row.foreignCurrency,
-    description: values.row.description,
-    billingStatus: values.row.billingStatus,
-    statementKey: values.row.statementKey ?? null,
-  };
-  db.prepare(
-    `INSERT INTO fubon_credit_card_source_records(
-      source_record_id, capture_id, account_id, source_record_key, source_key,
-      transaction_id, compact_json, content_hash, commit_sequence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    sourceRecordId,
-    values.captureId,
-    values.accountId,
-    values.row.sourceRecordKey,
-    values.row.sourceKey,
-    values.transactionId,
-    JSON.stringify(compact),
-    jsonHash(compact),
-    values.commitSequence,
-  );
-  return sourceRecordId;
-}
-
-function latestSourceRecord(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  sourceRecordKey: string,
-): SourceRecordLookup | undefined {
-  return db.prepare(
-    `SELECT source_record_id, source_key, transaction_id
-     FROM fubon_credit_card_source_records
-     WHERE account_id = ? AND source_record_key = ?
-     ORDER BY commit_sequence DESC, rowid DESC LIMIT 1`,
-  ).get(accountId, sourceRecordKey) as SourceRecordLookup | undefined;
-}
-
-function transactionIdBySourceKey(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  sourceKey: string,
-): Uint8Array | undefined {
-  const row = db.prepare(
-    "SELECT transaction_id FROM fubon_credit_card_transactions WHERE account_id = ? AND source_key = ?",
-  ).get(accountId, sourceKey) as { transaction_id?: Uint8Array } | undefined;
-  return row?.transaction_id;
-}
-
-function nextRevisionNumber(db: DatabaseSync, transactionId: Uint8Array): number {
-  return Number(
-    (
-      db.prepare(
-        "SELECT COALESCE(MAX(revision_number), 0) AS value FROM fubon_credit_card_transaction_revisions WHERE transaction_id = ?",
-      ).get(transactionId) as { value?: number }
-    ).value ?? 0,
-  ) + 1;
-}
-
-function persistTransaction(
-  db: DatabaseSync,
-  values: {
-    accountId: Uint8Array;
-    capture: FubonCreditCardValidatedCapture;
-    row: FubonCreditCardAdmittedTransaction;
-    commitSequence: number;
-  },
-): { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array } {
-  const existingSource = latestSourceRecord(
-    db,
-    values.accountId,
-    values.row.sourceRecordKey,
-  );
-  let transactionId = existingSource?.transaction_id ??
-    transactionIdBySourceKey(db, values.accountId, values.row.sourceKey);
-  if (existingSource && existingSource.source_key !== values.row.sourceKey && !values.row.correctionKey)
-    throw new FubonCreditCardAdmissionError(
-      "Changed Fubon credit-card source row requires explicit correction evidence.",
-    );
-  const wasNew = !transactionId;
-  if (!transactionId) {
-    transactionId = canonicalId();
-    db.prepare(
-      `INSERT INTO fubon_credit_card_transactions(
-        transaction_id, account_id, source_key, created_commit_sequence
-      ) VALUES (?, ?, ?, ?)`,
-    ).run(transactionId, values.accountId, values.row.sourceKey, values.commitSequence);
-  }
-  const sourceRecordId = insertSourceRecord(db, {
-    captureId: values.capture.captureId,
-    accountId: values.accountId,
-    row: values.row,
-    transactionId,
-    commitSequence: values.commitSequence,
-  });
-  let revisionId: Uint8Array;
-  if (wasNew) {
-    revisionId = insertTransactionRevision(db, {
-      transactionId,
-      sourceRecordId,
-      captureId: values.capture.captureId,
-      row: values.row,
-      revisionNumber: 1,
-      commitSequence: values.commitSequence,
-    });
-  } else {
-    const current = currentRevisionId(db, transactionId);
-    if (revisionMatches(db, current, values.row)) revisionId = current;
-    else {
-      if (!values.row.correctionKey)
-        throw new FubonCreditCardAdmissionError(
-          "Changed Fubon credit-card transaction requires explicit correction evidence.",
-        );
-      revisionId = insertTransactionRevision(db, {
-        transactionId,
-        sourceRecordId,
-        captureId: values.capture.captureId,
-        row: values.row,
-        revisionNumber: nextRevisionNumber(db, transactionId),
-        commitSequence: values.commitSequence,
-      });
-    }
-  }
-  db.prepare(
-    `INSERT OR IGNORE INTO fubon_credit_card_transaction_provenance(
-      transaction_id, capture_id, source_record_id, source_record_key, commit_sequence
-    ) VALUES (?, ?, ?, ?, ?)`,
-  ).run(
-    transactionId,
-    values.capture.captureId,
-    sourceRecordId,
-    values.row.sourceRecordKey,
-    values.commitSequence,
-  );
-  db.prepare(
-    `INSERT OR IGNORE INTO fubon_credit_card_billing_observations(
-      observation_id, transaction_id, capture_id, source_record_id,
-      billing_status, statement_key, commit_sequence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    canonicalId(),
-    transactionId,
-    values.capture.captureId,
-    sourceRecordId,
-    values.row.billingStatus,
-    values.row.statementKey ?? null,
-    values.commitSequence,
-  );
-  return { transactionId, revisionId, sourceRecordId };
-}
-
-function statementRevisionMatches(
-  db: DatabaseSync,
-  revisionId: Uint8Array,
-  statement: FubonCreditCardAdmittedStatement,
-  transactions: ReadonlyMap<string, { transactionId: Uint8Array; revisionId: Uint8Array }>,
-): boolean {
-  const row = db.prepare(
-    `SELECT cycle_start, cycle_end, issue_date, due_date, currency,
-            balance_coefficient, balance_scale, minimum_coefficient, minimum_scale,
-            evidence_source_record_key
-     FROM fubon_credit_statement_revisions WHERE statement_revision_id = ?`,
-  ).get(revisionId) as Record<string, unknown> | undefined;
-  if (!row) throw new Error("Fubon credit-card statement revision is missing.");
-  const memberships = db.prepare(
-    `SELECT source_record_key, transaction_revision_id
-     FROM fubon_credit_statement_memberships
-     WHERE statement_revision_id = ? ORDER BY source_record_key`,
-  ).all(revisionId) as Array<{ source_record_key?: string; transaction_revision_id?: Uint8Array }>;
-  const expectedMemberships = statement.transactionSourceKeys
-    .map((sourceRecordKey) => ({
-      sourceRecordKey,
-      revisionId: transactions.get(sourceRecordKey)?.revisionId,
-    }))
-    .sort((left, right) => left.sourceRecordKey.localeCompare(right.sourceRecordKey));
-  return (
-    row.cycle_start === statement.cycleStart &&
-    row.cycle_end === statement.cycleEnd &&
-    row.issue_date === statement.issueDate &&
-    row.due_date === statement.dueDate &&
-    row.currency === statement.currency &&
-    row.balance_coefficient === statement.balance.coefficient &&
-    Number(row.balance_scale) === statement.balance.scale &&
-    (row.minimum_coefficient ?? null) === (statement.minimumPayment?.coefficient ?? null) &&
-    (row.minimum_scale == null ? null : Number(row.minimum_scale)) ===
-      (statement.minimumPayment?.scale ?? null) &&
-    row.evidence_source_record_key === statement.evidence.sourceRecordKey &&
-    memberships.length === expectedMemberships.length &&
-    memberships.every((membership, index) => {
-      const expected = expectedMemberships[index];
-      return expected?.revisionId !== undefined &&
-        membership.source_record_key === expected.sourceRecordKey &&
-        Buffer.from(membership.transaction_revision_id ?? []).equals(Buffer.from(expected.revisionId));
-    })
-  );
-}
-
-function persistStatement(
-  db: DatabaseSync,
-  values: {
-    accountId: Uint8Array;
-    capture: FubonCreditCardValidatedCapture;
-    statement: FubonCreditCardAdmittedStatement;
-    transactions: ReadonlyMap<string, { transactionId: Uint8Array; revisionId: Uint8Array }>;
-    commitSequence: number;
-  },
-): { statementId: Uint8Array; statementRevisionId: Uint8Array; created: boolean } {
-  let statementId: Uint8Array;
-  const existing = db.prepare(
-    "SELECT statement_id FROM fubon_credit_statements WHERE account_id = ? AND statement_key = ?",
-  ).get(values.accountId, values.statement.statementKey) as { statement_id?: Uint8Array } | undefined;
-  if (existing?.statement_id) statementId = existing.statement_id;
-  else {
-    statementId = canonicalId();
-    db.prepare(
-      `INSERT INTO fubon_credit_statements(statement_id, account_id, statement_key, created_commit_sequence)
-       VALUES (?, ?, ?, ?)`,
-    ).run(statementId, values.accountId, values.statement.statementKey, values.commitSequence);
-  }
-  const previous = db.prepare(
-    `SELECT statement_revision_id FROM fubon_credit_statement_revisions
-     WHERE statement_id = ? AND revision_key = ?`,
-  ).get(statementId, values.statement.revisionKey) as { statement_revision_id?: Uint8Array } | undefined;
-  let statementRevisionId: Uint8Array;
-  let created = false;
-  if (previous?.statement_revision_id) {
-    if (!statementRevisionMatches(
-      db,
-      previous.statement_revision_id,
-      values.statement,
-      values.transactions,
-    ))
-      throw new FubonCreditCardAdmissionError("Statement revision key was reused for changed summary evidence.");
-    statementRevisionId = previous.statement_revision_id;
-  } else {
-    const revisionNumber = Number(
-      (
-        db.prepare(
-          "SELECT COALESCE(MAX(revision_number), 0) AS value FROM fubon_credit_statement_revisions WHERE statement_id = ?",
-        ).get(statementId) as { value?: number }
-      ).value ?? 0,
-    ) + 1;
-    statementRevisionId = canonicalId();
-    db.prepare(
-      `INSERT INTO fubon_credit_statement_revisions(
-        statement_revision_id, statement_id, capture_id, revision_key,
-        revision_number, cycle_start, cycle_end, issue_date, due_date, currency,
-        balance_coefficient, balance_scale, minimum_coefficient, minimum_scale,
-        evidence_source_record_key, commit_sequence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      statementRevisionId,
-      statementId,
-      values.capture.captureId,
-      values.statement.revisionKey,
-      revisionNumber,
-      values.statement.cycleStart,
-      values.statement.cycleEnd,
-      values.statement.issueDate,
-      values.statement.dueDate,
-      values.statement.currency,
-      values.statement.balance.coefficient,
-      values.statement.balance.scale,
-      values.statement.minimumPayment?.coefficient ?? null,
-      values.statement.minimumPayment?.scale ?? null,
-      values.statement.evidence.sourceRecordKey,
-      values.commitSequence,
-    );
-    created = true;
-    for (const sourceRecordKey of values.statement.transactionSourceKeys) {
-      const transaction = values.transactions.get(sourceRecordKey);
-      if (!transaction)
-        throw new FubonCreditCardAdmissionError("Statement membership transaction is missing from capture.");
-      db.prepare(
-        `INSERT INTO fubon_credit_statement_memberships(
-          statement_revision_id, transaction_id, transaction_revision_id,
-          source_record_key, commit_sequence
-        ) VALUES (?, ?, ?, ?, ?)`,
-      ).run(
-        statementRevisionId,
-        transaction.transactionId,
-        transaction.revisionId,
-        sourceRecordKey,
-        values.commitSequence,
-      );
-    }
-  }
-  db.prepare(
-    `INSERT OR IGNORE INTO fubon_credit_statement_provenance(
-      statement_revision_id, capture_id, evidence_source_record_key, commit_sequence
-    ) VALUES (?, ?, ?, ?)`,
-  ).run(
-    statementRevisionId,
-    values.capture.captureId,
-    values.statement.evidence.sourceRecordKey,
-    values.commitSequence,
-  );
-  return { statementId, statementRevisionId, created };
-}
-
-function persistRelation(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  relation: FubonCreditCardRelationInput,
-  transactions: ReadonlyMap<string, { transactionId: Uint8Array }>,
-  commitSequence: number,
-): void {
-  const from = transactions.get(relation.fromSourceRecordKey);
-  const to = transactions.get(relation.toSourceRecordKey);
-  if (!from || !to) throw new FubonCreditCardAdmissionError("Transaction relation endpoint is missing.");
-  db.prepare(
-    `INSERT OR IGNORE INTO fubon_credit_transaction_relations(
-      relation_id, account_id, relation_kind, from_transaction_id,
-      to_transaction_id, evidence_source_record_key, commit_sequence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    canonicalId(),
-    accountId,
-    relation.kind,
-    from.transactionId,
-    to.transactionId,
-    (relation.evidence as { sourceRecordKey: string }).sourceRecordKey,
-    commitSequence,
-  );
-}
-
-function commitFubonCreditCardCaptureOnce(
-  store: FubonCreditCardWriterStore,
-  capture: FubonCreditCardValidatedCapture,
-  managesTransaction = true,
-): FubonCreditCardCommitResult {
-  if (!hasValidatedCapture(capture))
-    throw new FubonCreditCardAdmissionError("Fubon credit-card capture did not cross the validated seam.");
-  ensureFubonCreditCardSchema(store.db);
-  const db = store.db;
-  if (managesTransaction) db.exec("BEGIN IMMEDIATE");
-  try {
-    if (db.prepare("SELECT 1 FROM fubon_credit_card_captures WHERE capture_id = ?").get(capture.captureId))
-      throw new FubonCreditCardAdmissionError("Fubon credit-card capture overwrite is forbidden.");
-    const commitId = canonicalId();
-    const commitSequence = nextCommitSequence(db);
-    db.prepare(
-      `INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind)
-       VALUES (?, ?, ?, ?, 'source_capture')`,
-    ).run(
-      commitId,
-      commitSequence,
-      commitKnowledgeTime(store),
-      capture.authorityRoute,
-    );
-    db.prepare(
-      `INSERT INTO source_authority_routes(
-        authority_route, integration_namespace, stream, contract_version, created_commit_id
-      ) VALUES (?, 'fubon', 'credit-card', ?, ?)
-      ON CONFLICT(authority_route) DO NOTHING`,
-    ).run(capture.authorityRoute, capture.contractVersion, commitId);
-    // The durable event is part of the same transaction as the first credit
-    // capture. A failed capture therefore cannot leave an attestation marker.
-    recordInitialFubonCreditCardHumanAttestationIfMissing(db, capture.observedAt);
-    if (!isFubonCreditCardHumanAttestationDurablyActive(db))
-      throw new FubonCreditCardAdmissionError(
-        "Fubon credit-card durable human attestation is revoked.",
-      );
-    const accountId = accountIdForCapture(db, capture, commitSequence);
-    addCardInstruments(db, accountId, capture, commitSequence);
-    db.prepare(
-      `INSERT INTO fubon_credit_card_captures(
-        capture_id, account_id, observed_at, scope_start, scope_end,
-        completeness_json, authority_route, contract_version, commit_sequence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      capture.captureId,
-      accountId,
-      capture.observedAt,
-      capture.scope.startDate,
-      capture.scope.endDate,
-      JSON.stringify(capture.scope.completeness),
-      capture.authorityRoute,
-      capture.contractVersion,
-      commitSequence,
-    );
-    const transactions = new Map<string, { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array }>();
-    for (const row of capture.transactions) {
-      const persisted = persistTransaction(db, {
-        accountId,
-        capture,
-        row,
-        commitSequence,
-      });
-      transactions.set(row.sourceRecordKey, persisted);
-    }
-    for (const statement of capture.statements)
-      persistStatement(db, {
-        accountId,
-        capture,
-        statement,
-        transactions,
-        commitSequence,
-      });
-    for (const relation of capture.relations)
-      persistRelation(db, accountId, relation, transactions, commitSequence);
-    db.prepare(
-      `INSERT INTO fubon_credit_sync_states(account_id, stream, last_capture_id, commit_sequence)
-       VALUES (?, 'credit-card', ?, ?)
-       ON CONFLICT(account_id) DO UPDATE SET last_capture_id = excluded.last_capture_id, commit_sequence = excluded.commit_sequence`,
-    ).run(accountId, capture.captureId, commitSequence);
-    const provenanceCount = Number(
-      (
-        db.prepare(
-          `SELECT
-             (SELECT COUNT(*) FROM fubon_credit_card_transaction_provenance WHERE capture_id = ?) +
-             (SELECT COUNT(*) FROM fubon_credit_statement_provenance WHERE capture_id = ?) AS count`,
-        ).get(capture.captureId, capture.captureId) as { count?: number }
-      ).count ?? 0,
-    );
-    if (managesTransaction) db.exec("COMMIT");
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      captureId: capture.captureId,
-      accountId: idText(accountId),
-      commitSequence,
-      transactionCount: capture.transactions.length,
-      statementCount: capture.statements.length,
-      relationCount: capture.relations.length,
-      provenanceCount,
-    };
-  } catch (error) {
-    if (managesTransaction)
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* preserve the original admission error */
-      }
-    throw error;
-  }
-}
-
 export async function commitFubonCreditCardCapture(
   store: FubonCreditCardWriterStore,
   capture: FubonCreditCardValidatedCapture,
@@ -1648,7 +874,7 @@ function opaqueFubonSpineToken(label: string, value: unknown): `sha256:${string}
 function fubonCanonicalSpineCapture(
   capture: FubonCreditCardValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
-  const records = capture.transactions.map((transaction) => {
+  const records = capture.transactions.map((transaction, sourceOrderOrdinal) => {
     const compact = JSON.stringify({
       occurrenceIndex: transaction.occurrenceIndex,
       instrumentKey: transaction.instrumentKey,
@@ -1662,9 +888,10 @@ function fubonCanonicalSpineCapture(
     return {
       occurrenceKey: transaction.sourceKey,
       collisionKey: transaction.sourceKey,
-      providerKey: transaction.sourceKey,
+      providerKey: "human-attested:no-provider-key",
+      humanAttestedOccurrenceKey: transaction.sourceKey,
       contentHash: opaqueFubonSpineToken("fubon-credit-content-v1", compact),
-      sequenceLexeme: transaction.sourceKey,
+      sequenceLexeme: `observed-source-order:${sourceOrderOrdinal}`,
       compactJson: compact,
       amount: transaction.bookedAmount,
       balanceAfter: null,
@@ -1774,38 +1001,6 @@ function persistFubonCanonicalExtensions(
       | undefined;
     if (!scope?.capture_id || !scope.account_id)
       throw new Error("Fubon shared canonical capture scope is missing.");
-    const instruments = new Map<string, Uint8Array>();
-    for (const instrument of capture.instruments) {
-      const existing = db.prepare(
-        `SELECT instrument_id, role, lifecycle
-         FROM fubon_credit_instrument_details
-         WHERE account_id = ? AND instrument_key = ?`,
-      ).get(scope.account_id, instrument.instrumentKey) as
-        | { instrument_id?: Uint8Array; role?: string; lifecycle?: string | null }
-        | undefined;
-      if (
-        existing &&
-        (existing.role !== instrument.role ||
-          (existing.lifecycle ?? null) !== (instrument.lifecycle ?? null))
-      )
-        throw new FubonCreditCardAdmissionError(
-          "Fubon card instrument evidence changed without a new identity epoch.",
-        );
-      const instrumentId = existing?.instrument_id ?? canonicalId();
-      if (!existing)
-        db.prepare(
-          `INSERT INTO fubon_credit_instrument_details(
-            instrument_id, account_id, instrument_key, role, lifecycle
-          ) VALUES (?, ?, ?, ?, ?)`,
-        ).run(
-          instrumentId,
-          scope.account_id,
-          instrument.instrumentKey,
-          instrument.role,
-          instrument.lifecycle ?? null,
-        );
-      instruments.set(instrument.instrumentKey, instrumentId);
-    }
     const sharedTransactions = new Map<
       string,
       { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array }
@@ -1831,6 +1026,68 @@ function persistFubonCanonicalExtensions(
         | undefined;
       if (!row?.transaction_id || !row.revision_id || !row.source_record_id)
         throw new Error("Fubon shared canonical transaction is missing.");
+      sharedTransactions.set(transaction.sourceRecordKey, {
+        transactionId: row.transaction_id,
+        revisionId: row.revision_id,
+        sourceRecordId: row.source_record_id,
+      });
+    }
+    const instruments = new Map<string, Uint8Array>();
+    for (const instrument of capture.instruments) {
+      const evidenceTransaction = sharedTransactions.get(
+        instrument.evidence!.sourceRecordKey,
+      );
+      if (!evidenceTransaction)
+        throw new FubonCreditCardAdmissionError(
+          "Fubon instrument role evidence is not a shared source record in this capture.",
+        );
+      const existing = db.prepare(
+        `SELECT instrument_id, role, lifecycle
+         FROM fubon_credit_instrument_details
+         WHERE account_id = ? AND instrument_key = ?`,
+      ).get(scope.account_id, instrument.instrumentKey) as
+        | {
+            instrument_id?: Uint8Array;
+            role?: string;
+            lifecycle?: string | null;
+          }
+        | undefined;
+      if (
+        existing &&
+        (existing.role !== instrument.role ||
+          (existing.lifecycle ?? null) !== (instrument.lifecycle ?? null))
+      )
+        throw new FubonCreditCardAdmissionError(
+          "Fubon card instrument evidence changed without a new identity epoch.",
+        );
+      const instrumentId = existing?.instrument_id ?? canonicalId();
+      if (!existing)
+        db.prepare(
+          `INSERT INTO fubon_credit_instrument_details(
+            instrument_id, account_id, instrument_key, role, lifecycle
+          ) VALUES (?, ?, ?, ?, ?)`,
+        ).run(
+          instrumentId,
+          scope.account_id,
+          instrument.instrumentKey,
+          instrument.role,
+          instrument.lifecycle ?? null,
+        );
+      db.prepare(
+        `INSERT INTO fubon_credit_instrument_role_evidence(
+          instrument_id, account_id, capture_id, source_record_id
+        ) VALUES (?, ?, ?, ?)`,
+      ).run(
+        instrumentId,
+        scope.account_id,
+        scope.capture_id,
+        evidenceTransaction.sourceRecordId,
+      );
+      instruments.set(instrument.instrumentKey, instrumentId);
+    }
+    for (const transaction of capture.transactions) {
+      const row = sharedTransactions.get(transaction.sourceRecordKey);
+      if (!row) throw new Error("Fubon shared canonical transaction is missing.");
       const instrumentId = instruments.get(transaction.instrumentKey);
       if (!instrumentId)
         throw new Error("Fubon typed card instrument is missing.");
@@ -1840,19 +1097,14 @@ function persistFubonCanonicalExtensions(
           instrument_id, billing_status, statement_key
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
-        row.transaction_id,
-        row.revision_id,
-        row.source_record_id,
+        row.transactionId,
+        row.revisionId,
+        row.sourceRecordId,
         scope.capture_id,
         instrumentId,
         transaction.billingStatus,
         transaction.statementKey ?? null,
       );
-      sharedTransactions.set(transaction.sourceRecordKey, {
-        transactionId: row.transaction_id,
-        revisionId: row.revision_id,
-        sourceRecordId: row.source_record_id,
-      });
     }
     for (const statement of capture.statements) {
       const existingStatement = db.prepare(
@@ -1932,6 +1184,16 @@ function persistFubonCanonicalExtensions(
           throw new FubonCreditCardAdmissionError(
             "Fubon Statement revision key was reused with changed summary or pinned membership.",
           );
+        db.prepare(
+          `INSERT INTO fubon_credit_statement_summary_evidence(
+            statement_revision_id, account_id, capture_id, evidence_key
+          ) VALUES (?, ?, ?, ?)`,
+        ).run(
+          existingRevision.statement_revision_id,
+          scope.account_id,
+          scope.capture_id,
+          statement.evidence.sourceRecordKey,
+        );
         continue;
       }
       const revisionNumber = Number(
@@ -1983,6 +1245,16 @@ function persistFubonCanonicalExtensions(
           transaction.sourceRecordId,
         );
       }
+      db.prepare(
+        `INSERT INTO fubon_credit_statement_summary_evidence(
+          statement_revision_id, account_id, capture_id, evidence_key
+        ) VALUES (?, ?, ?, ?)`,
+      ).run(
+        statementRevisionId,
+        scope.account_id,
+        scope.capture_id,
+        statement.evidence.sourceRecordKey,
+      );
     }
     for (const relation of capture.relations) {
       const from = sharedTransactions.get(relation.fromSourceRecordKey);
@@ -2015,14 +1287,21 @@ export async function commitFubonCreditCardCaptureBatch(
     if (!hasValidatedCapture(capture))
       throw new FubonCreditCardAdmissionError("Fubon credit-card batch contains an unvalidated capture.");
   }
-  ensureFubonCreditCardSchema(store.db);
-  recordInitialFubonCreditCardHumanAttestationIfMissing(store.db);
-  if (!isFubonCreditCardHumanAttestationDurablyActive(store.db))
+  if (peekFubonCreditCardHumanAttestationStatus(store.db) === "revoked")
     throw new FubonCreditCardAdmissionError("Fubon credit-card durable human attestation is revoked.");
   const committed = await commitCanonicalFinancialDepositCaptureBatch(
     store,
     captures.map(fubonCanonicalSpineCapture),
-    (db) => persistFubonCanonicalExtensions(db, captures),
+    (db) => {
+      ensureFubonCreditCardSchema(db);
+      recordInitialFubonCreditCardHumanAttestationIfMissing(db);
+      if (!isFubonCreditCardHumanAttestationDurablyActive(db))
+        throw new FubonCreditCardAdmissionError(
+          "Fubon credit-card durable human attestation is revoked.",
+        );
+      store.beforeFubonCreditExtensionCommit?.(db);
+      persistFubonCanonicalExtensions(db, captures);
+    },
   );
   return committed.map((result, index) => {
     const capture = captures[index]!;
@@ -2044,815 +1323,6 @@ export async function commitFubonCreditCardCaptureBatch(
       statementCount: capture.statements.length,
       relationCount: capture.relations.length,
       provenanceCount: result.provenanceCount,
-    };
-  });
-}
-
-export type FubonCreditCardAmountView = {
-  coefficient: string;
-  scale: number;
-  text: string;
-};
-
-export type FubonCreditCardBillingObservationView = {
-  observationId: string;
-  transactionId: string;
-  sourceRecordId: string;
-  captureId: string;
-  billingStatus: "billed" | "unbilled";
-  statementKey: string | null;
-  commitSequence: number;
-};
-
-export type FubonCreditCardTransactionProvenanceView = {
-  transactionId: string;
-  sourceRecordId: string;
-  sourceRecordKey: string;
-  captureId: string;
-  commitSequence: number;
-};
-
-export type FubonCreditCardTransactionView = {
-  id: string;
-  transactionId: string;
-  accountId: string;
-  sourceRecordId: string;
-  sourceRecordKey: string;
-  sourceKey: string;
-  instrumentKey: string;
-  consumeDate: string;
-  postingDate: string;
-  postingStatus: "posted";
-  direction: "inflow" | "outflow";
-  bookedAmount: string;
-  bookedExactAmount: FubonCreditCardAmountView;
-  bookedCurrency: string;
-  foreignAmount: string | null;
-  foreignExactAmount: FubonCreditCardAmountView | null;
-  foreignCurrency: string | null;
-  description: string;
-  normalizedDescription: string;
-  installmentKey: string | null;
-  correctionKey: string | null;
-  billingStatus: "billed" | "unbilled";
-  billingObservations: FubonCreditCardBillingObservationView[];
-  providerGuaranteed: false;
-  occurrenceProviderGuaranteed: false;
-  revisionId: string;
-  revisionNumber: number;
-  captureId: string;
-  commitSequence: number;
-  provenance: FubonCreditCardTransactionProvenanceView[];
-};
-
-export type FubonCreditCardInstrumentView = {
-  id: string;
-  instrumentId: string;
-  accountId: string;
-  instrumentKey: string;
-  cardMask: string | null;
-  productName: string | null;
-  role: FubonCreditCardInstrumentRole;
-  lifecycle: string | null;
-  createdCommitSequence: number;
-};
-
-export type FubonCreditCardStatementMembershipView = {
-  statementRevisionId: string;
-  transactionId: string;
-  transactionRevisionId: string;
-  sourceRecordKey: string;
-  commitSequence: number;
-};
-
-export type FubonCreditCardStatementProvenanceView = {
-  statementRevisionId: string;
-  captureId: string;
-  evidenceSourceRecordKey: string;
-  commitSequence: number;
-};
-
-export type FubonCreditCardStatementRevisionView = {
-  id: string;
-  statementRevisionId: string;
-  statementId: string;
-  captureId: string;
-  statementKey: string;
-  revisionKey: string;
-  revisionNumber: number;
-  cycleStart: string;
-  cycleEnd: string;
-  issueDate: string;
-  dueDate: string;
-  currency: string;
-  balance: string;
-  balanceExactAmount: FubonCreditCardAmountView;
-  minimumPayment: string | null;
-  minimumPaymentExactAmount: FubonCreditCardAmountView | null;
-  evidenceSourceRecordKey: string;
-  commitSequence: number;
-  memberships: FubonCreditCardStatementMembershipView[];
-  provenance: FubonCreditCardStatementProvenanceView[];
-};
-
-export type FubonCreditCardStatementView = {
-  id: string;
-  statementId: string;
-  accountId: string;
-  statementKey: string;
-  createdCommitSequence: number;
-  revisions: FubonCreditCardStatementRevisionView[];
-  currentRevision: FubonCreditCardStatementRevisionView | null;
-};
-
-export type FubonCreditCardAccountView = {
-  id: string;
-  accountId: string;
-  accountNaturalKey: string;
-  sourceConnectionKey: string;
-  identityEpochKey: string;
-  humanAttestedAccountKey: string;
-  stream: "credit-card";
-  accountType: "credit";
-  accountSubtype: "credit_card";
-  providerGuaranteed: false;
-  occurrenceProviderGuaranteed: false;
-  instruments: FubonCreditCardInstrumentView[];
-  transactions: FubonCreditCardTransactionView[];
-  statements: FubonCreditCardStatementView[];
-  relations: FubonCreditCardRelationView[];
-};
-
-export type FubonCreditCardCaptureView = {
-  id: string;
-  captureId: string;
-  accountId: string;
-  observedAt: string;
-  scopeStart: string;
-  scopeEnd: string;
-  completeness: FubonCreditCardCompleteness;
-  authorityRoute: "fubon/credit-card/human-attested-v1";
-  contractVersion: "fubon/credit-card/human-attested-v1";
-  commitSequence: number;
-};
-
-export type FubonCreditCardRelationView = {
-  id: string;
-  accountId: string;
-  kind: FubonCreditCardRelationInput["kind"];
-  fromTransactionId: string;
-  toTransactionId: string;
-  evidenceSourceRecordKey: string;
-  commitSequence: number;
-};
-
-type FubonCreditCardQueryBase = {
-  status: "canonical-live";
-  canonicalAdmission: "admitted";
-  accounts: FubonCreditCardAccountView[];
-  captures: FubonCreditCardCaptureView[];
-  provenanceCount: number;
-};
-
-export type FubonCreditCardCurrentQuery = FubonCreditCardQueryBase & {
-  kind: "current";
-  commitSequence: number;
-};
-
-export type FubonCreditCardHistoricalQuery = FubonCreditCardQueryBase & {
-  kind: "historical";
-  knowledgeAt: number;
-};
-
-export type FubonCreditCardHistoricalQueryRequest = {
-  knowledgeAt: number;
-  accountNaturalKey?: string;
-};
-
-export type FubonCreditCardLineageQueryRequest = {
-  accountNaturalKey?: string;
-  transactionId?: string;
-  sourceRecordKey?: string;
-  knowledgeAt?: number;
-};
-
-export type FubonCreditCardLineageQuery = {
-  status: "canonical-live";
-  canonicalAdmission: "admitted";
-  kind: "lineage";
-  accountNaturalKey?: string;
-  accounts: FubonCreditCardAccountView[];
-  captures: FubonCreditCardCaptureView[];
-  transactions: FubonCreditCardTransactionView[];
-  statements: FubonCreditCardStatementView[];
-  transactionRevisions: FubonCreditCardTransactionView[];
-  statementMemberships: FubonCreditCardStatementMembershipView[];
-  relations: FubonCreditCardRelationView[];
-  provenance: FubonCreditCardTransactionProvenanceView[];
-  statementProvenance: FubonCreditCardStatementProvenanceView[];
-  provenanceCount: number;
-};
-
-export type FubonCreditCardQueryStore = Pick<CanonicalSourceStore, "db">;
-
-type FubonCreditCardQueryOptions = {
-  accountNaturalKey?: string;
-  knowledgeAt?: number;
-  currentOnly: boolean;
-};
-
-type FubonCreditCardQueryValue = string | number | Uint8Array;
-
-function hasFubonCreditCardSchema(db: DatabaseSync): boolean {
-  const row = db.prepare(
-    `SELECT COUNT(*) AS value FROM sqlite_master
-     WHERE type = 'table' AND name IN ('fubon_credit_accounts', 'fubon_credit_card_captures',
-       'fubon_credit_card_transactions', 'fubon_credit_statement_revisions')`,
-  ).get() as { value?: number } | undefined;
-  return Number(row?.value ?? 0) === 4;
-}
-
-function fubonQueryRowId(row: Record<string, unknown>, key: string): string {
-  const value = row[key];
-  if (!(value instanceof Uint8Array))
-    throw new Error(`Fubon credit-card query row ${key} is not a canonical ID.`);
-  return idText(value);
-}
-
-function fubonQueryAmount(
-  coefficient: unknown,
-  scale: unknown,
-): FubonCreditCardAmountView {
-  const exact = {
-    coefficient: String(coefficient),
-    scale: Number(scale),
-  };
-  return { ...exact, text: exactText(exact) };
-}
-
-function fubonQueryLatestCommitSequence(db: DatabaseSync): number {
-  return Number(
-    (
-      db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as {
-        value?: number;
-      }
-    ).value ?? 0,
-  );
-}
-
-function fubonQueryBillingObservations(
-  db: DatabaseSync,
-  transactionId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardBillingObservationView[] {
-  const rows = db.prepare(
-    `SELECT observation_id, transaction_id, source_record_id, capture_id,
-            billing_status, statement_key, commit_sequence
-     FROM fubon_credit_card_billing_observations
-     WHERE transaction_id = ?${knowledgeAt === undefined ? "" : " AND commit_sequence <= ?"}
-     ORDER BY commit_sequence, observation_id`,
-  ).all(
-    transactionId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    observationId: fubonQueryRowId(row, "observation_id"),
-    transactionId: fubonQueryRowId(row, "transaction_id"),
-    sourceRecordId: fubonQueryRowId(row, "source_record_id"),
-    captureId: String(row.capture_id),
-    billingStatus: row.billing_status as "billed" | "unbilled",
-    statementKey: row.statement_key == null ? null : String(row.statement_key),
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryTransactionProvenance(
-  db: DatabaseSync,
-  transactionId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardTransactionProvenanceView[] {
-  const rows = db.prepare(
-    `SELECT transaction_id, source_record_id, source_record_key, capture_id, commit_sequence
-     FROM fubon_credit_card_transaction_provenance
-     WHERE transaction_id = ?${knowledgeAt === undefined ? "" : " AND commit_sequence <= ?"}
-     ORDER BY commit_sequence, source_record_id`,
-  ).all(
-    transactionId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    transactionId: fubonQueryRowId(row, "transaction_id"),
-    sourceRecordId: fubonQueryRowId(row, "source_record_id"),
-    sourceRecordKey: String(row.source_record_key),
-    captureId: String(row.capture_id),
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryTransactions(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  options: FubonCreditCardQueryOptions,
-): FubonCreditCardTransactionView[] {
-  const historical = !options.currentOnly;
-  const rows = db.prepare(
-    `SELECT transaction_row.transaction_id, transaction_row.account_id,
-            transaction_row.source_key AS transaction_source_key,
-            revision.revision_id, revision.source_record_id, revision.capture_id,
-            revision.revision_number, revision.instrument_key, revision.consume_date,
-            revision.posting_date, revision.posting_status, revision.direction,
-            revision.booked_coefficient, revision.booked_scale, revision.booked_currency,
-            revision.foreign_coefficient, revision.foreign_scale, revision.foreign_currency,
-            revision.description, revision.normalized_description, revision.installment_key,
-            revision.correction_key, revision.commit_sequence,
-            source_record.source_record_key, source_record.source_key AS source_record_source_key
-     FROM fubon_credit_card_transactions transaction_row
-     JOIN fubon_credit_card_transaction_revisions revision
-       ON revision.transaction_id = transaction_row.transaction_id
-     ${options.currentOnly
-       ? `JOIN fubon_credit_card_current_transactions current_row
-          ON current_row.transaction_id = transaction_row.transaction_id
-         AND current_row.revision_id = revision.revision_id`
-       : ""}
-     JOIN fubon_credit_card_source_records source_record
-       ON source_record.source_record_id = revision.source_record_id
-     WHERE transaction_row.account_id = ?
-       ${historical ? "AND transaction_row.created_commit_sequence <= ? AND revision.commit_sequence <= ?" : ""}
-       ${historical
-         ? `AND revision.revision_number = (
-              SELECT MAX(previous.revision_number)
-              FROM fubon_credit_card_transaction_revisions previous
-              WHERE previous.transaction_id = transaction_row.transaction_id
-                AND previous.commit_sequence <= ?
-            )`
-         : ""}
-     ORDER BY revision.consume_date, revision.posting_date, transaction_row.source_key`,
-  ).all(
-    accountId,
-    ...(historical
-      ? [options.knowledgeAt!, options.knowledgeAt!, options.knowledgeAt!]
-      : []),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => {
-    const transactionId = row.transaction_id as Uint8Array;
-    const booked = fubonQueryAmount(row.booked_coefficient, row.booked_scale);
-    const foreign = row.foreign_coefficient == null
-      ? null
-      : fubonQueryAmount(row.foreign_coefficient, row.foreign_scale);
-    const billingObservations = fubonQueryBillingObservations(
-      db,
-      transactionId,
-      options.knowledgeAt,
-    );
-    const latestBilling = billingObservations.at(-1);
-    return {
-      id: idText(transactionId),
-      transactionId: idText(transactionId),
-      accountId: fubonQueryRowId(row, "account_id"),
-      sourceRecordId: fubonQueryRowId(row, "source_record_id"),
-      sourceRecordKey: String(row.source_record_key),
-      sourceKey: String(row.transaction_source_key),
-      instrumentKey: String(row.instrument_key),
-      consumeDate: String(row.consume_date),
-      postingDate: String(row.posting_date),
-      postingStatus: "posted" as const,
-      direction: row.direction as "inflow" | "outflow",
-      bookedAmount: booked.text,
-      bookedExactAmount: booked,
-      bookedCurrency: String(row.booked_currency),
-      foreignAmount: foreign?.text ?? null,
-      foreignExactAmount: foreign,
-      foreignCurrency: row.foreign_currency == null ? null : String(row.foreign_currency),
-      description: String(row.description),
-      normalizedDescription: String(row.normalized_description),
-      installmentKey: row.installment_key == null ? null : String(row.installment_key),
-      correctionKey: row.correction_key == null ? null : String(row.correction_key),
-      billingStatus: latestBilling?.billingStatus ?? "unbilled",
-      billingObservations,
-      providerGuaranteed: false as const,
-      occurrenceProviderGuaranteed: false as const,
-      revisionId: fubonQueryRowId(row, "revision_id"),
-      revisionNumber: Number(row.revision_number),
-      captureId: String(row.capture_id),
-      commitSequence: Number(row.commit_sequence),
-      provenance: fubonQueryTransactionProvenance(db, transactionId, options.knowledgeAt),
-    };
-  });
-}
-
-function fubonQueryStatementMemberships(
-  db: DatabaseSync,
-  statementRevisionId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardStatementMembershipView[] {
-  const rows = db.prepare(
-    `SELECT statement_revision_id, transaction_id, transaction_revision_id,
-            source_record_key, commit_sequence
-     FROM fubon_credit_statement_memberships
-     WHERE statement_revision_id = ?${knowledgeAt === undefined ? "" : " AND commit_sequence <= ?"}
-     ORDER BY source_record_key, transaction_id`,
-  ).all(
-    statementRevisionId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    statementRevisionId: fubonQueryRowId(row, "statement_revision_id"),
-    transactionId: fubonQueryRowId(row, "transaction_id"),
-    transactionRevisionId: fubonQueryRowId(row, "transaction_revision_id"),
-    sourceRecordKey: String(row.source_record_key),
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryStatementProvenance(
-  db: DatabaseSync,
-  statementRevisionId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardStatementProvenanceView[] {
-  const rows = db.prepare(
-    `SELECT statement_revision_id, capture_id, evidence_source_record_key, commit_sequence
-     FROM fubon_credit_statement_provenance
-     WHERE statement_revision_id = ?${knowledgeAt === undefined ? "" : " AND commit_sequence <= ?"}
-     ORDER BY commit_sequence, capture_id`,
-  ).all(
-    statementRevisionId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    statementRevisionId: fubonQueryRowId(row, "statement_revision_id"),
-    captureId: String(row.capture_id),
-    evidenceSourceRecordKey: String(row.evidence_source_record_key),
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryStatements(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardStatementView[] {
-  const rows = db.prepare(
-    `SELECT statement.statement_id, statement.account_id, statement.statement_key,
-            statement.created_commit_sequence, revision.statement_revision_id,
-            revision.capture_id, revision.revision_key, revision.revision_number,
-            revision.cycle_start, revision.cycle_end, revision.issue_date, revision.due_date,
-            revision.currency, revision.balance_coefficient, revision.balance_scale,
-            revision.minimum_coefficient, revision.minimum_scale,
-            revision.evidence_source_record_key, revision.commit_sequence
-     FROM fubon_credit_statements statement
-     JOIN fubon_credit_statement_revisions revision
-       ON revision.statement_id = statement.statement_id
-     WHERE statement.account_id = ?
-       ${knowledgeAt === undefined ? "" : "AND statement.created_commit_sequence <= ? AND revision.commit_sequence <= ?"}
-     ORDER BY statement.statement_key, revision.revision_number`,
-  ).all(
-    accountId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt, knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  const grouped = new Map<string, FubonCreditCardStatementView>();
-  for (const row of rows) {
-    const statementId = fubonQueryRowId(row, "statement_id");
-    const revisionId = row.statement_revision_id as Uint8Array;
-    const balance = fubonQueryAmount(row.balance_coefficient, row.balance_scale);
-    const minimum = row.minimum_coefficient == null
-      ? null
-      : fubonQueryAmount(row.minimum_coefficient, row.minimum_scale);
-    const revision: FubonCreditCardStatementRevisionView = {
-      id: idText(revisionId),
-      statementRevisionId: idText(revisionId),
-      statementId,
-      captureId: String(row.capture_id),
-      statementKey: String(row.statement_key),
-      revisionKey: String(row.revision_key),
-      revisionNumber: Number(row.revision_number),
-      cycleStart: String(row.cycle_start),
-      cycleEnd: String(row.cycle_end),
-      issueDate: String(row.issue_date),
-      dueDate: String(row.due_date),
-      currency: String(row.currency),
-      balance: balance.text,
-      balanceExactAmount: balance,
-      minimumPayment: minimum?.text ?? null,
-      minimumPaymentExactAmount: minimum,
-      evidenceSourceRecordKey: String(row.evidence_source_record_key),
-      commitSequence: Number(row.commit_sequence),
-      memberships: fubonQueryStatementMemberships(db, revisionId, knowledgeAt),
-      provenance: fubonQueryStatementProvenance(db, revisionId, knowledgeAt),
-    };
-    const existing = grouped.get(statementId);
-    if (existing) existing.revisions.push(revision);
-    else {
-      grouped.set(statementId, {
-        id: statementId,
-        statementId,
-        accountId: fubonQueryRowId(row, "account_id"),
-        statementKey: String(row.statement_key),
-        createdCommitSequence: Number(row.created_commit_sequence),
-        revisions: [revision],
-        currentRevision: revision,
-      });
-    }
-  }
-  return [...grouped.values()].map((statement) => ({
-    ...statement,
-    currentRevision: statement.revisions.at(-1) ?? null,
-  }));
-}
-
-function fubonQueryInstruments(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardInstrumentView[] {
-  const rows = db.prepare(
-    `SELECT instrument_id, account_id, instrument_key, card_mask, product_name,
-            role, lifecycle, created_commit_sequence
-     FROM fubon_credit_card_instruments
-     WHERE account_id = ?${knowledgeAt === undefined ? "" : " AND created_commit_sequence <= ?"}
-     ORDER BY instrument_key`,
-  ).all(
-    accountId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    id: fubonQueryRowId(row, "instrument_id"),
-    instrumentId: fubonQueryRowId(row, "instrument_id"),
-    accountId: fubonQueryRowId(row, "account_id"),
-    instrumentKey: String(row.instrument_key),
-    cardMask: row.card_mask == null ? null : String(row.card_mask),
-    productName: row.product_name == null ? null : String(row.product_name),
-    role: row.role as FubonCreditCardInstrumentRole,
-    lifecycle: row.lifecycle == null ? null : String(row.lifecycle),
-    createdCommitSequence: Number(row.created_commit_sequence),
-  }));
-}
-
-function fubonQueryRelations(
-  db: DatabaseSync,
-  accountId: Uint8Array,
-  knowledgeAt?: number,
-): FubonCreditCardRelationView[] {
-  const rows = db.prepare(
-    `SELECT relation_id, account_id, relation_kind, from_transaction_id,
-            to_transaction_id, evidence_source_record_key, commit_sequence
-     FROM fubon_credit_transaction_relations
-     WHERE account_id = ?${knowledgeAt === undefined ? "" : " AND commit_sequence <= ?"}
-     ORDER BY commit_sequence, relation_id`,
-  ).all(
-    accountId,
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    id: fubonQueryRowId(row, "relation_id"),
-    accountId: fubonQueryRowId(row, "account_id"),
-    kind: row.relation_kind as FubonCreditCardRelationInput["kind"],
-    fromTransactionId: fubonQueryRowId(row, "from_transaction_id"),
-    toTransactionId: fubonQueryRowId(row, "to_transaction_id"),
-    evidenceSourceRecordKey: String(row.evidence_source_record_key),
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryCaptures(
-  db: DatabaseSync,
-  accountIds: readonly string[],
-  knowledgeAt?: number,
-): FubonCreditCardCaptureView[] {
-  if (accountIds.length === 0) return [];
-  const placeholders = accountIds.map(() => "?").join(", ");
-  const rows = db.prepare(
-    `SELECT capture_id, account_id, observed_at, scope_start, scope_end,
-            completeness_json, authority_route, contract_version, commit_sequence
-     FROM fubon_credit_card_captures
-     WHERE account_id IN (${placeholders})
-       ${knowledgeAt === undefined ? "" : "AND commit_sequence <= ?"}
-     ORDER BY commit_sequence, capture_id`,
-  ).all(
-    ...accountIds.map(idBytes),
-    ...(knowledgeAt === undefined ? [] : [knowledgeAt]),
-  ) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    id: String(row.capture_id),
-    captureId: String(row.capture_id),
-    accountId: fubonQueryRowId(row, "account_id"),
-    observedAt: String(row.observed_at),
-    scopeStart: String(row.scope_start),
-    scopeEnd: String(row.scope_end),
-    completeness: JSON.parse(String(row.completeness_json)) as FubonCreditCardCompleteness,
-    authorityRoute: row.authority_route as "fubon/credit-card/human-attested-v1",
-    contractVersion: row.contract_version as "fubon/credit-card/human-attested-v1",
-    commitSequence: Number(row.commit_sequence),
-  }));
-}
-
-function fubonQueryAccounts(
-  db: DatabaseSync,
-  options: FubonCreditCardQueryOptions,
-): FubonCreditCardAccountView[] {
-  const predicates = ["1 = 1"];
-  const parameters: FubonCreditCardQueryValue[] = [];
-  if (options.accountNaturalKey !== undefined) {
-    predicates.push("account_natural_key = ?");
-    parameters.push(options.accountNaturalKey);
-  }
-  if (options.knowledgeAt !== undefined) {
-    predicates.push("created_commit_sequence <= ?");
-    parameters.push(options.knowledgeAt);
-  }
-  const rows = db.prepare(
-    `SELECT account_id, source_connection_key, identity_epoch_key, stream,
-            human_attested_account_key, account_natural_key, account_type,
-            account_subtype, provider_guaranteed, occurrence_provider_guaranteed
-     FROM fubon_credit_accounts WHERE ${predicates.join(" AND ")}
-     ORDER BY account_natural_key`,
-  ).all(...parameters) as Array<Record<string, unknown>>;
-  return rows.map((row) => {
-    const accountId = row.account_id as Uint8Array;
-    return {
-      id: idText(accountId),
-      accountId: idText(accountId),
-      accountNaturalKey: String(row.account_natural_key),
-      sourceConnectionKey: String(row.source_connection_key),
-      identityEpochKey: String(row.identity_epoch_key),
-      humanAttestedAccountKey: String(row.human_attested_account_key),
-      stream: "credit-card" as const,
-      accountType: "credit" as const,
-      accountSubtype: "credit_card" as const,
-      providerGuaranteed: false as const,
-      occurrenceProviderGuaranteed: false as const,
-      instruments: fubonQueryInstruments(db, accountId, options.knowledgeAt),
-      transactions: fubonQueryTransactions(db, accountId, options),
-      statements: fubonQueryStatements(db, accountId, options.knowledgeAt),
-      relations: fubonQueryRelations(db, accountId, options.knowledgeAt),
-    };
-  });
-}
-
-function fubonQueryProvenanceCount(
-  accounts: readonly FubonCreditCardAccountView[],
-): number {
-  return accounts.reduce(
-    (count, account) =>
-      count +
-      account.transactions.reduce((sum, transaction) => sum + transaction.provenance.length, 0) +
-      account.statements.reduce(
-        (sum, statement) =>
-          sum + statement.revisions.reduce((revisionSum, revision) => revisionSum + revision.provenance.length, 0),
-        0,
-      ),
-    0,
-  );
-}
-
-function fubonEmptyCurrentQuery(db: DatabaseSync): FubonCreditCardCurrentQuery {
-  return {
-    status: "canonical-live",
-    canonicalAdmission: "admitted",
-    kind: "current",
-    accounts: [],
-    captures: [],
-    provenanceCount: 0,
-    commitSequence: fubonQueryLatestCommitSequence(db),
-  };
-}
-
-function queryFubonCreditCardCurrent(
-  store: FubonCreditCardQueryStore,
-  options: { accountNaturalKey?: string } = {},
-): FubonCreditCardCurrentQuery {
-  return withCanonicalSnapshot(store.db, () => {
-    if (!hasFubonCreditCardSchema(store.db)) return fubonEmptyCurrentQuery(store.db);
-    const accounts = fubonQueryAccounts(store.db, {
-      accountNaturalKey: options.accountNaturalKey,
-      currentOnly: true,
-    });
-    const captures = fubonQueryCaptures(
-      store.db,
-      accounts.map((account) => account.accountId),
-    );
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      kind: "current",
-      accounts,
-      captures,
-      provenanceCount: fubonQueryProvenanceCount(accounts),
-      commitSequence: fubonQueryLatestCommitSequence(store.db),
-    };
-  });
-}
-
-function queryFubonCreditCardHistorical(
-  store: FubonCreditCardQueryStore,
-  request: FubonCreditCardHistoricalQueryRequest,
-): FubonCreditCardHistoricalQuery {
-  return withCanonicalSnapshot(store.db, () => {
-    const latest = fubonQueryLatestCommitSequence(store.db);
-    if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt < 0 || request.knowledgeAt > latest)
-      throw new Error("Fubon credit-card historical knowledge cutoff is invalid.");
-    if (!hasFubonCreditCardSchema(store.db))
-      return {
-        status: "canonical-live",
-        canonicalAdmission: "admitted",
-        kind: "historical",
-        knowledgeAt: request.knowledgeAt,
-        accounts: [],
-        captures: [],
-        provenanceCount: 0,
-      };
-    const accounts = fubonQueryAccounts(store.db, {
-      accountNaturalKey: request.accountNaturalKey,
-      knowledgeAt: request.knowledgeAt,
-      currentOnly: false,
-    });
-    const captures = fubonQueryCaptures(
-      store.db,
-      accounts.map((account) => account.accountId),
-      request.knowledgeAt,
-    );
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      kind: "historical",
-      knowledgeAt: request.knowledgeAt,
-      accounts,
-      captures,
-      provenanceCount: fubonQueryProvenanceCount(accounts),
-    };
-  });
-}
-
-function queryFubonCreditCardLineage(
-  store: FubonCreditCardQueryStore,
-  request: FubonCreditCardLineageQueryRequest = {},
-): FubonCreditCardLineageQuery {
-  return withCanonicalSnapshot(store.db, () => {
-    const latest = fubonQueryLatestCommitSequence(store.db);
-    const knowledgeAt = request.knowledgeAt;
-    if (knowledgeAt !== undefined && (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0 || knowledgeAt > latest))
-      throw new Error("Fubon credit-card lineage knowledge cutoff is invalid.");
-    if (!hasFubonCreditCardSchema(store.db))
-      return {
-        status: "canonical-live",
-        canonicalAdmission: "admitted",
-        kind: "lineage",
-        accountNaturalKey: request.accountNaturalKey,
-        accounts: [],
-        captures: [],
-        transactions: [],
-        statements: [],
-        transactionRevisions: [],
-        statementMemberships: [],
-        relations: [],
-        provenance: [],
-        statementProvenance: [],
-        provenanceCount: 0,
-      };
-    const accounts = fubonQueryAccounts(store.db, {
-      accountNaturalKey: request.accountNaturalKey,
-      knowledgeAt,
-      currentOnly: knowledgeAt === undefined,
-    });
-    const accountTransactions = accounts.flatMap((account) => account.transactions);
-    const transactions = accountTransactions.filter((transaction) =>
-      (request.transactionId === undefined || transaction.transactionId === request.transactionId) &&
-      (request.sourceRecordKey === undefined || transaction.sourceRecordKey === request.sourceRecordKey),
-    );
-    const selectedTransactionIds = new Set(transactions.map((transaction) => transaction.transactionId));
-    const selectedAccounts = request.transactionId === undefined && request.sourceRecordKey === undefined
-      ? accounts
-      : accounts.filter((account) => account.transactions.some((transaction) => selectedTransactionIds.has(transaction.transactionId)));
-    const statements = selectedAccounts.flatMap((account) => account.statements);
-    const statementMemberships = statements.flatMap((statement) =>
-      statement.revisions.flatMap((revision) => revision.memberships),
-    ).filter((membership) => selectedTransactionIds.size === 0 || selectedTransactionIds.has(membership.transactionId));
-    const relations = selectedAccounts.flatMap((account) => account.relations).filter((relation) =>
-      selectedTransactionIds.size === 0 ||
-      (selectedTransactionIds.has(relation.fromTransactionId) && selectedTransactionIds.has(relation.toTransactionId)),
-    );
-    const provenance = transactions.flatMap((transaction) => transaction.provenance);
-    const statementProvenance = statements.flatMap((statement) =>
-      statement.revisions.flatMap((revision) => revision.provenance),
-    );
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      kind: "lineage",
-      accountNaturalKey: request.accountNaturalKey,
-      accounts: selectedAccounts,
-      captures: fubonQueryCaptures(
-        store.db,
-        selectedAccounts.map((account) => account.accountId),
-        knowledgeAt,
-      ),
-      transactions,
-      statements,
-      transactionRevisions: transactions,
-      statementMemberships,
-      relations,
-      provenance,
-      statementProvenance,
-      provenanceCount: provenance.length + statementProvenance.length,
     };
   });
 }

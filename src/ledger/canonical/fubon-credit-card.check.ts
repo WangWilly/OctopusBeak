@@ -13,6 +13,7 @@ import {
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
   admitFubonCreditCardCapture,
   buildFubonCreditCardAccountIdentityKey,
+  buildFubonCreditCardStatementEvidenceKey,
   buildFubonCreditCardTransactionSourceKey,
   type FubonCreditCardCaptureInput,
   type FubonCreditCardTransactionInput,
@@ -67,7 +68,7 @@ const primaryInstrument = {
   role: "primary" as const,
   evidence: {
     kind: "explicit-instrument-role" as const,
-    sourceRecordKey: "instrument-role-primary-a",
+    sourceRecordKey: "row-purchase-a",
     contractVersion: "fubon/credit-card/human-attested-v1",
   },
 };
@@ -94,13 +95,14 @@ function transaction(
 function capture(
   overrides: Partial<FubonCreditCardCaptureInput> = {},
 ): FubonCreditCardCaptureInput {
+  const identity = overrides.identity ?? {
+    sourceConnectionKey: "connection-a",
+    identityEpochKey: "epoch-1",
+    humanAttestedAccountKey: "portfolio-a",
+  };
   return {
     captureId: "capture-a",
-    identity: {
-      sourceConnectionKey: "connection-a",
-      identityEpochKey: "epoch-1",
-      humanAttestedAccountKey: "portfolio-a",
-    },
+    identity,
     observedAt: "2026-08-25T00:00:00.000Z",
     scope: {
       startDate: "2026-01-01",
@@ -134,7 +136,14 @@ function capture(
         transactionSourceKeys: ["row-purchase-a"],
         evidence: {
           kind: "issuer-settled-cycle-summary",
-          sourceRecordKey: "summary-2026-07",
+          sourceRecordKey: buildFubonCreditCardStatementEvidenceKey(
+            identity,
+            {
+              statementKey: "statement-2026-07",
+              cycleStart: "2026-07-01",
+              cycleEnd: "2026-07-31",
+            },
+          ),
           settled: true,
         },
       },
@@ -340,6 +349,23 @@ test("only issuer settled-cycle summaries may establish Statements", () => {
       ),
     /billed|statement/i,
   );
+  assert.throws(
+    () =>
+      admitFubonCreditCardCapture(
+        capture({
+          statements: [
+            {
+              ...capture().statements[0]!,
+              evidence: {
+                ...capture().statements[0]!.evidence,
+                sourceRecordKey: "fabricated-summary-marker",
+              },
+            },
+          ],
+        }),
+      ),
+    /scoped|account|cycle|summary evidence/i,
+  );
 });
 
 test("stable occurrence ordinal admits identical genuine rows and rejects reused identity", () => {
@@ -353,8 +379,27 @@ test("stable occurrence ordinal admits identical genuine rows and rejects reused
           transactions: [transaction(), transaction({ sourceRecordKey: "row-purchase-b" })],
         }),
       ),
-    /collision|duplicate|identity/i,
+    /collision|duplicate|identity|occurrence|source order/i,
   );
+  for (const transactions of [
+    [
+      transaction({ sourceRecordKey: "row-purchase-b", occurrenceIndex: 1 }),
+      transaction(),
+      capture().transactions[1]!,
+    ],
+    [
+      transaction(),
+      transaction({ sourceRecordKey: "row-purchase-b", occurrenceIndex: 2 }),
+      capture().transactions[1]!,
+    ],
+  ])
+    assert.throws(
+      () =>
+        admitFubonCreditCardCapture(
+          repeatedOccurrenceCapture({ transactions }),
+        ),
+      /contiguous|observed source order|occurrence/i,
+    );
 });
 
 test("all instrument roles require explicit source evidence", () => {
@@ -364,7 +409,7 @@ test("all instrument roles require explicit source evidence", () => {
       role,
       evidence: {
         ...primaryInstrument.evidence,
-        sourceRecordKey: `role-${role}`,
+        sourceRecordKey: "row-purchase-a",
       },
     };
     assert.equal(
@@ -381,6 +426,22 @@ test("all instrument roles require explicit source evidence", () => {
       ),
     /instrument|supplementary|evidence/i,
   );
+  for (const sourceRecordKey of ["", "fabricated-row-key"]) {
+    assert.throws(
+      () =>
+        admitFubonCreditCardCapture(
+          capture({
+            instruments: [
+              {
+                ...primaryInstrument,
+                evidence: { ...primaryInstrument.evidence, sourceRecordKey },
+              },
+            ],
+          }),
+        ),
+      /evidence|source record|same capture|instrument/i,
+    );
+  }
   assert.throws(
     () =>
       admitFubonCreditCardCapture(
@@ -473,6 +534,53 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     );
     assert.notEqual(first.accountId, secondAccount.accountId);
 
+    const roleEvidenceRows = store.db.prepare(
+      `SELECT instrument_id, account_id, capture_id, source_record_id
+       FROM fubon_credit_instrument_role_evidence ORDER BY rowid`,
+    ).all() as Array<{
+      instrument_id: Uint8Array;
+      account_id: Uint8Array;
+      capture_id: Uint8Array;
+      source_record_id: Uint8Array;
+    }>;
+    assert.throws(
+      () =>
+        store.db.prepare(
+          `INSERT INTO fubon_credit_instrument_role_evidence(
+            instrument_id, account_id, capture_id, source_record_id
+          ) VALUES (?, ?, ?, ?)`,
+        ).run(
+          roleEvidenceRows[0]!.instrument_id,
+          roleEvidenceRows[0]!.account_id,
+          roleEvidenceRows.at(-1)!.capture_id,
+          roleEvidenceRows.at(-1)!.source_record_id,
+        ),
+      /crosses capture, account, or instrument scope/i,
+    );
+    const summaryEvidenceRows = store.db.prepare(
+      `SELECT statement_revision_id, account_id, capture_id, evidence_key
+       FROM fubon_credit_statement_summary_evidence ORDER BY rowid`,
+    ).all() as Array<{
+      statement_revision_id: Uint8Array;
+      account_id: Uint8Array;
+      capture_id: Uint8Array;
+      evidence_key: string;
+    }>;
+    assert.throws(
+      () =>
+        store.db.prepare(
+          `INSERT INTO fubon_credit_statement_summary_evidence(
+            statement_revision_id, account_id, capture_id, evidence_key
+          ) VALUES (?, ?, ?, ?)`,
+        ).run(
+          summaryEvidenceRows[0]!.statement_revision_id,
+          summaryEvidenceRows[0]!.account_id,
+          summaryEvidenceRows.at(-1)!.capture_id,
+          `${summaryEvidenceRows[0]!.evidence_key}:cross-capture`,
+        ),
+      /crosses capture or account scope/i,
+    );
+
     const count = (table: string): number =>
       Number((store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as { value?: number }).value ?? 0);
     assert.equal(count("financial_accounts"), 2);
@@ -483,10 +591,12 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     assert.equal(count("assertions"), 4);
     assert.equal(count("assertion_provenance"), 6);
     assert.equal(count("fubon_credit_instrument_details"), 2);
+    assert.equal(count("fubon_credit_instrument_role_evidence"), 3);
     assert.equal(count("fubon_credit_transaction_details"), 6);
     assert.equal(count("fubon_credit_statement_details"), 2);
     assert.equal(count("fubon_credit_statement_revision_details"), 2);
     assert.equal(count("fubon_credit_statement_membership_details"), 2);
+    assert.equal(count("fubon_credit_statement_summary_evidence"), 3);
     assert.equal(count("fubon_credit_relation_details"), 0);
     assert.equal(
       count("sqlite_master WHERE type = 'table' AND name = 'fubon_credit_accounts'"),
@@ -499,10 +609,61 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     ).all() as Array<{ posting_status?: string }>;
     assert.equal(posted.length, 4);
     assert.ok(posted.every((row) => row.posting_status === "posted"));
+    const attestedRows = store.db.prepare(
+      `SELECT provider_key, sequence_lexeme FROM source_records
+       WHERE record_kind = 'fubon-credit-card-transaction'`,
+    ).all() as Array<{ provider_key?: string; sequence_lexeme?: string }>;
+    assert.ok(
+      attestedRows.every(
+        (row) =>
+          row.provider_key === "human-attested:no-provider-key" &&
+          /^observed-source-order:\d+$/.test(row.sequence_lexeme ?? ""),
+      ),
+    );
   } finally {
     store.close();
   }
 
+});
+
+test("extension failure rolls back initial attestation and the shared capture atomically", async () => {
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-atomic-"));
+  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    await assert.rejects(
+      commitFubonCreditCardCapture(
+        {
+          db: base.db,
+          databasePath: base.databasePath,
+          commitClock: base.commitClock,
+          beforeFubonCreditExtensionCommit: () => {
+            throw new Error("injected extension failure");
+          },
+        },
+        admitFubonCreditCardCapture(capture()),
+      ),
+      /injected extension failure/i,
+    );
+    const count = (table: string): number =>
+      Number(
+        (base.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+          value?: number;
+        }).value ?? 0,
+      );
+    assert.equal(count("source_captures"), 0);
+    assert.equal(count("source_records"), 0);
+    const attestationTable = Number(
+      (base.db
+        .prepare(
+          `SELECT COUNT(*) AS value FROM sqlite_master
+           WHERE type = 'table' AND name = 'fubon_credit_card_attestation_events'`,
+        )
+        .get() as { value?: number }).value ?? 0,
+    );
+    assert.equal(attestationTable, 0);
+  } finally {
+    base.close();
+  }
 });
 
 test("identical occurrences remain distinct while repeated captures add provenance", async () => {
@@ -644,6 +805,29 @@ test("generic current, historical, and lineage queries see Fubon after reopen", 
     await commitFubonCreditCardCapture(
       store,
       admitFubonCreditCardCapture(capture({ captureId: "capture-b" })),
+    );
+    const creditAccount = store.db.prepare(
+      `SELECT source_connection_id, identity_epoch_id, created_commit_id
+       FROM financial_accounts WHERE stream = 'credit-card' LIMIT 1`,
+    ).get() as {
+      source_connection_id?: Uint8Array;
+      identity_epoch_id?: Uint8Array;
+      created_commit_id?: Uint8Array;
+    };
+    assert.ok(creditAccount.source_connection_id);
+    assert.ok(creditAccount.identity_epoch_id);
+    assert.ok(creditAccount.created_commit_id);
+    store.db.prepare(
+      `INSERT INTO financial_accounts(
+        account_id, source_connection_id, identity_epoch_id, stream,
+        account_no, account_type, currency, created_commit_id
+      ) VALUES (?, ?, ?, 'domestic-deposit', ?, 'depository', 'TWD', ?)`,
+    ).run(
+      randomBytes(16),
+      creditAccount.source_connection_id,
+      creditAccount.identity_epoch_id,
+      "mixed-fubon-domestic-account",
+      creditAccount.created_commit_id,
     );
 
   } finally {

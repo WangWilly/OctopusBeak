@@ -8269,9 +8269,20 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                JOIN source_connections connection
                  ON connection.source_connection_id = account.source_connection_id
                WHERE connection.integration_namespace = ?
+                 AND EXISTS (
+                   SELECT 1 FROM capture_scopes scoped
+                   JOIN source_captures capture
+                     ON capture.capture_id = scoped.capture_id
+                   WHERE scoped.account_id = account.account_id
+                     AND capture.authority_route = ?
+                     AND capture.stream = account.stream
+                 )
                ORDER BY account.account_no`,
             )
-            .all(this.profile.integrationNamespace) as Record<string, unknown>[]
+            .all(
+              this.profile.integrationNamespace,
+              this.profile.postingRuleVersion,
+            ) as Record<string, unknown>[]
         ).map((row) => ({
           id: idToString(row.id),
           accountNo: String(row.accountNo),
