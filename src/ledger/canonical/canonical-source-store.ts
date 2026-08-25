@@ -3662,7 +3662,7 @@ function projectionRelevantCommitCount(db: DatabaseSync): number {
 }
 
 function sourceOnlyCommitCount(db: DatabaseSync): number {
-  return Number(
+  const sourceCaptureCount = Number(
     (
       db
         .prepare(
@@ -3678,6 +3678,38 @@ function sourceOnlyCommitCount(db: DatabaseSync): number {
         .get() as { count?: number }
     ).count ?? 0,
   );
+  const hasFubonCreditCardCaptures = Number(
+    (
+      db.prepare(
+        `SELECT COUNT(*) AS count FROM sqlite_master
+         WHERE type = 'table' AND name = 'fubon_credit_card_captures'`,
+      ).get() as { count?: number }
+    ).count ?? 0,
+  ) === 1;
+  if (!hasFubonCreditCardCaptures) return sourceCaptureCount;
+  const fubonCreditCardCaptureCount = Number(
+    (
+      db.prepare(
+        `SELECT COUNT(*) AS count FROM canonical_commits commit_row
+         WHERE commit_row.commit_kind = 'source_capture'
+           AND commit_row.authority_route = 'fubon/credit-card/human-attested-v1'
+           AND EXISTS (
+             SELECT 1 FROM fubon_credit_card_captures capture
+             WHERE capture.commit_sequence = commit_row.commit_sequence
+               AND capture.authority_route = 'fubon/credit-card/human-attested-v1'
+               AND capture.contract_version = 'fubon/credit-card/human-attested-v1'
+           )
+           AND EXISTS (
+             SELECT 1 FROM source_authority_routes registered
+             WHERE registered.authority_route = commit_row.authority_route
+               AND registered.integration_namespace = 'fubon'
+               AND registered.stream = 'credit-card'
+               AND registered.contract_version = 'fubon/credit-card/human-attested-v1'
+           )`,
+      ).get() as { count?: number }
+    ).count ?? 0,
+  );
+  return sourceCaptureCount + fubonCreditCardCaptureCount;
 }
 
 const CANONICAL_FINANCIAL_PROJECTION_TABLES = [
