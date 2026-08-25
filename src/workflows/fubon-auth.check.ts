@@ -712,6 +712,18 @@ for (const fileName of [
   });
 }
 
+test("Fubon declares a solver-capable text CAPTCHA challenge", async () => {
+  const source = await readFile(
+    new URL("./fubon-auth.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /challengeKind: "text-captcha"/);
+  assert.match(source, /challengeImageRegion/);
+  assert.match(source, /fubon\.login\.captcha-image/);
+  assert.match(source, /img\[src\*="captchaImage"\]:visible/);
+  assert.doesNotMatch(source, /challengeKind: "image-selection"/);
+});
+
 // The strip-types repository runner cannot resolve Libretto's nested TSX
 // loader. Run this gate with the actual TSX loader command instead.
 if (!process.execArgv.includes("--experimental-strip-types")) {
