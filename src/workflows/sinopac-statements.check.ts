@@ -17,9 +17,7 @@ import {
   sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
 } from "./sinopac-statements.ts";
-import {
-  type SinopacIdentityRawRow,
-} from "./sinopac-identity-evidence.ts";
+import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 assert.deepEqual(
@@ -211,8 +209,8 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        1,
-        "only the domestic SinoPac account is financially admitted",
+        2,
+        "domestic and human-attested foreign SinoPac rows are admitted",
       );
       assert.equal(
         Number(
@@ -224,8 +222,8 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        0,
-        "SinoPac foreign currency remains source-only",
+        1,
+        "SinoPac foreign currency uses the human-attested canonical contract",
       );
     } finally {
       financialStore.close();
@@ -278,7 +276,7 @@ try {
         }),
       },
     );
-    assert.equal(foreignOnlyResult.status, "source-only");
+    assert.equal(foreignOnlyResult.status, "financial-admitted");
     const foreignOnlyStore = createCanonicalSourceStore(
       join(foreignOnlyFinancialDir, "canonical.sqlite"),
     );
@@ -291,7 +289,7 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        0,
+        1,
       );
       assert.equal(
         Number(
@@ -303,13 +301,173 @@ try {
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        0,
+        1,
+      );
+      const firstForeignPayload = JSON.parse(
+        String(
+          (
+            foreignOnlyStore.db
+              .prepare(
+                "SELECT payload_json FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
+              )
+              .get() as { payload_json?: unknown }
+          ).payload_json ?? "",
+        ),
+      ) as { sourceKey?: string };
+      assert.equal(
+        firstForeignPayload.sourceKey,
+        "002:USD:2026-08-02T09:10:-100:900",
+      );
+      const repeatedForeignResult = await runSinopacStatements(
+        {} as never,
+        {
+          startDate: "20260801",
+          endDate: "20260823",
+          accountFilters: [],
+          currencyFilters: [],
+        },
+        [accounts[1]!],
+        {
+          canonicalSourceLedgerDir: sourceDir,
+          canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+          queryTransactions: async () => ({
+            Header: "SUCCESS",
+            SubInfo: [
+              {
+                DataText1: "2026/08/02<br />09:10",
+                DataText2: "2026/08/02",
+                DataText3: "foreign source-only transaction",
+                DataText4: "-100.00",
+                DataText5: "900.0",
+                DataText9: "different display-only value",
+              },
+            ],
+          }),
+          writeStatementFile: async (account, queryPeriods, rows) => ({
+            accountId: account.DataValue ?? "",
+            account: account.DataText ?? "",
+            currency: account.DisplayText ?? "",
+            kind: "foreign",
+            queryPeriods,
+            baseName: "foreign-repeat",
+            csvFilename: "foreign-repeat.csv",
+            csvPath: "foreign-repeat.csv",
+            csvBytes: 1,
+            jsonFilename: "foreign-repeat.json",
+            jsonPath: "foreign-repeat.json",
+            jsonBytes: 1,
+            rowCount: rows.length,
+          }),
+        },
+      );
+      assert.equal(repeatedForeignResult.status, "financial-admitted");
+      assert.equal(
+        Number(
+          (
+            foreignOnlyStore.db
+              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+        "normalized amount and balance lexemes keep one authority transaction",
+      );
+      assert.equal(
+        Number(
+          (
+            foreignOnlyStore.db
+              .prepare(
+                "SELECT COUNT(*) AS count FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        2,
+        "the repeated capture adds provenance without duplicating authority",
+      );
+      const foreignPayloads = foreignOnlyStore.db
+        .prepare(
+          "SELECT payload_json FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
+        )
+        .all() as Array<{ payload_json?: unknown }>;
+      assert.equal(
+        foreignPayloads.some((row) =>
+          String(row.payload_json ?? "").includes(
+            "different display-only value",
+          ),
+        ),
+        false,
+        "DataText9 never enters identity or canonical payload",
       );
     } finally {
       foreignOnlyStore.close();
     }
   } finally {
     await rm(foreignOnlyFinancialDir, { recursive: true, force: true });
+  }
+  const foreignCollisionDir = await mkdtemp(
+    join(tmpdir(), "sinopac-workflow-foreign-collision-"),
+  );
+  try {
+    await assert.rejects(
+      () =>
+        runSinopacStatements(
+          {} as never,
+          {
+            startDate: "20260801",
+            endDate: "20260823",
+            accountFilters: [],
+            currencyFilters: [],
+          },
+          [accounts[1]!],
+          {
+            canonicalSourceLedgerDir: sourceDir,
+            canonicalFinancialLedgerDir: foreignCollisionDir,
+            queryTransactions: async () => ({
+              Header: "SUCCESS",
+              SubInfo: [
+                {
+                  DataText1: "2026/08/02<br />09:10",
+                  DataText2: "2026/08/02",
+                  DataText3: "first indistinguishable row",
+                  DataText4: "-100",
+                  DataText5: "900",
+                },
+                {
+                  DataText1: "2026/08/02<br />09:10",
+                  DataText2: "2026/08/02",
+                  DataText3: "second indistinguishable row",
+                  DataText4: "-100.00",
+                  DataText5: "900.0",
+                },
+              ],
+            }),
+            writeStatementFile: async () => {
+              throw new Error("collision must fail before statement writing");
+            },
+          },
+        ),
+      /human-attested source identity collision/i,
+    );
+    const collisionStore = createCanonicalSourceStore(
+      join(foreignCollisionDir, "canonical.sqlite"),
+    );
+    try {
+      assert.equal(
+        Number(
+          (
+            collisionStore.db
+              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+    } finally {
+      collisionStore.close();
+    }
+  } finally {
+    await rm(foreignCollisionDir, { recursive: true, force: true });
   }
   const duplicateResult = await runSinopacStatements(
     {} as never,
@@ -605,7 +763,7 @@ const identityRows: SinopacIdentityRawRow[] = [
     DataText6: "candidate-one",
     DataText7: "31.1",
     DataText8: "note-one",
-    DataText9: "candidate-nine-one",
+    DataText9: "100.00<br />900.00",
     DataText10: "candidate-ten-one",
     DataText11: "candidate-eleven-one",
   },
@@ -618,7 +776,7 @@ const identityRows: SinopacIdentityRawRow[] = [
     DataText6: "candidate-two",
     DataText7: "31.2",
     DataText8: "note-two",
-    DataText9: "candidate-nine-two",
+    DataText9: "200.00<br />700.00",
     DataText10: "candidate-ten-two",
     DataText11: "candidate-eleven-two",
   },
@@ -660,14 +818,26 @@ assert.equal(identitySummary.exactRepeat.rowSetEqual, true);
 assert.equal(identitySummary.overlap.rightRowsContained, true);
 assert.equal(identitySummary.captures[0]?.duplicateCompleteRowsExist, true);
 assert.equal(
-  identitySummary.candidateFields.DataText6?.populationByCapture["exact-repeat-1"]
-    .uniqueWithinCapture,
+  identitySummary.candidateFields.DataText6?.populationByCapture[
+    "exact-repeat-1"
+  ].uniqueWithinCapture,
   false,
 );
 assert.equal(
   identitySummary.candidateFields.DataText6?.exactRepeat.stableForMatchedRows,
   true,
 );
+assert.equal(
+  identitySummary.derivedFields.DataText9.formula,
+  'DataText4 + "<br />" + DataText5',
+);
+for (const capture of identitySummary.captures) {
+  const derivation =
+    identitySummary.derivedFields.DataText9.populationByCapture[capture.label];
+  assert.equal(derivation.evaluatedRows, capture.rowCount);
+  assert.equal(derivation.exactMatches, capture.rowCount);
+  assert.equal(derivation.exactForAllEvaluatedRows, true);
+}
 assert.deepEqual(identitySummary.siteAssessment, {
   botProtectionDetected: false,
   fetchXhrWrapperCategory: { fetch: "native", xhr: "native" },

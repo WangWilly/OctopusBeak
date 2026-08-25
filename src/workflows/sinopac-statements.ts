@@ -24,6 +24,11 @@ import {
   type SinopacStatementValidatedCapture,
 } from "../ledger/canonical/sinopac-domestic-deposit.ts";
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import { admitSinopacForeignCurrencyFinancialCapture } from "../ledger/canonical/sinopac-foreign-deposit.ts";
+import {
+  commitForeignCurrencyDepositCaptureBatch,
+  type ForeignCurrencyDepositAdmittedCapture,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -115,7 +120,7 @@ const workflowOutputSchema = z.union([
   z
     .object({
       mode: z.literal("identity-validation"),
-      evidenceVersion: z.literal("sinopac-identity-evidence-v1"),
+      evidenceVersion: z.literal("sinopac-identity-evidence-v2"),
     })
     .passthrough(),
 ]);
@@ -177,8 +182,7 @@ export type SinopacStatementsRunDependencies = {
     rows: SinopacStatementRow[],
   ) => Promise<SinopacDownload>;
   canonicalSourceLedgerDir?: string;
-  /** Domestic financial mutation is opt-in; foreign SinoPac evidence remains
-   * source-only even when a financial ledger is supplied. */
+  /** Canonical financial mutation is opt-in for both domestic and foreign deposits. */
   canonicalFinancialLedgerDir?: string;
 };
 
@@ -1182,18 +1186,19 @@ export async function runSinopacStatements(
       captureInputs.map(({ capture }) => capture),
       captureOccurrenceId,
     );
-    if (
-      financialWriter &&
-      captureInputs.some(({ capture }) => capture.product === "domestic-deposit")
-    ) {
+    if (financialWriter) {
       const manifest = getSinopacHumanAttestedV1Manifest();
-      recordInitialSinopacHumanAttestationIfMissing(
-        financialWriter.db,
-        observedAt,
+      const hasDomesticCapture = captureInputs.some(
+        ({ capture }) => capture.product === "domestic-deposit",
       );
-      const personalAuthority = createSinopacPersonalAuthority(
-        financialWriter.db,
-      );
+      if (hasDomesticCapture)
+        recordInitialSinopacHumanAttestationIfMissing(
+          financialWriter.db,
+          observedAt,
+        );
+      const personalAuthority = hasDomesticCapture
+        ? createSinopacPersonalAuthority(financialWriter.db)
+        : null;
       const financialInputs = captureInputs.flatMap(({ capture }, index) =>
         capture.product === "domestic-deposit"
           ? [
@@ -1201,7 +1206,7 @@ export async function runSinopacStatements(
                 capture,
                 captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
                 humanAttestation: manifest,
-                personalAuthority,
+                personalAuthority: personalAuthority!,
               },
             ]
           : [],
@@ -1216,6 +1221,17 @@ export async function runSinopacStatements(
         throw new Error(
           `SinoPac domestic deposit financial admission failed: ${blocked.diagnostics.join(", ")}`,
         );
+      const foreignAdmissions: ForeignCurrencyDepositAdmittedCapture[] =
+        captureInputs.flatMap(({ capture }, index) =>
+          capture.product === "foreign-currency"
+            ? [
+                admitSinopacForeignCurrencyFinancialCapture(
+                  capture,
+                  `${captureOccurrenceId}:foreign:${index}`,
+                ),
+              ]
+            : [],
+        );
       if (financialInputs.length > 0) {
         await commitCanonicalSinopacDomesticDepositCaptureBatch(
           financialWriter,
@@ -1228,9 +1244,14 @@ export async function runSinopacStatements(
         )
           status = "financial-admitted";
       }
-      // SinoPac foreign captures remain durable source evidence only. The
-      // provider has not established a stable transaction occurrence key, so
-      // no foreign row may cross the canonical Financial Transaction writer.
+      if (foreignAdmissions.length > 0) {
+        await commitForeignCurrencyDepositCaptureBatch(
+          financialWriter,
+          foreignAdmissions,
+        );
+        if (foreignAdmissions.some((capture) => capture.records.length > 0))
+          status = "financial-admitted";
+      }
     }
   } finally {
     if (financialStore && financialStore !== sourceStore)

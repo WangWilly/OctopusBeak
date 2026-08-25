@@ -16,7 +16,6 @@ export const SINOPAC_IDENTITY_FIELD_NAMES = [
 
 export const SINOPAC_IDENTITY_CANDIDATE_FIELD_NAMES = [
   "DataText6",
-  "DataText9",
   "DataText10",
   "DataText11",
 ] as const;
@@ -97,6 +96,18 @@ export type SinopacIdentityCandidateEvidence = {
   overlap: CandidateComparison;
 };
 
+export type SinopacIdentityDerivedFieldEvidence = {
+  formula: 'DataText4 + "<br />" + DataText5';
+  populationByCapture: Record<
+    SinopacIdentityCapture["label"],
+    {
+      evaluatedRows: number;
+      exactMatches: number;
+      exactForAllEvaluatedRows: boolean;
+    }
+  >;
+};
+
 export type SinopacIdentityCaptureSummary = {
   label: SinopacIdentityCapture["label"];
   range: DateRange;
@@ -137,7 +148,7 @@ export type SinopacIdentitySiteAssessment = {
 
 export type SinopacIdentityEvidenceSummary = {
   mode: "identity-validation";
-  evidenceVersion: "sinopac-identity-evidence-v1";
+  evidenceVersion: "sinopac-identity-evidence-v2";
   currency: "USD";
   accountCount: number;
   captures: SinopacIdentityCaptureSummary[];
@@ -147,6 +158,9 @@ export type SinopacIdentityEvidenceSummary = {
     SinopacIdentityCandidateFieldName,
     SinopacIdentityCandidateEvidence
   >;
+  derivedFields: {
+    DataText9: SinopacIdentityDerivedFieldEvidence;
+  };
   siteAssessment: SinopacIdentitySiteAssessment;
   sideEffects: {
     canonicalCommits: false;
@@ -411,6 +425,24 @@ function compareCandidate(
   };
 }
 
+function dataText9Derivation(rows: SinopacIdentityRawRow[]) {
+  const evaluableRows = rows.filter(
+    (row) =>
+      typeof row.DataText4 === "string" &&
+      typeof row.DataText5 === "string" &&
+      typeof row.DataText9 === "string",
+  );
+  const exactMatches = evaluableRows.filter(
+    (row) => row.DataText9 === `${row.DataText4}<br />${row.DataText5}`,
+  ).length;
+  return {
+    evaluatedRows: evaluableRows.length,
+    exactMatches,
+    exactForAllEvaluatedRows:
+      evaluableRows.length > 0 && exactMatches === evaluableRows.length,
+  };
+}
+
 function captureSummary(
   capture: SinopacIdentityCapture,
 ): SinopacIdentityCaptureSummary {
@@ -485,13 +517,23 @@ export function summarizeSinopacIdentityEvidence(
   >;
   return {
     mode: "identity-validation",
-    evidenceVersion: "sinopac-identity-evidence-v1",
+    evidenceVersion: "sinopac-identity-evidence-v2",
     currency: "USD",
     accountCount,
     captures: captures.map(captureSummary),
     exactRepeat: compareRows(firstRows, secondRows, "exact"),
     overlap: compareRows(firstRows, overlapRows, "overlap"),
     candidateFields,
+    derivedFields: {
+      DataText9: {
+        formula: 'DataText4 + "<br />" + DataText5',
+        populationByCapture: {
+          "exact-repeat-1": dataText9Derivation(firstRows),
+          "exact-repeat-2": dataText9Derivation(secondRows),
+          overlap: dataText9Derivation(overlapRows),
+        },
+      },
+    },
     siteAssessment,
     sideEffects: {
       canonicalCommits: false,
