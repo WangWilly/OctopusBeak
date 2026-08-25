@@ -66,29 +66,28 @@ test("assistance stages publish a declared challenge kind and solver image regio
   });
 });
 
-test("assistance stages reject an unresolvable solver image region", async () => {
-  await assert.rejects(
-    emitHumanAssistanceStage({
-      stageId: "yuanta-bank-captcha",
-      title: "Complete the CAPTCHA",
-      targets: [{
-        id: "captcha-input",
-        label: "CAPTCHA input",
-        semanticId: "yuanta-bank.login.captcha-input",
-        modes: ["click", "type"],
-        locator: { boundingBox: async () => ({ x: 10, y: 20, width: 100, height: 24 }) },
-      }],
-      contextRegions: [],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: { targetId: "captcha-input", contextRegionIds: [] },
-      challengeKind: "image-selection",
-      challengeImageRegion: {
-        id: "captcha-image",
-        label: "CAPTCHA image",
-        semanticId: "yuanta-bank.login.captcha-image",
-        locator: { boundingBox: async () => null },
-      },
-    }, () => {}),
-    /challenge image region cannot be resolved: yuanta-bank\.login\.captcha-image/,
-  );
+test("assistance stages omit an unresolvable solver image region", async () => {
+  const contract = await emitHumanAssistanceStage({
+    stageId: "yuanta-bank-captcha",
+    title: "Complete the CAPTCHA",
+    targets: [{
+      id: "captcha-input",
+      label: "CAPTCHA input",
+      semanticId: "yuanta-bank.login.captcha-input",
+      modes: ["click", "type"],
+      locator: { boundingBox: async () => ({ x: 10, y: 20, width: 100, height: 24 }) },
+    }],
+    contextRegions: [],
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: { targetId: "captcha-input", contextRegionIds: [] },
+    challengeKind: "image-selection",
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "yuanta-bank.login.captcha-image",
+      locator: { boundingBox: async () => null },
+    },
+  }, () => {});
+  assert.equal(contract.challengeKind, "image-selection");
+  assert.equal(contract.challengeImageRegion, undefined);
 });

@@ -1153,6 +1153,13 @@ async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
         semanticId: "fubon.login.captcha-challenge",
       },
     ],
+    challengeKind: "text-captcha",
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "fubon.login.captcha-image",
+      locator: frame.locator('img[src*="captchaImage"]:visible').first(),
+    },
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: {
       targetId: "captcha-input",

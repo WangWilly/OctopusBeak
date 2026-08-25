@@ -89,11 +89,10 @@ export async function emitHumanAssistanceStage(
   let challengeImageRegion: VerificationChallengeImageRegion | undefined;
   if (stage.challengeImageRegion) {
     const rect = await stage.challengeImageRegion.locator.boundingBox().catch(() => null);
-    if (!rect || rect.width <= 0 || rect.height <= 0) {
-      throw new Error(`Verification challenge image region cannot be resolved: ${stage.challengeImageRegion.semanticId}`);
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const { locator: _locator, ...descriptor } = stage.challengeImageRegion;
+      challengeImageRegion = { ...descriptor, rect };
     }
-    const { locator: _locator, ...descriptor } = stage.challengeImageRegion;
-    challengeImageRegion = { ...descriptor, rect };
   }
 
   const contract: HumanAssistanceContractInput = {
