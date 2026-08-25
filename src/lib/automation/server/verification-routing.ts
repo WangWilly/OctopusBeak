@@ -175,6 +175,7 @@ export async function routeWaitingRunVerification(input: {
     session,
     confidenceThreshold,
     charset: contract?.charset,
+    prompt: contract?.prompt,
     dependencies,
   });
 }

@@ -12,6 +12,12 @@ import type {
   VerificationSolverResult,
 } from "./verification-solver.ts";
 
+export const stubVisionSelectionEngine: VisionSelectionEngine = {
+  async select() {
+    return { selections: [], confidence: 0 };
+  },
+};
+
 export function localVerificationSolver(deps: {
   textEngine?: TextRecognitionEngine;
   visionEngine?: VisionSelectionEngine;
@@ -19,18 +25,13 @@ export function localVerificationSolver(deps: {
   const ocrSolver = textCaptchaSolver(
     deps.textEngine ?? tesseractTextRecognitionEngine,
   );
-  const visionSolver = deps.visionEngine
-    ? imageSelectionSolver(deps.visionEngine)
-    : null;
+  const visionSolver = imageSelectionSolver(
+    deps.visionEngine ?? stubVisionSelectionEngine,
+  );
   return {
     async solve(input): Promise<VerificationSolverResult> {
       if (input.challengeKind === "text-captcha") return ocrSolver.solve(input);
       if (input.challengeKind === "image-selection") {
-        if (!visionSolver) {
-          throw new Error(
-            "No vision model is configured for image-selection challenges.",
-          );
-        }
         return visionSolver.solve(input);
       }
       throw new Error(
