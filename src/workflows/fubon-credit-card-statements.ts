@@ -7,6 +7,7 @@ import { z } from "zod";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   admitFubonCreditCardCapture,
+  buildFubonCreditCardStatementEvidenceKey,
   commitFubonCreditCardCaptureBatch,
   type FubonCreditCardCaptureInput,
   type FubonCreditCardValidatedCapture,
@@ -1027,6 +1028,7 @@ function instrumentForRows(
   instrumentKey: string,
   cardKey: string,
   rows: readonly CsvRow[],
+  evidenceSourceRecordKey: string,
 ): FubonCreditCardCaptureInput["instruments"][number] {
   const roles = new Set<FubonCreditCardCaptureInput["instruments"][number]["role"]>();
   for (const row of rows) {
@@ -1046,7 +1048,7 @@ function instrumentForRows(
     role,
     evidence: {
       kind: "explicit-instrument-role" as const,
-      sourceRecordKey: fubonCanonicalDigest("fubon-card-role-v1", [cardKey, role]),
+      sourceRecordKey: evidenceSourceRecordKey,
       contractVersion: "fubon/credit-card/human-attested-v1",
     },
   };
@@ -1165,7 +1167,18 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
         transactionSourceKeys,
         evidence: {
           kind: "issuer-settled-cycle-summary" as const,
-          sourceRecordKey: fubonCanonicalDigest("fubon-statement-summary-v1", summary),
+          sourceRecordKey: buildFubonCreditCardStatementEvidenceKey(
+            {
+              sourceConnectionKey: attestation.sourceConnectionKey,
+              identityEpochKey: attestation.identityEpochKey,
+              humanAttestedAccountKey,
+            },
+            {
+              statementKey,
+              cycleStart: summary.cycleStart,
+              cycleEnd: summary.cycleEnd,
+            },
+          ),
           settled: true as const,
         },
       };
@@ -1226,7 +1239,14 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
           }],
         },
       },
-      instruments: [instrumentForRows(instrumentKey, cardKey, statementRows)],
+      instruments: [
+        instrumentForRows(
+          instrumentKey,
+          cardKey,
+          [...statementRows, ...unbilledRows],
+          transactions[0]!.sourceRecordKey,
+        ),
+      ],
       transactions,
       statements,
       relations: [],

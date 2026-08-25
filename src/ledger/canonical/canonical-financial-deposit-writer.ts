@@ -56,6 +56,8 @@ export type CanonicalFinancialDepositRecord = {
   occurrenceKey: string;
   collisionKey: string;
   providerKey: string;
+  /** Human-attested occurrence identity; never a provider key or guarantee. */
+  humanAttestedOccurrenceKey?: string;
   contentHash: string;
   sequenceLexeme: string;
   compactJson: string;
@@ -602,7 +604,22 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   for (const record of capture.records) {
     validateOpaque(record.occurrenceKey, "Occurrence key");
     validateOpaque(record.collisionKey, "Collision key");
-    validateOpaque(record.providerKey, "Provider key");
+    if (isFubonCreditCardCapture) {
+      if (record.providerKey !== "human-attested:no-provider-key")
+        throw new Error("Fubon credit-card records cannot claim a provider key.");
+      validateOpaque(
+        record.humanAttestedOccurrenceKey ?? "",
+        "Human-attested occurrence key",
+      );
+      if (record.humanAttestedOccurrenceKey !== record.occurrenceKey)
+        throw new Error("Fubon human-attested occurrence key must be the authority identity.");
+      if (!/^observed-source-order:\d+$/.test(record.sequenceLexeme))
+        throw new Error("Fubon source order must be an observed ordinal, not a provider sequence.");
+    } else {
+      validateOpaque(record.providerKey, "Provider key");
+      if (record.humanAttestedOccurrenceKey !== undefined)
+        throw new Error("Human-attested occurrence identity is only valid for its exact route.");
+    }
     validateOpaque(record.contentHash, "Content hash");
     if (occurrences.has(record.occurrenceKey))
       throw new CanonicalFinancialDepositConflictError(
@@ -936,7 +953,10 @@ function commitOnce(
         provider_key?: unknown;
         content_hash?: unknown;
       }>;
-      if (prior.some((row) => String(row.provider_key) !== record.providerKey))
+      if (
+        capture.authorityRoute !== "fubon/credit-card/human-attested-v1" &&
+        prior.some((row) => String(row.provider_key) !== record.providerKey)
+      )
         throw new CanonicalFinancialDepositConflictError(
           "Source occurrence provider identity overwrite is forbidden.",
         );

@@ -30,6 +30,11 @@ test("Fubon credit-card v1 manifest is immutable, source-scoped, and non-provide
   );
   assert.equal(manifest.providerGuaranteed, false);
   assert.equal(manifest.occurrenceProviderGuaranteed, false);
+  assert.equal(
+    manifest.semantics.transactionIdentity,
+    "immutable-normalized-content-tuple-plus-contiguous-observed-occurrence-index",
+  );
+  assert.match(manifest.semantics.occurrenceOrdering, /human-attested-not-provider-guaranteed/);
   assert.match(manifest.provenance.sourceCaptureFingerprint, /^sha256:/);
   assert.equal(Object.isFrozen(manifest), true);
   assert.equal(isFubonCreditCardHumanAttestedV1Manifest(manifest), true);
