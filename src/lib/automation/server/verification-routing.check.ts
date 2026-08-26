@@ -75,7 +75,7 @@ function trackDependencies(overrides: Partial<VerificationRoutingDependencies> =
   const clicked: string[] = [];
   const failed: string[] = [];
   const dependencies: VerificationRoutingDependencies = {
-    solver: overrides.solver ?? confidentSolver("A1B2", 0.95),
+    solver: overrides.solver ?? confidentSolver("1234", 0.95),
     captureChallengeImage: overrides.captureChallengeImage ?? (async () => {
       calls.push("capture");
       return Buffer.from("challenge-image");
@@ -128,7 +128,7 @@ test("a solver actor solves an inline challenge and resumes", async () => {
   });
   assert.deepEqual(outcome, { kind: "resumed" });
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
-  assert.deepEqual(tracked.injected, ["A1B2"]);
+  assert.deepEqual(tracked.injected, ["1234"]);
   assert.deepEqual(tracked.resumed, ["ses-solver"]);
 });
 
@@ -138,6 +138,8 @@ test("a direct solver route uses contract metadata before compatibility argument
     charset?: string;
     imagePreprocessing?: readonly string[];
     ocrPageSegmentationMode?: string;
+    attempt?: number;
+    strategy?: unknown;
     expectedAnswerLength?: number;
   }> = [];
   const tracked = trackDependencies({
@@ -148,6 +150,8 @@ test("a direct solver route uses contract metadata before compatibility argument
           charset: input.charset,
           imagePreprocessing: input.imagePreprocessing,
           ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+          attempt: input.attempt,
+          strategy: input.strategy,
           expectedAnswerLength: input.expectedAnswerLength,
         });
         return { answer: "2038", confidence: 0.85 };
@@ -161,6 +165,14 @@ test("a direct solver route uses contract metadata before compatibility argument
       prompt: "Enter the digits shown.",
       imagePreprocessing: ["remove-interference-lines"],
       ocrPageSegmentationMode: "single-word",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-word" },
+        {
+          imagePreprocessing: [],
+          ocrOutputStage: "grayscale",
+          ocrPageSegmentationMode: "single-line",
+        },
+      ],
       solverConfidenceThreshold: 0.8,
       expectedAnswerLength: 4,
     },
@@ -174,6 +186,20 @@ test("a direct solver route uses contract metadata before compatibility argument
     charset: "digits",
     imagePreprocessing: ["remove-interference-lines"],
     ocrPageSegmentationMode: "single-word",
+    attempt: 1,
+    strategy: { ocrPageSegmentationMode: "single-word" },
+    expectedAnswerLength: 4,
+  }, {
+    prompt: "Enter the digits shown.",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-word",
+    attempt: 2,
+    strategy: {
+      imagePreprocessing: [],
+      ocrOutputStage: "grayscale",
+      ocrPageSegmentationMode: "single-line",
+    },
     expectedAnswerLength: 4,
   }]);
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
@@ -295,7 +321,7 @@ test("a failed solver invocation finalizes the run as failed", async () => {
 });
 
 test("the solver answer never leaks into resume, failure, or click output", async () => {
-  const secretAnswer = "SOLVER-SECRET-ANSWER-7f3a";
+  const secretAnswer = "120987";
   const tracked = trackDependencies({ solver: confidentSolver(secretAnswer, 0.99) });
   const outcome = await routeVerificationActor({
     actor: "solver",
@@ -573,9 +599,9 @@ test("a Post digit CAPTCHA routes through the local solver seam and resumes", as
       challengeKind: "text-captcha",
       charset: "digits",
       imagePreprocessing: ["remove-interference-lines"],
-      ocrPageSegmentationMode: "single-word",
-      expectedAnswerLength: 4,
-    }]);
+    ocrPageSegmentationMode: "single-word",
+    expectedAnswerLength: 4,
+  }]);
     assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
     assert.deepEqual(tracked.injected, ["5241"]);
     assert.deepEqual(tracked.resumed, ["ses-solver"]);

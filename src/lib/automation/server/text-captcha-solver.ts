@@ -1,6 +1,7 @@
 import { createWorker, OEM, PSM, type Page } from "tesseract.js";
 import type {
   CaptchaImagePreprocessingMode,
+  CaptchaOcrOutputStage,
   CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
 } from "../human-assistance.ts";
@@ -14,6 +15,7 @@ export type TextRecognitionEngine = {
     charset?: ChallengeCharacterSet,
     imagePreprocessing?: readonly CaptchaImagePreprocessingMode[],
     ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode,
+    ocrOutputStage?: CaptchaOcrOutputStage,
   ): Promise<{ text: string; confidence: number }>;
 };
 
@@ -69,34 +71,55 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
       imagePreprocessing,
       ocrPageSegmentationMode,
       expectedAnswerLength,
+      strategy,
     }): Promise<VerificationSolverResult> {
       if (challengeKind !== "text-captcha") {
         throw new Error(
           `OCR solver does not support challenge kind ${challengeKind}.`,
         );
       }
+      const effectiveImagePreprocessing = strategy?.imagePreprocessing
+        ?? imagePreprocessing;
+      const effectivePageSegmentationMode = strategy?.ocrPageSegmentationMode
+        ?? ocrPageSegmentationMode;
+      const effectiveOutputStage = strategy?.ocrOutputStage;
       const recognition = await engine.recognize(
         image,
         charset,
-        imagePreprocessing,
-        ocrPageSegmentationMode,
+        effectiveImagePreprocessing,
+        effectivePageSegmentationMode,
+        effectiveOutputStage,
       );
       const answer = normalizeCaptchaText(recognition.text, charset);
       const expectedLengthMatches = expectedAnswerLength === undefined
         || answer.length === expectedAnswerLength;
-      if (expectedLengthMatches || !imagePreprocessing?.includes("remove-interference-lines")) {
+      // An ordered attempt plan is the provider's complete pipeline. Do not
+      // add the legacy line-removal fallback inside a planned attempt: that
+      // would silently run another (possibly unsafe) OCR flow before the next
+      // declared strategy gets a chance.
+      if (strategy) {
+        if (!answer || (expectedAnswerLength !== undefined && !expectedLengthMatches)) {
+          return { answer: "", confidence: 0 };
+        }
+        return { answer, confidence: clampConfidence(recognition.confidence) };
+      }
+      if (expectedLengthMatches || !effectiveImagePreprocessing?.includes("remove-interference-lines")) {
         if (!answer) return { answer: "", confidence: 0 };
+        if (expectedAnswerLength !== undefined && !expectedLengthMatches) {
+          return { answer: "", confidence: 0 };
+        }
         return { answer, confidence: clampConfidence(recognition.confidence) };
       }
 
-      const fallbackPreprocessing = imagePreprocessing.filter(
+      const fallbackPreprocessing = effectiveImagePreprocessing.filter(
         (mode) => mode !== "remove-interference-lines",
       );
       const fallback = await engine.recognize(
         image,
         charset,
         fallbackPreprocessing.length > 0 ? fallbackPreprocessing : undefined,
-        ocrPageSegmentationMode,
+        effectivePageSegmentationMode,
+        effectiveOutputStage,
       );
       const fallbackAnswer = normalizeCaptchaText(fallback.text, charset);
       if (fallbackAnswer.length === expectedAnswerLength) {
@@ -105,8 +128,7 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
           confidence: clampConfidence(fallback.confidence),
         };
       }
-      if (!answer) return { answer: "", confidence: 0 };
-      return { answer, confidence: clampConfidence(recognition.confidence) };
+      return { answer: "", confidence: 0 };
     },
   };
 }
@@ -149,7 +171,13 @@ function enqueueRecognition<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
-  recognize(image, charset, imagePreprocessing, ocrPageSegmentationMode) {
+  recognize(
+    image,
+    charset,
+    imagePreprocessing,
+    ocrPageSegmentationMode,
+    ocrOutputStage,
+  ) {
     return enqueueRecognition(async () => {
       const worker = await tesseractWorker();
       await worker.setParameters({
@@ -165,6 +193,7 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
           removeInterferenceLines: imagePreprocessing?.includes(
             "remove-interference-lines",
           ),
+          outputStage: ocrOutputStage,
         },
       );
       const result = await worker.recognize(processed, {}, {

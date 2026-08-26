@@ -1,4 +1,5 @@
 import { PNG } from "pngjs";
+import type { CaptchaOcrOutputStage } from "../human-assistance.ts";
 
 export type GrayImage = {
   width: number;
@@ -26,6 +27,7 @@ export type CaptchaPreprocessStep =
 
 export type CaptchaPreprocessOptions = {
   removeInterferenceLines?: boolean;
+  outputStage?: CaptchaOcrOutputStage;
 };
 
 type PixelBand = { start: number; end: number };
@@ -497,5 +499,6 @@ export function preprocessCaptchaImage(
   const denoised = denoise(lineCleaned, MIN_REGION_PIXELS);
   const output = encodeGrayImage(denoised);
   onStep?.("denoised", output);
+  if (options.outputStage === "grayscale") return encodeGrayImage(decoded);
   return output;
 }

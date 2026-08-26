@@ -18,6 +18,14 @@ export type ViewerInput =
 /** The smallest browser seam provider adapters need: selector-backed access. */
 export type ViewerPageAccess = {
   locator(selector: string): Locator;
+  /** The live top-level frame used by provider adapters that need DOM pixels. */
+  mainFrame?: () => Frame;
+  /** Resolve a named provider frame without exposing the Playwright Page. */
+  frame?: (name: string) => Frame | null;
+  /** The current page URL, used to bind provider-owned captures to navigation. */
+  url?: () => string;
+  /** Capture a page-relative region without exposing the Playwright Page. */
+  screenshot(options: { clip: HumanVerificationRect; type: "png" }): Promise<Buffer>;
 };
 
 /**
@@ -245,7 +253,13 @@ export function withViewerPage<T>(
   session: string,
   action: (page: ViewerPageAccess) => Promise<T>,
 ) {
-  return withPausedPage(session, (page) => action({ locator: page.locator.bind(page) }));
+  return withPausedPage(session, (page) => action({
+    locator: page.locator.bind(page),
+    mainFrame: () => page.mainFrame(),
+    frame: (name) => page.frame({ name }),
+    url: () => page.url(),
+    screenshot: (options) => page.screenshot(options),
+  }));
 }
 
 export function captureSessionScreenshot(session: string) {
@@ -393,6 +407,9 @@ export function refreshTargetRect(
     ...(contract.ocrPageSegmentationMode === undefined
       ? {}
       : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
+    ...(contract.ocrAttemptPlan === undefined
+      ? {}
+      : { ocrAttemptPlan: contract.ocrAttemptPlan }),
     ...(contract.solverConfidenceThreshold === undefined
       ? {}
       : { solverConfidenceThreshold: contract.solverConfidenceThreshold }),

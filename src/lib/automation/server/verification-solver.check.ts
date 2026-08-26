@@ -333,3 +333,189 @@ test("solveVerificationChallenge forwards the expected answer length", async () 
   });
   assert.equal(receivedLength, 5);
 });
+
+test("a declared OCR attempt plan captures once and gives each low-confidence attempt a distinct strategy", async () => {
+  let captures = 0;
+  const attempts: Array<{ attempt?: number; strategy?: unknown }> = [];
+  const solver: VerificationSolver = {
+    async solve({ attempt, strategy }) {
+      attempts.push({ attempt, strategy });
+      return { answer: "LOW", confidence: 0.1 };
+    },
+  };
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => {
+      captures += 1;
+      return image;
+    },
+    injectAnswer: async () => {},
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrOutputStage: "grayscale" },
+      { ocrOutputStage: "final" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.equal(captures, 1);
+  assert.deepEqual(attempts, [
+    { attempt: 1, strategy: { ocrPageSegmentationMode: "single-word" } },
+    { attempt: 2, strategy: { ocrOutputStage: "grayscale" } },
+    { attempt: 3, strategy: { ocrOutputStage: "final" } },
+  ]);
+});
+
+test("a planned solve executes every strategy before injecting the winner", async () => {
+  const solvedAttempts: number[] = [];
+  let captures = 0;
+  const solver: VerificationSolver = {
+    async solve({ attempt }) {
+      solvedAttempts.push(attempt!);
+      return { answer: "123456", confidence: attempt === 2 ? 0.99 : 0.95 };
+    },
+  };
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => {
+      captures += 1;
+      return image;
+    },
+    injectAnswer: async () => {},
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrOutputStage: "grayscale" },
+      { ocrOutputStage: "final" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.equal(captures, 1);
+  assert.deepEqual(solvedAttempts, [1, 2, 3]);
+});
+
+test("a planned solve ranks eligible six-digit candidates after every strategy", async () => {
+  const injected: string[] = [];
+  const candidates = [
+    { answer: "123", confidence: 0.999 },
+    { answer: "123456", confidence: 0.91 },
+    { answer: "654321", confidence: 0.99 },
+  ];
+  let captures = 0;
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return candidates[attempt! - 1]!;
+      },
+    },
+    captureChallengeImage: async () => {
+      captures += 1;
+      return image;
+    },
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrPageSegmentationMode: "raw-line" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.equal(captures, 1);
+  assert.deepEqual(injected, ["654321"]);
+});
+
+test("a planned solve breaks equal-confidence ties by declaration order", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return {
+          answer: attempt === 1 ? "111111" : "222222",
+          confidence: 0.95,
+        };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injected, ["111111"]);
+});
+
+test("a planned solve exhausts when all candidates have the wrong length or confidence", async () => {
+  let solves = 0;
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        solves += 1;
+        return attempt === 1
+          ? { answer: "12345", confidence: 0.99 }
+          : { answer: "123456", confidence: 0.89 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.equal(solves, 2);
+  assert.deepEqual(injected, []);
+});
+
+test("a stale provider capture is withheld after ranking and never injected", async () => {
+  let validations = 0;
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve() {
+        return { answer: "123456", confidence: 0.99 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    validateChallengeImage: async () => {
+      validations += 1;
+      return false;
+    },
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+    ],
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.equal(validations, 1);
+  assert.deepEqual(injected, []);
+});

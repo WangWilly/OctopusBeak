@@ -151,6 +151,84 @@ test("a challenge declaration carries its image preprocessing modes", () => {
   assert.deepEqual(contract.imagePreprocessing, ["remove-interference-lines"]);
 });
 
+test("a challenge declaration carries a bounded ordered OCR attempt plan", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    challengeKind: "text-captcha",
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-word" },
+      {
+        imagePreprocessing: [],
+        ocrOutputStage: "grayscale",
+        ocrPageSegmentationMode: "single-line",
+      },
+      {
+        imagePreprocessing: [],
+        ocrOutputStage: "final",
+        ocrPageSegmentationMode: "single-line",
+      },
+    ],
+  }, 1);
+  assert.deepEqual(contract.ocrAttemptPlan, [
+    { ocrPageSegmentationMode: "single-word" },
+    {
+      imagePreprocessing: [],
+      ocrOutputStage: "grayscale",
+      ocrPageSegmentationMode: "single-line",
+    },
+    {
+      imagePreprocessing: [],
+      ocrOutputStage: "final",
+      ocrPageSegmentationMode: "single-line",
+    },
+  ]);
+});
+
+test("duplicate or oversized OCR attempt plans are rejected", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      ocrAttemptPlan: [{ ocrPageSegmentationMode: "single-word" }],
+    }, 1),
+    /OCR attempt plan requires a text CAPTCHA challenge/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-word" },
+        { ocrPageSegmentationMode: "single-word" },
+      ],
+    }, 1),
+    /OCR attempt plan strategies must be distinct/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-line" },
+        { ocrOutputStage: "final" },
+      ],
+    }, 1),
+    /OCR attempt plan strategies must be distinct/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-line" },
+        { ocrPageSegmentationMode: "single-word" },
+        { ocrPageSegmentationMode: "raw-line" },
+        { ocrOutputStage: "grayscale" },
+      ],
+    }, 1),
+    /OCR attempt plan cannot contain more than 3 strategies/,
+  );
+});
+
 test("an unknown image preprocessing mode is rejected with a clear error", () => {
   assert.throws(
     () => createHumanAssistanceContract({

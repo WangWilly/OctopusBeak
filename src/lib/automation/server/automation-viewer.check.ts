@@ -171,6 +171,10 @@ const metadataContract: HumanAssistanceContract = {
   charset: "digits",
   imagePreprocessing: ["remove-interference-lines"],
   ocrPageSegmentationMode: "single-word",
+  ocrAttemptPlan: [
+    { ocrPageSegmentationMode: "single-word" },
+    { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
+  ],
   solverConfidenceThreshold: 0.8,
   expectedAnswerLength: 5,
   prompt: "Enter the digits shown.",
@@ -187,6 +191,7 @@ assert.deepEqual(refreshedMetadataContract?.imagePreprocessing, [
   "remove-interference-lines",
 ]);
 assert.equal(refreshedMetadataContract?.ocrPageSegmentationMode, "single-word");
+assert.deepEqual(refreshedMetadataContract?.ocrAttemptPlan, metadataContract.ocrAttemptPlan);
 assert.equal(refreshedMetadataContract?.solverConfidenceThreshold, 0.8);
 assert.equal(refreshedMetadataContract?.expectedAnswerLength, 5);
 assert.equal(refreshedMetadataContract?.prompt, "Enter the digits shown.");
