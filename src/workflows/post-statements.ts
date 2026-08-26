@@ -345,7 +345,14 @@ export function postCaptchaAssistanceStage(
     challengeKind: "text-captcha",
     charset: "digits",
     imagePreprocessing: ["remove-interference-lines"],
-    ocrPageSegmentationMode: "single-word",
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
     expectedAnswerLength: 4,
     challengeImageRegion: {
       id: "captcha-image",

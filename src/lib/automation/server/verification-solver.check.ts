@@ -460,6 +460,160 @@ test("a planned solve breaks equal-confidence ties by declaration order", async 
   assert.deepEqual(injected, ["111111"]);
 });
 
+test("two distinct low-confidence OCR strategies can establish agreement", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 4,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return { answer: "6417", confidence: attempt === 1 ? 0.62 : 0.7 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injected, ["6417"]);
+});
+
+test("repeating one effective OCR strategy cannot establish agreement", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 4,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve() {
+        return { answer: "6417", confidence: 0.7 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.deepEqual(injected, []);
+});
+
+test("reject conflict resolution withholds conflicting confidence and agreement", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 4,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return attempt === 3
+          ? { answer: "2222", confidence: 0.95 }
+          : { answer: "1111", confidence: 0.7 + attempt! / 100 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrPageSegmentationMode: "raw-line" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.deepEqual(injected, []);
+});
+
+test("prefer-agreement resolves a conflict in favor of OCR agreement", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 4,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return attempt === 3
+          ? { answer: "2222", confidence: 0.95 }
+          : { answer: "1111", confidence: 0.7 + attempt! / 100 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrPageSegmentationMode: "raw-line" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "prefer-agreement",
+    },
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injected, ["1111"]);
+});
+
+test("prefer-confidence resolves a conflict in favor of Solve Confidence", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 4,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return attempt === 3
+          ? { answer: "2222", confidence: 0.95 }
+          : { answer: "1111", confidence: 0.7 + attempt! / 100 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+      { ocrPageSegmentationMode: "raw-line" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "prefer-confidence",
+    },
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injected, ["2222"]);
+});
+
 test("a planned solve exhausts when all candidates have the wrong length or confidence", async () => {
   let solves = 0;
   const injected: string[] = [];

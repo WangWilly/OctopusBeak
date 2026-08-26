@@ -5,6 +5,7 @@ import type {
   CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
   HumanAssistanceContract,
+  SolveAcceptancePolicy,
 } from "../human-assistance.ts";
 import {
   DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
@@ -85,6 +86,7 @@ export async function routeVerificationActor(input: {
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
   ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
+  solveAcceptancePolicy?: SolveAcceptancePolicy;
   expectedAnswerLength?: number;
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
@@ -114,6 +116,8 @@ export async function routeVerificationActor(input: {
       ocrPageSegmentationMode:
         contract?.ocrPageSegmentationMode ?? input.ocrPageSegmentationMode,
       ocrAttemptPlan: contract?.ocrAttemptPlan ?? input.ocrAttemptPlan,
+      solveAcceptancePolicy:
+        contract?.solveAcceptancePolicy ?? input.solveAcceptancePolicy,
       expectedAnswerLength:
         contract?.expectedAnswerLength ?? input.expectedAnswerLength,
     };

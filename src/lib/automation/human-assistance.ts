@@ -59,6 +59,22 @@ export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
 export type CaptchaImagePreprocessingMode =
   typeof CAPTCHA_IMAGE_PREPROCESSING_MODES[number];
 
+export const SOLVE_CONFLICT_RESOLUTIONS = [
+  "reject",
+  "prefer-agreement",
+  "prefer-confidence",
+] as const;
+
+export type SolveConflictResolution =
+  typeof SOLVE_CONFLICT_RESOLUTIONS[number];
+
+export type SolveAcceptancePolicy =
+  | { mode: "confidence-only" }
+  | {
+    mode: "confidence-or-agreement";
+    conflictResolution: SolveConflictResolution;
+  };
+
 export type HumanVerificationRect = {
   x: number;
   y: number;
@@ -117,6 +133,7 @@ export type HumanAssistanceContractInput = {
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
   ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
+  solveAcceptancePolicy?: SolveAcceptancePolicy;
   solverConfidenceThreshold?: number;
   expectedAnswerLength?: number;
   prompt?: string;
@@ -311,6 +328,41 @@ export function createHumanAssistanceContract(
       fingerprints.add(fingerprint);
     }
   }
+  if (input.solveAcceptancePolicy !== undefined) {
+    const policy = input.solveAcceptancePolicy;
+    if (!policy || typeof policy !== "object") {
+      throw new Error(
+        "Invalid human assistance contract: solve acceptance policy must be an object.",
+      );
+    }
+    if (policy.mode === "confidence-only") {
+      if ("conflictResolution" in policy) {
+        throw new Error(
+          "Invalid human assistance contract: confidence-only policy cannot declare conflict resolution.",
+        );
+      }
+    } else if (policy.mode === "confidence-or-agreement") {
+      if (!SOLVE_CONFLICT_RESOLUTIONS.includes(policy.conflictResolution)) {
+        throw new Error(
+          `Invalid human assistance contract: unknown solve conflict resolution ${policy.conflictResolution}.`,
+        );
+      }
+      if (input.challengeKind !== "text-captcha") {
+        throw new Error(
+          "Invalid human assistance contract: OCR agreement requires a text CAPTCHA challenge.",
+        );
+      }
+      if (!input.ocrAttemptPlan || input.ocrAttemptPlan.length < 2) {
+        throw new Error(
+          "Invalid human assistance contract: OCR agreement requires at least two distinct strategies.",
+        );
+      }
+    } else {
+      throw new Error(
+        `Invalid human assistance contract: unknown solve acceptance policy ${(policy as { mode?: unknown }).mode}.`,
+      );
+    }
+  }
   if (
     input.solverConfidenceThreshold !== undefined
     && (
@@ -383,6 +435,9 @@ export function createHumanAssistanceContract(
             : { ocrOutputStage: strategy.ocrOutputStage }),
         })),
       }),
+    ...(input.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...input.solveAcceptancePolicy } }),
     ...(input.solverConfidenceThreshold === undefined
       ? {}
       : { solverConfidenceThreshold: input.solverConfidenceThreshold }),
