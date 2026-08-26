@@ -5,8 +5,12 @@ import type {
   HumanVerificationRect,
 } from "../human-assistance.ts";
 import {
+  SINOPAC_CAPTCHA_IMAGE_SELECTOR,
+  SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+  SINOPAC_CAPTCHA_NATURAL_HEIGHT,
+  SINOPAC_CAPTCHA_NATURAL_WIDTH,
 } from "../sinopac-captcha.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
@@ -24,7 +28,7 @@ const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
 
-type YuantaCaptchaFingerprint = {
+type ProviderCaptchaFingerprint = {
   pageUrl: string;
   frameUrl: string;
   frameIdentity: string;
@@ -35,13 +39,13 @@ type YuantaCaptchaFingerprint = {
   imageHash?: string;
 };
 
-type YuantaCaptchaCapture = {
+type ProviderCaptchaCapture = {
   image: Buffer;
-  fingerprint: YuantaCaptchaFingerprint;
+  fingerprint: ProviderCaptchaFingerprint;
   source: "loaded-image" | "screenshot";
 };
 
-type YuantaCaptchaSource = {
+type ProviderCaptchaSource = {
   dataUrl: string | null;
   sourceMarker: string;
   frameMarker: string;
@@ -60,11 +64,11 @@ type ProviderVerificationAdapter = {
   captureChallengeImage?: (
     session: string,
     contract: HumanAssistanceContract,
-  ) => Promise<YuantaCaptchaCapture | null>;
+  ) => Promise<ProviderCaptchaCapture | null>;
   isChallengeImageCurrent?: (
     session: string,
     contract: HumanAssistanceContract,
-    capture: YuantaCaptchaCapture,
+    capture: ProviderCaptchaCapture,
   ) => Promise<boolean>;
   refreshTarget(
     session: string,
@@ -246,6 +250,66 @@ function imageFromDataUrl(dataUrl: unknown): Buffer | null {
   }
 }
 
+async function inspectCaptchaImageSource(
+  image: ReturnType<ViewerPageAccess["locator"]>,
+  markerKey: string,
+): Promise<ProviderCaptchaSource | null> {
+  return image.evaluate((node, key) => {
+    if (!(node instanceof HTMLImageElement)) return null;
+    const windowRecord = window as typeof window & Record<string, unknown>;
+    const existingMarker = windowRecord[key];
+    const frameMarker = typeof existingMarker === "string"
+      ? existingMarker
+      : `${Date.now()}-${Math.random()}`;
+    windowRecord[key] = frameMarker;
+    const sourceMarker = () => JSON.stringify({
+      frameMarker,
+      href: document.location.href,
+      src: node.getAttribute("src"),
+      currentSrc: node.currentSrc,
+      id: node.id,
+      className: node.className,
+      naturalWidth: node.naturalWidth,
+      naturalHeight: node.naturalHeight,
+    });
+    if (!node.complete || node.naturalWidth <= 0 || node.naturalHeight <= 0) {
+      return {
+        dataUrl: null,
+        frameMarker,
+        sourceMarker: sourceMarker(),
+        naturalWidth: node.naturalWidth,
+        naturalHeight: node.naturalHeight,
+      };
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = node.naturalWidth;
+    canvas.height = node.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    let dataUrl: string | null = null;
+    try {
+      context.drawImage(node, 0, 0, node.naturalWidth, node.naturalHeight);
+      dataUrl = canvas.toDataURL("image/png");
+    } catch {
+      // Callers decide whether their calibrated provider permits a screenshot
+      // fallback. The source marker still guards that fallback against staleness.
+    }
+    return {
+      dataUrl,
+      frameMarker,
+      sourceMarker: sourceMarker(),
+      naturalWidth: node.naturalWidth,
+      naturalHeight: node.naturalHeight,
+    };
+  }, markerKey).catch(() => null) as Promise<ProviderCaptchaSource | null>;
+}
+
+function sinopacCaptchaContract(contract: HumanAssistanceContract) {
+  return contract.targets.some(
+    (target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+  ) && contract.challengeImageRegion?.semanticId === SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID;
+}
+
 function yuantaBankCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some((target) => target.semanticId.startsWith("yuanta-bank."))
     || contract.challengeImageRegion?.semanticId === "yuanta-bank.login.captcha-image";
@@ -271,75 +335,46 @@ async function inspectYuantaCaptchaSource(page: ViewerPageAccess) {
   const pageUrl = page.url?.() ?? "";
   const frameUrl = typeof frame.url === "function" ? frame.url() : "";
   const frameName = typeof frame.name === "function" ? frame.name() : "";
-  const source = await image.evaluate((node) => {
-    if (!(node instanceof HTMLImageElement)) return null;
-    const markerKey = "__octopusBeakYuantaCaptchaFrameMarker";
-    const windowRecord = window as typeof window & Record<string, unknown>;
-    const existingMarker = windowRecord[markerKey];
-    const frameMarker = typeof existingMarker === "string"
-      ? existingMarker
-      : `${Date.now()}-${Math.random()}`;
-    windowRecord[markerKey] = frameMarker;
-    if (!node.complete || node.naturalWidth <= 0 || node.naturalHeight <= 0) {
-      return {
-        dataUrl: null,
-        frameMarker,
-        sourceMarker: JSON.stringify({
-          frameMarker,
-          href: document.location.href,
-          src: node.getAttribute("src"),
-          currentSrc: node.currentSrc,
-          id: node.id,
-          className: node.className,
-          naturalWidth: node.naturalWidth,
-          naturalHeight: node.naturalHeight,
-        }),
-        naturalWidth: node.naturalWidth,
-        naturalHeight: node.naturalHeight,
-      };
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = node.naturalWidth;
-    canvas.height = node.naturalHeight;
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-    let dataUrl: string | null = null;
-    try {
-      context.drawImage(node, 0, 0, node.naturalWidth, node.naturalHeight);
-      dataUrl = canvas.toDataURL("image/png");
-    } catch {
-      // Keep the DOM/source marker so a live-rectangle screenshot fallback
-      // can still be guarded against a stale frame or image.
-    }
-    return {
-      dataUrl,
-      frameMarker,
-      sourceMarker: JSON.stringify({
-        frameMarker,
-        href: document.location.href,
-        src: node.getAttribute("src"),
-        currentSrc: node.currentSrc,
-        id: node.id,
-        className: node.className,
-        naturalWidth: node.naturalWidth,
-        naturalHeight: node.naturalHeight,
-      }),
-      naturalWidth: node.naturalWidth,
-      naturalHeight: node.naturalHeight,
-    };
-  }).catch(() => null) as YuantaCaptchaSource | null;
+  const source = await inspectCaptchaImageSource(
+    image,
+    "__octopusBeakYuantaCaptchaFrameMarker",
+  );
 
   return { image, rect, pageUrl, frameUrl, frameName, source };
 }
 
-function fingerprintForYuantaCapture(input: {
+async function inspectSinopacCaptchaSource(page: ViewerPageAccess) {
+  const images = page.locator(SINOPAC_CAPTCHA_IMAGE_SELECTOR);
+  const count = await images.count().catch(() => 0);
+  if (count !== 1) return null;
+  const image = images.first();
+  if (!await image.isVisible().catch(() => false)) return null;
+  const rect = await image.boundingBox().catch(() => null);
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+
+  const pageUrl = page.url?.() ?? "";
+  const source = await inspectCaptchaImageSource(
+    image,
+    "__octopusBeakSinopacCaptchaPageMarker",
+  );
+  return {
+    image,
+    rect,
+    pageUrl,
+    frameUrl: pageUrl,
+    frameName: "top",
+    source,
+  };
+}
+
+function fingerprintForProviderCapture(input: {
   pageUrl: string;
   frameUrl: string;
   frameName: string;
   rect: HumanVerificationRect;
-  source: YuantaCaptchaSource;
+  source: ProviderCaptchaSource;
   image?: Buffer;
-}): YuantaCaptchaFingerprint {
+}): ProviderCaptchaFingerprint {
   return {
     pageUrl: input.pageUrl,
     frameUrl: input.frameUrl,
@@ -352,11 +387,69 @@ function fingerprintForYuantaCapture(input: {
   };
 }
 
+function calibratedSinopacSource(source: ProviderCaptchaSource | null) {
+  return source?.naturalWidth === SINOPAC_CAPTCHA_NATURAL_WIDTH
+    && source.naturalHeight === SINOPAC_CAPTCHA_NATURAL_HEIGHT;
+}
+
+async function captureSinopacCaptcha(
+  withPage: ProviderVerificationPageRunner,
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<ProviderCaptchaCapture | null> {
+  if (!sinopacCaptchaContract(contract)) return null;
+  return withPage(session, async (page) => {
+    const inspected = await inspectSinopacCaptchaSource(page);
+    if (!inspected || !calibratedSinopacSource(inspected.source)) return null;
+    const sourceImage = imageFromDataUrl(inspected.source?.dataUrl);
+    if (!sourceImage || !inspected.source) return null;
+    return {
+      image: sourceImage,
+      source: "loaded-image",
+      fingerprint: fingerprintForProviderCapture({
+        pageUrl: inspected.pageUrl,
+        frameUrl: inspected.frameUrl,
+        frameName: inspected.frameName,
+        rect: inspected.rect,
+        source: inspected.source,
+        image: sourceImage,
+      }),
+    };
+  });
+}
+
+async function currentSinopacCaptureMatches(
+  withPage: ProviderVerificationPageRunner,
+  session: string,
+  capture: ProviderCaptchaCapture,
+) {
+  return withPage(session, async (page) => {
+    const inspected = await inspectSinopacCaptchaSource(page);
+    if (!inspected || !calibratedSinopacSource(inspected.source)) return false;
+    const sourceImage = imageFromDataUrl(inspected.source?.dataUrl);
+    if (!sourceImage || !inspected.source) return false;
+    const fingerprint = fingerprintForProviderCapture({
+      pageUrl: inspected.pageUrl,
+      frameUrl: inspected.frameUrl,
+      frameName: inspected.frameName,
+      rect: inspected.rect,
+      source: inspected.source,
+      image: sourceImage,
+    });
+    return fingerprint.pageUrl === capture.fingerprint.pageUrl
+      && fingerprint.frameUrl === capture.fingerprint.frameUrl
+      && fingerprint.frameIdentity === capture.fingerprint.frameIdentity
+      && fingerprint.sourceMarker === capture.fingerprint.sourceMarker
+      && rectMatches(fingerprint.rect, capture.fingerprint.rect)
+      && fingerprint.imageHash === capture.fingerprint.imageHash;
+  });
+}
+
 async function captureYuantaCaptcha(
   withPage: ProviderVerificationPageRunner,
   session: string,
   contract: HumanAssistanceContract,
-): Promise<YuantaCaptchaCapture | null> {
+): Promise<ProviderCaptchaCapture | null> {
   if (!yuantaBankCaptchaContract(contract)) return null;
   return withPage(session, async (page) => {
     const inspected = await inspectYuantaCaptchaSource(page);
@@ -367,7 +460,7 @@ async function captureYuantaCaptcha(
       return {
         image: sourceImage,
         source: "loaded-image",
-        fingerprint: fingerprintForYuantaCapture({
+        fingerprint: fingerprintForProviderCapture({
           pageUrl: inspected.pageUrl,
           frameUrl: inspected.frameUrl,
           frameName: inspected.frameName,
@@ -386,7 +479,7 @@ async function captureYuantaCaptcha(
     return {
       image: fallback,
       source: "screenshot",
-      fingerprint: fingerprintForYuantaCapture({
+      fingerprint: fingerprintForProviderCapture({
         pageUrl: inspected.pageUrl,
         frameUrl: inspected.frameUrl,
         frameName: inspected.frameName,
@@ -401,12 +494,12 @@ async function captureYuantaCaptcha(
 async function currentYuantaCaptureMatches(
   withPage: ProviderVerificationPageRunner,
   session: string,
-  capture: YuantaCaptchaCapture,
+  capture: ProviderCaptchaCapture,
 ) {
   return withPage(session, async (page) => {
     const inspected = await inspectYuantaCaptchaSource(page);
     if (!inspected?.source) return false;
-    const fingerprint = fingerprintForYuantaCapture({
+    const fingerprint = fingerprintForProviderCapture({
       pageUrl: inspected.pageUrl,
       frameUrl: inspected.frameUrl,
       frameName: inspected.frameName,
@@ -550,6 +643,12 @@ function createAdapters(withPage: ProviderVerificationPageRunner): readonly Prov
     },
     {
       owns: (contract) => contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID),
+      captureChallengeImage: (session, contract) =>
+        captureSinopacCaptcha(withPage, session, contract),
+      isChallengeImageCurrent: (session, contract, capture) =>
+        sinopacCaptchaContract(contract)
+          ? currentSinopacCaptureMatches(withPage, session, capture)
+          : Promise.resolve(false),
       refreshTarget: (session, contract) => refreshSinopacCaptchaTarget(withPage, session, contract),
       inspectCompletion: async () => false,
       handleInput: sinopacInputHandler,
@@ -589,11 +688,11 @@ export function createProviderVerificationHost(
   const challengeCaptures = new Map<string, {
     stageId: string;
     contractVersion: number;
-    capture: YuantaCaptchaCapture;
+    capture: ProviderCaptchaCapture;
   }>();
 
   const handlesChallengeImage = (contract: HumanAssistanceContract) =>
-    yuantaBankCaptchaContract(contract)
+    (sinopacCaptchaContract(contract) || yuantaBankCaptchaContract(contract))
     && matchingAdapters(contract).some((adapter) => Boolean(adapter.captureChallengeImage));
 
   const captureChallengeImage = async (

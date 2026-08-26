@@ -6,6 +6,7 @@ import {
   runSinopacStatements,
   sinopacApiRowsToStatementRows,
   sinopacManualAuthMessage,
+  sinopacCaptchaAssistanceStage,
   sinopacPasswordExpiryNoticeDismissTargets,
   sinopacQueryWindows,
   sinopacFilterAccounts,
@@ -55,6 +56,33 @@ assert.equal(
   SINOPAC_LOGIN_URL,
   "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx",
 );
+const captchaSelectors: string[] = [];
+const captchaStage = sinopacCaptchaAssistanceStage({
+  locator(selector: string) {
+    captchaSelectors.push(selector);
+    return { selector };
+  },
+} as never);
+assert.equal(captchaStage.challengeKind, "text-captcha");
+assert.equal(captchaStage.charset, "digits");
+assert.equal(captchaStage.imagePreprocessing, undefined);
+assert.equal(captchaStage.ocrPageSegmentationMode, "single-line");
+assert.deepEqual(captchaStage.ocrAttemptPlan, [
+  { imagePreprocessing: ["remove-interference-lines"] },
+]);
+assert.deepEqual(captchaStage.solveAcceptancePolicy, {
+  mode: "confidence-only",
+});
+assert.equal(captchaStage.solverConfidenceThreshold, 0.9);
+assert.equal(captchaStage.expectedAnswerLength, 6);
+assert.equal(
+  captchaStage.challengeImageRegion?.semanticId,
+  "sinopac.login.captcha-image",
+);
+assert.deepEqual(captchaSelectors, [
+  'input[id$="sino_keyword3"]',
+  "#imgCode",
+]);
 assert.equal(
   sinopacLoginEntryUrl(
     "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx?from=start",

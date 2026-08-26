@@ -755,6 +755,10 @@ _Avoid_: Human retry, unbounded retry
 The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.
 _Avoid_: Yuanta five-digit CAPTCHA, mixed-provider CAPTCHA corpus
 
+**Bank SinoPac login CAPTCHA**:
+The single supported CAPTCHA family on the Bank SinoPac login workflow: a 120-by-40-pixel image whose answer is exactly six decimal digits and whose glyphs are crossed by multiple colored straight interference lines. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Bank SinoPac CAPTCHA, mixed-layout Bank SinoPac CAPTCHA corpus
+
 **E-Invoice login CAPTCHA**:
 The single supported CAPTCHA family on the E-Invoice login workflow: a 150-by-40-pixel image whose answer is exactly five decimal digits and whose interference appears along the lower part of the image. A capture with different dimensions, answer length, character set, or interference layout is unsupported and must not be submitted automatically.
 _Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
