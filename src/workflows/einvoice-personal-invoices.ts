@@ -325,8 +325,12 @@ export function einvoiceCaptchaAssistanceStage(
     ],
     challengeKind: "text-captcha",
     charset: "digits",
-    imagePreprocessing: ["remove-interference-lines"],
-    ocrPageSegmentationMode: "single-line",
+    ocrPageSegmentationMode: "single-word",
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["mask-bottom-interference-band"] },
+      { imagePreprocessing: ["suppress-horizontal-interference"] },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
     expectedAnswerLength: 5,
     challengeImageRegion: {
       id: "captcha-image",

@@ -1,5 +1,8 @@
 import { PNG } from "pngjs";
-import type { CaptchaOcrOutputStage } from "../human-assistance.ts";
+import type {
+  CaptchaImagePreprocessingMode,
+  CaptchaOcrOutputStage,
+} from "../human-assistance.ts";
 
 export type GrayImage = {
   width: number;
@@ -16,6 +19,15 @@ const DIAGONAL_LINE_MIN_SPAN = 0.45;
 const DIAGONAL_LINE_DETECTION_RADIUS = 2;
 const DIAGONAL_LINE_SLOPE_STEP = 0.05;
 const MAX_DIAGONAL_LINES = 8;
+const CALIBRATED_EINVOICE_WIDTH = 150;
+const CALIBRATED_EINVOICE_HEIGHT = 40;
+const EINVOICE_BOTTOM_INTERFERENCE_ROWS = 6;
+const EINVOICE_DIRECTIONAL_THRESHOLD = 100;
+const EINVOICE_DIRECTIONAL_KERNEL = [
+  [-1, 4, -1],
+  [-1, 2, -1],
+  [-1, 4, -1],
+] as const;
 
 export type CaptchaPreprocessStep =
   | "grayscale"
@@ -23,10 +35,13 @@ export type CaptchaPreprocessStep =
   | "blurred"
   | "binarized"
   | "lines-removed"
+  | "interference-band-masked"
+  | "horizontal-interference-suppressed"
   | "denoised";
 
 export type CaptchaPreprocessOptions = {
   removeInterferenceLines?: boolean;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   outputStage?: CaptchaOcrOutputStage;
 };
 
@@ -310,6 +325,61 @@ export function binarize(image: GrayImage, threshold: number): GrayImage {
   return { width: image.width, height: image.height, data };
 }
 
+function blankImageLike(image: GrayImage): GrayImage {
+  const data = new Uint8Array(image.data.length);
+  data.fill(255);
+  return { width: image.width, height: image.height, data };
+}
+
+function isCalibratedEinvoiceGeometry(image: GrayImage): boolean {
+  return image.width === CALIBRATED_EINVOICE_WIDTH
+    && image.height === CALIBRATED_EINVOICE_HEIGHT;
+}
+
+export function maskBottomInterferenceBand(image: GrayImage): GrayImage {
+  if (!isCalibratedEinvoiceGeometry(image)) return blankImageLike(image);
+  const data = new Uint8Array(image.data);
+  for (
+    let y = image.height - EINVOICE_BOTTOM_INTERFERENCE_ROWS;
+    y < image.height;
+    y += 1
+  ) {
+    data.fill(255, y * image.width, (y + 1) * image.width);
+  }
+  return { width: image.width, height: image.height, data };
+}
+
+export function suppressHorizontalInterference(image: GrayImage): GrayImage {
+  if (!isCalibratedEinvoiceGeometry(image)) return blankImageLike(image);
+  // CBL's binarize operation treats pixels exactly on the threshold as
+  // background. Preserve that exclusive boundary for the calibrated filter
+  // without changing the shared inclusive binarize helper.
+  const binary = binarize(image, EINVOICE_DIRECTIONAL_THRESHOLD - 1);
+  const data = new Uint8Array(binary.data.length);
+  const kernelRadius = 1;
+  for (let y = 0; y < binary.height; y += 1) {
+    for (let x = 0; x < binary.width; x += 1) {
+      let value = 0;
+      for (let kernelY = 0; kernelY < EINVOICE_DIRECTIONAL_KERNEL.length; kernelY += 1) {
+        for (let kernelX = 0; kernelX < EINVOICE_DIRECTIONAL_KERNEL[kernelY]!.length; kernelX += 1) {
+          const sampleX = Math.max(
+            0,
+            Math.min(binary.width - 1, x + kernelX - kernelRadius),
+          );
+          const sampleY = Math.max(
+            0,
+            Math.min(binary.height - 1, y + kernelY - kernelRadius),
+          );
+          value += binary.data[sampleY * binary.width + sampleX]!
+            * EINVOICE_DIRECTIONAL_KERNEL[kernelY]![kernelX]!;
+        }
+      }
+      data[y * binary.width + x] = Math.max(0, Math.min(255, value));
+    }
+  }
+  return { width: binary.width, height: binary.height, data };
+}
+
 export function denoise(image: GrayImage, minRegionPixels: number): GrayImage {
   const { width, height } = image;
   const data = new Uint8Array(image.data);
@@ -483,6 +553,21 @@ export function preprocessCaptchaImage(
 ): Buffer {
   const decoded = decodeGrayImage(buffer);
   onStep?.("grayscale", encodeGrayImage(decoded));
+  const imagePreprocessing = options.imagePreprocessing ?? [];
+  if (imagePreprocessing.includes("mask-bottom-interference-band")) {
+    const masked = maskBottomInterferenceBand(decoded);
+    const output = encodeGrayImage(masked);
+    onStep?.("interference-band-masked", output);
+    return output;
+  }
+  if (imagePreprocessing.includes("suppress-horizontal-interference")) {
+    const suppressed = suppressHorizontalInterference(decoded);
+    const binary = binarize(decoded, EINVOICE_DIRECTIONAL_THRESHOLD - 1);
+    onStep?.("binarized", encodeGrayImage(binary));
+    const output = encodeGrayImage(suppressed);
+    onStep?.("horizontal-interference-suppressed", output);
+    return output;
+  }
   const upscaled = upscaleImage(decoded, UPSCALE_FACTOR);
   onStep?.("upscaled", encodeGrayImage(upscaled));
   const blurred = boxBlur(upscaled);
@@ -490,10 +575,12 @@ export function preprocessCaptchaImage(
   const threshold = otsuThreshold(blurred);
   const binary = binarize(blurred, threshold);
   onStep?.("binarized", encodeGrayImage(binary));
-  const lineCleaned = options.removeInterferenceLines
+  const shouldRemoveInterferenceLines = options.removeInterferenceLines
+    ?? imagePreprocessing.includes("remove-interference-lines");
+  const lineCleaned = shouldRemoveInterferenceLines
     ? removeInterferenceLines(binary)
     : binary;
-  if (options.removeInterferenceLines) {
+  if (shouldRemoveInterferenceLines) {
     onStep?.("lines-removed", encodeGrayImage(lineCleaned));
   }
   const denoised = denoise(lineCleaned, MIN_REGION_PIXELS);

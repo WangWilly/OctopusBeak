@@ -28,8 +28,15 @@ try {
   assert.equal(captchaContract.stageId, "einvoice-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");
-  assert.deepEqual(captchaContract.imagePreprocessing, ["remove-interference-lines"]);
-  assert.equal(captchaContract.ocrPageSegmentationMode, "single-line");
+  assert.equal(captchaContract.imagePreprocessing, undefined);
+  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
+  assert.deepEqual(captchaContract.ocrAttemptPlan, [
+    { imagePreprocessing: ["mask-bottom-interference-band"] },
+    { imagePreprocessing: ["suppress-horizontal-interference"] },
+  ]);
+  assert.deepEqual(captchaContract.solveAcceptancePolicy, {
+    mode: "agreement-only",
+  });
   assert.equal(captchaContract.expectedAnswerLength, 5);
   assert.equal(
     captchaContract.targets[0]?.semanticId,
