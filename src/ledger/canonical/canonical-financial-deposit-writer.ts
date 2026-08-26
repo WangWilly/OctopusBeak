@@ -238,7 +238,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     "/foreign-currency/",
   );
   const isFubonCreditCardCapture =
-    capture.authorityRoute === "fubon/credit-card/human-attested-v1";
+    capture.authorityRoute === "fubon/credit-card/human-attested-v1" ||
+    capture.authorityRoute === "fubon/credit-card/human-attested-v2";
   validateText(capture.captureId, "Capture ID");
   validateText(capture.authorityRoute, "Authority route");
   validateText(capture.contractVersion, "Contract version");
@@ -315,6 +316,24 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       stream: "credit-card",
       recordKind: "fubon-credit-card-transaction",
       contractVersion: "fubon/credit-card/human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "fubon/credit-card/human-attested-v2": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "fubon/credit-card/human-attested-v2",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "fubon",
+      stream: "credit-card",
+      recordKind: "fubon-credit-card-transaction",
+      contractVersion: "fubon/credit-card/human-attested-v2",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/domestic-deposit/human-attested-v1": {

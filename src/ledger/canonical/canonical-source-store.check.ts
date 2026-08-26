@@ -10,6 +10,7 @@ import {
   admitCanonicalSourceEvidence,
   commitCathayDomesticDeposit,
   commitCanonicalSourceEvidence,
+  createCanonicalFinancialQuery,
   createCanonicalSourceStore,
   createCathayCanonicalFinancialQuery,
   queryCanonicalSourceCurrent,
@@ -21,6 +22,11 @@ import {
   type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-store.ts";
 import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
+import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
   commitCanonicalHncbDomesticDepositCapture,
@@ -29,6 +35,105 @@ import {
 } from "./hncb-domestic-deposit.ts";
 
 const token = (letter: string) => `sha256:${letter.repeat(64)}`;
+
+const fubonCreditCardFinancialCapture = (
+  version: "v1" | "v2",
+  captureId: string,
+): CanonicalFinancialDepositCapture => {
+  const route = `fubon/credit-card/human-attested-${version}`;
+  const sourceDate = "2026-08-01";
+  const occurrenceKey = token(version === "v1" ? "g" : "h");
+  return {
+    captureId,
+    authorityRoute: route,
+    contractVersion: route,
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: token(version === "v1" ? "i" : "j"),
+      identityEpochKey: token(version === "v1" ? "k" : "l"),
+      stream: "credit-card",
+      recordKind: "fubon-credit-card-transaction",
+      subjectDigest: token(version === "v1" ? "m" : "n"),
+      accountNo: `fubon-${version}-portfolio`,
+      accountType: "credit",
+      currency: "TWD",
+    },
+    observedAt: "2026-08-26T00:00:00.000Z",
+    scope: {
+      startDate: sourceDate,
+      endDate: sourceDate,
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      completenessRuleVersion: route,
+      absenceAuthority: null,
+      contractFingerprint: token(version === "v1" ? "o" : "p"),
+      preflightFingerprint: token(version === "v1" ? "q" : "r"),
+      pageCount: 7,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: route,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: route,
+      effectiveTimeBasis: "transaction-time",
+      effectiveTimeRuleVersion: route,
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      timeOrigin: "defaulted_local_midnight",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: Array.from({ length: 7 }, (_, pageOrdinal) => ({
+      pageOrdinal,
+      responseCode: "200",
+      terminal: true,
+      rowCount: pageOrdinal === 0 ? 1 : 0,
+      responseDigest: token(version === "v1" ? "s" : "t"),
+      proofKind: "source-declared-terminal-grid",
+      contractFingerprint: token(version === "v1" ? "o" : "p"),
+      preflightFingerprint: token(version === "v1" ? "q" : "r"),
+      metadataJson: JSON.stringify({ pageOrdinal }),
+    })),
+    records: [
+      {
+        occurrenceKey,
+        collisionKey: token(version === "v1" ? "u" : "v"),
+        providerKey: "human-attested:no-provider-key",
+        humanAttestedOccurrenceKey: occurrenceKey,
+        contentHash: token(version === "v1" ? "w" : "x"),
+        sequenceLexeme: "observed-source-order:0",
+        compactJson: JSON.stringify({
+          occurrenceKey,
+          amount: { coefficient: "100", scale: 0 },
+          currency: "TWD",
+          direction: "outflow",
+          balanceAfter: null,
+        }),
+        amount: { coefficient: "100", scale: 0 },
+        balanceAfter: null,
+        currency: "TWD",
+        direction: "outflow",
+        sourceTime: {
+          localDate: sourceDate,
+          localTime: "00:00:00",
+          timeZone: "Asia/Taipei",
+          epochMilliseconds: Date.parse(`${sourceDate}T00:00:00+08:00`),
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        effectiveOn: sourceDate,
+        transactionDateTimeLocal: `${sourceDate}T00:00:00`,
+        description: "historical-only Fubon fixture",
+      },
+    ],
+  };
+};
 
 const evidence = (captureId: string): CanonicalSourceEvidence => ({
   captureId,
@@ -1238,4 +1343,95 @@ try {
   }
 } finally {
   await rm(mixedMigrationDirectory, { recursive: true, force: true });
+}
+
+const fubonQueryDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-fubon-query-v2-"),
+);
+try {
+  const store = createCanonicalSourceStore(
+    join(fubonQueryDirectory, "canonical.sqlite"),
+  );
+  const v1Commit = await commitCanonicalFinancialDepositCapture(
+    store,
+    admitCanonicalFinancialDepositCapture(
+      fubonCreditCardFinancialCapture("v1", "fubon-historical-v1"),
+    ),
+  );
+  const v2Commit = await commitCanonicalFinancialDepositCapture(
+    store,
+    admitCanonicalFinancialDepositCapture(
+      fubonCreditCardFinancialCapture("v2", "fubon-current-v2"),
+    ),
+  );
+  store.close();
+
+  const v1Query = createCanonicalFinancialQuery(fubonQueryDirectory, {
+    integrationNamespace: "fubon",
+    postingRuleVersion: "fubon/credit-card/human-attested-v1",
+  });
+  const v1Current = await v1Query.current({ kind: "current" });
+  assert.deepEqual(v1Current.accounts, []);
+  assert.deepEqual(
+    v1Current.transactions,
+    [],
+    "superseded Fubon v1 rows cannot enter a current projection query",
+  );
+  const v1Historical = await v1Query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(v1Commit.commitSequence),
+    },
+  });
+  assert.equal(v1Historical.transactions.length, 1);
+  assert.equal(
+    v1Historical.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v1",
+  );
+
+  const v2Query = createCanonicalFinancialQuery(fubonQueryDirectory, {
+    integrationNamespace: "fubon",
+    postingRuleVersion: "fubon/credit-card/human-attested-v2",
+  });
+  const v2Current = await v2Query.current({ kind: "current" });
+  assert.equal(v2Current.accounts.length, 1);
+  assert.equal(v2Current.transactions.length, 1);
+  assert.equal(
+    v2Current.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v2",
+  );
+  const v2Historical = await v2Query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(v2Commit.commitSequence),
+    },
+  });
+  assert.equal(v2Historical.transactions.length, 1);
+  assert.equal(
+    v2Historical.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v2",
+  );
+
+  assert.throws(
+    () =>
+      createCanonicalFinancialQuery(fubonQueryDirectory, {
+        integrationNamespace: "other",
+        postingRuleVersion: "fubon/credit-card/human-attested-v2",
+      }),
+    /unknown|mixed/i,
+  );
+  assert.throws(
+    () =>
+      createCanonicalFinancialQuery(fubonQueryDirectory, {
+        integrationNamespace: "fubon",
+        postingRuleVersion: "fubon/credit-card/human-attested-v3",
+      }),
+    /unknown|mixed/i,
+  );
+} finally {
+  await rm(fubonQueryDirectory, { recursive: true, force: true });
 }
