@@ -1,5 +1,9 @@
 export const HUMAN_ASSISTANCE_SCHEMA_VERSION = 1 as const;
 
+// CAPTCHA answers are intentionally bounded to keep the workflow contract
+// descriptive rather than allowing an unbounded solver hint.
+export const MAX_EXPECTED_ANSWER_LENGTH = 32;
+
 export const HUMAN_VERIFICATION_INTERACTION_MODES = [
   "click",
   "type",
@@ -30,6 +34,15 @@ export type VerificationChallengeKind = typeof VERIFICATION_CHALLENGE_KINDS[numb
 export const CHALLENGE_CHARACTER_SETS = ["digits", "alphanumeric"] as const;
 
 export type ChallengeCharacterSet = typeof CHALLENGE_CHARACTER_SETS[number];
+
+export const CAPTCHA_OCR_PAGE_SEGMENTATION_MODES = [
+  "single-line",
+  "single-word",
+  "raw-line",
+] as const;
+
+export type CaptchaOcrPageSegmentationMode =
+  typeof CAPTCHA_OCR_PAGE_SEGMENTATION_MODES[number];
 
 export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "remove-interference-lines",
@@ -94,6 +107,9 @@ export type HumanAssistanceContractInput = {
   challengeImageRegion?: VerificationChallengeImageRegion;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  solverConfidenceThreshold?: number;
+  expectedAnswerLength?: number;
   prompt?: string;
 };
 
@@ -196,6 +212,38 @@ export function createHumanAssistanceContract(
       }
     }
   }
+  if (
+    input.ocrPageSegmentationMode !== undefined
+    && !CAPTCHA_OCR_PAGE_SEGMENTATION_MODES.includes(input.ocrPageSegmentationMode)
+  ) {
+    throw new Error(
+      `Invalid human assistance contract: unknown OCR page segmentation mode ${input.ocrPageSegmentationMode}.`,
+    );
+  }
+  if (
+    input.solverConfidenceThreshold !== undefined
+    && (
+      !Number.isFinite(input.solverConfidenceThreshold)
+      || input.solverConfidenceThreshold < 0
+      || input.solverConfidenceThreshold > 1
+    )
+  ) {
+    throw new Error(
+      "Invalid human assistance contract: solver confidence threshold must be finite and between 0 and 1.",
+    );
+  }
+  if (
+    input.expectedAnswerLength !== undefined
+    && (
+      !Number.isInteger(input.expectedAnswerLength)
+      || input.expectedAnswerLength <= 0
+      || input.expectedAnswerLength > MAX_EXPECTED_ANSWER_LENGTH
+    )
+  ) {
+    throw new Error(
+      `Invalid human assistance contract: expected answer length must be a positive integer no greater than ${MAX_EXPECTED_ANSWER_LENGTH}.`,
+    );
+  }
   if (input.prompt !== undefined) {
     nonEmpty(input.prompt, "prompt");
   }
@@ -226,6 +274,15 @@ export function createHumanAssistanceContract(
     ...(input.imagePreprocessing === undefined
       ? {}
       : { imagePreprocessing: [...input.imagePreprocessing] }),
+    ...(input.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: input.ocrPageSegmentationMode }),
+    ...(input.solverConfidenceThreshold === undefined
+      ? {}
+      : { solverConfidenceThreshold: input.solverConfidenceThreshold }),
+    ...(input.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: input.expectedAnswerLength }),
     ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
   };
 }

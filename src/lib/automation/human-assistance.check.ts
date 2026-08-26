@@ -86,6 +86,56 @@ test("a challenge declaration carries its character set", () => {
   assert.equal(contract.charset, "digits");
 });
 
+test("a challenge declaration carries OCR segmentation and solver policy", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    challengeKind: "text-captcha",
+    ocrPageSegmentationMode: "single-word",
+    solverConfidenceThreshold: 0.8,
+  }, 1);
+  assert.equal(contract.ocrPageSegmentationMode, "single-word");
+  assert.equal(contract.solverConfidenceThreshold, 0.8);
+});
+
+test("a challenge declaration carries its expected answer length", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    expectedAnswerLength: 5,
+  }, 1);
+  assert.equal(contract.expectedAnswerLength, 5);
+});
+
+test("invalid expected answer lengths are rejected", () => {
+  for (const length of [0, -1, 1.5, 33, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => createHumanAssistanceContract({
+        ...base,
+        expectedAnswerLength: length,
+      }, 1),
+      /expected answer length must be a positive integer no greater than 32/,
+    );
+  }
+});
+
+test("unknown OCR segmentation and unsafe solver thresholds are rejected", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      ocrPageSegmentationMode: "provider-mode" as never,
+    }, 1),
+    /unknown OCR page segmentation mode provider-mode/,
+  );
+  for (const threshold of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => createHumanAssistanceContract({
+        ...base,
+        solverConfidenceThreshold: threshold,
+      }, 1),
+      /solver confidence threshold must be finite and between 0 and 1/,
+    );
+  }
+});
+
 test("an unknown challenge character set is rejected with a clear error", () => {
   assert.throws(
     () => createHumanAssistanceContract({ ...base, charset: "hex" as never }, 1),

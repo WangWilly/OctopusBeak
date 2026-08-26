@@ -132,6 +132,53 @@ test("a solver actor solves an inline challenge and resumes", async () => {
   assert.deepEqual(tracked.resumed, ["ses-solver"]);
 });
 
+test("a direct solver route uses contract metadata before compatibility arguments", async () => {
+  const solverInputs: Array<{
+    prompt?: string;
+    charset?: string;
+    imagePreprocessing?: readonly string[];
+    ocrPageSegmentationMode?: string;
+    expectedAnswerLength?: number;
+  }> = [];
+  const tracked = trackDependencies({
+    solver: {
+      async solve(input) {
+        solverInputs.push({
+          prompt: input.prompt,
+          charset: input.charset,
+          imagePreprocessing: input.imagePreprocessing,
+          ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+          expectedAnswerLength: input.expectedAnswerLength,
+        });
+        return { answer: "2038", confidence: 0.85 };
+      },
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: {
+      ...textCaptchaContract(),
+      prompt: "Enter the digits shown.",
+      imagePreprocessing: ["remove-interference-lines"],
+      ocrPageSegmentationMode: "single-word",
+      solverConfidenceThreshold: 0.8,
+      expectedAnswerLength: 4,
+    },
+    session: "ses-contract-metadata",
+    confidenceThreshold: 0.99,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "resumed" });
+  assert.deepEqual(solverInputs, [{
+    prompt: "Enter the digits shown.",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-word",
+    expectedAnswerLength: 4,
+  }]);
+  assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+});
+
 test("a solver actor injects a selection answer as click coordinates and resumes", async () => {
   const tracked = trackDependencies({
     solver: {
@@ -341,6 +388,301 @@ test("a solver source routes through the solver seam with configured threshold",
   }
 });
 
+test("an unset HNCB source routes as human and leaves the run untouched", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-hncb-human-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "hncb-statements",
+      contract: textCaptchaContract(),
+    });
+    const tracked = trackDependencies();
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: {},
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "human" });
+    assert.deepEqual(tracked.calls, []);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("an HNCB digit CAPTCHA routes through the local solver without preprocessing", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-hncb-solver-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "hncb-statements",
+      contract: {
+        ...textCaptchaContract(),
+        stageId: "hncb-login-captcha",
+        ocrPageSegmentationMode: "single-word",
+        solverConfidenceThreshold: 0.8,
+        targets: [{
+          ...textCaptchaContract().targets[0]!,
+          semanticId: "hncb.login.captcha-input",
+        }],
+        challengeImageRegion: {
+          ...textCaptchaContract().challengeImageRegion!,
+          semanticId: "hncb.login.captcha-image",
+        },
+      },
+    });
+    const solverInputs: Array<{
+      challengeKind: string;
+      charset?: string;
+      imagePreprocessing?: readonly string[];
+      ocrPageSegmentationMode?: string;
+    }> = [];
+    const tracked = trackDependencies({
+      solver: {
+        async solve(input) {
+          solverInputs.push({
+            challengeKind: input.challengeKind,
+            charset: input.charset,
+            imagePreprocessing: input.imagePreprocessing,
+            ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+          });
+          return { answer: "1234", confidence: 0.85 };
+        },
+      },
+    });
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_HNCB_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(solverInputs, [{
+      challengeKind: "text-captcha",
+      charset: "digits",
+      imagePreprocessing: undefined,
+      ocrPageSegmentationMode: "single-word",
+    }]);
+    assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+    assert.deepEqual(tracked.injected, ["1234"]);
+    assert.deepEqual(tracked.resumed, ["ses-solver"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("an unset Post source routes as human and leaves the run untouched", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-post-human-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "post-statements",
+      contract: {
+        ...textCaptchaContract(),
+        stageId: "ipost-login-captcha",
+        imagePreprocessing: ["remove-interference-lines"],
+        ocrPageSegmentationMode: "single-word",
+        expectedAnswerLength: 4,
+      },
+    });
+    const tracked = trackDependencies();
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: {},
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "human" });
+    assert.deepEqual(tracked.calls, []);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("a Post digit CAPTCHA routes through the local solver seam and resumes", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-post-solver-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "post-statements",
+      contract: {
+        ...textCaptchaContract(),
+        stageId: "ipost-login-captcha",
+        imagePreprocessing: ["remove-interference-lines"],
+        ocrPageSegmentationMode: "single-word",
+        expectedAnswerLength: 4,
+      },
+    });
+    const solverInputs: Array<{
+      challengeKind: string;
+      charset?: string;
+      imagePreprocessing?: readonly string[];
+      ocrPageSegmentationMode?: string;
+      expectedAnswerLength?: number;
+    }> = [];
+    const tracked = trackDependencies({
+      solver: {
+        async solve(input) {
+          solverInputs.push({
+            challengeKind: input.challengeKind,
+            charset: input.charset,
+            imagePreprocessing: input.imagePreprocessing,
+            ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+            expectedAnswerLength: input.expectedAnswerLength,
+          });
+          return { answer: "5241", confidence: 0.97 };
+        },
+      },
+    });
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_POST_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(solverInputs, [{
+      challengeKind: "text-captcha",
+      charset: "digits",
+      imagePreprocessing: ["remove-interference-lines"],
+      ocrPageSegmentationMode: "single-word",
+      expectedAnswerLength: 4,
+    }]);
+    assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+    assert.deepEqual(tracked.injected, ["5241"]);
+    assert.deepEqual(tracked.resumed, ["ses-solver"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("an unset E-Invoice source routes as human and leaves the run untouched", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-einvoice-human-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "einvoice-personal-invoices",
+      contract: {
+        ...textCaptchaContract(),
+        stageId: "einvoice-login-captcha",
+        imagePreprocessing: ["remove-interference-lines"],
+        ocrPageSegmentationMode: "single-line",
+        expectedAnswerLength: 5,
+      },
+    });
+    const tracked = trackDependencies();
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: {},
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "human" });
+    assert.deepEqual(tracked.calls, []);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("an E-Invoice digit CAPTCHA routes through the local solver seam and resumes", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-einvoice-solver-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "einvoice-personal-invoices",
+      contract: {
+        ...textCaptchaContract(),
+        stageId: "einvoice-login-captcha",
+        imagePreprocessing: ["remove-interference-lines"],
+        ocrPageSegmentationMode: "single-line",
+        expectedAnswerLength: 5,
+      },
+    });
+    const solverInputs: Array<{
+      challengeKind: string;
+      charset?: string;
+      imagePreprocessing?: readonly string[];
+      ocrPageSegmentationMode?: string;
+      expectedAnswerLength?: number;
+    }> = [];
+    const tracked = trackDependencies({
+      solver: {
+        async solve(input) {
+          solverInputs.push({
+            challengeKind: input.challengeKind,
+            charset: input.charset,
+            imagePreprocessing: input.imagePreprocessing,
+            ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+            expectedAnswerLength: input.expectedAnswerLength,
+          });
+          return { answer: "32770", confidence: 0.964 };
+        },
+      },
+    });
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(solverInputs, [{
+      challengeKind: "text-captcha",
+      charset: "digits",
+      imagePreprocessing: ["remove-interference-lines"],
+      ocrPageSegmentationMode: "single-line",
+      expectedAnswerLength: 5,
+    }]);
+    assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+    assert.deepEqual(tracked.injected, ["32770"]);
+    assert.deepEqual(tracked.resumed, ["ses-solver"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("a Yuanta source routes its digit CAPTCHA through the local solver seam and resumes", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-yuanta-"));
   try {
@@ -355,6 +697,7 @@ test("a Yuanta source routes its digit CAPTCHA through the local solver seam and
       challengeKind: string;
       charset?: string;
       imagePreprocessing?: readonly string[];
+      ocrPageSegmentationMode?: string;
     }> = [];
     const tracked = trackDependencies({
       solver: {
@@ -363,6 +706,7 @@ test("a Yuanta source routes its digit CAPTCHA through the local solver seam and
             challengeKind: input.challengeKind,
             charset: input.charset,
             imagePreprocessing: input.imagePreprocessing,
+            ocrPageSegmentationMode: input.ocrPageSegmentationMode,
           });
           return { answer: "1234", confidence: 0.95 };
         },
@@ -387,6 +731,7 @@ test("a Yuanta source routes its digit CAPTCHA through the local solver seam and
       challengeKind: "text-captcha",
       charset: "digits",
       imagePreprocessing: ["remove-interference-lines"],
+      ocrPageSegmentationMode: undefined,
     }]);
     assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
     assert.deepEqual(tracked.injected, ["1234"]);

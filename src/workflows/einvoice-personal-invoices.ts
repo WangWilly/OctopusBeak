@@ -8,7 +8,10 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
 const SEARCH_URL =
@@ -298,6 +301,51 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
+export function einvoiceCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "einvoice-login-captcha",
+    title: "Enter the e-invoice CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "einvoice.login.captcha-input",
+        modes: ["click", "type"],
+        locator: page.locator("#captcha"),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "einvoice.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-line",
+    expectedAnswerLength: 5,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "einvoice.login.captcha-image",
+      locator: page
+        .locator(".input-group-text.code_num")
+        .locator('img[alt="圖形驗證碼"]:visible')
+        .first(),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
+}
+
 async function signInEinvoice(
   ctx: LibrettoWorkflowContext,
   credentials: EinvoiceCredentials,
@@ -313,14 +361,7 @@ async function signInEinvoice(
     .locator("#password")
     .fill(requireCredential(credentials, "einvoice_password"));
   await page.locator("#captcha").focus();
-  await emitHumanAssistanceStage({
-    stageId: "einvoice-login-captcha",
-    title: "Enter the e-invoice CAPTCHA",
-    targets: [{ id: "captcha-input", label: "CAPTCHA input", semanticId: "einvoice.login.captcha-input", modes: ["click", "type"], locator: page.locator("#captcha") }],
-    contextRegions: [{ id: "captcha-challenge", label: "CAPTCHA challenge and instructions", semanticId: "einvoice.login.captcha-challenge" }],
-    completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
-  });
+  await emitHumanAssistanceStage(einvoiceCaptchaAssistanceStage(page));
 
   console.log(
     "manual-auth-required: enter the e-invoice CAPTCHA in the browser, then run `npx libretto resume --session " +

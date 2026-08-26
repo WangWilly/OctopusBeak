@@ -170,6 +170,9 @@ const metadataContract: HumanAssistanceContract = {
   },
   charset: "digits",
   imagePreprocessing: ["remove-interference-lines"],
+  ocrPageSegmentationMode: "single-word",
+  solverConfidenceThreshold: 0.8,
+  expectedAnswerLength: 5,
   prompt: "Enter the digits shown.",
 };
 const refreshedMetadataContract = refreshTargetRect(
@@ -183,6 +186,9 @@ assert.equal(refreshedMetadataContract?.charset, "digits");
 assert.deepEqual(refreshedMetadataContract?.imagePreprocessing, [
   "remove-interference-lines",
 ]);
+assert.equal(refreshedMetadataContract?.ocrPageSegmentationMode, "single-word");
+assert.equal(refreshedMetadataContract?.solverConfidenceThreshold, 0.8);
+assert.equal(refreshedMetadataContract?.expectedAnswerLength, 5);
 assert.equal(refreshedMetadataContract?.prompt, "Enter the digits shown.");
 
 const focusCalls: Array<[number, number]> = [];

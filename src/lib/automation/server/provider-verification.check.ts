@@ -133,6 +133,9 @@ function metadata() {
     },
     charset: "digits" as const,
     imagePreprocessing: ["remove-interference-lines"] as const,
+    ocrPageSegmentationMode: "single-word" as const,
+    solverConfidenceThreshold: 0.8,
+    expectedAnswerLength: 5,
     prompt: "Enter the digits shown.",
   };
 }
@@ -241,6 +244,9 @@ test("Cathay refresh resolves the live OTP geometry and preserves the contract m
   assert.equal(input?.challengeKind, "text-captcha");
   assert.equal(input?.charset, "digits");
   assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
+  assert.equal(input?.ocrPageSegmentationMode, "single-word");
+  assert.equal(input?.solverConfidenceThreshold, 0.8);
+  assert.equal(input?.expectedAnswerLength, 5);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 
@@ -266,6 +272,9 @@ test("SinoPac refresh resolves the live CAPTCHA geometry", async () => {
   assert.deepEqual(input?.challengeImageRegion, metadata().challengeImageRegion);
   assert.equal(input?.charset, "digits");
   assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
+  assert.equal(input?.ocrPageSegmentationMode, "single-word");
+  assert.equal(input?.solverConfidenceThreshold, 0.8);
+  assert.equal(input?.expectedAnswerLength, 5);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 
@@ -379,6 +388,9 @@ test("Yuanta refresh adds the dynamic submit target and preserves all metadata",
   assert.deepEqual(input?.challengeImageRegion, verificationContract.challengeImageRegion);
   assert.equal(input?.charset, "digits");
   assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
+  assert.equal(input?.ocrPageSegmentationMode, "single-word");
+  assert.equal(input?.solverConfidenceThreshold, 0.8);
+  assert.equal(input?.expectedAnswerLength, 5);
   assert.equal(input?.prompt, "Enter the digits shown.");
 });
 

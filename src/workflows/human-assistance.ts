@@ -11,6 +11,7 @@ import {
   type VerificationChallengeKind,
   type ChallengeCharacterSet,
   type CaptchaImagePreprocessingMode,
+  type CaptchaOcrPageSegmentationMode,
   type HumanAssistanceFocus,
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
@@ -38,6 +39,9 @@ export type WorkflowHumanAssistanceStage = {
   challengeImageRegion?: WorkflowChallengeImageRegion;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  solverConfidenceThreshold?: number;
+  expectedAnswerLength?: number;
   prompt?: string;
 };
 
@@ -113,6 +117,15 @@ export async function emitHumanAssistanceStage(
     ...(stage.imagePreprocessing === undefined
       ? {}
       : { imagePreprocessing: stage.imagePreprocessing }),
+    ...(stage.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: stage.ocrPageSegmentationMode }),
+    ...(stage.solverConfidenceThreshold === undefined
+      ? {}
+      : { solverConfidenceThreshold: stage.solverConfidenceThreshold }),
+    ...(stage.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: stage.expectedAnswerLength }),
     ...(stage.prompt === undefined ? {} : { prompt: stage.prompt }),
   };
   return publishHumanAssistanceContract(contract, publish);

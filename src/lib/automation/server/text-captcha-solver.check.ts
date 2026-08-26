@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   meanSymbolConfidence,
   normalizeCaptchaText,
+  tesseractPageSegmentationMode,
   tesseractWhitelist,
   textCaptchaSolver,
   type TextRecognitionEngine,
@@ -60,12 +61,22 @@ test("normalizeCaptchaText keeps only alphanumeric characters, uppercased", () =
   assert.equal(normalizeCaptchaText("!@#$"), "");
 });
 
+test("normalizeCaptchaText enforces a digits-only answer for digit challenges", () => {
+  assert.equal(normalizeCaptchaText("2O-3 eight", "digits"), "23");
+});
+
 test("tesseractWhitelist maps a named set to tesseract's whitelist string", () => {
   assert.equal(tesseractWhitelist("digits"), "0123456789");
   assert.equal(
     tesseractWhitelist("alphanumeric"),
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
   );
+});
+
+test("tesseractPageSegmentationMode keeps the default and provider modes explicit", () => {
+  assert.equal(tesseractPageSegmentationMode(), "7");
+  assert.equal(tesseractPageSegmentationMode("single-word"), "8");
+  assert.equal(tesseractPageSegmentationMode("raw-line"), "13");
 });
 
 test("meanSymbolConfidence averages per-symbol confidences", () => {
@@ -130,6 +141,63 @@ test("the OCR solver forwards image preprocessing modes to the engine", async ()
     imagePreprocessing: ["remove-interference-lines"],
   });
   assert.deepEqual(receivedModes, ["remove-interference-lines"]);
+});
+
+test("the OCR solver forwards the provider-declared page segmentation mode", async () => {
+  let receivedMode: unknown;
+  const engine: TextRecognitionEngine = {
+    async recognize(_image, _charset, _imagePreprocessing, ocrPageSegmentationMode) {
+      receivedMode = ocrPageSegmentationMode;
+      return { text: "2038", confidence: 0.85 };
+    },
+  };
+  await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    ocrPageSegmentationMode: "single-word",
+  });
+  assert.equal(receivedMode, "single-word");
+});
+
+test("the OCR solver falls back without line removal when the processed answer has the wrong length", async () => {
+  const receivedModes: Array<readonly string[] | undefined> = [];
+  const engine: TextRecognitionEngine = {
+    async recognize(_image, _charset, imagePreprocessing) {
+      receivedModes.push(imagePreprocessing);
+      return imagePreprocessing?.includes("remove-interference-lines")
+        ? { text: "2", confidence: 0.54 }
+        : { text: "32770", confidence: 0.964 };
+    },
+  };
+  const result = await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    expectedAnswerLength: 5,
+  });
+  assert.deepEqual(result, { answer: "32770", confidence: 0.964 });
+  assert.deepEqual(receivedModes, [["remove-interference-lines"], undefined]);
+});
+
+test("the OCR solver does not run a fallback when the processed answer has the expected length", async () => {
+  let calls = 0;
+  const engine: TextRecognitionEngine = {
+    async recognize() {
+      calls += 1;
+      return { text: "5241", confidence: 0.97 };
+    },
+  };
+  const result = await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    expectedAnswerLength: 4,
+  });
+  assert.deepEqual(result, { answer: "5241", confidence: 0.97 });
+  assert.equal(calls, 1);
 });
 
 test("the OCR solver reads the image in memory without persisting or logging it", () => {

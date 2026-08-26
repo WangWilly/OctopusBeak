@@ -34,6 +34,19 @@ test("decodeGrayImage converts color pixels to luminance grayscale", () => {
   assert.equal(image.data[1], Math.round(0.587 * 255));
 });
 
+test("decodeGrayImage composites transparent pixels against a white background", () => {
+  const png = new PNG({ width: 2, height: 1 });
+  png.data.set([0, 0, 0, 0, 0, 0, 0, 128]);
+
+  const image = decodeGrayImage(PNG.sync.write(png));
+
+  assert.equal(image.data[0], 255, "fully transparent pixels are background");
+  assert.ok(
+    image.data[1]! > 120 && image.data[1]! < 140,
+    "partially transparent black is blended with the white background",
+  );
+});
+
 test("upscaleImage enlarges a grayscale image by the given factor", () => {
   const image = grayImage(1, 1, [200]);
   const upscaled = upscaleImage(image, 3);
@@ -107,6 +120,33 @@ test("removeInterferenceLines removes long grid lines without deleting compact g
     "vertical grid line removed",
   );
   assert.equal(cleaned.data[6 * image.width + 3], 255, "compact glyph retained");
+});
+
+test("removeInterferenceLines removes long diagonal lines without deleting compact glyphs", () => {
+  const image = solidGray(40, 20, 255);
+  for (let x = 0; x < image.width; x += 1) {
+    const y = 3 + Math.round(x * 0.3);
+    image.data[y * image.width + x] = 0;
+    if (y + 1 < image.height) image.data[(y + 1) * image.width + x] = 0;
+  }
+  for (let y = 7; y <= 12; y += 1) {
+    for (let x = 17; x <= 20; x += 1) image.data[y * image.width + x] = 0;
+  }
+
+  const cleaned = removeInterferenceLines(image);
+
+  let residual = 0;
+  for (let x = 0; x < image.width; x += 1) {
+    const y = 3 + Math.round(x * 0.3);
+    for (let dy = -1; dy <= 2; dy += 1) {
+      const candidate = y + dy;
+      if (candidate >= 0 && candidate < image.height && cleaned.data[candidate * image.width + x] === 0) {
+        residual += 1;
+      }
+    }
+  }
+  assert.ok(residual < image.width * 0.2, "diagonal interference is removed");
+  assert.equal(cleaned.data[9 * image.width + 19], 0, "compact glyph retained");
 });
 
 test("preprocessCaptchaImage returns a PNG buffer from a PNG buffer", () => {

@@ -10,6 +10,12 @@ export const UPSCALE_FACTOR = 3;
 export const MIN_REGION_PIXELS = 40;
 export const INTERFERENCE_LINE_MIN_COVERAGE = 0.7;
 
+const DIAGONAL_LINE_MIN_COVERAGE = 0.45;
+const DIAGONAL_LINE_MIN_SPAN = 0.45;
+const DIAGONAL_LINE_DETECTION_RADIUS = 2;
+const DIAGONAL_LINE_SLOPE_STEP = 0.05;
+const MAX_DIAGONAL_LINES = 8;
+
 export type CaptchaPreprocessStep =
   | "grayscale"
   | "upscaled"
@@ -23,6 +29,12 @@ export type CaptchaPreprocessOptions = {
 };
 
 type PixelBand = { start: number; end: number };
+
+type DiagonalLine = {
+  slope: number;
+  intercept: number;
+  coverage: number;
+};
 
 function pixelBands(mask: Uint8Array): PixelBand[] {
   const bands: PixelBand[] = [];
@@ -49,13 +61,151 @@ function expandLineMask(mask: Uint8Array, radius: number): Uint8Array {
   return expanded;
 }
 
+function findDiagonalLines(
+  image: GrayImage,
+  foreground: number,
+  minCoverage: number,
+): DiagonalLine[] {
+  const { width, height } = image;
+  const candidates: DiagonalLine[] = [];
+  const radius = DIAGONAL_LINE_DETECTION_RADIUS;
+  const coverageThreshold = Math.max(
+    DIAGONAL_LINE_MIN_COVERAGE,
+    minCoverage * 0.75,
+  );
+
+  // A CAPTCHA interference stroke is long and straight even when it is
+  // partial. Scan a bounded set of slopes and count the columns that contain
+  // a foreground pixel near each candidate line. Counting columns rather
+  // than pixels keeps thick glyphs from dominating the score.
+  for (let slope = -1.5; slope <= 1.5; slope += DIAGONAL_LINE_SLOPE_STEP) {
+    if (Math.abs(slope) < 0.15) continue;
+    const slopeWidth = Math.ceil(Math.abs(slope) * width);
+    for (let intercept = -slopeWidth - radius; intercept <= height + radius; intercept += 1) {
+      let hits = 0;
+      let firstColumn = width;
+      let lastColumn = -1;
+      for (let x = 0; x < width; x += 1) {
+        const y = Math.round(slope * x + intercept);
+        if (y < -radius || y >= height + radius) continue;
+        if (firstColumn === width) firstColumn = x;
+        lastColumn = x;
+        let hit = false;
+        for (let dy = -radius; dy <= radius; dy += 1) {
+          const candidateY = y + dy;
+          if (
+            candidateY >= 0
+            && candidateY < height
+            && image.data[candidateY * width + x] === foreground
+          ) {
+            hit = true;
+            break;
+          }
+        }
+        if (hit) hits += 1;
+      }
+      const span = lastColumn >= firstColumn
+        ? (lastColumn - firstColumn + 1) / width
+        : 0;
+      const coverage = span > 0 ? hits / (lastColumn - firstColumn + 1) : 0;
+      if (span >= DIAGONAL_LINE_MIN_SPAN && coverage >= coverageThreshold) {
+        candidates.push({ slope, intercept, coverage });
+      }
+    }
+  }
+
+  candidates.sort((left, right) => right.coverage - left.coverage);
+  const selected: DiagonalLine[] = [];
+  const centerX = width / 2;
+  for (const candidate of candidates) {
+    if (
+      selected.some((other) => (
+        Math.abs(candidate.slope - other.slope) < 0.15
+        && Math.abs(
+          (candidate.slope - other.slope) * centerX
+          + candidate.intercept
+          - other.intercept,
+        ) < radius * 4
+      ))
+    ) continue;
+    selected.push(candidate);
+    if (selected.length >= MAX_DIAGONAL_LINES) break;
+  }
+  return selected;
+}
+
+function localForegroundPixels(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  radius: number,
+  foreground: number,
+): number {
+  let count = 0;
+  for (let dy = -radius; dy <= radius; dy += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      const candidateX = x + dx;
+      const candidateY = y + dy;
+      if (
+        candidateX >= 0
+        && candidateX < width
+        && candidateY >= 0
+        && candidateY < height
+        && data[candidateY * width + candidateX] === foreground
+      ) count += 1;
+    }
+  }
+  return count;
+}
+
+function removeDiagonalLines(
+  image: GrayImage,
+  foreground: number,
+  background: number,
+  minCoverage: number,
+): GrayImage {
+  const { width, height } = image;
+  const lines = findDiagonalLines(image, foreground, minCoverage);
+  if (lines.length === 0) return image;
+  const source = new Uint8Array(image.data);
+  const data = new Uint8Array(image.data);
+  for (const line of lines) {
+    for (let x = 0; x < width; x += 1) {
+      const y = Math.round(line.slope * x + line.intercept);
+      for (let dy = -DIAGONAL_LINE_DETECTION_RADIUS; dy <= DIAGONAL_LINE_DETECTION_RADIUS; dy += 1) {
+        const candidateY = y + dy;
+        if (
+          candidateY < 0
+          || candidateY >= height
+          || data[candidateY * width + x] !== foreground
+        ) continue;
+        // Dense neighborhoods are compact glyph strokes, not the thin line
+        // being removed. Keeping them avoids erasing a character at a
+        // crossing while still clearing isolated interference pixels.
+        if (localForegroundPixels(source, width, height, x, candidateY, 2, foreground) >= 22) {
+          continue;
+        }
+        data[candidateY * width + x] = background;
+      }
+    }
+  }
+  return { width, height, data };
+}
+
 export function decodeGrayImage(buffer: Buffer): GrayImage {
   const png = PNG.sync.read(buffer);
   const data = new Uint8Array(png.width * png.height);
   for (let i = 0; i < data.length; i += 1) {
-    const r = png.data[i * 4]!;
-    const g = png.data[i * 4 + 1]!;
-    const b = png.data[i * 4 + 2]!;
+    // CAPTCHA screenshots can carry transparent pixels (notably when the
+    // challenge is captured from a canvas). Blend against the white page
+    // background before converting to luminance; treating alpha as opaque
+    // turns the transparent background into false foreground glyphs.
+    const alpha = png.data[i * 4 + 3]! / 255;
+    const r = Math.round(png.data[i * 4]! * alpha + 255 * (1 - alpha));
+    const g = Math.round(png.data[i * 4 + 1]! * alpha + 255 * (1 - alpha));
+    const b = Math.round(png.data[i * 4 + 2]! * alpha + 255 * (1 - alpha));
     data[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
   }
   return { width: png.width, height: png.height, data };
@@ -265,9 +415,16 @@ export function removeInterferenceLines(
     }
   }
 
+  const diagonalCleaned = removeDiagonalLines(
+    { width, height, data },
+    foreground,
+    background,
+    minCoverage,
+  );
+
   // Reconnect glyph strokes cut by a removed line. A bridge is restored only
   // when foreground remains on both sides of the entire detected line band.
-  const restored = new Uint8Array(data);
+  const restored = new Uint8Array(diagonalCleaned.data);
   const bridgeRadius = 2;
   const rowHasForeground = (y: number, x: number) => {
     if (y < 0 || y >= height) return false;
