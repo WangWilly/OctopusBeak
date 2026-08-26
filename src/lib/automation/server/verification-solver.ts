@@ -10,6 +10,11 @@ import {
   isSolverChallengeKind,
   type SolverChallengeKind,
 } from "../verification-config.ts";
+import {
+  assertSolveAcceptancePolicy,
+  selectAcceptedSolveCandidate,
+  type SolveAcceptanceCandidate,
+} from "../solve-acceptance-policy.ts";
 
 export const MAX_SOLVE_ATTEMPTS = 3;
 
@@ -135,112 +140,15 @@ function strategyFingerprint(
   });
 }
 
-function confidenceEvidence(
-  candidates: readonly PlannedCandidate[],
-  threshold: number,
-  rejectConflictingTies: boolean,
-): { candidate: PlannedCandidate | null; ambiguous: boolean } {
-  const eligible = candidates.filter(({ result }) =>
-    result.confidence >= threshold
-  );
-  if (eligible.length === 0) return { candidate: null, ambiguous: false };
-  const highestConfidence = Math.max(
-    ...eligible.map(({ result }) => result.confidence),
-  );
-  const highest = eligible.filter(({ result }) =>
-    result.confidence === highestConfidence
-  );
-  if (
-    rejectConflictingTies
-    && new Set(highest.map(({ result }) =>
-      "answer" in result ? result.answer : JSON.stringify(result.selections)
-    )).size > 1
-  ) {
-    return { candidate: null, ambiguous: true };
-  }
-  return { candidate: highest[0]!, ambiguous: false };
-}
-
-function agreementEvidence(
-  candidates: readonly PlannedCandidate[],
-): { candidate: PlannedCandidate | null; ambiguous: boolean } {
-  const groups = new Map<string, PlannedCandidate[]>();
-  for (const candidate of candidates) {
-    if (!("answer" in candidate.result)) continue;
-    const group = groups.get(candidate.result.answer) ?? [];
-    if (!group.some(({ strategyFingerprint: fingerprint }) =>
-      fingerprint === candidate.strategyFingerprint
-    )) group.push(candidate);
-    groups.set(candidate.result.answer, group);
-  }
-  const agreements = [...groups.values()].filter((group) => group.length >= 2);
-  if (agreements.length === 0) return { candidate: null, ambiguous: false };
-  if (agreements.length > 1) return { candidate: null, ambiguous: true };
-  const winner = agreements[0]!.reduce((best, candidate) =>
-    candidate.result.confidence > best.result.confidence ? candidate : best
-  );
-  return { candidate: winner, ambiguous: false };
-}
-
-function acceptedPlannedCandidate(
-  candidates: readonly PlannedCandidate[],
-  deps: Pick<
-    SolveDependencies,
-    "challengeKind" | "confidenceThreshold" | "solveAcceptancePolicy"
-  >,
-): PlannedCandidate | null {
-  const policy = deps.solveAcceptancePolicy;
-  if (!policy || policy.mode === "confidence-only") {
-    return confidenceEvidence(candidates, deps.confidenceThreshold, false)
-      .candidate;
-  }
-  if (deps.challengeKind !== "text-captcha") {
-    throw new Error("OCR agreement requires a text CAPTCHA challenge.");
-  }
-  if (policy.mode === "agreement-only") {
-    const agreement = agreementEvidence(candidates);
-    return agreement.ambiguous ? null : agreement.candidate;
-  }
-  const confidence = confidenceEvidence(
-    candidates,
-    deps.confidenceThreshold,
-    true,
-  );
-  const agreement = agreementEvidence(candidates);
-  if (agreement.ambiguous) return null;
-  if (confidence.ambiguous) {
-    return policy.conflictResolution === "prefer-agreement"
-      ? agreement.candidate
-      : null;
-  }
-  if (!confidence.candidate) return agreement.candidate;
-  if (!agreement.candidate) return confidence.candidate;
-  const confidenceAnswer = "answer" in confidence.candidate.result
-    ? confidence.candidate.result.answer
-    : null;
-  const agreementAnswer = "answer" in agreement.candidate.result
-    ? agreement.candidate.result.answer
-    : null;
-  if (confidenceAnswer === agreementAnswer) return confidence.candidate;
-  if (policy.conflictResolution === "prefer-agreement") {
-    return agreement.candidate;
-  }
-  if (policy.conflictResolution === "prefer-confidence") {
-    return confidence.candidate;
-  }
-  return null;
-}
-
 export async function solveVerificationChallenge(
   deps: SolveDependencies,
 ): Promise<SolveOutcome> {
   const plannedAttempts = deps.ocrAttemptPlan;
-  if (
-    deps.solveAcceptancePolicy !== undefined
-    && deps.solveAcceptancePolicy.mode !== "confidence-only"
-    && (!plannedAttempts || plannedAttempts.length < 2)
-  ) {
-    throw new Error("OCR agreement requires at least two distinct strategies.");
+  if (deps.solveAcceptancePolicy !== undefined) {
+    assertSolveAcceptancePolicy(deps.solveAcceptancePolicy, {
+      challengeKind: deps.challengeKind,
+      strategyCount: plannedAttempts?.length ?? 0,
+    });
   }
   let capturedImage: Buffer | null = null;
   if (plannedAttempts) {
@@ -281,20 +189,36 @@ export async function solveVerificationChallenge(
         strategyFingerprint: strategyFingerprint(deps, strategy),
       });
     }
-    const winner = acceptedPlannedCandidate(candidates, deps);
+    const winner = selectAcceptedSolveCandidate(
+      candidates.map<SolveAcceptanceCandidate<VerificationSolverResult>>((candidate) => ({
+        value: candidate.result,
+        confidence: candidate.result.confidence,
+        strategyFingerprint: candidate.strategyFingerprint,
+      })),
+      deps.solveAcceptancePolicy,
+      {
+        challengeKind: deps.challengeKind,
+        confidenceThreshold: deps.confidenceThreshold,
+        strategyCount: plannedAttempts?.length,
+        identityKey: (result) => "answer" in result
+          ? result.answer
+          : JSON.stringify(result.selections),
+        agreementKey: (result) => "answer" in result ? result.answer : null,
+      },
+    ).candidate?.value;
     if (!winner) return { status: "exhausted" };
     if (deps.validateChallengeImage && !await deps.validateChallengeImage()) {
       return { status: "exhausted" };
     }
-    if ("selections" in winner.result) {
+    if ("selections" in winner) {
       if (!deps.injectSelections) {
         throw new Error(
           "Verification solver returned a selection answer but no selection injection is available.",
         );
       }
-      await deps.injectSelections(winner.result.selections);
+      await deps.injectSelections(winner.selections);
     } else {
-      await deps.injectAnswer(winner.result.answer);
+      await deps.injectAnswer(winner.answer);
     }
     return { status: "solved" };
   }

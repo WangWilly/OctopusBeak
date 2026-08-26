@@ -7,6 +7,7 @@ import type {
   HumanAssistanceContract,
   SolveAcceptancePolicy,
 } from "../human-assistance.ts";
+import { resolveHumanAssistanceSolverMetadata } from "../human-assistance.ts";
 import {
   DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
   challengeConfidenceThreshold,
@@ -109,18 +110,15 @@ export async function routeVerificationActor(input: {
   }
   let outcome: SolveOutcome;
   try {
-    const solverMetadata = {
-      prompt: contract?.prompt ?? input.prompt,
-      charset: contract?.charset ?? input.charset,
-      imagePreprocessing: contract?.imagePreprocessing ?? input.imagePreprocessing,
-      ocrPageSegmentationMode:
-        contract?.ocrPageSegmentationMode ?? input.ocrPageSegmentationMode,
-      ocrAttemptPlan: contract?.ocrAttemptPlan ?? input.ocrAttemptPlan,
-      solveAcceptancePolicy:
-        contract?.solveAcceptancePolicy ?? input.solveAcceptancePolicy,
-      expectedAnswerLength:
-        contract?.expectedAnswerLength ?? input.expectedAnswerLength,
-    };
+    const solverMetadata = resolveHumanAssistanceSolverMetadata(contract, {
+      prompt: input.prompt,
+      charset: input.charset,
+      imagePreprocessing: input.imagePreprocessing,
+      ocrPageSegmentationMode: input.ocrPageSegmentationMode,
+      ocrAttemptPlan: input.ocrAttemptPlan,
+      solveAcceptancePolicy: input.solveAcceptancePolicy,
+      expectedAnswerLength: input.expectedAnswerLength,
+    });
     outcome = await solveVerificationChallenge({
       challengeKind: plan.challengeKind,
       confidenceThreshold:
@@ -221,12 +219,6 @@ export async function routeWaitingRunVerification(input: {
     contract,
     session,
     confidenceThreshold,
-    charset: contract?.charset,
-    imagePreprocessing: contract?.imagePreprocessing,
-    ocrPageSegmentationMode: contract?.ocrPageSegmentationMode,
-    ocrAttemptPlan: contract?.ocrAttemptPlan,
-    expectedAnswerLength: contract?.expectedAnswerLength,
-    prompt: contract?.prompt,
     dependencies,
   });
 }

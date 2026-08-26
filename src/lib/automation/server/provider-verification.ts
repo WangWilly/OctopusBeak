@@ -4,6 +4,7 @@ import type {
   HumanAssistanceContractInput,
   HumanVerificationRect,
 } from "../human-assistance.ts";
+import { transformHumanAssistanceContract } from "../human-assistance.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
@@ -141,30 +142,6 @@ export type ProviderVerificationDependencies = {
   sendInput?: ProviderVerificationInputForwarder;
   sleep?: (milliseconds: number) => Promise<void>;
 };
-
-function optionalContractMetadata(contract: HumanAssistanceContract) {
-  return {
-    ...(contract.challengeKind === undefined ? {} : { challengeKind: contract.challengeKind }),
-    ...(contract.challengeImageRegion === undefined ? {} : { challengeImageRegion: contract.challengeImageRegion }),
-    ...(contract.charset === undefined ? {} : { charset: contract.charset }),
-    ...(contract.imagePreprocessing === undefined
-      ? {}
-      : { imagePreprocessing: contract.imagePreprocessing }),
-    ...(contract.ocrPageSegmentationMode === undefined
-      ? {}
-      : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
-    ...(contract.ocrAttemptPlan === undefined
-      ? {}
-      : { ocrAttemptPlan: contract.ocrAttemptPlan }),
-    ...(contract.solverConfidenceThreshold === undefined
-      ? {}
-      : { solverConfidenceThreshold: contract.solverConfidenceThreshold }),
-    ...(contract.expectedAnswerLength === undefined
-      ? {}
-      : { expectedAnswerLength: contract.expectedAnswerLength }),
-    ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
-  };
-}
 
 async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
   const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
@@ -608,11 +585,10 @@ async function refreshYuantaChallengeSubmitTarget(
   });
   if (!submitRect || submitRect.width <= 0 || submitRect.height <= 0) return null;
 
-  return {
-    stageId: contract.stageId,
-    title: contract.title,
+  return transformHumanAssistanceContract(contract, (input) => ({
+    ...input,
     targets: [
-      ...contract.targets,
+      ...input.targets,
       {
         id: "challenge-submit",
         label: "Verify challenge",
@@ -621,15 +597,12 @@ async function refreshYuantaChallengeSubmitTarget(
         rect: submitRect,
       },
     ],
-    contextRegions: contract.contextRegions,
     completion: {
-      ...contract.completion,
-      targetIds: [...contract.completion.targetIds, "challenge-submit"],
+      ...input.completion,
+      targetIds: [...input.completion.targetIds, "challenge-submit"],
       status: "pending",
     },
-    focus: contract.focus,
-    ...optionalContractMetadata(contract),
-  };
+  }));
 }
 
 function createAdapters(withPage: ProviderVerificationPageRunner): readonly ProviderVerificationAdapter[] {
