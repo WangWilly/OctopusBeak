@@ -15,6 +15,10 @@ assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(source, /allSupportedStatementTypeIds\(/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES\.fubon/);
 assert.match(source, /runSelectedStatements\(selectedIds, \[/);
+assert.match(source, /deriveFubonCanonicalHumanAttestation/);
+assert.match(source, /FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY/);
+assert.match(source, /panFingerprintKey/);
+assert.doesNotMatch(source, /fubon_card_identity_fingerprint_key/);
 assert.match(
   source,
   /typeId: "deposit"[\s\S]*typeId: "credit_card"[\s\S]*typeId: "loan"/,
@@ -53,9 +57,12 @@ const legacyFinancialDirKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
 const previousLegacyFinancialDir = process.env[legacyFinancialDirKey];
 const ledgerDirKey = "LEDGER_DIR";
 const previousLedgerDir = process.env[ledgerDirKey];
+const managedSecretKey = "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
+const previousManagedSecret = process.env[managedSecretKey];
 process.env[selectionKey] = "credit_card";
 process.env[sourceDirKey] = "/tmp/fubon-all-statements-source-check";
 process.env[financialDirKey] = "/tmp/fubon-all-statements-financial-check";
+process.env[managedSecretKey] = "synthetic-managed-secret";
 delete process.env[legacyFinancialDirKey];
 const calls: string[] = [];
 const page = {
@@ -67,12 +74,19 @@ const creditCards = { files: ["credit-card.csv"] };
 const loans = { files: ["loan.csv"] };
 let observedCanonicalDir: string | undefined;
 let observedFinancialDir: string | undefined;
+let observedPanFingerprintKey:
+  | { secret: string; keyVersion?: string }
+  | undefined;
+let observedCreditCardInput: Record<string, unknown> | undefined;
 let output: unknown;
 try {
   output = await runFubonAllStatements(
     ctx,
     {
-      credentials: { fubon_user_id: "id" },
+      credentials: {
+        fubon_user_id: "id",
+        fubon_account: "account",
+      },
       statements: {},
       creditCards: {},
       loans: {},
@@ -115,8 +129,16 @@ try {
         calls.push("deposit");
         return statements;
       },
-      runFubonCreditCardStatements: async (actualPage: unknown) => {
+      runFubonCreditCardStatements: async (
+        actualPage: unknown,
+        actualInput: unknown,
+        options?: {
+          panFingerprintKey?: { secret: string; keyVersion?: string };
+        },
+      ) => {
         assert.equal(actualPage, page);
+        observedCreditCardInput = actualInput as Record<string, unknown>;
+        observedPanFingerprintKey = options?.panFingerprintKey;
         calls.push("credit-card");
         return creditCards;
       },
@@ -143,10 +165,83 @@ try {
   else process.env[legacyFinancialDirKey] = previousLegacyFinancialDir;
   if (previousLedgerDir === undefined) delete process.env[ledgerDirKey];
   else process.env[ledgerDirKey] = previousLedgerDir;
+  if (previousManagedSecret === undefined) delete process.env[managedSecretKey];
+  else process.env[managedSecretKey] = previousManagedSecret;
 }
 
 assert.equal(observedCanonicalDir, "/tmp/fubon-all-statements-source-check");
 assert.equal(observedFinancialDir, "/tmp/fubon-all-statements-financial-check");
+assert.deepEqual(observedPanFingerprintKey, {
+  secret: "synthetic-managed-secret",
+});
+assert.ok(observedCreditCardInput);
+const derivedIdentity = module.deriveFubonCanonicalHumanAttestation(
+  { fubon_user_id: " id ", fubon_account: " account " },
+  "synthetic-managed-secret",
+);
+assert.deepEqual(
+  derivedIdentity,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: "id", fubon_account: "account" },
+    "synthetic-managed-secret",
+  ),
+  "the same normalized login scope and managed secret must remain stable",
+);
+assert.deepEqual(
+  observedCreditCardInput?.canonicalHumanAttestation,
+  derivedIdentity,
+  "combined workflow must pass only opaque, automatically derived portfolio identity context",
+);
+assert.equal(
+  derivedIdentity?.identityEpochKey,
+  "fubon-credit-card-human-attested-v2",
+  "portfolio identity semantics must use the v2 attestation epoch",
+);
+assert.notEqual(
+  derivedIdentity?.sourceConnectionKey,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: "other-id", fubon_account: "account" },
+    "synthetic-managed-secret",
+  )?.sourceConnectionKey,
+);
+assert.notEqual(
+  derivedIdentity?.humanAttestedAccountKey,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: "other-id", fubon_account: "account" },
+    "synthetic-managed-secret",
+  )?.humanAttestedAccountKey,
+);
+assert.equal(
+  derivedIdentity?.sourceConnectionKey,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: " ID ", fubon_account: " ACCOUNT ", fubon_password: "rotated" },
+    "synthetic-managed-secret",
+  )?.sourceConnectionKey,
+);
+assert.notEqual(
+  derivedIdentity?.sourceConnectionKey,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: "id", fubon_account: "account" },
+    "different-managed-secret",
+  )?.sourceConnectionKey,
+);
+assert.notEqual(
+  derivedIdentity?.humanAttestedAccountKey,
+  module.deriveFubonCanonicalHumanAttestation(
+    { fubon_user_id: "id", fubon_account: "account" },
+    "different-managed-secret",
+  )?.humanAttestedAccountKey,
+);
+assert.doesNotMatch(
+  JSON.stringify(derivedIdentity),
+  /"id"|"account"|synthetic-managed-secret/iu,
+  "derived identity must not return login details or the managed secret",
+);
+assert.doesNotMatch(
+  JSON.stringify(output),
+  /synthetic-managed-secret|"id"|"account"/iu,
+  "combined workflow output must not expose login details or the managed secret",
+);
 
 assert.deepEqual(output, {
   statements,

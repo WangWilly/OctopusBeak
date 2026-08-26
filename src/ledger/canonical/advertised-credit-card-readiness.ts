@@ -1,6 +1,6 @@
 import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-selection.ts";
 import { FUBON_CREDIT_CARD_CAPTURE_CONTRACT } from "./fubon-credit-card.ts";
-import { getFubonCreditCardHumanAttestedV1Manifest } from "./fubon-credit-card-human-attestation.ts";
+import { getFubonCreditCardHumanAttestedV2Manifest } from "./fubon-credit-card-human-attestation.ts";
 
 export type AdvertisedCanonicalCreditCardSourceId = "fubon";
 
@@ -8,9 +8,9 @@ export type AdvertisedCanonicalCreditCardReadinessEntry = {
   sourceId: AdvertisedCanonicalCreditCardSourceId;
   advertisedName: string;
   workflow: "fubon-credit-card-statements";
-  authority: "fubon/credit-card/human-attested-v1";
-  contractVersion: "fubon/credit-card/human-attested-v1";
-  identity: "human-attested-independent-billing-account";
+  authority: "fubon/credit-card/human-attested-v2";
+  contractVersion: "fubon/credit-card/human-attested-v2";
+  identity: "human-attested-primary-cardholder-portfolio";
   cards: "subordinate-instruments";
   postingAndBilling: "posted-from-posting-date-billing-independent";
   statements: "issuer-settled-cycle-summary-pinned-membership";
@@ -37,7 +37,7 @@ export const ADVERTISED_CANONICAL_CREDIT_CARD_READINESS = [
     workflow: "fubon-credit-card-statements",
     authority: FUBON_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute,
     contractVersion: FUBON_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion,
-    identity: "human-attested-independent-billing-account",
+    identity: "human-attested-primary-cardholder-portfolio",
     cards: "subordinate-instruments",
     postingAndBilling: "posted-from-posting-date-billing-independent",
     statements: "issuer-settled-cycle-summary-pinned-membership",
@@ -52,10 +52,10 @@ export function isAdvertisedCanonicalCreditCardEntryReleaseReady(
   entry: AdvertisedCanonicalCreditCardReadinessEntry,
 ): boolean {
   return (
-    getFubonCreditCardHumanAttestedV1Manifest().status === "active" &&
-    entry.authority === "fubon/credit-card/human-attested-v1" &&
-    entry.contractVersion === "fubon/credit-card/human-attested-v1" &&
-    entry.identity === "human-attested-independent-billing-account" &&
+    getFubonCreditCardHumanAttestedV2Manifest().status === "active" &&
+    entry.authority === "fubon/credit-card/human-attested-v2" &&
+    entry.contractVersion === "fubon/credit-card/human-attested-v2" &&
+    entry.identity === "human-attested-primary-cardholder-portfolio" &&
     entry.cards === "subordinate-instruments" &&
     entry.postingAndBilling === "posted-from-posting-date-billing-independent" &&
     entry.statements === "issuer-settled-cycle-summary-pinned-membership" &&
