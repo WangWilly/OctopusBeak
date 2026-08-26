@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createHumanAssistanceContract,
+  projectHumanAssistanceContract,
+  transformHumanAssistanceContract,
   type HumanAssistanceContractInput,
 } from "./human-assistance.ts";
 
@@ -331,6 +333,55 @@ test("a challenge declaration carries its prompt", () => {
     prompt: "選取包含紅綠燈的圖片",
   }, 1);
   assert.equal(contract.prompt, "選取包含紅綠燈的圖片");
+});
+
+test("contract projection preserves all actor-neutral metadata through transforms", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    challengeKind: "text-captcha",
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "captcha.image",
+      rect: { x: 0, y: 0, width: 120, height: 40 },
+    },
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-line",
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["remove-interference-lines"] },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+    solverConfidenceThreshold: 0.9,
+    expectedAnswerLength: 6,
+    prompt: "Enter six digits.",
+  }, 3);
+
+  const projected = projectHumanAssistanceContract(contract);
+  assert.equal("schemaVersion" in projected, false);
+  assert.equal("version" in projected, false);
+  assert.deepEqual(projected.challengeImageRegion, contract.challengeImageRegion);
+  assert.deepEqual(projected.ocrAttemptPlan, contract.ocrAttemptPlan);
+  assert.deepEqual(projected.solveAcceptancePolicy, { mode: "agreement-only" });
+  assert.equal(projected.expectedAnswerLength, 6);
+
+  const transformed = transformHumanAssistanceContract(contract, (input) => ({
+    ...input,
+    targets: input.targets.map((target) => ({
+      ...target,
+      rect: { x: 99, y: 88, width: 77, height: 24 },
+    })),
+  }));
+  assert.deepEqual(transformed.targets[0]?.rect, {
+    x: 99,
+    y: 88,
+    width: 77,
+    height: 24,
+  });
+  assert.deepEqual(transformed.challengeImageRegion, contract.challengeImageRegion);
+  assert.deepEqual(transformed.ocrAttemptPlan, contract.ocrAttemptPlan);
+  assert.deepEqual(transformed.solveAcceptancePolicy, contract.solveAcceptancePolicy);
 });
 
 test("an empty prompt is rejected with a clear error", () => {

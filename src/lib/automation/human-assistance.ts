@@ -1,3 +1,14 @@
+import {
+  assertSolveAcceptancePolicy,
+  type SolveAcceptancePolicy,
+} from "./solve-acceptance-policy.ts";
+
+export {
+  SOLVE_CONFLICT_RESOLUTIONS,
+  type SolveAcceptancePolicy,
+  type SolveConflictResolution,
+} from "./solve-acceptance-policy.ts";
+
 export const HUMAN_ASSISTANCE_SCHEMA_VERSION = 1 as const;
 
 // CAPTCHA answers are intentionally bounded to keep the workflow contract
@@ -60,23 +71,6 @@ export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
 
 export type CaptchaImagePreprocessingMode =
   typeof CAPTCHA_IMAGE_PREPROCESSING_MODES[number];
-
-export const SOLVE_CONFLICT_RESOLUTIONS = [
-  "reject",
-  "prefer-agreement",
-  "prefer-confidence",
-] as const;
-
-export type SolveConflictResolution =
-  typeof SOLVE_CONFLICT_RESOLUTIONS[number];
-
-export type SolveAcceptancePolicy =
-  | { mode: "confidence-only" }
-  | { mode: "agreement-only" }
-  | {
-    mode: "confidence-or-agreement";
-    conflictResolution: SolveConflictResolution;
-  };
 
 export type HumanVerificationRect = {
   x: number;
@@ -154,6 +148,151 @@ export type HumanAssistanceContract = HumanAssistanceContractInput & {
   version: number;
   completion: HumanAssistanceCompletion;
 };
+
+/**
+ * Project a validated contract back to its actor-neutral input shape.
+ *
+ * Runtime adapters use this projection when they need to change geometry or
+ * add a target. Keeping the projection here means new contract metadata is
+ * preserved by every transformation without another caller-owned copy list.
+ */
+export function projectHumanAssistanceContract(
+  contract: HumanAssistanceContract,
+): HumanAssistanceContractInput {
+  const {
+    schemaVersion: _schemaVersion,
+    version: _version,
+    ...input
+  } = contract;
+  return {
+    ...input,
+    targets: contract.targets.map((target) => ({
+      ...target,
+      modes: [...target.modes],
+      ...(target.rect === undefined
+        ? {}
+        : { rect: target.rect ? { ...target.rect } : null }),
+    })),
+    contextRegions: contract.contextRegions.map((region) => ({
+      ...region,
+      ...(region.rect === undefined
+        ? {}
+        : { rect: region.rect ? { ...region.rect } : null }),
+    })),
+    completion: {
+      mode: contract.completion.mode,
+      targetIds: [...contract.completion.targetIds],
+      status: contract.completion.status,
+    },
+    focus: {
+      targetId: contract.focus.targetId,
+      contextRegionIds: [...contract.focus.contextRegionIds],
+      ...(contract.focus.initialZoom === undefined
+        ? {}
+        : { initialZoom: contract.focus.initialZoom }),
+    },
+    ...(contract.challengeImageRegion === undefined
+      ? {}
+      : {
+        challengeImageRegion: {
+          ...contract.challengeImageRegion,
+          rect: { ...contract.challengeImageRegion.rect },
+        },
+      }),
+    ...(contract.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...contract.imagePreprocessing] }),
+    ...(contract.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: contract.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
+    ...(contract.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...contract.solveAcceptancePolicy } }),
+  };
+}
+
+/** Transform a validated contract while preserving all of its metadata. */
+export function transformHumanAssistanceContract(
+  contract: HumanAssistanceContract,
+  transform: (input: HumanAssistanceContractInput) => HumanAssistanceContractInput,
+): HumanAssistanceContractInput {
+  return transform(projectHumanAssistanceContract(contract));
+}
+
+export type HumanAssistanceSolverMetadata = Pick<
+  HumanAssistanceContractInput,
+  | "prompt"
+  | "charset"
+  | "imagePreprocessing"
+  | "ocrPageSegmentationMode"
+  | "ocrAttemptPlan"
+  | "solveAcceptancePolicy"
+  | "expectedAnswerLength"
+>;
+
+/** Project only the solver-facing metadata without letting routing rebuild it. */
+export function projectHumanAssistanceSolverMetadata(
+  contract: HumanAssistanceContract,
+): HumanAssistanceSolverMetadata {
+  return {
+    ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
+    ...(contract.charset === undefined ? {} : { charset: contract.charset }),
+    ...(contract.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...contract.imagePreprocessing] }),
+    ...(contract.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
+    ...(contract.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: contract.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
+    ...(contract.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...contract.solveAcceptancePolicy } }),
+    ...(contract.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: contract.expectedAnswerLength }),
+  };
+}
+
+/**
+ * Merge legacy/direct-call compatibility metadata behind a contract. A
+ * contract value always wins, while omitted optional contract fields retain
+ * the compatibility value supplied by the caller.
+ */
+export function resolveHumanAssistanceSolverMetadata(
+  contract: HumanAssistanceContract | null,
+  fallback: HumanAssistanceSolverMetadata,
+): HumanAssistanceSolverMetadata {
+  return {
+    ...fallback,
+    ...(contract ? projectHumanAssistanceSolverMetadata(contract) : {}),
+  };
+}
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -332,55 +471,11 @@ export function createHumanAssistanceContract(
     }
   }
   if (input.solveAcceptancePolicy !== undefined) {
-    const policy = input.solveAcceptancePolicy;
-    if (!policy || typeof policy !== "object") {
-      throw new Error(
-        "Invalid human assistance contract: solve acceptance policy must be an object.",
-      );
-    }
-    if (policy.mode === "confidence-only") {
-      if ("conflictResolution" in policy) {
-        throw new Error(
-          "Invalid human assistance contract: confidence-only policy cannot declare conflict resolution.",
-        );
-      }
-    } else if (policy.mode === "agreement-only") {
-      if ("conflictResolution" in policy) {
-        throw new Error(
-          "Invalid human assistance contract: agreement-only policy cannot declare conflict resolution.",
-        );
-      }
-      if (input.challengeKind !== "text-captcha") {
-        throw new Error(
-          "Invalid human assistance contract: OCR agreement requires a text CAPTCHA challenge.",
-        );
-      }
-      if (!input.ocrAttemptPlan || input.ocrAttemptPlan.length < 2) {
-        throw new Error(
-          "Invalid human assistance contract: OCR agreement requires at least two distinct strategies.",
-        );
-      }
-    } else if (policy.mode === "confidence-or-agreement") {
-      if (!SOLVE_CONFLICT_RESOLUTIONS.includes(policy.conflictResolution)) {
-        throw new Error(
-          `Invalid human assistance contract: unknown solve conflict resolution ${policy.conflictResolution}.`,
-        );
-      }
-      if (input.challengeKind !== "text-captcha") {
-        throw new Error(
-          "Invalid human assistance contract: OCR agreement requires a text CAPTCHA challenge.",
-        );
-      }
-      if (!input.ocrAttemptPlan || input.ocrAttemptPlan.length < 2) {
-        throw new Error(
-          "Invalid human assistance contract: OCR agreement requires at least two distinct strategies.",
-        );
-      }
-    } else {
-      throw new Error(
-        `Invalid human assistance contract: unknown solve acceptance policy ${(policy as { mode?: unknown }).mode}.`,
-      );
-    }
+    assertSolveAcceptancePolicy(input.solveAcceptancePolicy, {
+      challengeKind: input.challengeKind,
+      strategyCount: input.ocrAttemptPlan?.length ?? 0,
+      errorPrefix: "Invalid human assistance contract",
+    });
   }
   if (
     input.solverConfidenceThreshold !== undefined

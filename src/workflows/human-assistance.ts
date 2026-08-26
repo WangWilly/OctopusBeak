@@ -108,35 +108,17 @@ export async function emitHumanAssistanceStage(
     }
   }
 
+  const {
+    targets: _stageTargets,
+    contextRegions: _stageContextRegions,
+    challengeImageRegion: _stageChallengeImageRegion,
+    ...contractMetadata
+  } = stage;
   const contract: HumanAssistanceContractInput = {
-    stageId: stage.stageId,
-    title: stage.title,
+    ...contractMetadata,
     targets,
     contextRegions,
-    completion: stage.completion,
-    focus: stage.focus,
-    ...(stage.challengeKind === undefined ? {} : { challengeKind: stage.challengeKind }),
     ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
-    ...(stage.charset === undefined ? {} : { charset: stage.charset }),
-    ...(stage.imagePreprocessing === undefined
-      ? {}
-      : { imagePreprocessing: stage.imagePreprocessing }),
-    ...(stage.ocrPageSegmentationMode === undefined
-      ? {}
-      : { ocrPageSegmentationMode: stage.ocrPageSegmentationMode }),
-    ...(stage.ocrAttemptPlan === undefined
-      ? {}
-      : { ocrAttemptPlan: stage.ocrAttemptPlan }),
-    ...(stage.solveAcceptancePolicy === undefined
-      ? {}
-      : { solveAcceptancePolicy: stage.solveAcceptancePolicy }),
-    ...(stage.solverConfidenceThreshold === undefined
-      ? {}
-      : { solverConfidenceThreshold: stage.solverConfidenceThreshold }),
-    ...(stage.expectedAnswerLength === undefined
-      ? {}
-      : { expectedAnswerLength: stage.expectedAnswerLength }),
-    ...(stage.prompt === undefined ? {} : { prompt: stage.prompt }),
   };
   return publishHumanAssistanceContract(contract, publish);
 }

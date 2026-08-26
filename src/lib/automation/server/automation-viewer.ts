@@ -6,6 +6,7 @@ import type {
   HumanVerificationTarget,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
+import { transformHumanAssistanceContract } from "../human-assistance.ts";
 import type { VerificationSelectionPoint } from "./verification-solver.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
 
@@ -389,38 +390,12 @@ export function refreshTargetRect(
     && target.rect.width === rect.width
     && target.rect.height === rect.height;
   if (unchanged) return null;
-  return {
-    stageId: contract.stageId,
-    title: contract.title,
-    targets: contract.targets.map((candidate) => (
+  return transformHumanAssistanceContract(contract, (input) => ({
+    ...input,
+    targets: input.targets.map((candidate) => (
       candidate.semanticId === semanticId ? { ...candidate, rect } : candidate
     )),
-    contextRegions: contract.contextRegions,
-    completion: contract.completion,
-    focus: contract.focus,
-    ...(contract.challengeKind === undefined ? {} : { challengeKind: contract.challengeKind }),
-    ...(contract.challengeImageRegion === undefined ? {} : { challengeImageRegion: contract.challengeImageRegion }),
-    ...(contract.charset === undefined ? {} : { charset: contract.charset }),
-    ...(contract.imagePreprocessing === undefined
-      ? {}
-      : { imagePreprocessing: contract.imagePreprocessing }),
-    ...(contract.ocrPageSegmentationMode === undefined
-      ? {}
-      : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
-    ...(contract.ocrAttemptPlan === undefined
-      ? {}
-      : { ocrAttemptPlan: contract.ocrAttemptPlan }),
-    ...(contract.solveAcceptancePolicy === undefined
-      ? {}
-      : { solveAcceptancePolicy: contract.solveAcceptancePolicy }),
-    ...(contract.solverConfidenceThreshold === undefined
-      ? {}
-      : { solverConfidenceThreshold: contract.solverConfidenceThreshold }),
-    ...(contract.expectedAnswerLength === undefined
-      ? {}
-      : { expectedAnswerLength: contract.expectedAnswerLength }),
-    ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
-  };
+  }));
 }
 
 export async function sendViewerInput(session: string, rawInput: unknown) {

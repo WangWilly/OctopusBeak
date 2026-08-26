@@ -209,6 +209,40 @@ test("a direct solver route uses contract metadata before compatibility argument
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
 });
 
+test("a direct solver route inherits omitted contract metadata from compatibility arguments", async () => {
+  const solverInputs: Array<{
+    charset?: string;
+    expectedAnswerLength?: number;
+  }> = [];
+  const tracked = trackDependencies({
+    solver: {
+      async solve(input) {
+        solverInputs.push({
+          charset: input.charset,
+          expectedAnswerLength: input.expectedAnswerLength,
+        });
+        return { answer: "2038", confidence: 0.95 };
+      },
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: {
+      ...textCaptchaContract(),
+      charset: undefined,
+      expectedAnswerLength: undefined,
+    },
+    session: "ses-contract-fallback-metadata",
+    confidenceThreshold: 0.9,
+    charset: "digits",
+    expectedAnswerLength: 4,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "resumed" });
+  assert.deepEqual(solverInputs, [{ charset: "digits", expectedAnswerLength: 4 }]);
+  assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+});
+
 test("a solver actor injects a selection answer as click coordinates and resumes", async () => {
   const tracked = trackDependencies({
     solver: {
