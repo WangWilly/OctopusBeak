@@ -696,7 +696,7 @@ The party that performs a verification target: `human` through Assist, or `solve
 _Avoid_: Viewer mode, interaction mode, fallback actor
 
 **Verification completion**:
-The condition that permits an automation task to resume after verification. For a `human` actor, an independent verification flow requires confirmation from the workflow or host, while inline verification submitted together with login information uses a non-empty declared field as the available pre-submit condition; for a `solver` actor, completion is the solver answer meeting the confidence threshold. Login success remains the final correctness check for both actors.
+The condition that permits an automation task to resume after verification. For a `human` actor, an independent verification flow requires confirmation from the workflow or host, while inline verification submitted together with login information uses a non-empty declared field as the available pre-submit condition; for a `solver` actor, completion is the solver answer satisfying the declared Solve Acceptance Policy. Login success remains the final correctness check for both actors.
 _Avoid_: Input has value means verification succeeded
 
 **Verification focus view**:
@@ -736,11 +736,19 @@ A future Verification Solver deployment boundary for provider-specific trained m
 _Avoid_: Hidden remote fallback, unconsented CAPTCHA upload
 
 **Solve confidence**:
-The probability a Verification Solver reports with its answer. An answer below the challenge's confidence threshold is not submitted and counts as a failed Solve Attempt.
+The probability a Verification Solver reports with its answer. It is one form of acceptance evidence; a result below the challenge's confidence threshold is insufficient by itself but may contribute to a declared OCR Agreement.
 _Avoid_: Absolute certainty, human confidence
 
+**Solve acceptance policy**:
+The provider-declared rule that determines whether solver evidence supports submitting one answer. Confidence-only acceptance is the default; a provider may additionally require agreement among distinct declared strategies without changing another provider's policy.
+_Avoid_: Global lowered threshold, provider-name special case, implicit fallback
+
+**OCR agreement**:
+The concordance reached when two or more provider-declared OCR strategies evaluate the same verification challenge and return the same normalized answer. It is acceptance evidence distinct from Solve Confidence and cannot be established by repeating an identical strategy.
+_Avoid_: Repeated OCR attempt, inflated confidence, majority guess
+
 **Solve attempt**:
-One Verification Solver invocation and, when the confidence threshold is met, submission of its answer. A challenge permits a fixed maximum of three attempts; exhausting them finalizes the task run as failed rather than returning to human assistance.
+One Verification Solver invocation and, when the Solve Acceptance Policy is satisfied, submission of its answer. A challenge permits a fixed maximum of three attempts; exhausting them finalizes the task run as failed rather than returning to human assistance.
 _Avoid_: Human retry, unbounded retry
 
 **Yuanta Bank login CAPTCHA**:

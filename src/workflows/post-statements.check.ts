@@ -122,7 +122,14 @@ try {
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");
   assert.deepEqual(captchaContract.imagePreprocessing, ["remove-interference-lines"]);
-  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
+  assert.deepEqual(captchaContract.ocrAttemptPlan, [
+    { ocrPageSegmentationMode: "single-line" },
+    { ocrPageSegmentationMode: "single-word" },
+  ]);
+  assert.deepEqual(captchaContract.solveAcceptancePolicy, {
+    mode: "confidence-or-agreement",
+    conflictResolution: "reject",
+  });
   assert.equal(captchaContract.expectedAnswerLength, 4);
   assert.equal(
     captchaContract.targets[0]?.semanticId,

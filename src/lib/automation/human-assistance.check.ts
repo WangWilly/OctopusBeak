@@ -184,6 +184,64 @@ test("a challenge declaration carries a bounded ordered OCR attempt plan", () =>
   ]);
 });
 
+test("a text CAPTCHA declaration carries its solve acceptance policy", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    challengeKind: "text-captcha",
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
+  }, 1);
+  assert.deepEqual(contract.solveAcceptancePolicy, {
+    mode: "confidence-or-agreement",
+    conflictResolution: "reject",
+  });
+});
+
+test("invalid OCR agreement policies are rejected", () => {
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      solveAcceptancePolicy: {
+        mode: "confidence-or-agreement",
+        conflictResolution: "reject",
+      },
+    }, 1),
+    /OCR agreement requires at least two distinct strategies/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-line" },
+        { ocrPageSegmentationMode: "single-word" },
+      ],
+      solveAcceptancePolicy: {
+        mode: "confidence-or-agreement",
+        conflictResolution: "provider-default" as never,
+      },
+    }, 1),
+    /unknown solve conflict resolution provider-default/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      solveAcceptancePolicy: {
+        mode: "confidence-only",
+        conflictResolution: "reject",
+      } as never,
+    }, 1),
+    /confidence-only policy cannot declare conflict resolution/,
+  );
+});
+
 test("duplicate or oversized OCR attempt plans are rejected", () => {
   assert.throws(
     () => createHumanAssistanceContract({

@@ -173,7 +173,11 @@ test("a direct solver route uses contract metadata before compatibility argument
           ocrPageSegmentationMode: "single-line",
         },
       ],
-      solverConfidenceThreshold: 0.8,
+      solveAcceptancePolicy: {
+        mode: "confidence-or-agreement",
+        conflictResolution: "reject",
+      },
+      solverConfidenceThreshold: 0.9,
       expectedAnswerLength: 4,
     },
     session: "ses-contract-metadata",

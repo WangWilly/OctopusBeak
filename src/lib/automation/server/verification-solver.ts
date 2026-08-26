@@ -4,6 +4,7 @@ import type {
   CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
   HumanAssistanceContract,
+  SolveAcceptancePolicy,
 } from "../human-assistance.ts";
 import {
   isSolverChallengeKind,
@@ -86,6 +87,7 @@ export type SolveDependencies = {
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
   ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
+  solveAcceptancePolicy?: SolveAcceptancePolicy;
   expectedAnswerLength?: number;
 };
 
@@ -94,10 +96,147 @@ export type SolveOutcome =
   | { status: "absent" }
   | { status: "exhausted" };
 
+type PlannedCandidate = {
+  result: VerificationSolverResult;
+  attempt: number;
+  strategyFingerprint: string;
+};
+
+function isStructurallyValid(
+  result: VerificationSolverResult,
+  deps: Pick<SolveDependencies, "charset" | "expectedAnswerLength">,
+): boolean {
+  if (!Number.isFinite(result.confidence)) return false;
+  if ("selections" in result) return result.selections.length > 0;
+  if (!result.answer) return false;
+  if (
+    deps.expectedAnswerLength !== undefined
+    && result.answer.length !== deps.expectedAnswerLength
+  ) return false;
+  if (deps.charset === "digits" && !/^\d+$/.test(result.answer)) return false;
+  return true;
+}
+
+function strategyFingerprint(
+  deps: Pick<
+    SolveDependencies,
+    "imagePreprocessing" | "ocrPageSegmentationMode"
+  >,
+  strategy: CaptchaOcrAttemptStrategy,
+): string {
+  return JSON.stringify({
+    imagePreprocessing: strategy.imagePreprocessing
+      ?? deps.imagePreprocessing
+      ?? [],
+    ocrPageSegmentationMode: strategy.ocrPageSegmentationMode
+      ?? deps.ocrPageSegmentationMode
+      ?? "single-line",
+    ocrOutputStage: strategy.ocrOutputStage ?? "final",
+  });
+}
+
+function confidenceEvidence(
+  candidates: readonly PlannedCandidate[],
+  threshold: number,
+  rejectConflictingTies: boolean,
+): { candidate: PlannedCandidate | null; ambiguous: boolean } {
+  const eligible = candidates.filter(({ result }) =>
+    result.confidence >= threshold
+  );
+  if (eligible.length === 0) return { candidate: null, ambiguous: false };
+  const highestConfidence = Math.max(
+    ...eligible.map(({ result }) => result.confidence),
+  );
+  const highest = eligible.filter(({ result }) =>
+    result.confidence === highestConfidence
+  );
+  if (
+    rejectConflictingTies
+    && new Set(highest.map(({ result }) =>
+      "answer" in result ? result.answer : JSON.stringify(result.selections)
+    )).size > 1
+  ) {
+    return { candidate: null, ambiguous: true };
+  }
+  return { candidate: highest[0]!, ambiguous: false };
+}
+
+function agreementEvidence(
+  candidates: readonly PlannedCandidate[],
+): { candidate: PlannedCandidate | null; ambiguous: boolean } {
+  const groups = new Map<string, PlannedCandidate[]>();
+  for (const candidate of candidates) {
+    if (!("answer" in candidate.result)) continue;
+    const group = groups.get(candidate.result.answer) ?? [];
+    if (!group.some(({ strategyFingerprint: fingerprint }) =>
+      fingerprint === candidate.strategyFingerprint
+    )) group.push(candidate);
+    groups.set(candidate.result.answer, group);
+  }
+  const agreements = [...groups.values()].filter((group) => group.length >= 2);
+  if (agreements.length === 0) return { candidate: null, ambiguous: false };
+  if (agreements.length > 1) return { candidate: null, ambiguous: true };
+  const winner = agreements[0]!.reduce((best, candidate) =>
+    candidate.result.confidence > best.result.confidence ? candidate : best
+  );
+  return { candidate: winner, ambiguous: false };
+}
+
+function acceptedPlannedCandidate(
+  candidates: readonly PlannedCandidate[],
+  deps: Pick<
+    SolveDependencies,
+    "challengeKind" | "confidenceThreshold" | "solveAcceptancePolicy"
+  >,
+): PlannedCandidate | null {
+  const policy = deps.solveAcceptancePolicy;
+  if (!policy || policy.mode === "confidence-only") {
+    return confidenceEvidence(candidates, deps.confidenceThreshold, false)
+      .candidate;
+  }
+  if (deps.challengeKind !== "text-captcha") {
+    throw new Error("OCR agreement requires a text CAPTCHA challenge.");
+  }
+  const confidence = confidenceEvidence(
+    candidates,
+    deps.confidenceThreshold,
+    true,
+  );
+  const agreement = agreementEvidence(candidates);
+  if (agreement.ambiguous) return null;
+  if (confidence.ambiguous) {
+    return policy.conflictResolution === "prefer-agreement"
+      ? agreement.candidate
+      : null;
+  }
+  if (!confidence.candidate) return agreement.candidate;
+  if (!agreement.candidate) return confidence.candidate;
+  const confidenceAnswer = "answer" in confidence.candidate.result
+    ? confidence.candidate.result.answer
+    : null;
+  const agreementAnswer = "answer" in agreement.candidate.result
+    ? agreement.candidate.result.answer
+    : null;
+  if (confidenceAnswer === agreementAnswer) return confidence.candidate;
+  if (policy.conflictResolution === "prefer-agreement") {
+    return agreement.candidate;
+  }
+  if (policy.conflictResolution === "prefer-confidence") {
+    return confidence.candidate;
+  }
+  return null;
+}
+
 export async function solveVerificationChallenge(
   deps: SolveDependencies,
 ): Promise<SolveOutcome> {
   const plannedAttempts = deps.ocrAttemptPlan;
+  if (
+    deps.solveAcceptancePolicy?.mode === "confidence-or-agreement"
+    && (!plannedAttempts || plannedAttempts.length < 2)
+  ) {
+    throw new Error("OCR agreement requires at least two distinct strategies.");
+  }
   let capturedImage: Buffer | null = null;
   if (plannedAttempts) {
     // A declared plan describes alternative OCR views of one challenge. The
@@ -111,27 +250,18 @@ export async function solveVerificationChallenge(
     MAX_SOLVE_ATTEMPTS,
   );
 
-  const isEligible = (result: VerificationSolverResult) => {
-    if (!Number.isFinite(result.confidence) || result.confidence < deps.confidenceThreshold) {
-      return false;
-    }
-    if ("selections" in result) return result.selections.length > 0;
-    if (!result.answer) return false;
-    if (deps.expectedAnswerLength !== undefined
-      && result.answer.length !== deps.expectedAnswerLength) {
-      return false;
-    }
-    if (deps.charset === "digits" && !/^\d+$/.test(result.answer)) return false;
-    return true;
-  };
+  const isEligible = (result: VerificationSolverResult) =>
+    isStructurallyValid(result, deps)
+    && result.confidence >= deps.confidenceThreshold;
 
   if (plannedAttempts) {
-    let winner: { result: VerificationSolverResult; attempt: number } | null = null;
+    const candidates: PlannedCandidate[] = [];
     for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
+      const strategy = plannedAttempts[attempt - 1]!;
       const result = await deps.solver.solve({
         image: capturedImage!,
         attempt,
-        strategy: plannedAttempts[attempt - 1],
+        strategy,
         challengeKind: deps.challengeKind,
         prompt: deps.prompt,
         charset: deps.charset,
@@ -139,11 +269,14 @@ export async function solveVerificationChallenge(
         ocrPageSegmentationMode: deps.ocrPageSegmentationMode,
         expectedAnswerLength: deps.expectedAnswerLength,
       });
-      if (!isEligible(result)) continue;
-      if (!winner || result.confidence > winner.result.confidence) {
-        winner = { result, attempt };
-      }
+      if (!isStructurallyValid(result, deps)) continue;
+      candidates.push({
+        result,
+        attempt,
+        strategyFingerprint: strategyFingerprint(deps, strategy),
+      });
     }
+    const winner = acceptedPlannedCandidate(candidates, deps);
     if (!winner) return { status: "exhausted" };
     if (deps.validateChallengeImage && !await deps.validateChallengeImage()) {
       return { status: "exhausted" };
