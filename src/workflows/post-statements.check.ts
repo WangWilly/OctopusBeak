@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chromium } from "playwright";
 import { DatabaseSync } from "node:sqlite";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildPostDomesticDepositCapture,
   dismissPostNoticeIfPresent,
+  postCaptchaAssistanceStage,
   postCaptchaGenerationUnchanged,
   postDetailLinkSelector,
   postLoginEntryUrl,
@@ -97,6 +100,44 @@ assert.equal(
   ),
   false,
 );
+
+const browser = await chromium.launch();
+try {
+  const captchaPage = await browser.newPage();
+  await captchaPage.setContent(`
+    <input name="captcha" style="width: 92px; height: 32px" />
+    <div class="codes_img">
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        style="width: 142px; height: 48px"
+        alt="iPost CAPTCHA"
+      />
+    </div>
+  `);
+  const captchaContract = await emitHumanAssistanceStage(
+    postCaptchaAssistanceStage(captchaPage),
+    (contract) => contract,
+  );
+  assert.equal(captchaContract.stageId, "ipost-login-captcha");
+  assert.equal(captchaContract.challengeKind, "text-captcha");
+  assert.equal(captchaContract.charset, "digits");
+  assert.deepEqual(captchaContract.imagePreprocessing, ["remove-interference-lines"]);
+  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
+  assert.equal(captchaContract.expectedAnswerLength, 4);
+  assert.equal(
+    captchaContract.targets[0]?.semanticId,
+    "post.login.captcha-input",
+  );
+  assert.equal(
+    captchaContract.challengeImageRegion?.semanticId,
+    "post.login.captcha-image",
+  );
+  assert.equal(captchaContract.challengeImageRegion?.rect?.width, 142);
+  assert.equal(captchaContract.challengeImageRegion?.rect?.height, 48);
+  await captchaPage.close();
+} finally {
+  await browser.close();
+}
 
 assert.equal(
   await withPostAssistanceDeadline(

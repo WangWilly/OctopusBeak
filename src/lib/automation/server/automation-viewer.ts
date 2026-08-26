@@ -390,6 +390,15 @@ export function refreshTargetRect(
     ...(contract.imagePreprocessing === undefined
       ? {}
       : { imagePreprocessing: contract.imagePreprocessing }),
+    ...(contract.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
+    ...(contract.solverConfidenceThreshold === undefined
+      ? {}
+      : { solverConfidenceThreshold: contract.solverConfidenceThreshold }),
+    ...(contract.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: contract.expectedAnswerLength }),
     ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
   };
 }

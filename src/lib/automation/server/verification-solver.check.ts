@@ -295,3 +295,41 @@ test("solveVerificationChallenge forwards image preprocessing modes to the solve
   });
   assert.deepEqual(receivedModes, ["remove-interference-lines"]);
 });
+
+test("solveVerificationChallenge forwards the provider OCR segmentation mode", async () => {
+  let receivedMode: unknown;
+  const solver: VerificationSolver = {
+    async solve({ ocrPageSegmentationMode }) {
+      receivedMode = ocrPageSegmentationMode;
+      return { answer: "2038", confidence: 0.85 };
+    },
+  };
+  await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.8,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    ocrPageSegmentationMode: "single-word",
+  });
+  assert.equal(receivedMode, "single-word");
+});
+
+test("solveVerificationChallenge forwards the expected answer length", async () => {
+  let receivedLength: unknown;
+  const solver: VerificationSolver = {
+    async solve({ expectedAnswerLength }) {
+      receivedLength = expectedAnswerLength;
+      return { answer: "32770", confidence: 0.964 };
+    },
+  };
+  await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    confidenceThreshold: 0.9,
+    solver,
+    captureChallengeImage: async () => image,
+    injectAnswer: async () => {},
+    expectedAnswerLength: 5,
+  });
+  assert.equal(receivedLength, 5);
+});

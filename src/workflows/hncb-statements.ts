@@ -28,7 +28,10 @@ import {
 } from "../ledger/canonical/hncb-domestic-deposit.ts";
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -510,13 +513,10 @@ async function fillLoginForm(
   await page.locator("#TrxCaptchaKey").focus();
 }
 
-async function signInHncb(
-  ctx: LibrettoWorkflowContext,
-  credentials: HncbCredentials,
-): Promise<void> {
-  const { page, session } = ctx;
-  await fillLoginForm(page, credentials);
-  await emitHumanAssistanceStage({
+export function hncbCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  return {
     stageId: "hncb-login-captcha",
     title: "Enter the HNCB CAPTCHA",
     targets: [
@@ -535,13 +535,32 @@ async function signInHncb(
         semanticId: "hncb.login.captcha-challenge",
       },
     ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    ocrPageSegmentationMode: "single-word",
+    solverConfidenceThreshold: 0.8,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "hncb.login.captcha-image",
+      locator: page.locator("#code_Cap"),
+    },
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: {
       targetId: "captcha-input",
       contextRegionIds: ["captcha-challenge"],
       initialZoom: 1.15,
     },
-  });
+  };
+}
+
+async function signInHncb(
+  ctx: LibrettoWorkflowContext,
+  credentials: HncbCredentials,
+): Promise<void> {
+  const { page, session } = ctx;
+  await fillLoginForm(page, credentials);
+  await emitHumanAssistanceStage(hncbCaptchaAssistanceStage(page));
 
   console.log(
     "manual-auth-required: enter the HNCB CAPTCHA in the browser, then run `npx libretto resume --session " +

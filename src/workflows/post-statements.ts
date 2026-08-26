@@ -26,7 +26,10 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -316,6 +319,49 @@ export function postManualAuthMessage(session: string): string {
   return `manual-auth-required: enter the iPost CAPTCHA in the browser, then run \`npx libretto resume --session ${session}\`.`;
 }
 
+export function postCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  const captchaInput = page.locator('input[name="captcha"]:visible').first();
+  return {
+    stageId: "ipost-login-captcha",
+    title: "Enter the iPost CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "post.login.captcha-input",
+        modes: ["click", "type"],
+        locator: captchaInput,
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "post.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-word",
+    expectedAnswerLength: 4,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "post.login.captcha-image",
+      locator: page.locator(".codes_img img:visible").first(),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
+}
+
 export async function dismissPostNoticeIfPresent(page: Page): Promise<boolean> {
   const closeButton = page
     .getByRole("button", {
@@ -380,7 +426,7 @@ async function signInPost(
   await page.locator("#userID_1_Input").fill(userCode);
   await page.locator("#userPWD_1_Input").fill(password);
   await dismissPostNoticeIfPresent(page);
-  const captchaInput = page.locator('input[name="captcha"]').first();
+  const captchaInput = page.locator('input[name="captcha"]:visible').first();
   await captchaInput.focus();
 
   if (captchaCode) {
@@ -391,32 +437,7 @@ async function signInPost(
     const assistedCaptchaElement = await captchaInput.elementHandle();
     if (!assistedCaptchaElement)
       throw new Error("iPost CAPTCHA input is unavailable for assistance.");
-    await emitHumanAssistanceStage({
-      stageId: "ipost-login-captcha",
-      title: "Enter the iPost CAPTCHA",
-      targets: [
-        {
-          id: "captcha-input",
-          label: "CAPTCHA input",
-          semanticId: "ipost.login.captcha-input",
-          modes: ["click", "type"],
-          locator: captchaInput,
-        },
-      ],
-      contextRegions: [
-        {
-          id: "captcha-challenge",
-          label: "CAPTCHA challenge and instructions",
-          semanticId: "ipost.login.captcha-challenge",
-        },
-      ],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: {
-        targetId: "captcha-input",
-        contextRegionIds: ["captcha-challenge"],
-        initialZoom: 1.15,
-      },
-    });
+    await emitHumanAssistanceStage(postCaptchaAssistanceStage(page));
     console.log(postManualAuthMessage(session));
     await pause(session);
     if (

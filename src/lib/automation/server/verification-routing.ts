@@ -1,6 +1,7 @@
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 import type {
   CaptchaImagePreprocessingMode,
+  CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
   HumanAssistanceContract,
 } from "../human-assistance.ts";
@@ -72,6 +73,8 @@ export async function routeVerificationActor(input: {
   prompt?: string;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  expectedAnswerLength?: number;
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
   if (input.actor !== "solver") return { kind: "human" };
@@ -93,10 +96,21 @@ export async function routeVerificationActor(input: {
   }
   let outcome: SolveOutcome;
   try {
+    const solverMetadata = {
+      prompt: contract?.prompt ?? input.prompt,
+      charset: contract?.charset ?? input.charset,
+      imagePreprocessing: contract?.imagePreprocessing ?? input.imagePreprocessing,
+      ocrPageSegmentationMode:
+        contract?.ocrPageSegmentationMode ?? input.ocrPageSegmentationMode,
+      expectedAnswerLength:
+        contract?.expectedAnswerLength ?? input.expectedAnswerLength,
+    };
     outcome = await solveVerificationChallenge({
       challengeKind: plan.challengeKind,
       confidenceThreshold:
-        input.confidenceThreshold ?? DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
+        contract?.solverConfidenceThreshold
+        ?? input.confidenceThreshold
+        ?? DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
       solver: deps.solver,
       captureChallengeImage: () =>
         deps.captureChallengeImage(input.session, contract!),
@@ -104,9 +118,7 @@ export async function routeVerificationActor(input: {
         deps.injectAnswer(input.session, contract!, answer),
       injectSelections: (selections) =>
         deps.injectSelections(input.session, contract!, selections),
-      prompt: input.prompt,
-      charset: input.charset,
-      imagePreprocessing: input.imagePreprocessing,
+      ...solverMetadata,
     });
   } catch {
     await deps.finalizeFailed("Verification solver failed to solve the challenge.");
@@ -159,7 +171,8 @@ export async function routeWaitingRunVerification(input: {
 
   const kind = contract?.challengeKind;
   const confidenceThreshold = isSolverChallengeKind(kind)
-    ? challengeConfidenceThreshold(settings, kind)
+    ? contract?.solverConfidenceThreshold
+      ?? challengeConfidenceThreshold(settings, kind)
     : undefined;
 
   const dependencies: VerificationRoutingDependencies = {
@@ -182,6 +195,8 @@ export async function routeWaitingRunVerification(input: {
     confidenceThreshold,
     charset: contract?.charset,
     imagePreprocessing: contract?.imagePreprocessing,
+    ocrPageSegmentationMode: contract?.ocrPageSegmentationMode,
+    expectedAnswerLength: contract?.expectedAnswerLength,
     prompt: contract?.prompt,
     dependencies,
   });

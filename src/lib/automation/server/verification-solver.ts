@@ -1,5 +1,6 @@
 import type {
   CaptchaImagePreprocessingMode,
+  CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
   HumanAssistanceContract,
 } from "../human-assistance.ts";
@@ -36,6 +37,8 @@ export type VerificationSolver = {
     prompt?: string;
     charset?: ChallengeCharacterSet;
     imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+    ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+    expectedAnswerLength?: number;
   }): Promise<VerificationSolverResult>;
 };
 
@@ -76,6 +79,8 @@ export type SolveDependencies = {
   prompt?: string;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  expectedAnswerLength?: number;
 };
 
 export type SolveOutcome =
@@ -95,6 +100,8 @@ export async function solveVerificationChallenge(
       prompt: deps.prompt,
       charset: deps.charset,
       imagePreprocessing: deps.imagePreprocessing,
+      ocrPageSegmentationMode: deps.ocrPageSegmentationMode,
+      expectedAnswerLength: deps.expectedAnswerLength,
     });
     if (result.confidence < deps.confidenceThreshold) continue;
     if ("selections" in result) {
