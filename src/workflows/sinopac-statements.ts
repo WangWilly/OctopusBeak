@@ -10,7 +10,10 @@ import {
 import type { Page } from "playwright";
 import { z } from "zod";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 import {
   admitSinopacDomesticDepositFinancialCapture,
   admitSinopacStatementCaptureEvidence,
@@ -29,7 +32,11 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { SINOPAC_CAPTCHA_INPUT_SELECTOR } from "../lib/automation/sinopac-captcha.ts";
+import {
+  SINOPAC_CAPTCHA_IMAGE_SELECTOR,
+  SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
+  SINOPAC_CAPTCHA_INPUT_SELECTOR,
+} from "../lib/automation/sinopac-captcha.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
 const TRANSACTION_URL =
@@ -538,14 +545,10 @@ async function fillLoginForm(
   await captcha.focus();
 }
 
-async function signInSinopac(
-  ctx: LibrettoWorkflowContext,
-  credentials: SinopacCredentials,
-): Promise<void> {
-  const { page, session } = ctx;
-  await fillLoginForm(page, credentials);
-  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  await emitHumanAssistanceStage({
+export function sinopacCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  return {
     stageId: "sinopac-login-captcha",
     title: "Enter the SinoPac CAPTCHA",
     targets: [
@@ -554,7 +557,7 @@ async function signInSinopac(
         label: "CAPTCHA input",
         semanticId: "sinopac.login.captcha-input",
         modes: ["click", "type"],
-        locator: captcha,
+        locator: page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
       },
     ],
     contextRegions: [
@@ -564,13 +567,38 @@ async function signInSinopac(
         semanticId: "sinopac.login.captcha-challenge",
       },
     ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    ocrPageSegmentationMode: "single-line",
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["remove-interference-lines"] },
+    ],
+    solveAcceptancePolicy: { mode: "confidence-only" },
+    solverConfidenceThreshold: 0.9,
+    expectedAnswerLength: 6,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
+      locator: page.locator(SINOPAC_CAPTCHA_IMAGE_SELECTOR),
+    },
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: {
       targetId: "captcha-input",
       contextRegionIds: ["captcha-challenge"],
       initialZoom: 1.15,
     },
-  });
+  };
+}
+
+async function signInSinopac(
+  ctx: LibrettoWorkflowContext,
+  credentials: SinopacCredentials,
+): Promise<void> {
+  const { page, session } = ctx;
+  await fillLoginForm(page, credentials);
+  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
+  await emitHumanAssistanceStage(sinopacCaptchaAssistanceStage(page));
 
   console.log(sinopacManualAuthMessage(session));
   await pause(session);

@@ -6,3 +6,11 @@ export const SINOPAC_CAPTCHA_INPUT_SELECTOR =
 
 export const SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID =
   "sinopac.login.captcha-input" as const;
+
+export const SINOPAC_CAPTCHA_IMAGE_SELECTOR = "#imgCode" as const;
+
+export const SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID =
+  "sinopac.login.captcha-image" as const;
+
+export const SINOPAC_CAPTCHA_NATURAL_WIDTH = 120;
+export const SINOPAC_CAPTCHA_NATURAL_HEIGHT = 40;

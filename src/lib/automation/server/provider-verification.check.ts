@@ -14,6 +14,8 @@ import {
   type ProviderVerificationPageRunner,
 } from "./provider-verification.ts";
 import {
+  SINOPAC_CAPTCHA_IMAGE_SELECTOR,
+  SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 } from "../sinopac-captcha.ts";
@@ -114,6 +116,47 @@ function yuantaBankCaptchaContract(overrides: Partial<HumanAssistanceContract> =
     },
     ...overrides,
   });
+}
+
+function sinopacCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
+  return contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, {
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
+      rect: { x: 150, y: 60, width: 100, height: 35 },
+    },
+    ...overrides,
+  });
+}
+
+function sinopacCaptchaPage(options: {
+  source: unknown;
+  rect?: HumanVerificationRect;
+  screenshot?: (clip: HumanVerificationRect) => Buffer;
+}) {
+  const image = fakeLocator({
+    visible: true,
+    rect: options.rect ?? { x: 150, y: 60, width: 100, height: 35 },
+    evaluateResult: options.source,
+  });
+  const screenshotCalls: HumanVerificationRect[] = [];
+  const page = {
+    locator(selector: string) {
+      if (selector === SINOPAC_CAPTCHA_IMAGE_SELECTOR) return image;
+      if (selector === SINOPAC_CAPTCHA_INPUT_SELECTOR) return fakeLocator();
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+    url: () => "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx",
+    screenshot: async ({ clip }: { clip: HumanVerificationRect }) => {
+      screenshotCalls.push(clip);
+      return options.screenshot?.(clip) ?? Buffer.from("forbidden-fallback");
+    },
+  };
+  return { page, screenshotCalls };
 }
 
 function yuantaCaptchaPage(options: {
@@ -370,6 +413,80 @@ test("SinoPac adapter owns selector-backed click and fill operations", async () 
   assert.deepEqual(fills, ["1234"]);
 });
 
+test("SinoPac source capture uses calibrated natural pixels and never the CSS-sized screenshot", async () => {
+  const naturalPixels = Buffer.from("sinopac-natural-120x40");
+  const source = {
+    dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
+    sourceMarker: "sinopac-image-v1",
+    frameMarker: "sinopac-page-v1",
+    naturalWidth: 120,
+    naturalHeight: 40,
+  };
+  const { page, screenshotCalls } = sinopacCaptchaPage({ source });
+  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
+  assert.equal(host.handlesChallengeImage(sinopacCaptchaContract()), true);
+  assert.deepEqual(
+    await host.captureChallengeImage("session-sinopac-source", sinopacCaptchaContract()),
+    naturalPixels,
+  );
+  assert.deepEqual(screenshotCalls, []);
+});
+
+test("SinoPac source capture fails closed for missing pixels or unsupported natural geometry", async () => {
+  for (const source of [
+    {
+      dataUrl: null,
+      sourceMarker: "sinopac-image-v1",
+      frameMarker: "sinopac-page-v1",
+      naturalWidth: 120,
+      naturalHeight: 40,
+    },
+    {
+      dataUrl: `data:image/png;base64,${Buffer.from("css-sized").toString("base64")}`,
+      sourceMarker: "sinopac-image-v1",
+      frameMarker: "sinopac-page-v1",
+      naturalWidth: 100,
+      naturalHeight: 35,
+    },
+  ]) {
+    const { page, screenshotCalls } = sinopacCaptchaPage({ source });
+    const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
+    assert.equal(
+      await host.captureChallengeImage("session-sinopac-unsupported", sinopacCaptchaContract()),
+      null,
+    );
+    assert.deepEqual(screenshotCalls, []);
+  }
+});
+
+test("SinoPac source fingerprint rejects a changed CAPTCHA before answer injection", async () => {
+  let version = 1;
+  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
+    const pixels = Buffer.from(`sinopac-natural-v${version}`);
+    const source = {
+      dataUrl: `data:image/png;base64,${pixels.toString("base64")}`,
+      sourceMarker: `sinopac-image-v${version}`,
+      frameMarker: "sinopac-page-v1",
+      naturalWidth: 120,
+      naturalHeight: 40,
+    };
+    const { page } = sinopacCaptchaPage({ source });
+    const result = await action(page as never);
+    version += 1;
+    return result;
+  };
+  const host = createProviderVerificationHost({ withPage });
+  const contractValue = sinopacCaptchaContract();
+  assert.deepEqual(
+    await host.captureChallengeImage("session-sinopac-stale", contractValue),
+    Buffer.from("sinopac-natural-v1"),
+  );
+  assert.equal(
+    await host.isChallengeImageCurrent("session-sinopac-stale", contractValue),
+    false,
+  );
+});
+
 test("Yuanta source capture uses loaded natural pixels instead of the CSS-sized rectangle", async () => {
   const naturalPixels = Buffer.from("yuanta-natural-180x50");
   const source = {
@@ -470,11 +587,12 @@ test("Yuanta source fingerprint rejects a stale live rectangle even when image b
   );
 });
 
-test("non-Yuanta contracts do not opt into provider-owned source capture", () => {
+test("only adapters with calibrated source capture own challenge images", () => {
   const host = createProviderVerificationHost({
     withPage: pageRunner({ locator: () => fakeLocator() } as never),
   });
-  assert.equal(host.handlesChallengeImage(contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)), false);
+  assert.equal(host.handlesChallengeImage(sinopacCaptchaContract()), true);
+  assert.equal(host.handlesChallengeImage(contract("cathay.login.email-otp-input")), false);
 });
 
 function yuantaPage(options: {
