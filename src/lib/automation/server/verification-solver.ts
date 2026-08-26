@@ -197,6 +197,10 @@ function acceptedPlannedCandidate(
   if (deps.challengeKind !== "text-captcha") {
     throw new Error("OCR agreement requires a text CAPTCHA challenge.");
   }
+  if (policy.mode === "agreement-only") {
+    const agreement = agreementEvidence(candidates);
+    return agreement.ambiguous ? null : agreement.candidate;
+  }
   const confidence = confidenceEvidence(
     candidates,
     deps.confidenceThreshold,
@@ -232,7 +236,8 @@ export async function solveVerificationChallenge(
 ): Promise<SolveOutcome> {
   const plannedAttempts = deps.ocrAttemptPlan;
   if (
-    deps.solveAcceptancePolicy?.mode === "confidence-or-agreement"
+    deps.solveAcceptancePolicy !== undefined
+    && deps.solveAcceptancePolicy.mode !== "confidence-only"
     && (!plannedAttempts || plannedAttempts.length < 2)
   ) {
     throw new Error("OCR agreement requires at least two distinct strategies.");

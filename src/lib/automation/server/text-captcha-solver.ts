@@ -190,6 +190,7 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
         image,
         debug ? (step, buffer) => debug.writeImage(step, buffer) : undefined,
         {
+          imagePreprocessing,
           removeInterferenceLines: imagePreprocessing?.includes(
             "remove-interference-lines",
           ),

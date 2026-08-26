@@ -54,6 +54,8 @@ export type CaptchaOcrOutputStage = typeof CAPTCHA_OCR_OUTPUT_STAGES[number];
 
 export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "remove-interference-lines",
+  "mask-bottom-interference-band",
+  "suppress-horizontal-interference",
 ] as const;
 
 export type CaptchaImagePreprocessingMode =
@@ -70,6 +72,7 @@ export type SolveConflictResolution =
 
 export type SolveAcceptancePolicy =
   | { mode: "confidence-only" }
+  | { mode: "agreement-only" }
   | {
     mode: "confidence-or-agreement";
     conflictResolution: SolveConflictResolution;
@@ -339,6 +342,22 @@ export function createHumanAssistanceContract(
       if ("conflictResolution" in policy) {
         throw new Error(
           "Invalid human assistance contract: confidence-only policy cannot declare conflict resolution.",
+        );
+      }
+    } else if (policy.mode === "agreement-only") {
+      if ("conflictResolution" in policy) {
+        throw new Error(
+          "Invalid human assistance contract: agreement-only policy cannot declare conflict resolution.",
+        );
+      }
+      if (input.challengeKind !== "text-captcha") {
+        throw new Error(
+          "Invalid human assistance contract: OCR agreement requires a text CAPTCHA challenge.",
+        );
+      }
+      if (!input.ocrAttemptPlan || input.ocrAttemptPlan.length < 2) {
+        throw new Error(
+          "Invalid human assistance contract: OCR agreement requires at least two distinct strategies.",
         );
       }
     } else if (policy.mode === "confidence-or-agreement") {

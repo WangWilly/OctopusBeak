@@ -7,9 +7,11 @@ import {
   decodeGrayImage,
   denoise,
   encodeGrayImage,
+  maskBottomInterferenceBand,
   otsuThreshold,
   preprocessCaptchaImage,
   removeInterferenceLines,
+  suppressHorizontalInterference,
   upscaleImage,
   type GrayImage,
 } from "./captcha-preprocess.ts";
@@ -80,6 +82,39 @@ test("otsuThreshold plus binarize separates a bimodal image", () => {
 test("binarize maps pixels to black or white around the threshold", () => {
   const image = grayImage(3, 1, [10, 128, 200]);
   assert.deepEqual(Array.from(binarize(image, 128).data), [0, 0, 255]);
+});
+
+test("maskBottomInterferenceBand clears six rows without changing calibrated geometry", () => {
+  const image = solidGray(150, 40, 0);
+  const masked = maskBottomInterferenceBand(image);
+  assert.deepEqual([masked.width, masked.height], [150, 40]);
+  assert.equal(masked.data[33 * masked.width], 0);
+  assert.ok(
+    masked.data.slice(34 * masked.width).every((value) => value === 255),
+  );
+});
+
+test("suppressHorizontalInterference removes a thin horizontal stroke while keeping a vertical stroke", () => {
+  const image = solidGray(150, 40, 255);
+  for (let x = 0; x < image.width; x += 1) {
+    image.data[20 * image.width + x] = 0;
+  }
+  for (let y = 0; y < image.height; y += 1) {
+    image.data[y * image.width + 50] = 0;
+  }
+  const suppressed = suppressHorizontalInterference(image);
+  assert.equal(suppressed.data[20 * suppressed.width + 80], 255);
+  assert.equal(suppressed.data[10 * suppressed.width + 50], 0);
+});
+
+test("E-Invoice calibrated preprocessing fails closed for another geometry", () => {
+  const image = solidGray(149, 40, 0);
+  assert.ok(
+    maskBottomInterferenceBand(image).data.every((value) => value === 255),
+  );
+  assert.ok(
+    suppressHorizontalInterference(image).data.every((value) => value === 255),
+  );
 });
 
 test("denoise removes small isolated dots but keeps a large block", () => {
@@ -210,4 +245,27 @@ test("preprocessCaptchaImage reports Yuanta line removal when requested", () => 
     "lines-removed",
     "denoised",
   ]);
+});
+
+test("preprocessCaptchaImage exposes each calibrated E-Invoice strategy", () => {
+  const png = new PNG({ width: 150, height: 40 });
+  png.data.fill(255);
+  const input = PNG.sync.write(png);
+  const runs = [
+    "mask-bottom-interference-band",
+    "suppress-horizontal-interference",
+  ] as const;
+  assert.deepEqual(
+    runs.map((mode) => {
+      const steps: string[] = [];
+      preprocessCaptchaImage(input, (step) => steps.push(step), {
+        imagePreprocessing: [mode],
+      });
+      return steps;
+    }),
+    [
+      ["grayscale", "interference-band-masked"],
+      ["grayscale", "binarized", "horizontal-interference-suppressed"],
+    ],
+  );
 });

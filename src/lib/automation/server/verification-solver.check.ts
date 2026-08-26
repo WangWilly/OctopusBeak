@@ -489,6 +489,60 @@ test("two distinct low-confidence OCR strategies can establish agreement", async
   assert.deepEqual(injected, ["6417"]);
 });
 
+test("agreement-only accepts matching low-confidence strategies", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 5,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve() {
+        return { answer: "69850", confidence: 0.84 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["mask-bottom-interference-band"] },
+      { imagePreprocessing: ["suppress-horizontal-interference"] },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+  });
+  assert.deepEqual(outcome, { status: "solved" });
+  assert.deepEqual(injected, ["69850"]);
+});
+
+test("agreement-only rejects a lone high-confidence answer", async () => {
+  const injected: string[] = [];
+  const outcome = await solveVerificationChallenge({
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 5,
+    confidenceThreshold: 0.9,
+    solver: {
+      async solve({ attempt }) {
+        return attempt === 1
+          ? { answer: "22020", confidence: 0.98 }
+          : { answer: "", confidence: 0 };
+      },
+    },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => {
+      injected.push(answer);
+    },
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["mask-bottom-interference-band"] },
+      { imagePreprocessing: ["suppress-horizontal-interference"] },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+  });
+  assert.deepEqual(outcome, { status: "exhausted" });
+  assert.deepEqual(injected, []);
+});
+
 test("repeating one effective OCR strategy cannot establish agreement", async () => {
   const injected: string[] = [];
   const outcome = await solveVerificationChallenge({

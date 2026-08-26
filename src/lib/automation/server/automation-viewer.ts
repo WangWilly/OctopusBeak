@@ -410,6 +410,9 @@ export function refreshTargetRect(
     ...(contract.ocrAttemptPlan === undefined
       ? {}
       : { ocrAttemptPlan: contract.ocrAttemptPlan }),
+    ...(contract.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: contract.solveAcceptancePolicy }),
     ...(contract.solverConfidenceThreshold === undefined
       ? {}
       : { solverConfidenceThreshold: contract.solverConfidenceThreshold }),

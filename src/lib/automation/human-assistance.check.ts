@@ -203,6 +203,19 @@ test("a text CAPTCHA declaration carries its solve acceptance policy", () => {
   });
 });
 
+test("a text CAPTCHA declaration can require OCR agreement", () => {
+  const contract = createHumanAssistanceContract({
+    ...base,
+    challengeKind: "text-captcha",
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["mask-bottom-interference-band"] },
+      { imagePreprocessing: ["suppress-horizontal-interference"] },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+  }, 1);
+  assert.deepEqual(contract.solveAcceptancePolicy, { mode: "agreement-only" });
+});
+
 test("invalid OCR agreement policies are rejected", () => {
   assert.throws(
     () => createHumanAssistanceContract({
@@ -239,6 +252,21 @@ test("invalid OCR agreement policies are rejected", () => {
       } as never,
     }, 1),
     /confidence-only policy cannot declare conflict resolution/,
+  );
+  assert.throws(
+    () => createHumanAssistanceContract({
+      ...base,
+      challengeKind: "text-captcha",
+      ocrAttemptPlan: [
+        { ocrPageSegmentationMode: "single-line" },
+        { ocrPageSegmentationMode: "single-word" },
+      ],
+      solveAcceptancePolicy: {
+        mode: "agreement-only",
+        conflictResolution: "reject",
+      } as never,
+    }, 1),
+    /agreement-only policy cannot declare conflict resolution/,
   );
 });
 

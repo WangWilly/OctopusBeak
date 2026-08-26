@@ -740,7 +740,7 @@ The probability a Verification Solver reports with its answer. It is one form of
 _Avoid_: Absolute certainty, human confidence
 
 **Solve acceptance policy**:
-The provider-declared rule that determines whether solver evidence supports submitting one answer. Confidence-only acceptance is the default; a provider may additionally require agreement among distinct declared strategies without changing another provider's policy.
+The provider-declared rule that determines whether solver evidence supports submitting one answer. Confidence-only acceptance is the default; a provider may additionally accept agreement alongside confidence or require agreement among distinct declared strategies. Under agreement-only acceptance, Solve Confidence never substitutes for missing agreement. One provider's policy does not change another provider's policy.
 _Avoid_: Global lowered threshold, provider-name special case, implicit fallback
 
 **OCR agreement**:
@@ -754,6 +754,10 @@ _Avoid_: Human retry, unbounded retry
 **Yuanta Bank login CAPTCHA**:
 The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.
 _Avoid_: Yuanta five-digit CAPTCHA, mixed-provider CAPTCHA corpus
+
+**E-Invoice login CAPTCHA**:
+The single supported CAPTCHA family on the E-Invoice login workflow: a 150-by-40-pixel image whose answer is exactly five decimal digits and whose interference appears along the lower part of the image. A capture with different dimensions, answer length, character set, or interference layout is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
 
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.
