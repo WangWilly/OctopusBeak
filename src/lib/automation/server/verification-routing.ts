@@ -1,6 +1,7 @@
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 import type {
   CaptchaImagePreprocessingMode,
+  CaptchaOcrAttemptStrategy,
   CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
   HumanAssistanceContract,
@@ -26,6 +27,11 @@ import {
   injectVerificationAnswer,
   injectVerificationSelections,
 } from "./automation-viewer.ts";
+import {
+  captureProviderVerificationImage,
+  isProviderVerificationImageCurrent,
+  providerVerificationHandlesChallengeImage,
+} from "./provider-verification.ts";
 import { finalizeFailedWaitingRun } from "./task-run-finalization.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import { readAutomationSettings } from "./settings.ts";
@@ -39,6 +45,10 @@ export type VerificationRoutingDependencies = {
     session: string,
     contract: HumanAssistanceContract,
   ) => Promise<Buffer | null>;
+  validateChallengeImage?: (
+    session: string,
+    contract: HumanAssistanceContract,
+  ) => Promise<boolean>;
   injectAnswer: (
     session: string,
     contract: HumanAssistanceContract,
@@ -74,6 +84,7 @@ export async function routeVerificationActor(input: {
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
   expectedAnswerLength?: number;
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
@@ -102,6 +113,7 @@ export async function routeVerificationActor(input: {
       imagePreprocessing: contract?.imagePreprocessing ?? input.imagePreprocessing,
       ocrPageSegmentationMode:
         contract?.ocrPageSegmentationMode ?? input.ocrPageSegmentationMode,
+      ocrAttemptPlan: contract?.ocrAttemptPlan ?? input.ocrAttemptPlan,
       expectedAnswerLength:
         contract?.expectedAnswerLength ?? input.expectedAnswerLength,
     };
@@ -118,6 +130,9 @@ export async function routeVerificationActor(input: {
         deps.injectAnswer(input.session, contract!, answer),
       injectSelections: (selections) =>
         deps.injectSelections(input.session, contract!, selections),
+      validateChallengeImage: deps.validateChallengeImage
+        ? () => deps.validateChallengeImage!(input.session, contract!)
+        : undefined,
       ...solverMetadata,
     });
   } catch {
@@ -139,6 +154,7 @@ export async function routeWaitingRunVerification(input: {
   scheduleResume: (session: string) => void;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
+  validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
@@ -177,8 +193,16 @@ export async function routeWaitingRunVerification(input: {
 
   const dependencies: VerificationRoutingDependencies = {
     solver: input.solver ?? defaultLocalSolver,
-    captureChallengeImage:
-      input.captureChallengeImage ?? captureChallengeImageForContract,
+    captureChallengeImage: input.captureChallengeImage ?? (async (session, contract) => {
+      if (providerVerificationHandlesChallengeImage(contract)) {
+        return captureProviderVerificationImage(session, contract);
+      }
+      return captureChallengeImageForContract(session, contract);
+    }),
+    validateChallengeImage: input.validateChallengeImage
+      ?? (contract && providerVerificationHandlesChallengeImage(contract)
+        ? isProviderVerificationImageCurrent
+        : undefined),
     injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
     injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
@@ -196,6 +220,7 @@ export async function routeWaitingRunVerification(input: {
     charset: contract?.charset,
     imagePreprocessing: contract?.imagePreprocessing,
     ocrPageSegmentationMode: contract?.ocrPageSegmentationMode,
+    ocrAttemptPlan: contract?.ocrAttemptPlan,
     expectedAnswerLength: contract?.expectedAnswerLength,
     prompt: contract?.prompt,
     dependencies,

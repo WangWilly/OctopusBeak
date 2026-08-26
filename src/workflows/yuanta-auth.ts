@@ -76,6 +76,18 @@ export function yuantaBankCaptchaAssistanceStage(
     challengeKind: "text-captcha",
     charset: "digits",
     imagePreprocessing: ["remove-interference-lines"],
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      {
+        ocrPageSegmentationMode: "single-word",
+      },
+      {
+        imagePreprocessing: [],
+        ocrOutputStage: "grayscale",
+        ocrPageSegmentationMode: "single-line",
+      },
+    ],
+    expectedAnswerLength: 6,
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",

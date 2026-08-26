@@ -160,6 +160,19 @@ test("preprocessCaptchaImage returns a PNG buffer from a PNG buffer", () => {
   assert.ok(roundTripped.data.every((value) => value === 0 || value === 255));
 });
 
+test("preprocessCaptchaImage can select the calibrated OCR output stage", () => {
+  const png = new PNG({ width: 6, height: 2 });
+  png.data.fill(200);
+  const input = PNG.sync.write(png);
+  assert.deepEqual(
+    ["grayscale", "final"].map((outputStage) => {
+      const image = decodeGrayImage(preprocessCaptchaImage(input, undefined, { outputStage: outputStage as never }));
+      return [image.width, image.height];
+    }),
+    [[6, 2], [18, 6]],
+  );
+});
+
 test("encodeGrayImage round-trips a grayscale image through PNG", () => {
   const image = grayImage(2, 2, [0, 255, 255, 0]);
   const decoded = decodeGrayImage(encodeGrayImage(image));

@@ -724,8 +724,16 @@ The continuation of a resumed automation task run that discovers the verificatio
 _Avoid_: Restarting the whole workflow, treating an incorrect answer as an ordinary infrastructure failure
 
 **Verification solver**:
-The automated producer behind a `solver` Verification Actor, which reads a verification challenge image and returns an answer with a Solve Confidence. The first version is a local OCR or vision model run by the automation host; a future remote or third-party solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
+The automated producer behind a `solver` Verification Actor, which reads a verification challenge image and returns an answer with a Solve Confidence. The first version is a lightweight Local Verification Solver run by the automation host; a future Remote Verification Solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
 _Avoid_: Workflow-side solver, generic input scanner
+
+**Local verification solver**:
+The first-release client-resident Verification Solver. It may preserve source-image fidelity, apply deterministic provider-declared preprocessing, and generate candidates with the bundled Tesseract runtime, but it does not ship provider-trained models, custom neural recognizers, PaddleOCR, or another heavyweight OCR runtime. When those lightweight methods cannot support an answer, the attempt fails or refreshes the challenge instead of expanding the client model stack.
+_Avoid_: Client-side provider model, client-side fine-tuning runtime
+
+**Remote verification solver**:
+A future Verification Solver deployment boundary for provider-specific trained models, heavyweight OCR, calibrated ensembles, and centralized hard-case learning. It remains behind the Verification Solver contract and may receive a de-identified challenge image only with explicit consent.
+_Avoid_: Hidden remote fallback, unconsented CAPTCHA upload
 
 **Solve confidence**:
 The probability a Verification Solver reports with its answer. An answer below the challenge's confidence threshold is not submitted and counts as a failed Solve Attempt.
@@ -734,6 +742,10 @@ _Avoid_: Absolute certainty, human confidence
 **Solve attempt**:
 One Verification Solver invocation and, when the confidence threshold is met, submission of its answer. A challenge permits a fixed maximum of three attempts; exhausting them finalizes the task run as failed rather than returning to human assistance.
 _Avoid_: Human retry, unbounded retry
+
+**Yuanta Bank login CAPTCHA**:
+The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.
+_Avoid_: Yuanta five-digit CAPTCHA, mixed-provider CAPTCHA corpus
 
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.

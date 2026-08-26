@@ -181,6 +181,67 @@ test("the OCR solver falls back without line removal when the processed answer h
   assert.deepEqual(receivedModes, [["remove-interference-lines"], undefined]);
 });
 
+test("the OCR solver rejects malformed primary and fallback answers", async () => {
+  const result = await textCaptchaSolver({
+    async recognize(_image, _charset, imagePreprocessing) {
+      return imagePreprocessing?.includes("remove-interference-lines")
+        ? { text: "0748", confidence: 0.94 }
+        : { text: "748", confidence: 0.95 };
+    },
+  }).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    expectedAnswerLength: 6,
+  });
+  assert.deepEqual(result, { answer: "", confidence: 0 });
+});
+
+test("the OCR solver applies a planned strategy over the base metadata", async () => {
+  let received: unknown[] = [];
+  const engine: TextRecognitionEngine = {
+    async recognize(...args) {
+      received = args;
+      return { text: "123456", confidence: 0.95 };
+    },
+  };
+  const result = await textCaptchaSolver(engine).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrPageSegmentationMode: "single-word",
+    expectedAnswerLength: 6,
+    strategy: {
+      imagePreprocessing: [],
+      ocrPageSegmentationMode: "single-line",
+      ocrOutputStage: "grayscale",
+    },
+  });
+  assert.deepEqual(result, { answer: "123456", confidence: 0.95 });
+  assert.deepEqual(received.slice(2), [[], "single-line", "grayscale"]);
+});
+
+test("a planned wrong-length strategy does not run an undeclared fallback pipeline", async () => {
+  let calls = 0;
+  const result = await textCaptchaSolver({
+    async recognize() {
+      calls += 1;
+      return { text: "36951", confidence: 0.96 };
+    },
+  }).solve({
+    image: fixtureImage,
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    expectedAnswerLength: 6,
+    strategy: { ocrPageSegmentationMode: "single-line" },
+  });
+  assert.deepEqual(result, { answer: "", confidence: 0 });
+  assert.equal(calls, 1);
+});
+
 test("the OCR solver does not run a fallback when the processed answer has the expected length", async () => {
   let calls = 0;
   const engine: TextRecognitionEngine = {

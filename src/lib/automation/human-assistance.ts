@@ -3,6 +3,7 @@ export const HUMAN_ASSISTANCE_SCHEMA_VERSION = 1 as const;
 // CAPTCHA answers are intentionally bounded to keep the workflow contract
 // descriptive rather than allowing an unbounded solver hint.
 export const MAX_EXPECTED_ANSWER_LENGTH = 32;
+export const MAX_OCR_ATTEMPT_STRATEGIES = 3;
 
 export const HUMAN_VERIFICATION_INTERACTION_MODES = [
   "click",
@@ -43,6 +44,13 @@ export const CAPTCHA_OCR_PAGE_SEGMENTATION_MODES = [
 
 export type CaptchaOcrPageSegmentationMode =
   typeof CAPTCHA_OCR_PAGE_SEGMENTATION_MODES[number];
+
+export const CAPTCHA_OCR_OUTPUT_STAGES = [
+  "grayscale",
+  "final",
+] as const;
+
+export type CaptchaOcrOutputStage = typeof CAPTCHA_OCR_OUTPUT_STAGES[number];
 
 export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "remove-interference-lines",
@@ -108,9 +116,17 @@ export type HumanAssistanceContractInput = {
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
   solverConfidenceThreshold?: number;
   expectedAnswerLength?: number;
   prompt?: string;
+};
+
+export type CaptchaOcrAttemptStrategy = {
+  /** Provider-calibrated overrides for one OCR view of the same image. */
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrOutputStage?: CaptchaOcrOutputStage;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -220,6 +236,81 @@ export function createHumanAssistanceContract(
       `Invalid human assistance contract: unknown OCR page segmentation mode ${input.ocrPageSegmentationMode}.`,
     );
   }
+  if (input.ocrAttemptPlan !== undefined) {
+    if (input.challengeKind !== "text-captcha") {
+      throw new Error(
+        "Invalid human assistance contract: OCR attempt plan requires a text CAPTCHA challenge.",
+      );
+    }
+    if (input.ocrAttemptPlan.length === 0) {
+      throw new Error(
+        "Invalid human assistance contract: OCR attempt plan must contain at least one strategy.",
+      );
+    }
+    if (input.ocrAttemptPlan.length > MAX_OCR_ATTEMPT_STRATEGIES) {
+      throw new Error(
+        `Invalid human assistance contract: OCR attempt plan cannot contain more than ${MAX_OCR_ATTEMPT_STRATEGIES} strategies.`,
+      );
+    }
+    const fingerprints = new Set<string>();
+    for (const [index, strategy] of input.ocrAttemptPlan.entries()) {
+      if (!strategy || typeof strategy !== "object") {
+        throw new Error(
+          `Invalid human assistance contract: OCR attempt strategy ${index + 1} must be an object.`,
+        );
+      }
+      if (
+        strategy.imagePreprocessing === undefined
+        && strategy.ocrPageSegmentationMode === undefined
+        && strategy.ocrOutputStage === undefined
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: OCR attempt strategy ${index + 1} must override at least one OCR setting.`,
+        );
+      }
+      if (strategy.imagePreprocessing !== undefined) {
+        uniqueIds(strategy.imagePreprocessing, `OCR attempt strategy ${index + 1} preprocessing modes`);
+        for (const mode of strategy.imagePreprocessing) {
+          if (!CAPTCHA_IMAGE_PREPROCESSING_MODES.includes(mode)) {
+            throw new Error(
+              `Invalid human assistance contract: unknown OCR attempt preprocessing mode ${mode}.`,
+            );
+          }
+        }
+      }
+      if (
+        strategy.ocrPageSegmentationMode !== undefined
+        && !CAPTCHA_OCR_PAGE_SEGMENTATION_MODES.includes(strategy.ocrPageSegmentationMode)
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: unknown OCR attempt page segmentation mode ${strategy.ocrPageSegmentationMode}.`,
+        );
+      }
+      if (
+        strategy.ocrOutputStage !== undefined
+        && !CAPTCHA_OCR_OUTPUT_STAGES.includes(strategy.ocrOutputStage)
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: unknown OCR attempt output stage ${strategy.ocrOutputStage}.`,
+        );
+      }
+      const fingerprint = JSON.stringify({
+        imagePreprocessing: strategy.imagePreprocessing
+          ?? input.imagePreprocessing
+          ?? [],
+        ocrPageSegmentationMode: strategy.ocrPageSegmentationMode
+          ?? input.ocrPageSegmentationMode
+          ?? "single-line",
+        ocrOutputStage: strategy.ocrOutputStage ?? "final",
+      });
+      if (fingerprints.has(fingerprint)) {
+        throw new Error(
+          "Invalid human assistance contract: OCR attempt plan strategies must be distinct.",
+        );
+      }
+      fingerprints.add(fingerprint);
+    }
+  }
   if (
     input.solverConfidenceThreshold !== undefined
     && (
@@ -277,6 +368,21 @@ export function createHumanAssistanceContract(
     ...(input.ocrPageSegmentationMode === undefined
       ? {}
       : { ocrPageSegmentationMode: input.ocrPageSegmentationMode }),
+    ...(input.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: input.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
     ...(input.solverConfidenceThreshold === undefined
       ? {}
       : { solverConfidenceThreshold: input.solverConfidenceThreshold }),

@@ -216,6 +216,12 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
   assert.equal(contract.challengeKind, "text-captcha");
   assert.equal(contract.charset, "digits");
   assert.deepEqual(contract.imagePreprocessing, ["remove-interference-lines"]);
+  assert.deepEqual(contract.ocrAttemptPlan, [
+    { ocrPageSegmentationMode: "single-line" },
+    { ocrPageSegmentationMode: "single-word" },
+    { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
+  ]);
+  assert.equal(contract.expectedAnswerLength, 6);
   assert.deepEqual(contract.challengeImageRegion, {
     id: "captcha-image",
     label: "CAPTCHA image",
