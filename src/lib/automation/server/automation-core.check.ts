@@ -79,6 +79,10 @@ assert.deepEqual(
   ],
 );
 assert.equal(AUTOMATION_ENABLED_KEYS.includes("LIBRETTO_CLOUD_FUBON_ENABLED"), true);
+assert.equal(
+  AUTOMATION_SECRET_KEYS.includes("LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY"),
+  true,
+);
 assert.equal(AUTOMATION_NON_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), true);
 assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SECRET_KEY"), true);
 assert.equal(AUTOMATION_SECRET_KEYS.includes("MAX_SUB_ACCOUNT"), false);

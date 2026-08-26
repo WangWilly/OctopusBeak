@@ -18,6 +18,14 @@ export const CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION = "v1";
 export const CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 export const CATHAY_DERIVED_ORIGIN =
   "derived/cathay/domestic-deposit/v1" as const;
+const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1 =
+  "fubon/credit-card/human-attested-v1" as const;
+const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2 =
+  "fubon/credit-card/human-attested-v2" as const;
+const FUBON_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
+  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1,
+  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2,
+]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 export const CANONICAL_SCHEMA_VERSION = 8;
 export const CATHAY_POSTING_MAPPING = {
@@ -2368,6 +2376,13 @@ function validateCanonicalAuthorityRoutes(
             AND registered.integration_namespace = 'fubon'
             AND registered.contract_version = 'fubon/credit-card/human-attested-v1')
           OR
+          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
+            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2'
+            AND capture.stream = 'credit-card'
+            AND registered.stream = 'credit-card'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'fubon/credit-card/human-attested-v2')
+          OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
             AND registered.integration_namespace = 'linebank'
@@ -3341,6 +3356,10 @@ function validateSelectedAssertionProvenance(
           (capture.authority_route = 'fubon/credit-card/human-attested-v1'
             AND capture.stream = 'credit-card'
             AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1')
+          OR
+          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
+            AND capture.stream = 'credit-card'
+            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
@@ -8242,6 +8261,14 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
   private readonly profile: CanonicalFinancialQueryProfile;
 
   constructor(ledgerDir: string, profile: CanonicalFinancialQueryProfile) {
+    if (
+      profile.postingRuleVersion.startsWith("fubon/credit-card/") &&
+      (profile.integrationNamespace !== "fubon" ||
+        !FUBON_CREDIT_CARD_QUERY_ROUTES.has(profile.postingRuleVersion))
+    )
+      throw new Error(
+        "Fubon credit-card financial query profile is unknown or mixed.",
+      );
     this.ledgerDir = ledgerDir;
     this.profile = {
       integrationNamespace: requireSourceText(
@@ -8257,6 +8284,15 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
   async current(
     _request: CathayCanonicalCurrentQueryRequest,
   ): Promise<CathayCanonicalCurrentQueryResult> {
+    // The v1 Fubon contract remains queryable only through an explicit
+    // historical cutoff.  Keep the profile constructible for migration and
+    // audit callers, but make a current read an empty result so superseded
+    // observed-order identity rows cannot enter a current product view.
+    const currentRoute =
+      this.profile.integrationNamespace === "fubon" &&
+      this.profile.postingRuleVersion === FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1
+        ? "fubon/credit-card/human-attested-v1-current-disabled"
+        : this.profile.postingRuleVersion;
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
@@ -8281,7 +8317,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
             )
             .all(
               this.profile.integrationNamespace,
-              this.profile.postingRuleVersion,
+              currentRoute,
             ) as Record<string, unknown>[]
         ).map((row) => ({
           id: idToString(row.id),
@@ -8312,7 +8348,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         WHERE r.posting_rule_version = ?
         ORDER BY a.account_no, t.source_sequence`,
           )
-          .all(this.profile.postingRuleVersion) as Record<string, unknown>[];
+          .all(currentRoute) as Record<string, unknown>[];
         const projection = db
           .prepare(
             `SELECT c.commit_sequence FROM current_projection_state state

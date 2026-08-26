@@ -102,6 +102,73 @@ assert.equal(
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
 );
 
+// The credit-card worker uses the shared writer as its final admission seam.
+// Keep this route-level probe here so a new Fubon contract cannot compile in
+// the provider module while remaining unknown to the generic canonical spine.
+const fubonCapture = structuredClone(admittedCapture);
+fubonCapture.captureId = "fubon-writer-route-positive";
+fubonCapture.authorityRoute = "fubon/credit-card/human-attested-v2";
+fubonCapture.contractVersion = "fubon/credit-card/human-attested-v2";
+Object.assign(fubonCapture.identity, {
+  integrationNamespace: "fubon",
+  stream: "credit-card",
+  recordKind: "fubon-credit-card-transaction",
+  accountNo: "fubon-portfolio",
+  accountType: "credit",
+  currency: "TWD",
+});
+Object.assign(fubonCapture.scope, {
+  completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+  pageCount: 7,
+  withdrawalPolicy: "never-infer",
+});
+Object.assign(fubonCapture.semantics, {
+  postingStatus: "posted",
+  postingOrigin: "human-attested",
+  postingBasis: "statement-posted-history",
+  postingRuleVersion: "fubon/credit-card/human-attested-v2",
+  semanticRuleVersion: "fubon/credit-card/human-attested-v2",
+  effectiveTimeBasis: "transaction-time",
+  effectiveTimeRuleVersion: "fubon/credit-card/human-attested-v2",
+  timeZone: "Asia/Taipei",
+  timePrecision: "date",
+  timeOrigin: "defaulted_local_midnight",
+  requireBalance: false,
+  providerGuaranteed: false,
+  occurrenceProviderGuaranteed: false,
+});
+fubonCapture.pages = Array.from({ length: 7 }, (_, pageOrdinal) => ({
+  ...fubonCapture.pages[0]!,
+  pageOrdinal,
+  terminal: true,
+  rowCount: pageOrdinal === 0 ? 1 : 0,
+}));
+const fubonRecord = fubonCapture.records[0]!;
+fubonRecord.providerKey = "human-attested:no-provider-key";
+fubonRecord.humanAttestedOccurrenceKey = fubonRecord.occurrenceKey;
+fubonRecord.sequenceLexeme = "observed-source-order:0";
+fubonRecord.sourceTime = {
+  localDate: fubonRecord.effectiveOn,
+  localTime: "00:00:00",
+  timeZone: "Asia/Taipei",
+  epochMilliseconds: Date.parse(`${fubonRecord.effectiveOn}T00:00:00+08:00`),
+  precision: "date",
+  timeOrigin: "defaulted_local_midnight",
+};
+fubonRecord.transactionDateTimeLocal = `${fubonRecord.effectiveOn}T00:00:00`;
+const fubonRouteAdmission = admitCanonicalFinancialDepositCapture(fubonCapture);
+assert.equal(
+  fubonRouteAdmission.authorityRoute,
+  "fubon/credit-card/human-attested-v2",
+);
+const mixedFubonRoute = structuredClone(fubonCapture);
+mixedFubonRoute.captureId = "fubon-writer-route-mixed-version";
+mixedFubonRoute.contractVersion = "fubon/credit-card/human-attested-v1";
+assert.throws(
+  () => admitCanonicalFinancialDepositCapture(mixedFubonRoute),
+  /contract version|route profile/i,
+);
+
 const unknownRoute = structuredClone(admittedCapture);
 unknownRoute.authorityRoute = "unknown/domestic-deposit/v1";
 assert.throws(

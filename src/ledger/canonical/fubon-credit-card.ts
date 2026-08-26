@@ -7,13 +7,18 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isFubonCreditCardHumanAttestedAccountKey,
-  isFubonCreditCardHumanAttestedV1Active,
-  isFubonCreditCardHumanAttestationDurablyActive,
+  isFubonCreditCardHumanAttestedV2Active,
+  isFubonCreditCardHumanAttestationV2DurablyActive,
   peekFubonCreditCardHumanAttestationStatus,
-  recordInitialFubonCreditCardHumanAttestationIfMissing,
+  recordInitialFubonCreditCardHumanAttestationV2IfMissing,
 } from "./fubon-credit-card-human-attestation.ts";
+import {
+  fubonCreditCardPanFingerprint,
+  type FubonCreditCardPanFingerprintKey,
+  type FubonCreditCardPanIdentityMetadata,
+} from "./fubon-credit-card-pan.ts";
 
 export type FubonCreditCardExactAmount = {
   coefficient: string;
@@ -58,6 +63,8 @@ export type FubonCreditCardTransactionInput = {
   description: string;
   installmentKey?: string | null;
   billingStatus: "billed" | "unbilled";
+  /** Opaque source scope used when billed evidence lacks a settled Statement. */
+  sourceScopeKey?: string;
   statementKey?: string;
   paymentStatus?: string;
   correctionKey?: string;
@@ -69,6 +76,35 @@ export type FubonCreditCardTransactionInput = {
   sourceKey?: string;
 };
 
+type FubonCreditCardGridBase = {
+  kind: "billed" | "unbilled";
+  period: string;
+  currentPage: number;
+  pageSize: number;
+  maximumPageSize: number;
+  capturedRowCount: number;
+  terminal: boolean;
+  dueDateEvidence?: "explicit-date" | "provider-text-status";
+};
+
+/**
+ * A terminal grid is either backed by a provider-declared total, or by a
+ * short first page whose returned row count is strictly below the requested
+ * maximum. The short-page variant deliberately carries no source-declared
+ * count: observed rows are not promoted into provider evidence.
+ */
+export type FubonCreditCardGrid =
+  | (FubonCreditCardGridBase & {
+      terminalEvidence: "source-declared-total";
+      sourceDeclaredRowCount: number;
+      sourceDeclaredScopeRowCount: number;
+    })
+  | (FubonCreditCardGridBase & {
+      terminalEvidence: "short-page";
+      sourceDeclaredRowCount?: never;
+      sourceDeclaredScopeRowCount?: never;
+    });
+
 export type FubonCreditCardCompleteness = {
   billedPeriods: readonly string[];
   unbilledIncluded: boolean;
@@ -79,17 +115,7 @@ export type FubonCreditCardCompleteness = {
   unbilledRowCount: number;
   recordCount: number;
   settledSummaryEvidencePresent: boolean;
-  grids: readonly {
-    kind: "billed" | "unbilled";
-    period: string;
-    currentPage: number;
-    pageSize: number;
-    maximumPageSize: number;
-    capturedRowCount: number;
-    sourceDeclaredRowCount: number;
-    sourceDeclaredScopeRowCount: number;
-    terminal: boolean;
-  }[];
+  grids: readonly FubonCreditCardGrid[];
 };
 
 export type FubonCreditCardStatementEvidence = {
@@ -133,7 +159,10 @@ export type FubonCreditCardCaptureInput = {
   identity: {
     sourceConnectionKey: string;
     identityEpochKey: string;
-    humanAttestedAccountKey: string;
+    /** Opaque fallback identity when the bank exposes no full PAN. */
+    humanAttestedAccountKey?: string;
+    /** Ephemeral bank-page value. Admission strips it before returning. */
+    fullPan?: string;
   };
   observedAt: string;
   scope: {
@@ -172,21 +201,25 @@ export type FubonCreditCardAdmittedCapture = Omit<
   FubonCreditCardCaptureInput,
   "identity" | "scope" | "instruments" | "transactions" | "statements" | "relations"
 > & {
-  identity: FubonCreditCardCaptureInput["identity"] & {
+  identity: Omit<FubonCreditCardCaptureInput["identity"], "fullPan"> & {
     accountNaturalKey: string;
     accountType: "credit";
     accountSubtype: "credit_card";
     stream: "credit-card";
     providerGuaranteed: false;
     occurrenceProviderGuaranteed: false;
+    identityMethod: "human-attested" | "pan-hmac";
+    panFingerprint?: `sha256:${string}`;
+    panLast4?: `${number}${number}${number}${number}`;
+    panFingerprintKeyVersion?: string;
   };
   scope: FubonCreditCardCaptureInput["scope"];
   instruments: readonly FubonCreditCardInstrumentInput[];
   transactions: readonly FubonCreditCardAdmittedTransaction[];
   statements: readonly FubonCreditCardAdmittedStatement[];
   relations: readonly FubonCreditCardRelationInput[];
-  contractVersion: "fubon/credit-card/human-attested-v1";
-  authorityRoute: "fubon/credit-card/human-attested-v1";
+  contractVersion: "fubon/credit-card/human-attested-v2";
+  authorityRoute: "fubon/credit-card/human-attested-v2";
 };
 
 export type FubonCreditCardValidatedCapture = FubonCreditCardAdmittedCapture & {
@@ -196,14 +229,15 @@ export type FubonCreditCardValidatedCapture = FubonCreditCardAdmittedCapture & {
 export const FUBON_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   source: "fubon",
   stream: "credit-card",
-  authorityRoute: FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
-  contractVersion: FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+  authorityRoute: FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute,
+  contractVersion: FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion,
   accountType: "credit",
   accountSubtype: "credit_card",
   providerGuaranteed: false,
   occurrenceProviderGuaranteed: false,
   postingRule: "posting-date-present-means-posted",
   billingRule: "billed-or-unbilled-independent-of-posting",
+  transactionIdentityRule: "statement-key-or-source-scope-scoped-occurrence-v2",
   statementRule: "issuer-settled-cycle-summary-only",
   relationRule: "explicit-source-linkage-only",
 } as const);
@@ -214,6 +248,19 @@ export class FubonCreditCardAdmissionError extends Error {
     this.name = "FubonCreditCardAdmissionError";
   }
 }
+
+export type FubonCreditCardAdmissionOptions = {
+  readonly panFingerprintKey?: FubonCreditCardPanFingerprintKey;
+};
+
+export type FubonCreditCardIdentityMetadata = {
+  readonly identityMethod: "human-attested" | "pan-hmac";
+  readonly accountNaturalKey: `sha256:${string}`;
+  readonly humanAttestedAccountKey?: string;
+  readonly panFingerprint?: `sha256:${string}`;
+  readonly panLast4?: `${number}${number}${number}${number}`;
+  readonly panFingerprintKeyVersion?: string;
+};
 const VALIDATED_CAPTURES = new WeakSet<object>();
 
 function fail(message: string): never {
@@ -288,30 +335,99 @@ function stableTuple(value: readonly unknown[]): string {
   return JSON.stringify(value);
 }
 
-export function buildFubonCreditCardAccountIdentityKey(identity: {
-  sourceConnectionKey: string;
-  identityEpochKey: string;
-  humanAttestedAccountKey: string;
-}): string {
-  const connection = text(identity.sourceConnectionKey, "Source connection key");
-  const epoch = text(identity.identityEpochKey, "Identity epoch key");
+type FubonCreditCardIdentityInput = FubonCreditCardCaptureInput["identity"];
+
+function rejectUntrustedPanMetadata(identity: object): void {
+  if (
+    Object.hasOwn(identity, "panFingerprint") ||
+    Object.hasOwn(identity, "panLast4") ||
+    Object.hasOwn(identity, "panFingerprintKeyVersion")
+  )
+    fail("Fubon PAN identity metadata must be derived from an observed PAN during admission.");
+}
+
+function resolvedFubonCreditCardIdentity(
+  identity: FubonCreditCardIdentityInput,
+  options: FubonCreditCardAdmissionOptions = {},
+): {
+  readonly sourceConnectionKey: string;
+  readonly identityEpochKey: string;
+  readonly humanAttestedAccountKey?: string;
+  readonly panFingerprint?: `sha256:${string}`;
+  readonly panLast4?: `${number}${number}${number}${number}`;
+  readonly panFingerprintKeyVersion?: string;
+  readonly identityMethod: "human-attested" | "pan-hmac";
+  readonly accountNaturalKey: `sha256:${string}`;
+} {
+  const sourceConnectionKey = text(identity.sourceConnectionKey, "Source connection key");
+  const identityEpochKey = text(identity.identityEpochKey, "Identity epoch key");
+  rejectUntrustedPanMetadata(identity);
+  if (identity.fullPan !== undefined) {
+    if (!options.panFingerprintKey)
+      fail("Fubon PAN fingerprint key is unavailable.");
+    let metadata: FubonCreditCardPanIdentityMetadata;
+    try {
+      metadata = fubonCreditCardPanFingerprint(
+        identity.fullPan,
+        options.panFingerprintKey,
+      );
+    } catch (error) {
+      if (error instanceof FubonCreditCardAdmissionError) throw error;
+      const message = error instanceof Error ? error.message : "";
+      if (/key (?:is )?unavailable|key version/i.test(message))
+        fail("Fubon PAN fingerprint key is unavailable.");
+      fail("Fubon card number is invalid.");
+    }
+    return {
+      sourceConnectionKey,
+      identityEpochKey,
+      panFingerprint: metadata.fingerprint,
+      panLast4: metadata.last4,
+      panFingerprintKeyVersion: metadata.keyVersion,
+      identityMethod: "pan-hmac",
+      accountNaturalKey: metadata.fingerprint,
+    };
+  }
   const accountKey = text(identity.humanAttestedAccountKey, "Human-attested account key");
   if (!isFubonCreditCardHumanAttestedAccountKey(accountKey))
     fail("Human-attested account key must be opaque and independent of card identity.");
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(["fubon-credit-account-v1", connection, epoch, accountKey]))
-    .digest("base64url")}`;
+  const accountNaturalKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["fubon-credit-account-v2", sourceConnectionKey, identityEpochKey, accountKey]))
+    .digest("base64url")}` as `sha256:${string}`;
+  return {
+    sourceConnectionKey,
+    identityEpochKey,
+    humanAttestedAccountKey: accountKey,
+    identityMethod: "human-attested",
+    accountNaturalKey,
+  };
+}
+
+export function buildFubonCreditCardAccountIdentityKey(identity: {
+  sourceConnectionKey: string;
+  identityEpochKey: string;
+  humanAttestedAccountKey?: string;
+  fullPan?: string;
+}, options: FubonCreditCardAdmissionOptions = {}): `sha256:${string}` {
+  return resolvedFubonCreditCardIdentity(identity, options).accountNaturalKey;
+}
+
+export function resolveFubonCreditCardIdentity(
+  identity: FubonCreditCardIdentityInput,
+  options: FubonCreditCardAdmissionOptions = {},
+): FubonCreditCardIdentityMetadata & {
+  readonly sourceConnectionKey: string;
+  readonly identityEpochKey: string;
+} {
+  return resolvedFubonCreditCardIdentity(identity, options);
 }
 
 export function buildFubonCreditCardTransactionSourceKey(
-  identity: {
-    sourceConnectionKey: string;
-    identityEpochKey: string;
-    humanAttestedAccountKey: string;
-  },
+  identity: FubonCreditCardIdentityInput,
   record: FubonCreditCardTransactionInput,
+  options: FubonCreditCardAdmissionOptions = {},
 ): `sha256:${string}` {
-  const accountKey = buildFubonCreditCardAccountIdentityKey(identity);
+  const accountKey = buildFubonCreditCardAccountIdentityKey(identity, options);
   const amount = exactAmount(record.bookedAmount, "Booked amount");
   const foreignCurrency = record.foreignCurrency
     ? currency(record.foreignCurrency, "Foreign currency")
@@ -321,10 +437,13 @@ export function buildFubonCreditCardTransactionSourceKey(
     : exactAmount(record.foreignAmount, "Foreign amount");
   if ((foreignCurrency === null) !== (foreignAmount === null))
     fail("Foreign currency and foreign amount must be provided together.");
+  const statementKey = record.statementKey?.trim() || null;
+  const sourceScopeKey = record.sourceScopeKey?.trim() || null;
   const tuple = stableTuple([
-    "fubon-credit-card-transaction-v1",
+    "fubon-credit-card-transaction-v2",
     accountKey,
     text(record.instrumentKey, "Card instrument key"),
+    statementKey,
     validDate(record.consumeDate, "Consume date"),
     record.postingDate ? validDate(record.postingDate, "Posting date") : null,
     record.direction,
@@ -336,6 +455,7 @@ export function buildFubonCreditCardTransactionSourceKey(
     foreignAmount?.scale ?? null,
     normalizedDescription(text(record.description, "Transaction description")),
     record.installmentKey?.trim() || null,
+    ...(sourceScopeKey ? [sourceScopeKey] : []),
     record.occurrenceIndex,
   ]);
   return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
@@ -347,21 +467,55 @@ export function buildFubonCreditCardStatementEvidenceKey(
     FubonCreditCardStatementInput,
     "statementKey" | "cycleStart" | "cycleEnd"
   >,
+  options: FubonCreditCardAdmissionOptions = {},
 ): `sha256:${string}` {
-  const accountKey = text(
-    identity.humanAttestedAccountKey,
-    "Human-attested account key",
-  );
-  if (!isFubonCreditCardHumanAttestedAccountKey(accountKey))
-    fail("Statement evidence requires an opaque human-attested account key.");
+  const accountKey = buildFubonCreditCardAccountIdentityKey(identity, options);
   const tuple = [
-    "fubon-credit-card-statement-summary-v1",
+    "fubon-credit-card-statement-summary-v2",
+    text(identity.sourceConnectionKey, "Source connection key"),
+    text(identity.identityEpochKey, "Identity epoch key"),
     accountKey,
     text(statement.statementKey, "Statement key"),
     validDate(statement.cycleStart, "Statement cycle start"),
     validDate(statement.cycleEnd, "Statement cycle end"),
   ];
   return `sha256:${createHash("sha256").update(JSON.stringify(tuple)).digest("base64url")}`;
+}
+
+function hasValidFubonGridTerminalEvidence(grid: FubonCreditCardGrid): boolean {
+  if (
+    !Number.isSafeInteger(grid.currentPage) ||
+    grid.currentPage !== 1 ||
+    !Number.isSafeInteger(grid.pageSize) ||
+    !Number.isSafeInteger(grid.maximumPageSize) ||
+    grid.maximumPageSize <= 0 ||
+    grid.pageSize !== grid.maximumPageSize ||
+    !grid.terminal ||
+    !Number.isSafeInteger(grid.capturedRowCount) ||
+    grid.capturedRowCount < 0 ||
+    grid.capturedRowCount > grid.pageSize
+  )
+    return false;
+
+  if (grid.terminalEvidence === "source-declared-total")
+    return (
+      Object.hasOwn(grid, "sourceDeclaredRowCount") &&
+      Object.hasOwn(grid, "sourceDeclaredScopeRowCount") &&
+      Number.isSafeInteger(grid.sourceDeclaredRowCount) &&
+      grid.sourceDeclaredRowCount >= 0 &&
+      grid.capturedRowCount === grid.sourceDeclaredRowCount &&
+      Number.isSafeInteger(grid.sourceDeclaredScopeRowCount) &&
+      grid.sourceDeclaredScopeRowCount >= grid.sourceDeclaredRowCount
+    );
+
+  if (grid.terminalEvidence === "short-page")
+    return (
+      !Object.hasOwn(grid, "sourceDeclaredRowCount") &&
+      !Object.hasOwn(grid, "sourceDeclaredScopeRowCount") &&
+      grid.capturedRowCount < grid.pageSize
+    );
+
+  return false;
 }
 
 function validateCompleteness(
@@ -397,19 +551,30 @@ function validateCompleteness(
     completeness.grids.length !== 7 ||
     completeness.grids.filter((grid) => grid.kind === "billed").length !== 6 ||
     completeness.grids.filter((grid) => grid.kind === "unbilled").length !== 1 ||
-    completeness.grids.some(
-      (grid) =>
-        grid.currentPage !== 1 ||
-        grid.pageSize !== grid.maximumPageSize ||
-        !grid.terminal ||
-        !Number.isSafeInteger(grid.capturedRowCount) ||
-        grid.capturedRowCount < 0 ||
-        grid.capturedRowCount !== grid.sourceDeclaredRowCount ||
-        !Number.isSafeInteger(grid.sourceDeclaredScopeRowCount) ||
-        grid.sourceDeclaredScopeRowCount < grid.sourceDeclaredRowCount,
-    )
+    completeness.grids.some((grid) => !hasValidFubonGridTerminalEvidence(grid))
   )
     fail("Fubon credit-card grids lack terminal maximum-page matching-count evidence.");
+  const billedGrids = completeness.grids.filter(
+    (grid) => grid.kind === "billed",
+  );
+  const unbilledGrid = completeness.grids.find(
+    (grid) => grid.kind === "unbilled",
+  );
+  if (
+    billedGrids.some(
+      (grid, index) =>
+        grid.period !== completeness.billedPeriods[index] ||
+        grid.capturedRowCount !== completeness.periodRowCounts[index] ||
+        (grid.terminalEvidence === "source-declared-total" &&
+          grid.sourceDeclaredRowCount !== completeness.periodRowCounts[index]),
+    ) ||
+    !unbilledGrid ||
+    unbilledGrid.period !== "unbilled" ||
+    unbilledGrid.capturedRowCount !== completeness.unbilledRowCount ||
+    (unbilledGrid.terminalEvidence === "source-declared-total" &&
+      unbilledGrid.sourceDeclaredRowCount !== completeness.unbilledRowCount)
+  )
+    fail("Fubon credit-card grid periods or row counts do not match completeness evidence.");
   const billedCount = transactions.filter((row) => row.billingStatus === "billed").length;
   const unbilledCount = transactions.filter((row) => row.billingStatus === "unbilled").length;
   if (
@@ -424,6 +589,8 @@ function validateCompleteness(
 
 function validateInstrument(instrument: FubonCreditCardInstrumentInput): FubonCreditCardInstrumentInput {
   const instrumentKey = text(instrument.instrumentKey, "Card instrument key");
+  if (/\d[\d\s-]{11,}\d/u.test(instrumentKey))
+    fail("Card instrument key must not contain a full card number.");
   if (
     !instrument.evidence ||
     instrument.evidence.kind !== "explicit-instrument-role" ||
@@ -433,11 +600,17 @@ function validateInstrument(instrument: FubonCreditCardInstrumentInput): FubonCr
   if (instrument.lifecycle && !instrument.evidence) {
     fail("Card lifecycle facts require explicit versioned evidence.");
   }
+  const cardMask = instrument.cardMask?.trim() || undefined;
+  if (cardMask !== undefined && !/^\*{4}\d{4}$/u.test(cardMask))
+    fail("Card instrument display mask must contain only four stars and four digits.");
+  const productName = instrument.productName?.trim() || undefined;
+  if (productName && /\d[\d\s-]{11,}\d/u.test(productName))
+    fail("Card instrument product name must not contain a full card number.");
   return {
     ...instrument,
     instrumentKey,
-    cardMask: instrument.cardMask?.trim() || undefined,
-    productName: instrument.productName?.trim() || undefined,
+    cardMask,
+    productName,
   };
 }
 
@@ -445,6 +618,7 @@ function validateTransaction(
   identity: FubonCreditCardCaptureInput["identity"],
   instruments: ReadonlyMap<string, FubonCreditCardInstrumentInput>,
   record: FubonCreditCardTransactionInput,
+  options: FubonCreditCardAdmissionOptions,
 ): FubonCreditCardAdmittedTransaction {
   const sourceRecordKey = text(record.sourceRecordKey, "Source record key");
   if (!Number.isSafeInteger(record.occurrenceIndex) || record.occurrenceIndex < 0)
@@ -454,10 +628,17 @@ function validateTransaction(
   const consumeDate = validDate(record.consumeDate, "Consume date");
   const postingDate = validDate(record.postingDate, "Posting date");
   if (record.postingStatus === "pending")
-    fail("Fubon v1 requires posted credit-card transactions when posting date is present.");
+    fail("Fubon v2 requires posted credit-card transactions when posting date is present.");
   const bookedAmount = exactAmount(record.bookedAmount, "Booked amount");
   const bookedCurrency = currency(record.bookedCurrency, "Booked currency");
   const description = text(record.description, "Transaction description");
+  const statementKey = record.statementKey?.trim() || undefined;
+  const sourceScopeKey = record.sourceScopeKey?.trim() || undefined;
+  if (sourceScopeKey && sourceScopeKey.length > 256)
+    fail("Transaction source scope key is too long.");
+  if (record.billingStatus === "billed" && !statementKey)
+    if (!sourceScopeKey)
+      fail("Billed Fubon transactions require a statement or source scope identity.");
   const normalized = normalizedDescription(description);
   if (!normalized) fail("Transaction description cannot be empty.");
   if (record.signedAmount !== undefined) {
@@ -485,11 +666,20 @@ function validateTransaction(
     )
       fail("Transaction correction requires explicit versioned correction evidence.");
   }
-  const sourceKey = buildFubonCreditCardTransactionSourceKey(identity, record);
+  const normalizedRecord = {
+    ...record,
+    ...(statementKey ? { statementKey } : {}),
+    ...(sourceScopeKey ? { sourceScopeKey } : {}),
+  };
+  const sourceKey = buildFubonCreditCardTransactionSourceKey(
+    identity,
+    normalizedRecord,
+    options,
+  );
   if (record.sourceKey && record.sourceKey !== sourceKey)
     fail("Provided transaction source key does not match the contract tuple.");
   return {
-    ...record,
+    ...normalizedRecord,
     sourceRecordKey,
     instrumentKey,
     consumeDate,
@@ -509,6 +699,7 @@ function validateStatement(
   identity: FubonCreditCardCaptureInput["identity"],
   statement: FubonCreditCardStatementInput,
   transactions: ReadonlyMap<string, FubonCreditCardAdmittedTransaction>,
+  options: FubonCreditCardAdmissionOptions,
 ): FubonCreditCardAdmittedStatement {
   const statementKey = text(statement.statementKey, "Statement key");
   const revisionKey = text(statement.revisionKey, "Statement revision key");
@@ -530,11 +721,11 @@ function validateStatement(
     fail("Only issuer settled-cycle summary evidence may establish a Statement.");
   if (
     evidence.sourceRecordKey.trim() !==
-    buildFubonCreditCardStatementEvidenceKey(identity, {
-      statementKey,
-      cycleStart,
-      cycleEnd,
-    })
+    buildFubonCreditCardStatementEvidenceKey(
+      identity,
+      { statementKey, cycleStart, cycleEnd },
+      options,
+    )
   )
     fail("Statement summary evidence is not scoped to this attested account and cycle.");
   for (const sourceKey of statement.transactionSourceKeys) {
@@ -569,12 +760,38 @@ function validateStatement(
 
 function validateRelation(
   relation: FubonCreditCardRelationInput,
-  sourceRecordKeys: ReadonlySet<string>,
+  transactionsBySourceRecord: ReadonlyMap<
+    string,
+    FubonCreditCardAdmittedTransaction
+  >,
 ): FubonCreditCardRelationInput {
-  if (!sourceRecordKeys.has(relation.fromSourceRecordKey) || !sourceRecordKeys.has(relation.toSourceRecordKey))
-    fail("Transaction relation references an unknown source record.");
-  if (relation.fromSourceRecordKey === relation.toSourceRecordKey)
+  if (relation === null || typeof relation !== "object")
+    fail("Fubon transaction relation is required.");
+  const fromSourceRecordKey = text(
+    relation.fromSourceRecordKey,
+    "Transaction relation from source record key",
+  );
+  const toSourceRecordKey = text(
+    relation.toSourceRecordKey,
+    "Transaction relation to source record key",
+  );
+  if (fromSourceRecordKey === toSourceRecordKey)
     fail("Transaction relation cannot connect a transaction to itself.");
+  const from = transactionsBySourceRecord.get(fromSourceRecordKey);
+  const to = transactionsBySourceRecord.get(toSourceRecordKey);
+  if (!from || !to)
+    fail("Transaction relation references an unknown source record.");
+
+  const relationKinds = new Set<FubonCreditCardRelationInput["kind"]>([
+    "pending_to_posted",
+    "refund_of",
+    "reversal_of",
+    "transfer_counterpart",
+    "installment_of",
+  ]);
+  if (!relationKinds.has(relation.kind))
+    fail("Transaction relation kind is unsupported.");
+
   const evidence = relation.evidence;
   if (
     evidence === null ||
@@ -585,13 +802,50 @@ function validateRelation(
     !evidence.sourceRecordKey.trim()
   )
     fail("Transaction relations require explicit source linkage; similarity is not evidence.");
+  const evidenceSourceRecordKey = evidence.sourceRecordKey.trim();
+  if (
+    evidenceSourceRecordKey !== fromSourceRecordKey &&
+    evidenceSourceRecordKey !== toSourceRecordKey
+  )
+    fail(
+      "Transaction relation evidence must identify one of its in-capture endpoint source records.",
+    );
+  if (!transactionsBySourceRecord.has(evidenceSourceRecordKey))
+    fail("Transaction relation evidence references an unknown source record.");
+
+  switch (relation.kind) {
+    case "pending_to_posted":
+      if ((from.postingStatus as string) !== "pending" || to.postingStatus !== "posted")
+        fail("pending_to_posted relations require a pending source and posted target.");
+      break;
+    case "refund_of":
+      if (from.direction !== "inflow" || to.direction !== "outflow")
+        fail("refund_of relations require an inflow refund and an outflow original.");
+      break;
+    case "reversal_of":
+      if (from.direction === to.direction)
+        fail("reversal_of relations require opposite transaction directions.");
+      break;
+    case "transfer_counterpart":
+      if (from.direction === to.direction)
+        fail("transfer_counterpart relations require opposite transaction directions.");
+      break;
+    case "installment_of":
+      if (from.direction !== "outflow" || to.direction !== "outflow")
+        fail("installment_of relations require outflow installment and original transactions.");
+      if (from.consumeDate < to.consumeDate)
+        fail("installment_of relations require the installment date to follow the original.");
+      break;
+  }
+
   return {
     ...relation,
-    fromSourceRecordKey: relation.fromSourceRecordKey.trim(),
-    toSourceRecordKey: relation.toSourceRecordKey.trim(),
+    kind: relation.kind,
+    fromSourceRecordKey,
+    toSourceRecordKey,
     evidence: {
       kind: "explicit-source-linkage",
-      sourceRecordKey: evidence.sourceRecordKey.trim(),
+      sourceRecordKey: evidenceSourceRecordKey,
       contractVersion: evidence.contractVersion,
     },
   };
@@ -609,14 +863,16 @@ const freezeDeep = <T>(value: T, seen = new WeakSet<object>()): T => {
 
 export function admitFubonCreditCardCapture(
   capture: FubonCreditCardCaptureInput,
+  options: FubonCreditCardAdmissionOptions = {},
 ): FubonCreditCardValidatedCapture {
-  if (!isFubonCreditCardHumanAttestedV1Active())
-    fail("Fubon credit-card human-attested v1 contract is revoked.");
+  if (!isFubonCreditCardHumanAttestedV2Active())
+    fail("Fubon credit-card human-attested v2 contract is revoked.");
   if (capture === null || typeof capture !== "object") fail("Fubon credit-card capture is required.");
   text(capture.captureId, "Capture ID");
   if (!/^\d{4}-\d{2}-\d{2}T/.test(text(capture.observedAt, "Observed at")))
     fail("Observed at must be an ISO timestamp.");
-  const accountNaturalKey = buildFubonCreditCardAccountIdentityKey(capture.identity);
+  const identity = resolvedFubonCreditCardIdentity(capture.identity, options);
+  const accountNaturalKey = identity.accountNaturalKey;
   const startDate = validDate(capture.scope.startDate, "Capture start date");
   const endDate = validDate(capture.scope.endDate, "Capture end date");
   if (startDate > endDate) fail("Capture date scope is inverted.");
@@ -638,6 +894,7 @@ export function admitFubonCreditCardCapture(
     const contentIdentity = buildFubonCreditCardTransactionSourceKey(
       capture.identity,
       { ...record, occurrenceIndex: 0 },
+      options,
     );
     const expectedOccurrenceIndex = occurrenceOrdinals.get(contentIdentity) ?? 0;
     if (record.occurrenceIndex !== expectedOccurrenceIndex)
@@ -645,7 +902,12 @@ export function admitFubonCreditCardCapture(
         "Transaction occurrence indexes must be contiguous in complete observed source order.",
       );
     occurrenceOrdinals.set(contentIdentity, expectedOccurrenceIndex + 1);
-    const normalized = validateTransaction(capture.identity, instruments, record);
+    const normalized = validateTransaction(
+      capture.identity,
+      instruments,
+      record,
+      options,
+    );
     if (sourceRecordKeys.has(normalized.sourceRecordKey)) fail("Duplicate source record key.");
     if (sourceKeys.has(normalized.sourceKey)) fail("Transaction identity collision within one capture.");
     sourceRecordKeys.add(normalized.sourceRecordKey);
@@ -673,25 +935,39 @@ export function admitFubonCreditCardCapture(
       capture.identity,
       statement,
       transactionsBySourceRecord,
+      options,
     );
     if (statementKeys.has(normalized.statementKey)) fail("Duplicate Statement key within one capture.");
     statementKeys.add(normalized.statementKey);
     statements.push(normalized);
   }
-  if (statements.length === 0) fail("Fubon credit-card capture is missing settled statement summary.");
   if (!Array.isArray(capture.relations)) fail("Fubon credit-card relations are required.");
-  const relations = capture.relations.map((relation) => validateRelation(relation, sourceRecordKeys));
+  const relations = capture.relations.map((relation) =>
+    validateRelation(relation, transactionsBySourceRecord),
+  );
   const result = {
     captureId: capture.captureId,
     observedAt: capture.observedAt,
     identity: {
-      ...capture.identity,
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      ...(identity.humanAttestedAccountKey
+        ? { humanAttestedAccountKey: identity.humanAttestedAccountKey }
+        : {}),
+      ...(identity.panFingerprint
+        ? {
+            panFingerprint: identity.panFingerprint,
+            panLast4: identity.panLast4,
+            panFingerprintKeyVersion: identity.panFingerprintKeyVersion,
+          }
+        : {}),
       accountNaturalKey,
       accountType: "credit" as const,
       accountSubtype: "credit_card" as const,
       stream: "credit-card" as const,
       providerGuaranteed: false as const,
       occurrenceProviderGuaranteed: false as const,
+      identityMethod: identity.identityMethod,
     },
     scope: {
       startDate,
@@ -737,9 +1013,26 @@ CREATE TABLE IF NOT EXISTS fubon_credit_instrument_details (
   instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
   account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
   instrument_key TEXT NOT NULL,
+  card_mask TEXT CHECK(
+    card_mask IS NULL OR
+    (length(card_mask) = 8 AND substr(card_mask, 1, 4) = '****' AND
+      substr(card_mask, 5) GLOB '[0-9][0-9][0-9][0-9]')
+  ),
   role TEXT NOT NULL CHECK(role IN ('primary','supplementary','virtual','replacement')),
   lifecycle TEXT,
   UNIQUE(account_id, instrument_key)
+);
+CREATE TABLE IF NOT EXISTS fubon_credit_account_identity_details (
+  account_id BLOB PRIMARY KEY REFERENCES financial_accounts(account_id),
+  identity_method TEXT NOT NULL CHECK(identity_method IN ('human-attested','pan-hmac')),
+  pan_fingerprint TEXT,
+  pan_last4 TEXT CHECK(pan_last4 IS NULL OR pan_last4 GLOB '[0-9][0-9][0-9][0-9]'),
+  pan_fingerprint_key_version TEXT,
+  CHECK(
+    (identity_method = 'pan-hmac' AND pan_fingerprint IS NOT NULL AND pan_last4 IS NOT NULL AND pan_fingerprint_key_version IS NOT NULL)
+    OR
+    (identity_method = 'human-attested' AND pan_fingerprint IS NULL AND pan_last4 IS NULL AND pan_fingerprint_key_version IS NULL)
+  )
 );
 CREATE TABLE IF NOT EXISTS fubon_credit_instrument_role_evidence (
   instrument_id BLOB NOT NULL REFERENCES fubon_credit_instrument_details(instrument_id),
@@ -789,6 +1082,7 @@ CREATE TABLE IF NOT EXISTS fubon_credit_statement_summary_evidence (
   account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
   capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
   evidence_key TEXT NOT NULL,
+  evidence_source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   PRIMARY KEY(statement_revision_id, capture_id),
   UNIQUE(account_id, capture_id, evidence_key)
 );
@@ -801,7 +1095,39 @@ CREATE TABLE IF NOT EXISTS fubon_credit_relation_details (
   evidence_source_record_key TEXT NOT NULL,
   UNIQUE(account_id, relation_kind, from_transaction_id, to_transaction_id)
 );
-CREATE TRIGGER IF NOT EXISTS fubon_credit_role_evidence_scope_guard
+  `);
+
+  const instrumentColumns = db.prepare(
+    "PRAGMA table_info(fubon_credit_instrument_details)",
+  ).all() as Array<{ name?: string }>;
+  if (!instrumentColumns.some((column) => column.name === "card_mask")) {
+    db.exec(
+      "ALTER TABLE fubon_credit_instrument_details ADD COLUMN card_mask TEXT",
+    );
+  }
+
+  // Databases created before statement Source Record lineage was added have
+  // valid summary rows but no evidence_source_record_id.  Keep those rows
+  // intact and leave the new lineage column nullable for the legacy rows; the
+  // replacement trigger below rejects any new row without a real Source
+  // Record, so the compatibility exception cannot be used for new writes.
+  const summaryColumns = db.prepare(
+    "PRAGMA table_info(fubon_credit_statement_summary_evidence)",
+  ).all() as Array<{ name?: string }>;
+  if (!summaryColumns.some((column) => column.name === "evidence_source_record_id")) {
+    db.exec(
+      "ALTER TABLE fubon_credit_statement_summary_evidence " +
+      "ADD COLUMN evidence_source_record_id BLOB REFERENCES source_records(source_record_id)",
+    );
+  }
+
+  // CREATE TRIGGER IF NOT EXISTS would preserve the pre-lineage trigger on a
+  // reused database. Drop and recreate both guards so upgrades are idempotent
+  // and always enforce the current scope contract.
+  db.exec(`
+DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
+DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
+CREATE TRIGGER fubon_credit_role_evidence_scope_guard
 BEFORE INSERT ON fubon_credit_instrument_role_evidence
 WHEN NOT EXISTS (
   SELECT 1 FROM source_record_scopes scoped
@@ -814,21 +1140,41 @@ WHEN NOT EXISTS (
     AND scoped.account_id = NEW.account_id
     AND instrument.account_id = NEW.account_id
     AND json_extract(source_record.payload_json, '$.instrumentKey') = instrument.instrument_key
+    AND (
+      (instrument.card_mask IS NULL AND
+        json_extract(source_record.payload_json, '$.cardMask') IS NULL)
+      OR
+      (instrument.card_mask IS NOT NULL AND
+        json_extract(source_record.payload_json, '$.cardMask') = instrument.card_mask)
+    )
 )
 BEGIN
-  SELECT RAISE(ABORT, 'Fubon instrument role evidence crosses capture, account, or instrument scope');
+  SELECT RAISE(ABORT, 'Fubon instrument role evidence crosses capture, account, or instrument scope (or has an inconsistent card mask)');
 END;
-CREATE TRIGGER IF NOT EXISTS fubon_credit_summary_evidence_scope_guard
+CREATE TRIGGER fubon_credit_summary_evidence_scope_guard
 BEFORE INSERT ON fubon_credit_statement_summary_evidence
-WHEN NOT EXISTS (
+WHEN NEW.evidence_source_record_id IS NULL OR NOT EXISTS (
   SELECT 1 FROM capture_scopes scoped
   JOIN fubon_credit_statement_revision_details revision
     ON revision.statement_revision_id = NEW.statement_revision_id
   JOIN fubon_credit_statement_details statement
     ON statement.statement_id = revision.statement_id
+  JOIN source_record_scopes evidence_scope
+    ON evidence_scope.source_record_id = NEW.evidence_source_record_id
+  JOIN source_records evidence_record
+    ON evidence_record.source_record_id = evidence_scope.source_record_id
+  JOIN source_subjects evidence_subject
+    ON evidence_subject.source_subject_id = evidence_record.source_subject_id
   WHERE scoped.capture_id = NEW.capture_id
     AND scoped.account_id = NEW.account_id
     AND statement.account_id = NEW.account_id
+    AND evidence_scope.capture_id = NEW.capture_id
+    AND evidence_scope.account_id = NEW.account_id
+    AND evidence_record.record_kind = 'fubon-credit-card-statement-summary'
+    AND evidence_record.occurrence_key = NEW.evidence_key
+    AND evidence_subject.source_connection_id = scoped.source_connection_id
+    AND evidence_subject.identity_epoch_id = scoped.identity_epoch_id
+    AND json_extract(evidence_record.payload_json, '$.statementKey') = statement.statement_key
 )
 BEGIN
   SELECT RAISE(ABORT, 'Fubon statement summary evidence crosses capture or account scope');
@@ -838,6 +1184,41 @@ END;
 
 function canonicalId(): Buffer {
   return randomBytes(16);
+}
+
+function validateFubonInstrumentEvidencePayload(
+  db: DatabaseSync,
+  sourceRecordId: Uint8Array,
+  instrument: FubonCreditCardInstrumentInput,
+): void {
+  const row = db.prepare(
+    "SELECT payload_json FROM source_records WHERE source_record_id = ?",
+  ).get(sourceRecordId) as { payload_json?: string } | undefined;
+  if (!row?.payload_json)
+    throw new FubonCreditCardAdmissionError(
+      "Fubon instrument role evidence source record is missing.",
+    );
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+  } catch {
+    throw new FubonCreditCardAdmissionError(
+      "Fubon instrument role evidence source payload is not valid JSON.",
+    );
+  }
+  const cardMask = payload.cardMask === undefined ? null : payload.cardMask;
+  if (
+    payload.instrumentKey !== instrument.instrumentKey ||
+    cardMask !== (instrument.cardMask ?? null) ||
+    (cardMask !== null &&
+      (typeof cardMask !== "string" || !/^\*{4}\d{4}$/u.test(cardMask))) ||
+    Object.hasOwn(payload, "fullPan") ||
+    Object.hasOwn(payload, "cardNumber") ||
+    Object.hasOwn(payload, "sourceLabel")
+  )
+    throw new FubonCreditCardAdmissionError(
+      "Fubon instrument role evidence source payload is inconsistent with the instrument.",
+    );
 }
 
 export type FubonCreditCardCommitResult = {
@@ -874,10 +1255,21 @@ function opaqueFubonSpineToken(label: string, value: unknown): `sha256:${string}
 function fubonCanonicalSpineCapture(
   capture: FubonCreditCardValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
+  const instrumentsByKey = new Map(
+    capture.instruments.map((instrument) => [instrument.instrumentKey, instrument]),
+  );
   const records = capture.transactions.map((transaction, sourceOrderOrdinal) => {
+    const instrument = instrumentsByKey.get(transaction.instrumentKey);
+    if (!instrument)
+      throw new FubonCreditCardAdmissionError(
+        "Fubon transaction instrument is missing from the validated capture.",
+      );
     const compact = JSON.stringify({
       occurrenceIndex: transaction.occurrenceIndex,
+      sourceScopeKey: transaction.sourceScopeKey ?? null,
+      statementKey: transaction.statementKey ?? null,
       instrumentKey: transaction.instrumentKey,
+      cardMask: instrument.cardMask ?? null,
       consumeDate: transaction.consumeDate,
       postingDate: transaction.postingDate,
       amount: transaction.bookedAmount,
@@ -890,7 +1282,7 @@ function fubonCanonicalSpineCapture(
       collisionKey: transaction.sourceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: transaction.sourceKey,
-      contentHash: opaqueFubonSpineToken("fubon-credit-content-v1", compact),
+      contentHash: opaqueFubonSpineToken("fubon-credit-content-v2", compact),
       sequenceLexeme: `observed-source-order:${sourceOrderOrdinal}`,
       compactJson: compact,
       amount: transaction.bookedAmount,
@@ -908,9 +1300,23 @@ function fubonCanonicalSpineCapture(
       effectiveOn: transaction.postingDate,
       transactionDateTimeLocal: `${transaction.postingDate}T00:00:00`,
       description: transaction.description,
+      ...(transaction.foreignAmount && transaction.foreignCurrency
+        ? {
+            conversionEvidence: {
+              originalAmount: transaction.foreignAmount,
+              originalCurrency: transaction.foreignCurrency,
+              bookedAmount: transaction.bookedAmount,
+              bookedCurrency: transaction.bookedCurrency,
+              sourceReportedRate: null,
+              impliedRate: null,
+              comparison: "not-comparable" as const,
+              evidenceOrigin: "fubon-credit-card-source-reported-original-amount",
+            },
+          }
+        : {}),
     };
   });
-  const fingerprint = opaqueFubonSpineToken("fubon-credit-contract-v1", {
+  const fingerprint = opaqueFubonSpineToken("fubon-credit-contract-v2", {
     authority: capture.authorityRoute,
     periods: capture.scope.completeness.billedPeriods,
   });
@@ -921,11 +1327,11 @@ function fubonCanonicalSpineCapture(
     identity: {
       integrationNamespace: "fubon",
       sourceConnectionKey: opaqueFubonSpineToken(
-        "fubon-credit-connection-v1",
+        "fubon-credit-connection-v2",
         capture.identity.sourceConnectionKey,
       ),
       identityEpochKey: opaqueFubonSpineToken(
-        "fubon-credit-epoch-v1",
+        "fubon-credit-epoch-v2",
         capture.identity.identityEpochKey,
       ),
       stream: "credit-card",
@@ -971,12 +1377,15 @@ function fubonCanonicalSpineCapture(
       responseCode: "200",
       terminal: grid.terminal,
       rowCount: grid.capturedRowCount,
-      responseDigest: opaqueFubonSpineToken("fubon-credit-page-v1", [
+      responseDigest: opaqueFubonSpineToken("fubon-credit-page-v2", [
         capture.captureId,
         pageOrdinal,
         grid,
       ]),
-      proofKind: "source-declared-terminal-grid",
+      proofKind:
+        grid.terminalEvidence === "short-page"
+          ? "short-page-terminal-grid"
+          : "source-declared-terminal-grid",
       contractFingerprint: fingerprint,
       preflightFingerprint: fingerprint,
       metadataJson: JSON.stringify(grid),
@@ -991,16 +1400,135 @@ function persistFubonCanonicalExtensions(
 ): void {
   for (const capture of captures) {
     const scope = db.prepare(
-      `SELECT source_capture.capture_id, capture_scope.account_id
+      `SELECT source_capture.capture_id, capture_scope.account_id,
+              source_capture.source_subject_id, source_capture.commit_id,
+              capture_scope.scope_id
        FROM source_captures source_capture
        JOIN capture_scopes capture_scope
          ON capture_scope.capture_id = source_capture.capture_id
        WHERE source_capture.capture_key = ?`,
     ).get(capture.captureId) as
-      | { capture_id?: Uint8Array; account_id?: Uint8Array }
+      | {
+          capture_id?: Uint8Array;
+          account_id?: Uint8Array;
+          source_subject_id?: Uint8Array;
+          commit_id?: Uint8Array;
+          scope_id?: Uint8Array;
+        }
       | undefined;
-    if (!scope?.capture_id || !scope.account_id)
+    if (
+      !scope?.capture_id ||
+      !scope.account_id ||
+      !scope.source_subject_id ||
+      !scope.commit_id ||
+      !scope.scope_id
+    )
       throw new Error("Fubon shared canonical capture scope is missing.");
+    const identityMetadata = capture.identity;
+    const existingIdentity = db.prepare(
+      `SELECT identity_method, pan_fingerprint, pan_last4,
+              pan_fingerprint_key_version
+       FROM fubon_credit_account_identity_details
+       WHERE account_id = ?`,
+    ).get(scope.account_id) as
+      | {
+          identity_method?: string;
+          pan_fingerprint?: string | null;
+          pan_last4?: string | null;
+          pan_fingerprint_key_version?: string | null;
+        }
+      | undefined;
+    const desiredIdentity = {
+      identityMethod: identityMetadata.identityMethod,
+      panFingerprint: identityMetadata.panFingerprint ?? null,
+      panLast4: identityMetadata.panLast4 ?? null,
+      panFingerprintKeyVersion: identityMetadata.panFingerprintKeyVersion ?? null,
+    };
+    if (
+      existingIdentity &&
+      (existingIdentity.identity_method !== desiredIdentity.identityMethod ||
+        (existingIdentity.pan_fingerprint ?? null) !== desiredIdentity.panFingerprint ||
+        (existingIdentity.pan_last4 ?? null) !== desiredIdentity.panLast4 ||
+        (existingIdentity.pan_fingerprint_key_version ?? null) !==
+          desiredIdentity.panFingerprintKeyVersion)
+    )
+      throw new FubonCreditCardAdmissionError(
+        "Fubon account identity metadata changed without a new identity epoch.",
+      );
+    if (!existingIdentity)
+      db.prepare(
+        `INSERT INTO fubon_credit_account_identity_details(
+          account_id, identity_method, pan_fingerprint, pan_last4,
+          pan_fingerprint_key_version
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        scope.account_id,
+        desiredIdentity.identityMethod,
+        desiredIdentity.panFingerprint,
+        desiredIdentity.panLast4,
+        desiredIdentity.panFingerprintKeyVersion,
+      );
+
+    const statementEvidenceSourceRecord = new Map<string, Uint8Array>();
+    for (const statement of capture.statements) {
+      const existingRecord = db.prepare(
+        `SELECT source_record_id FROM source_records
+         WHERE capture_id = ? AND record_kind = 'fubon-credit-card-statement-summary'
+           AND occurrence_key = ?`,
+      ).get(scope.capture_id, statement.evidence.sourceRecordKey) as
+        | { source_record_id?: Uint8Array }
+        | undefined;
+      const sourceRecordId = existingRecord?.source_record_id ?? canonicalId();
+      if (!existingRecord) {
+        const payload = JSON.stringify({
+          statementKey: statement.statementKey,
+          revisionKey: statement.revisionKey,
+          cycleStart: statement.cycleStart,
+          cycleEnd: statement.cycleEnd,
+          issueDate: statement.issueDate,
+          dueDate: statement.dueDate,
+          currency: statement.currency,
+          balance: statement.balance,
+          minimumPayment: statement.minimumPayment,
+        });
+        db.prepare(
+          `INSERT INTO source_records(
+            source_record_id, capture_id, source_subject_id, commit_id,
+            record_kind, sequence_lexeme, provider_key, content_hash,
+            occurrence_key, collision_key, description, payload_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          sourceRecordId,
+          scope.capture_id,
+          scope.source_subject_id,
+          scope.commit_id,
+          "fubon-credit-card-statement-summary",
+          `statement-summary:${statement.statementKey}`,
+          "human-attested:no-provider-key",
+          opaqueFubonSpineToken("fubon-credit-statement-summary-v2", payload),
+          statement.evidence.sourceRecordKey,
+          statement.evidence.sourceRecordKey,
+          null,
+          payload,
+        );
+        db.prepare(
+          `INSERT INTO source_record_scopes(
+            source_record_id, scope_id, capture_id, account_id,
+            source_subject_id, sequence_lexeme, occurrence_key, commit_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          sourceRecordId,
+          scope.scope_id,
+          scope.capture_id,
+          scope.account_id,
+          scope.source_subject_id,
+          `statement-summary:${statement.statementKey}`,
+          statement.evidence.sourceRecordKey,
+          scope.commit_id,
+        );
+      }
+      statementEvidenceSourceRecord.set(statement.evidence.sourceRecordKey, sourceRecordId);
+    }
     const sharedTransactions = new Map<
       string,
       { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array }
@@ -1041,8 +1569,13 @@ function persistFubonCanonicalExtensions(
         throw new FubonCreditCardAdmissionError(
           "Fubon instrument role evidence is not a shared source record in this capture.",
         );
+      validateFubonInstrumentEvidencePayload(
+        db,
+        evidenceTransaction.sourceRecordId,
+        instrument,
+      );
       const existing = db.prepare(
-        `SELECT instrument_id, role, lifecycle
+        `SELECT instrument_id, role, lifecycle, card_mask
          FROM fubon_credit_instrument_details
          WHERE account_id = ? AND instrument_key = ?`,
       ).get(scope.account_id, instrument.instrumentKey) as
@@ -1050,12 +1583,16 @@ function persistFubonCanonicalExtensions(
             instrument_id?: Uint8Array;
             role?: string;
             lifecycle?: string | null;
+            card_mask?: string | null;
           }
         | undefined;
       if (
         existing &&
         (existing.role !== instrument.role ||
-          (existing.lifecycle ?? null) !== (instrument.lifecycle ?? null))
+          (existing.lifecycle ?? null) !== (instrument.lifecycle ?? null) ||
+          (existing.card_mask !== null &&
+            instrument.cardMask !== undefined &&
+            existing.card_mask !== instrument.cardMask))
       )
         throw new FubonCreditCardAdmissionError(
           "Fubon card instrument evidence changed without a new identity epoch.",
@@ -1064,15 +1601,22 @@ function persistFubonCanonicalExtensions(
       if (!existing)
         db.prepare(
           `INSERT INTO fubon_credit_instrument_details(
-            instrument_id, account_id, instrument_key, role, lifecycle
-          ) VALUES (?, ?, ?, ?, ?)`,
+            instrument_id, account_id, instrument_key, card_mask, role, lifecycle
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
         ).run(
           instrumentId,
           scope.account_id,
           instrument.instrumentKey,
+          instrument.cardMask ?? null,
           instrument.role,
           instrument.lifecycle ?? null,
         );
+      else if (existing.card_mask === null && instrument.cardMask !== undefined)
+        db.prepare(
+          `UPDATE fubon_credit_instrument_details
+           SET card_mask = ?
+           WHERE instrument_id = ?`,
+        ).run(instrument.cardMask, instrumentId);
       db.prepare(
         `INSERT INTO fubon_credit_instrument_role_evidence(
           instrument_id, account_id, capture_id, source_record_id
@@ -1186,13 +1730,15 @@ function persistFubonCanonicalExtensions(
           );
         db.prepare(
           `INSERT INTO fubon_credit_statement_summary_evidence(
-            statement_revision_id, account_id, capture_id, evidence_key
-          ) VALUES (?, ?, ?, ?)`,
+            statement_revision_id, account_id, capture_id, evidence_key,
+            evidence_source_record_id
+          ) VALUES (?, ?, ?, ?, ?)`,
         ).run(
           existingRevision.statement_revision_id,
           scope.account_id,
           scope.capture_id,
           statement.evidence.sourceRecordKey,
+          statementEvidenceSourceRecord.get(statement.evidence.sourceRecordKey)!,
         );
         continue;
       }
@@ -1247,13 +1793,15 @@ function persistFubonCanonicalExtensions(
       }
       db.prepare(
         `INSERT INTO fubon_credit_statement_summary_evidence(
-          statement_revision_id, account_id, capture_id, evidence_key
-        ) VALUES (?, ?, ?, ?)`,
+          statement_revision_id, account_id, capture_id, evidence_key,
+          evidence_source_record_id
+        ) VALUES (?, ?, ?, ?, ?)`,
       ).run(
         statementRevisionId,
         scope.account_id,
         scope.capture_id,
         statement.evidence.sourceRecordKey,
+        statementEvidenceSourceRecord.get(statement.evidence.sourceRecordKey)!,
       );
     }
     for (const relation of capture.relations) {
@@ -1290,12 +1838,12 @@ export async function commitFubonCreditCardCaptureBatch(
   if (peekFubonCreditCardHumanAttestationStatus(store.db) === "revoked")
     throw new FubonCreditCardAdmissionError("Fubon credit-card durable human attestation is revoked.");
   const committed = await commitCanonicalFinancialDepositCaptureBatch(
-    store,
-    captures.map(fubonCanonicalSpineCapture),
+      store,
+      captures.map(fubonCanonicalSpineCapture),
     (db) => {
       ensureFubonCreditCardSchema(db);
-      recordInitialFubonCreditCardHumanAttestationIfMissing(db);
-      if (!isFubonCreditCardHumanAttestationDurablyActive(db))
+      recordInitialFubonCreditCardHumanAttestationV2IfMissing(db);
+      if (!isFubonCreditCardHumanAttestationV2DurablyActive(db))
         throw new FubonCreditCardAdmissionError(
           "Fubon credit-card durable human attestation is revoked.",
         );

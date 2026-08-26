@@ -4,7 +4,7 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   getFubonCreditCardHumanAttestedV1Manifest,
   restoreFubonCreditCardHumanAttestedV1,
   revokeFubonCreditCardHumanAttestedV1,
@@ -24,6 +24,14 @@ import {
   commitFubonCreditCardCapture,
   ensureFubonCreditCardSchema,
 } from "./fubon-credit-card.ts";
+import {
+  fubonCreditCardPanFingerprint,
+  fubonCreditCardPanLast4,
+  normalizeFubonCreditCardPan,
+} from "./fubon-credit-card-pan.ts";
+
+const FUBON_CREDIT_CARD_CONTRACT_VERSION =
+  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion;
 
 const completeness = {
   billedPeriods: ["period-1", "period-2", "period-3", "period-4", "period-5", "period-6"],
@@ -46,6 +54,7 @@ const completeness = {
       sourceDeclaredRowCount: count,
       sourceDeclaredScopeRowCount: count,
       terminal: true,
+      terminalEvidence: "source-declared-total" as const,
     })),
     {
       kind: "unbilled" as const,
@@ -57,6 +66,7 @@ const completeness = {
       sourceDeclaredRowCount: 1,
       sourceDeclaredScopeRowCount: 1,
       terminal: true,
+      terminalEvidence: "source-declared-total" as const,
     },
   ],
 } as const;
@@ -69,7 +79,19 @@ const primaryInstrument = {
   evidence: {
     kind: "explicit-instrument-role" as const,
     sourceRecordKey: "row-purchase-a",
-    contractVersion: "fubon/credit-card/human-attested-v1",
+    contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
+  },
+};
+
+const secondaryInstrument = {
+  instrumentKey: "instrument-primary-b",
+  cardMask: "****5678",
+  productName: "SYNTHETIC GOLD",
+  role: "primary" as const,
+  evidence: {
+    kind: "explicit-instrument-role" as const,
+    sourceRecordKey: "row-purchase-b",
+    contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
   },
 };
 
@@ -153,6 +175,50 @@ function capture(
   };
 }
 
+function portfolioCapture(): FubonCreditCardCaptureInput {
+  const base = capture();
+  return {
+    ...base,
+    captureId: "capture-portfolio",
+    instruments: [primaryInstrument, secondaryInstrument],
+    transactions: [
+      transaction(),
+      transaction({
+        sourceRecordKey: "row-purchase-b",
+        instrumentKey: secondaryInstrument.instrumentKey,
+        description: "SYNTHETIC DINNER",
+        bookedAmount: "50.00",
+      }),
+      base.transactions[1]!,
+    ],
+    scope: {
+      ...base.scope,
+      completeness: {
+        ...completeness,
+        periodRowCounts: [2, 0, 0, 0, 0, 0],
+        recordCount: 3,
+        grids: completeness.grids.map((grid, index) =>
+          index === 0
+            ? {
+                ...grid,
+                capturedRowCount: 2,
+                sourceDeclaredRowCount: 2,
+                sourceDeclaredScopeRowCount: 2,
+              }
+            : grid,
+        ),
+      },
+    },
+    statements: [
+      {
+        ...base.statements[0]!,
+        balance: "173.45",
+        transactionSourceKeys: ["row-purchase-a", "row-purchase-b"],
+      },
+    ],
+  };
+}
+
 function repeatedOccurrenceCapture(
   overrides: Partial<FubonCreditCardCaptureInput> = {},
 ): FubonCreditCardCaptureInput {
@@ -190,10 +256,16 @@ function repeatedOccurrenceCapture(
   });
 }
 
-test("Fubon v1 contract is human-attested and keeps cards subordinate to an opaque account", () => {
-  assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute, FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute);
+test("Fubon v2 contract is human-attested and keeps cards subordinate to an opaque account", () => {
+  assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute, FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute);
+  assert.equal(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authority, "human-attested-primary-cardholder-portfolio");
+  assert.equal(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics.cards, "primary-card-instruments-under-attested-portfolio");
   assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.providerGuaranteed, false);
   assert.equal(FUBON_CREDIT_CARD_CAPTURE_CONTRACT.occurrenceProviderGuaranteed, false);
+  assert.equal(
+    FUBON_CREDIT_CARD_CAPTURE_CONTRACT.transactionIdentityRule,
+    "statement-key-or-source-scope-scoped-occurrence-v2",
+  );
 
   const left = capture();
   const right = capture({
@@ -225,6 +297,294 @@ test("Fubon v1 contract is human-attested and keeps cards subordinate to an opaq
   );
 });
 
+test("one portfolio account persists multiple card instruments with display-safe masks", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    const admitted = admitFubonCreditCardCapture(portfolioCapture());
+    const committed = await commitFubonCreditCardCapture(store, admitted);
+    assert.equal(committed.transactionCount, 3);
+    assert.equal(
+      Number(
+        (store.db.prepare("SELECT COUNT(*) AS value FROM financial_accounts").get() as {
+          value?: number;
+        }).value ?? 0,
+      ),
+      1,
+    );
+    const instruments = store.db.prepare(
+      `SELECT instrument_key, card_mask, role
+       FROM fubon_credit_instrument_details ORDER BY instrument_key`,
+    ).all() as Array<{ instrument_key?: string; card_mask?: string; role?: string }>;
+    assert.equal(instruments.length, 2);
+    assert.ok(instruments.every((row) => /^\*{4}\d{4}$/u.test(row.card_mask ?? "")));
+    assert.ok(instruments.every((row) => row.role === "primary"));
+    const transactionInstruments = store.db.prepare(
+      `SELECT DISTINCT instrument_id
+       FROM fubon_credit_transaction_details`,
+    ).all() as Array<{ instrument_id?: Uint8Array }>;
+    assert.equal(transactionInstruments.length, 2);
+    const transactionPayloads = store.db.prepare(
+      `SELECT payload_json
+       FROM source_records
+       WHERE record_kind = 'fubon-credit-card-transaction'
+       ORDER BY sequence_lexeme`,
+    ).all() as Array<{ payload_json?: string }>;
+    assert.equal(transactionPayloads.length, 3);
+    const parsedPayloads = transactionPayloads.map((row) =>
+      JSON.parse(row.payload_json ?? "{}") as Record<string, unknown>,
+    );
+    assert.deepEqual(
+      parsedPayloads.map((payload) => payload.cardMask),
+      ["****1234", "****5678", "****1234"],
+    );
+    assert.ok(
+      parsedPayloads.every(
+        (payload) =>
+          typeof payload.instrumentKey === "string" &&
+          /^\*{4}\d{4}$/u.test(String(payload.cardMask)),
+      ),
+    );
+    assert.equal(
+      transactionPayloads.some((row) => /4111\s*1111|1234\s*5678/u.test(row.payload_json ?? "")),
+      false,
+    );
+    const roleLineage = store.db.prepare(
+      `SELECT instrument.instrument_key, instrument.card_mask,
+              json_extract(source.payload_json, '$.instrumentKey') AS payload_instrument_key,
+              json_extract(source.payload_json, '$.cardMask') AS payload_card_mask
+       FROM fubon_credit_instrument_role_evidence evidence
+       JOIN fubon_credit_instrument_details instrument
+         ON instrument.instrument_id = evidence.instrument_id
+       JOIN source_records source
+         ON source.source_record_id = evidence.source_record_id
+       ORDER BY instrument.instrument_key`,
+    ).all() as Array<{
+      instrument_key?: string;
+      card_mask?: string;
+      payload_instrument_key?: string;
+      payload_card_mask?: string;
+    }>;
+    assert.deepEqual(roleLineage.map((row) => ({ ...row })), [
+      {
+        instrument_key: "instrument-primary-a",
+        card_mask: "****1234",
+        payload_instrument_key: "instrument-primary-a",
+        payload_card_mask: "****1234",
+      },
+      {
+        instrument_key: "instrument-primary-b",
+        card_mask: "****5678",
+        payload_instrument_key: "instrument-primary-b",
+        payload_card_mask: "****5678",
+      },
+    ]);
+    const persisted = JSON.stringify(
+      store.db.prepare(
+        `SELECT account_no FROM financial_accounts
+         UNION ALL SELECT instrument_key FROM fubon_credit_instrument_details
+         UNION ALL SELECT card_mask FROM fubon_credit_instrument_details`,
+      ).all(),
+    );
+    assert.equal(/\d[\d\s-]{11,}\d/u.test(persisted), false);
+  } finally {
+    store.close();
+  }
+});
+
+test("instrument mask column is added idempotently to a legacy extension table", () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    store.db.exec(`
+      DROP TABLE IF EXISTS fubon_credit_instrument_details;
+      CREATE TABLE fubon_credit_instrument_details (
+        instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
+        account_id BLOB NOT NULL,
+        instrument_key TEXT NOT NULL,
+        role TEXT NOT NULL,
+        lifecycle TEXT,
+        UNIQUE(account_id, instrument_key)
+      );
+    `);
+    ensureFubonCreditCardSchema(store.db);
+    ensureFubonCreditCardSchema(store.db);
+    const columns = store.db.prepare(
+      "PRAGMA table_info(fubon_credit_instrument_details)",
+    ).all() as Array<{ name?: string }>;
+    assert.equal(columns.filter((column) => column.name === "card_mask").length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("instrument role evidence rejects source payload mask drift", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    await assert.rejects(
+      commitFubonCreditCardCapture(
+        {
+          db: store.db,
+          databasePath: store.databasePath,
+          commitClock: store.commitClock,
+          beforeFubonCreditExtensionCommit: (db) => {
+            const row = db.prepare(
+              `SELECT source_record_id, payload_json
+               FROM source_records
+               WHERE record_kind = 'fubon-credit-card-transaction'
+               ORDER BY sequence_lexeme LIMIT 1`,
+            ).get() as { source_record_id?: Uint8Array; payload_json?: string } | undefined;
+            assert.ok(row?.source_record_id);
+            const payload = JSON.parse(row.payload_json ?? "{}") as Record<string, unknown>;
+            payload.cardMask = "****9999";
+            db.prepare(
+              "UPDATE source_records SET payload_json = ? WHERE source_record_id = ?",
+            ).run(JSON.stringify(payload), row.source_record_id);
+          },
+        },
+        admitFubonCreditCardCapture(capture()),
+      ),
+      /inconsistent card mask|source payload is inconsistent/i,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("full PAN identity is normalized, keyed, and never retained in admitted captures", async () => {
+  const pan = "4111 1111-1111 1111";
+  const normalized = normalizeFubonCreditCardPan(pan);
+  assert.equal(normalized, "4111111111111111");
+  assert.equal(fubonCreditCardPanLast4(pan), "1111");
+  const key = { secret: "synthetic-pan-fingerprint-key", keyVersion: "test-v1" };
+  const fingerprint = fubonCreditCardPanFingerprint(pan, key);
+  assert.equal(fingerprint.last4, "1111");
+  assert.equal(fingerprint.keyVersion, "test-v1");
+  assert.equal(
+    fubonCreditCardPanFingerprint("4111111111111111", key).fingerprint,
+    fingerprint.fingerprint,
+  );
+  assert.notEqual(
+    fubonCreditCardPanFingerprint("4012888888881881", key).fingerprint,
+    fingerprint.fingerprint,
+  );
+  assert.equal(
+    buildFubonCreditCardAccountIdentityKey(
+      {
+        sourceConnectionKey: "connection-a",
+        identityEpochKey: "epoch-1",
+        fullPan: pan,
+      },
+      { panFingerprintKey: key },
+    ),
+    buildFubonCreditCardAccountIdentityKey(
+      {
+        sourceConnectionKey: "connection-a",
+        identityEpochKey: "epoch-1",
+        fullPan: "4111111111111111",
+      },
+      { panFingerprintKey: key },
+    ),
+  );
+  assert.notEqual(
+    buildFubonCreditCardAccountIdentityKey(
+      {
+        sourceConnectionKey: "connection-a",
+        identityEpochKey: "epoch-1",
+        fullPan: "4012888888881881",
+      },
+      { panFingerprintKey: key },
+    ),
+    fingerprint.fingerprint,
+  );
+  assert.throws(
+    () => normalizeFubonCreditCardPan("4111 1111 1111 1112"),
+    (error: unknown) => {
+      assert.match(String(error), /invalid/i);
+      assert.doesNotMatch(String(error), /4111|1112/);
+      return true;
+    },
+  );
+
+  const panIdentity = {
+    sourceConnectionKey: "connection-a",
+    identityEpochKey: "epoch-1",
+    fullPan: pan,
+  };
+  const { fullPan: _discardedPan, ...panIdentityWithoutPan } = panIdentity;
+  const panCapture = capture();
+  panCapture.identity = panIdentity;
+  panCapture.statements = [
+    {
+      ...panCapture.statements[0]!,
+      evidence: {
+        kind: "issuer-settled-cycle-summary",
+        sourceRecordKey: buildFubonCreditCardStatementEvidenceKey(
+          panIdentity,
+          panCapture.statements[0]!,
+          { panFingerprintKey: key },
+        ),
+        settled: true,
+      },
+    },
+  ];
+  const admitted = admitFubonCreditCardCapture(panCapture, {
+    panFingerprintKey: key,
+  });
+  assert.equal(admitted.identity.identityMethod, "pan-hmac");
+  assert.equal(admitted.identity.panLast4, "1111");
+  assert.equal(admitted.identity.panFingerprintKeyVersion, "test-v1");
+  assert.equal("fullPan" in admitted.identity, false);
+  assert.equal(JSON.stringify(admitted).includes("4111111111111111"), false);
+  assert.throws(
+    () => admitFubonCreditCardCapture(panCapture),
+    /fingerprint key is unavailable/i,
+  );
+  assert.equal(admitFubonCreditCardCapture(capture()).identity.identityMethod, "human-attested");
+  assert.throws(
+    () =>
+      admitFubonCreditCardCapture({
+        ...capture(),
+        identity: {
+          ...panIdentityWithoutPan,
+          panFingerprint: fingerprint.fingerprint,
+          panLast4: fingerprint.last4,
+          panFingerprintKeyVersion: fingerprint.keyVersion,
+        } as never,
+      }),
+    /derived from an observed PAN/i,
+  );
+
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    await commitFubonCreditCardCapture(store, admitted);
+    const identityRows = store.db.prepare(
+      `SELECT identity_method, pan_fingerprint, pan_last4,
+              pan_fingerprint_key_version
+       FROM fubon_credit_account_identity_details`,
+    ).all() as Array<{
+      identity_method?: string;
+      pan_fingerprint?: string;
+      pan_last4?: string;
+      pan_fingerprint_key_version?: string;
+    }>;
+    assert.deepEqual(identityRows.map((row) => ({ ...row })), [{
+      identity_method: "pan-hmac",
+      pan_fingerprint: admitted.identity.panFingerprint,
+      pan_last4: "1111",
+      pan_fingerprint_key_version: "test-v1",
+    }]);
+    const persisted = JSON.stringify(
+      store.db.prepare(
+        `SELECT account_no FROM financial_accounts
+         UNION ALL SELECT payload_json FROM source_records
+         UNION ALL SELECT pan_fingerprint FROM fubon_credit_account_identity_details`,
+      ).all(),
+    );
+    assert.equal(persisted.includes("4111111111111111"), false);
+  } finally {
+    store.close();
+  }
+});
+
 test("billing status is independent and excluded from the transaction identity tuple", () => {
   const billed = transaction({ billingStatus: "billed" });
   const unbilled = transaction({ billingStatus: "unbilled" });
@@ -243,6 +603,16 @@ test("billing status is independent and excluded from the transaction identity t
   assert.equal(admitted.transactions[0]?.billingStatus, "billed");
   assert.equal(admitted.transactions[1]?.postingStatus, "posted");
   assert.equal(admitted.transactions[1]?.billingStatus, "unbilled");
+});
+
+test("statement identity scopes credit-card transaction source keys", () => {
+  const identity = capture().identity;
+  const july = transaction({ statementKey: "statement-2026-07", occurrenceIndex: 0 });
+  const june = transaction({ statementKey: "statement-2026-06", occurrenceIndex: 0 });
+  assert.notEqual(
+    buildFubonCreditCardTransactionSourceKey(identity, july),
+    buildFubonCreditCardTransactionSourceKey(identity, june),
+  );
 });
 
 test("posting date and exact sign/direction mapping are total", () => {
@@ -267,6 +637,11 @@ test("posting date and exact sign/direction mapping are total", () => {
 test("full six-period plus unbilled terminal grid evidence is required", () => {
   const admitted = admitFubonCreditCardCapture(capture());
   assert.equal(admitted.scope.completeness.billedPeriods.length, 6);
+  assert.ok(
+    admitted.scope.completeness.grids.every(
+      (grid) => grid.terminalEvidence === "source-declared-total",
+    ),
+  );
   for (const invalid of [
     { terminalGrids: false },
     { unfiltered: false },
@@ -309,6 +684,127 @@ test("full six-period plus unbilled terminal grid evidence is required", () => {
         ),
       /terminal|maximum-page|count|evidence/i,
     );
+  }
+});
+
+test("short first pages are terminal only without fabricated source totals", () => {
+  const shortPageCompleteness = {
+    ...completeness,
+    grids: completeness.grids.map((grid) => {
+      const {
+        sourceDeclaredRowCount: _sourceDeclaredRowCount,
+        sourceDeclaredScopeRowCount: _sourceDeclaredScopeRowCount,
+        ...shortPageGrid
+      } = grid;
+      return {
+        ...shortPageGrid,
+        terminalEvidence: "short-page" as const,
+      };
+    }),
+  };
+  const admitted = admitFubonCreditCardCapture(
+    capture({
+      scope: {
+        ...capture().scope,
+        completeness: shortPageCompleteness,
+      },
+    }),
+  );
+  assert.ok(
+    admitted.scope.completeness.grids.every(
+      (grid) =>
+        grid.terminalEvidence === "short-page" &&
+        !Object.hasOwn(grid, "sourceDeclaredRowCount") &&
+        !Object.hasOwn(grid, "sourceDeclaredScopeRowCount"),
+    ),
+  );
+
+  for (const invalidGrid of [
+    { ...admitted.scope.completeness.grids[0]!, capturedRowCount: 2_147_483_647 },
+    { ...admitted.scope.completeness.grids[0]!, currentPage: 2 },
+    { ...admitted.scope.completeness.grids[0]!, pageSize: 100 },
+    {
+      ...admitted.scope.completeness.grids[0]!,
+      sourceDeclaredRowCount: 1,
+    },
+  ]) {
+    const grids = admitted.scope.completeness.grids.map((grid, index) =>
+      index === 0 ? invalidGrid : grid,
+    );
+    assert.throws(
+      () =>
+        admitFubonCreditCardCapture(
+          capture({
+            scope: {
+              ...capture().scope,
+              completeness: {
+                ...shortPageCompleteness,
+                grids: grids as never,
+              },
+            },
+          }),
+        ),
+      /terminal|maximum-page|count|evidence/i,
+    );
+  }
+
+  const missingDiscriminator = admitted.scope.completeness.grids.map(
+    (grid, index) => {
+      if (index !== 0) return grid;
+      const { terminalEvidence: _terminalEvidence, ...withoutEvidence } = grid;
+      return withoutEvidence;
+    },
+  );
+  assert.throws(
+    () =>
+      admitFubonCreditCardCapture(
+        capture({
+          scope: {
+            ...capture().scope,
+            completeness: {
+              ...shortPageCompleteness,
+              grids: missingDiscriminator as never,
+            },
+          },
+        }),
+      ),
+    /terminal|maximum-page|evidence/i,
+  );
+});
+
+test("shared canonical pages retain the short-page proof discriminator", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    ensureFubonCreditCardSchema(store.db);
+    const shortPageCompleteness = {
+      ...completeness,
+      grids: completeness.grids.map((grid) => {
+        const {
+          sourceDeclaredRowCount: _sourceDeclaredRowCount,
+          sourceDeclaredScopeRowCount: _sourceDeclaredScopeRowCount,
+          ...shortPageGrid
+        } = grid;
+        return { ...shortPageGrid, terminalEvidence: "short-page" as const };
+      }),
+    };
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(
+        capture({
+          scope: {
+            ...capture().scope,
+            completeness: shortPageCompleteness,
+          },
+        }),
+      ),
+    );
+    const proofKinds = store.db.prepare(
+      "SELECT proof_kind FROM capture_scope_pages ORDER BY page_ordinal",
+    ).all() as Array<{ proof_kind?: string }>;
+    assert.equal(proofKinds.length, 7);
+    assert.ok(proofKinds.every((page) => page.proof_kind === "short-page-terminal-grid"));
+  } finally {
+    store.close();
   }
 });
 
@@ -365,6 +861,36 @@ test("only issuer settled-cycle summaries may establish Statements", () => {
         }),
       ),
     /scoped|account|cycle|summary evidence/i,
+  );
+});
+
+test("billed source evidence may remain without settled Statement membership", () => {
+  const admitted = admitFubonCreditCardCapture(
+    capture({
+      transactions: [
+        transaction({
+          statementKey: undefined,
+          sourceScopeKey: "fubon-source-only-period-v2:sha256:period-source-only",
+        }),
+        transaction({
+          sourceRecordKey: "row-unbilled-a",
+          consumeDate: "2026-08-20",
+          postingDate: "2026-08-21",
+          description: "SYNTHETIC TRANSIT",
+          bookedAmount: "20.00",
+          billingStatus: "unbilled",
+          statementKey: undefined,
+        }),
+      ],
+      statements: [],
+    }),
+  );
+  assert.equal(admitted.statements.length, 0);
+  assert.equal(admitted.transactions[0]?.billingStatus, "billed");
+  assert.equal(admitted.transactions[0]?.statementKey, undefined);
+  assert.equal(
+    admitted.transactions[0]?.sourceScopeKey,
+    "fubon-source-only-period-v2:sha256:period-source-only",
   );
 });
 
@@ -473,21 +999,112 @@ test("similarity cannot create a relation; explicit source linkage is required",
 
   const explicit = admitFubonCreditCardCapture(
     capture({
+      transactions: [
+        transaction(),
+        transaction({
+          sourceRecordKey: "row-refund-a",
+          consumeDate: "2026-08-20",
+          postingDate: "2026-08-21",
+          direction: "inflow",
+          description: "SYNTHETIC REFUND",
+          bookedAmount: "20.00",
+          billingStatus: "unbilled",
+          statementKey: undefined,
+        }),
+      ],
       relations: [
         {
           kind: "refund_of",
-          fromSourceRecordKey: "row-unbilled-a",
+          fromSourceRecordKey: "row-refund-a",
           toSourceRecordKey: "row-purchase-a",
           evidence: {
             kind: "explicit-source-linkage",
-            sourceRecordKey: "relation-1",
-            contractVersion: "fubon/credit-card/human-attested-v1",
+            sourceRecordKey: "row-refund-a",
+            contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
           },
         },
       ],
     }),
   );
   assert.equal(explicit.relations.length, 1);
+
+  for (const invalid of [
+    {
+      ...explicit,
+      relations: [
+        {
+          ...explicit.relations[0]!,
+          evidence: {
+            kind: "explicit-source-linkage" as const,
+            sourceRecordKey: "fabricated-relation-evidence",
+            contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
+          },
+        },
+      ],
+    },
+    {
+      ...explicit,
+      relations: [
+        {
+          ...explicit.relations[0]!,
+          evidence: {
+            kind: "explicit-source-linkage" as const,
+            sourceRecordKey: "row-unbilled-a",
+            contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
+          },
+        },
+      ],
+    },
+  ]) {
+    assert.throws(
+      () => admitFubonCreditCardCapture(invalid as never),
+      /endpoint|source record|evidence/i,
+    );
+  }
+
+  assert.throws(
+    () =>
+      admitFubonCreditCardCapture(
+        capture({
+          relations: [
+            {
+              kind: "refund_of",
+              fromSourceRecordKey: "row-unbilled-a",
+              toSourceRecordKey: "row-purchase-a",
+              evidence: {
+                kind: "explicit-source-linkage",
+                sourceRecordKey: "row-unbilled-a",
+                contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
+              },
+            },
+          ],
+        }),
+      ),
+    /refund|inflow|outflow|direction/i,
+  );
+
+  for (const kind of ["pending_to_posted", "unsupported"] as const) {
+    assert.throws(
+      () =>
+        admitFubonCreditCardCapture(
+          capture({
+            relations: [
+              {
+                kind: kind as never,
+                fromSourceRecordKey: "row-purchase-a",
+                toSourceRecordKey: "row-unbilled-a",
+                evidence: {
+                  kind: "explicit-source-linkage",
+                  sourceRecordKey: "row-purchase-a",
+                contractVersion: FUBON_CREDIT_CARD_CONTRACT_VERSION,
+                },
+              },
+            ],
+          }),
+        ),
+      /unsupported|pending|posted|relation/i,
+    );
+  }
 });
 
 test("restores the attestation state after the focused event check", () => {
@@ -558,25 +1175,29 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
       /crosses capture, account, or instrument scope/i,
     );
     const summaryEvidenceRows = store.db.prepare(
-      `SELECT statement_revision_id, account_id, capture_id, evidence_key
+      `SELECT statement_revision_id, account_id, capture_id, evidence_key,
+              evidence_source_record_id
        FROM fubon_credit_statement_summary_evidence ORDER BY rowid`,
     ).all() as Array<{
       statement_revision_id: Uint8Array;
       account_id: Uint8Array;
       capture_id: Uint8Array;
       evidence_key: string;
+      evidence_source_record_id: Uint8Array;
     }>;
     assert.throws(
       () =>
         store.db.prepare(
           `INSERT INTO fubon_credit_statement_summary_evidence(
-            statement_revision_id, account_id, capture_id, evidence_key
-          ) VALUES (?, ?, ?, ?)`,
+            statement_revision_id, account_id, capture_id, evidence_key,
+            evidence_source_record_id
+          ) VALUES (?, ?, ?, ?, ?)`,
         ).run(
           summaryEvidenceRows[0]!.statement_revision_id,
           summaryEvidenceRows[0]!.account_id,
           summaryEvidenceRows.at(-1)!.capture_id,
           `${summaryEvidenceRows[0]!.evidence_key}:cross-capture`,
+          summaryEvidenceRows.at(-1)!.evidence_source_record_id,
         ),
       /crosses capture or account scope/i,
     );
@@ -585,7 +1206,7 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
       Number((store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as { value?: number }).value ?? 0);
     assert.equal(count("financial_accounts"), 2);
     assert.equal(count("source_captures"), 3);
-    assert.equal(count("source_records"), 6);
+    assert.equal(count("source_records"), 9);
     assert.equal(count("financial_transactions"), 4);
     assert.equal(count("transaction_revisions"), 4);
     assert.equal(count("assertions"), 4);
@@ -597,18 +1218,57 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     assert.equal(count("fubon_credit_statement_revision_details"), 2);
     assert.equal(count("fubon_credit_statement_membership_details"), 2);
     assert.equal(count("fubon_credit_statement_summary_evidence"), 3);
+    assert.equal(count("fubon_credit_account_identity_details"), 2);
+    const committedCaptures = store.db.prepare(
+      `SELECT authority_route, completeness_rule_version
+       FROM source_captures ORDER BY capture_key`,
+    ).all() as Array<{
+      authority_route?: string;
+      completeness_rule_version?: string;
+    }>;
+    assert.equal(committedCaptures.length, 3);
+    assert.ok(
+      committedCaptures.every(
+        (row) =>
+          row.authority_route === FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute &&
+          row.completeness_rule_version === FUBON_CREDIT_CARD_CONTRACT_VERSION,
+      ),
+      "new Fubon captures must persist the v2 route and completeness contract",
+    );
+    const summarySourceRecords = store.db.prepare(
+      `SELECT record_kind, occurrence_key, payload_json
+       FROM source_records
+       WHERE record_kind = 'fubon-credit-card-statement-summary'`,
+    ).all() as Array<{ record_kind?: string; occurrence_key?: string; payload_json?: string }>;
+    assert.equal(summarySourceRecords.length, 3);
+    assert.ok(summarySourceRecords.every((row) => row.record_kind === "fubon-credit-card-statement-summary"));
+    assert.ok(summarySourceRecords.every((row) => row.occurrence_key?.startsWith("sha256:")));
+    assert.ok(summarySourceRecords.every((row) => row.payload_json?.includes("statementKey")));
     assert.equal(count("fubon_credit_relation_details"), 0);
     assert.equal(
       count("sqlite_master WHERE type = 'table' AND name = 'fubon_credit_accounts'"),
       0,
     );
     const posted = store.db.prepare(
-      `SELECT posting_status FROM transaction_revisions
-       WHERE posting_rule_version = 'fubon/credit-card/human-attested-v1'
+      `SELECT posting_status, semantic_rule_version, effective_time_rule_version
+       FROM transaction_revisions
+       WHERE posting_rule_version = 'fubon/credit-card/human-attested-v2'
        ORDER BY revision_id`,
-    ).all() as Array<{ posting_status?: string }>;
+    ).all() as Array<{
+      posting_status?: string;
+      semantic_rule_version?: string;
+      effective_time_rule_version?: string;
+    }>;
     assert.equal(posted.length, 4);
     assert.ok(posted.every((row) => row.posting_status === "posted"));
+    assert.ok(
+      posted.every(
+        (row) =>
+          row.semantic_rule_version === FUBON_CREDIT_CARD_CONTRACT_VERSION &&
+          row.effective_time_rule_version === FUBON_CREDIT_CARD_CONTRACT_VERSION,
+      ),
+      "new Fubon transaction revisions must pin v2 semantic and effective-time rules",
+    );
     const attestedRows = store.db.prepare(
       `SELECT provider_key, sequence_lexeme FROM source_records
        WHERE record_kind = 'fubon-credit-card-transaction'`,
@@ -624,6 +1284,75 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     store.close();
   }
 
+});
+
+test("idempotently migrates legacy statement evidence lineage without losing rows", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    store.db.exec(`
+CREATE TABLE fubon_credit_statement_summary_evidence (
+  statement_revision_id BLOB NOT NULL,
+  account_id BLOB NOT NULL,
+  capture_id BLOB NOT NULL,
+  evidence_key TEXT NOT NULL,
+  PRIMARY KEY(statement_revision_id, capture_id),
+  UNIQUE(account_id, capture_id, evidence_key)
+);
+INSERT INTO fubon_credit_statement_summary_evidence(
+  statement_revision_id, account_id, capture_id, evidence_key
+) VALUES (randomblob(16), randomblob(16), randomblob(16), 'legacy-evidence');
+CREATE TRIGGER fubon_credit_summary_evidence_scope_guard
+BEFORE INSERT ON fubon_credit_statement_summary_evidence
+WHEN 1
+BEGIN
+  SELECT RAISE(ABORT, 'stale legacy summary evidence trigger');
+END;
+    `);
+
+    ensureFubonCreditCardSchema(store.db);
+    ensureFubonCreditCardSchema(store.db);
+    const columns = store.db.prepare(
+      "PRAGMA table_info(fubon_credit_statement_summary_evidence)",
+    ).all() as Array<{ name?: string }>;
+    assert.ok(columns.some((column) => column.name === "evidence_source_record_id"));
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare("SELECT COUNT(*) AS value FROM fubon_credit_statement_summary_evidence")
+            .get() as { value?: number }
+        ).value ?? 0,
+      ),
+      1,
+    );
+    assert.throws(
+      () =>
+        store.db.prepare(
+          `INSERT INTO fubon_credit_statement_summary_evidence(
+            statement_revision_id, account_id, capture_id, evidence_key,
+            evidence_source_record_id
+          ) VALUES (randomblob(16), randomblob(16), randomblob(16), 'missing-lineage', NULL)`,
+        ).run(),
+      /crosses capture or account scope/i,
+    );
+
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(capture()),
+    );
+    const migratedRows = store.db.prepare(
+      `SELECT evidence_key, evidence_source_record_id
+       FROM fubon_credit_statement_summary_evidence
+       ORDER BY rowid`,
+    ).all() as Array<{ evidence_key?: string; evidence_source_record_id?: Uint8Array | null }>;
+    assert.equal(migratedRows.length, 2);
+    assert.equal(migratedRows[0]?.evidence_key, "legacy-evidence");
+    assert.equal(migratedRows[0]?.evidence_source_record_id, null);
+    assert.equal(migratedRows[1]?.evidence_key?.startsWith("sha256:"), true);
+    assert.ok(migratedRows[1]?.evidence_source_record_id);
+  } finally {
+    store.close();
+  }
 });
 
 test("extension failure rolls back initial attestation and the shared capture atomically", async () => {
@@ -688,7 +1417,7 @@ test("identical occurrences remain distinct while repeated captures add provenan
       );
     assert.equal(count("financial_transactions"), 3);
     assert.equal(count("transaction_revisions"), 3);
-    assert.equal(count("source_records"), 6);
+    assert.equal(count("source_records"), 8);
     assert.equal(count("assertion_provenance"), 6);
   } finally {
     store.close();
@@ -835,7 +1564,7 @@ test("generic current, historical, and lineage queries see Fubon after reopen", 
   }
   const query = createCanonicalFinancialQuery(directory, {
     integrationNamespace: "fubon",
-    postingRuleVersion: "fubon/credit-card/human-attested-v1",
+    postingRuleVersion: "fubon/credit-card/human-attested-v2",
   });
   const current = await query.current({ kind: "current" });
   assert.equal(current.accounts.length, 1);
@@ -845,7 +1574,7 @@ test("generic current, historical, and lineage queries see Fubon after reopen", 
   assert.ok(
     current.transactions.every(
       (transaction) =>
-        transaction.postingRuleVersion === "fubon/credit-card/human-attested-v1",
+        transaction.postingRuleVersion === "fubon/credit-card/human-attested-v2",
     ),
   );
   const historical = await query.historical({

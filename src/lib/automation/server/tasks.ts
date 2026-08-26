@@ -1195,6 +1195,11 @@ export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
   ),
 );
 
+/** Secrets owned by the application rather than exposed as credential fields. */
+export const AUTOMATION_MANAGED_SECRET_KEYS = [
+  "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY",
+] as const;
+
 export const AUTOMATION_ENABLED_KEYS = AUTOMATION_CREDENTIAL_GROUPS.map(
   (group) => group.enabledKey,
 );
@@ -1215,9 +1220,12 @@ export const AUTOMATION_NON_SECRET_KEYS = [
 
 const nonSecretCredentialKeys = new Set<string>(["MAX_SUB_ACCOUNT"]);
 
-export const AUTOMATION_SECRET_KEYS = AUTOMATION_CREDENTIAL_KEYS.filter(
-  (key) => !nonSecretCredentialKeys.has(key),
-);
+export const AUTOMATION_SECRET_KEYS = [
+  ...AUTOMATION_CREDENTIAL_KEYS.filter(
+    (key) => !nonSecretCredentialKeys.has(key),
+  ),
+  ...AUTOMATION_MANAGED_SECRET_KEYS,
+];
 
 export function automationCredentialKeyIsSecret(key: string) {
   return !nonSecretCredentialKeys.has(key);
