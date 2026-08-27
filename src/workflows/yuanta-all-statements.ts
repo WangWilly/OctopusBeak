@@ -13,7 +13,9 @@ import {
 } from "../lib/automation/statement-selection.js";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
-import yuantaCreditCardStatements from "./yuanta-credit-card-statements.js";
+import yuantaCreditCardStatements, {
+  yuantaCanonicalHumanAttestationFromEnvironment,
+} from "./yuanta-credit-card-statements.js";
 import yuantaForeignCurrencyStatements from "./yuanta-foreign-currency-statements.js";
 import yuantaFundStatements from "./yuanta-fund-statements.js";
 import yuantaLoanStatements from "./yuanta-loan-statements.js";
@@ -23,6 +25,8 @@ import {
   type YuantaCredentials,
   YUANTA_ENTRY_URL,
 } from "./yuanta-auth.ts";
+
+export { deriveYuantaCanonicalHumanAttestation } from "./yuanta-credit-card-statements.js";
 
 type BrowserScope = Page | Frame;
 
@@ -471,6 +475,11 @@ export async function runYuantaAllStatements(
   const input = rawInput as WorkflowInput;
   const credentials = input.credentials;
   const prepare = input.prepareBetweenComponents;
+  const canonicalHumanAttestation =
+    yuantaCanonicalHumanAttestationFromEnvironment(credentials ?? {});
+  const creditCardInput = canonicalHumanAttestation
+    ? { ...asRecord(input.creditCard), canonicalHumanAttestation }
+    : { ...asRecord(input.creditCard), canonicalHumanAttestation: undefined };
   console.log("automation-progress: 0");
 
   // Yuanta exposes the complete product registry for every run. The `include`
@@ -525,7 +534,7 @@ export async function runYuantaAllStatements(
       run: () =>
         yuantaCreditCardStatements.run(
           ctx,
-          withCredentials(input.creditCard, credentials),
+          withCredentials(creditCardInput, credentials),
         ),
     },
     {

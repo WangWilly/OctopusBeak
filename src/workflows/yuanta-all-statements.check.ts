@@ -25,6 +25,8 @@ assert.match(source, /const hasTable = await hasAttachedLocator\(/);
 assert.match(source, /if \(hasMonthLink && hasTable\) return true/);
 assert.match(source, /yuanta-all-component-page-ready[\s\S]*durationMs/);
 assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
+assert.match(source, /yuantaCanonicalHumanAttestationFromEnvironment/);
+assert.match(source, /canonicalHumanAttestation/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
@@ -81,10 +83,17 @@ assert.equal(workflow.handler, runYuantaAllStatements);
 
 const selectionKey = "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES";
 const previousSelection = process.env[selectionKey];
+const identitySecretKey = "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
+const previousIdentitySecret = process.env[identitySecretKey];
 process.env[selectionKey] = "foreign_currency,fund";
+process.env[identitySecretKey] = "synthetic-managed-secret";
 const calls: string[] = [];
 const ctx = { page: {}, session: "yuanta-session" };
-const credentials = { yuanta_user_id: "id" };
+const credentials = { yuanta_user_id: "id", yuanta_account: "account" };
+const expectedIdentity = module.deriveYuantaCanonicalHumanAttestation(
+  credentials,
+  "synthetic-managed-secret",
+);
 const foreignCurrencyOutput = {
   dateRange: "three_months",
   channelType: "all",
@@ -118,6 +127,7 @@ const creditCardOutput = {
   count: 0,
   files: [],
 };
+let observedCreditCardInput: Record<string, unknown> | undefined;
 let output: unknown;
 try {
   output = await runYuantaAllStatements(
@@ -177,7 +187,8 @@ try {
       },
       yuantaCreditCardStatements: {
         name: "yuantaCreditCardStatements",
-        run: async () => {
+        run: async (_actualCtx: unknown, input: Record<string, unknown>) => {
+          observedCreditCardInput = input;
           calls.push("run:creditCard");
           return creditCardOutput;
         },
@@ -200,7 +211,18 @@ try {
 } finally {
   if (previousSelection === undefined) delete process.env[selectionKey];
   else process.env[selectionKey] = previousSelection;
+  if (previousIdentitySecret === undefined) delete process.env[identitySecretKey];
+  else process.env[identitySecretKey] = previousIdentitySecret;
 }
+
+assert.deepEqual(
+  observedCreditCardInput?.canonicalHumanAttestation,
+  expectedIdentity,
+);
+assert.doesNotMatch(
+  JSON.stringify(observedCreditCardInput?.canonicalHumanAttestation),
+  /"id"|"account"|synthetic-managed-secret/iu,
+);
 
 assert.deepEqual(calls, [
   "authenticate",
