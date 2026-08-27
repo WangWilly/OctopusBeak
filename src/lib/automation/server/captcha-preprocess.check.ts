@@ -269,3 +269,57 @@ test("preprocessCaptchaImage exposes each calibrated E-Invoice strategy", () => 
     ],
   );
 });
+
+test("Fubon foreground strategies preserve their calibrated color semantics", () => {
+  const png = new PNG({ width: 158, height: 30 });
+  png.data.fill(255);
+  const sourceIndex = (15 * png.width + 79) * 4;
+  png.data.set([160, 240, 160, 255], sourceIndex);
+  const input = PNG.sync.write(png);
+
+  const luminance = decodeGrayImage(preprocessCaptchaImage(input, undefined, {
+    imagePreprocessing: ["fubon-luminance-foreground"],
+  }));
+  const minChannel = decodeGrayImage(preprocessCaptchaImage(input, undefined, {
+    imagePreprocessing: ["fubon-min-channel-foreground"],
+  }));
+  const outputIndex = (15 * 3 + 1) * minChannel.width + (79 * 3 + 1);
+
+  assert.deepEqual([luminance.width, luminance.height], [474, 90]);
+  assert.equal(luminance.data[outputIndex], 255);
+  assert.equal(minChannel.data[outputIndex], 0);
+});
+
+test("Fubon foreground preprocessing fails closed outside 158 by 30", () => {
+  const png = new PNG({ width: 157, height: 30 });
+  png.data.fill(0);
+  const input = PNG.sync.write(png);
+
+  for (const mode of [
+    "fubon-luminance-foreground",
+    "fubon-min-channel-foreground",
+  ] as const) {
+    const output = decodeGrayImage(preprocessCaptchaImage(input, undefined, {
+      imagePreprocessing: [mode],
+    }));
+    assert.deepEqual([output.width, output.height], [157, 30]);
+    assert.ok(output.data.every((value) => value === 255));
+  }
+});
+
+test("preprocessCaptchaImage exposes each calibrated Fubon strategy", () => {
+  const png = new PNG({ width: 158, height: 30 });
+  png.data.fill(255);
+  const input = PNG.sync.write(png);
+
+  for (const mode of [
+    "fubon-luminance-foreground",
+    "fubon-min-channel-foreground",
+  ] as const) {
+    const steps: string[] = [];
+    preprocessCaptchaImage(input, (step) => steps.push(step), {
+      imagePreprocessing: [mode],
+    });
+    assert.deepEqual(steps, ["grayscale", "upscaled", "binarized"]);
+  }
+});

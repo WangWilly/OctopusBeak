@@ -36,6 +36,12 @@ import {
 const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
+export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
+const FUBON_CAPTCHA_INPUT_SEMANTIC_ID = "fubon.login.captcha-input";
+const FUBON_CAPTCHA_IMAGE_SEMANTIC_ID = "fubon.login.captcha-image";
+const FUBON_CAPTCHA_FRAME_NAME = "txnFrame";
+const FUBON_CAPTCHA_NATURAL_WIDTH = 158;
+const FUBON_CAPTCHA_NATURAL_HEIGHT = 30;
 
 type YuantaCompletionProbe = {
   checkboxChecked: boolean;
@@ -190,6 +196,42 @@ function yuantaBankCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
     (target) => target.semanticId === "yuanta-bank.login.captcha-input",
   ) && contract.challengeImageRegion?.semanticId === "yuanta-bank.login.captcha-image";
+}
+
+function fubonCaptchaContract(contract: HumanAssistanceContract) {
+  return contract.targets.some(
+    (target) => target.semanticId === FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+  ) && contract.challengeImageRegion?.semanticId === FUBON_CAPTCHA_IMAGE_SEMANTIC_ID;
+}
+
+async function resolveFubonCaptchaImage(
+  page: ViewerPageAccess,
+  _contract: HumanAssistanceContract,
+): Promise<CaptchaImageDescriptor | null> {
+  let frame;
+  try {
+    frame = page.frame?.(FUBON_CAPTCHA_FRAME_NAME);
+  } catch {
+    return null;
+  }
+  if (!frame) return null;
+
+  const images = frame.locator(FUBON_CAPTCHA_IMAGE_SELECTOR);
+  const count = await images.count().catch(() => 0);
+  if (count !== 1) return null;
+  const image = images.first();
+  if (!await image.isVisible().catch(() => false)) return null;
+  const rect = await image.boundingBox().catch(() => null);
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+
+  return {
+    image,
+    rect,
+    pageUrl: page.url?.() ?? "",
+    frameUrl: typeof frame.url === "function" ? frame.url() : "",
+    frameName: typeof frame.name === "function" ? frame.name() : "",
+    markerKey: "__octopusBeakFubonCaptchaFrameMarker",
+  };
 }
 
 async function resolveYuantaCaptchaImage(
@@ -352,6 +394,13 @@ async function refreshYuantaChallengeSubmitTarget(
 }
 
 function createAdapters(withPage: ProviderVerificationPageRunner): readonly ProviderVerificationAdapter[] {
+  const fubonSourceOwner = createLoadedCaptchaSourceOwner({
+    id: FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+    withPage,
+    resolveImage: resolveFubonCaptchaImage,
+    naturalWidth: FUBON_CAPTCHA_NATURAL_WIDTH,
+    naturalHeight: FUBON_CAPTCHA_NATURAL_HEIGHT,
+  });
   const sinopacSourceOwner = createLoadedCaptchaSourceOwner({
     id: "sinopac.login.captcha-image",
     withPage,
@@ -365,6 +414,22 @@ function createAdapters(withPage: ProviderVerificationPageRunner): readonly Prov
     resolveImage: resolveYuantaCaptchaImage,
   });
   return [
+    {
+      id: "fubon",
+      capabilityOwner: {
+        id: fubonSourceOwner.id,
+        capabilities: ["challenge-image"],
+        owns: fubonCaptchaContract,
+        sourceOwner: fubonSourceOwner,
+      },
+      owns: (contract) => contract.targets.some(
+        (target) => target.semanticId === FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+      ),
+      refreshTarget: async () => null,
+      inspectCompletion: async () => false,
+      shouldCheckCompletion: () => false,
+      shouldAutoResume: () => false,
+    },
     {
       id: "cathay",
       owns: (contract) => contract.targets.some((target) => target.semanticId.startsWith("cathay.")),

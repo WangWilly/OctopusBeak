@@ -1,7 +1,10 @@
 import { pause } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const FUBON_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -1125,16 +1128,10 @@ export async function inspectFubonOtpFromCurrentFrame(
   }
 }
 
-async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
-  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
-  const frame = await waitForLoginFrame(
-    page,
-    FUBON_LOGIN_FRAME_NAME,
-    deadline,
-    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-  );
-  await frame.locator("#m1_userCaptcha").focus();
-  await emitHumanAssistanceStage({
+export function fubonCaptchaAssistanceStage(
+  frame: Frame,
+): WorkflowHumanAssistanceStage {
+  return {
     stageId: "fubon-login-captcha",
     title: "Enter the Fubon CAPTCHA",
     targets: [
@@ -1155,6 +1152,23 @@ async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
     ],
     challengeKind: "text-captcha",
     charset: "digits",
+    ocrPageSegmentationMode: "single-word",
+    ocrAttemptPlan: [
+      {
+        imagePreprocessing: [],
+        ocrPageSegmentationMode: "single-word",
+      },
+      {
+        imagePreprocessing: ["fubon-luminance-foreground"],
+        ocrPageSegmentationMode: "single-word",
+      },
+      {
+        imagePreprocessing: ["fubon-min-channel-foreground"],
+        ocrPageSegmentationMode: "single-word",
+      },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+    expectedAnswerLength: 6,
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",
@@ -1167,7 +1181,19 @@ async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
       contextRegionIds: ["captcha-challenge"],
       initialZoom: 1.15,
     },
-  });
+  };
+}
+
+async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
+  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
+  const frame = await waitForLoginFrame(
+    page,
+    FUBON_LOGIN_FRAME_NAME,
+    deadline,
+    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+  );
+  await frame.locator("#m1_userCaptcha").focus();
+  await emitHumanAssistanceStage(fubonCaptchaAssistanceStage(frame));
 }
 
 async function emitFubonOtpAssistance(page: Page): Promise<void> {
