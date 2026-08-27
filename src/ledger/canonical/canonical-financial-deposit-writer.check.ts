@@ -9,6 +9,8 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
 } from "./yuanta-domestic-deposit.ts";
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "./yuanta-human-attestation.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./esun-credit-card-human-attestation.ts";
+import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
@@ -119,6 +121,7 @@ Object.assign(fubonCapture.identity, {
 });
 Object.assign(fubonCapture.scope, {
   completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+  completenessRuleVersion: "fubon/credit-card/human-attested-v2",
   pageCount: 7,
   withdrawalPolicy: "never-infer",
 });
@@ -167,6 +170,119 @@ mixedFubonRoute.contractVersion = "fubon/credit-card/human-attested-v1";
 assert.throws(
   () => admitCanonicalFinancialDepositCapture(mixedFubonRoute),
   /contract version|route profile/i,
+);
+
+function humanAttestedCreditCardCapture(source: "esun" | "yuanta") {
+  const route =
+    source === "esun"
+      ? ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE
+      : YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE;
+  const pageCount = source === "esun" ? 1 : 7;
+  const completenessBasis =
+    source === "esun"
+      ? "default-one-year-combined-grid-page-one-maximum-page-size-card-counts"
+      : "six-billed-months-plus-unbilled-terminal-no-pager";
+  const capture = structuredClone(admittedCapture!);
+  capture.captureId = `${source}-writer-route-positive`;
+  capture.authorityRoute = route;
+  capture.contractVersion = route;
+  Object.assign(capture.identity, {
+    integrationNamespace: source,
+    stream: "credit-card",
+    recordKind: `${source}-credit-card-transaction`,
+    accountNo: `${source}-portfolio`,
+    accountType: "credit",
+    currency: "TWD",
+  });
+  Object.assign(capture.scope, {
+    completenessBasis,
+    completenessRuleVersion: route,
+    pageCount,
+    absenceAuthority: null,
+    withdrawalPolicy: "never-infer",
+  });
+  Object.assign(capture.semantics, {
+    postingStatus: "posted",
+    postingOrigin: "human-attested",
+    postingBasis: "statement-posted-history",
+    postingRuleVersion: route,
+    semanticRuleVersion: route,
+    effectiveTimeBasis: "transaction-time",
+    effectiveTimeRuleVersion: route,
+    timeZone: "Asia/Taipei",
+    timePrecision: "date",
+    timeOrigin: "defaulted_local_midnight",
+    requireBalance: false,
+    providerGuaranteed: false,
+    occurrenceProviderGuaranteed: false,
+  });
+  capture.pages = Array.from({ length: pageCount }, (_, pageOrdinal) => ({
+    ...capture.pages[0]!,
+    pageOrdinal,
+    terminal: true,
+    rowCount: pageOrdinal === 0 ? 1 : 0,
+  }));
+  const record = capture.records[0]!;
+  record.providerKey = "human-attested:no-provider-key";
+  record.humanAttestedOccurrenceKey = record.occurrenceKey;
+  record.sequenceLexeme = "observed-source-order:0";
+  record.sourceTime = {
+    localDate: record.effectiveOn,
+    localTime: "00:00:00",
+    timeZone: "Asia/Taipei",
+    epochMilliseconds: Date.parse(`${record.effectiveOn}T00:00:00+08:00`),
+    precision: "date",
+    timeOrigin: "defaulted_local_midnight",
+  };
+  record.transactionDateTimeLocal = `${record.effectiveOn}T00:00:00`;
+  return capture;
+}
+
+const esunCapture = humanAttestedCreditCardCapture("esun");
+const esunRouteAdmission = admitCanonicalFinancialDepositCapture(esunCapture);
+assert.equal(esunRouteAdmission.authorityRoute, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE);
+
+const yuantaCreditCardCapture = humanAttestedCreditCardCapture("yuanta");
+const yuantaCreditCardRouteAdmission = admitCanonicalFinancialDepositCapture(
+  yuantaCreditCardCapture,
+);
+assert.equal(
+  yuantaCreditCardRouteAdmission.authorityRoute,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+);
+
+const crossSource = structuredClone(esunCapture);
+crossSource.captureId = "esun-writer-route-cross-source";
+crossSource.identity.integrationNamespace = "yuanta";
+assert.throws(
+  () => admitCanonicalFinancialDepositCapture(crossSource),
+  /integration namespace|route profile/i,
+);
+
+const mixedEsunVersion = structuredClone(esunCapture);
+mixedEsunVersion.captureId = "esun-writer-route-mixed-version";
+mixedEsunVersion.contractVersion = "esun/credit-card/human-attested-v2";
+assert.throws(
+  () => admitCanonicalFinancialDepositCapture(mixedEsunVersion),
+  /contract version|route profile/i,
+);
+
+const mixedYuantaRule = structuredClone(yuantaCreditCardCapture);
+mixedYuantaRule.captureId = "yuanta-writer-route-mixed-rule";
+mixedYuantaRule.semantics.semanticRuleVersion =
+  "esun/credit-card/human-attested-v1";
+assert.throws(
+  () => admitCanonicalFinancialDepositCapture(mixedYuantaRule),
+  /semantics|route profile/i,
+);
+
+const mixedYuantaCompletenessRule = structuredClone(yuantaCreditCardCapture);
+mixedYuantaCompletenessRule.captureId = "yuanta-writer-route-mixed-completeness-rule";
+mixedYuantaCompletenessRule.scope.completenessRuleVersion =
+  "esun/credit-card/human-attested-v1";
+assert.throws(
+  () => admitCanonicalFinancialDepositCapture(mixedYuantaCompletenessRule),
+  /completeness rule version|route profile/i,
 );
 
 const unknownRoute = structuredClone(admittedCapture);

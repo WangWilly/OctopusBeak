@@ -1,9 +1,24 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import {
+  buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
+  commitYuantaCreditCardCaptureBatch,
+  type YuantaCreditCardCaptureBuilderOptions,
+  type YuantaCreditCardIdentityInput,
+  type YuantaCreditCardSourceRow,
+  type YuantaCreditCardStatementSummary,
+  type YuantaCreditCardValidatedCapture,
+} from "../ledger/canonical/yuanta-credit-card.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
@@ -14,13 +29,15 @@ import {
 
 type BrowserScope = Page | Frame;
 
-type MonthOption = {
+export type YuantaCreditCardMonthOption = {
   index: number;
   label: string;
 };
 
+type MonthOption = YuantaCreditCardMonthOption;
+
 type StatementKind = "unbilled" | "billed";
-type CaptureMetadata =
+export type YuantaCreditCardCaptureMetadata =
   | {
       snapshotMode: "full";
       captureId: string;
@@ -33,7 +50,9 @@ type CaptureMetadata =
       completenessEvidence: Record<string, unknown>;
     };
 
-type StatementRow = {
+type CaptureMetadata = YuantaCreditCardCaptureMetadata;
+
+export type YuantaCreditCardStatementRow = {
   creditCardNo: string;
   creditCardName: string;
   consumeDate: string;
@@ -47,6 +66,8 @@ type StatementRow = {
   period: string | null;
 };
 
+type StatementRow = YuantaCreditCardStatementRow;
+
 type ParsedCreditCardBillsHtml = {
   monthOptions: MonthOption[];
   paymentStatus: string;
@@ -59,6 +80,13 @@ const inputSchema = z.object({
   includePaymentDetails: z.boolean().default(true),
   includeSummary: z.boolean().default(true),
   replaceActiveSession: z.boolean().default(true),
+  canonicalHumanAttestation: z
+    .object({
+      sourceConnectionKey: z.string().min(3).max(128),
+      identityEpochKey: z.string().min(3).max(128),
+      humanAttestedAccountKey: z.string().min(3).max(128),
+    })
+    .optional(),
 });
 
 const tableFileSchema = z.object({
@@ -80,10 +108,137 @@ const outputSchema = z.object({
   replacedActiveSession: z.boolean(),
   count: z.number().int().nonnegative(),
   files: z.array(tableFileSchema),
+  canonicalAdmission: z.enum(["not-configured", "admitted"]),
+  canonicalCaptureCount: z.number().int().nonnegative(),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
+
+/**
+ * The workflow's Yuanta identity epoch is deliberately tied to the
+ * human-attested credit-card contract.  Login values and the managed secret
+ * are inputs to the derivation only; neither is returned by these helpers.
+ */
+export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH =
+  "yuanta-credit-card-human-attested-v1" as const;
+
+export type YuantaCanonicalHumanAttestation = {
+  sourceConnectionKey: string;
+  identityEpochKey: typeof YUANTA_CREDIT_CARD_IDENTITY_EPOCH;
+  humanAttestedAccountKey: string;
+};
+
+export type YuantaCreditCardCanonicalCaptureInput = {
+  capture: YuantaCreditCardCaptureMetadata;
+  identity: YuantaCreditCardIdentityInput;
+  /** Device-owned managed secret; consumed only while deriving opaque instruments. */
+  instrumentFingerprintSecret: string;
+  allMonthOptions: readonly MonthOption[];
+  selectedMonthOptions: readonly MonthOption[];
+  includeUnbilled: boolean;
+  terminalPages: readonly boolean[];
+  billedRows: readonly YuantaCreditCardStatementRow[];
+  unbilledRows: readonly YuantaCreditCardStatementRow[];
+  statementSummaries?: readonly YuantaCreditCardStatementSummary[];
+};
+
+function normalizeYuantaLoginPart(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toUpperCase();
+}
+
+function hmacYuantaIdentity(secret: string, value: unknown): string {
+  return createHmac("sha256", secret)
+    .update(JSON.stringify(value))
+    .digest("base64url");
+}
+
+type YuantaProjectedInstrumentIdentity = {
+  instrumentKey: string;
+  cardMask: `****${number}${number}${number}${number}`;
+};
+
+/**
+ * Parse the exact masked label observed on both Yuanta grids and immediately
+ * reduce its first-six + last-four projection to an account-scoped HMAC.
+ * Full PANs, last-four-only values, malformed masks, and empty secrets are
+ * deliberately rejected.
+ */
+export function deriveYuantaProjectedInstrumentIdentity(
+  cardLabel: string,
+  identity: YuantaCreditCardIdentityInput,
+  managedSecret: string,
+): YuantaProjectedInstrumentIdentity | undefined {
+  const secret = managedSecret.trim();
+  if (!secret) return undefined;
+  const normalized = cleanText(cardLabel)
+    .normalize("NFKC")
+    .replace(/[‐‑‒–—−]/gu, "-");
+  const match = normalized.match(
+    /^(\d{4})-(\d{2})([xX*•●]{2})-([xX*•●]{4})-(\d{4})$/u,
+  );
+  if (!match) return undefined;
+  const firstSix = `${match[1]}${match[2]}`;
+  const lastFour = match[5]!;
+  const projection = `${firstSix}:${lastFour}`;
+  return {
+    instrumentKey: `yuanta_instrument_${hmacYuantaIdentity(secret, [
+      "yuanta-credit-card-instrument-projection-v1",
+      identity.sourceConnectionKey,
+      identity.identityEpochKey,
+      identity.humanAttestedAccountKey,
+      projection,
+    ])}`,
+    cardMask: `****${lastFour}` as `****${number}${number}${number}${number}`,
+  };
+}
+
+/**
+ * Derive stable opaque Yuanta source and portfolio keys from the normalized
+ * login scope.  The password is intentionally excluded so password rotation
+ * does not create a new account identity.  Callers must supply the
+ * device-owned managed secret explicitly; it is never included in the
+ * returned identity or in any workflow output.
+ */
+export function deriveYuantaCanonicalHumanAttestation(
+  credentials: YuantaCredentials,
+  managedSecret: string,
+): YuantaCanonicalHumanAttestation | undefined {
+  const secret = managedSecret.trim();
+  const userId = normalizeYuantaLoginPart(credentials.yuanta_user_id);
+  const account = normalizeYuantaLoginPart(credentials.yuanta_account);
+  if (!secret || !userId || !account) return undefined;
+
+  const sourceConnectionKey = `yuanta_connection_${hmacYuantaIdentity(
+    secret,
+    ["yuanta-credit-card-login-scope-v1", userId, account],
+  )}`;
+  const humanAttestedAccountKey = `portfolio_${hmacYuantaIdentity(secret, [
+    "yuanta-credit-card-primary-cardholder-portfolio-v1",
+    sourceConnectionKey,
+    userId,
+    account,
+  ])}`;
+  return {
+    sourceConnectionKey,
+    identityEpochKey: YUANTA_CREDIT_CARD_IDENTITY_EPOCH,
+    humanAttestedAccountKey,
+  };
+}
+
+/** Resolve the generic application-managed identity secret without exposing it. */
+export function yuantaCanonicalHumanAttestationFromEnvironment(
+  credentials: YuantaCredentials,
+): YuantaCanonicalHumanAttestation | undefined {
+  const managedSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+  return managedSecret
+    ? deriveYuantaCanonicalHumanAttestation(credentials, managedSecret)
+    : undefined;
+}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
@@ -1019,6 +1174,177 @@ function cardKeyForRow(row: StatementRow): string {
   return row.creditCardNo.replace(/\D/g, "").slice(-4);
 }
 
+function safeCanonicalCardName(value: string): string {
+  return cleanText(value)
+    .replace(/(?<!\d)(?:\d[\s-]*){12,19}(?!\d)/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * Convert parser rows to the canonical builder's redacted source-row shape.
+ * The workflow HMACs the observed first-six + last-four projection, then only
+ * an opaque instrument key and `****last4` cross the canonical boundary.
+ */
+export function toYuantaCanonicalCreditCardSourceRow(
+  row: YuantaCreditCardStatementRow,
+  identity: YuantaCreditCardIdentityInput,
+  managedSecret: string,
+  kind: StatementKind = row.period ? "billed" : "unbilled",
+): YuantaCreditCardSourceRow | undefined {
+  const instrument = deriveYuantaProjectedInstrumentIdentity(
+    row.creditCardNo,
+    identity,
+    managedSecret,
+  );
+  if (!instrument) return undefined;
+  return {
+    creditCardNo: instrument.cardMask,
+    creditCardName: safeCanonicalCardName(row.creditCardName),
+    consumeDate: cleanText(row.consumeDate),
+    postedDate: cleanText(row.postedDate),
+    description: cleanText(row.description),
+    countryCurrency: cleanText(row.countryCurrency),
+    foreignExchangeDate: cleanText(row.foreignExchangeDate),
+    foreignAmount: cleanText(row.foreignAmount),
+    twdAmount: cleanText(row.twdAmount),
+    paymentStatus: cleanText(row.paymentStatus),
+    period: kind === "billed" ? row.period : null,
+    instrumentKey: instrument.instrumentKey,
+  };
+}
+
+function sameMonthOptionSet(
+  left: readonly MonthOption[],
+  right: readonly MonthOption[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightByIndex = new Map(right.map((option) => [option.index, option.label]));
+  if (rightByIndex.size !== right.length) return false;
+  return left.every(
+    (option) => rightByIndex.get(option.index) === option.label,
+  );
+}
+
+/**
+ * Return terminal no-pager evidence for the six billed responses and the
+ * optional unbilled response.  This helper is intentionally pure so a caller
+ * can retain only booleans instead of response bodies.
+ */
+export function yuantaCreditCardTerminalPagesFromHtml(
+  billedResponses: readonly string[],
+  unbilledResponse?: string,
+): boolean[] {
+  return [
+    ...billedResponses.map((html) => !hasUntraversedPager(html)),
+    ...(unbilledResponse === undefined
+      ? []
+      : [!hasUntraversedPager(unbilledResponse)]),
+  ];
+}
+
+/**
+ * Map a complete browser capture to the canonical module's builder options.
+ * Partial month selections, omitted unbilled data, and any pager evidence are
+ * deliberately represented as `undefined` so callers cannot accidentally
+ * admit a partial snapshot as a canonical portfolio capture.
+ */
+export function yuantaCreditCardCaptureBuilderOptions(
+  options: YuantaCreditCardCanonicalCaptureInput,
+): YuantaCreditCardCaptureBuilderOptions | undefined {
+  const { capture } = options;
+  const completenessEvidence = capture.completenessEvidence;
+  const evidenceMonthIndexes = completenessEvidence.monthIndexes;
+  const evidenceMatchesMonths =
+    evidenceMonthIndexes === undefined ||
+    (Array.isArray(evidenceMonthIndexes) &&
+      evidenceMonthIndexes.length === options.allMonthOptions.length &&
+      options.allMonthOptions.every(
+        (option) => evidenceMonthIndexes.includes(option.index),
+      ));
+  const evidenceIncludesUnbilled =
+    completenessEvidence.unbilled === undefined ||
+    completenessEvidence.unbilled === true;
+  const evidenceHasNoPager =
+    completenessEvidence.pagination === undefined ||
+    completenessEvidence.pagination === "none";
+  const completeScope =
+    capture.snapshotMode === "full" &&
+    options.includeUnbilled &&
+    options.allMonthOptions.length === 6 &&
+    sameMonthOptionSet(options.allMonthOptions, options.selectedMonthOptions) &&
+    evidenceMatchesMonths &&
+    evidenceIncludesUnbilled &&
+    evidenceHasNoPager &&
+    options.terminalPages.length === 7 &&
+    options.terminalPages.every((terminal) => terminal === true);
+  if (!completeScope) return undefined;
+
+  const billedPeriods = options.allMonthOptions.map((option) => option.label);
+  if (
+    billedPeriods.some((period) => period.length === 0) ||
+    new Set(billedPeriods).size !== billedPeriods.length
+  )
+    return undefined;
+
+  const billedRows = options.billedRows.map((row) =>
+    toYuantaCanonicalCreditCardSourceRow(
+      row,
+      options.identity,
+      options.instrumentFingerprintSecret,
+      "billed",
+    ),
+  );
+  const unbilledRows = options.unbilledRows.map((row) =>
+    toYuantaCanonicalCreditCardSourceRow(
+      row,
+      options.identity,
+      options.instrumentFingerprintSecret,
+      "unbilled",
+    ),
+  );
+  if (
+    billedRows.some((row) => row === undefined) ||
+    unbilledRows.some((row) => row === undefined)
+  )
+    return undefined;
+
+  return {
+    captureId: capture.captureId,
+    observedAt: capture.capturedAt,
+    identity: options.identity,
+    billedRows: billedRows as YuantaCreditCardSourceRow[],
+    unbilledRows: unbilledRows as YuantaCreditCardSourceRow[],
+    billedPeriods,
+    terminalPages: [...options.terminalPages],
+    ...(options.statementSummaries
+      ? { statementSummaries: [...options.statementSummaries] }
+      : {}),
+  };
+}
+
+/** Build one admitted Yuanta capture when the supplied browser evidence is complete. */
+export function buildYuantaCanonicalCreditCardCaptureFromWorkflow(
+  options: YuantaCreditCardCanonicalCaptureInput,
+): YuantaCreditCardValidatedCapture | undefined {
+  const builderOptions = yuantaCreditCardCaptureBuilderOptions(options);
+  return builderOptions
+    ? buildCanonicalYuantaCreditCardCapture(builderOptions)
+    : undefined;
+}
+
+/**
+ * Plural form mirrors the other credit-card workflow seam and keeps the
+ * caller's commit path batch-friendly.  No capture is returned for partial
+ * or pager-bearing browser evidence.
+ */
+export function buildYuantaCanonicalCreditCardCaptures(
+  options: YuantaCreditCardCanonicalCaptureInput,
+): YuantaCreditCardValidatedCapture[] {
+  const capture = buildYuantaCanonicalCreditCardCaptureFromWorkflow(options);
+  return capture ? [capture] : [];
+}
+
 async function writeStatementFile(
   nextTimestamp: () => string,
   kind: StatementKind,
@@ -1218,6 +1544,10 @@ export default workflow("yuantaCreditCardStatements", {
       input.replaceActiveSession,
     );
     const replacedActiveSession = authResult.replacedActiveSession;
+    const instrumentFingerprintSecret =
+      process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+    const canonicalHumanAttestation =
+      yuantaCanonicalHumanAttestationFromEnvironment(credentials);
 
     const pageReadyStartedAt = Date.now();
     console.log("yuanta-credit-card-page-ready-start", {
@@ -1248,6 +1578,7 @@ export default workflow("yuantaCreditCardStatements", {
     });
     const nextTimestamp = createTimestampGenerator();
     const billedRows: StatementRow[] = [];
+    const terminalPages: boolean[] = [];
     const creditCardStepCount =
       monthOptions.length + (input.includeUnbilled ? 1 : 0);
     let completedCreditCardSteps = 0;
@@ -1282,6 +1613,7 @@ export default workflow("yuantaCreditCardStatements", {
         return submitCreditCardMonth(page, month);
       },
       async (month, monthHtml, monthPosition) => {
+        terminalPages.push(true);
         const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
         billedRows.push(...monthRows);
         completedCreditCardSteps += 1;
@@ -1311,6 +1643,7 @@ export default workflow("yuantaCreditCardStatements", {
           "YuanTa credit-card response has untraversed pagination.",
         );
       }
+      terminalPages.push(true);
       unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
       completedCreditCardSteps += 1;
       console.log("yuanta-credit-card-unbilled-complete", {
@@ -1328,6 +1661,10 @@ export default workflow("yuantaCreditCardStatements", {
     const isFullCapture =
       !input.monthIndexes &&
       input.includeUnbilled &&
+      allMonthOptions.length === 6 &&
+      monthOptions.length === allMonthOptions.length &&
+      terminalPages.length === 7 &&
+      terminalPages.every((terminal) => terminal === true) &&
       [...billedRows, ...unbilledRows].every(
         (row) => cardKeyForRow(row).length === 4,
       );
@@ -1353,6 +1690,38 @@ export default workflow("yuantaCreditCardStatements", {
             unbilled: input.includeUnbilled,
           },
         };
+
+    let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
+    let canonicalCaptureCount = 0;
+    if (
+      canonicalHumanAttestation &&
+      instrumentFingerprintSecret &&
+      isFullCapture
+    ) {
+      const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures({
+        capture,
+        identity: canonicalHumanAttestation,
+        instrumentFingerprintSecret,
+        allMonthOptions,
+        selectedMonthOptions: monthOptions,
+        includeUnbilled: input.includeUnbilled,
+        terminalPages,
+        billedRows,
+        unbilledRows,
+      });
+      if (canonicalCaptures.length > 0) {
+        const store = createCanonicalSourceStore(
+          canonicalSqlitePath(DEFAULT_LEDGER_DIR),
+        );
+        try {
+          await commitYuantaCreditCardCaptureBatch(store, canonicalCaptures);
+          canonicalAdmission = "admitted";
+          canonicalCaptureCount = canonicalCaptures.length;
+        } finally {
+          store.close();
+        }
+      }
+    }
 
     if (input.includeUnbilled) {
       files.push(
@@ -1380,6 +1749,8 @@ export default workflow("yuantaCreditCardStatements", {
       replacedActiveSession,
       count: files.length,
       files,
+      canonicalAdmission,
+      canonicalCaptureCount,
     };
   },
 });

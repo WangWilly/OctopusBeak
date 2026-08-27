@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -8,19 +8,36 @@ import {
 } from "libretto";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
+import {
+  buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
+  commitEsunCreditCardCapture,
+  ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
+  type EsunCreditCardCanonicalCaptureOptions,
+  type EsunCreditCardIdentityInput,
+  type EsunCreditCardSettledPeriod,
+  type EsunCreditCardSourceRow,
+  type EsunCreditCardValidatedCapture,
+} from "../ledger/canonical/esun-credit-card.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
-type EsunCredentials = {
+export type EsunCredentials = {
   esun_user_id?: string;
   esun_account?: string;
   esun_password?: string;
 };
 
 type StatementKind = "unbilled" | "billed";
-type GridState = { currentPage?: string; currentPageSize?: string };
-type CaptureMetadata =
+export type GridState = { currentPage?: string; currentPageSize?: string };
+export type CaptureMetadata =
   | {
       snapshotMode: "full";
       captureId: string;
@@ -33,7 +50,7 @@ type CaptureMetadata =
       completenessEvidence: Record<string, unknown>;
     };
 
-type StatementRow = {
+export type StatementRow = {
   statementPeriod: string;
   cardNumber: string;
   consumeDate: string;
@@ -43,6 +60,8 @@ type StatementRow = {
   paymentCurrency: string;
   twdAmount: string;
   paymentStatus: StatementKind;
+  /** Raw issuer status retained in memory for the canonical source contract. */
+  sourcePaymentStatus?: string;
 };
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
@@ -74,6 +93,8 @@ const outputSchema = z.object({
     endDate: z.string(),
   }),
   files: z.array(tableFileSchema),
+  canonicalAdmission: z.enum(["not-configured", "admitted"]),
+  canonicalCaptureCount: z.number().int().nonnegative(),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
@@ -168,7 +189,166 @@ export function isEsunCompleteGrid({
   currentPage,
   currentPageSize,
 }: GridState): boolean {
-  return currentPage === "1" && currentPageSize === String(2_147_483_647);
+  return (
+    currentPage === "1" &&
+    currentPageSize === String(ESUN_CREDIT_CARD_MAX_PAGE_SIZE)
+  );
+}
+
+export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE;
+
+function normalizedEsunLoginPart(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toUpperCase();
+}
+
+function esunLoginScope(
+  credentials: EsunCredentials,
+): readonly [string, string] | null {
+  const userId = normalizedEsunLoginPart(credentials.esun_user_id);
+  const account = normalizedEsunLoginPart(credentials.esun_account);
+  if (!userId || !account) return null;
+  return [userId, account];
+}
+
+function hmacEsunIdentity(secret: string, value: unknown): string {
+  return createHmac("sha256", secret)
+    .update(JSON.stringify(value))
+    .digest("base64url");
+}
+
+function optionalEsunManagedSecret(): string | undefined {
+  const secret =
+    process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+  return secret || undefined;
+}
+
+/**
+ * Derive opaque E.SUN source and portfolio identity keys in memory from the
+ * normalized login scope and the device-managed HMAC secret. Neither login
+ * value, password, nor secret is returned or persisted.
+ */
+export function deriveEsunCanonicalHumanAttestation(
+  credentials: EsunCredentials,
+  managedSecret = optionalEsunManagedSecret() ?? "",
+):
+  | {
+      sourceConnectionKey: string;
+      identityEpochKey: typeof ESUN_CREDIT_CARD_IDENTITY_EPOCH;
+      humanAttestedAccountKey: string;
+    }
+  | undefined {
+  const secret = managedSecret.trim();
+  const scope = esunLoginScope(credentials);
+  if (!secret || !scope) return undefined;
+  const scopeDigest = hmacEsunIdentity(secret, [
+    "esun-credit-card-login-scope-v1",
+    ...scope,
+  ]);
+  const sourceConnectionKey = `esun_connection_${scopeDigest}`;
+  const humanAttestedAccountKey = `portfolio_${hmacEsunIdentity(secret, [
+    "esun-credit-card-primary-cardholder-portfolio-v1",
+    sourceConnectionKey,
+    ...scope,
+  ])}`;
+  return {
+    sourceConnectionKey,
+    identityEpochKey: ESUN_CREDIT_CARD_IDENTITY_EPOCH,
+    humanAttestedAccountKey,
+  };
+}
+
+export type EsunCanonicalCaptureBuildInput = {
+  startDate: string;
+  endDate: string;
+  identity: EsunCreditCardIdentityInput;
+  statementRows: readonly StatementRow[];
+  unbilledRows?: readonly StatementRow[];
+  grid: GridState;
+  capture: CaptureMetadata;
+  /** Explicit issuer cycle-summary evidence; query dates are not statements. */
+  settledPeriods?: readonly EsunCreditCardSettledPeriod[];
+};
+
+function canonicalPaymentStatus(row: StatementRow): "已入帳" | "未入帳" {
+  const sourceStatus = row.sourcePaymentStatus?.trim();
+  if (sourceStatus === "已入帳" || sourceStatus === "未入帳") {
+    return sourceStatus;
+  }
+  if (sourceStatus) {
+    throw new Error("E.SUN source payment status is unsupported.");
+  }
+  return row.paymentStatus === "billed" ? "已入帳" : "未入帳";
+}
+
+function mapEsunStatementRow(row: StatementRow): EsunCreditCardSourceRow {
+  const cardDigits = row.cardNumber.replace(/\D/gu, "");
+  if (!/^\d{4}$/u.test(cardDigits)) {
+    throw new Error(
+      "E.SUN canonical capture requires a display-safe four-digit card key.",
+    );
+  }
+  return {
+    statementPeriod: row.statementPeriod,
+    cardNumber: cardDigits,
+    consumeDate: row.consumeDate,
+    description: row.description,
+    foreignCurrency: row.foreignCurrency,
+    foreignAmount: row.foreignAmount,
+    paymentCurrency: row.paymentCurrency.trim() || "TWD",
+    twdAmount: row.twdAmount,
+    paymentStatus: canonicalPaymentStatus(row),
+  };
+}
+
+/**
+ * Admit a complete terminal E.SUN grid through the canonical builder. Partial
+ * captures remain source-only. Settled statements are created only when the
+ * caller supplies explicit issuer cycle-summary evidence; the combined grid's
+ * query range is deliberately never inferred to be a billing cycle.
+ */
+export function buildEsunCanonicalCreditCardCapture(
+  input: EsunCanonicalCaptureBuildInput,
+): EsunCreditCardValidatedCapture | undefined {
+  if (
+    input.capture.snapshotMode !== "full" ||
+    input.capture.captureKinds[0] !== "billed" ||
+    input.capture.captureKinds[1] !== "unbilled" ||
+    input.capture.completenessEvidence.range !== "default_one_year" ||
+    !isEsunCompleteGrid(input.grid) ||
+    input.identity.identityEpochKey !== ESUN_CREDIT_CARD_IDENTITY_EPOCH
+  ) {
+    return undefined;
+  }
+
+  const statementRows = input.statementRows.map(mapEsunStatementRow);
+  const unbilledRows = (input.unbilledRows ?? []).map(mapEsunStatementRow);
+  const allRows = [...statementRows, ...unbilledRows];
+  const options: EsunCreditCardCanonicalCaptureOptions = {
+    captureId: input.capture.captureId,
+    observedAt: input.capture.capturedAt,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    identity: input.identity,
+    statementRows,
+    unbilledRows,
+    grid: {
+      kind: "combined",
+      currentPage: Number(input.grid.currentPage),
+      pageSize: Number(input.grid.currentPageSize),
+      maximumPageSize: ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
+      capturedRowCount: allRows.length,
+      terminal: true,
+    },
+    ...(input.settledPeriods === undefined
+      ? {}
+      : { settledPeriods: input.settledPeriods }),
+  };
+  return buildCanonicalEsunCreditCardCapture(options);
 }
 
 async function waitForFrame(
@@ -350,6 +530,7 @@ async function readStatementRows(
       paymentCurrency: payment.currency,
       twdAmount: payment.amount,
       paymentStatus,
+      sourcePaymentStatus: cells[5] ?? "",
     });
   }
 
@@ -543,6 +724,36 @@ export default workflow("esunCreditCardStatements", {
         cardKeys,
       ),
     ];
+    const managedSecret = optionalEsunManagedSecret();
+    const canonicalHumanAttestation = managedSecret
+      ? deriveEsunCanonicalHumanAttestation(credentials, managedSecret)
+      : undefined;
+    const canonicalCapture = canonicalHumanAttestation
+      ? buildEsunCanonicalCreditCardCapture({
+          startDate,
+          endDate,
+          identity: canonicalHumanAttestation,
+          statementRows: billedRows,
+          unbilledRows,
+          grid: completeGrid,
+          capture,
+        })
+      : undefined;
+    let canonicalAdmission: "not-configured" | "admitted" =
+      "not-configured";
+    let canonicalCaptureCount = 0;
+    if (canonicalCapture) {
+      const store = createCanonicalSourceStore(
+        canonicalSqlitePath(DEFAULT_LEDGER_DIR),
+      );
+      try {
+        await commitEsunCreditCardCapture(store, canonicalCapture);
+        canonicalAdmission = "admitted";
+        canonicalCaptureCount = 1;
+      } finally {
+        store.close();
+      }
+    }
     console.log("automation-progress: 100");
 
     return {
@@ -550,6 +761,8 @@ export default workflow("esunCreditCardStatements", {
       count: files.length,
       query: { startDate, endDate },
       files,
+      canonicalAdmission,
+      canonicalCaptureCount,
     };
   },
 });

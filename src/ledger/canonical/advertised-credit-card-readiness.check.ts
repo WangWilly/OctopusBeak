@@ -8,14 +8,18 @@ import {
   type AdvertisedCanonicalCreditCardReadinessEntry,
 } from "./advertised-credit-card-readiness.ts";
 
-test("Fubon is the first release-ready canonical credit-card source", () => {
-  assert.deepEqual(ADVERTISED_CANONICAL_CREDIT_CARD_SOURCE_IDS, ["fubon"]);
-  assert.equal(ADVERTISED_CANONICAL_CREDIT_CARD_READINESS.length, 1);
+test("advertised canonical credit-card sources are independently release-ready", () => {
+  assert.deepEqual(ADVERTISED_CANONICAL_CREDIT_CARD_SOURCE_IDS, [
+    "fubon",
+    "esun",
+    "yuanta",
+  ]);
+  assert.equal(ADVERTISED_CANONICAL_CREDIT_CARD_READINESS.length, 3);
   assert.deepEqual(evaluateAdvertisedCanonicalCreditCardReadiness(), {
-    status: "release-ready",
-    releaseReady: true,
-    advertisedSourceCount: 1,
-    unreadySourceIds: [],
+    status: "blocked",
+    releaseReady: false,
+    advertisedSourceCount: 3,
+    unreadySourceIds: ["esun", "yuanta"],
   });
   const entry = ADVERTISED_CANONICAL_CREDIT_CARD_READINESS[0];
   assert.equal(entry.authority, "fubon/credit-card/human-attested-v2");
@@ -36,4 +40,57 @@ test("Fubon is the first release-ready canonical credit-card source", () => {
     false,
     "v1 remains historical and cannot be advertised as the current route",
   );
+
+  const esun = ADVERTISED_CANONICAL_CREDIT_CARD_READINESS.find(
+    ({ sourceId }) => sourceId === "esun",
+  );
+  const yuanta = ADVERTISED_CANONICAL_CREDIT_CARD_READINESS.find(
+    ({ sourceId }) => sourceId === "yuanta",
+  );
+  assert.ok(esun);
+  assert.ok(yuanta);
+  assert.deepEqual(esun.blockers, [
+    "issuer-settled-cycle-summary-evidence-missing",
+  ]);
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(esun), false);
+  assert.deepEqual(yuanta.blockers, [
+    "issuer-settled-cycle-summary-evidence-missing",
+  ]);
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(yuanta), false);
+
+  assert.deepEqual(evaluateAdvertisedCanonicalCreditCardReadiness(), {
+    status: "blocked",
+    releaseReady: false,
+    advertisedSourceCount: 3,
+    unreadySourceIds: ["esun", "yuanta"],
+  });
+
+  const unblockedYuanta = {
+    ...yuanta,
+    blockers: [],
+  } as unknown as AdvertisedCanonicalCreditCardReadinessEntry;
+  assert.equal(
+    isAdvertisedCanonicalCreditCardEntryReleaseReady(unblockedYuanta),
+    true,
+  );
+  const revokedEsun = {
+    ...esun,
+    authority: "esun/credit-card/revoked" as const,
+  } as unknown as AdvertisedCanonicalCreditCardReadinessEntry;
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(revokedEsun), false);
+  assert.deepEqual(
+    evaluateAdvertisedCanonicalCreditCardReadiness([
+      entry,
+      revokedEsun,
+      unblockedYuanta,
+    ]),
+    {
+      status: "blocked",
+      releaseReady: false,
+      advertisedSourceCount: 3,
+      unreadySourceIds: ["esun"],
+    },
+  );
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(entry), true);
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(unblockedYuanta), true);
 });
