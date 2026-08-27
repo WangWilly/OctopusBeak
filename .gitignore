@@ -25,3 +25,7 @@ design-qa.md
 
 # Codebase knowledge graph artifacts.
 /.codebase-memory/
+
+# Tesseract runtime language models; never commit downloaded OCR artifacts.
+*.traineddata
+*.traineddata.gz
