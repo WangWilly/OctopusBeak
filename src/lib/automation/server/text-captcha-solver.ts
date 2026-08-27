@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createWorker, OEM, PSM, type Page } from "tesseract.js";
 import type {
   CaptchaImagePreprocessingMode,
@@ -136,6 +139,11 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
 let workerPromise: ReturnType<typeof createWorker> | null = null;
 let recognitionQueue = Promise.resolve();
 
+// Tesseract.js writes downloaded language models to `cachePath`. Keep those
+// runtime artifacts outside the repository so a local OCR run cannot create a
+// source-controlled `*.traineddata` file in the current working directory.
+export const TESSERACT_CACHE_PATH = join(tmpdir(), "octopusbeak", "tesseract");
+
 const TESSERACT_PAGE_SEGMENTATION_MODES: Record<
   CaptchaOcrPageSegmentationMode,
   PSM
@@ -153,9 +161,11 @@ export function tesseractPageSegmentationMode(
 
 function tesseractWorker() {
   if (workerPromise) return workerPromise;
-  workerPromise = createWorker("eng", OEM.LSTM_ONLY, {
-    logger: () => {},
-  })
+  workerPromise = mkdir(TESSERACT_CACHE_PATH, { recursive: true })
+    .then(() => createWorker("eng", OEM.LSTM_ONLY, {
+      logger: () => {},
+      cachePath: TESSERACT_CACHE_PATH,
+    }))
     .then((worker) => worker)
     .catch((error) => {
       workerPromise = null;

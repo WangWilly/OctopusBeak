@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   meanSymbolConfidence,
   normalizeCaptchaText,
+  TESSERACT_CACHE_PATH,
   tesseractPageSegmentationMode,
   tesseractWhitelist,
   textCaptchaSolver,
@@ -268,4 +270,13 @@ test("the OCR solver reads the image in memory without persisting or logging it"
   );
   assert.doesNotMatch(source, /writeFile|appendFile|createWriteStream|from\("node:fs"\)/);
   assert.doesNotMatch(source, /console\.(log|info|debug|warn)/);
+});
+
+test("Tesseract language models are cached outside the repository", () => {
+  assert.equal(isAbsolute(TESSERACT_CACHE_PATH), true);
+  const relativeCachePath = relative(resolve("."), TESSERACT_CACHE_PATH);
+  assert.ok(
+    relativeCachePath === ".." || relativeCachePath.startsWith(`..${sep}`),
+    `expected the Tesseract cache to stay outside the repository, got ${TESSERACT_CACHE_PATH}`,
+  );
 });
