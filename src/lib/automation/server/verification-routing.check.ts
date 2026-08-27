@@ -9,6 +9,7 @@ import {
   updateHumanAssistanceContract,
 } from "./store.ts";
 import {
+  selectVerificationChallengeImage,
   routeVerificationActor,
   routeWaitingRunVerification,
   type VerificationRoutingDependencies,
@@ -241,6 +242,142 @@ test("a direct solver route inherits omitted contract metadata from compatibilit
   assert.deepEqual(outcome, { kind: "resumed" });
   assert.deepEqual(solverInputs, [{ charset: "digits", expectedAnswerLength: 4 }]);
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+});
+
+test("unregistered challenge images use the generic screenshot seam", async () => {
+  const calls: string[] = [];
+  const selection = selectVerificationChallengeImage(textCaptchaContract(), {
+    provider: {
+      handlesChallengeImage: () => false,
+      captureChallengeImage: async () => {
+        calls.push("provider");
+        return Buffer.from("provider");
+      },
+      isChallengeImageCurrent: async () => true,
+    },
+    genericCaptureChallengeImage: async () => {
+      calls.push("generic");
+      return Buffer.from("generic");
+    },
+  });
+  assert.deepEqual(
+    await selection.captureChallengeImage("session", textCaptchaContract()),
+    Buffer.from("generic"),
+  );
+  assert.deepEqual(calls, ["generic"]);
+  assert.equal(selection.validateChallengeImage, undefined);
+});
+
+test("registered capture failures do not fall back to the generic screenshot", async () => {
+  const calls: string[] = [];
+  const provider = {
+    handlesChallengeImage: () => true,
+    captureChallengeImage: async () => {
+      calls.push("provider");
+      return null;
+    },
+    isChallengeImageCurrent: async () => true,
+  };
+  const selection = selectVerificationChallengeImage(textCaptchaContract(), {
+    provider,
+    genericCaptureChallengeImage: async () => {
+      calls.push("generic");
+      return Buffer.from("generic");
+    },
+  });
+  assert.deepEqual(
+    await selection.captureChallengeImage("session", textCaptchaContract()),
+    null,
+  );
+  assert.deepEqual(calls, ["provider"]);
+  assert.equal(
+    await selection.validateChallengeImage!("session", textCaptchaContract()),
+    true,
+  );
+});
+
+test("waiting-run routing keeps the selected image owner through execution", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-image-owner-"));
+  try {
+    const run = createWaitingRun(ledgerDir, { contract: textCaptchaContract() });
+    const calls: string[] = [];
+    const tracked = trackDependencies();
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      genericCaptureChallengeImage: async () => {
+        calls.push("generic");
+        return Buffer.from("generic-image");
+      },
+      providerVerification: {
+        handlesChallengeImage: () => false,
+        captureChallengeImage: async () => {
+          calls.push("provider");
+          return Buffer.from("provider-image");
+        },
+        isChallengeImageCurrent: async () => true,
+      },
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(calls, ["generic"]);
+    assert.deepEqual(tracked.calls, ["inject", "resume"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("waiting-run routing does not invoke generic capture after a provider owner claims the image", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-image-failure-"));
+  try {
+    const run = createWaitingRun(ledgerDir, { contract: textCaptchaContract() });
+    const calls: string[] = [];
+    const tracked = trackDependencies();
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      genericCaptureChallengeImage: async () => {
+        calls.push("generic");
+        return Buffer.from("generic-image");
+      },
+      providerVerification: {
+        handlesChallengeImage: () => true,
+        captureChallengeImage: async () => {
+          calls.push("provider");
+          return null;
+        },
+        isChallengeImageCurrent: async () => true,
+      },
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "failed" });
+    assert.deepEqual(calls, ["provider"]);
+    assert.deepEqual(tracked.calls, ["finalize"]);
+    assert.deepEqual(tracked.resumed, []);
+    assert.deepEqual(tracked.injected, []);
+    assert.deepEqual(
+      tracked.failed,
+      ["Verification challenge image capture failed."],
+    );
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
 });
 
 test("a solver actor injects a selection answer as click coordinates and resumes", async () => {

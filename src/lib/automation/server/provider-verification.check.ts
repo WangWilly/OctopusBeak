@@ -506,7 +506,7 @@ test("Yuanta source capture uses loaded natural pixels instead of the CSS-sized 
   assert.deepEqual(screenshotCalls, []);
 });
 
-test("Yuanta loaded-image capture never refetches the CAPTCHA URL and safely falls back to a live rectangle", async () => {
+test("Yuanta loaded-image capture fails closed without a screenshot fallback", async () => {
   let refetches = 0;
   const source = {
     dataUrl: null,
@@ -517,10 +517,9 @@ test("Yuanta loaded-image capture never refetches the CAPTCHA URL and safely fal
   };
   const { page, screenshotCalls } = yuantaCaptchaPage({
     source,
-    screenshot: (clip) => {
-      refetches += 0;
-      assert.deepEqual(clip, { x: 10, y: 20, width: 96, height: 28 });
-      return Buffer.from("safe-fallback");
+    screenshot: () => {
+      refetches += 1;
+      return Buffer.from("forbidden-fallback");
     },
   });
   (page as unknown as { request?: () => never }).request = () => {
@@ -529,9 +528,19 @@ test("Yuanta loaded-image capture never refetches the CAPTCHA URL and safely fal
   };
   const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
   const image = await host.captureChallengeImage("session-yuanta-fallback", yuantaBankCaptchaContract());
-  assert.deepEqual(image, Buffer.from("safe-fallback"));
+  assert.equal(image, null);
   assert.equal(refetches, 0);
-  assert.equal(screenshotCalls.length, 1);
+  assert.deepEqual(screenshotCalls, []);
+});
+
+test("missing source captures fail freshness closed", async () => {
+  const host = createProviderVerificationHost({
+    withPage: pageRunner({ locator: () => fakeLocator() } as never),
+  });
+  assert.equal(
+    await host.isChallengeImageCurrent("session-without-capture", yuantaBankCaptchaContract()),
+    false,
+  );
 });
 
 test("Yuanta source fingerprint rejects a replaced frame or changed image before injection", async () => {
@@ -592,6 +601,11 @@ test("only adapters with calibrated source capture own challenge images", () => 
     withPage: pageRunner({ locator: () => fakeLocator() } as never),
   });
   assert.equal(host.handlesChallengeImage(sinopacCaptchaContract()), true);
+  assert.equal(host.handlesChallengeImage(yuantaBankCaptchaContract()), true);
+  assert.equal(
+    host.handlesChallengeImage(contract("yuanta-bank.login.captcha-input")),
+    false,
+  );
   assert.equal(host.handlesChallengeImage(contract("cathay.login.email-otp-input")), false);
 });
 
