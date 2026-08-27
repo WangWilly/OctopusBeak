@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   ESUN_CREDIT_CARD_CAPTURE_CONTRACT,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
   ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
   admitEsunCreditCardCapture,
   buildEsunCanonicalCreditCardCapture,
@@ -16,11 +16,11 @@ import {
   type EsunCreditCardSourceRow,
 } from "./esun-credit-card.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   esunCreditCardHumanAttestedIdentityEpochKey,
-  getEsunCreditCardHumanAttestedV1Manifest,
+  getEsunCreditCardHumanAttestedV2Manifest,
   isEsunCreditCardHumanAttestedAccountKey,
-  isEsunCreditCardHumanAttestedV1Active,
+  isEsunCreditCardHumanAttestedV2Active,
 } from "./esun-credit-card-human-attestation.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 
@@ -41,6 +41,7 @@ const grid = {
 
 const billedRow: EsunCreditCardSourceRow = {
   statementPeriod: "2026-07",
+  instrumentKey: "esun_instrument_synthetic_projection_1234",
   cardNumber: "****1234",
   consumeDate: "2026/07/15",
   description: "Synthetic Coffee",
@@ -53,6 +54,7 @@ const billedRow: EsunCreditCardSourceRow = {
 
 const unbilledRow: EsunCreditCardSourceRow = {
   statementPeriod: "unbilled",
+  instrumentKey: "esun_instrument_synthetic_projection_1234",
   cardNumber: "****1234",
   consumeDate: "2026/08/15",
   description: "Synthetic Transit",
@@ -81,13 +83,13 @@ function options(
   };
 }
 
-test("E.SUN v1 is a human-attested portfolio route", () => {
+test("E.SUN v2 is a human-attested portfolio route", () => {
   assert.equal(
     ESUN_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute,
-    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
   );
   assert.equal(
-    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authority,
+    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authority,
     "human-attested-primary-cardholder-portfolio",
   );
   assert.equal(ESUN_CREDIT_CARD_CAPTURE_CONTRACT.providerGuaranteed, false);
@@ -95,10 +97,10 @@ test("E.SUN v1 is a human-attested portfolio route", () => {
     ESUN_CREDIT_CARD_CAPTURE_CONTRACT.occurrenceProviderGuaranteed,
     false,
   );
-  assert.equal(isEsunCreditCardHumanAttestedV1Active(), true);
+  assert.equal(isEsunCreditCardHumanAttestedV2Active(), true);
   assert.equal(
-    getEsunCreditCardHumanAttestedV1Manifest(),
-    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+    getEsunCreditCardHumanAttestedV2Manifest(),
+    ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   );
   assert.equal(isEsunCreditCardHumanAttestedAccountKey(identity.humanAttestedAccountKey), true);
   assert.equal(isEsunCreditCardHumanAttestedAccountKey("****1234"), false);
@@ -155,9 +157,10 @@ test("E.SUN billed statement evidence pins only billed source records", () => {
           period: "2026-07",
           cycleStart: "2026-07-01",
           cycleEnd: "2026-07-31",
-          issueDate: "2026-08-01",
+          issueDate: "2026-07-31",
           dueDate: "2026-08-20",
           balance: "123.45",
+          minimumPayment: "12.34",
         },
       ],
     }),
@@ -180,9 +183,10 @@ test("E.SUN neutral projection preserves opaque identities and billed-only membe
           period: "2026-07",
           cycleStart: "2026-07-01",
           cycleEnd: "2026-07-31",
-          issueDate: "2026-08-01",
+          issueDate: "2026-07-31",
           dueDate: "2026-08-20",
           balance: "123.45",
+          minimumPayment: "12.34",
         },
       ],
     }),
@@ -245,9 +249,10 @@ test("E.SUN commit materializes the shared spine and neutral billed statement ex
           period: "2026-07",
           cycleStart: "2026-07-01",
           cycleEnd: "2026-07-31",
-          issueDate: "2026-08-01",
+          issueDate: "2026-07-31",
           dueDate: "2026-08-20",
           balance: "123.45",
+          minimumPayment: "12.34",
         }],
       }),
     );
@@ -298,9 +303,10 @@ test("E.SUN repeated captures retain one account/instrument authority and add pr
       period: "2026-07",
       cycleStart: "2026-07-01",
       cycleEnd: "2026-07-31",
-      issueDate: "2026-08-01",
+      issueDate: "2026-07-31",
       dueDate: "2026-08-20",
       balance: "123.45",
+      minimumPayment: "12.34",
     }];
     const first = await commitEsunCreditCardCapture(
       store,
@@ -404,6 +410,49 @@ test("partial, non-terminal, ambiguous, status, and sign-conflict captures fail 
         }),
       ),
     /raw card numbers are rejected/i,
+  );
+  assert.throws(
+    () =>
+      buildEsunCanonicalCreditCardCapture(
+        options({
+          statementRows: [billedRow],
+          unbilledRows: [{ ...unbilledRow, cardNumber: "****9876" }],
+        }),
+      ),
+    /projected instrument identity conflicts/i,
+  );
+  assert.throws(
+    () =>
+      buildEsunCanonicalCreditCardCapture(
+        options({
+          settledPeriods: [{
+            period: "2026-07",
+            cycleStart: "2026-07-01",
+            cycleEnd: "2026-07-31",
+            issueDate: "2026-08-01",
+            dueDate: "2026-08-20",
+            balance: "123.45",
+            minimumPayment: "12.34",
+          }],
+        }),
+      ),
+    /cycle or billing dates are invalid/i,
+  );
+  assert.throws(
+    () =>
+      buildEsunCanonicalCreditCardCapture(
+        options({
+          settledPeriods: [{
+            period: "2026-07",
+            cycleStart: "2026-07-01",
+            cycleEnd: "2026-07-31",
+            issueDate: "2026-07-31",
+            dueDate: "2026-08-20",
+            balance: "123.45",
+          }],
+        }),
+      ),
+    /minimum-payment evidence/i,
   );
   assert.throws(
     () =>

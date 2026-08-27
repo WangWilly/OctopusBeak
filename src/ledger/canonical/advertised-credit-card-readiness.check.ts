@@ -19,7 +19,7 @@ test("advertised canonical credit-card sources are independently release-ready",
     status: "blocked",
     releaseReady: false,
     advertisedSourceCount: 3,
-    unreadySourceIds: ["esun", "yuanta"],
+    unreadySourceIds: ["yuanta"],
   });
   const entry = ADVERTISED_CANONICAL_CREDIT_CARD_READINESS[0];
   assert.equal(entry.authority, "fubon/credit-card/human-attested-v2");
@@ -49,10 +49,9 @@ test("advertised canonical credit-card sources are independently release-ready",
   );
   assert.ok(esun);
   assert.ok(yuanta);
-  assert.deepEqual(esun.blockers, [
-    "issuer-settled-cycle-summary-evidence-missing",
-  ]);
-  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(esun), false);
+  assert.deepEqual(esun.blockers, []);
+  assert.equal(isAdvertisedCanonicalCreditCardEntryReleaseReady(esun), true);
+  assert.equal(esun.authority, "esun/credit-card/human-attested-v2");
   assert.deepEqual(yuanta.blockers, [
     "issuer-settled-cycle-summary-evidence-missing",
   ]);
@@ -62,7 +61,7 @@ test("advertised canonical credit-card sources are independently release-ready",
     status: "blocked",
     releaseReady: false,
     advertisedSourceCount: 3,
-    unreadySourceIds: ["esun", "yuanta"],
+    unreadySourceIds: ["yuanta"],
   });
 
   const unblockedYuanta = {

@@ -2,7 +2,7 @@ import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-sele
 import { ESUN_CREDIT_CARD_CAPTURE_CONTRACT } from "./esun-credit-card.ts";
 import { FUBON_CREDIT_CARD_CAPTURE_CONTRACT } from "./fubon-credit-card.ts";
 import { YUANTA_CREDIT_CARD_CAPTURE_CONTRACT } from "./yuanta-credit-card.ts";
-import { getEsunCreditCardHumanAttestedV1Manifest } from "./esun-credit-card-human-attestation.ts";
+import { getEsunCreditCardHumanAttestedV2Manifest } from "./esun-credit-card-human-attestation.ts";
 import { getFubonCreditCardHumanAttestedV2Manifest } from "./fubon-credit-card-human-attestation.ts";
 import { getYuantaCreditCardHumanAttestedV1Manifest } from "./yuanta-credit-card-human-attestation.ts";
 
@@ -17,11 +17,11 @@ export type AdvertisedCanonicalCreditCardReadinessEntry = {
     | "yuanta-credit-card-statements";
   authority:
     | "fubon/credit-card/human-attested-v2"
-    | "esun/credit-card/human-attested-v1"
+    | "esun/credit-card/human-attested-v2"
     | "yuanta/credit-card/human-attested-v1";
   contractVersion:
     | "fubon/credit-card/human-attested-v2"
-    | "esun/credit-card/human-attested-v1"
+    | "esun/credit-card/human-attested-v2"
     | "yuanta/credit-card/human-attested-v1";
   identity: "human-attested-primary-cardholder-portfolio";
   cards: "subordinate-instruments";
@@ -101,7 +101,7 @@ export const ADVERTISED_CANONICAL_CREDIT_CARD_READINESS = [
     relations: "explicit-source-linkage-only",
     completeness: ESUN_CREDIT_CARD_CAPTURE_CONTRACT.completenessRule,
     liveEvidence: "redacted-complete-grid-repeat-plus-human-attestation",
-    blockers: ["issuer-settled-cycle-summary-evidence-missing"],
+    blockers: [],
   },
   {
     sourceId: "yuanta",
@@ -144,7 +144,7 @@ export function isAdvertisedCanonicalCreditCardEntryReleaseReady(
       );
     case "esun":
       return (
-        getEsunCreditCardHumanAttestedV1Manifest().status === "active" &&
+        getEsunCreditCardHumanAttestedV2Manifest().status === "active" &&
         entry.workflow === "esun-credit-card-statements" &&
         entry.authority === ESUN_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute &&
         entry.contractVersion === ESUN_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion &&
