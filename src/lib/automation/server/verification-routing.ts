@@ -34,6 +34,7 @@ import {
   isProviderVerificationImageCurrent,
   providerVerificationHandlesChallengeImage,
 } from "./provider-verification.ts";
+import type { ProviderVerificationHost } from "./provider-verification.ts";
 import { finalizeFailedWaitingRun } from "./task-run-finalization.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import { readAutomationSettings } from "./settings.ts";
@@ -69,6 +70,53 @@ export type VerificationRoutingDependencies = {
   resume: (session: string) => void | Promise<void>;
   finalizeFailed: (message: string) => void | Promise<void>;
 };
+
+export type VerificationChallengeImageProvider = Pick<
+  ProviderVerificationHost,
+  "handlesChallengeImage" | "captureChallengeImage" | "isChallengeImageCurrent"
+>;
+
+export type VerificationChallengeImageSelection = {
+  captureChallengeImage: VerificationRoutingDependencies["captureChallengeImage"];
+  validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
+  /** A registered source owner treats a null capture as a hard failure. */
+  providerOwned: boolean;
+};
+
+class ProviderChallengeImageCaptureError extends Error {
+  constructor() {
+    super("Verification challenge image capture failed.");
+    this.name = "ProviderChallengeImageCaptureError";
+  }
+}
+
+/**
+ * Select the image seam once for a contract. A registered provider owner is
+ * authoritative: a failed provider capture is returned as-is and never
+ * falls through to the generic contract rectangle screenshot. Contracts
+ * without a source owner retain the generic viewer behavior.
+ */
+export function selectVerificationChallengeImage(
+  contract: HumanAssistanceContract,
+  options: {
+    provider: VerificationChallengeImageProvider;
+    genericCaptureChallengeImage: VerificationRoutingDependencies["captureChallengeImage"];
+  },
+): VerificationChallengeImageSelection {
+  if (options.provider.handlesChallengeImage(contract)) {
+    return {
+      captureChallengeImage: (session, currentContract) =>
+        options.provider.captureChallengeImage(session, currentContract),
+      validateChallengeImage: (session, currentContract) =>
+        options.provider.isChallengeImageCurrent(session, currentContract),
+      providerOwned: true,
+    };
+  }
+  return {
+    captureChallengeImage: options.genericCaptureChallengeImage,
+    providerOwned: false,
+  };
+}
 
 export type VerificationRoutingOutcome =
   | { kind: "human" }
@@ -137,8 +185,12 @@ export async function routeVerificationActor(input: {
         : undefined,
       ...solverMetadata,
     });
-  } catch {
-    await deps.finalizeFailed("Verification solver failed to solve the challenge.");
+  } catch (error) {
+    await deps.finalizeFailed(
+      error instanceof ProviderChallengeImageCaptureError
+        ? error.message
+        : "Verification solver failed to solve the challenge.",
+    );
     return { kind: "failed" };
   }
   if (outcome.status === "solved" || outcome.status === "absent") {
@@ -161,6 +213,8 @@ export async function routeWaitingRunVerification(input: {
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
   finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
+  providerVerification?: VerificationChallengeImageProvider;
+  genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   settings?: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
   const task = taskById(input.taskId);
@@ -193,18 +247,38 @@ export async function routeWaitingRunVerification(input: {
       ?? challengeConfidenceThreshold(settings, kind)
     : undefined;
 
+  const providerVerification: VerificationChallengeImageProvider = input.providerVerification ?? {
+    handlesChallengeImage: providerVerificationHandlesChallengeImage,
+    captureChallengeImage: captureProviderVerificationImage,
+    isChallengeImageCurrent: isProviderVerificationImageCurrent,
+  };
+  const imageSelection = contract
+    ? selectVerificationChallengeImage(contract, {
+        provider: providerVerification,
+        genericCaptureChallengeImage: input.genericCaptureChallengeImage
+          ?? captureChallengeImageForContract,
+      })
+    : {
+        captureChallengeImage: input.genericCaptureChallengeImage
+          ?? captureChallengeImageForContract,
+        validateChallengeImage: undefined,
+        providerOwned: false,
+      };
+
+  const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
+  const selectedCapture = imageSelection.providerOwned
+    ? async (selectedSession: string, selectedContract: HumanAssistanceContract) => {
+        const image = await capture(selectedSession, selectedContract);
+        if (image === null) throw new ProviderChallengeImageCaptureError();
+        return image;
+      }
+    : capture;
+
   const dependencies: VerificationRoutingDependencies = {
     solver: input.solver ?? defaultLocalSolver,
-    captureChallengeImage: input.captureChallengeImage ?? (async (session, contract) => {
-      if (providerVerificationHandlesChallengeImage(contract)) {
-        return captureProviderVerificationImage(session, contract);
-      }
-      return captureChallengeImageForContract(session, contract);
-    }),
+    captureChallengeImage: selectedCapture,
     validateChallengeImage: input.validateChallengeImage
-      ?? (contract && providerVerificationHandlesChallengeImage(contract)
-        ? isProviderVerificationImageCurrent
-        : undefined),
+      ?? imageSelection.validateChallengeImage,
     injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
     injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
