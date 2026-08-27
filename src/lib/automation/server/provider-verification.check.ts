@@ -9,6 +9,7 @@ import {
 } from "./automation-viewer.ts";
 import {
   createProviderVerificationHost,
+  FUBON_CAPTCHA_IMAGE_SELECTOR,
   shouldAutoResumeProviderVerification,
   shouldCheckProviderVerificationCompletion,
   type ProviderVerificationPageRunner,
@@ -131,6 +132,52 @@ function sinopacCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}
     },
     ...overrides,
   });
+}
+
+function fubonCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
+  return contract("fubon.login.captcha-input", {
+    challengeKind: "text-captcha",
+    charset: "digits",
+    expectedAnswerLength: 6,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "fubon.login.captcha-image",
+      rect: { x: 10, y: 20, width: 158, height: 30 },
+    },
+    ...overrides,
+  });
+}
+
+function fubonCaptchaPage(options: {
+  source: unknown;
+  rect?: HumanVerificationRect;
+  screenshot?: (clip: HumanVerificationRect) => Buffer;
+}) {
+  const image = fakeLocator({
+    visible: true,
+    rect: options.rect ?? { x: 10, y: 20, width: 158, height: 30 },
+    evaluateResult: options.source,
+  });
+  const frame = {
+    locator(selector: string) {
+      assert.equal(selector, FUBON_CAPTCHA_IMAGE_SELECTOR);
+      return image;
+    },
+    url: () => "https://ebank.taipeifubon.com.tw/B2C/txn/txnFrame.faces",
+    name: () => "txnFrame",
+  };
+  const screenshotCalls: HumanVerificationRect[] = [];
+  const page = {
+    locator: () => fakeLocator(),
+    frame: (name: string) => name === "txnFrame" ? frame : null,
+    url: () => "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",
+    screenshot: async ({ clip }: { clip: HumanVerificationRect }) => {
+      screenshotCalls.push(clip);
+      return options.screenshot?.(clip) ?? Buffer.from("forbidden-fallback");
+    },
+  };
+  return { page, screenshotCalls };
 }
 
 function sinopacCaptchaPage(options: {
@@ -411,6 +458,93 @@ test("SinoPac adapter owns selector-backed click and fill operations", async () 
   }, verificationContract);
   assert.deepEqual(clicks, ["click"]);
   assert.deepEqual(fills, ["1234"]);
+});
+
+test("Fubon source capture uses loaded 158 by 30 DOM pixels", async () => {
+  const naturalPixels = Buffer.from("fubon-natural-158x30");
+  const source = {
+    dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
+    sourceMarker: "fubon-image-v1",
+    frameMarker: "fubon-frame-v1",
+    naturalWidth: 158,
+    naturalHeight: 30,
+  };
+  const { page, screenshotCalls } = fubonCaptchaPage({ source });
+  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
+
+  assert.equal(host.handlesChallengeImage(fubonCaptchaContract()), true);
+  assert.deepEqual(
+    await host.captureChallengeImage("session-fubon-source", fubonCaptchaContract()),
+    naturalPixels,
+  );
+  assert.deepEqual(screenshotCalls, []);
+});
+
+test("Fubon DOM capture fails closed without screenshot or URL refetch", async () => {
+  let refetches = 0;
+  for (const source of [
+    {
+      dataUrl: null,
+      sourceMarker: "fubon-image-v1",
+      frameMarker: "fubon-frame-v1",
+      naturalWidth: 158,
+      naturalHeight: 30,
+    },
+    {
+      dataUrl: `data:image/png;base64,${Buffer.from("wrong-size").toString("base64")}`,
+      sourceMarker: "fubon-image-v1",
+      frameMarker: "fubon-frame-v1",
+      naturalWidth: 157,
+      naturalHeight: 30,
+    },
+  ]) {
+    const { page, screenshotCalls } = fubonCaptchaPage({
+      source,
+      screenshot: () => {
+        refetches += 1;
+        return Buffer.from("forbidden-fallback");
+      },
+    });
+    (page as unknown as { request?: () => never }).request = () => {
+      refetches += 1;
+      throw new Error("CAPTCHA URL must not be refetched.");
+    };
+    const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
+    assert.equal(
+      await host.captureChallengeImage("session-fubon-unsupported", fubonCaptchaContract()),
+      null,
+    );
+    assert.deepEqual(screenshotCalls, []);
+  }
+  assert.equal(refetches, 0);
+});
+
+test("Fubon source fingerprint rejects changed DOM pixels", async () => {
+  let version = 1;
+  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
+    const pixels = Buffer.from(`fubon-natural-v${version}`);
+    const source = {
+      dataUrl: `data:image/png;base64,${pixels.toString("base64")}`,
+      sourceMarker: `fubon-image-v${version}`,
+      frameMarker: "fubon-frame-v1",
+      naturalWidth: 158,
+      naturalHeight: 30,
+    };
+    const { page } = fubonCaptchaPage({ source });
+    const result = await action(page as never);
+    version += 1;
+    return result;
+  };
+  const host = createProviderVerificationHost({ withPage });
+
+  assert.deepEqual(
+    await host.captureChallengeImage("session-fubon-stale", fubonCaptchaContract()),
+    Buffer.from("fubon-natural-v1"),
+  );
+  assert.equal(
+    await host.isChallengeImageCurrent("session-fubon-stale", fubonCaptchaContract()),
+    false,
+  );
 });
 
 test("SinoPac source capture uses calibrated natural pixels and never the CSS-sized screenshot", async () => {

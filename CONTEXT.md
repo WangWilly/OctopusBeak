@@ -763,6 +763,10 @@ _Avoid_: Unrestricted Bank SinoPac CAPTCHA, mixed-layout Bank SinoPac CAPTCHA co
 The single supported CAPTCHA family on the E-Invoice login workflow: a 150-by-40-pixel image whose answer is exactly five decimal digits and whose interference appears along the lower part of the image. A capture with different dimensions, answer length, character set, or interference layout is unsupported and must not be submitted automatically.
 _Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
 
+**Taipei Fubon login CAPTCHA**:
+The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflow: a 158-by-30-pixel white-background image whose answer is exactly six decimal digits rendered as colored, variably tilted glyphs without an interference-line requirement. Automatic submission requires OCR Agreement from at least two distinct provider-declared preprocessing strategies; missing agreement fails closed. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
+
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.
 _Avoid_: Assumed challenge, unconditional solve

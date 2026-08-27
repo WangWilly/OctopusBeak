@@ -28,6 +28,9 @@ const EINVOICE_DIRECTIONAL_KERNEL = [
   [-1, 2, -1],
   [-1, 4, -1],
 ] as const;
+const CALIBRATED_FUBON_WIDTH = 158;
+const CALIBRATED_FUBON_HEIGHT = 30;
+const FUBON_FOREGROUND_THRESHOLD = 190;
 
 export type CaptchaPreprocessStep =
   | "grayscale"
@@ -228,6 +231,19 @@ export function decodeGrayImage(buffer: Buffer): GrayImage {
   return { width: png.width, height: png.height, data };
 }
 
+function decodeMinChannelImage(buffer: Buffer): GrayImage {
+  const png = PNG.sync.read(buffer);
+  const data = new Uint8Array(png.width * png.height);
+  for (let i = 0; i < data.length; i += 1) {
+    const alpha = png.data[i * 4 + 3]! / 255;
+    const r = Math.round(png.data[i * 4]! * alpha + 255 * (1 - alpha));
+    const g = Math.round(png.data[i * 4 + 1]! * alpha + 255 * (1 - alpha));
+    const b = Math.round(png.data[i * 4 + 2]! * alpha + 255 * (1 - alpha));
+    data[i] = Math.min(r, g, b);
+  }
+  return { width: png.width, height: png.height, data };
+}
+
 export function encodeGrayImage(image: GrayImage): Buffer {
   const png = new PNG({ width: image.width, height: image.height });
   for (let i = 0; i < image.data.length; i += 1) {
@@ -334,6 +350,26 @@ function blankImageLike(image: GrayImage): GrayImage {
 function isCalibratedEinvoiceGeometry(image: GrayImage): boolean {
   return image.width === CALIBRATED_EINVOICE_WIDTH
     && image.height === CALIBRATED_EINVOICE_HEIGHT;
+}
+
+function isCalibratedFubonGeometry(image: GrayImage): boolean {
+  return image.width === CALIBRATED_FUBON_WIDTH
+    && image.height === CALIBRATED_FUBON_HEIGHT;
+}
+
+function preprocessFubonForeground(
+  image: GrayImage,
+  onStep?: (step: CaptchaPreprocessStep, image: Buffer) => void,
+): Buffer {
+  if (!isCalibratedFubonGeometry(image)) {
+    return encodeGrayImage(blankImageLike(image));
+  }
+  const upscaled = upscaleImage(image, UPSCALE_FACTOR);
+  onStep?.("upscaled", encodeGrayImage(upscaled));
+  const binary = binarize(upscaled, FUBON_FOREGROUND_THRESHOLD);
+  const output = encodeGrayImage(binary);
+  onStep?.("binarized", output);
+  return output;
 }
 
 export function maskBottomInterferenceBand(image: GrayImage): GrayImage {
@@ -554,6 +590,21 @@ export function preprocessCaptchaImage(
   const decoded = decodeGrayImage(buffer);
   onStep?.("grayscale", encodeGrayImage(decoded));
   const imagePreprocessing = options.imagePreprocessing ?? [];
+  const useFubonLuminance = imagePreprocessing.includes(
+    "fubon-luminance-foreground",
+  );
+  const useFubonMinChannel = imagePreprocessing.includes(
+    "fubon-min-channel-foreground",
+  );
+  if (useFubonLuminance || useFubonMinChannel) {
+    if (useFubonLuminance && useFubonMinChannel) {
+      return encodeGrayImage(blankImageLike(decoded));
+    }
+    return preprocessFubonForeground(
+      useFubonMinChannel ? decodeMinChannelImage(buffer) : decoded,
+      onStep,
+    );
+  }
   if (imagePreprocessing.includes("mask-bottom-interference-band")) {
     const masked = maskBottomInterferenceBand(decoded);
     const output = encodeGrayImage(masked);

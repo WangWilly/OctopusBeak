@@ -67,6 +67,8 @@ export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "remove-interference-lines",
   "mask-bottom-interference-band",
   "suppress-horizontal-interference",
+  "fubon-luminance-foreground",
+  "fubon-min-channel-foreground",
 ] as const;
 
 export type CaptchaImagePreprocessingMode =
