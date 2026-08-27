@@ -12,24 +12,24 @@ import {
   type CanonicalCreditCardPersistenceCapture,
 } from "./canonical-credit-card-persistence.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
   isEsunCreditCardHumanAttestedAccountKey,
   isEsunCreditCardHumanAttestationDurablyActive,
-  isEsunCreditCardHumanAttestedV1Active,
+  isEsunCreditCardHumanAttestedV2Active,
   recordInitialEsunCreditCardHumanAttestationIfMissing,
 } from "./esun-credit-card-human-attestation.ts";
 
 export {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
 } from "./esun-credit-card-human-attestation.ts";
 
 export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   source: "esun",
   stream: "credit-card",
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
-  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion,
   accountType: "credit",
   accountSubtype: "credit_card",
   providerGuaranteed: false,
@@ -38,7 +38,7 @@ export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   billingRule: "billed-or-unbilled-independent-of-posting",
   transactionIdentityRule:
     "normalized-content-tuple-plus-contiguous-deterministic-occurrence-v1",
-  statementRule: "explicit-settled-billed-period-evidence-only",
+  statementRule: "issuer-close-due-total-minimum-with-prior-close-cycle-start",
   relationRule: "explicit-source-linkage-only",
   completenessRule:
     "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
@@ -58,7 +58,7 @@ export type EsunCreditCardInstrumentRole =
   | "replacement";
 
 export type EsunCreditCardInstrumentEvidence = {
-  kind: "explicit-card-last4";
+  kind: "masked-card-projection-hmac";
   sourceRecordKey: string;
   contractVersion: string;
 };
@@ -197,8 +197,8 @@ export type EsunCreditCardAdmittedCapture = Omit<
   instruments: readonly EsunCreditCardInstrumentInput[];
   transactions: readonly EsunCreditCardAdmittedTransaction[];
   statements: readonly EsunCreditCardAdmittedStatement[];
-  contractVersion: "esun/credit-card/human-attested-v1";
-  authorityRoute: "esun/credit-card/human-attested-v1";
+  contractVersion: "esun/credit-card/human-attested-v2";
+  authorityRoute: "esun/credit-card/human-attested-v2";
 };
 
 export type EsunCreditCardValidatedCapture = EsunCreditCardAdmittedCapture & {
@@ -210,6 +210,8 @@ export type EsunCreditCardIdentityInput = EsunCreditCardCaptureInput["identity"]
 /** A row shape emitted by the E.SUN combined billed/unbilled grid. */
 export type EsunCreditCardSourceRow = {
   statementPeriod: string;
+  /** Opaque HMAC of the issuer's masked first-four + last-four projection. */
+  instrumentKey: string;
   cardNumber: string;
   consumeDate: string;
   description: string;
@@ -493,10 +495,10 @@ function validateInstrument(
   if (cardMask !== `****${cardKey}`)
     fail("Card display mask must contain four stars and the same four-digit card key.");
   if (
-    instrument.evidence?.kind !== "explicit-card-last4" ||
+    instrument.evidence?.kind !== "masked-card-projection-hmac" ||
     instrument.evidence.contractVersion !== ESUN_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion
   )
-    fail("E.SUN card instrument lacks explicit versioned last-four evidence.");
+    fail("E.SUN card instrument lacks versioned masked-projection HMAC evidence.");
   const productName = instrument.productName?.trim() || undefined;
   if (productName && /\d[\d\s-]{11,}\d/u.test(productName))
     fail("Card product name must not contain a full card number.");
@@ -615,13 +617,17 @@ function validateCompleteness(
   if (new Set(completeness.billedPeriods).size !== completeness.billedPeriods.length)
     fail("E.SUN billed periods must be distinct.");
   const cardCounts = new Map<string, number>();
-  for (const instrument of capture.instruments) cardCounts.set(instrument.cardKey, 0);
+  for (const instrument of capture.instruments)
+    cardCounts.set(instrument.instrumentKey, 0);
   for (const transaction of transactions) {
     const instrument = capture.instruments.find(
       (candidate) => candidate.instrumentKey === transaction.instrumentKey,
     );
     if (!instrument) fail("E.SUN card instrument is missing from completeness evidence.");
-    cardCounts.set(instrument.cardKey, (cardCounts.get(instrument.cardKey) ?? 0) + 1);
+    cardCounts.set(
+      instrument.instrumentKey,
+      (cardCounts.get(instrument.instrumentKey) ?? 0) + 1,
+    );
   }
   const evidenceKeys = Object.keys(completeness.cardRowCounts).sort();
   const observedKeys = [...cardCounts.keys()].sort();
@@ -657,8 +663,14 @@ function validateStatement(
   const cycleEnd = validDate(statement.cycleEnd, "Statement cycle end");
   const issueDate = validDate(statement.issueDate, "Statement issue date");
   const dueDate = validDate(statement.dueDate, "Statement due date");
-  if (cycleStart > cycleEnd || issueDate < cycleEnd || dueDate < issueDate)
+  if (
+    cycleStart > cycleEnd ||
+    issueDate !== cycleEnd ||
+    dueDate < issueDate
+  )
     fail("Settled statement cycle or billing dates are invalid.");
+  if (statement.minimumPayment == null)
+    fail("E.SUN settled statement requires issuer minimum-payment evidence.");
   if (
     statement.evidence?.kind !== "issuer-settled-cycle-summary" ||
     statement.evidence.settled !== true ||
@@ -679,12 +691,8 @@ function validateStatement(
     if (!transaction) fail("Statement membership references an unknown source record.");
     if (transaction.billingStatus !== "billed")
       fail("Statement membership cannot reference an unbilled transaction.");
-    if (
-      statement.period &&
-      transaction.statementPeriod &&
-      transaction.statementPeriod !== statement.period
-    )
-      fail("Statement membership crosses billed periods.");
+    if (transaction.consumeDate < cycleStart || transaction.consumeDate > cycleEnd)
+      fail("Statement membership crosses issuer cycle dates.");
   }
   return {
     ...statement,
@@ -696,10 +704,10 @@ function validateStatement(
     dueDate,
     currency: currency(statement.currency, "Statement currency"),
     balance: exactAmount(statement.balance, "Statement balance"),
-    minimumPayment:
-      statement.minimumPayment == null
-        ? null
-        : exactAmount(statement.minimumPayment, "Statement minimum payment"),
+    minimumPayment: exactAmount(
+      statement.minimumPayment,
+      "Statement minimum payment",
+    ),
     transactionSourceKeys: [...statement.transactionSourceKeys],
     evidence: {
       kind: "issuer-settled-cycle-summary",
@@ -722,7 +730,7 @@ const freezeDeep = <T>(value: T, seen = new WeakSet<object>()): T => {
 export function admitEsunCreditCardCapture(
   capture: EsunCreditCardCaptureInput,
 ): EsunCreditCardValidatedCapture {
-  if (!isEsunCreditCardHumanAttestedV1Active())
+  if (!isEsunCreditCardHumanAttestedV2Active())
     fail("E.SUN credit-card human-attested v1 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("E.SUN credit-card capture is required.");
@@ -956,12 +964,15 @@ function buildSettledStatements(
   return periods.map((period) => {
     const statementKey = period.statementKey?.trim() ||
       digest("esun-credit-card-statement-v1", period.period);
+    const cycleStart = validDate(period.cycleStart, "Statement cycle start");
+    const cycleEnd = validDate(period.cycleEnd, "Statement cycle end");
+    if (cycleStart > cycleEnd)
+      fail("E.SUN statement cycle start must not follow its cycle end.");
     const memberKeys = transactions
-      .filter(
-        (transaction) =>
-          transaction.billingStatus === "billed" &&
-          transaction.statementPeriod?.trim() === period.period,
-      )
+      .filter((transaction) =>
+        transaction.billingStatus === "billed" &&
+        transaction.consumeDate >= cycleStart &&
+        transaction.consumeDate <= cycleEnd)
       .map((transaction) => transaction.sourceRecordKey);
     return {
       statementKey,
@@ -971,8 +982,8 @@ function buildSettledStatements(
           statementKey,
           memberKeys,
         ]),
-      cycleStart: period.cycleStart,
-      cycleEnd: period.cycleEnd,
+      cycleStart,
+      cycleEnd,
       issueDate: period.issueDate,
       dueDate: period.dueDate,
       currency: period.currency ?? "TWD",
@@ -1029,20 +1040,20 @@ export function buildEsunCanonicalCreditCardCapture(
     ...options.statementRows,
     ...(options.unbilledRows ?? []),
   ];
-  const cardKeys = new Set(allRows.map(sourceRowCardKey));
-  const instrumentKeys = new Map<string, string>();
-  for (const cardKey of cardKeys) {
-    instrumentKeys.set(
-      cardKey,
-      digest("esun-credit-card-instrument-v1", [
-        identity.accountNaturalKey,
-        cardKey,
-      ]),
-    );
+  const instrumentsByKey = new Map<string, `${number}${number}${number}${number}`>();
+  for (const row of allRows) {
+    const instrumentKey = text(row.instrumentKey, "Card instrument key");
+    if (!/^esun_instrument_[A-Za-z0-9_-]{20,}$/u.test(instrumentKey))
+      fail("E.SUN source row requires an opaque projected instrument key.");
+    const cardKey = sourceRowCardKey(row);
+    const knownCardKey = instrumentsByKey.get(instrumentKey);
+    if (knownCardKey && knownCardKey !== cardKey)
+      fail("E.SUN projected instrument identity conflicts with its display mask.");
+    instrumentsByKey.set(instrumentKey, cardKey);
   }
   const descriptors = allRows.map((row, inputIndex) => {
     const cardKey = sourceRowCardKey(row);
-    const instrumentKey = instrumentKeys.get(cardKey)!;
+    const instrumentKey = text(row.instrumentKey, "Card instrument key");
     return {
       row,
       inputIndex,
@@ -1074,8 +1085,9 @@ export function buildEsunCanonicalCreditCardCapture(
   const transactions = descriptors.map(
     (descriptor) => transactionsByInputIndex.get(descriptor.inputIndex)!,
   );
-  const instruments = [...cardKeys].sort().map((cardKey) => {
-    const instrumentKey = instrumentKeys.get(cardKey)!;
+  const instruments = [...instrumentsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([instrumentKey, cardKey]) => {
     const first = transactions.find((transaction) => transaction.instrumentKey === instrumentKey);
     if (!first) fail("E.SUN card instrument has no transaction evidence.");
     return {
@@ -1084,7 +1096,7 @@ export function buildEsunCanonicalCreditCardCapture(
       cardMask: `****${cardKey}` as `****${number}${number}${number}${number}`,
       role: "primary" as const,
       evidence: {
-        kind: "explicit-card-last4" as const,
+        kind: "masked-card-projection-hmac" as const,
         sourceRecordKey: first.sourceRecordKey,
         contractVersion: ESUN_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion,
       },
@@ -1100,12 +1112,10 @@ export function buildEsunCanonicalCreditCardCapture(
     ),
   ];
   const cardRowCounts = Object.fromEntries(
-    [...cardKeys].sort().map((cardKey) => [
-      cardKey,
+    [...instrumentsByKey.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([instrumentKey]) => [
+      instrumentKey,
       transactions.filter(
-        (transaction) =>
-          instruments.find((instrument) => instrument.instrumentKey === transaction.instrumentKey)
-            ?.cardKey === cardKey,
+        (transaction) => transaction.instrumentKey === instrumentKey,
       ).length,
     ]),
   );
@@ -1451,7 +1461,7 @@ export async function commitEsunCreditCardCaptureBatch(
         "E.SUN credit-card batch contains an unvalidated capture.",
       );
   }
-  if (!isEsunCreditCardHumanAttestedV1Active())
+  if (!isEsunCreditCardHumanAttestedV2Active())
     throw new EsunCreditCardAdmissionError(
       "E.SUN credit-card human-attested v1 contract is revoked.",
     );

@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import {
   buildEsunCanonicalCreditCardCapture,
+  buildEsunSettledPeriodsFromIssuerSummaries,
+  deriveEsunProjectedInstrumentIdentity,
+  esunIssuerSummaryFromLabelRows,
+  esunIssuerSummaryFromText,
   type CaptureMetadata,
   deriveEsunCanonicalHumanAttestation,
   type GridState,
   type StatementRow,
   isEsunCompleteGrid,
 } from "./esun-credit-card-statements.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 
 assert.equal(
@@ -52,9 +56,51 @@ assert.deepEqual(
   ),
   "normalized E.SUN login scope and the managed secret must be deterministic",
 );
+
+assert.deepEqual(
+  esunIssuerSummaryFromLabelRows([
+    ["帳款結帳日", "115/07/31", "繳款截止日", "115/08/20"],
+    ["本期應繳總金額", "NT$ 2,000"],
+    ["本期最低應繳金額", "200"],
+  ]),
+  {
+    cycleEnd: "115/07/31",
+    dueDate: "115/08/20",
+    balance: "2000",
+    minimumPayment: "200",
+    currency: "TWD",
+  },
+);
+assert.deepEqual(
+  esunIssuerSummaryFromLabelRows([
+    ["繳款截止日", "帳款結帳日"],
+    ["115/08/20", "115/07/31"],
+    ["本期應繳總金額", "本期最低應繳金額"],
+    ["2,000", "200"],
+  ]),
+  {
+    cycleEnd: "115/07/31",
+    dueDate: "115/08/20",
+    balance: "2000",
+    minimumPayment: "200",
+    currency: "TWD",
+  },
+);
+assert.deepEqual(
+  esunIssuerSummaryFromText(
+    "帳款結帳日\n115/07/31\n繳款截止日：115/08/20\n本期應繳總金額 NT$ 2,000\n本期最低應繳金額 200",
+  ),
+  {
+    cycleEnd: "115/07/31",
+    dueDate: "115/08/20",
+    balance: "2000",
+    minimumPayment: "200",
+    currency: "TWD",
+  },
+);
 assert.equal(
   identity.identityEpochKey,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
 );
 assert.notEqual(
   identity.sourceConnectionKey,
@@ -83,9 +129,74 @@ assert.doesNotMatch(
   "derived E.SUN identity must never expose login values or the managed secret",
 );
 
+const projected = deriveEsunProjectedInstrumentIdentity(
+  "1234-****-****-5678",
+  identity,
+  managedSecret,
+);
+assert(projected);
+assert.equal(projected.cardMask, "****5678");
+assert.match(projected.instrumentKey, /^esun_instrument_[A-Za-z0-9_-]+$/u);
+assert.deepEqual(
+  projected,
+  deriveEsunProjectedInstrumentIdentity(
+    "1234 **** **** 5678",
+    identity,
+    managedSecret,
+  ),
+);
+assert.notEqual(
+  projected.instrumentKey,
+  deriveEsunProjectedInstrumentIdentity(
+    "9876-****-****-5678",
+    identity,
+    managedSecret,
+  )?.instrumentKey,
+  "same last four with a different first four must be a different instrument",
+);
+assert.equal(
+  deriveEsunProjectedInstrumentIdentity("****5678", identity, managedSecret),
+  undefined,
+);
+assert.equal(
+  deriveEsunProjectedInstrumentIdentity(
+    "1234-5678-9012-3456",
+    identity,
+    managedSecret,
+  ),
+  undefined,
+);
+
+assert.deepEqual(
+  buildEsunSettledPeriodsFromIssuerSummaries([
+    {
+      cycleEnd: "115/06/30",
+      dueDate: "115/07/20",
+      balance: "1,000",
+      minimumPayment: "100",
+    },
+    {
+      cycleEnd: "115/07/31",
+      dueDate: "115/08/20",
+      balance: "2,000",
+      minimumPayment: "200",
+    },
+  ]),
+  [{
+    period: "2026-07",
+    cycleStart: "2026-07-01",
+    cycleEnd: "2026-07-31",
+    issueDate: "2026-07-31",
+    dueDate: "2026-08-20",
+    currency: "TWD",
+    balance: "2000",
+    minimumPayment: "200",
+  }],
+);
+
 const billedRow: StatementRow = {
   statementPeriod: "2026-07",
-  cardNumber: "****1234",
+  cardNumber: "4111-****-****-1234",
   consumeDate: "2026/07/15",
   description: "Synthetic Coffee",
   foreignCurrency: "USD",
@@ -97,7 +208,7 @@ const billedRow: StatementRow = {
 };
 const unbilledRow: StatementRow = {
   statementPeriod: "2026-08",
-  cardNumber: "****1234",
+  cardNumber: "4111-****-****-1234",
   consumeDate: "2026/08/15",
   description: "Synthetic Transit",
   foreignCurrency: "",
@@ -127,10 +238,11 @@ const settledPeriods = [
     period: "2026-07",
     cycleStart: "2026-07-01",
     cycleEnd: "2026-07-31",
-    issueDate: "2026-08-01",
+    issueDate: "2026-07-31",
     dueDate: "2026-08-20",
     currency: "TWD",
     balance: "123.45",
+    minimumPayment: "12.34",
   },
 ];
 const canonicalCapture = buildEsunCanonicalCreditCardCapture({
@@ -141,6 +253,7 @@ const canonicalCapture = buildEsunCanonicalCreditCardCapture({
   unbilledRows: [unbilledRow],
   grid: completeGrid,
   capture: completeCapture,
+  instrumentFingerprintSecret: managedSecret,
   settledPeriods,
 });
 assert(canonicalCapture);
@@ -177,7 +290,7 @@ assert.deepEqual(
 );
 assert.doesNotMatch(
   JSON.stringify(canonicalCapture),
-  /4111\*{8}1111|user-id-001|account-009|synthetic-esun-managed-secret/iu,
+  /4111|user-id-001|account-009|synthetic-esun-managed-secret/iu,
   "canonical E.SUN capture must retain only safe card keys and opaque identity",
 );
 
@@ -189,6 +302,7 @@ const noSettledEvidence = buildEsunCanonicalCreditCardCapture({
   unbilledRows: [unbilledRow],
   grid: completeGrid,
   capture: completeCapture,
+  instrumentFingerprintSecret: managedSecret,
 });
 assert(noSettledEvidence);
 assert.equal(
@@ -214,6 +328,7 @@ assert.equal(
     unbilledRows: [unbilledRow],
     grid: completeGrid,
     capture: partialCapture,
+    instrumentFingerprintSecret: managedSecret,
   }),
   undefined,
   "partial E.SUN captures must remain source-only",
@@ -227,6 +342,7 @@ assert.equal(
     unbilledRows: [unbilledRow],
     grid: { currentPage: "1", currentPageSize: "100" },
     capture: completeCapture,
+    instrumentFingerprintSecret: managedSecret,
   }),
   undefined,
   "a non-terminal maximum-page grid must remain source-only",
@@ -241,10 +357,11 @@ assert.throws(
       unbilledRows: [unbilledRow],
       grid: completeGrid,
       capture: completeCapture,
+      instrumentFingerprintSecret: managedSecret,
     }),
   (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    assert.match(message, /display-safe four-digit card key/u);
+    assert.match(message, /masked first-four and last-four card projection/u);
     assert.doesNotMatch(message, /4111111111111111/u);
     return true;
   },

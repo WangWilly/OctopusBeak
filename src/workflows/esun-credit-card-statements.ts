@@ -18,7 +18,7 @@ import {
   type EsunCreditCardSourceRow,
   type EsunCreditCardValidatedCapture,
 } from "../ledger/canonical/esun-credit-card.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -62,6 +62,14 @@ export type StatementRow = {
   paymentStatus: StatementKind;
   /** Raw issuer status retained in memory for the canonical source contract. */
   sourcePaymentStatus?: string;
+};
+
+export type EsunIssuerStatementSummary = {
+  cycleEnd: string;
+  dueDate: string;
+  balance: string;
+  minimumPayment: string;
+  currency?: string;
 };
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
@@ -196,7 +204,7 @@ export function isEsunCompleteGrid({
 }
 
 export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE;
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
 
 function normalizedEsunLoginPart(value: string | undefined): string {
   return (value ?? "")
@@ -219,6 +227,97 @@ function hmacEsunIdentity(secret: string, value: unknown): string {
   return createHmac("sha256", secret)
     .update(JSON.stringify(value))
     .digest("base64url");
+}
+
+export type EsunProjectedInstrumentIdentity = {
+  instrumentKey: string;
+  cardMask: `****${number}${number}${number}${number}`;
+};
+
+/**
+ * E.SUN exposes a masked first-four + last-four projection. Reduce it to an
+ * opaque, portfolio-scoped HMAC immediately; neither the projection nor the
+ * managed secret crosses the canonical boundary.
+ */
+export function deriveEsunProjectedInstrumentIdentity(
+  cardLabel: string,
+  identity: EsunCreditCardIdentityInput,
+  managedSecret: string,
+): EsunProjectedInstrumentIdentity | undefined {
+  const secret = managedSecret.trim();
+  const normalized = cleanText(cardLabel).normalize("NFKC");
+  const digits = normalized.replace(/\D/gu, "");
+  const hasMask = /[*xX•●]/u.test(normalized);
+  if (!secret || digits.length !== 8 || !hasMask) return undefined;
+  const firstFour = digits.slice(0, 4);
+  const lastFour = digits.slice(-4);
+  return {
+    instrumentKey: `esun_instrument_${hmacEsunIdentity(secret, [
+      "esun-credit-card-instrument-projection-v2",
+      identity.sourceConnectionKey,
+      identity.identityEpochKey,
+      identity.humanAttestedAccountKey,
+      `${firstFour}:${lastFour}`,
+    ])}`,
+    cardMask: `****${lastFour}` as `****${number}${number}${number}${number}`,
+  };
+}
+
+function isoDate(value: string): string | undefined {
+  const normalized = value.normalize("NFKC").trim();
+  const match = normalized.match(/^(\d{3,4})[/.\-](\d{1,2})[/.\-](\d{1,2})$/u);
+  if (!match) return undefined;
+  const rawYear = Number(match[1]);
+  const year = match[1]!.length === 3 ? rawYear + 1911 : rawYear;
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return undefined;
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function nextIsoDate(value: string): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Build only cycles whose predecessor close date is present as issuer evidence. */
+export function buildEsunSettledPeriodsFromIssuerSummaries(
+  summaries: readonly EsunIssuerStatementSummary[],
+): EsunCreditCardSettledPeriod[] {
+  const normalized = summaries.map((summary) => ({
+    ...summary,
+    cycleEnd: isoDate(summary.cycleEnd),
+    dueDate: isoDate(summary.dueDate),
+    balance: issuerAmount(summary.balance),
+    minimumPayment: issuerAmount(summary.minimumPayment),
+  }));
+  if (normalized.some((summary) =>
+    !summary.cycleEnd || !summary.dueDate ||
+    !summary.balance || !summary.minimumPayment)) {
+    throw new Error("E.SUN issuer statement evidence is incomplete or invalid.");
+  }
+  const ordered = normalized
+    .map((summary) => ({ ...summary, cycleEnd: summary.cycleEnd!, dueDate: summary.dueDate! }))
+    .sort((left, right) => left.cycleEnd.localeCompare(right.cycleEnd));
+  const uniqueEnds = new Set(ordered.map((summary) => summary.cycleEnd));
+  if (uniqueEnds.size !== ordered.length)
+    throw new Error("E.SUN issuer statement close dates must be unique.");
+  return ordered.slice(1).map((summary, index) => ({
+    period: summary.cycleEnd.slice(0, 7),
+    cycleStart: nextIsoDate(ordered[index]!.cycleEnd),
+    cycleEnd: summary.cycleEnd,
+    issueDate: summary.cycleEnd,
+    dueDate: summary.dueDate,
+    currency: summary.currency?.trim() || "TWD",
+    balance: summary.balance!,
+    minimumPayment: summary.minimumPayment!,
+  }));
 }
 
 function optionalEsunManagedSecret(): string | undefined {
@@ -270,6 +369,7 @@ export type EsunCanonicalCaptureBuildInput = {
   unbilledRows?: readonly StatementRow[];
   grid: GridState;
   capture: CaptureMetadata;
+  instrumentFingerprintSecret: string;
   /** Explicit issuer cycle-summary evidence; query dates are not statements. */
   settledPeriods?: readonly EsunCreditCardSettledPeriod[];
 };
@@ -285,16 +385,25 @@ function canonicalPaymentStatus(row: StatementRow): "已入帳" | "未入帳" {
   return row.paymentStatus === "billed" ? "已入帳" : "未入帳";
 }
 
-function mapEsunStatementRow(row: StatementRow): EsunCreditCardSourceRow {
-  const cardDigits = row.cardNumber.replace(/\D/gu, "");
-  if (!/^\d{4}$/u.test(cardDigits)) {
+function mapEsunStatementRow(
+  row: StatementRow,
+  identity: EsunCreditCardIdentityInput,
+  managedSecret: string,
+): EsunCreditCardSourceRow {
+  const projected = deriveEsunProjectedInstrumentIdentity(
+    row.cardNumber,
+    identity,
+    managedSecret,
+  );
+  if (!projected) {
     throw new Error(
-      "E.SUN canonical capture requires a display-safe four-digit card key.",
+      "E.SUN canonical capture requires an unambiguous masked first-four and last-four card projection.",
     );
   }
   return {
     statementPeriod: row.statementPeriod,
-    cardNumber: cardDigits,
+    cardNumber: projected.cardMask,
+    instrumentKey: projected.instrumentKey,
     consumeDate: row.consumeDate,
     description: row.description,
     foreignCurrency: row.foreignCurrency,
@@ -325,8 +434,10 @@ export function buildEsunCanonicalCreditCardCapture(
     return undefined;
   }
 
-  const statementRows = input.statementRows.map(mapEsunStatementRow);
-  const unbilledRows = (input.unbilledRows ?? []).map(mapEsunStatementRow);
+  const statementRows = input.statementRows.map((row) =>
+    mapEsunStatementRow(row, input.identity, input.instrumentFingerprintSecret));
+  const unbilledRows = (input.unbilledRows ?? []).map((row) =>
+    mapEsunStatementRow(row, input.identity, input.instrumentFingerprintSecret));
   const allRows = [...statementRows, ...unbilledRows];
   const options: EsunCreditCardCanonicalCaptureOptions = {
     captureId: input.capture.captureId,
@@ -537,6 +648,151 @@ async function readStatementRows(
   return statementRows;
 }
 
+function labeledCellValue(rows: readonly string[][], label: string): string | undefined {
+  const issuerLabel = /帳款結帳日|繳款截止日|本期應繳總金額|本期最低應繳金額/u;
+  for (const [rowIndex, cells] of rows.entries()) {
+    const index = cells.findIndex((cell) => cleanText(cell).includes(label));
+    if (index < 0) continue;
+    const verticallyAligned = cleanText(rows[rowIndex + 1]?.[index]);
+    if (verticallyAligned && !issuerLabel.test(verticallyAligned))
+      return verticallyAligned;
+    const following = cleanText(cells[index + 1]);
+    if (following && !issuerLabel.test(following)) return following;
+    const sameCell = cleanText(cells[index]).replace(label, "").trim();
+    if (sameCell && !issuerLabel.test(sameCell)) return sameCell;
+  }
+  return undefined;
+}
+
+function issuerAmount(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[,，\s]/gu, "")
+    .replace(/^(?:NT\$|TWD|新臺幣|新台幣)/iu, "");
+  return /^[+-]?\d+(?:\.\d+)?$/u.test(normalized) ? normalized : undefined;
+}
+
+export function esunIssuerSummaryFromLabelRows(
+  rows: readonly string[][],
+): EsunIssuerStatementSummary | undefined {
+  const cycleEnd = labeledCellValue(rows, "帳款結帳日");
+  const dueDate = labeledCellValue(rows, "繳款截止日");
+  const balance = issuerAmount(labeledCellValue(rows, "本期應繳總金額"));
+  const minimumPayment = issuerAmount(
+    labeledCellValue(rows, "本期最低應繳金額"),
+  );
+  if (!cycleEnd || !dueDate || !balance || !minimumPayment) return undefined;
+  return { cycleEnd, dueDate, balance, minimumPayment, currency: "TWD" };
+}
+
+export function esunIssuerSummaryFromText(
+  value: string,
+): EsunIssuerStatementSummary | undefined {
+  const textValue = value.normalize("NFKC");
+  const dateAfter = (label: string): string | undefined =>
+    textValue.match(
+      new RegExp(`${label}\\s*[:：]?\\s*(\\d{3,4}[/.\\-]\\d{1,2}[/.\\-]\\d{1,2})`, "u"),
+    )?.[1];
+  const amountAfter = (label: string): string | undefined =>
+    issuerAmount(
+      textValue.match(
+        new RegExp(
+          `${label}\\s*[:：]?\\s*(?:NT\\$|TWD|新臺幣|新台幣)?\\s*([+-]?\\d[\\d,，]*(?:\\.\\d+)?)`,
+          "iu",
+        ),
+      )?.[1],
+    );
+  const cycleEnd = dateAfter("帳款結帳日");
+  const dueDate = dateAfter("繳款截止日");
+  const balance = amountAfter("本期應繳總金額");
+  const minimumPayment = amountAfter("本期最低應繳金額");
+  if (!cycleEnd || !dueDate || !balance || !minimumPayment) return undefined;
+  return { cycleEnd, dueDate, balance, minimumPayment, currency: "TWD" };
+}
+
+function redactedIssuerEvidenceShape(value: string): string {
+  const labels = [
+    "帳款結帳日",
+    "繳款截止日",
+    "本期應繳總金額",
+    "本期最低應繳金額",
+  ];
+  const lines = value.split(/\r?\n/u).map(cleanText).filter(Boolean);
+  const evidenceLines = lines.filter((line, index) =>
+    labels.some((label) => line.includes(label)) ||
+    labels.some((label) => lines[index - 1]?.includes(label)),
+  );
+  return evidenceLines
+    .map((line) => line.replace(/\d/gu, "#"))
+    .join(" | ")
+    .slice(0, 600);
+}
+
+async function tableCellRows(scope: Page | Frame): Promise<string[][]> {
+  const rows = await scope.locator("tr").all();
+  return await Promise.all(
+    rows.map(async (row) =>
+      (await row.locator("th, td").allTextContents()).map(cleanText)),
+  );
+}
+
+async function openIssuerStatementSummaryPage(page: Page): Promise<Frame> {
+  const frame = await mainFrame(page);
+  await frame.evaluate(() => {
+    const loader = (globalThis as unknown as {
+      _leftMenuLoadWidget?: (
+        event: Event,
+        widget: string,
+        group: string,
+        menu: string,
+      ) => void;
+    })._leftMenuLoadWidget;
+    if (typeof loader !== "function")
+      throw new Error("E.SUN statement menu loader is unavailable.");
+    loader(new Event("click"), "FCM01003", "FCM", "MFCM0201");
+  });
+  const summaryFrame = await mainFrame(page);
+  await summaryFrame.locator("form#fcm01003").waitFor({
+    state: "attached",
+    timeout: 60_000,
+  });
+  return summaryFrame;
+}
+
+async function readIssuerStatementSummaries(
+  page: Page,
+): Promise<EsunIssuerStatementSummary[]> {
+  const frame = await openIssuerStatementSummaryPage(page);
+  const detailLinks = frame
+    .locator("form#fcm01003 a")
+    .filter({ hasText: /^\s*明細\s*$/u });
+  const count = await detailLinks.count();
+  const summaries: EsunIssuerStatementSummary[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const popupPromise = page.waitForEvent("popup", { timeout: 10_000 });
+    await detailLinks.nth(index).click();
+    const popup = await popupPromise;
+    try {
+      await popup.waitForLoadState("domcontentloaded");
+      const bodyText = await popup.locator("body").innerText();
+      const summary =
+        esunIssuerSummaryFromLabelRows(await tableCellRows(popup)) ??
+        esunIssuerSummaryFromText(bodyText);
+      if (!summary)
+        throw new Error(
+          `E.SUN statement detail lacks complete settled-cycle evidence (${redactedIssuerEvidenceShape(bodyText)}).`,
+        );
+      summaries.push(summary);
+    } finally {
+      await popup.close();
+    }
+  }
+  if (summaries.length < 2)
+    throw new Error("E.SUN needs at least two consecutive statement closes.");
+  return summaries;
+}
+
 function statementRowsToCsv(rows: StatementRow[]): string {
   const csvRows = [
     statementHeaders,
@@ -639,6 +895,7 @@ async function writeStatementFile(
 }
 
 export default workflow("esunCreditCardStatements", {
+  startUrl: BANK_ENTRY_URL,
   credentials: ["esun_user_id", "esun_account", "esun_password"],
   input: inputSchema,
   output: outputSchema,
@@ -653,7 +910,6 @@ export default workflow("esunCreditCardStatements", {
       await dialog.accept();
     });
 
-    await page.goto(BANK_ENTRY_URL);
     console.log("automation-progress: 20");
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
@@ -708,6 +964,11 @@ export default workflow("esunCreditCardStatements", {
             grid: completeGrid,
           },
         };
+    const settledPeriods = isFullCapture
+      ? buildEsunSettledPeriodsFromIssuerSummaries(
+          await readIssuerStatementSummaries(page),
+        )
+      : [];
     const files = [
       await writeStatementFile(
         nextTimestamp,
@@ -737,6 +998,8 @@ export default workflow("esunCreditCardStatements", {
           unbilledRows,
           grid: completeGrid,
           capture,
+          instrumentFingerprintSecret: managedSecret!,
+          settledPeriods,
         })
       : undefined;
     let canonicalAdmission: "not-configured" | "admitted" =
