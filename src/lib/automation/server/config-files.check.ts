@@ -8,6 +8,7 @@ import {
   AUTOMATION_CREDENTIALS_FORMAT,
   AUTOMATION_CREDENTIALS_PATH,
   AUTOMATION_SETTINGS_PATH,
+  CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   automationConfigEnv,
   credentialStatusFromValues,
@@ -136,6 +137,10 @@ try {
   assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");
   assert.equal(AUTOMATION_ENV_PATH, ".env");
+  assert.equal(
+    CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+    FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+  );
 
   const importCwd = join(dir, "import-cwd");
   const runtimeCwd = join(dir, "runtime-cwd");

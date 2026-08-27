@@ -58,6 +58,8 @@ const automationKnownKeys = new Set<string>([
 
 export const FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =
   AUTOMATION_MANAGED_SECRET_KEYS[0];
+export const CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =
+  FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY;
 
 function readJsonRecord(path: string) {
   if (!existsSync(path)) return {};

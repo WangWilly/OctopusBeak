@@ -240,6 +240,14 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   const isFubonCreditCardCapture =
     capture.authorityRoute === "fubon/credit-card/human-attested-v1" ||
     capture.authorityRoute === "fubon/credit-card/human-attested-v2";
+  const isEsunCreditCardCapture =
+    capture.authorityRoute === "esun/credit-card/human-attested-v1";
+  const isYuantaCreditCardCapture =
+    capture.authorityRoute === "yuanta/credit-card/human-attested-v1";
+  const isHumanAttestedCreditCardCapture =
+    isFubonCreditCardCapture ||
+    isEsunCreditCardCapture ||
+    isYuantaCreditCardCapture;
   validateText(capture.captureId, "Capture ID");
   validateText(capture.authorityRoute, "Authority route");
   validateText(capture.contractVersion, "Contract version");
@@ -272,11 +280,13 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       timePrecision?: string;
       completeness?: "complete-range" | "single-page";
       completenessBasis?: string;
-      absenceAuthority?: string;
+      completenessRuleVersion?: string;
+      absenceAuthority?: string | null;
       withdrawalPolicy?: "allow-inference" | "never-infer";
       integrationNamespace?: string;
       stream?: string;
       recordKind?: string;
+      accountType?: string;
       contractVersion?: string;
       requireProviderGuaranteedFalse?: boolean;
       absenceAuthorityOnlyWhenEmpty?: boolean;
@@ -311,10 +321,12 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       timePrecision: "date",
       completeness: "complete-range",
       completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      completenessRuleVersion: "fubon/credit-card/human-attested-v1",
       withdrawalPolicy: "never-infer",
       integrationNamespace: "fubon",
       stream: "credit-card",
       recordKind: "fubon-credit-card-transaction",
+      accountType: "credit",
       contractVersion: "fubon/credit-card/human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
@@ -329,11 +341,56 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       timePrecision: "date",
       completeness: "complete-range",
       completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      completenessRuleVersion: "fubon/credit-card/human-attested-v2",
       withdrawalPolicy: "never-infer",
       integrationNamespace: "fubon",
       stream: "credit-card",
       recordKind: "fubon-credit-card-transaction",
+      accountType: "credit",
       contractVersion: "fubon/credit-card/human-attested-v2",
+      requireProviderGuaranteedFalse: true,
+    },
+    "esun/credit-card/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "esun/credit-card/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis:
+        "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
+      completenessRuleVersion: "esun/credit-card/human-attested-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "esun",
+      stream: "credit-card",
+      recordKind: "esun-credit-card-transaction",
+      accountType: "credit",
+      contractVersion: "esun/credit-card/human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta/credit-card/human-attested-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/credit-card/human-attested-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "six-billed-months-plus-unbilled-terminal-no-pager",
+      completenessRuleVersion: "yuanta/credit-card/human-attested-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "credit-card",
+      recordKind: "yuanta-credit-card-transaction",
+      accountType: "credit",
+      contractVersion: "yuanta/credit-card/human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/domestic-deposit/human-attested-v1": {
@@ -531,6 +588,11 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       capture.scope.completenessBasis !== routeRule.completenessBasis
     )
       mismatches.push("completeness basis");
+    if (
+      routeRule.completenessRuleVersion !== undefined &&
+      capture.scope.completenessRuleVersion !== routeRule.completenessRuleVersion
+    )
+      mismatches.push("completeness rule version");
     if (routeRule.absenceAuthority !== undefined) {
       const expectedAbsenceAuthority = routeRule.absenceAuthorityOnlyWhenEmpty
         ? capture.records.length === 0
@@ -560,6 +622,11 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       capture.identity.recordKind !== routeRule.recordKind
     )
       mismatches.push("record kind");
+    if (
+      routeRule.accountType !== undefined &&
+      capture.identity.accountType !== routeRule.accountType
+    )
+      mismatches.push("account type");
     if (
       routeRule.contractVersion !== undefined &&
       capture.contractVersion !== routeRule.contractVersion
@@ -591,8 +658,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       throw new Error("Capture page ordinal is invalid.");
     if (isForeignCurrencyCapture && page.pageOrdinal !== pageIndex)
       throw new Error("Foreign capture page ordinals must be contiguous from zero.");
-    if (isFubonCreditCardCapture && page.pageOrdinal !== pageIndex)
-      throw new Error("Fubon credit-card grid ordinals must be contiguous from zero.");
+    if (isHumanAttestedCreditCardCapture && page.pageOrdinal !== pageIndex)
+      throw new Error(
+        "Human-attested credit-card grid ordinals must be contiguous from zero.",
+      );
     if (!Number.isSafeInteger(page.rowCount) || page.rowCount < 0)
       throw new Error("Capture page row count is invalid.");
     capturedRowCount += page.rowCount;
@@ -618,22 +687,46 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     throw new Error(
       "Fubon credit-card capture requires seven terminal grids with matching row counts.",
     );
+  if (
+    isEsunCreditCardCapture &&
+    (capture.pages.length !== 1 ||
+      terminalPageCount !== 1 ||
+      capturedRowCount !== capture.records.length)
+  )
+    throw new Error(
+      "E.SUN credit-card capture requires one terminal grid with matching row counts.",
+    );
+  if (
+    isYuantaCreditCardCapture &&
+    (capture.pages.length !== 7 ||
+      terminalPageCount !== 7 ||
+      capturedRowCount !== capture.records.length)
+  )
+    throw new Error(
+      "Yuanta credit-card capture requires seven terminal grids with matching row counts.",
+    );
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
     validateOpaque(record.occurrenceKey, "Occurrence key");
     validateOpaque(record.collisionKey, "Collision key");
-    if (isFubonCreditCardCapture) {
+    if (isHumanAttestedCreditCardCapture) {
       if (record.providerKey !== "human-attested:no-provider-key")
-        throw new Error("Fubon credit-card records cannot claim a provider key.");
+        throw new Error(
+          "Human-attested credit-card records cannot claim a provider key.",
+        );
       validateOpaque(
         record.humanAttestedOccurrenceKey ?? "",
         "Human-attested occurrence key",
       );
       if (record.humanAttestedOccurrenceKey !== record.occurrenceKey)
-        throw new Error("Fubon human-attested occurrence key must be the authority identity.");
+        throw new Error(
+          "Human-attested occurrence key must be the authority identity.",
+        );
       if (!/^observed-source-order:\d+$/.test(record.sequenceLexeme))
-        throw new Error("Fubon source order must be an observed ordinal, not a provider sequence.");
+        throw new Error(
+          "Human-attested source order must be an observed ordinal, not a provider sequence.",
+        );
     } else {
       validateOpaque(record.providerKey, "Provider key");
       if (record.humanAttestedOccurrenceKey !== undefined)
