@@ -66,12 +66,12 @@ The app remembers onboarding progress, so you can quit and continue later. You c
 | HNCB | TWD deposits |
 | CTBC | TWD deposits |
 | Post Office | TWD deposits |
-| SinoPac | TWD deposits; foreign-currency source evidence (canonical foreign transactions pending) |
+| SinoPac | TWD deposits; foreign-currency canonical transactions (human-attested identity contract) |
 | LINE Bank | TWD deposits and foreign currency |
 | E-Invoice | Personal invoices and purchased items |
 | MAX / MaiCoin | Crypto balances and statement rows |
 
-SinoPac foreign-currency statements can still be collected and retained as traceable source evidence. Because the provider has not established a stable transaction identity, the app does not promote those rows to canonical Financial Transactions. Advertised canonical foreign-currency support currently covers Yuanta, Cathay, and LINE Bank.
+SinoPac foreign-currency statements are collected and retained as traceable source evidence, and their rows are promoted to canonical Financial Transactions under a human-attested identity contract. Advertised canonical foreign-currency support currently includes SinoPac, Yuanta, Cathay, and LINE Bank.
 
 ## Your data stays on your device
 
