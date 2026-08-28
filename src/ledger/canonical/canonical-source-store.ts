@@ -28,6 +28,8 @@ const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2 =
   "esun/credit-card/human-attested-v2" as const;
 const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1 =
   "yuanta/credit-card/human-attested-v1" as const;
+const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2 =
+  "yuanta/credit-card/human-attested-v2" as const;
 const FUBON_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1,
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2,
@@ -38,6 +40,7 @@ const ESUN_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 ]);
 const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 export const CANONICAL_SCHEMA_VERSION = 8;
@@ -1181,11 +1184,11 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
-    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+    "posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'yuanta/credit-card/%')",
   )
   .replace(
     "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
-    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+    "semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'yuanta/credit-card/%')",
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
@@ -1197,7 +1200,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
-    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+    "effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'yuanta/credit-card/%')",
   );
 
 const SCHEMA_V6_APPEND = `
@@ -2417,6 +2420,13 @@ function validateCanonicalAuthorityRoutes(
             AND registered.integration_namespace = 'yuanta'
             AND registered.contract_version = 'yuanta/credit-card/human-attested-v1')
           OR
+          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
+            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2'
+            AND capture.stream = 'credit-card'
+            AND registered.stream = 'credit-card'
+            AND registered.integration_namespace = 'yuanta'
+            AND registered.contract_version = 'yuanta/credit-card/human-attested-v2')
+          OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
             AND registered.integration_namespace = 'linebank'
@@ -3406,6 +3416,10 @@ function validateSelectedAssertionProvenance(
           (capture.authority_route = 'yuanta/credit-card/human-attested-v1'
             AND capture.stream = 'credit-card'
             AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v1')
+          OR
+          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
+            AND capture.stream = 'credit-card'
+            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
@@ -4482,16 +4496,19 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /posting_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
+    /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
     /semantic_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
     /semantic_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
     /semantic_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
+    /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
     /effective_time_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
     /effective_time_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
     /effective_time_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
+    /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
     /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
       sql,
     ) &&
@@ -4522,15 +4539,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -8311,6 +8328,98 @@ function addSelectedFields(
   };
 }
 
+/**
+ * A Yuanta v2 capture is allowed to supersede v1 in a current view only when
+ * the durable source proof is complete.  The source connection is the stable
+ * lineage key here: it identifies the provider login/portfolio without
+ * comparing account numbers, card numbers, transaction facts, or any other
+ * sensitive payload.  Historical reads intentionally do not use this
+ * predicate, so immutable v1 rows remain queryable for audit.
+ *
+ * Keep the predicate SQL-only and conservative.  In particular, a malformed
+ * or partially traversed v2 scope cannot hide a valid v1 projection.
+ */
+function yuantaV2CompleteCaptureForConnectionSql(alias: string): string {
+  return `EXISTS (
+    SELECT 1
+    FROM source_captures yuanta_v2_capture
+    JOIN capture_scopes yuanta_v2_scope
+      ON yuanta_v2_scope.capture_id = yuanta_v2_capture.capture_id
+     AND yuanta_v2_scope.source_connection_id = yuanta_v2_capture.source_connection_id
+     AND yuanta_v2_scope.identity_epoch_id = yuanta_v2_capture.identity_epoch_id
+    WHERE yuanta_v2_capture.source_connection_id = ${alias}.source_connection_id
+      AND yuanta_v2_capture.authority_route = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_capture.stream = 'credit-card'
+      AND yuanta_v2_capture.record_kind = 'yuanta-credit-card-transaction'
+      AND yuanta_v2_capture.completeness = 'complete-range'
+      AND yuanta_v2_capture.completeness_rule_version = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_scope.stream = 'credit-card'
+      AND yuanta_v2_scope.completeness = 'complete-range'
+      AND yuanta_v2_scope.completeness_rule_version = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_scope.terminal = 1
+      AND (
+        SELECT COUNT(*)
+        FROM capture_scope_pages yuanta_v2_page_count
+        WHERE yuanta_v2_page_count.scope_id = yuanta_v2_scope.scope_id
+      ) = yuanta_v2_scope.page_count
+      AND NOT EXISTS (
+        SELECT 1
+        FROM capture_scope_pages yuanta_v2_page
+        WHERE yuanta_v2_page.scope_id = yuanta_v2_scope.scope_id
+          AND (
+            yuanta_v2_page.response_code <> '200'
+            OR yuanta_v2_page.terminal <> 1
+            OR yuanta_v2_page.page_ordinal >= yuanta_v2_scope.page_count
+          )
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM transaction_revisions yuanta_v2_revision
+        JOIN financial_transactions yuanta_v2_transaction
+          ON yuanta_v2_transaction.transaction_id = yuanta_v2_revision.transaction_id
+        WHERE yuanta_v2_revision.capture_id = yuanta_v2_capture.capture_id
+          AND yuanta_v2_transaction.account_id = yuanta_v2_scope.account_id
+          AND yuanta_v2_revision.posting_rule_version = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      )
+  )`;
+}
+
+function yuantaV2CompleteCaptureForRevisionSql(alias: string): string {
+  return `EXISTS (
+    SELECT 1
+    FROM source_captures yuanta_v2_capture
+    JOIN capture_scopes yuanta_v2_scope
+      ON yuanta_v2_scope.capture_id = yuanta_v2_capture.capture_id
+     AND yuanta_v2_scope.source_connection_id = yuanta_v2_capture.source_connection_id
+     AND yuanta_v2_scope.identity_epoch_id = yuanta_v2_capture.identity_epoch_id
+    WHERE yuanta_v2_capture.capture_id = ${alias}.capture_id
+      AND yuanta_v2_capture.authority_route = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_capture.stream = 'credit-card'
+      AND yuanta_v2_capture.record_kind = 'yuanta-credit-card-transaction'
+      AND yuanta_v2_capture.completeness = 'complete-range'
+      AND yuanta_v2_capture.completeness_rule_version = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_scope.stream = 'credit-card'
+      AND yuanta_v2_scope.completeness = 'complete-range'
+      AND yuanta_v2_scope.completeness_rule_version = '${YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2}'
+      AND yuanta_v2_scope.terminal = 1
+      AND (
+        SELECT COUNT(*)
+        FROM capture_scope_pages yuanta_v2_page_count
+        WHERE yuanta_v2_page_count.scope_id = yuanta_v2_scope.scope_id
+      ) = yuanta_v2_scope.page_count
+      AND NOT EXISTS (
+        SELECT 1
+        FROM capture_scope_pages yuanta_v2_page
+        WHERE yuanta_v2_page.scope_id = yuanta_v2_scope.scope_id
+          AND (
+            yuanta_v2_page.response_code <> '200'
+            OR yuanta_v2_page.terminal <> 1
+            OR yuanta_v2_page.page_ordinal >= yuanta_v2_scope.page_count
+          )
+      )
+  )`;
+}
+
 class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQuery {
   private readonly ledgerDir: string;
   private readonly profile: CanonicalFinancialQueryProfile;
@@ -8360,9 +8469,21 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       this.profile.postingRuleVersion === FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1
         ? "fubon/credit-card/human-attested-v1-current-disabled"
         : this.profile.postingRuleVersion;
+    const yuantaV1CurrentSupersession =
+      this.profile.integrationNamespace === "yuanta" &&
+      this.profile.postingRuleVersion === YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1;
+    const yuantaV2CurrentRead =
+      this.profile.integrationNamespace === "yuanta" &&
+      this.profile.postingRuleVersion === YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2;
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
+        const accountEligibility =
+          yuantaV1CurrentSupersession
+            ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("account")})`
+            : yuantaV2CurrentRead
+              ? `AND ${yuantaV2CompleteCaptureForConnectionSql("account")}`
+              : "";
         const accounts = (
           db
             .prepare(
@@ -8380,6 +8501,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                      AND capture.authority_route = ?
                      AND capture.stream = account.stream
                  )
+                 ${accountEligibility}
                ORDER BY account.account_no`,
             )
             .all(
@@ -8413,6 +8535,11 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
         WHERE r.posting_rule_version = ?
+          ${yuantaV1CurrentSupersession
+            ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("a")})`
+            : yuantaV2CurrentRead
+              ? `AND ${yuantaV2CompleteCaptureForRevisionSql("r")}`
+              : ""}
         ORDER BY a.account_no, t.source_sequence`,
           )
           .all(currentRoute) as Record<string, unknown>[];

@@ -17,8 +17,11 @@ import {
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   getYuantaCreditCardHumanAttestedV1Manifest,
+  getYuantaCreditCardHumanAttestedV2Manifest,
   isYuantaCreditCardHumanAttestedV1Active,
+  isYuantaCreditCardHumanAttestedV2Active,
   restoreYuantaCreditCardHumanAttestedV1,
   revokeYuantaCreditCardHumanAttestedV1,
 } from "./yuanta-credit-card-human-attestation.ts";
@@ -78,6 +81,7 @@ function options(
       row(null, { consumeDate: "2026-07-23", postedDate: "2026-07-24", description: "SYNTHETIC UNBILLED 4" }),
     ],
     terminalPages: [true, true, true, true, true, true, true],
+    statementSummaries: settledSummaries(),
     ...overrides,
   };
 }
@@ -97,10 +101,10 @@ function settledSummaries(): YuantaCreditCardStatementSummary[] {
   });
 }
 
-test("Yuanta credit-card v1 is a human-attested portfolio contract", () => {
+test("Yuanta credit-card v2 is a human-attested portfolio contract", () => {
   assert.equal(
     YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute,
-    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute,
   );
   assert.equal(YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.providerGuaranteed, false);
   assert.equal(
@@ -108,25 +112,99 @@ test("Yuanta credit-card v1 is a human-attested portfolio contract", () => {
     false,
   );
   assert.equal(
-    getYuantaCreditCardHumanAttestedV1Manifest().authority,
-    "human-attested-primary-cardholder-portfolio",
+    YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.statementRule,
+    "issuer-settled-history-detail-close-due-total-minimum-with-period-only",
   );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics.statements,
+    "issuer-settled-history-detail-close-due-total-minimum-with-period-and-prior-close-derived-cycle-start",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics.settledSummaryPeriodAuthority,
+    "history-detail.table.rwdTable[0].row[0].cell[0].period-label-to-row[1].cell[0].same-column-value-exact-human-attested-a",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics.settledSummaryPeriodFormat,
+    "human-attested-category-2-gregorian-year-month-slash-with-month-or-period-suffix",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryBalanceAuthority,
+    "history-detail.table.rwdTable[0].balance-label-to-next-row.same-column-value-exact-human-attested-a",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryNonAuthoritativeBalanceSources,
+    "paid-amount-and-text-fragment-non-authoritative",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryParserContract,
+    "yuanta-credit-card.settled-summary-parser.v7-exact-period-balance-a",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryNonAuthoritativePeriodSources,
+    "card-title-and-month-tab-non-authoritative",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryLiveEvidence,
+    "six-issuer-history-detail-summaries-five-bounded-cycles-queryHistoryDetail-authority",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryAuthorityContract,
+    "queryHistoryDetail-selected-billed-month-response-with-provider-posting-date-membership",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryExactFieldEvidence,
+    "period-and-balance-next-row-same-column-exact-human-attested-a",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryCompletenessEvidence,
+    "complete-range-seven-terminal-grids-six-history-summaries-unbilled-terminal",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryRepeatEvidence,
+    "two-v2-captures-repeat-deduped-authority-with-provenance-retained",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryCurrentRoutePrecedence,
+    "v2-complete-capture-supersedes-v1-current-view-only-history-retains-both",
+  );
+  assert.equal(
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
+      .settledSummaryDiagnosticPage,
+    "creditcardsummary-optional-non-authoritative-and-must-not-block",
+  );
+  assert.equal(getYuantaCreditCardHumanAttestedV2Manifest().authority, "human-attested-primary-cardholder-portfolio");
+  assert.equal(getYuantaCreditCardHumanAttestedV1Manifest().authorityRoute, YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute);
   assert.equal(isYuantaCreditCardHumanAttestedV1Active(), true);
+  assert.equal(isYuantaCreditCardHumanAttestedV2Active(), true);
   assert.match(
     buildYuantaCreditCardAccountIdentityKey(identity),
     /^sha256:/u,
   );
 });
 
-test("complete six billed months plus unbilled rows do not invent statements", () => {
+test("complete six billed months plus unbilled rows require settled summaries", () => {
+  assert.throws(
+    () => buildYuantaCanonicalCreditCardCapture(options({ statementSummaries: undefined })),
+    /issuer-settled statement summaries/u,
+  );
   const capture = buildYuantaCanonicalCreditCardCapture(options());
   assert.equal(capture.identity.accountType, "credit");
   assert.equal(capture.identity.accountSubtype, "credit_card");
   assert.equal(capture.instruments.length, 1);
   assert.equal(capture.instruments[0]?.cardMask, "****1234");
   assert.equal(capture.transactions.length, 10);
-  assert.equal(capture.statements.length, 0);
-  assert.equal(capture.scope.completeness.settledSummaryEvidencePresent, false);
+  assert.equal(capture.statements.length, 6);
+  assert.equal(capture.scope.completeness.settledSummaryEvidencePresent, true);
   assert.equal(
     capture.transactions.filter((transaction) => transaction.billingStatus === "billed").length,
     6,
@@ -135,10 +213,9 @@ test("complete six billed months plus unbilled rows do not invent statements", (
     capture.transactions.filter((transaction) => transaction.billingStatus === "unbilled").length,
     4,
   );
-  assert.ok(
-    capture.transactions
-      .filter((transaction) => transaction.billingStatus === "billed")
-      .every((transaction) => transaction.statementKey === undefined),
+  assert.equal(
+    capture.transactions.filter((transaction) => transaction.billingStatus === "billed" && transaction.statementKey).length,
+    6,
   );
   assert.ok(
     capture.transactions
@@ -147,6 +224,12 @@ test("complete six billed months plus unbilled rows do not invent statements", (
   );
   assert.equal(capture.scope.completeness.grids.length, 7);
   assert.ok(capture.scope.completeness.grids.every((grid) => grid.terminal));
+  const incomplete = structuredClone(capture) as unknown as YuantaCreditCardCaptureInput;
+  incomplete.statements = incomplete.statements.slice(0, 1);
+  assert.throws(
+    () => admitYuantaCreditCardCapture(incomplete),
+    /issuer-settled statement summaries covering all billed periods/u,
+  );
 });
 
 test("only explicit valid summaries create settled statements and memberships", () => {
@@ -177,25 +260,79 @@ test("only explicit valid summaries create settled statements and memberships", 
   assert.ok(capture.statements.every((statement) => statement.balance.coefficient === "10000"));
 });
 
-test("a partial summary set only creates the supplied settled statements", () => {
+test("an incomplete settled-summary set fails closed", () => {
   const [summary] = settledSummaries();
-  const capture = buildYuantaCanonicalCreditCardCapture(
-    options({ statementSummaries: [summary!] }),
+  assert.throws(
+    () => buildYuantaCanonicalCreditCardCapture(
+      options({ statementSummaries: [summary!] }),
+    ),
+    /issuer-settled statement summaries covering all billed periods/u,
   );
-  assert.equal(capture.statements.length, 1);
-  assert.equal(capture.statements[0]?.balance.coefficient, "10000");
+});
+
+test("five settled summaries may omit only the oldest billed period", async () => {
+  const summaries = settledSummaries();
+  const oldestOmitted = buildYuantaCanonicalCreditCardCapture(
+    options({ statementSummaries: summaries.slice(1) }),
+  );
+  assert.equal(oldestOmitted.statements.length, 5);
   assert.equal(
-    capture.transactions.filter(
+    oldestOmitted.transactions.filter(
       (transaction) => transaction.billingStatus === "billed" && transaction.statementKey,
-    ).length,
-    1,
-  );
-  assert.equal(
-    capture.transactions.filter(
-      (transaction) => transaction.billingStatus === "billed" && !transaction.statementKey,
     ).length,
     5,
   );
+
+  const oldestDirectory = mkdtempSync(join("/tmp", "yuanta-credit-card-oldest-edge-"));
+  const oldestStore = createCanonicalSourceStore(join(oldestDirectory, "canonical.sqlite"));
+  try {
+    const committed = await commitYuantaCreditCardCapture(oldestStore, oldestOmitted);
+    assert.equal(committed.statementCount, 5);
+    assert.equal(
+      Number(
+        (oldestStore.db.prepare("SELECT COUNT(*) AS n FROM source_captures").get() as { n: number }).n,
+      ),
+      1,
+    );
+  } finally {
+    oldestStore.close();
+  }
+
+  for (const missingPeriod of ["115/03", "115/06"]) {
+    assert.throws(
+      () =>
+        buildYuantaCanonicalCreditCardCapture(
+          options({
+            statementSummaries: summaries.filter(
+              (summary) => summary.period !== missingPeriod,
+            ),
+          }),
+        ),
+      /oldest billed period|bounded billed period/u,
+    );
+  }
+
+  const fullCapture = buildYuantaCanonicalCreditCardCapture(options());
+  const middleOmitted = structuredClone(fullCapture) as unknown as YuantaCreditCardCaptureInput;
+  middleOmitted.statements = middleOmitted.statements.filter(
+    (_statement, index) => index !== 2,
+  );
+  const middleDirectory = mkdtempSync(join("/tmp", "yuanta-credit-card-middle-edge-"));
+  const middleStore = createCanonicalSourceStore(join(middleDirectory, "canonical.sqlite"));
+  try {
+    assert.throws(
+      () => admitYuantaCreditCardCapture(middleOmitted),
+      /bounded Yuanta billed transaction|issuer-settled statement summaries/u,
+    );
+    assert.equal(
+      Number(
+        (middleStore.db.prepare("SELECT COUNT(*) AS n FROM source_captures").get() as { n: number }).n,
+      ),
+      0,
+    );
+  } finally {
+    middleStore.close();
+  }
 });
 
 test("admitted captures map to neutral extension keys and pinned memberships", () => {
@@ -248,7 +385,7 @@ test("admitted captures map to neutral extension keys and pinned memberships", (
       .length,
     4,
   );
-  assert.equal(neutral.statements.length, 0);
+  assert.equal(neutral.statements.length, 6);
   assert.equal(JSON.stringify(neutral).includes("4111"), false);
 });
 
@@ -330,6 +467,36 @@ test("partial, conflicting-instrument, and invalid signed/status rows fail close
       } as unknown as YuantaCreditCardCaptureInput),
     /posted|status/u,
   );
+  assert.throws(
+    () =>
+      buildYuantaCanonicalCreditCardCapture(
+        options({
+          billedRows: periods.map((period, index) =>
+            row(period, index === 0 ? { postedDate: "" } : {}),
+          ),
+        }),
+      ),
+    /posting date|calendar date/u,
+  );
+  const duplicated = buildYuantaCanonicalCreditCardCapture(
+    options({
+      billedRows: [
+        row("115/01", { description: "SAME PURCHASE" }),
+        row("115/01", { description: "SAME PURCHASE" }),
+        ...periods.slice(1).map((period) => row(period)),
+      ],
+    }),
+  );
+  const nonContiguous = structuredClone(duplicated) as unknown as YuantaCreditCardCaptureInput;
+  const duplicateTransactionIndexes = nonContiguous.transactions
+    .map((transaction, index) => ({ transaction, index }))
+    .filter(({ transaction }) => transaction.description === "SAME PURCHASE")
+    .map(({ index }) => index);
+  nonContiguous.transactions[duplicateTransactionIndexes[1]!]!.occurrenceIndex = 2;
+  assert.throws(
+    () => admitYuantaCreditCardCapture(nonContiguous),
+    /contiguous|occurrence/u,
+  );
 });
 
 test("canonical builder rejects projection, PAN, and last-four-only evidence", () => {
@@ -404,40 +571,11 @@ test("same last four with different projected identities remain distinct and sta
   assert.equal(serialized.includes("4111-11"), false);
 });
 
-test("commit preserves a complete no-summary capture without fabricated statements", async () => {
-  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-no-summary-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
-  try {
-    const committed = await commitYuantaCreditCardCapture(
-      store,
-      buildYuantaCanonicalCreditCardCapture(options()),
-    );
-    assert.equal(committed.status, "canonical-live");
-    assert.equal(committed.transactionCount, 10);
-    assert.equal(committed.statementCount, 0);
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_accounts").get() as { n: number }).n),
-      1,
-    );
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
-      10,
-    );
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions").get() as { n: number }).n),
-      0,
-    );
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_memberships").get() as { n: number }).n),
-      0,
-    );
-    assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_summary_evidence").get() as { n: number }).n),
-      0,
-    );
-  } finally {
-    store.close();
-  }
+test("a complete capture without summaries cannot be built for canonical commit", () => {
+  assert.throws(
+    () => buildYuantaCanonicalCreditCardCapture(options({ statementSummaries: undefined })),
+    /issuer-settled statement summaries/u,
+  );
 });
 
 test("commit writes explicit settled summaries to the shared spine and extensions", async () => {
@@ -532,7 +670,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_records").get() as { n: number }).n),
-      26,
+      32,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_record_provenance").get() as { n: number }).n),
@@ -556,11 +694,156 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_summary_evidence").get() as { n: number }).n),
-      6,
+      12,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_instrument_evidence").get() as { n: number }).n),
       2,
+    );
+
+    const changedSummaries = settledSummaries();
+    changedSummaries[0] = {
+      ...changedSummaries[0]!,
+      balance: "200.00",
+      minimumPayment: "20.00",
+    };
+    const changed = await commitYuantaCreditCardCapture(
+      store,
+      buildYuantaCanonicalCreditCardCapture(
+        options({ captureId: "capture-c", statementSummaries: changedSummaries }),
+      ),
+    );
+    assert.equal(changed.statementCount, 6);
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM transaction_revisions").get() as { n: number }).n),
+      10,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions").get() as { n: number }).n),
+      7,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_memberships").get() as { n: number }).n),
+      7,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_summary_evidence").get() as { n: number }).n),
+      18,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_record_provenance").get() as { n: number }).n),
+      30,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM assertion_provenance").get() as { n: number }).n),
+      30,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions WHERE balance_coefficient = '20000'").get() as { n: number }).n),
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("settled summary corrections create complete revisions without duplicating statements", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-summary-revisions-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const baselineCapture = buildYuantaCanonicalCreditCardCapture(
+      options({ captureId: "summary-capture-a", statementSummaries: settledSummaries() }),
+    );
+    await commitYuantaCreditCardCapture(
+      store,
+      baselineCapture,
+    );
+    await commitYuantaCreditCardCapture(
+      store,
+      buildYuantaCanonicalCreditCardCapture(
+        options({ captureId: "summary-capture-b", statementSummaries: settledSummaries() }),
+      ),
+    );
+
+    const revisionCount = () =>
+      Number(
+        (store.db.prepare(
+          "SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions",
+        ).get() as { n: number }).n,
+      );
+    const statementCount = () =>
+      Number(
+        (store.db.prepare(
+          "SELECT COUNT(*) AS n FROM canonical_credit_card_statements",
+        ).get() as { n: number }).n,
+      );
+    assert.equal(revisionCount(), 6);
+    assert.equal(statementCount(), 6);
+
+    const changes: Array<[
+      keyof YuantaCreditCardStatementSummary,
+      string,
+    ]> = [
+      ["cycleStart", "2026-01-02"],
+      ["cycleEnd", "2026-01-21"],
+      ["issueDate", "2026-01-22"],
+      ["dueDate", "2026-01-26"],
+      ["balance", "200.00"],
+      ["minimumPayment", "20.00"],
+    ];
+    const latestKeys = new Set<string>();
+    for (const [index, [field, value]] of changes.entries()) {
+      const summaries = settledSummaries();
+      summaries[0] = { ...summaries[0]!, [field]: value };
+      await commitYuantaCreditCardCapture(
+        store,
+        buildYuantaCanonicalCreditCardCapture(
+          options({
+            captureId: `summary-capture-change-${index}`,
+            statementSummaries: summaries,
+          }),
+        ),
+      );
+      assert.equal(revisionCount(), 7 + index);
+      assert.equal(statementCount(), 6);
+      const latest = store.db.prepare(
+        `SELECT revision_key, evidence_source_record_key
+         FROM canonical_credit_card_statement_revisions
+         WHERE statement_id = (
+           SELECT statement_id FROM canonical_credit_card_statements
+           WHERE statement_key = ?
+         )
+         ORDER BY revision_number DESC LIMIT 1`,
+      ).get(baselineCapture.statements[0]!.statementKey) as
+        | { revision_key?: string; evidence_source_record_key?: string }
+        | undefined;
+      assert.ok(latest?.revision_key);
+      assert.ok(latest?.evidence_source_record_key);
+      latestKeys.add(`${latest.revision_key}\u0000${latest.evidence_source_record_key}`);
+    }
+    assert.equal(latestKeys.size, changes.length);
+
+    const beforeRepeat = revisionCount();
+    const repeatedCorrection = settledSummaries();
+    repeatedCorrection[0] = { ...repeatedCorrection[0]!, minimumPayment: "20.00" };
+    await commitYuantaCreditCardCapture(
+      store,
+      buildYuantaCanonicalCreditCardCapture(
+        options({
+          captureId: "summary-capture-change-repeat",
+          statementSummaries: repeatedCorrection,
+        }),
+      ),
+    );
+    assert.equal(revisionCount(), beforeRepeat);
+    assert.equal(statementCount(), 6);
+    assert.equal(
+      Number(
+        (store.db.prepare(
+          "SELECT COUNT(*) AS n FROM canonical_credit_card_statement_summary_evidence",
+        ).get() as { n: number }).n,
+      ),
+      54,
     );
   } finally {
     store.close();

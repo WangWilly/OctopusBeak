@@ -4,7 +4,7 @@ import { FUBON_CREDIT_CARD_CAPTURE_CONTRACT } from "./fubon-credit-card.ts";
 import { YUANTA_CREDIT_CARD_CAPTURE_CONTRACT } from "./yuanta-credit-card.ts";
 import { getEsunCreditCardHumanAttestedV2Manifest } from "./esun-credit-card-human-attestation.ts";
 import { getFubonCreditCardHumanAttestedV2Manifest } from "./fubon-credit-card-human-attestation.ts";
-import { getYuantaCreditCardHumanAttestedV1Manifest } from "./yuanta-credit-card-human-attestation.ts";
+import { getYuantaCreditCardHumanAttestedV2Manifest } from "./yuanta-credit-card-human-attestation.ts";
 
 export type AdvertisedCanonicalCreditCardSourceId = "fubon" | "esun" | "yuanta";
 
@@ -18,11 +18,11 @@ export type AdvertisedCanonicalCreditCardReadinessEntry = {
   authority:
     | "fubon/credit-card/human-attested-v2"
     | "esun/credit-card/human-attested-v2"
-    | "yuanta/credit-card/human-attested-v1";
+    | "yuanta/credit-card/human-attested-v2";
   contractVersion:
     | "fubon/credit-card/human-attested-v2"
     | "esun/credit-card/human-attested-v2"
-    | "yuanta/credit-card/human-attested-v1";
+    | "yuanta/credit-card/human-attested-v2";
   identity: "human-attested-primary-cardholder-portfolio";
   cards: "subordinate-instruments";
   postingAndBilling: "posted-from-posting-date-billing-independent";
@@ -31,16 +31,19 @@ export type AdvertisedCanonicalCreditCardReadinessEntry = {
   completeness:
     | "six-billed-periods-plus-unbilled-terminal-grids"
     | "default-one-year-combined-grid-page-one-maximum-page-size-card-counts"
-    | "six-billed-months-plus-unbilled-terminal-no-pager";
+    | "six-billed-months-plus-unbilled-terminal-no-pager"
+    | "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles";
   liveEvidence:
     | "redacted-repeat-plus-human-attestation"
     | "redacted-complete-grid-repeat-plus-human-attestation"
-    | "redacted-six-billed-month-plus-unbilled-terminal-plus-human-attestation";
+    | "redacted-six-billed-month-plus-unbilled-terminal-plus-human-attestation"
+    | "redacted-six-billed-month-plus-unbilled-terminal-summary-cycles-plus-human-attestation";
   blockers: readonly AdvertisedCanonicalCreditCardReadinessBlocker[];
 };
 
 export type AdvertisedCanonicalCreditCardReadinessBlocker =
-  | "issuer-settled-cycle-summary-evidence-missing";
+  | "issuer-settled-cycle-summary-evidence-missing"
+  | "human-assisted-live-summary-validation-pending";
 
 export const ADVERTISED_CANONICAL_CREDIT_CARD_SOURCE_IDS = [
   "fubon",
@@ -115,8 +118,9 @@ export const ADVERTISED_CANONICAL_CREDIT_CARD_READINESS = [
     statements: "issuer-settled-cycle-summary-pinned-membership",
     relations: "explicit-source-linkage-only",
     completeness: YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.completenessRule,
-    liveEvidence: "redacted-six-billed-month-plus-unbilled-terminal-plus-human-attestation",
-    blockers: ["issuer-settled-cycle-summary-evidence-missing"],
+    liveEvidence:
+      "redacted-six-billed-month-plus-unbilled-terminal-summary-cycles-plus-human-attestation",
+    blockers: [],
   },
 ] as const satisfies readonly AdvertisedCanonicalCreditCardReadinessEntry[];
 
@@ -152,15 +156,38 @@ export function isAdvertisedCanonicalCreditCardEntryReleaseReady(
         entry.liveEvidence === "redacted-complete-grid-repeat-plus-human-attestation"
       );
     case "yuanta":
-      return (
-        getYuantaCreditCardHumanAttestedV1Manifest().status === "active" &&
+      {
+        const manifest = getYuantaCreditCardHumanAttestedV2Manifest();
+        return (
+        manifest.status === "active" &&
         entry.workflow === "yuanta-credit-card-statements" &&
         entry.authority === YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.authorityRoute &&
         entry.contractVersion === YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion &&
         entry.completeness === YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.completenessRule &&
         entry.liveEvidence ===
-          "redacted-six-billed-month-plus-unbilled-terminal-plus-human-attestation"
-      );
+          "redacted-six-billed-month-plus-unbilled-terminal-summary-cycles-plus-human-attestation" &&
+        manifest.semantics.settledSummaryLiveEvidence ===
+          "six-issuer-history-detail-summaries-five-bounded-cycles-queryHistoryDetail-authority" &&
+        manifest.semantics.settledSummaryAuthorityContract ===
+          "queryHistoryDetail-selected-billed-month-response-with-provider-posting-date-membership" &&
+        manifest.semantics.settledSummaryPeriodAuthority ===
+          "history-detail.table.rwdTable[0].row[0].cell[0].period-label-to-row[1].cell[0].same-column-value-exact-human-attested-a" &&
+        manifest.semantics.settledSummaryPeriodFormat ===
+          "human-attested-category-2-gregorian-year-month-slash-with-month-or-period-suffix" &&
+        manifest.semantics.settledSummaryExactFieldEvidence ===
+          "period-and-balance-next-row-same-column-exact-human-attested-a" &&
+        manifest.semantics.settledSummaryBalanceAuthority ===
+          "history-detail.table.rwdTable[0].balance-label-to-next-row.same-column-value-exact-human-attested-a" &&
+        manifest.semantics.settledSummaryCompletenessEvidence ===
+          "complete-range-seven-terminal-grids-six-history-summaries-unbilled-terminal" &&
+        manifest.semantics.settledSummaryRepeatEvidence ===
+          "two-v2-captures-repeat-deduped-authority-with-provenance-retained" &&
+        manifest.semantics.settledSummaryCurrentRoutePrecedence ===
+          "v2-complete-capture-supersedes-v1-current-view-only-history-retains-both" &&
+        manifest.semantics.settledSummaryDiagnosticPage ===
+          "creditcardsummary-optional-non-authoritative-and-must-not-block"
+        );
+      }
     default:
       return false;
   }

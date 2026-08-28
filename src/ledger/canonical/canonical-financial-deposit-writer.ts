@@ -244,7 +244,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     capture.authorityRoute === "esun/credit-card/human-attested-v1" ||
     capture.authorityRoute === "esun/credit-card/human-attested-v2";
   const isYuantaCreditCardCapture =
-    capture.authorityRoute === "yuanta/credit-card/human-attested-v1";
+    capture.authorityRoute === "yuanta/credit-card/human-attested-v1" ||
+    capture.authorityRoute === "yuanta/credit-card/human-attested-v2";
   const isHumanAttestedCreditCardCapture =
     isFubonCreditCardCapture ||
     isEsunCreditCardCapture ||
@@ -414,6 +415,28 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       recordKind: "yuanta-credit-card-transaction",
       accountType: "credit",
       contractVersion: "yuanta/credit-card/human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta/credit-card/human-attested-v2": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/credit-card/human-attested-v2",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis:
+        "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
+      completenessRuleVersion: "yuanta/credit-card/human-attested-v2",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "credit-card",
+      recordKind: "yuanta-credit-card-transaction",
+      accountType: "credit",
+      contractVersion: "yuanta/credit-card/human-attested-v2",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/domestic-deposit/human-attested-v1": {
