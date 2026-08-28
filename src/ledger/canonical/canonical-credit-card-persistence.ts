@@ -334,7 +334,7 @@ function persistCapture(
 
   const sharedTransactions = new Map<string, SharedTransaction>();
   for (const transaction of capture.transactions) {
-    const row = db.prepare(`
+    const currentRow = db.prepare(`
       SELECT financial.transaction_id, revision.revision_id, record.source_record_id
       FROM source_records record
       JOIN transaction_revisions revision ON revision.source_record_id = record.source_record_id
@@ -342,6 +342,25 @@ function persistCapture(
       WHERE record.capture_id = ? AND financial.account_id = ?
         AND record.occurrence_key = ? AND financial.source_sequence = ?
     `).get(scope.capture_id, scope.account_id, transaction.sourceRecordKey, transaction.sourceKey) as
+      | { transaction_id?: Uint8Array; revision_id?: Uint8Array; source_record_id?: Uint8Array }
+      | undefined;
+    // The shared writer deliberately reuses an unchanged authority revision
+    // for a repeated capture. In that case the new source record has no
+    // transaction_revisions row, but statement summaries still need to pin
+    // their memberships to the existing authority revision while attaching
+    // fresh issuer-summary evidence to the new capture.
+    const row = currentRow ?? db.prepare(`
+      SELECT financial.transaction_id, revision.revision_id, record.source_record_id
+      FROM source_records record
+      JOIN source_record_scopes record_scope
+        ON record_scope.source_record_id = record.source_record_id
+      JOIN transaction_revisions revision ON revision.source_record_id = record.source_record_id
+      JOIN financial_transactions financial ON financial.transaction_id = revision.transaction_id
+      WHERE record_scope.account_id = ? AND financial.account_id = ?
+        AND financial.source_sequence = ?
+      ORDER BY revision.revision_number DESC
+      LIMIT 1
+    `).get(scope.account_id, scope.account_id, transaction.sourceKey) as
       | { transaction_id?: Uint8Array; revision_id?: Uint8Array; source_record_id?: Uint8Array }
       | undefined;
     if (!row?.transaction_id || !row.revision_id || !row.source_record_id)

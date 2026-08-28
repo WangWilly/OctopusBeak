@@ -11,6 +11,7 @@ import {
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "./yuanta-human-attestation.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./esun-credit-card-human-attestation.ts";
 import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
+import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
@@ -251,6 +252,28 @@ assert.equal(
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
 );
 
+const yuantaCreditCardV2Capture = structuredClone(yuantaCreditCardCapture);
+yuantaCreditCardV2Capture.captureId = "yuanta-writer-route-v2-positive";
+yuantaCreditCardV2Capture.authorityRoute = YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+yuantaCreditCardV2Capture.contractVersion = YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+yuantaCreditCardV2Capture.scope.completenessBasis =
+  "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles";
+yuantaCreditCardV2Capture.scope.completenessRuleVersion =
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+yuantaCreditCardV2Capture.semantics.postingRuleVersion =
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+yuantaCreditCardV2Capture.semantics.semanticRuleVersion =
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+yuantaCreditCardV2Capture.semantics.effectiveTimeRuleVersion =
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+const yuantaCreditCardV2RouteAdmission = admitCanonicalFinancialDepositCapture(
+  yuantaCreditCardV2Capture,
+);
+assert.equal(
+  yuantaCreditCardV2RouteAdmission.authorityRoute,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+);
+
 const crossSource = structuredClone(esunCapture);
 crossSource.captureId = "esun-writer-route-cross-source";
 crossSource.identity.integrationNamespace = "yuanta";
@@ -446,4 +469,53 @@ try {
   mixedStore.close();
 } finally {
   await rm(mixedDirectory, { recursive: true, force: true });
+}
+
+const creditCardVersionDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-credit-card-v1-v2-coexistence-"),
+);
+try {
+  const versionedStore = createCanonicalSourceStore(
+    join(creditCardVersionDirectory, "canonical.sqlite"),
+  );
+  await commitCanonicalFinancialDepositCapture(
+    versionedStore,
+    yuantaCreditCardRouteAdmission,
+  );
+  await commitCanonicalFinancialDepositCapture(
+    versionedStore,
+    yuantaCreditCardV2RouteAdmission,
+  );
+  assert.equal(
+    (
+      versionedStore.db
+        .prepare(
+          "SELECT COUNT(*) AS value FROM source_captures WHERE authority_route IN (?, ?)",
+        )
+        .get(
+          YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+          YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+        ) as { value?: number }
+    ).value,
+    2,
+  );
+  assert.deepEqual(
+    (
+      versionedStore.db
+        .prepare(
+          "SELECT authority_route FROM source_captures WHERE authority_route IN (?, ?) ORDER BY authority_route",
+        )
+        .all(
+          YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+          YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+        ) as Array<{ authority_route?: string }>
+    ).map((row) => row.authority_route),
+    [
+      YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+      YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+    ],
+  );
+  versionedStore.close();
+} finally {
+  await rm(creditCardVersionDirectory, { recursive: true, force: true });
 }
