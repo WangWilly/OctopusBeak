@@ -63,8 +63,77 @@ export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
   revocationReason: null,
 } as const);
 
+/**
+ * v2 is a new authority route because settled statement summaries and the
+ * first-six/last-four instrument projection are materially stronger semantics
+ * than the historical v1 capture.  v1 remains immutable for historical
+ * captures and is intentionally not silently reinterpreted as v2.
+ */
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE =
+  "yuanta/credit-card/human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION =
+  "yuanta/credit-card/human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
+  ...YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  attestationId: "yuanta-credit-card-human-attested-v2",
+  evidenceVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION,
+  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+  attestedAt: "2026-08-27T00:00:00.000+08:00",
+  provenance: {
+    kind: "human-attestation",
+    sourceCaptureFingerprint:
+      "sha256:yuanta-credit-card-live-card-projection-and-history-detail-settled-summary-evidence-v2",
+    source:
+      "Yuanta redacted six billed-month plus unbilled terminal capture with issuer-settled summaries",
+  },
+  semantics: {
+    ...YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics,
+    cards:
+      "card-instruments-by-managed-secret-hmac-of-first-six-plus-last-four-projection",
+    statements:
+      "issuer-settled-history-detail-close-due-total-minimum-with-period-and-prior-close-derived-cycle-start",
+    settledSummaryPeriodAuthority:
+      "history-detail.table.rwdTable[0].row[0].cell[0].period-label-to-row[1].cell[0].same-column-value-exact-human-attested-a",
+    settledSummaryPeriodFormat:
+      "human-attested-category-2-gregorian-year-month-slash-with-month-or-period-suffix",
+    settledSummaryNonAuthoritativePeriodSources:
+      "card-title-and-month-tab-non-authoritative",
+    settledSummaryBalanceAuthority:
+      "history-detail.table.rwdTable[0].balance-label-to-next-row.same-column-value-exact-human-attested-a",
+    settledSummaryNonAuthoritativeBalanceSources:
+      "paid-amount-and-text-fragment-non-authoritative",
+    settledSummaryParserContract:
+      "yuanta-credit-card.settled-summary-parser.v7-exact-period-balance-a",
+    settledSummaryLiveEvidence:
+      "six-issuer-history-detail-summaries-five-bounded-cycles-queryHistoryDetail-authority",
+    settledSummaryAuthorityContract:
+      "queryHistoryDetail-selected-billed-month-response-with-provider-posting-date-membership",
+    settledSummaryExactFieldEvidence:
+      "period-and-balance-next-row-same-column-exact-human-attested-a",
+    settledSummaryCompletenessEvidence:
+      "complete-range-seven-terminal-grids-six-history-summaries-unbilled-terminal",
+    settledSummaryRepeatEvidence:
+      "two-v2-captures-repeat-deduped-authority-with-provenance-retained",
+    settledSummaryCurrentRoutePrecedence:
+      "v2-complete-capture-supersedes-v1-current-view-only-history-retains-both",
+    settledSummaryDiagnosticPage:
+      "creditcardsummary-optional-non-authoritative-and-must-not-block",
+    occurrenceOrdering:
+      "complete-six-month-plus-unbilled-deterministic-source-order-human-attested-not-provider-guaranteed",
+  },
+} as const);
+
 export type YuantaCreditCardHumanAttestedV1Manifest = Omit<
   typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  "status" | "revokedAt" | "revocationReason"
+> & {
+  status: "active" | "revoked";
+  revokedAt: string | null;
+  revocationReason: string | null;
+};
+
+export type YuantaCreditCardHumanAttestedV2Manifest = Omit<
+  typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   "status" | "revokedAt" | "revocationReason"
 > & {
   status: "active" | "revoked";
@@ -381,6 +450,260 @@ export function isYuantaCreditCardHumanAttestationDurablyActive(
   if (!isYuantaCreditCardHumanAttestedV1Active()) return false;
   try {
     return latestYuantaCreditCardHumanAttestationEvent(db)?.manifestStatus ===
+      "active";
+  } catch {
+    return false;
+  }
+}
+
+const VALIDATED_V2_MANIFESTS = new WeakSet<object>();
+let currentV2Manifest: YuantaCreditCardHumanAttestedV2Manifest =
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
+VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
+
+function manifestFingerprintV2(
+  manifest: YuantaCreditCardHumanAttestedV2Manifest = currentV2Manifest,
+): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        attestationId: manifest.attestationId,
+        evidenceVersion: manifest.evidenceVersion,
+        authorityRoute: manifest.authorityRoute,
+        sourceCaptureFingerprint: manifest.provenance.sourceCaptureFingerprint,
+        semantics: manifest.semantics,
+        providerGuaranteed: manifest.providerGuaranteed,
+        occurrenceProviderGuaranteed: manifest.occurrenceProviderGuaranteed,
+      }),
+    )
+    .digest("base64url")}`;
+}
+
+export function yuantaCreditCardHumanAttestedV2ManifestFingerprint(): `sha256:${string}` {
+  return manifestFingerprintV2();
+}
+
+function assertCurrentV2Manifest(
+  manifest: YuantaCreditCardHumanAttestedV2Manifest,
+): void {
+  if (
+    manifest !== currentV2Manifest ||
+    !VALIDATED_V2_MANIFESTS.has(manifest) ||
+    manifest.attestationId !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.attestationId ||
+    manifest.evidenceVersion !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion ||
+    manifest.authorityRoute !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute ||
+    manifest.providerGuaranteed !== false ||
+    manifest.occurrenceProviderGuaranteed !== false
+  )
+    throw new Error(
+      "Yuanta credit-card v2 attestation manifest does not match the immutable contract.",
+    );
+}
+
+export function getYuantaCreditCardHumanAttestedV2Manifest(): YuantaCreditCardHumanAttestedV2Manifest {
+  return currentV2Manifest;
+}
+
+export function isYuantaCreditCardHumanAttestedV2Manifest(
+  value: unknown,
+): value is YuantaCreditCardHumanAttestedV2Manifest {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    VALIDATED_V2_MANIFESTS.has(value) &&
+    value === currentV2Manifest
+  );
+}
+
+export function isYuantaCreditCardHumanAttestedV2Active(): boolean {
+  return currentV2Manifest.status === "active";
+}
+
+function readV2Events(db: DatabaseSync): YuantaCreditCardHumanAttestationEvent[] {
+  ensureYuantaCreditCardHumanAttestationEvents(db);
+  const rows = db
+    .prepare(
+      `SELECT attestation_id, evidence_version, event_kind, manifest_status,
+              event_at, reason, manifest_fingerprint, event_sequence
+       FROM yuanta_credit_card_attestation_events
+       WHERE attestation_id = ? ORDER BY event_sequence ASC`,
+    )
+    .all(YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.attestationId) as StoredEvent[];
+  const events: YuantaCreditCardHumanAttestationEvent[] = [];
+  for (const [index, row] of rows.entries()) {
+    const event: YuantaCreditCardHumanAttestationEvent = {
+      attestationId: row.attestation_id ?? "",
+      evidenceVersion: row.evidence_version ?? "",
+      eventKind: row.event_kind ?? "attested",
+      manifestStatus: row.manifest_status ?? "active",
+      eventAt: row.event_at ?? "",
+      reason: row.reason ?? null,
+      manifestFingerprint: row.manifest_fingerprint ?? "sha256:",
+      sequence: Number(row.event_sequence),
+    };
+    const previous = events.at(-1);
+    if (
+      event.attestationId !== currentV2Manifest.attestationId ||
+      event.evidenceVersion !== currentV2Manifest.evidenceVersion ||
+      event.manifestFingerprint !== manifestFingerprintV2() ||
+      event.sequence !== index + 1 ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(event.eventAt) ||
+      (index === 0 && event.eventKind !== "attested") ||
+      (previous && event.eventKind === previous.eventKind) ||
+      (event.eventKind === "attested" && event.manifestStatus !== "active") ||
+      (event.eventKind === "revoked" && event.manifestStatus !== "revoked") ||
+      (event.eventKind === "restored" && event.manifestStatus !== "active") ||
+      (event.eventKind !== "attested" && !event.reason?.trim())
+    )
+      throw new Error("Yuanta credit-card v2 attestation event chain is invalid.");
+    events.push(event);
+  }
+  if (rows.length > 0) assertCurrentV2Manifest(currentV2Manifest);
+  return events;
+}
+
+function nextV2Sequence(db: DatabaseSync): number {
+  return readV2Events(db).length + 1;
+}
+
+export function recordYuantaCreditCardHumanAttestationV2Event(
+  db: DatabaseSync,
+  event: YuantaCreditCardHumanAttestationEvent,
+): void {
+  ensureYuantaCreditCardHumanAttestationEvents(db);
+  assertCurrentV2Manifest(currentV2Manifest);
+  const previous = readV2Events(db);
+  if (
+    event.attestationId !== currentV2Manifest.attestationId ||
+    event.evidenceVersion !== currentV2Manifest.evidenceVersion ||
+    event.manifestFingerprint !== manifestFingerprintV2() ||
+    event.sequence !== previous.length + 1 ||
+    !/^\d{4}-\d{2}-\d{2}T/.test(event.eventAt) ||
+    (event.eventKind === "attested" &&
+      (event.manifestStatus !== "active" || previous.length !== 0)) ||
+    (event.eventKind === "revoked" &&
+      (event.manifestStatus !== "revoked" || previous.at(-1)?.eventKind !== "attested")) ||
+    (event.eventKind === "restored" &&
+      (event.manifestStatus !== "active" || previous.at(-1)?.eventKind !== "revoked")) ||
+    (event.eventKind !== "attested" && !event.reason?.trim())
+  )
+    throw new Error(
+      "Yuanta credit-card v2 attestation event does not match its append-only contract.",
+    );
+  db.prepare(
+    `INSERT INTO yuanta_credit_card_attestation_events(
+      event_id, attestation_id, evidence_version, event_kind, manifest_status,
+      event_at, reason, manifest_fingerprint, event_sequence
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    randomBytes(16),
+    event.attestationId,
+    event.evidenceVersion,
+    event.eventKind,
+    event.manifestStatus,
+    event.eventAt,
+    event.reason,
+    event.manifestFingerprint,
+    event.sequence,
+  );
+}
+
+export function latestYuantaCreditCardHumanAttestationV2Event(
+  db: DatabaseSync,
+): YuantaCreditCardHumanAttestationEvent | null {
+  return readV2Events(db).at(-1) ?? null;
+}
+
+export function peekYuantaCreditCardHumanAttestationV2Status(
+  db: DatabaseSync,
+): "active" | "revoked" | null {
+  if (!tableExists(db)) return null;
+  return latestYuantaCreditCardHumanAttestationV2Event(db)?.manifestStatus ?? null;
+}
+
+export function recordInitialYuantaCreditCardHumanAttestationV2IfMissing(
+  db: DatabaseSync,
+  observedAt = YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.attestedAt,
+): void {
+  if (!isYuantaCreditCardHumanAttestedV2Active())
+    throw new Error("Cannot attest a revoked Yuanta credit-card v2 manifest.");
+  if (latestYuantaCreditCardHumanAttestationV2Event(db)) return;
+  recordYuantaCreditCardHumanAttestationV2Event(db, {
+    attestationId: currentV2Manifest.attestationId,
+    evidenceVersion: currentV2Manifest.evidenceVersion,
+    eventKind: "attested",
+    manifestStatus: "active",
+    eventAt: observedAt,
+    reason: "user-confirmed-yuanta-credit-card-portfolio-v2",
+    manifestFingerprint: manifestFingerprintV2(),
+    sequence: 1,
+  });
+}
+
+export function revokeYuantaCreditCardHumanAttestedV2(
+  at: string,
+  reason: string,
+  db?: DatabaseSync,
+): YuantaCreditCardHumanAttestedV2Manifest {
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(at) || !reason.trim())
+    throw new Error("Yuanta credit-card v2 attestation revocation requires time and reason.");
+  if (currentV2Manifest.status === "revoked") return currentV2Manifest;
+  currentV2Manifest = deepFreeze({
+    ...currentV2Manifest,
+    status: "revoked" as const,
+    revokedAt: at,
+    revocationReason: reason.trim(),
+  });
+  VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
+  if (db)
+    recordYuantaCreditCardHumanAttestationV2Event(db, {
+      attestationId: currentV2Manifest.attestationId,
+      evidenceVersion: currentV2Manifest.evidenceVersion,
+      eventKind: "revoked",
+      manifestStatus: "revoked",
+      eventAt: at,
+      reason: reason.trim(),
+      manifestFingerprint: manifestFingerprintV2(),
+      sequence: nextV2Sequence(db),
+    });
+  return currentV2Manifest;
+}
+
+export function restoreYuantaCreditCardHumanAttestedV2(
+  at: string,
+  reason = "user-confirmed-restoration",
+  db?: DatabaseSync,
+): YuantaCreditCardHumanAttestedV2Manifest {
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(at) || !reason.trim())
+    throw new Error("Yuanta credit-card v2 attestation restoration requires time and reason.");
+  if (currentV2Manifest.status === "active") return currentV2Manifest;
+  currentV2Manifest = deepFreeze({
+    ...currentV2Manifest,
+    status: "active" as const,
+    revokedAt: null,
+    revocationReason: null,
+  });
+  VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
+  if (db)
+    recordYuantaCreditCardHumanAttestationV2Event(db, {
+      attestationId: currentV2Manifest.attestationId,
+      evidenceVersion: currentV2Manifest.evidenceVersion,
+      eventKind: "restored",
+      manifestStatus: "active",
+      eventAt: at,
+      reason: reason.trim(),
+      manifestFingerprint: manifestFingerprintV2(),
+      sequence: nextV2Sequence(db),
+    });
+  return currentV2Manifest;
+}
+
+export function isYuantaCreditCardHumanAttestationV2DurablyActive(
+  db: DatabaseSync,
+): boolean {
+  if (!isYuantaCreditCardHumanAttestedV2Active()) return false;
+  try {
+    return latestYuantaCreditCardHumanAttestationV2Event(db)?.manifestStatus ===
       "active";
   } catch {
     return false;

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
@@ -33,6 +34,10 @@ import {
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   getHncbHumanAttestedV1Manifest,
 } from "./hncb-domestic-deposit.ts";
+import {
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+} from "./yuanta-credit-card-human-attestation.ts";
 
 const token = (letter: string) => `sha256:${letter.repeat(64)}`;
 
@@ -132,6 +137,78 @@ const fubonCreditCardFinancialCapture = (
         description: "historical-only Fubon fixture",
       },
     ],
+  };
+};
+
+/** A privacy-safe cross-version fixture: both routes share the durable Yuanta
+ * source-connection lineage, while their versioned subject/account and
+ * transaction identities remain distinct. */
+const yuantaCreditCardFinancialCapture = (
+  version: "v1" | "v2",
+  captureId: string,
+): CanonicalFinancialDepositCapture => {
+  const route = `yuanta/credit-card/human-attested-${version}`;
+  const base = fubonCreditCardFinancialCapture(version, captureId);
+  const opaque = (label: string, ordinal: number): `sha256:${string}` =>
+    `sha256:${createHash("sha256")
+      .update(`yuanta-query-${label}:${ordinal}`)
+      .digest("base64url")}`;
+  const records = Array.from({ length: 31 }, (_, ordinal) => {
+    const sourceDate = "2026-08-01";
+    const occurrenceKey = opaque("occurrence", ordinal);
+    return {
+      ...base.records[0]!,
+      occurrenceKey,
+      collisionKey: opaque("collision", ordinal),
+      humanAttestedOccurrenceKey: occurrenceKey,
+      contentHash: opaque("content", ordinal),
+      sequenceLexeme: `observed-source-order:${ordinal}`,
+      compactJson: JSON.stringify({ ordinal, source: "yuanta-query-fixture" }),
+      sourceTime: {
+        ...base.records[0]!.sourceTime,
+        localDate: sourceDate,
+        epochMilliseconds: Date.parse(`${sourceDate}T00:00:00+08:00`),
+      },
+      effectiveOn: sourceDate,
+      transactionDateTimeLocal: `${sourceDate}T00:00:00`,
+      description: "historical/current Yuanta route-precedence fixture",
+    };
+  });
+  return {
+    ...base,
+    authorityRoute: route,
+    contractVersion: route,
+    identity: {
+      ...base.identity,
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: token("y"),
+      identityEpochKey: token("z"),
+      recordKind: "yuanta-credit-card-transaction",
+      subjectDigest: opaque("subject", version === "v1" ? 1 : 2),
+      accountNo: `yuanta-query-${version}-portfolio`,
+    },
+    scope: {
+      ...base.scope,
+      completenessBasis:
+        version === "v1"
+          ? "six-billed-months-plus-unbilled-terminal-no-pager"
+          : "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
+      completenessRuleVersion: route,
+    },
+    semantics: {
+      ...base.semantics,
+      postingRuleVersion: route,
+      semanticRuleVersion: route,
+      effectiveTimeRuleVersion: route,
+    },
+    pages: base.pages.map((page, pageOrdinal) => ({
+      ...page,
+      rowCount: pageOrdinal === 0 ? records.length : 0,
+      contractFingerprint: base.scope.contractFingerprint,
+      preflightFingerprint: base.scope.preflightFingerprint,
+      proofKind: "no-pager-terminal-grid" as const,
+    })),
+    records,
   };
 };
 
@@ -821,11 +898,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -833,7 +910,7 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);
@@ -1451,3 +1528,138 @@ try {
 } finally {
   await rm(fubonQueryDirectory, { recursive: true, force: true });
 }
+
+test("Yuanta v2 wins the current view without deleting v1 history", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-yuanta-query-v2-precedence-"),
+  );
+  try {
+    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const v1Commit = await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v1", "yuanta-query-v1"),
+      ),
+    );
+    const v2Commit = await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "yuanta-query-v2"),
+      ),
+    );
+    assert.equal(
+      Number(
+        (store.db.prepare(
+          "SELECT COUNT(*) AS value FROM financial_transactions WHERE account_id IN (SELECT account_id FROM financial_accounts WHERE stream = 'credit-card')",
+        ).get() as { value?: number }).value,
+      ),
+      62,
+    );
+    assert.equal(queryCanonicalSourceCurrent(store).observations.length, 62);
+    assert.equal(
+      queryCanonicalSourceHistorical(store, {
+        knowledgeAt: v2Commit.commitSequence,
+      }).observations.length,
+      62,
+    );
+    store.close();
+
+    const v1Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+    });
+    const v2Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+    });
+    assert.equal(
+      (await v1Query.current({ kind: "current" })).transactions.length,
+      0,
+      "a complete v2 capture supersedes v1 only in the current view",
+    );
+    assert.equal(
+      (await v2Query.current({ kind: "current" })).transactions.length,
+      31,
+    );
+    assert.equal(
+      (
+        await v1Query.historical({
+          kind: "historical",
+          cutoff: {
+            kind: "both",
+            financialAt: "2026-12-31",
+            knowledgeAt: String(v1Commit.commitSequence),
+          },
+        })
+      ).transactions.length,
+      31,
+      "v1 remains available through its historical route",
+    );
+    assert.equal(
+      (
+        await v2Query.historical({
+          kind: "historical",
+          cutoff: {
+            kind: "both",
+            financialAt: "2026-12-31",
+            knowledgeAt: String(v2Commit.commitSequence),
+          },
+        })
+      ).transactions.length,
+      31,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-yuanta-query-v2-invalid-"),
+  );
+  try {
+    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v1", "yuanta-invalid-v1"),
+      ),
+    );
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "yuanta-invalid-v2"),
+      ),
+    );
+    store.db.prepare(
+      `UPDATE capture_scopes
+       SET terminal = 0
+       WHERE capture_id = (
+         SELECT capture_id FROM source_captures
+         WHERE capture_key = ?
+       )`,
+    ).run("yuanta-invalid-v2");
+    store.close();
+
+    const v1Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+    });
+    const v2Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+    });
+    assert.equal(
+      (await v1Query.current({ kind: "current" })).transactions.length,
+      31,
+      "incomplete v2 cannot hide v1 authority",
+    );
+    assert.equal(
+      (await v2Query.current({ kind: "current" })).transactions.length,
+      0,
+      "incomplete v2 is not current authority",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

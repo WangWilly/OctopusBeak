@@ -13,11 +13,13 @@ import {
 } from "./canonical-credit-card-persistence.ts";
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isYuantaCreditCardHumanAttestedAccountKey,
   isYuantaCreditCardHumanAttestedV1Active,
-  isYuantaCreditCardHumanAttestationDurablyActive,
-  peekYuantaCreditCardHumanAttestationStatus,
-  recordInitialYuantaCreditCardHumanAttestationIfMissing,
+  isYuantaCreditCardHumanAttestedV2Active,
+  isYuantaCreditCardHumanAttestationV2DurablyActive,
+  peekYuantaCreditCardHumanAttestationV2Status,
+  recordInitialYuantaCreditCardHumanAttestationV2IfMissing,
 } from "./yuanta-credit-card-human-attestation.ts";
 
 export type YuantaCreditCardExactAmount = {
@@ -184,8 +186,8 @@ export type YuantaCreditCardAdmittedCapture = Omit<
   instruments: readonly YuantaCreditCardInstrumentInput[];
   transactions: readonly YuantaCreditCardAdmittedTransaction[];
   statements: readonly YuantaCreditCardAdmittedStatement[];
-  contractVersion: typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion;
-  authorityRoute: typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute;
+  contractVersion: typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion;
+  authorityRoute: typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute;
 };
 
 export type YuantaCreditCardValidatedCapture =
@@ -196,9 +198,9 @@ export type YuantaCreditCardValidatedCapture =
 export const YUANTA_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   source: "yuanta",
   stream: "credit-card",
-  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
+  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute,
   contractVersion:
-    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
+    YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion,
   accountType: "credit",
   accountSubtype: "credit_card",
   providerGuaranteed: false,
@@ -206,10 +208,12 @@ export const YUANTA_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   postingRule: "posting-date-present-means-posted",
   billingRule: "billed-or-unbilled-independent-of-posting",
   transactionIdentityRule:
-    "normalized-content-tuple-plus-contiguous-exact-duplicate-ordinal-v1",
-  statementRule: "issuer-settled-cycle-summary-only",
+    "normalized-content-tuple-plus-contiguous-exact-duplicate-ordinal-v2",
+  statementRule:
+    "issuer-settled-history-detail-close-due-total-minimum-with-period-only",
   relationRule: "explicit-source-linkage-only",
-  completenessRule: "six-billed-months-plus-unbilled-terminal-no-pager",
+  completenessRule:
+    "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
 } as const);
 
 export class YuantaCreditCardAdmissionError extends Error {
@@ -315,7 +319,7 @@ export function buildYuantaCreditCardAccountIdentityKey(
   );
   if (!isYuantaCreditCardHumanAttestedAccountKey(accountKey))
     fail("Human-attested account key must be opaque and independent of card identity.");
-  return digest("yuanta-credit-account-v1", [
+  return digest("yuanta-credit-account-v2", [
     sourceConnectionKey,
     identityEpochKey,
     accountKey,
@@ -336,7 +340,7 @@ export function buildYuantaCreditCardTransactionSourceKey(
     : exactAmount(record.foreignAmount, "Foreign amount");
   if ((foreignCurrency === null) !== (foreignAmount === null))
     fail("Foreign currency and foreign amount must be provided together.");
-  return digest("yuanta-credit-card-transaction-v1", [
+  return digest("yuanta-credit-card-transaction-v2", [
     accountKey,
     text(record.instrumentKey, "Card instrument key"),
     validDate(record.consumeDate, "Consume date"),
@@ -353,18 +357,105 @@ export function buildYuantaCreditCardTransactionSourceKey(
   ]);
 }
 
+type YuantaCreditCardLegacyStatementEvidenceInput = Pick<
+  YuantaCreditCardStatementInput,
+  "statementKey" | "cycleStart" | "cycleEnd"
+>;
+
+type YuantaCreditCardSettledStatementEvidenceInput = Pick<
+  YuantaCreditCardStatementInput,
+  | "statementKey"
+  | "cycleStart"
+  | "cycleEnd"
+  | "issueDate"
+  | "dueDate"
+  | "currency"
+  | "balance"
+  | "minimumPayment"
+  | "transactionSourceKeys"
+>;
+
+function buildYuantaCreditCardAccountIdentityKeyV1(
+  identity: YuantaCreditCardIdentityInput,
+): `sha256:${string}` {
+  const sourceConnectionKey = text(
+    identity.sourceConnectionKey,
+    "Source connection key",
+  );
+  const identityEpochKey = text(identity.identityEpochKey, "Identity epoch key");
+  const accountKey = text(
+    identity.humanAttestedAccountKey,
+    "Human-attested account key",
+  );
+  if (!isYuantaCreditCardHumanAttestedAccountKey(accountKey))
+    fail("Human-attested account key must be opaque and independent of card identity.");
+  return digest("yuanta-credit-account-v1", [
+    sourceConnectionKey,
+    identityEpochKey,
+    accountKey,
+  ]);
+}
+
+/**
+ * Keep the v1 evidence-key recipe available for historical captures and
+ * read-side consumers. New v2 captures use the versioned helper below.
+ */
 export function buildYuantaCreditCardStatementEvidenceKey(
   identity: YuantaCreditCardIdentityInput,
-  statement: Pick<
-    YuantaCreditCardStatementInput,
-    "statementKey" | "cycleStart" | "cycleEnd"
-  >,
+  statement: YuantaCreditCardLegacyStatementEvidenceInput,
 ): `sha256:${string}` {
   return digest("yuanta-credit-card-statement-summary-v1", [
-    buildYuantaCreditCardAccountIdentityKey(identity),
+    buildYuantaCreditCardAccountIdentityKeyV1(identity),
     text(statement.statementKey, "Statement key"),
     validDate(statement.cycleStart, "Statement cycle start"),
     validDate(statement.cycleEnd, "Statement cycle end"),
+  ]);
+}
+
+function settledStatementAuthorityTuple(
+  statement: YuantaCreditCardSettledStatementEvidenceInput,
+): readonly unknown[] {
+  const balance = exactAmount(statement.balance, "Statement balance");
+  if (statement.minimumPayment == null)
+    fail("Statement minimum payment is required for v2 evidence.");
+  const minimumPayment = exactAmount(
+    statement.minimumPayment,
+    "Statement minimum payment",
+  );
+  return [
+    text(statement.statementKey, "Statement key"),
+    validDate(statement.cycleStart, "Statement cycle start"),
+    validDate(statement.cycleEnd, "Statement cycle end"),
+    validDate(statement.issueDate, "Statement issue date"),
+    validDate(statement.dueDate, "Statement due date"),
+    currency(statement.currency, "Statement currency"),
+    balance.coefficient,
+    balance.scale,
+    minimumPayment.coefficient,
+    minimumPayment.scale,
+    statement.transactionSourceKeys
+      .map((sourceRecordKey) => text(sourceRecordKey, "Statement membership source record key"))
+      .sort(),
+  ];
+}
+
+export function buildYuantaCreditCardStatementEvidenceKeyV2(
+  identity: YuantaCreditCardIdentityInput,
+  statement: YuantaCreditCardSettledStatementEvidenceInput,
+): `sha256:${string}` {
+  return digest("yuanta-credit-card-history-detail-statement-summary-v2", [
+    buildYuantaCreditCardAccountIdentityKey(identity),
+    ...settledStatementAuthorityTuple(statement),
+  ]);
+}
+
+function buildYuantaCreditCardStatementRevisionKey(
+  statement: YuantaCreditCardSettledStatementEvidenceInput,
+  evidenceSourceRecordKey: string,
+): `sha256:${string}` {
+  return digest("yuanta-credit-statement-revision-v2", [
+    ...settledStatementAuthorityTuple(statement),
+    text(evidenceSourceRecordKey, "Statement evidence source record key"),
   ]);
 }
 
@@ -398,7 +489,7 @@ function validateCompleteness(
     completeness.rowCountsMatch !== true
   )
     fail("Yuanta credit-card capture is not complete.");
-  if (typeof completeness.settledSummaryEvidencePresent !== "boolean")
+  if (completeness.settledSummaryEvidencePresent !== true)
     fail("Yuanta settled statement evidence flag is invalid.");
   if (
     !Array.isArray(completeness.periodRowCounts) ||
@@ -549,20 +640,54 @@ function validateStatement(
   const cycleEnd = validDate(statement.cycleEnd, "Statement cycle end");
   const issueDate = validDate(statement.issueDate, "Statement issue date");
   const dueDate = validDate(statement.dueDate, "Statement due date");
+  const statementCurrency = currency(statement.currency, "Statement currency");
+  const balance = exactAmount(statement.balance, "Statement balance");
+  if (statement.minimumPayment == null)
+    fail("Yuanta settled statements require issuer minimum-payment evidence.");
+  const minimumPayment = exactAmount(
+    statement.minimumPayment,
+    "Statement minimum payment",
+  );
+  const transactionSourceKeys = statement.transactionSourceKeys.map(
+    (sourceRecordKey) => text(sourceRecordKey, "Statement membership source record key"),
+  );
   if (cycleStart > cycleEnd || issueDate < cycleEnd || dueDate < issueDate)
     fail("Yuanta settled statement cycle or billing dates are invalid.");
+  const normalizedStatement = {
+    statementKey,
+    cycleStart,
+    cycleEnd,
+    issueDate,
+    dueDate,
+    currency: statementCurrency,
+    balance,
+    minimumPayment,
+    transactionSourceKeys,
+  } satisfies YuantaCreditCardSettledStatementEvidenceInput;
   if (
     statement.evidence.kind !== "issuer-settled-cycle-summary" ||
     statement.evidence.settled !== true ||
     text(statement.evidence.sourceRecordKey, "Statement evidence source record key") !==
-      buildYuantaCreditCardStatementEvidenceKey(identity, {
-        statementKey,
-        cycleStart,
-        cycleEnd,
-      })
+      buildYuantaCreditCardStatementEvidenceKeyV2(identity, normalizedStatement)
   )
     fail("Statement evidence is not scoped to this Yuanta account and cycle.");
-  for (const sourceRecordKey of statement.transactionSourceKeys) {
+  const evidenceSourceRecordKey = text(
+    statement.evidence.sourceRecordKey,
+    "Statement evidence source record key",
+  );
+  if (
+    revisionKey !==
+    buildYuantaCreditCardStatementRevisionKey(
+      normalizedStatement,
+      evidenceSourceRecordKey,
+    )
+  )
+    fail("Yuanta statement revision key does not match settled authority semantics.");
+  const membershipKeys = new Set<string>();
+  for (const sourceRecordKey of transactionSourceKeys) {
+    if (membershipKeys.has(sourceRecordKey))
+      fail("Yuanta statement membership cannot repeat a source record.");
+    membershipKeys.add(sourceRecordKey);
     const transaction = transactions.get(sourceRecordKey);
     if (
       !transaction ||
@@ -570,6 +695,8 @@ function validateStatement(
       transaction.statementKey !== statementKey
     )
       fail("Statement membership must reference billed transactions in the capture.");
+    if (transaction.postingDate < cycleStart || transaction.postingDate > cycleEnd)
+      fail("Yuanta statement membership posting date is outside its settled cycle.");
   }
   return {
     ...statement,
@@ -579,16 +706,13 @@ function validateStatement(
     cycleEnd,
     issueDate,
     dueDate,
-    currency: currency(statement.currency, "Statement currency"),
-    balance: exactAmount(statement.balance, "Statement balance"),
-    minimumPayment:
-      statement.minimumPayment == null
-        ? null
-        : exactAmount(statement.minimumPayment, "Statement minimum payment"),
-    transactionSourceKeys: [...statement.transactionSourceKeys],
+    currency: statementCurrency,
+    balance,
+    minimumPayment,
+    transactionSourceKeys,
     evidence: {
       kind: "issuer-settled-cycle-summary",
-      sourceRecordKey: statement.evidence.sourceRecordKey,
+      sourceRecordKey: evidenceSourceRecordKey,
       settled: true,
     },
   };
@@ -644,8 +768,8 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 export function admitYuantaCreditCardCapture(
   capture: YuantaCreditCardCaptureInput,
 ): YuantaCreditCardValidatedCapture {
-  if (!isYuantaCreditCardHumanAttestedV1Active())
-    fail("Yuanta credit-card human-attested v1 contract is revoked.");
+  if (!isYuantaCreditCardHumanAttestedV2Active())
+    fail("Yuanta credit-card human-attested v2 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("Yuanta credit-card capture is required.");
   const captureId = text(capture.captureId, "Capture ID");
@@ -721,9 +845,55 @@ export function admitYuantaCreditCardCapture(
   validateCompleteness(capture.scope.completeness, transactions);
   if (!Array.isArray(capture.statements))
     fail("Yuanta credit-card statements are required.");
-  const statements = capture.statements.map((statement) =>
-    validateStatement(identity, statement, bySourceRecord),
-  );
+  const statements: YuantaCreditCardAdmittedStatement[] = [];
+  const statementKeys = new Set<string>();
+  for (const statement of capture.statements) {
+    const normalized = validateStatement(identity, statement, bySourceRecord);
+    if (statementKeys.has(normalized.statementKey))
+      fail("Duplicate Yuanta Statement key within one capture.");
+    statementKeys.add(normalized.statementKey);
+    statements.push(normalized);
+  }
+  // A six-month capture is complete only when every month has an issuer
+  // summary, or when the contract's one unbounded oldest edge is explicitly
+  // left source-only because it has no preceding close date. A single summary
+  // (or any other sparse subset) must never pass as complete-range evidence.
+  const billedPeriodCount = capture.scope.completeness.billedPeriods.length;
+  if (
+    statements.length < billedPeriodCount - 1 ||
+    statements.length > billedPeriodCount
+  )
+    fail(
+      "Yuanta complete capture requires issuer-settled statement summaries covering all billed periods (or five bounded cycles for six billed periods).",
+    );
+  const earliestBoundedCycleStart = statements
+    .map((statement) => statement.cycleStart)
+    .sort()[0];
+  if (earliestBoundedCycleStart !== undefined) {
+    const membershipKeys = new Set(
+      statements.flatMap((statement) =>
+        statement.transactionSourceKeys.map(
+          (sourceRecordKey) => `${statement.statementKey}\u0000${sourceRecordKey}`,
+        ),
+      ),
+    );
+    for (const transaction of transactions) {
+      if (
+        transaction.billingStatus !== "billed" ||
+        transaction.postingDate < earliestBoundedCycleStart
+      )
+        continue;
+      if (
+        !transaction.statementKey ||
+        !membershipKeys.has(
+          `${transaction.statementKey}\u0000${transaction.sourceRecordKey}`,
+        )
+      )
+        fail(
+          "Every bounded Yuanta billed transaction must have a matching issuer settled statement membership.",
+        );
+    }
+  }
   if (
     capture.scope.completeness.settledSummaryEvidencePresent !==
     (statements.length > 0)
@@ -909,7 +1079,7 @@ function yuantaCanonicalSpineCapture(
       collisionKey: transaction.sourceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: transaction.sourceKey,
-      contentHash: opaqueYuantaSpineToken("yuanta-credit-content-v1", compact),
+      contentHash: opaqueYuantaSpineToken("yuanta-credit-content-v2", compact),
       sequenceLexeme: `observed-source-order:${sourceOrderOrdinal}`,
       compactJson: compact,
       amount: transaction.bookedAmount,
@@ -946,7 +1116,7 @@ function yuantaCanonicalSpineCapture(
         : {}),
     };
   });
-  const fingerprint = opaqueYuantaSpineToken("yuanta-credit-contract-v1", {
+  const fingerprint = opaqueYuantaSpineToken("yuanta-credit-contract-v2", {
     authority: capture.authorityRoute,
     contractVersion: capture.contractVersion,
     periods: capture.scope.completeness.billedPeriods,
@@ -958,11 +1128,11 @@ function yuantaCanonicalSpineCapture(
     identity: {
       integrationNamespace: "yuanta",
       sourceConnectionKey: opaqueYuantaSpineToken(
-        "yuanta-credit-connection-v1",
+        "yuanta-credit-connection-v2",
         capture.identity.sourceConnectionKey,
       ),
       identityEpochKey: opaqueYuantaSpineToken(
-        "yuanta-credit-epoch-v1",
+        "yuanta-credit-epoch-v2",
         capture.identity.identityEpochKey,
       ),
       stream: "credit-card",
@@ -978,7 +1148,8 @@ function yuantaCanonicalSpineCapture(
       endDate: capture.scope.endDate,
       scopeKind: "bounded-range",
       completeness: "complete-range",
-      completenessBasis: "six-billed-months-plus-unbilled-terminal-no-pager",
+      completenessBasis:
+        "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
       completenessRuleVersion: capture.contractVersion,
       absenceAuthority: null,
       contractFingerprint: fingerprint,
@@ -1008,7 +1179,7 @@ function yuantaCanonicalSpineCapture(
       responseCode: "200",
       terminal: grid.terminal,
       rowCount: grid.capturedRowCount,
-      responseDigest: opaqueYuantaSpineToken("yuanta-credit-page-v1", [
+      responseDigest: opaqueYuantaSpineToken("yuanta-credit-page-v2", [
         capture.captureId,
         pageOrdinal,
         grid,
@@ -1026,25 +1197,6 @@ function hasValidatedYuantaCreditCardCapture(
   capture: unknown,
 ): capture is YuantaCreditCardValidatedCapture {
   return isAdmittedYuantaCreditCardCapture(capture);
-}
-
-function hasCurrentYuantaCreditCardRevisions(
-  db: DatabaseSync,
-  capture: YuantaCreditCardValidatedCapture,
-): boolean {
-  const captureRow = db.prepare(
-    "SELECT capture_id FROM source_captures WHERE capture_key = ?",
-  ).get(capture.captureId) as { capture_id?: Uint8Array } | undefined;
-  if (!captureRow?.capture_id) return false;
-  const row = db.prepare(
-    `SELECT COUNT(DISTINCT source_record.source_record_id) AS count
-     FROM source_records source_record
-     JOIN transaction_revisions revision
-       ON revision.source_record_id = source_record.source_record_id
-     WHERE source_record.capture_id = ?
-       AND source_record.record_kind = 'yuanta-credit-card-transaction'`,
-  ).get(captureRow.capture_id) as { count?: number } | undefined;
-  return Number(row?.count ?? 0) === capture.transactions.length;
 }
 
 export async function commitYuantaCreditCardCapture(
@@ -1068,9 +1220,9 @@ export async function commitYuantaCreditCardCaptureBatch(
         "Yuanta credit-card batch contains an unvalidated capture.",
       );
   }
-  if (
-    !isYuantaCreditCardHumanAttestedV1Active() ||
-    peekYuantaCreditCardHumanAttestationStatus(store.db) === "revoked"
+    if (
+    !isYuantaCreditCardHumanAttestedV2Active() ||
+    peekYuantaCreditCardHumanAttestationV2Status(store.db) === "revoked"
   )
     throw new YuantaCreditCardAdmissionError(
       "Yuanta credit-card durable human attestation is revoked.",
@@ -1080,33 +1232,19 @@ export async function commitYuantaCreditCardCaptureBatch(
     captures.map(yuantaCanonicalSpineCapture),
     (db) => {
       ensureCanonicalCreditCardSchema(db);
-      if (!isYuantaCreditCardHumanAttestedV1Active())
+      if (!isYuantaCreditCardHumanAttestedV2Active())
         throw new YuantaCreditCardAdmissionError(
           "Yuanta credit-card durable human attestation is revoked.",
         );
-      recordInitialYuantaCreditCardHumanAttestationIfMissing(db);
-      if (!isYuantaCreditCardHumanAttestationDurablyActive(db))
+      recordInitialYuantaCreditCardHumanAttestationV2IfMissing(db);
+      if (!isYuantaCreditCardHumanAttestationV2DurablyActive(db))
         throw new YuantaCreditCardAdmissionError(
           "Yuanta credit-card durable human attestation is revoked.",
         );
       store.beforeYuantaCreditExtensionCommit?.(db);
-      const extensionCaptures = captures.map((capture) => {
-        const neutral = yuantaNeutralCreditCardCapture(capture);
-        if (hasCurrentYuantaCreditCardRevisions(db, capture)) return neutral;
-        // The generic writer intentionally reuses an unchanged transaction
-        // revision on a repeated capture.  Keep neutral instrument evidence
-        // for that observation, but do not ask the extension helper to resolve
-        // source records that have no revision in the current capture.
-        return {
-          ...neutral,
-          transactions: [],
-          statements: [],
-          relations: [],
-        };
-      });
       persistCanonicalCreditCardExtensions(
         db,
-        extensionCaptures,
+        captures.map(yuantaNeutralCreditCardCapture),
       );
     },
   );
@@ -1155,12 +1293,14 @@ export type YuantaCreditCardSourceRow = {
 
 export type YuantaCreditCardStatementSummary = {
   period: string;
+  statementId?: string;
   cycleStart: string;
   cycleEnd: string;
   issueDate: string;
   dueDate: string;
   balance: string;
-  minimumPayment?: string;
+  minimumPayment: string;
+  paymentStatus?: string;
 };
 
 export type YuantaCreditCardCaptureBuilderOptions = {
@@ -1221,6 +1361,23 @@ function canonicalDate(value: string, label: string): string {
   return result;
 }
 
+function yuantaPeriodOrdinal(value: string): number {
+  const normalized = text(value, "Billed period")
+    .normalize("NFKC")
+    .replace(/年/gu, "/")
+    .replace(/月/gu, "")
+    .replace(/[.\-]/gu, "/");
+  const match = normalized.match(/^(\d{3,4})\/(\d{1,2})$/u);
+  if (!match) throw new Error("Yuanta billed period is invalid.");
+  const year = Number(
+    match[1]!.length === 3 ? Number(match[1]) + 1911 : match[1],
+  );
+  const month = Number(match[2]);
+  if (month < 1 || month > 12)
+    throw new Error("Yuanta billed period is invalid.");
+  return year * 12 + month;
+}
+
 function parseSignedDecimal(value: string, label: string): {
   amount: string;
   direction: "inflow" | "outflow";
@@ -1239,7 +1396,6 @@ function parseSignedDecimal(value: string, label: string): {
 function canonicalRowBase(
   row: YuantaCreditCardSourceRow,
   instrumentKey: string,
-  settledPeriods: ReadonlySet<string>,
 ): Omit<YuantaCreditCardTransactionInput, "sourceRecordKey" | "occurrenceIndex"> {
   const signed = parseSignedDecimal(row.twdAmount, "TWD amount");
   const foreignCurrency = row.foreignAmount.trim()
@@ -1263,10 +1419,22 @@ function canonicalRowBase(
     foreignAmount,
     description: row.description,
     billingStatus: row.period ? "billed" : "unbilled",
-    ...(row.period && settledPeriods.has(row.period)
-      ? { statementKey: digest("yuanta-credit-statement-v1", [row.period]) }
-      : {}),
   };
+}
+
+function statementKeyForSummary(
+  summary: YuantaCreditCardStatementSummary,
+): string {
+  return digest("yuanta-credit-statement-v2", [
+    summary.statementId?.trim() || summary.period,
+  ]);
+}
+
+function postingDateInCycle(
+  postingDate: string,
+  summary: YuantaCreditCardStatementSummary,
+): boolean {
+  return postingDate >= summary.cycleStart && postingDate <= summary.cycleEnd;
 }
 
 /**
@@ -1284,16 +1452,45 @@ export function buildYuantaCanonicalCreditCardCapture(
   if (options.terminalPages &&
       (options.terminalPages.length !== 7 || options.terminalPages.some((value) => value !== true)))
     throw new Error("Yuanta canonical capture requires seven terminal no-pager results.");
+  if (
+    !options.statementSummaries ||
+    options.statementSummaries.length < options.billedPeriods.length - 1 ||
+    options.statementSummaries.length > options.billedPeriods.length
+  )
+    throw new Error(
+      "Yuanta canonical capture requires issuer-settled statement summaries covering all billed periods (or five bounded cycles for six billed periods).",
+    );
   const summaries = new Map<string, YuantaCreditCardStatementSummary>();
-  for (const summary of options.statementSummaries ?? []) {
+  for (const summary of options.statementSummaries) {
     const period = text(summary.period, "Statement summary period");
     if (!options.billedPeriods.includes(period))
       throw new Error("Yuanta statement summary period is outside the captured billed periods.");
     if (summaries.has(period))
       throw new Error("Yuanta statement summary periods must be unique.");
+    if (!text(summary.minimumPayment, "Statement summary minimum payment"))
+      throw new Error("Yuanta statement summary minimum payment is required.");
     summaries.set(period, { ...summary, period });
   }
-  const settledPeriods = new Set(summaries.keys());
+  const missingPeriods = options.billedPeriods.filter(
+    (period) => !summaries.has(period),
+  );
+  let unboundedOldestPeriod: string | undefined;
+  if (
+    missingPeriods.length === 1 &&
+    summaries.size === options.billedPeriods.length - 1
+  ) {
+    unboundedOldestPeriod = options.billedPeriods
+      .slice()
+      .sort((left, right) => yuantaPeriodOrdinal(left) - yuantaPeriodOrdinal(right))[0];
+    if (missingPeriods[0] !== unboundedOldestPeriod)
+      throw new Error(
+        "Yuanta five-summary capture may omit only the oldest billed period without a preceding close boundary.",
+      );
+  } else if (missingPeriods.length !== 0) {
+    throw new Error(
+      "Yuanta settled statement summaries must cover every bounded billed period; only the oldest period may be unbounded.",
+    );
+  }
   const allRows = [...options.billedRows, ...options.unbilledRows];
   if (allRows.length === 0) throw new Error("Yuanta canonical capture requires observed rows.");
   const cardDescriptors = new Map<
@@ -1314,19 +1511,52 @@ export function buildYuantaCanonicalCreditCardCapture(
   }
   const descriptors = allRows.map((row, inputIndex) => {
     const instrumentKey = instrumentKeyForRow(row);
-    const base = canonicalRowBase(row, instrumentKey, settledPeriods);
+    const base = canonicalRowBase(row, instrumentKey);
+    const matchingSummaries = row.period && base.billingStatus === "billed"
+      ? [...summaries.values()].filter((summary) =>
+          postingDateInCycle(base.postingDate, summary),
+        )
+      : [];
+    if (matchingSummaries.length > 1)
+      throw new Error("Yuanta statement cycles overlap at a transaction posting date.");
+    const periodSummary = row.period ? summaries.get(row.period) : undefined;
+    if (
+      base.billingStatus === "billed" &&
+      (!periodSummary || matchingSummaries.length === 0) &&
+      (row.period !== unboundedOldestPeriod || matchingSummaries.length !== 0)
+    )
+      throw new Error(
+        "Yuanta bounded billed transaction is missing its issuer settled statement summary.",
+      );
+    if (
+      periodSummary &&
+      (matchingSummaries.length !== 1 || matchingSummaries[0] !== periodSummary)
+    )
+      throw new Error(
+        "Yuanta billed transaction posting date is outside its issuer settled cycle.",
+      );
+    const statementKey = matchingSummaries[0]
+      ? statementKeyForSummary(matchingSummaries[0])
+      : undefined;
+    const normalizedBase = statementKey ? { ...base, statementKey } : base;
     const baseIdentity = stableTuple([
       instrumentKey,
-      base.consumeDate,
-      base.postingDate,
-      base.direction,
-      base.bookedAmount,
-      base.bookedCurrency,
-      base.foreignCurrency,
-      base.foreignAmount,
-      normalizedDescription(base.description),
+      normalizedBase.consumeDate,
+      normalizedBase.postingDate,
+      normalizedBase.direction,
+      normalizedBase.bookedAmount,
+      normalizedBase.bookedCurrency,
+      normalizedBase.foreignCurrency,
+      normalizedBase.foreignAmount,
+      normalizedDescription(normalizedBase.description),
     ]);
-    return { row, inputIndex, instrumentKey, base, baseIdentity };
+    return {
+      row,
+      inputIndex,
+      instrumentKey,
+      base: normalizedBase,
+      baseIdentity,
+    };
   });
   const ordered = descriptors.slice().sort((left, right) =>
     left.baseIdentity.localeCompare(right.baseIdentity) || left.inputIndex - right.inputIndex,
@@ -1336,7 +1566,7 @@ export function buildYuantaCanonicalCreditCardCapture(
     const occurrenceIndex = occurrences.get(descriptor.baseIdentity) ?? 0;
     occurrences.set(descriptor.baseIdentity, occurrenceIndex + 1);
     return {
-      sourceRecordKey: digest("yuanta-credit-card-source-record-v1", [
+      sourceRecordKey: digest("yuanta-credit-card-source-record-v2", [
         descriptor.baseIdentity,
         occurrenceIndex,
       ]),
@@ -1359,54 +1589,68 @@ export function buildYuantaCanonicalCreditCardCapture(
       contractVersion: YUANTA_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion,
     },
   }));
-  const statements = options.billedPeriods.flatMap((period) => {
-    const summary = summaries.get(period);
-    if (!summary) return [];
+  const statements = [...summaries.values()].map((summary) => {
     const cycleStart = canonicalDate(summary.cycleStart, "statement cycle start");
     const cycleEnd = canonicalDate(summary.cycleEnd, "statement cycle end");
-    const statementKey = digest("yuanta-credit-statement-v1", [period]);
+    const statementKey = statementKeyForSummary(summary);
     const periodTransactions = transactions.filter(
       (transaction) => transaction.billingStatus === "billed" && transaction.statementKey === statementKey,
     );
     const sourceRecordKeys = periodTransactions.map((transaction) => transaction.sourceRecordKey);
     const issueDate = canonicalDate(summary.issueDate, "statement issue date");
     const dueDate = canonicalDate(summary.dueDate, "statement due date");
-    return [{
+    const statementAuthority = {
       statementKey,
-      revisionKey: digest("yuanta-credit-statement-revision-v1", [
-        statementKey,
-        sourceRecordKeys,
-        summary.balance,
-      ]),
       cycleStart,
       cycleEnd,
       issueDate,
       dueDate,
       currency: "TWD",
       balance: summary.balance,
-      ...(summary.minimumPayment !== undefined
-        ? { minimumPayment: summary.minimumPayment }
-        : {}),
+      minimumPayment: summary.minimumPayment,
+      transactionSourceKeys: sourceRecordKeys,
+    } satisfies YuantaCreditCardSettledStatementEvidenceInput;
+    const evidenceSourceRecordKey = buildYuantaCreditCardStatementEvidenceKeyV2(
+      options.identity,
+      statementAuthority,
+    );
+    return {
+      statementKey,
+      revisionKey: buildYuantaCreditCardStatementRevisionKey(
+        statementAuthority,
+        evidenceSourceRecordKey,
+      ),
+      cycleStart,
+      cycleEnd,
+      issueDate,
+      dueDate,
+      currency: "TWD",
+      balance: summary.balance,
+      minimumPayment: summary.minimumPayment,
       transactionSourceKeys: sourceRecordKeys,
       evidence: {
         kind: "issuer-settled-cycle-summary" as const,
-        sourceRecordKey: buildYuantaCreditCardStatementEvidenceKey(options.identity, {
-          statementKey,
-          cycleStart,
-          cycleEnd,
-        }),
+        sourceRecordKey: evidenceSourceRecordKey,
         settled: true as const,
       },
-    } satisfies YuantaCreditCardStatementInput];
+    } satisfies YuantaCreditCardStatementInput;
   });
   // `canonicalRowBase` has already normalized ROC dates to ISO dates.  Scope
   // dates must be derived from those admitted values; using the raw provider
   // lexemes here would make a ROC year look earlier than the actual capture
   // and would fail admission's YYYY-MM-DD invariant.
-  const dates = transactions.flatMap((transaction) => [
+  const dates = [
+    ...transactions.flatMap((transaction) => [
     transaction.consumeDate,
     transaction.postingDate,
-  ]);
+    ]),
+    ...[...summaries.values()].flatMap((summary) => [
+      canonicalDate(summary.cycleStart, "statement cycle start"),
+      canonicalDate(summary.cycleEnd, "statement cycle end"),
+      canonicalDate(summary.issueDate, "statement issue date"),
+      canonicalDate(summary.dueDate, "statement due date"),
+    ]),
+  ];
   const capture: YuantaCreditCardCaptureInput = {
     captureId: options.captureId,
     identity: options.identity,
