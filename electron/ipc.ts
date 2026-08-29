@@ -9,6 +9,9 @@ import { createDataIssueIpcHandlers } from "../src/lib/desktop/api.ts";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
+  cathayGmailOtpStatus,
+  disconnectCathayGmailOtp,
+  enableCathayGmailOtp,
   automationResume,
   automationRun,
   automationRunMany,
@@ -17,6 +20,7 @@ import {
   automationSetupGuideLink,
   externalPrerequisiteById,
   loadAutomationDesktopModel,
+  setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
@@ -134,6 +138,24 @@ export function registerOctopusBeakIpc({
     "automation:saveCredentials",
     (_event, updates: Record<string, string>) =>
       automationSaveCredentials(updates),
+  );
+  ipcMain.handle("automation:cathayGmailOtpStatus", () =>
+    cathayGmailOtpStatus(),
+  );
+  ipcMain.handle("automation:enableCathayGmailOtp", () =>
+    enableCathayGmailOtp(),
+  );
+  ipcMain.handle(
+    "automation:setCathayGmailOtpEnabled",
+    (_event, enabled: unknown) => {
+      if (typeof enabled !== "boolean") {
+        throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
+      }
+      return setCathayGmailOtpEnabled(enabled);
+    },
+  );
+  ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
+    disconnectCathayGmailOtp(),
   );
   ipcMain.handle(
     "automation:selectCertificateFile",

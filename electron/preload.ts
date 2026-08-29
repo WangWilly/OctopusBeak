@@ -34,6 +34,10 @@ const api: OctopusBeakApi = {
   automation: {
     load: () => ipcRenderer.invoke("automation:load"),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
+    cathayGmailOtpStatus: () => ipcRenderer.invoke("automation:cathayGmailOtpStatus"),
+    enableCathayGmailOtp: () => ipcRenderer.invoke("automation:enableCathayGmailOtp"),
+    setCathayGmailOtpEnabled: (enabled) => ipcRenderer.invoke("automation:setCathayGmailOtpEnabled", enabled),
+    disconnectCathayGmailOtp: () => ipcRenderer.invoke("automation:disconnectCathayGmailOtp"),
     selectCertificateFile: (locale) => ipcRenderer.invoke("automation:selectCertificateFile", locale),
     openSetupGuideLink: (groupId, linkId, locale) => ipcRenderer.invoke("automation:openSetupGuideLink", groupId, linkId, locale),
     run: (taskId) => ipcRenderer.invoke("automation:run", taskId),

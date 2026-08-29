@@ -97,6 +97,15 @@ try {
   }
 
   const model = api.loadAutomationDesktopModel(dir);
+  assert.deepEqual(Object.keys(model.automation.cathayGmailOtp ?? {}).sort(), [
+    "connectedEmail",
+    "enabled",
+    "needsAuthorization",
+  ]);
+  assert.equal(
+    Object.hasOwn(model.automation.cathayGmailOtp ?? {}, "accessToken"),
+    false,
+  );
   assert.equal(
     api.automationSetupGuideLink("maicoin", "api-guide", "en")?.url,
     "https://campaign.maicoin.com/en/api",

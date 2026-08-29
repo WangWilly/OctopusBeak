@@ -10,6 +10,12 @@ import {
   type HumanAssistanceContractPublisher,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
+import {
+  ensureCathayGmailOtpAccess,
+  gmailOtpFallbackReason,
+  prepareCathayGmailOtpRetrieval,
+  retrieveCathayGmailOtp,
+} from "./gmail-otp.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
@@ -878,97 +884,57 @@ async function fillLoginForm(
   await page.locator("button.js-login").click();
 }
 
-async function completeEmailOtpIfNeeded(
+type CathayGmailOtpOutcome = {
+  kind?: unknown;
+  status?: unknown;
+  reason?: unknown;
+  otp?: unknown;
+  code?: unknown;
+  answer?: unknown;
+};
+
+type CathayGmailOtpFallbackStage = "access" | "retrieval" | "workflow";
+
+function reportCathayGmailOtpFallback(
+  stage: CathayGmailOtpFallbackStage,
+  outcome: unknown,
+) {
+  const reason = gmailOtpFallbackReason(outcome) ?? "protocol-error";
+  console.warn(`cathay-gmail-otp-fallback: stage=${stage} reason=${reason}`);
+}
+
+function gmailOtpOutcomeKind(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const outcome = value as CathayGmailOtpOutcome;
+  const kind = outcome.kind ?? outcome.status;
+  return typeof kind === "string" ? kind : null;
+}
+
+function gmailOtpAccessIsReady(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const outcome = value as CathayGmailOtpOutcome & { ready?: unknown };
+  return (
+    gmailOtpOutcomeKind(outcome) === "ready" || outcome.ready === true
+  );
+}
+
+export function cathayEmailOtpSubmissionValue(value: unknown): string | null {
+  if (gmailOtpOutcomeKind(value) !== "found") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const outcome = value as CathayGmailOtpOutcome;
+  const candidate = outcome.otp ?? outcome.code ?? outcome.answer;
+  if (typeof candidate !== "string") return null;
+  const normalized = candidate.trim();
+  const match = /^[A-Z]{4}-(\d{6})$/.exec(normalized);
+  return match?.[1] ?? null;
+}
+
+async function pauseForManualCathayEmailOtp(
   page: Page,
   session: string,
+  otpField: Locator,
+  submitOnResume = true,
 ): Promise<void> {
-  const emailVerificationLink = page
-    .locator("a")
-    .filter({ hasText: "Email驗證" });
-  const otpField = page.locator("#OtpMailPassword");
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return;
-    if (await otpField.isVisible().catch(() => false)) {
-      break;
-    }
-    if (
-      await emailVerificationLink
-        .first()
-        .isVisible()
-        .catch(() => false)
-    ) {
-      break;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  if (
-    !(await emailVerificationLink
-      .first()
-      .isVisible()
-      .catch(() => false))
-  ) {
-    if (await otpField.isVisible().catch(() => false)) {
-      await otpField.scrollIntoViewIfNeeded();
-      await otpField.focus();
-      await waitForStableLocatorBox(page, otpField);
-      await emitHumanAssistanceStage({
-        stageId: "cathay-login-email-otp",
-        title: "Enter the Cathay Email OTP",
-        targets: [
-          {
-            id: "otp-input",
-            label: "Email OTP input",
-            semanticId: "cathay.login.email-otp-input",
-            modes: ["click", "type"],
-            locator: otpField,
-          },
-        ],
-        contextRegions: [
-          {
-            id: "otp-challenge",
-            label: "Email OTP instructions",
-            semanticId: "cathay.login.email-otp-challenge",
-          },
-        ],
-        completion: { mode: "inline", targetIds: ["otp-input"] },
-        focus: {
-          targetId: "otp-input",
-          contextRegionIds: ["otp-challenge"],
-          initialZoom: 1.15,
-        },
-      });
-      console.log(
-        "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
-          session +
-          "`.",
-      );
-      await pause(session);
-      if (await otpField.isVisible().catch(() => false)) {
-        if (!(await otpField.inputValue()).trim()) {
-          throw new Error(
-            "Cathay Email OTP is empty. Enter it in the browser before resuming.",
-          );
-        }
-        await page.locator("#btnConfirm").click();
-      }
-      return;
-    }
-
-    throw new Error(
-      `Cathay sign-in did not reach Email OTP or signed-in state. Current URL: ${page.url()}`,
-    );
-  }
-
-  await emailVerificationLink.first().click();
-
-  const sendEmailOtp = page.locator("#js-otp-email-send");
-  if (await sendEmailOtp.isVisible().catch(() => false)) {
-    await sendEmailOtp.click();
-  }
-
-  await otpField.waitFor({ state: "visible", timeout: 30_000 });
   await otpField.scrollIntoViewIfNeeded();
   await otpField.focus();
   await waitForStableLocatorBox(page, otpField);
@@ -998,22 +964,135 @@ async function completeEmailOtpIfNeeded(
       initialZoom: 1.15,
     },
   });
-
   console.log(
     "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
       session +
       "`.",
   );
   await pause(session);
-
-  if (await otpField.isVisible().catch(() => false)) {
-    if (!(await otpField.inputValue()).trim()) {
-      throw new Error(
-        "Cathay Email OTP is empty. Enter it in the browser before resuming.",
-      );
-    }
-    await page.locator("#btnConfirm").click();
+  if (!submitOnResume || !(await otpField.isVisible().catch(() => false))) return;
+  if (!(await otpField.inputValue()).trim()) {
+    throw new Error(
+      "Cathay Email OTP is empty. Enter it in the browser before resuming.",
+    );
   }
+  await page.locator("#btnConfirm").click();
+}
+
+export type CathayEmailOtpAutomation = {
+  /** Optional seams keep the login policy testable without a live Gmail bridge. */
+  ensureAccess?: () => Promise<unknown>;
+  prepareRetrieval?: () => Promise<unknown>;
+  retrieve?: (boundaryId: string) => Promise<unknown>;
+};
+
+export async function completeEmailOtpIfNeeded(
+  page: Page,
+  session: string,
+  automation: CathayEmailOtpAutomation = {},
+): Promise<void> {
+  const emailVerificationLink = page
+    .locator("a")
+    .filter({ hasText: "Email驗證" });
+  const otpField = page.locator("#OtpMailPassword");
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await isSignedIn(page)) return;
+    if (await otpField.isVisible().catch(() => false)) {
+      break;
+    }
+    if (
+      await emailVerificationLink
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
+      break;
+    }
+    await page.waitForTimeout(500);
+  }
+
+  if (
+    !(await emailVerificationLink
+      .first()
+      .isVisible()
+      .catch(() => false))
+  ) {
+    if (await otpField.isVisible().catch(() => false)) {
+      await pauseForManualCathayEmailOtp(page, session, otpField);
+      return;
+    }
+
+    throw new Error(
+      `Cathay sign-in did not reach Email OTP or signed-in state. Current URL: ${page.url()}`,
+    );
+  }
+
+  await emailVerificationLink.first().click();
+
+  const sendEmailOtp = page.locator("#js-otp-email-send");
+  const ensureAccess = automation.ensureAccess ?? ensureCathayGmailOtpAccess;
+  const prepareRetrieval = automation.prepareRetrieval ?? prepareCathayGmailOtpRetrieval;
+  const retrieve = automation.retrieve ?? retrieveCathayGmailOtp;
+  let sendClicked = false;
+  let submitAttempted = false;
+  const clickSendOnce = async () => {
+    if (sendClicked) return;
+    // Mark before dispatch so an exception with an uncertain browser outcome
+    // can never cause a second OTP request.
+    sendClicked = true;
+    await sendEmailOtp.click();
+  };
+  if (await sendEmailOtp.isVisible().catch(() => false)) {
+    try {
+      const access = await ensureAccess();
+      if (gmailOtpAccessIsReady(access)) {
+        const boundary = await prepareRetrieval();
+        const boundaryId = boundary && typeof boundary === "object" &&
+          (boundary as { status?: unknown }).status === "prepared" &&
+          typeof (boundary as { boundaryId?: unknown }).boundaryId === "string"
+          ? (boundary as { boundaryId: string }).boundaryId
+          : null;
+        if (boundaryId) {
+          await clickSendOnce();
+          const result = await retrieve(boundaryId);
+          const otp = cathayEmailOtpSubmissionValue(result);
+          if (otp) {
+            await otpField.waitFor({ state: "visible", timeout: 30_000 });
+            await otpField.fill(otp);
+            submitAttempted = true;
+            await page.locator("#btnConfirm").click();
+            return;
+          }
+          reportCathayGmailOtpFallback("retrieval", result);
+        } else {
+          reportCathayGmailOtpFallback("retrieval", boundary);
+        }
+      } else {
+        reportCathayGmailOtpFallback("access", access);
+        await clickSendOnce();
+      }
+    } catch {
+      reportCathayGmailOtpFallback("workflow", null);
+      // Retrieval, OAuth, fill, or submit uncertainty falls through to the
+      // existing human-assistance contract without another send attempt.
+    }
+    if (!sendClicked) {
+      try {
+        await clickSendOnce();
+      } catch {
+        // The existing wait/manual path below reports the unavailable target.
+      }
+    }
+  }
+
+  await otpField.waitFor({ state: "visible", timeout: 30_000 });
+  await pauseForManualCathayEmailOtp(
+    page,
+    session,
+    otpField,
+    !submitAttempted,
+  );
 }
 
 async function waitForSignedInState(page: Page): Promise<void> {

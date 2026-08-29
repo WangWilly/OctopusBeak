@@ -558,6 +558,10 @@ _Avoid_: Local-only product, anonymous financial data
 A login password, one-time code, session token, cookie, API key, credential answer, or equivalent material that can authenticate as the person. It is never exposed to a model or agent tool, even when other financial data is locally observable.
 _Avoid_: Financial account identifier, account data
 
+**Gmail OTP mailbox authorization**:
+The person's explicit Google OAuth grant that lets the application read only the Gmail messages needed to retrieve Cathay Bank login one-time codes. The first supported mailbox family is Gmail and Google Workspace; the application never asks for or stores the person's Google password. The person can turn automatic retrieval on or off, and first authorization begins only when they turn it on. While the feature remains enabled, an expired or invalid refresh token opens the system browser directly for renewed authorization during the Cathay workflow; cancellation or failure returns that run to human assistance. Automatic entry occurs only when exactly one post-request message and exactly one code satisfy the Cathay sender, template, timing, and format rules; disabled, revoked, missing, or ambiguous retrieval returns Cathay email verification to human assistance.
+_Avoid_: Email password, unrestricted mailbox ownership, generic email login
+
 **Authentication certificate file**:
 A user-owned certificate file selected for a supported source's authentication flow. The application retains a reference to the original file without copying it, presents only its filename in ordinary UI, and treats its password separately as an authentication secret.
 _Avoid_: Sign-in detail, copied certificate, uploaded certificate
@@ -766,6 +770,10 @@ _Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
 **Taipei Fubon login CAPTCHA**:
 The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflow: a 158-by-30-pixel white-background image whose answer is exactly six decimal digits rendered as colored, variably tilted glyphs without an interference-line requirement. Automatic submission requires OCR Agreement from at least two distinct provider-declared preprocessing strategies; missing agreement fails closed. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
 _Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
+
+**Cathay login Email OTP**:
+The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Any missing, stale, unauthenticated, differently shaped, ambiguous, rejected, or uncertain candidate returns to human assistance without persisting the message or answer.
+_Avoid_: Numeric-only Cathay OTP, arbitrary six-digit email code, recipient-address equality
 
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.

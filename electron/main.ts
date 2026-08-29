@@ -15,6 +15,7 @@ import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
+import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
@@ -155,6 +156,8 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
+  registerAutomationCredentialSafeStorage();
+  registerCathayGmailOtpElectronRuntime(appRoot);
   try {
     prepareLibrettoRunCdpPatch();
   } catch (error) {
@@ -164,7 +167,6 @@ async function start() {
   await recoverAbandonedAutomationSessions().catch((error) => {
     console.warn("automation-session-startup-recovery-failed", error);
   });
-  registerAutomationCredentialSafeStorage();
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   scheduler = createExchangeRateScheduler({
     now: () => new Date(),

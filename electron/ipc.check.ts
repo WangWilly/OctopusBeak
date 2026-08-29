@@ -12,6 +12,11 @@ assert.equal(octopusBeakApiChannels.includes("settings:save"), true);
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
 assert.match(source, /ipcMain\.handle\("settings:save"/);
+assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
+assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
+assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);
+assert.match(source, /ipcMain\.handle\(\s*"automation:disconnectCathayGmailOtp"/);
+assert.match(source, /typeof enabled !== "boolean"/);
 assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
 assert.match(
   source,
