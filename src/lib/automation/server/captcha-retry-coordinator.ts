@@ -5,6 +5,7 @@ import {
   createCaptchaRetryCampaign,
   isCaptchaRetryCampaignReady,
   transitionCaptchaRetryCampaign,
+  CaptchaRetryCampaignTransitionError,
   type CaptchaRetryCampaign,
 } from "./captcha-retry-campaign.ts";
 import {
@@ -80,6 +81,12 @@ function recordCapturedChallenge(
     campaign.activeExecutionId === executionId
   ) {
     return campaign;
+  }
+  if (campaign.status === "awaiting-outcome") {
+    throw new CaptchaRetryCampaignTransitionError(
+      `A second CAPTCHA challenge was captured by execution ${executionId} before execution ${campaign.activeExecutionId} reported its round outcome.`,
+      "invalid-transition",
+    );
   }
   return campaign;
 }
