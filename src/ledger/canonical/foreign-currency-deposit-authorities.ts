@@ -1,10 +1,10 @@
 export const FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA = {
   yuanta: {
-    authorityRoute: "yuanta/foreign-currency/deposit/v1",
-    contractVersion: "foreign-currency/yuanta/v1",
+    authorityRoute: "yuanta/foreign-currency/deposit/human-attested-v2",
+    contractVersion: "foreign-currency/yuanta/human-attested-v2",
     integrationNamespace: "yuanta",
     recordKind: "yuanta-foreign-currency-deposit",
-    postingOrigin: "provider_booked_history",
+    postingOrigin: "human-attested",
   },
   cathay: {
     authorityRoute: "cathay/foreign-currency/deposit/v1",

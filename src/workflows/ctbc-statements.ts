@@ -26,6 +26,10 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  ctbcResponseDiagnosticDirectoryFromEnvironment,
+  writeCtbcResponseDiagnostic,
+} from "./ctbc-response-diagnostic.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -92,7 +96,7 @@ type CtbcResourceResponse<T> = {
   code?: string;
   message?: string;
   msg?: string;
-  rsData?: T;
+  rsData?: T | null;
 };
 
 type CtbcAccount = {
@@ -153,6 +157,21 @@ export type CtbcDetailTelemetry = {
 
 type CtbcResourceCapture<T> = {
   body: CtbcResourceResponse<T>;
+  request: {
+    method: string;
+    url: string;
+    postData: string | null;
+  };
+  visibleMonthLabel?: string;
+};
+
+export type CtbcResponseShapeEvidence = {
+  hasRsData: boolean;
+  rsDataKind: "object" | "null" | "other";
+  hasDetailList: boolean;
+  detailListIsArray: boolean;
+  detailListRowCount: number | null;
+  nextKeyPresent: boolean;
 };
 
 export type CtbcObservedRangeResponse = {
@@ -163,6 +182,7 @@ export type CtbcObservedRangeResponse = {
   nextKey: string | null;
   terminal: boolean;
   rows: CtbcStatementRow[];
+  responseShape: CtbcResponseShapeEvidence;
 };
 
 export type CtbcObservedAccountCapture = {
@@ -507,7 +527,15 @@ async function nextCtbcResource<T>(
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
     requireCtbcOk(body, resource);
   }
-  return { body };
+  const request = response.request();
+  return {
+    body,
+    request: {
+      method: request.method(),
+      url: request.url(),
+      postData: request.postData(),
+    },
+  };
 }
 
 function detailsFromCapture(
@@ -518,11 +546,45 @@ function detailsFromCapture(
     console.log("ctbc-domestic-detail-telemetry", {
       responseClass:
         capture.body.code === NO_DATA_CODE ? "provider-no-data" : "ok",
-      ...ctbcDetailTelemetry(capture.body.rsData),
+      ...ctbcDetailTelemetry(capture.body.rsData ?? undefined),
     });
   }
   if (capture.body.code === NO_DATA_CODE) return [];
-  return capture.body.rsData?.detailList ?? [];
+  if (
+    !capture.body.rsData ||
+    typeof capture.body.rsData !== "object" ||
+    !Array.isArray(capture.body.rsData.detailList)
+  )
+    throw new Error(
+      "CTBC successful detail response lacks an explicit detailList array.",
+    );
+  return capture.body.rsData.detailList;
+}
+
+export function ctbcResponseShape(
+  body: CtbcResourceResponse<CtbcDetailData>,
+): CtbcResponseShapeEvidence {
+  const hasRsData = Object.prototype.hasOwnProperty.call(body, "rsData");
+  const rsData = body.rsData;
+  const rsDataKind =
+    rsData === null
+      ? ("null" as const)
+      : rsData && typeof rsData === "object" && !Array.isArray(rsData)
+        ? ("object" as const)
+        : ("other" as const);
+  const hasDetailList =
+    rsDataKind === "object" &&
+    Object.prototype.hasOwnProperty.call(rsData, "detailList");
+  const detailListIsArray = Array.isArray(rsData?.detailList);
+  return {
+    hasRsData,
+    rsDataKind,
+    hasDetailList,
+    detailListIsArray,
+    detailListRowCount: detailListIsArray ? rsData.detailList!.length : null,
+    nextKeyPresent:
+      typeof rsData?.nextKey === "string" && rsData.nextKey.trim().length > 0,
+  };
 }
 
 async function openDomesticDetailsPage(page: Page, telemetry = false) {
@@ -717,13 +779,19 @@ async function captureVisibleMonthDetails(
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
   telemetry = false,
 ): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
-  const captures = [initialCapture];
-  detailsFromCapture(initialCapture, telemetry);
   const tabs = monthTabs(page);
   await tabs.first().waitFor({ state: "visible", timeout: 60_000 });
+  const captures = [
+    {
+      ...initialCapture,
+      visibleMonthLabel: cleanText(await tabs.first().textContent()),
+    },
+  ];
+  detailsFromCapture(initialCapture, telemetry);
 
   const count = await tabs.count();
   for (let index = 1; index < count; index += 1) {
+    const visibleMonthLabel = cleanText(await tabs.nth(index).textContent());
     const detailPromise = nextCtbcResource<CtbcDetailData>(
       page,
       "/twrbc-deposit/qu002/011",
@@ -732,7 +800,7 @@ async function captureVisibleMonthDetails(
     await tabs.nth(index).click();
     const capture = await detailPromise;
     detailsFromCapture(capture, telemetry);
-    captures.push(capture);
+    captures.push({ ...capture, visibleMonthLabel });
   }
 
   return captures;
@@ -755,6 +823,25 @@ async function accountRowsFromCurrentPage(
     input.telemetry,
   );
   const ranges = bootstrap.dateRanges ?? [];
+  const queryPeriods = queryPeriodsForBootstrap(bootstrap, input);
+  const diagnosticDirectory =
+    ctbcResponseDiagnosticDirectoryFromEnvironment();
+  for (const [rangeOrdinal, capture] of captures.entries()) {
+    await writeCtbcResponseDiagnostic(diagnosticDirectory, {
+      capturedAt: new Date().toISOString(),
+      resource: "/twrbc-deposit/qu002/011",
+      account: {
+        accountId: account.accountId,
+        label: account.label,
+      },
+      rangeOrdinal,
+      visibleMonthLabel: capture.visibleMonthLabel ?? null,
+      expectedRange: ranges[rangeOrdinal] ?? null,
+      queryPeriods,
+      request: capture.request,
+      response: capture.body,
+    });
+  }
   const responses = captures.map((capture, rangeOrdinal) => {
     const code = capture.body.code === NO_DATA_CODE ? NO_DATA_CODE : "0000";
     const nextKey = cleanText(capture.body.rsData?.nextKey) || null;
@@ -767,13 +854,14 @@ async function accountRowsFromCurrentPage(
       nextKey,
       terminal: nextKey === null,
       rows: ctbcDetailRowsToStatementRows(account, detailsFromCapture(capture)),
+      responseShape: ctbcResponseShape(capture.body),
     } satisfies CtbcObservedRangeResponse;
   });
   const rows = responses
     .flatMap((response) => response.rows)
     .filter((row) => rowWithinDateRange(row, input));
   return {
-    queryPeriods: queryPeriodsForBootstrap(bootstrap, input),
+    queryPeriods,
     rows,
     responses,
   };
@@ -931,6 +1019,7 @@ function buildCtbcCapture(
       code: response.code,
       nextKey: response.nextKey,
       terminal: response.terminal,
+      responseShape: response.responseShape,
       rows: response.rows.map((row, rowOrdinal) => ({
         rowOrdinal,
         values: row.values,

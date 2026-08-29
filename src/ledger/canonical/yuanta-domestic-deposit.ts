@@ -648,11 +648,12 @@ export function createYuantaDomesticDepositSourceEvidence(
     records: pageRows.flatMap(({ download, pageOrdinal }) =>
       download.rows.map((row) => {
         const cells = row.values.map(normalizedCell);
+        const identityCells = normalizedYuantaRowForIdentity(row.values);
         const rowDigest = yuantaDigest(
           "yuanta-source-row-v2",
           String(pageOrdinal),
           String(row.rowOrdinal),
-          ...cells,
+          ...identityCells,
         );
         const occurrenceKey = yuantaDigest(
           "yuanta-source-occurrence-v2",
@@ -894,6 +895,19 @@ function normalizedFinancialCell(value: unknown): string {
   return normalizedCell(value).replace(/,/g, "");
 }
 
+function normalizeFinancialAmountParts(
+  coefficient: string,
+  scale: number,
+): { coefficient: string; scale: number } {
+  let normalizedCoefficient = coefficient.replace(/^0+(?=\d)/, "") || "0";
+  let normalizedScale = scale;
+  while (normalizedScale > 0 && normalizedCoefficient.endsWith("0")) {
+    normalizedCoefficient = normalizedCoefficient.slice(0, -1) || "0";
+    normalizedScale -= 1;
+  }
+  return { coefficient: normalizedCoefficient, scale: normalizedScale };
+}
+
 function parseFinancialAmount(
   value: unknown,
   allowZero = false,
@@ -904,7 +918,28 @@ function parseFinancialAmount(
   const coefficient = (parts[0] ?? "") + (parts[1] ?? "");
   const trimmed = coefficient.replace(/^0+(?=\d)/, "") || "0";
   if (!allowZero && BigInt(trimmed) === 0n) return null;
-  return { coefficient: trimmed, scale: (parts[1] ?? "").length };
+  return normalizeFinancialAmountParts(trimmed, (parts[1] ?? "").length);
+}
+
+/**
+ * Source exports have used both fixed-width zero-padded amounts and ordinary
+ * decimal lexemes. Remove insignificant scale so equivalent numeric values
+ * share one content/occurrence representation. Invalid cells remain untouched
+ * so structural admission still rejects them instead of guessing.
+ */
+function normalizedFinancialIdentityCell(value: unknown): string {
+  const parsed = parseFinancialAmount(value, true);
+  return parsed
+    ? `${parsed.coefficient}:${String(parsed.scale)}`
+    : normalizedCell(value);
+}
+
+function normalizedYuantaRowForIdentity(values: readonly string[]): string[] {
+  return values.map((value, index) =>
+    index === 6 || index === 7 || index === 8
+      ? normalizedFinancialIdentityCell(value)
+      : normalizedCell(value),
+  );
 }
 
 function canonicalDate(value: string): string | null {
@@ -1020,7 +1055,7 @@ function financialRecord(
   const note = normalizedCell(values[10]);
   const contentHash = financialOpaque(
     "yuanta-observed-content-v2",
-    ...values.map(normalizedCell),
+    ...normalizedYuantaRowForIdentity(values),
   );
   const collisionKey = financialOpaque(
     "yuanta-observed-composite-fence-v2",

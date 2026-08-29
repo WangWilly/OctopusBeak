@@ -243,6 +243,58 @@ assert.doesNotMatch(
   /123456|SYNTHETIC DESCRIPTION|SYNTHETIC NOTE/,
 );
 
+const reformattedFinancialCapture = admitYuantaDomesticDepositCaptureEvidence({
+  ...financialCaptureEvidence,
+  downloads: financialCaptureEvidence.downloads.map((download) => ({
+    ...download,
+    rows: download.rows.map((row) => ({
+      ...row,
+      values: row.values.map((value, index) =>
+        index === 7 ? "000100.00" : index === 8 ? "000900.0" : value,
+      ),
+    })),
+  })),
+}).capture!;
+const baselineSourceEvidence = createYuantaDomesticDepositSourceEvidence(
+  financialAdmitted.capture,
+  "yuanta-domestic-decimal-baseline",
+);
+const reformattedSourceEvidence = createYuantaDomesticDepositSourceEvidence(
+  reformattedFinancialCapture,
+  "yuanta-domestic-decimal-reformatted",
+);
+assert.equal(
+  reformattedSourceEvidence.records[0]!.occurrenceKey,
+  baselineSourceEvidence.records[0]!.occurrenceKey,
+);
+assert.equal(
+  reformattedSourceEvidence.records[0]!.contentHash,
+  baselineSourceEvidence.records[0]!.contentHash,
+);
+const reformattedFinancial = admitYuantaDomesticDepositFinancialCapture({
+  capture: reformattedFinancialCapture,
+  captureId: "yuanta-financial-decimal-reformatted",
+  humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+});
+assert.equal(reformattedFinancial.status, "admitted");
+assert.ok(reformattedFinancial.capture);
+assert.equal(
+  reformattedFinancial.capture.records[0]!.occurrenceKey,
+  admittedFinancial.capture.records[0]!.occurrenceKey,
+);
+assert.equal(
+  reformattedFinancial.capture.records[0]!.contentHash,
+  admittedFinancial.capture.records[0]!.contentHash,
+);
+assert.deepEqual(reformattedFinancial.capture.records[0]!.amount, {
+  coefficient: "100",
+  scale: 0,
+});
+assert.deepEqual(reformattedFinancial.capture.records[0]!.balanceAfter, {
+  coefficient: "900",
+  scale: 0,
+});
+
 const accountingVsTransactionDate = admitYuantaDomesticDepositFinancialCapture({
   capture: admitYuantaDomesticDepositCaptureEvidence({
     ...sourceCapture,

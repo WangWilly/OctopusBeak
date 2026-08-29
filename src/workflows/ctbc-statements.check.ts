@@ -114,6 +114,14 @@ try {
                 code: "0000",
                 nextKey: null,
                 terminal: true,
+                responseShape: {
+                  hasRsData: true,
+                  rsDataKind: "object",
+                  hasDetailList: true,
+                  detailListIsArray: true,
+                  detailListRowCount: 1,
+                  nextKeyPresent: false,
+                },
                 rows: ctbcDetailRowsToStatementRows(
                   {
                     accountId: "PRIVATE-CTBC-ACCOUNT",
@@ -159,6 +167,53 @@ try {
   );
 } finally {
   await rm(sourceOnlyDir, { recursive: true, force: true });
+}
+
+const successfulEmptyDir = await mkdtemp(
+  join(tmpdir(), "ctbc-successful-empty-"),
+);
+try {
+  const successfulEmpty = await runCtbcStatements(
+    {} as never,
+    { telemetry: false },
+    {
+      canonicalSourceLedgerDir: successfulEmptyDir,
+      observedAt: "2026-08-29T21:23:06+08:00",
+      collectStatements: async () => ({
+        output: { count: 1, rowCount: 0, downloads: [] },
+        captures: [
+          {
+            accountId: "PRIVATE-CTBC-ACCOUNT",
+            queryPeriods: ["2026/03/01~2026/03/31"],
+            expectedRangeCount: 1,
+            responses: [
+              {
+                rangeOrdinal: 0,
+                startDate: "2026/03/01",
+                endDate: "2026/03/31",
+                code: "0000",
+                nextKey: null,
+                terminal: true,
+                rows: [],
+                responseShape: {
+                  hasRsData: true,
+                  rsDataKind: "object",
+                  hasDetailList: true,
+                  detailListIsArray: true,
+                  detailListRowCount: 0,
+                  nextKeyPresent: false,
+                },
+              } as never,
+            ],
+          },
+        ],
+      }),
+    },
+  );
+  assert.equal(successfulEmpty.status, "source-only");
+  assert.equal(successfulEmpty.sourceCaptureCount, 1);
+} finally {
+  await rm(successfulEmptyDir, { recursive: true, force: true });
 }
 
 const rows = ctbcDetailRowsToStatementRows(
