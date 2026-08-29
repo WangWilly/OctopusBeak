@@ -67,6 +67,8 @@ try {
 
   updateTaskRun(db, run.taskRunId, {
     status: "completed",
+    attempt: 2,
+    maxAttempts: 10,
     finishedAt,
     exitCode: 0,
     logTail: "ok",
@@ -77,6 +79,8 @@ try {
   assert.equal(latest["fubon-all-statements"]?.finishedAt, finishedAt);
   const completedRun = taskRunById(db, run.taskRunId);
   assert.equal(completedRun?.status, "completed");
+  assert.equal(completedRun?.attempt, 2);
+  assert.equal(completedRun?.maxAttempts, 10);
   assert.equal(JSON.parse(completedRun?.recordJson ?? "{}").recordJson, undefined);
   assert.equal(taskRunById(db, "missing"), null);
 

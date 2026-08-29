@@ -400,7 +400,7 @@ test("a solver actor injects a selection answer as click coordinates and resumes
   assert.deepEqual(tracked.injectedSelections, [[{ x: 10, y: 20 }]]);
 });
 
-test("an exhausted solve finalizes the run as failed", async () => {
+test("an exhausted solve returns a retryable outcome without finalizing the run", async () => {
   const tracked = trackDependencies({
     solver: confidentSolver("LOW", 0.1),
   });
@@ -411,10 +411,10 @@ test("an exhausted solve finalizes the run as failed", async () => {
     confidenceThreshold: 0.9,
     dependencies: tracked.dependencies,
   });
-  assert.deepEqual(outcome, { kind: "failed" });
-  assert.deepEqual(tracked.calls, ["capture", "capture", "capture", "finalize"]);
+  assert.deepEqual(outcome, { kind: "retryable", reason: "solver-exhausted" });
+  assert.deepEqual(tracked.calls, ["capture", "capture", "capture"]);
   assert.deepEqual(tracked.injected, []);
-  assert.deepEqual(tracked.failed, ["Verification solver exhausted its attempts."]);
+  assert.deepEqual(tracked.failed, []);
 });
 
 test("a checkbox challenge performs a declared click with no solver call", async () => {
