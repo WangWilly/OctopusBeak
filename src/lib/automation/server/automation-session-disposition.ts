@@ -205,6 +205,12 @@ export async function isLiveOwnedAutomationSession(
 export function automationSessionOwnerForRun(
   run: AutomationTaskRun,
 ): OwnedAutomationSession | null {
+  // During a bounded CAPTCHA retry campaign one persisted task run owns
+  // several sequential browser sessions. The log is intentionally append-only
+  // and therefore may contain an earlier round's session first; while the
+  // process is live, the registry is the authoritative owner for this run.
+  const active = ownedAutomationSession(run.taskId);
+  if (active?.taskRunId === run.taskRunId) return active;
   const session = sessionFromRun(run);
   return session
     ? {
@@ -361,8 +367,12 @@ export async function finalizeAutomationSessionForRun(
   run: AutomationTaskRun,
   workflowError: string | null,
   mode: "exact" | "recovery",
+  activeOwner?: OwnedAutomationSession | null,
 ): Promise<AutomationSessionCleanupResult> {
-  const owner = automationSessionOwnerForRun(run);
+  // Live retry executions can append several session identities to one task
+  // log. The in-memory owner is authoritative while the task is running;
+  // only recovery callers should derive an identity from persisted log data.
+  const owner = activeOwner ?? automationSessionOwnerForRun(run);
   if (!owner) {
     return {
       session: null,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -67,15 +68,149 @@ import {
   startAutomationTasks,
 } from "./runner.ts";
 
+const TEST_TASK_SETTLE_TIMEOUT_MS = 30_000;
+
+async function waitForTaskToSettle(taskId: string) {
+  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
+  while (activeAutomationTaskIds().includes(taskId)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${taskId} to settle.`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function settleStartedTasks(taskIds: readonly string[]) {
+  const pending = new Set(taskIds);
+  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
+  while (pending.size > 0) {
+    for (const taskId of pending) {
+      if (!activeAutomationTaskIds().includes(taskId)) {
+        pending.delete(taskId);
+        continue;
+      }
+      try {
+        await cancelAutomationTask(taskId);
+      } catch {
+        // The task can finish between the active check and cancellation.
+        if (!activeAutomationTaskIds().includes(taskId)) pending.delete(taskId);
+      }
+    }
+    if (pending.size === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for automation cleanup: ${[...pending].join(", ")}`,
+      );
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 async function settleStartedTask(taskId: string) {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    if (!hasActiveAutomationTask()) return;
-    try {
-      await cancelAutomationTask(taskId);
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+  await settleStartedTasks([taskId]);
+}
+
+async function settleStartedBatchTasks(taskIds: readonly string[]) {
+  await settleStartedTasks(taskIds);
+  // A crawler batch schedules its final import after the selected tasks
+  // settle. Let that callback and its promise continuations claim the
+  // dynamically-created import task before declaring the batch idle.
+  let idleTurns = 0;
+  while (idleTurns < 4) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (activeAutomationTaskIds().includes("import-downloads-csv")) {
+      idleTurns = 0;
+      await settleStartedTask("import-downloads-csv");
+    } else {
+      idleTurns += 1;
     }
   }
+}
+
+function writeTypedCaptchaRoundFixture(rootDir: string, options: {
+  cleanupStartedPath?: string;
+  allowCleanupPath?: string;
+}) {
+  const roundScriptPath = join(rootDir, "captcha-round.mjs");
+  writeFileSync(
+    roundScriptPath,
+    `import { appendFileSync } from "node:fs";
+import { createConnection } from "node:net";
+
+const endpoint = process.env.OCTOPUSBEAK_CAPTCHA_ROUND_OUTCOME_ENDPOINT;
+const token = process.env.OCTOPUSBEAK_CAPTCHA_ROUND_OUTCOME_TOKEN;
+const executionId = process.env.OCTOPUSBEAK_CAPTCHA_ROUND_OUTCOME_EXECUTION_ID;
+appendFileSync(process.env.CAPTCHA_LAUNCH_PATH, executionId + "\\n");
+const frame = (value) => JSON.stringify(value) + "\\n";
+const auth = frame({
+  schemaVersion: 1,
+  type: "authenticate",
+  executionId,
+  token,
+});
+const captured = frame({
+  schemaVersion: 1,
+  type: "captcha-round-outcome",
+  executionId,
+  sequence: 1,
+  outcome: {
+    kind: "captured",
+    stageId: "fubon-login-captcha",
+    challengeKind: "text-captcha",
+  },
+});
+const exhausted = frame({
+  schemaVersion: 1,
+  type: "captcha-round-outcome",
+  executionId,
+  sequence: 2,
+  outcome: {
+    kind: "retryable",
+    stageId: "fubon-login-captcha",
+    reason: "solver-exhausted",
+  },
+});
+await new Promise((resolve, reject) => {
+  const socket = createConnection(endpoint);
+  socket.once("connect", () => socket.end(auth + captured + exhausted, resolve));
+  socket.once("error", reject);
+});
+`,
+    "utf8",
+  );
+  const npmPath = join(rootDir, "bin", "npm");
+  writeFileSync(
+    npmPath,
+    "#!/bin/sh\nnode \"$CAPTCHA_ROUND_SCRIPT\"\n",
+    "utf8",
+  );
+  chmodSync(npmPath, 0o755);
+  const npxPath = join(rootDir, "bin", "npx");
+  writeFileSync(
+    npxPath,
+    [
+      "#!/bin/sh",
+      "if [ \"$1\" = \"libretto\" ] && [ \"$2\" = \"close\" ]; then",
+      options.cleanupStartedPath ? `  touch \"${options.cleanupStartedPath}\"` : "  :",
+      options.allowCleanupPath
+        ? `  while [ ! -f \"${options.allowCleanupPath}\" ]; do sleep 0.01; done`
+        : "  :",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  chmodSync(npxPath, 0o755);
+  return roundScriptPath;
+}
+
+async function waitForFile(path: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
 }
 test("manual Fubon starts ignore persisted statement selection", async () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
@@ -107,7 +242,10 @@ test("batch starts allow Fubon without a persisted selection", async () => {
     assert.doesNotThrow(() =>
       startAutomationTasks(["exchange-rates", "fubon-all-statements"], dir),
     );
-    await settleStartedTask("fubon-all-statements");
+    await settleStartedBatchTasks([
+      "fubon-all-statements",
+      "exchange-rates",
+    ]);
     assert.deepEqual(activeAutomationTaskIds(), []);
   } finally {
     process.chdir(originalCwd);
@@ -151,7 +289,10 @@ test("batch starts allow SinoPac without a persisted selection", async () => {
     assert.doesNotThrow(() =>
       startAutomationTasks(["exchange-rates", "sinopac-statements"], dir),
     );
-    await settleStartedTask("sinopac-statements");
+    await settleStartedBatchTasks([
+      "sinopac-statements",
+      "exchange-rates",
+    ]);
     assert.deepEqual(activeAutomationTaskIds(), []);
   } finally {
     process.chdir(originalCwd);
@@ -179,11 +320,8 @@ test("resume bypasses fresh statement-selection validation", async () => {
       startAutomationResume("fubon-all-statements", "ses-existing", ledgerDir),
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!hasActiveAutomationTask()) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(hasActiveAutomationTask(), false);
+    await waitForTaskToSettle("fubon-all-statements");
+    assert.equal(activeAutomationTaskIds().includes("fubon-all-statements"), false);
     const db = openLedgerDatabase(ledgerDir);
     assert.equal(
       latestTaskRuns(db)["fubon-all-statements"]?.taskId,
@@ -736,6 +874,125 @@ test("cleanup failure makes a partial Libretto run failed", async () => {
   }
 });
 
+test("typed solver exhaustion restarts fresh sessions serially in one task run", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "automation-captcha-campaign-"));
+  const ledgerDir = join(rootDir, "ledger");
+  const binDir = join(rootDir, "bin");
+  const launchPath = join(rootDir, "launches.log");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousLaunchPath = process.env.CAPTCHA_LAUNCH_PATH;
+  const previousRoundScript = process.env.CAPTCHA_ROUND_SCRIPT;
+  try {
+    mkdirSync(binDir, { recursive: true });
+    const roundScript = writeTypedCaptchaRoundFixture(rootDir, {});
+    writeFileSync(join(rootDir, "settings.json"), "{}\n", "utf8");
+    process.chdir(rootDir);
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    process.env.CAPTCHA_LAUNCH_PATH = launchPath;
+    process.env.CAPTCHA_ROUND_SCRIPT = roundScript;
+
+    assert.deepEqual(
+      await runAutomationTask("fubon-all-statements", ledgerDir),
+      { status: "failed" },
+    );
+
+    const launches = readFileSync(launchPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
+    assert.equal(launches.length, 10);
+    assert.equal(new Set(launches).size, 10);
+    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const runs = db
+      .prepare("SELECT task_run_id, status, attempt, max_attempts FROM automation_task_runs")
+      .all() as Array<{
+        task_run_id: string;
+        status: string;
+        attempt: number;
+        max_attempts: number;
+      }>;
+    assert.equal(runs.length, 1);
+    assert.deepEqual(
+      {
+        status: runs[0]?.status,
+        attempt: runs[0]?.attempt,
+        maxAttempts: runs[0]?.max_attempts,
+      },
+      { status: "failed", attempt: 10, maxAttempts: 10 },
+    );
+    db.close();
+  } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousLaunchPath === undefined) delete process.env.CAPTCHA_LAUNCH_PATH;
+    else process.env.CAPTCHA_LAUNCH_PATH = previousLaunchPath;
+    if (previousRoundScript === undefined) delete process.env.CAPTCHA_ROUND_SCRIPT;
+    else process.env.CAPTCHA_ROUND_SCRIPT = previousRoundScript;
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("cancellation during CAPTCHA cleanup prevents the next workflow launch", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "automation-captcha-cancel-"));
+  const ledgerDir = join(rootDir, "ledger");
+  const binDir = join(rootDir, "bin");
+  const launchPath = join(rootDir, "launches.log");
+  const cleanupStartedPath = join(rootDir, "cleanup-started");
+  const allowCleanupPath = join(rootDir, "allow-cleanup");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousLaunchPath = process.env.CAPTCHA_LAUNCH_PATH;
+  const previousRoundScript = process.env.CAPTCHA_ROUND_SCRIPT;
+  let runPromise: Promise<{ status: string }> | null = null;
+  try {
+    mkdirSync(binDir, { recursive: true });
+    const roundScript = writeTypedCaptchaRoundFixture(rootDir, {
+      cleanupStartedPath,
+      allowCleanupPath,
+    });
+    writeFileSync(join(rootDir, "settings.json"), "{}\n", "utf8");
+    process.chdir(rootDir);
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    process.env.CAPTCHA_LAUNCH_PATH = launchPath;
+    process.env.CAPTCHA_ROUND_SCRIPT = roundScript;
+
+    runPromise = runAutomationTask("fubon-all-statements", ledgerDir);
+    await waitForFile(cleanupStartedPath);
+    assert.deepEqual(await cancelAutomationTask("fubon-all-statements"), {
+      cancelled: "fubon-all-statements",
+    });
+    writeFileSync(allowCleanupPath, "ok\n", "utf8");
+    assert.deepEqual(await runPromise, { status: "failed" });
+
+    const launches = readFileSync(launchPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
+    assert.equal(launches.length, 1);
+    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
+    const runs = db
+      .prepare("SELECT status, attempt, max_attempts FROM automation_task_runs")
+      .all() as Array<{ status: string; attempt: number; max_attempts: number }>;
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.status, "failed");
+    assert.equal(runs[0]?.attempt, 1);
+    assert.equal(runs[0]?.max_attempts, 10);
+    db.close();
+  } finally {
+    if (runPromise) writeFileSync(allowCleanupPath, "ok\n", "utf8");
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousLaunchPath === undefined) delete process.env.CAPTCHA_LAUNCH_PATH;
+    else process.env.CAPTCHA_LAUNCH_PATH = previousLaunchPath;
+    if (previousRoundScript === undefined) delete process.env.CAPTCHA_ROUND_SCRIPT;
+    else process.env.CAPTCHA_ROUND_SCRIPT = previousRoundScript;
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("batch task startup uses two concurrent slots", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
   assert.match(source, /runWithConcurrency\(selectedTaskIds, 2,/);
@@ -840,10 +1097,10 @@ test("batch startup validates every task before claiming any", async () => {
     () => startAutomationTasks(["exchange-rates", "unknown-task"]),
     /Unknown automation task/,
   );
-  const leaked = activeAutomationTaskIds();
-  if (leaked.includes("exchange-rates"))
+  if (activeAutomationTaskIds().includes("exchange-rates"))
     await cancelAutomationTask("exchange-rates");
-  assert.deepEqual(leaked, []);
+  await waitForTaskToSettle("exchange-rates");
+  assert.deepEqual(activeAutomationTaskIds(), []);
 });
 
 test("a queued batch task can be cancelled before its process starts", async () => {
@@ -852,7 +1109,7 @@ test("a queued batch task can be cancelled before its process starts", async () 
   assert.deepEqual(await cancelAutomationTask("exchange-rates"), {
     cancelled: "exchange-rates",
   });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await waitForTaskToSettle("exchange-rates");
   assert.deepEqual(activeAutomationTaskIds(), []);
 });
 
@@ -879,10 +1136,7 @@ test("an import-only batch runs once and releases its claim", async () => {
   try {
     startAutomationTasks(["import-downloads-csv"], ledgerDir);
     assert.deepEqual(activeAutomationTaskIds(), ["import-downloads-csv"]);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!activeAutomationTaskIds().includes("import-downloads-csv")) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForTaskToSettle("import-downloads-csv");
 
     assert.deepEqual(activeAutomationTaskIds(), []);
     assert.equal(readFileSync(capturePath, "utf8"), "import\n");
@@ -2144,11 +2398,7 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     throw new Error("Timed out waiting for automation command capture");
   };
   const waitForIdle = async (taskId: string) => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!hasActiveAutomationTask()) return;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`Timed out waiting for ${taskId} to finish`);
+    await waitForTaskToSettle(taskId);
   };
   try {
     startAutomationTask("exchange-rates", ledgerDir, {

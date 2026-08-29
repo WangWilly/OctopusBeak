@@ -724,8 +724,8 @@ The operation explicitly permitted for a verification target, such as click, typ
 _Avoid_: Generic viewer capability, inferred operation
 
 **Verification retry**:
-The continuation of a resumed automation task run that discovers the verification is incomplete or incorrect. For a `human` actor the run returns to waiting with refreshed challenge context and a new contract version; for a `solver` actor each Solve Attempt is a bounded retry. The run preserves the task's execution lineage instead of immediately becoming terminally failed, retries are bounded by the workflow or external verification service, and an exhausted or locked verification becomes an explicit task failure.
-_Avoid_: Restarting the whole workflow, treating an incorrect answer as an ordinary infrastructure failure
+The continuation of verification after an incomplete or incorrect result. For a `human` actor the run returns to waiting with refreshed challenge context and a new contract version; for a `solver` actor the first version restarts the provider workflow so the next retry begins a new CAPTCHA Challenge Round rather than repeating OCR against the rejected challenge. Retries are bounded, and an exhausted or locked verification becomes an explicit task failure; provider-specific in-session refresh is deferred beyond the first version.
+_Avoid_: Repeating a rejected challenge, treating an incorrect answer as an ordinary infrastructure failure
 
 **Verification solver**:
 The automated producer behind a `solver` Verification Actor, which reads a verification challenge image and returns an answer with a Solve Confidence. The first version is a lightweight Local Verification Solver run by the automation host; a future Remote Verification Solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
@@ -752,8 +752,28 @@ The concordance reached when two or more provider-declared OCR strategies evalua
 _Avoid_: Repeated OCR attempt, inflated confidence, majority guess
 
 **Solve attempt**:
-One Verification Solver invocation and, when the Solve Acceptance Policy is satisfied, submission of its answer. A challenge permits a fixed maximum of three attempts; exhausting them finalizes the task run as failed rather than returning to human assistance.
-_Avoid_: Human retry, unbounded retry
+One invocation of a distinct provider-declared OCR strategy against the image belonging to one CAPTCHA Challenge Round. A round permits at most three Solve Attempts; repeating an identical strategy does not create another attempt or establish OCR Agreement.
+_Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
+
+**CAPTCHA challenge round**:
+The CAPTCHA image successfully captured by one workflow execution, the one to three distinct Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after image capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while a captured image that violates the declared challenge contract consumes a round without submission. First-version campaigns apply to solver-backed `text-captcha` and `image-selection` challenges, not ordinary checkbox interaction or a `human` Verification Actor, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the first version treats that restarted execution as the new-round boundary and does not compare image identity across rounds.
+_Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
+
+**CAPTCHA retry campaign**:
+The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed without switching from the `solver` Verification Actor to human assistance. Only a new explicit user operation starts a new campaign with a fresh budget.
+_Avoid_: Independent failed history item per round, per-process retry counter, automatically renewed retry budget
+
+**CAPTCHA campaign launch snapshot**:
+The provider, collection choices, verification configuration, and Sign-in Details selected when a CAPTCHA Retry Campaign begins and reused unchanged by every internal workflow restart in that campaign. Configuration edits made while it runs apply only to a later user-initiated operation; Sign-in Details remain non-persistent execution input and neither they nor solver answers enter campaign history or audit.
+_Avoid_: Per-round settings reload, persisted authentication secret, mixed-configuration campaign
+
+**CAPTCHA retry trigger**:
+The provider-verifiable reason that permits a CAPTCHA Retry Campaign to advance to another round: either the current round produced no answer satisfying its Solve Acceptance Policy, or a provider-specific rejection probe explicitly establishes that the provider rejected the submitted CAPTCHA answer. A provider without fixture or live evidence for a stable rejection signal may retry solver exhaustion but must treat an ambiguous post-submission failure as non-retryable. Incorrect sign-in details, account restrictions, transport or browser-control failures, workflow defects, and ambiguous login failures are non-retryable and end the campaign without consuming another round.
+_Avoid_: Any login failure, inferred CAPTCHA rejection, generic workflow error retry
+
+**CAPTCHA round outcome**:
+The structured result by which a workflow reports that a CAPTCHA Challenge Round succeeded, needs another round because its solver was exhausted or the provider explicitly rejected its answer, or ended for a non-retryable reason. Only this typed outcome may advance a CAPTCHA Retry Campaign; log text, exception wording, and process exit status never establish a CAPTCHA Retry Trigger.
+_Avoid_: Retry log marker, error-message matching, inferred process failure
 
 **Yuanta Bank login CAPTCHA**:
 The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.

@@ -69,6 +69,8 @@ export type VerificationRoutingDependencies = {
   ) => Promise<void>;
   resume: (session: string) => void | Promise<void>;
   finalizeFailed: (message: string) => void | Promise<void>;
+  /** Called once after a non-empty challenge image has been captured. */
+  onChallengeCaptured?: () => void | Promise<void>;
 };
 
 export type VerificationChallengeImageProvider = Pick<
@@ -121,7 +123,8 @@ export function selectVerificationChallengeImage(
 export type VerificationRoutingOutcome =
   | { kind: "human" }
   | { kind: "resumed" }
-  | { kind: "failed" };
+  | { kind: "failed" }
+  | { kind: "retryable"; reason: "solver-exhausted" };
 
 const defaultLocalSolver = localVerificationSolver();
 
@@ -157,6 +160,7 @@ export async function routeVerificationActor(input: {
     return { kind: "failed" };
   }
   let outcome: SolveOutcome;
+  let challengeCaptured = false;
   try {
     const solverMetadata = resolveHumanAssistanceSolverMetadata(contract, {
       prompt: input.prompt,
@@ -174,8 +178,14 @@ export async function routeVerificationActor(input: {
         ?? input.confidenceThreshold
         ?? DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
       solver: deps.solver,
-      captureChallengeImage: () =>
-        deps.captureChallengeImage(input.session, contract!),
+      captureChallengeImage: async () => {
+        const image = await deps.captureChallengeImage(input.session, contract!);
+        if (image !== null && !challengeCaptured) {
+          challengeCaptured = true;
+          await deps.onChallengeCaptured?.();
+        }
+        return image;
+      },
       injectAnswer: (answer) =>
         deps.injectAnswer(input.session, contract!, answer),
       injectSelections: (selections) =>
@@ -197,15 +207,14 @@ export async function routeVerificationActor(input: {
     await deps.resume(input.session);
     return { kind: "resumed" };
   }
-  await deps.finalizeFailed("Verification solver exhausted its attempts.");
-  return { kind: "failed" };
+  return { kind: "retryable", reason: "solver-exhausted" };
 }
 
 export async function routeWaitingRunVerification(input: {
   taskId: string;
   taskRunId: string;
   db: LedgerDatabase;
-  scheduleResume: (session: string) => void;
+  scheduleResume: (session: string) => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
@@ -213,6 +222,7 @@ export async function routeWaitingRunVerification(input: {
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
   finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
+  onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   settings?: AutomationSettingsFile;
@@ -282,10 +292,9 @@ export async function routeWaitingRunVerification(input: {
     injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
     injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
-    resume: (session) => {
-      input.scheduleResume(session);
-    },
+    resume: (session) => input.scheduleResume(session),
     finalizeFailed,
+    onChallengeCaptured: input.onChallengeCaptured,
   };
 
   return routeVerificationActor({

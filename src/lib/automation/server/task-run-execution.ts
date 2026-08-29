@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes as cryptoRandomBytes, randomUUID } from "node:crypto";
+import { createServer, type Server, type Socket } from "node:net";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -37,6 +40,7 @@ import {
   sessionFromRun,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
+import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
   isForceQuitRun,
@@ -54,13 +58,231 @@ import {
   updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import {
+  CAPTCHA_ROUND_OUTCOME_ENDPOINT_ENV,
+  CAPTCHA_ROUND_OUTCOME_EXECUTION_ID_ENV,
+  CAPTCHA_ROUND_OUTCOME_IPC_TOKEN_BYTES,
+  CAPTCHA_ROUND_OUTCOME_TOKEN_ENV,
+  createCaptchaRoundOutcomeReceiver,
+  isCaptchaRoundOutcomeToken,
+  parseCaptchaRoundOutcomeAuthFrame,
+  parseCaptchaRoundOutcomeFrame,
+  type CaptchaRoundOutcomeMessage,
+} from "../captcha-round-outcome.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
   resumeSession?: string;
+  /** Reuse the user-visible task run for an internal execution. */
+  taskRunId?: string;
+  /** Snapshot of process configuration captured at campaign launch. */
+  launchEnv?: NodeJS.ProcessEnv;
+  /** Internal execution identity used by the private CAPTCHA bridge. */
+  executionId?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  /** Stop before launching a child when the host task was cancelled. */
+  isCancellationRequested?: () => boolean;
 };
+
+export type CaptchaRoundOutcomeIpcServer = {
+  endpoint: string;
+  token: string;
+  executionId: string;
+  env: {
+    [CAPTCHA_ROUND_OUTCOME_ENDPOINT_ENV]: string;
+    [CAPTCHA_ROUND_OUTCOME_TOKEN_ENV]: string;
+    [CAPTCHA_ROUND_OUTCOME_EXECUTION_ID_ENV]: string;
+  };
+  ready: Promise<void>;
+  close(): Promise<void>;
+  messages(): readonly CaptchaRoundOutcomeMessage[];
+};
+
+const CAPTCHA_OUTCOME_AUTH_TIMEOUT_MS = 10_000;
+
+function isNamedPipeEndpoint(endpoint: string) {
+  return endpoint.startsWith("\\\\.\\pipe\\");
+}
+
+function createCaptchaOutcomeEndpoint() {
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\octopusbeak-captcha-${randomUUID()}`
+    : join(tmpdir(), `ob-captcha-${randomUUID().slice(0, 12)}.sock`);
+}
+
+async function unlinkCaptchaOutcomeEndpoint(endpoint: string) {
+  if (isNamedPipeEndpoint(endpoint)) return;
+  try {
+    await unlink(endpoint);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+/**
+ * Host side of the private CAPTCHA outcome bridge. Only bounded, typed
+ * outcome metadata crosses this socket; images, answers, and credentials do
+ * not. It is intentionally kept next to process execution so the endpoint is
+ * created and destroyed with exactly one child execution.
+ */
+export function createCaptchaRoundOutcomeIpcServer(input: {
+  endpoint?: string;
+  token?: string;
+  executionId?: string;
+  onProtocolError?: (reason: string) => void;
+} = {}): CaptchaRoundOutcomeIpcServer {
+  const endpoint = input.endpoint ?? createCaptchaOutcomeEndpoint();
+  const token = input.token
+    ?? Buffer.from(cryptoRandomBytes(CAPTCHA_ROUND_OUTCOME_IPC_TOKEN_BYTES)).toString("base64url");
+  const executionId = input.executionId ?? createAutomationSessionId();
+  if (!isCaptchaRoundOutcomeToken(token)) {
+    throw new TypeError("CAPTCHA round outcome IPC token is invalid.");
+  }
+  let closed = false;
+  let listening = false;
+  let readySettled = false;
+  let closePromise: Promise<void> | null = null;
+  const sockets = new Set<Socket>();
+  const accepted: CaptchaRoundOutcomeMessage[] = [];
+  const receiver = createCaptchaRoundOutcomeReceiver(executionId);
+  const report = (reason: string) => {
+    try {
+      input.onProtocolError?.(reason);
+    } catch {
+      // Diagnostics must never affect workflow execution.
+    }
+  };
+  const server: Server = createServer((socket) => {
+    if (closed) {
+      socket.destroy();
+      return;
+    }
+    sockets.add(socket);
+    let authenticated = false;
+    let terminated = false;
+    let pending = "";
+    const terminate = () => {
+      if (terminated) return;
+      terminated = true;
+      sockets.delete(socket);
+    };
+    const handleLine = (line: string) => {
+      if (terminated || line.length === 0) return;
+      if (!authenticated) {
+        const auth = parseCaptchaRoundOutcomeAuthFrame(line);
+        if (!auth || auth.token !== token || auth.executionId !== executionId) {
+          report("invalid-authentication");
+          terminated = true;
+          socket.destroy();
+          return;
+        }
+        authenticated = true;
+        socket.setTimeout(0);
+        return;
+      }
+      const message = parseCaptchaRoundOutcomeFrame(line);
+      if (!message) {
+        report("invalid-outcome-frame");
+        terminated = true;
+        socket.destroy();
+        return;
+      }
+      const acceptance = receiver.accept(message);
+      if (!acceptance.accepted) {
+        report(acceptance.reason);
+        return;
+      }
+      accepted.push(message);
+    };
+    socket.setTimeout(CAPTCHA_OUTCOME_AUTH_TIMEOUT_MS, () => {
+      report("authentication-timeout");
+      socket.destroy();
+    });
+    socket.on("data", (chunk) => {
+      if (terminated) return;
+      pending += chunk.toString("utf8");
+      if (pending.length > 32_768) {
+        report("frame-too-large");
+        terminated = true;
+        socket.destroy();
+        return;
+      }
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        handleLine(line);
+        if (terminated) return;
+        newline = pending.indexOf("\n");
+      }
+    });
+    socket.on("error", () => {
+      report("socket-error");
+      terminate();
+    });
+    socket.on("end", () => {
+      if (pending.trim()) report("unterminated-frame");
+      terminate();
+    });
+    socket.on("close", terminate);
+  });
+  const ready = new Promise<void>((resolve, reject) => {
+    server.once("listening", () => {
+      listening = true;
+      readySettled = true;
+      resolve();
+    });
+    server.on("error", (error) => {
+      report("server-error");
+      if (!readySettled) {
+        readySettled = true;
+        reject(error);
+      }
+    });
+    try {
+      server.listen(endpoint);
+    } catch (error) {
+      readySettled = true;
+      reject(error);
+    }
+  });
+  const close = () => {
+    if (closePromise) return closePromise;
+    closed = true;
+    for (const socket of sockets) socket.destroy();
+    closePromise = new Promise<void>((resolve) => {
+      const cleanup = () => {
+        void unlinkCaptchaOutcomeEndpoint(endpoint).then(
+          () => resolve(),
+          () => {
+            report("endpoint-cleanup-failed");
+            resolve();
+          },
+        );
+      };
+      if (!listening || !server.listening) cleanup();
+      else server.close(cleanup);
+    });
+    return closePromise;
+  };
+  void ready.catch(() => close());
+  return {
+    endpoint,
+    token,
+    executionId,
+    env: {
+      [CAPTCHA_ROUND_OUTCOME_ENDPOINT_ENV]: endpoint,
+      [CAPTCHA_ROUND_OUTCOME_TOKEN_ENV]: token,
+      [CAPTCHA_ROUND_OUTCOME_EXECUTION_ID_ENV]: executionId,
+    },
+    ready,
+    close,
+    messages: () => [...accepted],
+  };
+}
 
 export function createAutomationSessionId(
   uuid: () => string = randomUUID,
@@ -146,16 +368,10 @@ function createAutomationTaskRunExecution(
   taskDb: ReturnType<typeof openLedgerDatabase>,
   options: AutomationTaskExecutionOptions,
 ): AutomationTaskRunExecution | null {
-  const attempt = 1;
-  const maxAttempts = 1;
+  const attempt = options.attempt ?? 1;
+  const maxAttempts = options.maxAttempts ?? 1;
   const startedAt = new Date().toISOString();
-  const logPath = join(
-    "data",
-    "automation",
-    "logs",
-    `${task.id}-${Date.now()}-${attempt}.log`,
-  );
-  const env = automationProcessEnv();
+  const env = { ...(options.launchEnv ?? automationProcessEnv()) };
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
     ? (options.resumeSession ?? createAutomationSessionId())
@@ -181,19 +397,42 @@ function createAutomationTaskRunExecution(
           sessionFromRun(candidate) === options.resumeSession,
       )
     : undefined;
-  const run = createTaskRun(taskDb, {
-    taskId: task.id,
-    script: command.display,
-    kind: task.kind,
-    status: "running",
-    attempt,
-    maxAttempts,
-    startedAt,
-    logPath,
-    humanAssistanceContract: resumeHumanAssistanceContract(
-      resumeFrom?.humanAssistanceContract,
-    ),
-  });
+  const existingRun = options.taskRunId
+    ? taskRunById(taskDb, options.taskRunId)
+    : resumeFrom;
+  if (options.taskRunId && !existingRun) return null;
+  const logPath = existingRun?.logPath ?? join(
+    "data",
+    "automation",
+    "logs",
+    `${task.id}-${Date.now()}-${attempt}.log`,
+  );
+  const run = existingRun
+    ? { taskRunId: existingRun.taskRunId }
+    : createTaskRun(taskDb, {
+        taskId: task.id,
+        script: command.display,
+        kind: task.kind,
+        status: "running",
+        attempt,
+        maxAttempts,
+        startedAt,
+        logPath,
+        humanAssistanceContract: resumeHumanAssistanceContract(
+          resumeFrom?.humanAssistanceContract,
+        ),
+      });
+  if (existingRun) {
+    updateTaskRun(taskDb, existingRun.taskRunId, {
+      status: "running",
+      attempt,
+      maxAttempts,
+      finishedAt: null,
+      exitCode: null,
+      signal: null,
+      errorMessage: null,
+    });
+  }
   const owner = session
     ? {
         taskId: task.id,
@@ -203,20 +442,35 @@ function createAutomationTaskRunExecution(
       }
     : null;
   if (session) {
-    appendLog(logPath, "automation-session: " + session + "\n");
-    if (
-      !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
-        resumeSession: options.resumeSession,
-        resumeFrom,
-      })
-    )
+    if (!options.resumeSession || !existingRun) {
+      appendLog(logPath, "automation-session: " + session + "\n");
+    }
+    if (!options.resumeSession) {
+      if (
+        !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
+          resumeFrom,
+        })
+      )
+        return null;
+    } else if (!ownAutomationSession(owner!)) {
       return null;
+    }
   }
-  return { task, taskDb, run, logPath, command, session, owner };
+  return {
+    task,
+    taskDb,
+    run,
+    logPath,
+    command,
+    session,
+    owner,
+    executionId: options.executionId ?? createAutomationSessionId(),
+  };
 }
 
 async function executeAutomationTaskProcess(
   execution: AutomationTaskRunExecution,
+  isCancellationRequested?: () => boolean,
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
@@ -233,6 +487,7 @@ async function executeAutomationTaskProcess(
   let humanAssistanceReadOffset = 0;
   let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
   let gmailOtpServer: ReturnType<typeof createGmailOtpIpcServer>;
+  let captchaOutcomeServer: CaptchaRoundOutcomeIpcServer | null = null;
   try {
     gmailOtpServer = createGmailOtpIpcServer({
       service: {
@@ -255,6 +510,34 @@ async function executeAutomationTaskProcess(
       statementSummary,
       outputPersistenceWarnings,
       externalPrerequisiteIds: [],
+      captchaOutcomeMessages: [],
+    };
+  }
+  try {
+    captchaOutcomeServer = createCaptchaRoundOutcomeIpcServer({
+      executionId: execution.executionId,
+      onProtocolError: (reason) => {
+        console.warn(`captcha-round-outcome-bridge-protocol-error: ${reason}`);
+      },
+    });
+    await captchaOutcomeServer.ready;
+  } catch {
+    await captchaOutcomeServer?.close();
+    captchaOutcomeServer = null;
+  }
+  if (isCancellationRequested?.()) {
+    await gmailOtpServer.close();
+    await captchaOutcomeServer?.close();
+    return {
+      exitCode: null,
+      signal: null,
+      error: new Error("Automation task cancelled."),
+      logTail,
+      resumeFailure: null,
+      statementSummary,
+      outputPersistenceWarnings,
+      externalPrerequisiteIds: [],
+      captchaOutcomeMessages: [],
     };
   }
   const result = await new Promise<
@@ -357,6 +640,7 @@ async function executeAutomationTaskProcess(
         [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
         [GMAIL_OTP_IPC_ENDPOINT_ENV]: gmailOtpServer.endpoint,
         [GMAIL_OTP_IPC_TOKEN_ENV]: gmailOtpServer.token,
+        ...(captchaOutcomeServer?.env ?? {}),
       },
     });
     activeTaskChildren.set(execution.task.id, child);
@@ -378,8 +662,14 @@ async function executeAutomationTaskProcess(
       outputBuffer.flush();
       rmSync(humanAssistancePath, { force: true });
       void gmailOtpServer.close().then(
-        () => resolve(processResult),
-        () => resolve(processResult),
+        async () => {
+          await captchaOutcomeServer?.close();
+          resolve(processResult);
+        },
+        async () => {
+          await captchaOutcomeServer?.close();
+          resolve(processResult);
+        },
       );
     };
     child.on("error", (error) => {
@@ -396,6 +686,7 @@ async function executeAutomationTaskProcess(
     statementSummary,
     outputPersistenceWarnings,
     externalPrerequisiteIds: [...externalPrerequisiteIds],
+    captchaOutcomeMessages: captchaOutcomeServer?.messages().slice() ?? [],
   };
 }
 
@@ -414,11 +705,42 @@ export async function runAutomationTaskExecution(
   options: AutomationTaskExecutionOptions,
   onRunCreated: (taskRunId: string) => void,
 ) {
+  if (options.isCancellationRequested?.()) {
+    return { status: "cancelled" as const };
+  }
   const execution = createAutomationTaskRunExecution(task, taskDb, options);
   if (!execution) return { status: "failed" as const };
   onRunCreated(execution.run.taskRunId);
+  if (options.isCancellationRequested?.()) {
+    return {
+      status: "cancelled" as const,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+    };
+  }
   try {
-    const result = await executeAutomationTaskProcess(execution);
+    const result = await executeAutomationTaskProcess(
+      execution,
+      options.isCancellationRequested,
+    );
+    const retryableOutcome = (result.captchaOutcomeMessages ?? [])
+      .map((message) => message.outcome)
+      .findLast((outcome) => outcome.kind === "retryable");
+    if (retryableOutcome) {
+      updateTaskRun(taskDb, execution.run.taskRunId, {
+        logTail: result.logTail,
+      });
+      return {
+        status: "captcha-retryable" as const,
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
     const finalizationContext: AutomationTaskRunFinalizationContext = {
       taskDb,
       taskId: task.id,
@@ -428,7 +750,14 @@ export async function runAutomationTaskExecution(
       ledgerDir,
     };
     const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
-    return { status: finalized.status, taskRunId: execution.run.taskRunId };
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      result,
+    };
   } finally {
     activeTaskChildren.delete(task.id);
   }

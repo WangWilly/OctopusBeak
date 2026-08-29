@@ -64,6 +64,39 @@ test("session owner resolution reads the bounded log prefix before the tail", ()
   }
 });
 
+test("active owner resolution takes precedence over an earlier retry session in the log", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-session-disposition-retry-owner-"));
+  let owner: OwnedAutomationSession | null = null;
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createRun(
+      db,
+      ledgerDir,
+      "running",
+      "automation-session: ses-round-one\n" + "captcha-retry: restarting workflow\n",
+    );
+    writeFileSync(
+      run.logPath,
+      "automation-session: ses-round-one\n" +
+        "captcha-retry: restarting workflow\n" +
+        "automation-session: ses-round-two\n",
+    );
+    owner = {
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      session: "ses-round-two",
+      pid: null,
+    };
+    refreshAutomationSession(owner);
+
+    assert.deepEqual(automationSessionOwnerForRun(run), owner);
+    db.close();
+  } finally {
+    if (owner) await relinquishAutomationSessionForTask(owner.taskId, fakeFinalizeDeps());
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("resume session parsing accepts Libretto resume output", () => {
   assert.equal(
     resumeSessionFromLog('Resume requested for session "ses-resume-output".'),
