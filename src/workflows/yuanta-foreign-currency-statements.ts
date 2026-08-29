@@ -761,13 +761,36 @@ function sourceDateRange(input: WorkflowInput): {
   return { startDate: iso(start), endDate: iso(end) };
 }
 
-function exactCell(value: string, label: string): string {
+function normalizeExactDecimal(value: string, label: string): string {
   const normalized = stripSpreadsheetTextPrefix(value).replace(/[ ,]/g, "");
   if (!normalized || normalized === "-")
     throw new Error(`Yuanta foreign row is missing ${label}.`);
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
+  if (!/^\d+(?:\.\d+)?$/.test(normalized))
     throw new Error(`Yuanta foreign ${label} is not an exact decimal.`);
-  return normalized;
+
+  const [whole, fraction = ""] = normalized.split(".");
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, "") || "0";
+  const normalizedFraction = fraction.replace(/0+$/u, "");
+  return normalizedFraction
+    ? `${normalizedWhole}.${normalizedFraction}`
+    : normalizedWhole;
+}
+
+function exactCell(value: string, label: string): string {
+  return normalizeExactDecimal(value, label);
+}
+
+/**
+ * Yuanta's export fills the unused amount side with a zero-padded decimal
+ * (for example, `000000000000.00`). It proves no direction and must not be
+ * selected as the transaction amount. Blank cells are treated the same way;
+ * malformed non-blank cells remain fail-closed.
+ */
+function optionalAmountCell(value: string, label: string): string | null {
+  const normalized = stripSpreadsheetTextPrefix(value).replace(/[ ,]/g, "");
+  if (!normalized || normalized === "-") return null;
+  const amount = normalizeExactDecimal(normalized, label);
+  return /^0+(?:\.0+)?$/.test(amount) ? null : amount;
 }
 
 function currencyCode(label: string, value: string): string {
@@ -809,27 +832,40 @@ export function buildYuantaForeignCurrencyCaptureInput(
     completeness: "complete-range",
     records: rows.map((row) => {
       const values = row.values;
-      const debit = stripSpreadsheetTextPrefix(values[6] ?? "");
-      const credit = stripSpreadsheetTextPrefix(values[7] ?? "");
-      if ((debit.length > 0) === (credit.length > 0))
+      const debit = optionalAmountCell(values[6] ?? "", "debit amount");
+      const credit = optionalAmountCell(values[7] ?? "", "credit amount");
+      if ((debit === null) === (credit === null))
+        throw new Error("Yuanta foreign row must prove exactly one amount direction.");
+      const amount = debit ?? credit;
+      if (amount === null)
         throw new Error("Yuanta foreign row must prove exactly one amount direction.");
       const localDate = toAsciiDigits(values[2] ?? "").replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const localTime = toAsciiDigits(values[3] ?? "");
       const rowCurrency = currencyCode(values[4] ?? "", row.queryCurrencyValue);
-      const providerSequence = stripSpreadsheetTextPrefix(values[0] ?? "").trim();
-      if (!providerSequence)
-        throw new Error("Yuanta foreign row lacks provider sequence identity.");
+      const balanceAfter = exactCell(values[8] ?? "", "balance");
+      const direction = debit !== null ? ("outflow" as const) : ("inflow" as const);
+      const signedAmount = `${direction === "outflow" ? "-" : "+"}${amount}`;
+      const sourceKey = [
+        accountNo,
+        rowCurrency,
+        `${localDate}T${localTime || "date"}`,
+        signedAmount,
+        balanceAfter,
+      ].join(":");
       const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
+      const normalizedReportedRate = reportedRateText
+        ? normalizeExactDecimal(reportedRateText, "reported rate")
+        : "";
       return {
-        sourceKey: `${accountNo}:${rowCurrency}:sequence:${providerSequence}`,
-        sequence: providerSequence,
-        amount: exactCell(debit || credit, "amount"),
-        direction: debit.length > 0 ? "outflow" : "inflow",
+        sourceKey,
+        sequence: `${localDate}T${localTime || "date"}`,
+        amount,
+        direction,
         currencyEvidence: {
           kind: "row" as const,
           currency: rowCurrency,
         },
-        balanceAfter: exactCell(values[8] ?? "", "balance"),
+        balanceAfter,
         sourceTime: {
           localDate,
           localTime: localTime || undefined,
@@ -839,12 +875,12 @@ export function buildYuantaForeignCurrencyCaptureInput(
         // source row currency; preserving it as original evidence avoids
         // inventing a TWD conversion or fee from an unlabeled rate column.
         originalAmount: {
-          amount: exactCell(debit || credit, "original amount"),
+          amount: exactCell(amount, "original amount"),
           currency: rowCurrency,
         },
         sourceReportedRate: reportedRateText
           ? {
-              rate: exactCell(reportedRateText, "reported rate"),
+              rate: normalizedReportedRate,
               baseCurrency: rowCurrency,
               quoteCurrency: "TWD",
               observedOn: localDate,
@@ -852,9 +888,14 @@ export function buildYuantaForeignCurrencyCaptureInput(
           : null,
         description: values[5] || null,
         sourcePayload: {
-          providerSequence,
+          identityAuthority: "human-attested",
+          identityContract: "foreign-currency/yuanta/human-attested-v2",
+          accountingDate: toAsciiDigits(values[1] ?? "").replace(
+            /^(\d{4})(\d{2})(\d{2})$/,
+            "$1-$2-$3",
+          ),
           transactionInfo: values[9] ?? "",
-          reportedRate: reportedRateText,
+          reportedRate: normalizedReportedRate,
         },
       };
     }),

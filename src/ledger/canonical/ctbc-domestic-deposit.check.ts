@@ -63,6 +63,14 @@ const baseCapture: CtbcDomesticDepositCaptureEvidence = {
       code: "0000",
       nextKey: null,
       terminal: true,
+      responseShape: {
+        hasRsData: true,
+        rsDataKind: "object",
+        hasDetailList: true,
+        detailListIsArray: true,
+        detailListRowCount: 1,
+        nextKeyPresent: false,
+      },
       rows: [
         {
           rowOrdinal: 0,
@@ -86,6 +94,14 @@ const baseCapture: CtbcDomesticDepositCaptureEvidence = {
       code: "9201",
       nextKey: null,
       terminal: true,
+      responseShape: {
+        hasRsData: true,
+        rsDataKind: "null",
+        hasDetailList: false,
+        detailListIsArray: false,
+        detailListRowCount: null,
+        nextKeyPresent: false,
+      },
       rows: [],
     },
   ],
@@ -146,7 +162,15 @@ for (const secret of [
 const incomplete = admitCtbcDomesticDepositCaptureEvidence({
   ...baseCapture,
   responses: [
-    { ...baseCapture.responses[0]!, terminal: false, nextKey: "opaque-next" },
+    {
+      ...baseCapture.responses[0]!,
+      terminal: false,
+      nextKey: "opaque-next",
+      responseShape: {
+        ...baseCapture.responses[0]!.responseShape,
+        nextKeyPresent: true,
+      },
+    },
     baseCapture.responses[1]!,
   ],
 });
@@ -216,6 +240,10 @@ const ambiguous = admitCtbcDomesticDepositCaptureEvidence({
           ),
         },
       ],
+      responseShape: {
+        ...baseCapture.responses[0]!.responseShape,
+        detailListRowCount: 2,
+      },
     },
     baseCapture.responses[1]!,
   ],
@@ -236,6 +264,14 @@ const zero = admitCtbcDomesticDepositCaptureEvidence({
     ...response,
     code: "9201" as const,
     rows: [],
+    responseShape: {
+      hasRsData: true,
+      rsDataKind: "null" as const,
+      hasDetailList: false,
+      detailListIsArray: false,
+      detailListRowCount: null,
+      nextKeyPresent: false,
+    },
   })),
 });
 assert.equal(zero.status, "admissible");
@@ -251,6 +287,57 @@ assert.equal(
   zeroFinancial.capture?.scope.absenceAuthority,
   "provider-explicit-no-data",
 );
+
+const successfulEmptyResponse = {
+  ...baseCapture,
+  queryRange: { startDate: "2026/08/01", endDate: "2026/08/31" },
+  responses: [
+    {
+      ...baseCapture.responses[0]!,
+      rows: [],
+      responseShape: {
+        ...baseCapture.responses[0]!.responseShape,
+        detailListRowCount: 0,
+      },
+    },
+  ],
+  provenance: {
+    ...baseCapture.provenance,
+    expectedRangeCount: 1,
+  },
+};
+assert.equal(
+  admitCtbcDomesticDepositCaptureEvidence(successfulEmptyResponse).status,
+  "admissible",
+);
+for (const responseShape of [
+  {
+    ...successfulEmptyResponse.responses[0]!.responseShape,
+    hasRsData: false,
+    rsDataKind: "other" as const,
+  },
+  {
+    ...successfulEmptyResponse.responses[0]!.responseShape,
+    hasDetailList: false,
+    detailListIsArray: false,
+    detailListRowCount: null,
+  },
+  {
+    ...successfulEmptyResponse.responses[0]!.responseShape,
+    nextKeyPresent: true,
+  },
+]) {
+  const rejected = admitCtbcDomesticDepositCaptureEvidence({
+    ...successfulEmptyResponse,
+    responses: [
+      {
+        ...successfulEmptyResponse.responses[0]!,
+        responseShape,
+      },
+    ],
+  });
+  assert.equal(rejected.status, "rejected");
+}
 
 const directory = await mkdtemp(join(tmpdir(), "ctbc-canonical-check-"));
 try {

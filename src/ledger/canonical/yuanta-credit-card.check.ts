@@ -257,7 +257,12 @@ test("only explicit valid summaries create settled statements and memberships", 
       ),
     ),
   );
-  assert.ok(capture.statements.every((statement) => statement.balance.coefficient === "10000"));
+  assert.ok(
+    capture.statements.every(
+      (statement) =>
+        statement.balance.coefficient === "100" && statement.balance.scale === 0,
+    ),
+  );
 });
 
 test("an incomplete settled-summary set fails closed", () => {
@@ -425,6 +430,114 @@ test("source keys are stable across captures and exact duplicate ordinals are di
       occurrenceIndex: 0,
     }),
   );
+});
+
+test("repeated credit rows ignore provider description formatting in content identity", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-description-format-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const baseline = buildYuantaCanonicalCreditCardCapture(
+      options({ captureId: "description-format-a" }),
+    );
+    await commitYuantaCreditCardCapture(store, baseline);
+
+    const reformatted = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "description-format-b",
+        billedRows: periods.map((period) =>
+          row(period, { description: `  synthetic   billed ${period.toLowerCase()} ` }),
+        ),
+        unbilledRows: options().unbilledRows.map((sourceRow) => ({
+          ...sourceRow,
+          description: `  ${sourceRow.description.toLowerCase().replace(" ", "   ")} `,
+        })),
+      }),
+    );
+    const baselineKeys = baseline.transactions
+      .map((transaction) => transaction.sourceKey)
+      .sort();
+    assert.deepEqual(
+      reformatted.transactions.map((transaction) => transaction.sourceKey).sort(),
+      baselineKeys,
+    );
+    await commitYuantaCreditCardCapture(store, reformatted);
+    assert.equal(
+      Number(
+        (store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n,
+      ),
+      baseline.transactions.length,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("credit amount identity ignores provider zero padding", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-amount-format-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const baseline = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "amount-format-a",
+        billedRows: periods.map((period, index) =>
+          row(period, index === 0
+            ? { twdAmount: "100", foreignAmount: "2.5", countryCurrency: "USD" }
+            : {}),
+        ),
+      }),
+    );
+    await commitYuantaCreditCardCapture(store, baseline);
+
+    const reformatted = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "amount-format-b",
+        billedRows: periods.map((period, index) =>
+          row(period, index === 0
+            ? { twdAmount: "000100.000", foreignAmount: "0002.5000", countryCurrency: "USD" }
+            : {}),
+        ),
+      }),
+    );
+    assert.deepEqual(
+      reformatted.transactions.map((transaction) => transaction.sourceKey).sort(),
+      baseline.transactions.map((transaction) => transaction.sourceKey).sort(),
+    );
+    const reformattedTransaction = reformatted.transactions.find(
+      (transaction) => transaction.foreignAmount !== null,
+    )!;
+    assert.deepEqual(reformattedTransaction.bookedAmount, {
+      coefficient: "100",
+      scale: 0,
+    });
+    assert.deepEqual(reformattedTransaction.foreignAmount, {
+      coefficient: "25",
+      scale: 1,
+    });
+
+    const differentValue = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "amount-format-c",
+        billedRows: periods.map((period, index) =>
+          row(period, index === 0
+            ? { twdAmount: "100.01", foreignAmount: "2.5", countryCurrency: "USD" }
+            : {}),
+        ),
+      }),
+    );
+    assert.notDeepEqual(
+      differentValue.transactions.map((transaction) => transaction.sourceKey).sort(),
+      baseline.transactions.map((transaction) => transaction.sourceKey).sort(),
+    );
+    await commitYuantaCreditCardCapture(store, reformatted);
+    assert.equal(
+      Number(
+        (store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n,
+      ),
+      baseline.transactions.length,
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test("partial, conflicting-instrument, and invalid signed/status rows fail closed", () => {
@@ -739,7 +852,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
       30,
     );
     assert.equal(
-      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions WHERE balance_coefficient = '20000'").get() as { n: number }).n),
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions WHERE balance_coefficient = '200'").get() as { n: number }).n),
       1,
     );
   } finally {

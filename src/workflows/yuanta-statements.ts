@@ -36,6 +36,10 @@ import {
   dismissYuantaBankNotice,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
+import {
+  writeYuantaOccurrenceDiagnosticCandidate,
+  yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
+} from "./yuanta-occurrence-diagnostic.ts";
 export {
   dismissYuantaBankNotice,
   type YuantaCredentials,
@@ -176,6 +180,8 @@ export type YuantaStatementsRunDependencies = {
   writeBankTransactionsFile?: typeof writeBankTransactionsFile;
   canonicalLedgerDir?: string;
   canonicalFinancialLedgerDir?: string;
+  /** Explicit opt-in directory for raw, local-only occurrence diagnostics. */
+  occurrenceDiagnosticDirectory?: string | null;
 };
 
 type BankTransactionRow = {
@@ -792,6 +798,10 @@ export async function runYuantaStatements(
       }
     : null;
   const financialUsesSourceStore = financialStore === sourceStore;
+  const occurrenceDiagnosticDirectory =
+    overrides.occurrenceDiagnosticDirectory === undefined
+      ? yuantaOccurrenceDiagnosticDirectoryFromEnvironment()
+      : overrides.occurrenceDiagnosticDirectory;
   const nextTimestamp = createTimestampGenerator();
   const observedAt = yuantaObservedAt();
   const queryRange = deriveYuantaDomesticDepositQueryRange(
@@ -865,6 +875,14 @@ export async function runYuantaStatements(
       };
       const financialAdmission =
         admitYuantaDomesticDepositFinancialCapture(financialInput);
+      const diagnosticPath = await writeYuantaOccurrenceDiagnosticCandidate(
+        occurrenceDiagnosticDirectory,
+        financialInput,
+      );
+      if (diagnosticPath)
+        console.log("yuanta-occurrence-diagnostic-candidate-written", {
+          path: diagnosticPath,
+        });
       const reasons = new Set<string>();
       let attestationStateInvalid = false;
       let status: "financial-admitted" | "source-only" = "source-only";

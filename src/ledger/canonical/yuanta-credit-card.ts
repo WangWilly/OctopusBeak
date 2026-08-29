@@ -247,6 +247,19 @@ function validDate(value: unknown, label: string): string {
   return normalized;
 }
 
+function normalizeExactAmountParts(
+  coefficient: string,
+  scale: number,
+): YuantaCreditCardExactAmount {
+  let normalizedCoefficient = coefficient.replace(/^0+(?=\d)/u, "") || "0";
+  let normalizedScale = scale;
+  while (normalizedScale > 0 && normalizedCoefficient.endsWith("0")) {
+    normalizedCoefficient = normalizedCoefficient.slice(0, -1) || "0";
+    normalizedScale -= 1;
+  }
+  return { coefficient: normalizedCoefficient, scale: normalizedScale };
+}
+
 function exactAmount(
   input: string | YuantaCreditCardExactAmount,
   label: string,
@@ -258,7 +271,7 @@ function exactAmount(
       input.scale < 0
     )
       fail(`${label} must be an exact non-negative amount.`);
-    return { coefficient: input.coefficient, scale: input.scale };
+    return normalizeExactAmountParts(input.coefficient, input.scale);
   }
   const normalized = text(input, label).replaceAll(",", "");
   const match = normalized.match(/^(\d+)(?:\.(\d+))?$/u);
@@ -266,9 +279,7 @@ function exactAmount(
   const integer = match[1]!.replace(/^0+(?=\d)/u, "");
   const fraction = match[2] ?? "";
   const coefficient = `${integer}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return coefficient === "0"
-    ? { coefficient: "0", scale: 0 }
-    : { coefficient, scale: fraction.length };
+  return normalizeExactAmountParts(coefficient, fraction.length);
 }
 
 function signedAmount(value: string): "positive" | "negative" | "zero" {
@@ -300,6 +311,14 @@ function digest(domain: string, values: readonly unknown[]): `sha256:${string}` 
 
 function stableTuple(values: readonly unknown[]): string {
   return JSON.stringify(values);
+}
+
+function normalizedAmountIdentity(
+  value: string | YuantaCreditCardExactAmount,
+  label: string,
+): string {
+  const amount = exactAmount(value, label);
+  return `${amount.coefficient}:${String(amount.scale)}`;
 }
 
 export type YuantaCreditCardIdentityInput =
@@ -1070,7 +1089,10 @@ function yuantaCanonicalSpineCapture(
       direction: transaction.direction,
       foreignAmount: transaction.foreignAmount,
       foreignCurrency: transaction.foreignCurrency,
-      description: transaction.description,
+      // The occurrence key already uses the normalized description. Keep the
+      // immutable content identity on that same semantic value so harmless
+      // provider whitespace/casing changes do not look like an overwrite.
+      description: transaction.normalizedDescription,
       billingStatus: transaction.billingStatus,
       statementKey: transaction.statementKey ?? null,
     });
@@ -1544,10 +1566,12 @@ export function buildYuantaCanonicalCreditCardCapture(
       normalizedBase.consumeDate,
       normalizedBase.postingDate,
       normalizedBase.direction,
-      normalizedBase.bookedAmount,
+      normalizedAmountIdentity(normalizedBase.bookedAmount, "Booked amount"),
       normalizedBase.bookedCurrency,
       normalizedBase.foreignCurrency,
-      normalizedBase.foreignAmount,
+      normalizedBase.foreignAmount == null
+        ? null
+        : normalizedAmountIdentity(normalizedBase.foreignAmount, "Foreign amount"),
       normalizedDescription(normalizedBase.description),
     ]);
     return {
