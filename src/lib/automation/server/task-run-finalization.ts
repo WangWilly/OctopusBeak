@@ -38,7 +38,6 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import { taskById, type AutomationTaskKind } from "./tasks.ts";
-import type { CaptchaRoundOutcomeMessage } from "../captcha-round-outcome.ts";
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -69,7 +68,6 @@ export type AutomationTaskProcessResult = {
   statementSummary: StatementRunSummary | null;
   outputPersistenceWarnings: string[];
   externalPrerequisiteIds: string[];
-  captchaOutcomeMessages?: CaptchaRoundOutcomeMessage[];
 };
 
 export function shouldRetainAutomationSession(status: AutomationTaskStatus) {

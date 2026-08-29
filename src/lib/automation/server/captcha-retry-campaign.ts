@@ -37,9 +37,9 @@ export type CaptchaCaptureFailureReason =
   | "capture-failed";
 
 /**
- * One typed result from a workflow execution. The execution identity belongs
- * to the enclosing event so that the same result shape can be used over a
- * private workflow-to-host channel.
+ * One typed result from host-side verification routing for a workflow
+ * execution. The execution identity belongs to the enclosing event so stale
+ * or duplicate routing results cannot advance the campaign.
  */
 export type CaptchaRoundOutcome =
   | { kind: "succeeded" }

@@ -80,8 +80,10 @@ acceptance, privacy, and fail-closed rules remain in force.
 
 - The automation host owns a campaign state machine above individual workflow
   processes and preserves one task-run identity across internal restarts.
-- Workflow execution needs a private typed round-outcome channel; stdout and
-  exception messages remain diagnostic only.
+- Verification routing reports the host-side round outcome directly to that
+  campaign state machine. Workflows only publish their existing human-
+  assistance contract; stdout, exception messages, and a workflow-to-host
+  CAPTCHA IPC channel remain outside retry control.
 - Process and browser-session cleanup becomes a prerequisite for starting the
   next round.
 - Task progress may expose the current round and fixed maximum, but no continue
