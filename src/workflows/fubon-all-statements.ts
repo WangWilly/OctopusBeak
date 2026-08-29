@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
@@ -28,6 +29,7 @@ import {
 } from "./fubon-statements.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 
 const inputSchema = z.object({
   statements: fubonStatementsInputSchema.default(() =>
@@ -59,6 +61,72 @@ const outputSchema = z.object({
 type Input = z.infer<typeof inputSchema> & {
   credentials: FubonCredentials;
 };
+
+const FUBON_CREDIT_CARD_IDENTITY_EPOCH =
+  "fubon-credit-card-human-attested-v2" as const;
+
+function normalizedFubonLoginPart(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toUpperCase();
+}
+
+function fubonLoginScope(credentials: FubonCredentials): readonly [string, string] | null {
+  const userId = normalizedFubonLoginPart(credentials.fubon_user_id);
+  const account = normalizedFubonLoginPart(credentials.fubon_account);
+  if (!userId || !account) return null;
+  return [userId, account];
+}
+
+function hmacFubonIdentity(secret: string, value: unknown): string {
+  return createHmac("sha256", secret)
+    .update(JSON.stringify(value))
+    .digest("base64url");
+}
+
+/**
+ * Derive the source connection and portfolio attestation in memory from the
+ * device-owned managed secret and the stable Fubon login scope (user ID plus
+ * online-banking code; password rotation must not create a new account). The
+ * login values and managed secret are never returned, logged, or persisted. The
+ * managed secret is intentionally part of both HMACs: moving the encrypted
+ * credentials file with the same secret preserves identity, while a fresh
+ * device secret deliberately starts a new portable source scope.
+ */
+export function deriveFubonCanonicalHumanAttestation(
+  credentials: FubonCredentials,
+  managedSecret: string,
+): {
+  sourceConnectionKey: string;
+  identityEpochKey: typeof FUBON_CREDIT_CARD_IDENTITY_EPOCH;
+  humanAttestedAccountKey: string;
+} | undefined {
+  const secret = managedSecret.trim();
+  const scope = fubonLoginScope(credentials);
+  if (!secret || !scope) return undefined;
+  const scopeDigest = hmacFubonIdentity(secret, [
+    "fubon-login-scope-v2",
+    ...scope,
+  ]);
+  const sourceConnectionKey = `fubon_connection_${scopeDigest}`;
+  const humanAttestedAccountKey = `portfolio_${hmacFubonIdentity(secret, [
+    "fubon-primary-cardholder-portfolio-v2",
+    sourceConnectionKey,
+    ...scope,
+  ])}`;
+  return {
+    sourceConnectionKey,
+    identityEpochKey: FUBON_CREDIT_CARD_IDENTITY_EPOCH,
+    humanAttestedAccountKey,
+  };
+}
+
+function optionalFubonManagedSecret(): string | undefined {
+  const secret = process.env[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+  return secret || undefined;
+}
 
 async function keepFubonSessionAlive(page: Page): Promise<void> {
   const headerFrame = page.frame({ name: "frame1" });
@@ -231,6 +299,13 @@ export async function runFubonAllStatements(
     BANK_STATEMENT_CAPABILITIES.fubon,
   );
   const ledgerOverrides = resolveFubonLedgerOverrides();
+  const managedSecret = optionalFubonManagedSecret();
+  const canonicalHumanAttestation = managedSecret
+    ? deriveFubonCanonicalHumanAttestation(input.credentials, managedSecret)
+    : undefined;
+  const creditCardInput = canonicalHumanAttestation
+    ? { ...input.creditCards, canonicalHumanAttestation }
+    : { ...input.creditCards, canonicalHumanAttestation: undefined };
 
   await signInFubon(page, session, input.credentials);
   await keepBrowserWindowOutOfForeground(page);
@@ -250,7 +325,17 @@ export async function runFubonAllStatements(
         typeId: "credit_card",
         run: () =>
           runSectionOutOfForeground(page, "creditCards", () =>
-            runFubonCreditCardStatements(page, input.creditCards),
+            runFubonCreditCardStatements(page, creditCardInput, {
+              ...(ledgerOverrides.canonicalFinancialLedgerDir
+                ? {
+                    canonicalFinancialLedgerDir:
+                      ledgerOverrides.canonicalFinancialLedgerDir,
+                  }
+                : {}),
+              ...(managedSecret
+                ? { panFingerprintKey: { secret: managedSecret } }
+                : {}),
+            }),
           ),
       },
       {

@@ -4,12 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   admitCanonicalSourceEvidence,
   commitCathayDomesticDeposit,
   commitCanonicalSourceEvidence,
+  createCanonicalFinancialQuery,
   createCanonicalSourceStore,
   createCathayCanonicalFinancialQuery,
   queryCanonicalSourceCurrent,
@@ -21,14 +23,194 @@ import {
   type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-store.ts";
 import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
+import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
   commitCanonicalHncbDomesticDepositCapture,
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   getHncbHumanAttestedV1Manifest,
 } from "./hncb-domestic-deposit.ts";
+import {
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+} from "./yuanta-credit-card-human-attestation.ts";
 
 const token = (letter: string) => `sha256:${letter.repeat(64)}`;
+
+const fubonCreditCardFinancialCapture = (
+  version: "v1" | "v2",
+  captureId: string,
+): CanonicalFinancialDepositCapture => {
+  const route = `fubon/credit-card/human-attested-${version}`;
+  const sourceDate = "2026-08-01";
+  const occurrenceKey = token(version === "v1" ? "g" : "h");
+  return {
+    captureId,
+    authorityRoute: route,
+    contractVersion: route,
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: token(version === "v1" ? "i" : "j"),
+      identityEpochKey: token(version === "v1" ? "k" : "l"),
+      stream: "credit-card",
+      recordKind: "fubon-credit-card-transaction",
+      subjectDigest: token(version === "v1" ? "m" : "n"),
+      accountNo: `fubon-${version}-portfolio`,
+      accountType: "credit",
+      currency: "TWD",
+    },
+    observedAt: "2026-08-26T00:00:00.000Z",
+    scope: {
+      startDate: sourceDate,
+      endDate: sourceDate,
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
+      completenessRuleVersion: route,
+      absenceAuthority: null,
+      contractFingerprint: token(version === "v1" ? "o" : "p"),
+      preflightFingerprint: token(version === "v1" ? "q" : "r"),
+      pageCount: 7,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: route,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: route,
+      effectiveTimeBasis: "transaction-time",
+      effectiveTimeRuleVersion: route,
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      timeOrigin: "defaulted_local_midnight",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: Array.from({ length: 7 }, (_, pageOrdinal) => ({
+      pageOrdinal,
+      responseCode: "200",
+      terminal: true,
+      rowCount: pageOrdinal === 0 ? 1 : 0,
+      responseDigest: token(version === "v1" ? "s" : "t"),
+      proofKind: "source-declared-terminal-grid",
+      contractFingerprint: token(version === "v1" ? "o" : "p"),
+      preflightFingerprint: token(version === "v1" ? "q" : "r"),
+      metadataJson: JSON.stringify({ pageOrdinal }),
+    })),
+    records: [
+      {
+        occurrenceKey,
+        collisionKey: token(version === "v1" ? "u" : "v"),
+        providerKey: "human-attested:no-provider-key",
+        humanAttestedOccurrenceKey: occurrenceKey,
+        contentHash: token(version === "v1" ? "w" : "x"),
+        sequenceLexeme: "observed-source-order:0",
+        compactJson: JSON.stringify({
+          occurrenceKey,
+          amount: { coefficient: "100", scale: 0 },
+          currency: "TWD",
+          direction: "outflow",
+          balanceAfter: null,
+        }),
+        amount: { coefficient: "100", scale: 0 },
+        balanceAfter: null,
+        currency: "TWD",
+        direction: "outflow",
+        sourceTime: {
+          localDate: sourceDate,
+          localTime: "00:00:00",
+          timeZone: "Asia/Taipei",
+          epochMilliseconds: Date.parse(`${sourceDate}T00:00:00+08:00`),
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        effectiveOn: sourceDate,
+        transactionDateTimeLocal: `${sourceDate}T00:00:00`,
+        description: "historical-only Fubon fixture",
+      },
+    ],
+  };
+};
+
+/** A privacy-safe cross-version fixture: both routes share the durable Yuanta
+ * source-connection lineage, while their versioned subject/account and
+ * transaction identities remain distinct. */
+const yuantaCreditCardFinancialCapture = (
+  version: "v1" | "v2",
+  captureId: string,
+): CanonicalFinancialDepositCapture => {
+  const route = `yuanta/credit-card/human-attested-${version}`;
+  const base = fubonCreditCardFinancialCapture(version, captureId);
+  const opaque = (label: string, ordinal: number): `sha256:${string}` =>
+    `sha256:${createHash("sha256")
+      .update(`yuanta-query-${label}:${ordinal}`)
+      .digest("base64url")}`;
+  const records = Array.from({ length: 31 }, (_, ordinal) => {
+    const sourceDate = "2026-08-01";
+    const occurrenceKey = opaque("occurrence", ordinal);
+    return {
+      ...base.records[0]!,
+      occurrenceKey,
+      collisionKey: opaque("collision", ordinal),
+      humanAttestedOccurrenceKey: occurrenceKey,
+      contentHash: opaque("content", ordinal),
+      sequenceLexeme: `observed-source-order:${ordinal}`,
+      compactJson: JSON.stringify({ ordinal, source: "yuanta-query-fixture" }),
+      sourceTime: {
+        ...base.records[0]!.sourceTime,
+        localDate: sourceDate,
+        epochMilliseconds: Date.parse(`${sourceDate}T00:00:00+08:00`),
+      },
+      effectiveOn: sourceDate,
+      transactionDateTimeLocal: `${sourceDate}T00:00:00`,
+      description: "historical/current Yuanta route-precedence fixture",
+    };
+  });
+  return {
+    ...base,
+    authorityRoute: route,
+    contractVersion: route,
+    identity: {
+      ...base.identity,
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: token("y"),
+      identityEpochKey: token("z"),
+      recordKind: "yuanta-credit-card-transaction",
+      subjectDigest: opaque("subject", version === "v1" ? 1 : 2),
+      accountNo: `yuanta-query-${version}-portfolio`,
+    },
+    scope: {
+      ...base.scope,
+      completenessBasis:
+        version === "v1"
+          ? "six-billed-months-plus-unbilled-terminal-no-pager"
+          : "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
+      completenessRuleVersion: route,
+    },
+    semantics: {
+      ...base.semantics,
+      postingRuleVersion: route,
+      semanticRuleVersion: route,
+      effectiveTimeRuleVersion: route,
+    },
+    pages: base.pages.map((page, pageOrdinal) => ({
+      ...page,
+      rowCount: pageOrdinal === 0 ? records.length : 0,
+      contractFingerprint: base.scope.contractFingerprint,
+      preflightFingerprint: base.scope.preflightFingerprint,
+      proofKind: "no-pager-terminal-grid" as const,
+    })),
+    records,
+  };
+};
 
 const evidence = (captureId: string): CanonicalSourceEvidence => ({
   captureId,
@@ -633,6 +815,14 @@ try {
   );
   assert.match(
     migratedRevisionSchema,
+    /esun\/credit-card\/human-attested-v1/,
+  );
+  assert.match(
+    migratedRevisionSchema,
+    /yuanta\/credit-card\/human-attested-v1/,
+  );
+  assert.match(
+    migratedRevisionSchema,
     /yuanta\/domestic-deposit\/human-attested-v1/,
   );
   assert.match(
@@ -708,11 +898,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -720,7 +910,7 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);
@@ -785,6 +975,14 @@ try {
   assert.match(
     widenedRevisionSchema,
     /CHECK\(posting_rule_version IN .*synthetic-%/,
+  );
+  assert.match(
+    widenedRevisionSchema,
+    /esun\/credit-card\/human-attested-v1/,
+  );
+  assert.match(
+    widenedRevisionSchema,
+    /yuanta\/credit-card\/human-attested-v1/,
   );
   assert.match(
     widenedRevisionSchema,
@@ -1239,3 +1437,229 @@ try {
 } finally {
   await rm(mixedMigrationDirectory, { recursive: true, force: true });
 }
+
+const fubonQueryDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-source-fubon-query-v2-"),
+);
+try {
+  const store = createCanonicalSourceStore(
+    join(fubonQueryDirectory, "canonical.sqlite"),
+  );
+  const v1Commit = await commitCanonicalFinancialDepositCapture(
+    store,
+    admitCanonicalFinancialDepositCapture(
+      fubonCreditCardFinancialCapture("v1", "fubon-historical-v1"),
+    ),
+  );
+  const v2Commit = await commitCanonicalFinancialDepositCapture(
+    store,
+    admitCanonicalFinancialDepositCapture(
+      fubonCreditCardFinancialCapture("v2", "fubon-current-v2"),
+    ),
+  );
+  store.close();
+
+  const v1Query = createCanonicalFinancialQuery(fubonQueryDirectory, {
+    integrationNamespace: "fubon",
+    postingRuleVersion: "fubon/credit-card/human-attested-v1",
+  });
+  const v1Current = await v1Query.current({ kind: "current" });
+  assert.deepEqual(v1Current.accounts, []);
+  assert.deepEqual(
+    v1Current.transactions,
+    [],
+    "superseded Fubon v1 rows cannot enter a current projection query",
+  );
+  const v1Historical = await v1Query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(v1Commit.commitSequence),
+    },
+  });
+  assert.equal(v1Historical.transactions.length, 1);
+  assert.equal(
+    v1Historical.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v1",
+  );
+
+  const v2Query = createCanonicalFinancialQuery(fubonQueryDirectory, {
+    integrationNamespace: "fubon",
+    postingRuleVersion: "fubon/credit-card/human-attested-v2",
+  });
+  const v2Current = await v2Query.current({ kind: "current" });
+  assert.equal(v2Current.accounts.length, 1);
+  assert.equal(v2Current.transactions.length, 1);
+  assert.equal(
+    v2Current.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v2",
+  );
+  const v2Historical = await v2Query.historical({
+    kind: "historical",
+    cutoff: {
+      kind: "both",
+      financialAt: "2026-12-31",
+      knowledgeAt: String(v2Commit.commitSequence),
+    },
+  });
+  assert.equal(v2Historical.transactions.length, 1);
+  assert.equal(
+    v2Historical.transactions[0]?.postingRuleVersion,
+    "fubon/credit-card/human-attested-v2",
+  );
+
+  assert.throws(
+    () =>
+      createCanonicalFinancialQuery(fubonQueryDirectory, {
+        integrationNamespace: "other",
+        postingRuleVersion: "fubon/credit-card/human-attested-v2",
+      }),
+    /unknown|mixed/i,
+  );
+  assert.throws(
+    () =>
+      createCanonicalFinancialQuery(fubonQueryDirectory, {
+        integrationNamespace: "fubon",
+        postingRuleVersion: "fubon/credit-card/human-attested-v3",
+      }),
+    /unknown|mixed/i,
+  );
+} finally {
+  await rm(fubonQueryDirectory, { recursive: true, force: true });
+}
+
+test("Yuanta v2 wins the current view without deleting v1 history", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-yuanta-query-v2-precedence-"),
+  );
+  try {
+    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const v1Commit = await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v1", "yuanta-query-v1"),
+      ),
+    );
+    const v2Commit = await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "yuanta-query-v2"),
+      ),
+    );
+    assert.equal(
+      Number(
+        (store.db.prepare(
+          "SELECT COUNT(*) AS value FROM financial_transactions WHERE account_id IN (SELECT account_id FROM financial_accounts WHERE stream = 'credit-card')",
+        ).get() as { value?: number }).value,
+      ),
+      62,
+    );
+    assert.equal(queryCanonicalSourceCurrent(store).observations.length, 62);
+    assert.equal(
+      queryCanonicalSourceHistorical(store, {
+        knowledgeAt: v2Commit.commitSequence,
+      }).observations.length,
+      62,
+    );
+    store.close();
+
+    const v1Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+    });
+    const v2Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+    });
+    assert.equal(
+      (await v1Query.current({ kind: "current" })).transactions.length,
+      0,
+      "a complete v2 capture supersedes v1 only in the current view",
+    );
+    assert.equal(
+      (await v2Query.current({ kind: "current" })).transactions.length,
+      31,
+    );
+    assert.equal(
+      (
+        await v1Query.historical({
+          kind: "historical",
+          cutoff: {
+            kind: "both",
+            financialAt: "2026-12-31",
+            knowledgeAt: String(v1Commit.commitSequence),
+          },
+        })
+      ).transactions.length,
+      31,
+      "v1 remains available through its historical route",
+    );
+    assert.equal(
+      (
+        await v2Query.historical({
+          kind: "historical",
+          cutoff: {
+            kind: "both",
+            financialAt: "2026-12-31",
+            knowledgeAt: String(v2Commit.commitSequence),
+          },
+        })
+      ).transactions.length,
+      31,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-yuanta-query-v2-invalid-"),
+  );
+  try {
+    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v1", "yuanta-invalid-v1"),
+      ),
+    );
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "yuanta-invalid-v2"),
+      ),
+    );
+    store.db.prepare(
+      `UPDATE capture_scopes
+       SET terminal = 0
+       WHERE capture_id = (
+         SELECT capture_id FROM source_captures
+         WHERE capture_key = ?
+       )`,
+    ).run("yuanta-invalid-v2");
+    store.close();
+
+    const v1Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+    });
+    const v2Query = createCanonicalFinancialQuery(directory, {
+      integrationNamespace: "yuanta",
+      postingRuleVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+    });
+    assert.equal(
+      (await v1Query.current({ kind: "current" })).transactions.length,
+      31,
+      "incomplete v2 cannot hide v1 authority",
+    );
+    assert.equal(
+      (await v2Query.current({ kind: "current" })).transactions.length,
+      0,
+      "incomplete v2 is not current authority",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

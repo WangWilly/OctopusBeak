@@ -9,6 +9,14 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/domestic-deposit-store.ts";
+import {
+  commitForeignCurrencyDepositCaptureBatch,
+  type ForeignCurrencyDepositCaptureInput,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -685,6 +693,103 @@ export function linebankStatementRowsToCsv(
   return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
 }
 
+function exactLinebankAmount(value: number | string | undefined, label: string): string {
+  if (typeof value === "number")
+    throw new Error(`LINE Bank foreign ${label} must remain an exact decimal string.`);
+  const lexeme = transactionAmountLexeme(value);
+  if (!lexeme) throw new Error(`LINE Bank foreign row is missing ${label}.`);
+  return lexeme;
+}
+
+/** Public adapter from typed LINE Bank response rows to foreign canonical rows. */
+export function buildLinebankForeignCurrencyCaptureInput(input: {
+  account: LineBankAccount;
+  dateRange: DateRange;
+  pages: readonly LineBankTransactionPage[];
+  observedAt?: string;
+  captureOccurrenceId?: string;
+}): ForeignCurrencyDepositCaptureInput {
+  const currency = linebankAccountCurrency(input.account);
+  if (currency === "TWD" || !/^[A-Z]{3}$/.test(currency))
+    throw new Error("LINE Bank foreign capture requires a source-proven currency.");
+  const accountNo = linebankAccountKey(input.account);
+  if (!accountNo) throw new Error("LINE Bank foreign account identity is incomplete.");
+  linebankValidateTransactionPageSequence(input.pages, {
+    requireComplete: true,
+    expectedAccount: input.account,
+  });
+  const rows = input.pages.flatMap((page) => page.rows);
+  const identityEpoch = input.pages[0]?.source?.opnDtm;
+  if (
+    typeof identityEpoch !== "number" ||
+    !Number.isSafeInteger(identityEpoch) ||
+    identityEpoch < 0
+  )
+    throw new Error("LINE Bank foreign capture requires a source identity epoch.");
+  const zeroResultAuthority =
+    rows.length === 0 &&
+    input.pages.every(
+      (page) =>
+        page.rows.length === 0 &&
+        page.totTxCnt === 0 &&
+        page.responseCode === "200",
+    )
+      ? ("provider-explicit-no-data" as const)
+      : undefined;
+  if (rows.length === 0 && zeroResultAuthority === undefined)
+    throw new Error(
+      "LINE Bank foreign empty capture requires provider-explicit-no-data terminal evidence.",
+    );
+  return {
+    source: "linebank",
+    accountNo,
+    sourceConnectionKey: "linebank-foreign-current-login",
+    identityEpochKey: String(identityEpoch),
+    accountType: "depository",
+    captureCurrencyScope: { kind: "currency", currency },
+    captureOccurrenceId: input.captureOccurrenceId ?? "",
+    zeroResultAuthority,
+    observedAt: input.observedAt ?? new Date().toISOString(),
+    startDate: formatSlashDate(input.dateRange.startDate).replaceAll("/", "-"),
+    endDate: formatSlashDate(input.dateRange.endDate).replaceAll("/", "-"),
+    completeness: "complete-range",
+    records: rows.map((row) => {
+      linebankValidateSourceOccurrenceFields(row);
+      const signedAmount = exactLinebankAmount(row.txAmt, "amount");
+      const signedBalanceAfter = exactLinebankAmount(row.afTxBal, "balance");
+      if (row.dpstWdrwDsCd !== "1" && row.dpstWdrwDsCd !== "2")
+        throw new Error("LINE Bank foreign row lacks an explicit direction.");
+      if (signedAmount.startsWith("-"))
+        throw new Error("LINE Bank foreign amount must be an unsigned exact magnitude; direction is separate evidence.");
+      if (signedBalanceAfter.startsWith("-"))
+        throw new Error("LINE Bank foreign negative balance is unsupported by the canonical contract.");
+      const amount = signedAmount;
+      const balanceAfter = signedBalanceAfter;
+      const transactionDate = cleanText(row.txDt).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
+      const transactionTime = formatTime(row.txTm);
+      return {
+        sourceKey: `${accountNo}:${currency}:${String(row.txSeqNbr)}:${String(row.crrnDpstNthCnt)}:${String(row.txDtm)}`,
+        sequence: String(row.txSeqNbr),
+        amount,
+        direction: row.dpstWdrwDsCd === "1" ? "inflow" : "outflow",
+        currencyEvidence: { kind: "scope" as const, currency },
+        balanceAfter,
+        sourceTime: { localDate: transactionDate, localTime: transactionTime },
+        originalAmount: { amount, currency },
+        description: cleanText(row.bizTxFuncTpNm) || null,
+        sourcePayload: {
+          transactionSequence: String(row.txSeqNbr),
+          occurrenceCounter: String(row.crrnDpstNthCnt),
+          transactionEpochMilliseconds: String(row.txDtm),
+          functionCode: row.bizTxFuncTpCd ?? "",
+          transactionId: row.fxsTxId ?? "",
+          signedAmount,
+        },
+      };
+    }),
+  };
+}
+
 function accountId(account: LineBankAccount): string {
   return cleanText(account.acctNbr);
 }
@@ -1124,6 +1229,8 @@ async function downloadLineBankStatements(
 
   const downloads: LineBankDownload[] = [];
   const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
+  const foreignCanonicalCaptures: ForeignCurrencyDepositCaptureInput[] = [];
+  const captureOccurrenceId = randomUUID();
   for (const account of accounts) {
     const rows: LineBankStatementRow[] = [];
     for (const window of windows) {
@@ -1140,6 +1247,15 @@ async function downloadLineBankStatements(
           observedAt: new Date().toISOString(),
         });
         if (capture) canonicalCaptures.push(capture);
+      } else {
+        foreignCanonicalCaptures.push(
+          buildLinebankForeignCurrencyCaptureInput({
+            account,
+            dateRange: window,
+            pages,
+            captureOccurrenceId,
+          }),
+        );
       }
     }
     downloads.push(
@@ -1170,13 +1286,28 @@ async function downloadLineBankStatements(
       store.close();
     }
   }
+  if (financialLedgerDir && foreignCanonicalCaptures.length > 0) {
+    const store = createCanonicalSourceStore(
+      canonicalSqlitePath(financialLedgerDir),
+    );
+    try {
+      await commitForeignCurrencyDepositCaptureBatch(
+        store,
+        foreignCanonicalCaptures,
+      );
+    } finally {
+      store.close();
+    }
+  }
 
   return {
     dateRange,
     count: downloads.length,
     rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
     canonicalCaptureCount:
-      financialLedgerDir === undefined ? 0 : canonicalCaptures.length,
+      financialLedgerDir === undefined
+        ? 0
+        : canonicalCaptures.length + foreignCanonicalCaptures.length,
     downloads,
   };
 }
