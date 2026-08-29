@@ -16,8 +16,10 @@ the existing maximum of three distinct OCR strategies per captured image.
 The automation host owns a `CaptchaRetryCampaign` state machine above workflow
 process execution. It freezes the launch input, creates one persisted task run,
 starts fresh workflow/browser executions serially, and finalizes the task only
-when the campaign ends. A private typed workflow-to-host channel reports a
-`CaptchaRoundOutcome`; logs and generic exceptions do not drive control flow.
+when the campaign ends. After a workflow publishes its existing human-
+assistance contract, host-side verification routing invokes the configured
+solver and returns a typed `VerificationRoutingOutcome` to the campaign. Logs,
+generic exceptions, and workflow-to-host CAPTCHA IPC do not drive control flow.
 
 The task run's existing `attempt` and `maxAttempts` fields represent consumed
 CAPTCHA rounds only while a campaign is active. The host never persists CAPTCHA
@@ -47,10 +49,8 @@ additional user-visible history rows.
 
 - `src/lib/automation/server/captcha-retry-campaign.ts`
 - `src/lib/automation/server/captcha-retry-campaign.check.ts`
-- `src/lib/automation/captcha-round-outcome.ts`
-- `src/lib/automation/captcha-round-outcome.check.ts`
 
-Define a closed discriminated union for at least:
+Define the campaign's closed discriminated union for at least:
 
 - `succeeded`
 - `retryable` with reason `solver-exhausted | provider-rejected`
@@ -80,45 +80,11 @@ npm test -- captcha-retry-campaign.check
 npm run typecheck
 ```
 
-## Task 2: Add the private typed workflow-to-host channel
-
-**Create or update**
-
-- `src/workflows/captcha-round-outcome.ts`
-- `src/workflows/captcha-round-outcome.check.ts`
-- `src/lib/automation/server/task-run-execution.ts`
-- the existing workflow process launch/environment contract
-
-Follow the established private IPC pattern used by host/workflow contracts, but
-give CAPTCHA outcomes their own versioned message schema and one-execution
-authentication boundary. Do not parse stdout, log markers, thrown error text, or
-exit codes as retry signals.
-
-The workflow helper must:
-
-- report successful challenge capture before solver evaluation;
-- report `solver-exhausted` only after the Solve Acceptance Policy rejects all
-  distinct planned candidates;
-- report `provider-rejected` only through an explicitly registered provider
-  probe;
-- allow at most one terminal round outcome per execution;
-- never serialize the challenge image or solver answer.
-
-Tests must cover schema validation, stale/duplicate messages, unavailable IPC,
-authentication failure, and privacy assertions over serialized payloads.
-
-Run:
-
-```bash
-npm test -- captcha-round-outcome.check
-npm run typecheck
-```
-
-## Task 3: Preserve one task run across workflow restarts
+## Task 2: Preserve one task run across workflow restarts
 
 **Update**
 
-- `src/lib/automation/server/task-runner.ts`
+- `src/lib/automation/server/runner.ts`
 - `src/lib/automation/server/task-run-execution.ts`
 - `src/lib/automation/server/task-run-finalization.ts`
 - the browser/session lifecycle module used by task execution
@@ -131,9 +97,11 @@ Separate these concepts:
 3. campaign coordination across internal executions.
 
 Create the task run once, freeze the launch snapshot once, and loop only when
-the typed campaign transition requests another round. Await workflow-process and
-browser-session cleanup before launching the next execution. Reuse in-memory
-sign-in details without copying them into persistent campaign state.
+host-side verification routing returns a typed `solver-exhausted` outcome.
+Await workflow-process and browser-session cleanup before launching the next
+execution. Reuse in-memory sign-in details without copying them into persistent
+campaign state. Do not create a workflow-to-host CAPTCHA socket, environment
+variables, or reporter helper.
 
 Update task-run progress atomically after a challenge is captured. If the app or
 automation process disappears unexpectedly, finalize the current task as failed;
@@ -155,7 +123,8 @@ Run the relevant focused checks, then:
 npm run typecheck
 ```
 
-## Task 4: Route solver exhaustion through the campaign
+
+## Task 3: Route solver exhaustion through the campaign
 
 **Update**
 
@@ -164,9 +133,15 @@ npm run typecheck
 - solver execution/planning checks
 
 Replace the current immediate task failure after three unsuccessful same-image
-strategies with a typed `solver-exhausted` round outcome. Preserve all current
-candidate normalization, confidence, agreement, strategy uniqueness, and
-single-submission rules.
+strategies with a typed host-side `VerificationRoutingOutcome` carrying
+`solver-exhausted`. Preserve all current candidate normalization, confidence,
+agreement, strategy uniqueness, and single-submission rules.
+
+The route must invoke `onChallengeCaptured` exactly once after a successful
+capture. The runner records that event in `CaptchaRetryCampaign`, and then
+transitions the same campaign to a retry only after routing returns
+`solver-exhausted`. A workflow-side reporter, socket, environment variable,
+or log marker is not part of this control path.
 
 Add regression coverage proving:
 
@@ -178,7 +153,7 @@ Add regression coverage proving:
 - solver exceptions remain non-retryable unless they are already represented as
   a policy-level exhausted result.
 
-## Task 5: Integrate every supported workflow
+## Task 4: Integrate every supported workflow
 
 Audit and update these workflow families:
 
@@ -190,16 +165,18 @@ Audit and update these workflow families:
 - E-Invoice
 - Yuanta Trade image-selection verification
 
-For each workflow, declare challenge capture and emit `solver-exhausted` through
-the shared helper. Do not duplicate campaign loops inside provider workflows.
-Keep all provider preprocessing, acceptance policies, loaded-image requirements,
-and answer-shape contracts unchanged.
+For each workflow, declare its challenge image and solver metadata in the
+existing human-assistance contract. Do not duplicate campaign loops or emit a
+second CAPTCHA outcome from provider workflows. Keep all provider
+preprocessing, acceptance policies, loaded-image requirements, and answer-shape
+contracts unchanged.
 
 Add a table-driven integration check showing that each solver-backed workflow is
-registered and that checkbox/human workflows are not. A provider whose challenge
-is absent must continue its existing path without starting a campaign round.
+registered and that checkbox/human workflows are not. A provider whose
+challenge is absent must continue its existing path without starting a campaign
+round.
 
-## Task 6: Add provider-rejection probes only with evidence
+## Task 5: Add provider-rejection probes only with evidence
 
 For each provider, inspect sanitized fixtures and—where needed—perform a live
 read-only or controlled Electron/CDP run to identify a stable CAPTCHA-specific
@@ -216,9 +193,13 @@ A probe is admissible only if it distinguishes CAPTCHA rejection from:
 Providers without adequate evidence receive only `solver-exhausted` retry in
 this version. Do not invent a fallback heuristic. Each admitted probe needs
 positive CAPTCHA-rejection fixtures plus negative fixtures for the neighboring
-failure classes.
+failure classes. Until a probe is proven, `provider-rejected` must fail closed
+and must not advance the campaign.
 
-## Task 7: Expose bounded progress without recovery controls
+## Task 6: Expose bounded progress without recovery controls
+
+
+## Task 7: End-to-end verification
 
 **Update as needed**
 
@@ -230,8 +211,6 @@ Show passive progress such as `驗證碼嘗試 3 / 10` only after a challenge ro
 has been consumed. Do not add a Continue button, interrupted-campaign state,
 provider-specific limit, or user setting. Preserve one final result and one
 history entry.
-
-## Task 8: End-to-end verification
 
 Run the complete automated suite:
 
@@ -257,11 +236,10 @@ coverage and leave `provider-rejected` disabled for that provider.
 ## Suggested Commit Sequence
 
 1. `test: specify bounded captcha retry campaigns`
-2. `feat: add typed captcha round outcomes`
-3. `refactor: preserve task runs across workflow restarts`
-4. `feat: retry solver-backed captcha workflows`
-5. `feat: add proven provider captcha rejection probes`
-6. `test: cover captcha retry campaign integration`
+2. `refactor: preserve task runs across workflow restarts`
+3. `feat: retry solver-backed captcha workflows`
+4. `feat: add proven provider captcha rejection probes`
+5. `test: cover captcha retry campaign integration`
 
 Do not commit generated CAPTCHA debug images, OCR answers, authentication
 material, or live provider response bodies.

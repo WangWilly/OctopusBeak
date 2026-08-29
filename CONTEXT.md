@@ -772,7 +772,7 @@ The provider-verifiable reason that permits a CAPTCHA Retry Campaign to advance 
 _Avoid_: Any login failure, inferred CAPTCHA rejection, generic workflow error retry
 
 **CAPTCHA round outcome**:
-The structured result by which a workflow reports that a CAPTCHA Challenge Round succeeded, needs another round because its solver was exhausted or the provider explicitly rejected its answer, or ended for a non-retryable reason. Only this typed outcome may advance a CAPTCHA Retry Campaign; log text, exception wording, and process exit status never establish a CAPTCHA Retry Trigger.
+The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, or the round ended for a non-retryable reason. A provider-rejected result is reserved for a future provider adapter with proven rejection evidence. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing human-assistance contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
 _Avoid_: Retry log marker, error-message matching, inferred process failure
 
 **Yuanta Bank login CAPTCHA**:
