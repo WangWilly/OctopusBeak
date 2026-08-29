@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
+  AUTOMATION_MANAGED_SECRET_KEYS,
   AUTOMATION_NON_SECRET_KEYS,
   enabledAutomationTasks,
   taskById,
@@ -96,6 +97,21 @@ assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")
     ?.statementTypes,
   [{ id: "deposit" }, { id: "credit_card" }, { id: "loan" }],
+);
+const fubonGroup = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon");
+assert.ok(fubonGroup);
+assert.equal(
+  fubonGroup.credentialFields.some((field) =>
+    field.key.includes("IDENTITY_FINGERPRINT"),
+  ),
+  false,
+);
+assert.deepEqual(AUTOMATION_MANAGED_SECRET_KEYS, [
+  "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY",
+]);
+assert.deepEqual(
+  taskById("fubon-all-statements")?.credentialKeys,
+  fubonGroup.credentialFields.map((field) => field.key),
 );
 assert.equal(
   AUTOMATION_NON_SECRET_KEYS.includes("LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES"),

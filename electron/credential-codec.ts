@@ -1,5 +1,6 @@
 import { safeStorage } from "electron";
 import {
+  ensureAutomationManagedSecrets,
   migrateAutomationCredentialsFileEncryption,
   setAutomationCredentialCodec,
 } from "../src/lib/automation/server/config-files.ts";
@@ -18,4 +19,5 @@ export function registerAutomationCredentialSafeStorage() {
   });
 
   migrateAutomationCredentialsFileEncryption();
+  ensureAutomationManagedSecrets();
 }

@@ -178,27 +178,39 @@ const foreignCapture = {
     currency: "USD",
   },
 };
+const nonTerminal = admitSinopacStatementCaptureEvidence({
+  ...foreignCapture,
+  downloads: [{ ...foreignCapture.downloads[0]!, terminal: false }],
+});
+assert.equal(nonTerminal.status, "rejected");
+assert.ok(nonTerminal.diagnostics.includes("download-terminal-invalid"));
 const foreignAdmitted = admitSinopacStatementCaptureEvidence(foreignCapture);
 assert.equal(foreignAdmitted.status, "admissible");
 assert.ok(foreignAdmitted.capture);
+const foreignExplicitNoData = admitSinopacStatementCaptureEvidence({
+  ...foreignCapture,
+  downloads: [
+    {
+      ...foreignCapture.downloads[0]!,
+      rows: [],
+      byteLength: 0,
+      contentDigest: digest("c"),
+    },
+  ],
+  zeroResultAuthority: "provider-explicit-no-data",
+});
+assert.equal(foreignExplicitNoData.status, "admissible");
+assert.ok(foreignExplicitNoData.capture);
+const foreignEmptyEvidence = createSinopacForeignCurrencySourceEvidence(
+  foreignExplicitNoData.capture,
+  "sinopac-foreign-explicit-no-data-capture",
+);
 assert.equal(
-  createSinopacForeignCurrencySourceEvidence(
-    admitSinopacStatementCaptureEvidence({
-      ...foreignCapture,
-      downloads: [
-        {
-          ...foreignCapture.downloads[0]!,
-          rows: [],
-          byteLength: 0,
-          contentDigest: digest("c"),
-        },
-      ],
-      zeroResultAuthority: "provider-explicit-no-data",
-    }).capture!,
-    "sinopac-foreign-explicit-no-data-capture",
-  ).scope.absenceAuthority,
+  foreignEmptyEvidence.scope.absenceAuthority,
   "provider-explicit-no-data",
 );
+assert.equal(foreignEmptyEvidence.scope.completeness, "complete-range");
+assert.equal(foreignEmptyEvidence.pages[0]?.terminal, true);
 const foreignGuardResult =
   admitSinopacForeignCurrencyCaptureEvidence(foreignCapture);
 assert.equal(foreignGuardResult.status, "admissible");
@@ -220,6 +232,8 @@ assert.equal(
 );
 assert.equal(foreignEvidence.stream, "foreign-currency");
 assert.notEqual(sourceEvidence.identityEpoch, foreignEvidence.identityEpoch);
+assert.equal(foreignEvidence.scope.completeness, "complete-range");
+assert.equal(foreignEvidence.pages.at(-1)?.terminal, true);
 
 const sourceDirectory = await mkdtemp(join(tmpdir(), "sinopac-source-v1-"));
 try {
@@ -243,8 +257,26 @@ try {
       foreignAdmitted.capture,
       "sinopac-foreign-capture-1",
     );
+    const emptyCommit = await commitCanonicalSourceEvidence(
+      store,
+      admitCanonicalSourceEvidence(foreignEmptyEvidence),
+    );
     assert.equal(first.status, "durable-source-evidence");
     assert.equal(repeated.status, "durable-source-evidence");
+    assert.equal(emptyCommit.observationCount, 0);
+    const emptyScope = store.db
+      .prepare(
+        `SELECT scope.completeness, scope.terminal
+         FROM capture_scopes scope
+         JOIN source_captures capture ON capture.capture_id = scope.capture_id
+         WHERE capture.capture_key = ?`,
+      )
+      .get("sinopac-foreign-explicit-no-data-capture") as {
+      completeness?: unknown;
+      terminal?: unknown;
+    } | undefined;
+    assert.equal(emptyScope?.completeness, "complete-range");
+    assert.equal(emptyScope?.terminal, 1);
     assert.equal(queryCanonicalSourceCurrent(store).records.length, 2);
     assert.equal(queryCanonicalSourceCurrent(store).observations.length, 3);
     assert.equal(

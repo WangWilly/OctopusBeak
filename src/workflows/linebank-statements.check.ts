@@ -20,6 +20,7 @@ import {
   linebankValidateTransactionTime,
   linebankValidateTransactionPageSequence,
   linebankAutoDismissApprovedAlert,
+  buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
 
@@ -920,6 +921,49 @@ assert.throws(
       },
     ]),
   /Invalid LINE Bank transaction amount/,
+);
+
+const linebankForeignPage = {
+  pageNbr: 1,
+  pageCnt: 1,
+  totTxCnt: 1,
+  txCnt: 1,
+  source: { acctNbr: "LINE-FOREIGN-133", arrId: "arr-133", opnDtm: 1700000000000 },
+  rows: [
+    {
+      txSeqNbr: "1",
+      crrnDpstNthCnt: 1,
+      txDt: "20260823",
+      txTm: "091000",
+      txDtm: linebankEpochMillisecondsFromSourceDateTime("20260823", "091000"),
+      dpstWdrwDsCd: "1",
+      txAmt: "10.00",
+      afTxBal: "110.00",
+    },
+  ],
+};
+const linebankForeignCapture = buildLinebankForeignCurrencyCaptureInput({
+  account: { acctNbr: "LINE-FOREIGN-133", arrId: "arr-133", currCd: "USD" },
+  dateRange: { startDate: "20260801", endDate: "20260823" },
+  pages: [linebankForeignPage],
+  observedAt: "2026-08-24T12:00:00+08:00",
+  captureOccurrenceId: "linebank-foreign-check-observation-2",
+});
+assert.equal(linebankForeignCapture.accountType, "depository");
+assert.equal(linebankForeignCapture.records[0]!.currencyEvidence.currency, "USD");
+assert.throws(
+  () =>
+    buildLinebankForeignCurrencyCaptureInput({
+      account: { acctNbr: "LINE-FOREIGN-133", arrId: "arr-133", currCd: "USD" },
+      dateRange: { startDate: "20260801", endDate: "20260823" },
+      pages: [
+        {
+          ...linebankForeignPage,
+          rows: [{ ...linebankForeignPage.rows[0]!, txAmt: 10 }],
+        },
+      ],
+    }),
+  /exact decimal string/i,
 );
 assert.throws(
   () =>

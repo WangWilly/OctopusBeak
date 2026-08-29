@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  admitForeignCurrencyDepositCapture,
+  commitForeignCurrencyDepositCapture,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
+import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -16,6 +24,7 @@ registerHooks({
 const {
   readYuantaForeignCurrencyAccountOptions,
   readYuantaForeignCurrencyOptions,
+  buildYuantaForeignCurrencyCaptureInput,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
@@ -125,3 +134,124 @@ assert.deepEqual(
   ),
   [{ value: "ALL", label: "全部幣別" }],
 );
+
+const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
+  [
+    {
+      accountLabel: "外幣綜合存款",
+      accountValue: "fx-1",
+      queryCurrencyLabel: "全部幣別",
+      queryCurrencyValue: "ALL",
+      values: [
+        "1",
+        "20260823",
+        "20260823",
+        "09:10",
+        "USD",
+        "外幣存入",
+        "",
+        "10.00",
+        "110.00",
+        "交易資訊",
+        "31.50",
+      ],
+      sortTime: null,
+    },
+  ],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-1",
+  "2026-08-24T12:00:00+08:00",
+  "yuanta-foreign-check-observation-1",
+);
+assert.equal(yuantaForeignCapture.accountType, "depository");
+assert.equal(yuantaForeignCapture.records[0]!.currencyEvidence.currency, "USD");
+assert.equal(
+  yuantaForeignCapture.records[0]!.sourceReportedRate?.rate,
+  "31.50",
+);
+assert.deepEqual(
+  admitForeignCurrencyDepositCapture(yuantaForeignCapture).records[0]!
+    .conversionEvidence?.sourceReportedRate?.amount,
+  { coefficient: "315", scale: 1 },
+);
+const yuantaCorrectedMutableFacts = buildYuantaForeignCurrencyCaptureInput(
+  [
+    {
+      accountLabel: "外幣綜合存款",
+      accountValue: "fx-1",
+      queryCurrencyLabel: "全部幣別",
+      queryCurrencyValue: "ALL",
+      values: [
+        "1",
+        "20260824",
+        "20260824",
+        "10:30",
+        "USD",
+        "更正後說明",
+        "10.00",
+        "",
+        "100.00",
+        "更正後交易資訊",
+        "31.60",
+      ],
+      sortTime: null,
+    },
+  ],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-1",
+  "2026-08-24T13:00:00+08:00",
+  "yuanta-foreign-check-observation-2",
+);
+assert.equal(
+  yuantaCorrectedMutableFacts.records[0]!.sourceKey,
+  yuantaForeignCapture.records[0]!.sourceKey,
+);
+assert.throws(
+  () =>
+    buildYuantaForeignCurrencyCaptureInput(
+      [
+        {
+          accountLabel: "外幣綜合存款",
+          accountValue: "fx-1",
+          queryCurrencyLabel: "全部幣別",
+          queryCurrencyValue: "ALL",
+          values: ["1", "20260823", "20260823", "09:10", "", "存入", "", "10", "110", "", "31.5"],
+          sortTime: null,
+        },
+      ],
+      { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      "fx-1",
+      "2026-08-24T12:00:00+08:00",
+      "yuanta-foreign-check-observation-invalid",
+    ),
+  /source currency/i,
+);
+
+const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
+  [],
+  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "fx-empty-133",
+  "2026-08-24T12:00:00+08:00",
+  "yuanta-foreign-check-empty-observation",
+  "provider-explicit-no-data",
+);
+const yuantaEmptyDirectory = await mkdtemp(join(tmpdir(), "yuanta-foreign-empty-133-"));
+try {
+  const store = createCanonicalSourceStore(join(yuantaEmptyDirectory, "canonical.sqlite"));
+  const result = await commitForeignCurrencyDepositCapture(
+    store,
+    admitForeignCurrencyDepositCapture(emptyYuantaCapture),
+  );
+  assert.equal(result.transactionCount, 0);
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  assert.equal(
+    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
+    1,
+  );
+  store.close();
+} finally {
+  await rm(yuantaEmptyDirectory, { recursive: true, force: true });
+}

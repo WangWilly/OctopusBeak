@@ -7,9 +7,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { parseEnvText } from "./env-file.ts";
 import {
+  AUTOMATION_CREDENTIAL_KEYS,
+  AUTOMATION_MANAGED_SECRET_KEYS,
   AUTOMATION_NON_SECRET_KEYS,
   AUTOMATION_SECRET_KEYS,
 } from "./tasks.ts";
@@ -61,10 +64,24 @@ const automationSecretKeys = new Set<string>([
   ...AUTOMATION_SECRET_KEYS,
   ...CATHAY_GMAIL_HOST_KEYS,
 ]);
+const automationManagedSecretKeys = new Set<string>(
+  AUTOMATION_MANAGED_SECRET_KEYS,
+);
+const automationUserSecretKeys = new Set<string>(
+  AUTOMATION_CREDENTIAL_KEYS.filter(
+    (key) => !automationSettingKeys.has(key),
+  ),
+);
 const automationKnownKeys = new Set<string>([
   ...automationSettingKeys,
-  ...automationSecretKeys,
+  ...automationUserSecretKeys,
+  ...CATHAY_GMAIL_HOST_KEYS,
 ]);
+
+export const FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =
+  AUTOMATION_MANAGED_SECRET_KEYS[0];
+export const CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =
+  FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY;
 
 function readJsonRecord(path: string) {
   if (!existsSync(path)) return {};
@@ -169,6 +186,45 @@ export function writeAutomationCredentials(credentials: AutomationCredentialsFil
   writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials);
 }
 
+function validManagedFingerprintSecret(value: string | undefined) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+/**
+ * Create device-owned identity secrets only after an encrypted credential
+ * codec is registered. The secret is intentionally never returned to callers.
+ */
+export function ensureAutomationManagedSecrets({
+  credentialsPath = AUTOMATION_CREDENTIALS_PATH,
+  generateFingerprintSecret = () => randomBytes(32).toString("base64url"),
+}: {
+  credentialsPath?: string;
+  generateFingerprintSecret?: () => string;
+} = {}) {
+  requireAutomationCredentialCodec();
+  const credentials = readAutomationCredentialsFile(credentialsPath);
+  const existing = credentials[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+  if (existing !== undefined) {
+    if (!validManagedFingerprintSecret(existing)) {
+      throw new Error("Managed Fubon card identity secret is invalid.");
+    }
+    return { created: false as const };
+  }
+
+  const secret = generateFingerprintSecret();
+  if (!validManagedFingerprintSecret(secret)) {
+    throw new Error("Generated Fubon card identity secret is invalid.");
+  }
+  if (!automationManagedSecretKeys.has(FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY)) {
+    throw new Error("Fubon card identity secret is not registered as managed.");
+  }
+  writeAutomationCredentialsFile(credentialsPath, {
+    ...credentials,
+    [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: secret,
+  });
+  return { created: true as const };
+}
+
 export function writeAutomationConfigFiles(
   settings: AutomationSettingsFile,
   credentials?: AutomationCredentialsFile,
@@ -232,7 +288,7 @@ export function splitAutomationUpdates(updates: Record<string, string>) {
       settings[key] = envValueToSetting(key, value);
       continue;
     }
-    if (automationSecretKeys.has(key) && value.trim()) credentials[key] = value;
+    if (automationUserSecretKeys.has(key) && value.trim()) credentials[key] = value;
   }
   return { settings, credentials };
 }

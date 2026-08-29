@@ -1,4 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
@@ -11,6 +12,15 @@ import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
+import {
+  commitForeignCurrencyDepositCaptureBatch,
+  type ForeignCurrencyDepositCaptureInput,
+  type ForeignCurrencyDepositCommitStore,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -80,6 +90,7 @@ type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
 
 type SourceDownloadMetadata = {
+  accountValue: string;
   account: string;
   currency: string;
   filename: string;
@@ -88,7 +99,9 @@ type SourceDownloadMetadata = {
 
 type ForeignCurrencyTransactionRow = {
   accountLabel: string;
+  accountValue: string;
   queryCurrencyLabel: string;
+  queryCurrencyValue: string;
   values: string[];
   sortTime: number | null;
 };
@@ -202,7 +215,9 @@ function parseTransactionSortTime(values: string[]): number | null {
 function transactionRowsFromDownloadedCsv(
   content: string,
   accountLabel: string,
+  accountValue: string,
   queryCurrencyLabel: string,
+  queryCurrencyValue: string,
 ): ForeignCurrencyTransactionRow[] {
   const rows = parseCsvMatrix(content).map((row) =>
     row.map(stripSpreadsheetTextPrefix),
@@ -227,7 +242,9 @@ function transactionRowsFromDownloadedCsv(
 
     transactions.push({
       accountLabel,
+      accountValue,
       queryCurrencyLabel,
+      queryCurrencyValue,
       values,
       sortTime: parseTransactionSortTime(values),
     });
@@ -690,7 +707,9 @@ async function queryAccountCurrency(
 async function downloadTransactionRows(
   page: Page,
   accountLabel: string,
+  accountValue: string,
   currencyLabel: string,
+  currencyValue: string,
 ): Promise<{ filename: string; rows: ForeignCurrencyTransactionRow[] }> {
   const scope = await findScopeWithLocator(
     page,
@@ -719,9 +738,134 @@ async function downloadTransactionRows(
     rows: transactionRowsFromDownloadedCsv(
       content,
       accountLabel,
+      accountValue,
       currencyLabel,
+      currencyValue,
     ),
   };
+}
+
+function sourceDateRange(input: WorkflowInput): {
+  startDate: string;
+  endDate: string;
+} {
+  if (input.customDateRange)
+    return {
+      startDate: input.customDateRange.startDate.replaceAll("/", "-"),
+      endDate: input.customDateRange.endDate.replaceAll("/", "-"),
+    };
+  const end = new Date();
+  const days = input.dateRange === "one_week" ? 7 : input.dateRange === "one_month" ? 31 : 93;
+  const start = new Date(end.getTime() - days * 86_400_000);
+  const iso = (value: Date) => value.toISOString().slice(0, 10);
+  return { startDate: iso(start), endDate: iso(end) };
+}
+
+function exactCell(value: string, label: string): string {
+  const normalized = stripSpreadsheetTextPrefix(value).replace(/[ ,]/g, "");
+  if (!normalized || normalized === "-")
+    throw new Error(`Yuanta foreign row is missing ${label}.`);
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
+    throw new Error(`Yuanta foreign ${label} is not an exact decimal.`);
+  return normalized;
+}
+
+function currencyCode(label: string, value: string): string {
+  const rowCandidate = label.toUpperCase().match(/\b[A-Z]{3}\b/)?.[0];
+  if (rowCandidate && rowCandidate !== "ALL") return rowCandidate;
+  const typedCandidate = value.toUpperCase().match(/\b[A-Z]{3}\b/)?.[0];
+  if (typedCandidate && typedCandidate !== "ALL") return typedCandidate;
+  throw new Error("Yuanta foreign row lacks a source currency.");
+}
+
+/** Public workflow-to-canonical seam used by browser runs and deterministic checks. */
+export function buildYuantaForeignCurrencyCaptureInput(
+  rows: readonly ForeignCurrencyTransactionRow[],
+  input: WorkflowInput,
+  accountNo: string,
+  observedAt = new Date().toISOString(),
+  captureOccurrenceId = "",
+  zeroResultAuthority?: "provider-explicit-no-data",
+): ForeignCurrencyDepositCaptureInput {
+  if (
+    rows.length === 0 &&
+    zeroResultAuthority !== "provider-explicit-no-data"
+  )
+    throw new Error(
+      "Yuanta foreign empty capture requires provider-explicit-no-data terminal evidence.",
+    );
+  const range = sourceDateRange(input);
+  return {
+    source: "yuanta",
+    accountNo,
+    sourceConnectionKey: "yuanta-foreign-current-login",
+    identityEpochKey: "yuanta-foreign-current-identity",
+    accountType: "depository",
+    captureCurrencyScope: { kind: "multi-currency" },
+    captureOccurrenceId,
+    zeroResultAuthority,
+    observedAt,
+    ...range,
+    completeness: "complete-range",
+    records: rows.map((row) => {
+      const values = row.values;
+      const debit = stripSpreadsheetTextPrefix(values[6] ?? "");
+      const credit = stripSpreadsheetTextPrefix(values[7] ?? "");
+      if ((debit.length > 0) === (credit.length > 0))
+        throw new Error("Yuanta foreign row must prove exactly one amount direction.");
+      const localDate = toAsciiDigits(values[2] ?? "").replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
+      const localTime = toAsciiDigits(values[3] ?? "");
+      const rowCurrency = currencyCode(values[4] ?? "", row.queryCurrencyValue);
+      const providerSequence = stripSpreadsheetTextPrefix(values[0] ?? "").trim();
+      if (!providerSequence)
+        throw new Error("Yuanta foreign row lacks provider sequence identity.");
+      const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
+      return {
+        sourceKey: `${accountNo}:${rowCurrency}:sequence:${providerSequence}`,
+        sequence: providerSequence,
+        amount: exactCell(debit || credit, "amount"),
+        direction: debit.length > 0 ? "outflow" : "inflow",
+        currencyEvidence: {
+          kind: "row" as const,
+          currency: rowCurrency,
+        },
+        balanceAfter: exactCell(values[8] ?? "", "balance"),
+        sourceTime: {
+          localDate,
+          localTime: localTime || undefined,
+          precision: localTime ? undefined : ("date" as const),
+        },
+        // Yuanta's foreign statement amount is already denominated in the
+        // source row currency; preserving it as original evidence avoids
+        // inventing a TWD conversion or fee from an unlabeled rate column.
+        originalAmount: {
+          amount: exactCell(debit || credit, "original amount"),
+          currency: rowCurrency,
+        },
+        sourceReportedRate: reportedRateText
+          ? {
+              rate: exactCell(reportedRateText, "reported rate"),
+              baseCurrency: rowCurrency,
+              quoteCurrency: "TWD",
+              observedOn: localDate,
+            }
+          : null,
+        description: values[5] || null,
+        sourcePayload: {
+          providerSequence,
+          transactionInfo: values[9] ?? "",
+          reportedRate: reportedRateText,
+        },
+      };
+    }),
+  };
+}
+
+export async function commitYuantaForeignCurrencyCapture(
+  store: ForeignCurrencyDepositCommitStore,
+  input: ForeignCurrencyDepositCaptureInput,
+) {
+  return commitForeignCurrencyDepositCaptureBatch(store, [input]);
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
@@ -763,10 +907,13 @@ export default workflow("yuantaForeignCurrencyStatements", {
         const download = await downloadTransactionRows(
           page,
           maskedAccount,
+          account.value,
           currency.label,
+          currency.value,
         );
         rows.push(...download.rows);
         sourceDownloads.push({
+          accountValue: account.value,
           account: maskedAccount,
           currency: currency.label,
           filename: download.filename,
@@ -783,6 +930,46 @@ export default workflow("yuantaForeignCurrencyStatements", {
       rows,
       sourceDownloads,
     );
+
+    const financialLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
+    if (financialLedgerDir) {
+      const captureOccurrenceId = randomUUID();
+      const financialStore = createCanonicalSourceStore(
+        canonicalSqlitePath(financialLedgerDir),
+      );
+      try {
+        const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
+        for (const row of rows) {
+          const accountRows = grouped.get(row.accountValue) ?? [];
+          accountRows.push(row);
+          grouped.set(row.accountValue, accountRows);
+        }
+        const captures = accounts.map((account) => {
+          const accountRows = grouped.get(account.value) ?? [];
+          const accountDownloads = sourceDownloads.filter(
+            (download) => download.accountValue === account.value,
+          );
+          const zeroResultAuthority =
+            accountRows.length === 0 &&
+            accountDownloads.length > 0 &&
+            accountDownloads.every((download) => download.rowCount === 0)
+              ? ("provider-explicit-no-data" as const)
+              : undefined;
+          return buildYuantaForeignCurrencyCaptureInput(
+            accountRows,
+            input,
+            account.value,
+            new Date().toISOString(),
+            captureOccurrenceId,
+            zeroResultAuthority,
+          );
+        });
+        await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
+      } finally {
+        financialStore.close();
+      }
+    }
 
     return {
       dateRange,

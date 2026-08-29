@@ -78,6 +78,22 @@ import {
   preflightYuantaDomesticDeposit,
 } from "./yuanta-domestic-deposit.ts";
 
+// Kept as a compatibility re-export for existing readiness consumers. The
+// foreign inventory has its own module and derives contract metadata from the
+// canonical foreign contract registry.
+export {
+  ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_READINESS,
+  ADVERTISED_FOREIGN_CURRENCY_DEPOSIT_SOURCE_IDS,
+  advertisedForeignCurrencyDepositSourceIds,
+  evaluateAdvertisedForeignCurrencyDepositReadiness,
+  isAdvertisedForeignCurrencyDepositEntryReleaseReady,
+} from "./advertised-foreign-currency-deposit-readiness.ts";
+export type {
+  AdvertisedForeignCurrencyDepositReadinessEntry,
+  AdvertisedForeignCurrencyDepositReadinessGate,
+  AdvertisedForeignCurrencyDepositSourceId,
+} from "./advertised-foreign-currency-deposit-readiness.ts";
+
 const DOMESTIC_DEPOSIT_STATEMENT_TYPE_IDS = new Set([
   "deposit",
   "domestic",

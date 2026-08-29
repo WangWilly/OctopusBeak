@@ -27,6 +27,11 @@ import {
   type SinopacStatementValidatedCapture,
 } from "../ledger/canonical/sinopac-domestic-deposit.ts";
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import { admitSinopacForeignCurrencyFinancialCapture } from "../ledger/canonical/sinopac-foreign-deposit.ts";
+import {
+  commitForeignCurrencyDepositCaptureBatch,
+  type ForeignCurrencyDepositAdmittedCapture,
+} from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -37,6 +42,14 @@ import {
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
 } from "../lib/automation/sinopac-captcha.ts";
+import {
+  SINOPAC_IDENTITY_FIELD_NAMES,
+  summarizeSinopacIdentityEvidence,
+  type SinopacIdentityCapture,
+  type SinopacIdentityEvidenceSummary,
+  type SinopacIdentityRawRow,
+  type SinopacIdentitySiteAssessment,
+} from "./sinopac-identity-evidence.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
 const TRANSACTION_URL =
@@ -58,11 +71,21 @@ const statementHeaders = [
 
 const dateSchema = z.string().regex(/^\d{8}$/);
 
+export const sinopacIdentityValidationSchema = z.object({
+  startDate: dateSchema,
+  endDate: dateSchema,
+  currency: z.literal("USD"),
+  overlapStartDate: dateSchema.optional(),
+  overlapEndDate: dateSchema.optional(),
+  accountFilter: z.string().min(1).optional(),
+});
+
 const inputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
+  identityValidation: sinopacIdentityValidationSchema.optional(),
 });
 
 const downloadSchema = z.object({
@@ -99,6 +122,16 @@ const outputSchema = z.object({
   status: z.enum(["source-only", "financial-admitted"]),
 });
 
+const workflowOutputSchema = z.union([
+  outputSchema,
+  z
+    .object({
+      mode: z.literal("identity-validation"),
+      evidenceVersion: z.literal("sinopac-identity-evidence-v2"),
+    })
+    .passthrough(),
+]);
+
 type SinopacCredentials = {
   sinopac_user_id?: string;
   sinopac_account?: string;
@@ -108,6 +141,10 @@ type SinopacCredentials = {
 type Input = z.infer<typeof inputSchema> & {
   credentials: SinopacCredentials;
 };
+
+export type SinopacIdentityValidationInput = NonNullable<
+  z.infer<typeof inputSchema>["identityValidation"]
+>;
 
 export type DateRange = {
   startDate: string;
@@ -152,23 +189,13 @@ export type SinopacStatementsRunDependencies = {
     rows: SinopacStatementRow[],
   ) => Promise<SinopacDownload>;
   canonicalSourceLedgerDir?: string;
-  /** Financial mutation is opt-in and never falls back to a generic ledger. */
+  /** Canonical financial mutation is opt-in for both domestic and foreign deposits. */
   canonicalFinancialLedgerDir?: string;
 };
 
-type SinopacRawTransactionRow = {
-  DataText1?: string;
-  DataText2?: string;
-  DataText3?: string;
-  DataText4?: string;
-  DataText5?: string;
-  DataText6?: string;
-  DataText7?: string;
-  DataText8?: string;
-  DataText9?: string;
-  DataText10?: string;
-  DataText11?: string;
-};
+export type SinopacRawTransactionRow = Partial<
+  Record<(typeof SINOPAC_IDENTITY_FIELD_NAMES)[number], string>
+>;
 
 export type SinopacStatementRow = {
   sortKey: string;
@@ -598,7 +625,19 @@ async function signInSinopac(
   const { page, session } = ctx;
   await fillLoginForm(page, credentials);
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  await emitHumanAssistanceStage(sinopacCaptchaAssistanceStage(page));
+  try {
+    await emitHumanAssistanceStage(sinopacCaptchaAssistanceStage(page));
+  } catch (error) {
+    // A plain CLI run has no desktop host contract channel.  Keep the
+    // headed-browser CAPTCHA pause usable while preserving all other errors.
+    if (
+      !(error instanceof Error) ||
+      error.message !== "Human assistance host API is unavailable for this workflow run."
+    ) {
+      throw error;
+    }
+    console.warn("human-assistance-host-unavailable; use the headed browser directly");
+  }
 
   console.log(sinopacManualAuthMessage(session));
   await pause(session);
@@ -756,6 +795,180 @@ class SinopacApiClient {
     }
     return result;
   }
+}
+
+type SinopacWrapperCategory = "native" | "patched" | "unknown";
+
+function classifyWrapperSource(source: unknown): SinopacWrapperCategory {
+  if (typeof source !== "string" || source.length === 0) return "unknown";
+  return source.includes("[native code]") ? "native" : "patched";
+}
+
+async function assessSinopacSiteSecurity(
+  page: Page,
+): Promise<SinopacIdentitySiteAssessment> {
+  // Keep the probe aggregate-only: browser globals are classified in-page and
+  // cookie/script values never leave this function.
+  const browserSignals = (await page.evaluate(`(() => {
+    const root = globalThis;
+    const fetchSource = Function.prototype.toString.call(root.fetch);
+    const xhr = root.XMLHttpRequest;
+    const openSource = xhr?.prototype?.open
+      ? Function.prototype.toString.call(xhr.prototype.open)
+      : "";
+    return {
+      botGlobal: ["_pxAppId", "bmak", "ddjskey"].some((key) => key in root),
+      fetchSource,
+      openSource,
+    };
+  })()`)) as {
+    botGlobal: boolean;
+    fetchSource: string;
+    openSource: string;
+  };
+  const cookies = await page.context().cookies(page.url());
+  const cookieBotSignal = cookies.some((cookie) =>
+    /(?:_abck|_px|datadome|cf_clearance|_imp_apg_|x-kpsdk-)/i.test(cookie.name),
+  );
+  let scriptBotSignal = false;
+  for (const script of await page.locator("script[src]").all()) {
+    const source = await script.getAttribute("src");
+    if (
+      source &&
+      /(?:akamaized|perimeterx|datadome|kasada|cloudflare)/i.test(source)
+    ) {
+      scriptBotSignal = true;
+      break;
+    }
+  }
+
+  const captchaMarkers = await page
+    .locator('iframe[src*="captcha" i]:visible, iframe[title*="captcha" i]:visible')
+    .count();
+  const cloudflareMarkers = await page
+    .locator(
+      'iframe[src*="challenge" i]:visible, [data-cf-chl-widget]:visible',
+    )
+    .count();
+  const genericChallengeMarkers = await page
+    .getByText(/checking your browser|verify you are human|bot check/i)
+    .count()
+    .catch(() => 0);
+  const challengeType: SinopacIdentitySiteAssessment["challengeType"] =
+    captchaMarkers > 0
+      ? "captcha"
+      : cloudflareMarkers > 0
+        ? "cloudflare"
+        : genericChallengeMarkers > 0
+          ? "generic-bot-check"
+          : "none";
+
+  return {
+    botProtectionDetected:
+      cookieBotSignal || scriptBotSignal || browserSignals.botGlobal || challengeType !== "none",
+    fetchXhrWrapperCategory: {
+      fetch: classifyWrapperSource(browserSignals.fetchSource),
+      xhr: classifyWrapperSource(browserSignals.openSource),
+    },
+    challengeType,
+  };
+}
+
+function cloneSinopacRawRow(row: SinopacRawTransactionRow): SinopacIdentityRawRow {
+  return { ...row };
+}
+
+function identityValidationOverlapRange(
+  validation: SinopacIdentityValidationInput,
+): DateRange {
+  const primary = {
+    startDate: validation.startDate,
+    endDate: validation.endDate,
+  };
+  const defaultStart = formatYYYYMMDD(
+    addMonths(dateFromYYYYMMDD(primary.endDate), -6),
+  );
+  const startDate = validation.overlapStartDate ??
+    (dateFromYYYYMMDD(defaultStart) < dateFromYYYYMMDD(primary.startDate)
+      ? primary.startDate
+      : defaultStart);
+  const endDate = validation.overlapEndDate ?? primary.endDate;
+  if (
+    dateFromYYYYMMDD(startDate) < dateFromYYYYMMDD(primary.startDate) ||
+    dateFromYYYYMMDD(endDate) > dateFromYYYYMMDD(primary.endDate) ||
+    dateFromYYYYMMDD(startDate) > dateFromYYYYMMDD(endDate)
+  ) {
+    throw new Error("identityValidation overlap range must be within the primary range.");
+  }
+  return { startDate, endDate };
+}
+
+export async function runSinopacIdentityValidation(
+  page: Page,
+  validation: SinopacIdentityValidationInput,
+  initialAccounts: SinopacAccount[],
+): Promise<SinopacIdentityEvidenceSummary> {
+  if (validation.currency !== "USD")
+    throw new Error("SinoPac identity validation only supports USD foreign accounts.");
+  const accounts = sinopacFilterAccounts(
+    initialAccounts,
+    validation.accountFilter ? [validation.accountFilter] : [],
+    ["USD"],
+  );
+  if (accounts.length === 0)
+    throw new Error("No USD foreign account matched identityValidation.");
+  if (accounts.length !== 1)
+    throw new Error(
+      "identityValidation requires exactly one USD foreign account; provide accountFilter.",
+    );
+
+  const primaryRange: DateRange = {
+    startDate: validation.startDate,
+    endDate: validation.endDate,
+  };
+  if (dateFromYYYYMMDD(primaryRange.startDate) > dateFromYYYYMMDD(primaryRange.endDate))
+    throw new Error("identityValidation startDate must be on or before endDate.");
+  const overlapRange = identityValidationOverlapRange(validation);
+  const apiClient = new SinopacApiClient(page);
+  const siteAssessment = await assessSinopacSiteSecurity(page);
+  const querySets: Array<{
+    label: SinopacIdentityCapture["label"];
+    range: DateRange;
+  }> = [
+    { label: "exact-repeat-1", range: primaryRange },
+    { label: "exact-repeat-2", range: primaryRange },
+    { label: "overlap", range: overlapRange },
+  ];
+  const captures: SinopacIdentityCapture[] = [];
+
+  // Query exactly three sequential sets.  Monthly windows remain the normal
+  // provider boundary so the validation does not introduce a new request shape.
+  for (const querySet of querySets) {
+    const windows: SinopacIdentityCapture["windows"] = [];
+    for (const window of sinopacQueryWindows(querySet.range)) {
+      const response = await apiClient.fetchTransactions(
+        accounts[0]!,
+        window,
+        querySet.range.endDate,
+      );
+      windows.push({
+        window,
+        response: { ...response },
+        rows: (response.SubInfo ?? []).map(cloneSinopacRawRow),
+      });
+    }
+    captures.push({ label: querySet.label, range: querySet.range, windows });
+  }
+
+  return summarizeSinopacIdentityEvidence(
+    captures as [
+      SinopacIdentityCapture,
+      SinopacIdentityCapture,
+      SinopacIdentityCapture,
+    ],
+    siteAssessment,
+    accounts.length,
+  );
 }
 
 async function writeStatementFiles(
@@ -917,6 +1130,7 @@ export async function runSinopacStatements(
   }
 
   const observedAt = new Date().toISOString();
+  const captureOccurrenceId = sinopacCaptureId(observedAt);
   const captureInputs: Array<{
     capture: SinopacStatementValidatedCapture;
     pending: PendingSinopacDownload;
@@ -998,17 +1212,21 @@ export async function runSinopacStatements(
     await commitSinopacStatementSourceEvidenceBatch(
       sourceStore,
       captureInputs.map(({ capture }) => capture),
-      sinopacCaptureId(observedAt),
+      captureOccurrenceId,
     );
     if (financialWriter) {
       const manifest = getSinopacHumanAttestedV1Manifest();
-      recordInitialSinopacHumanAttestationIfMissing(
-        financialWriter.db,
-        observedAt,
+      const hasDomesticCapture = captureInputs.some(
+        ({ capture }) => capture.product === "domestic-deposit",
       );
-      const personalAuthority = createSinopacPersonalAuthority(
-        financialWriter.db,
-      );
+      if (hasDomesticCapture)
+        recordInitialSinopacHumanAttestationIfMissing(
+          financialWriter.db,
+          observedAt,
+        );
+      const personalAuthority = hasDomesticCapture
+        ? createSinopacPersonalAuthority(financialWriter.db)
+        : null;
       const financialInputs = captureInputs.flatMap(({ capture }, index) =>
         capture.product === "domestic-deposit"
           ? [
@@ -1016,7 +1234,7 @@ export async function runSinopacStatements(
                 capture,
                 captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
                 humanAttestation: manifest,
-                personalAuthority,
+                personalAuthority: personalAuthority!,
               },
             ]
           : [],
@@ -1031,6 +1249,17 @@ export async function runSinopacStatements(
         throw new Error(
           `SinoPac domestic deposit financial admission failed: ${blocked.diagnostics.join(", ")}`,
         );
+      const foreignAdmissions: ForeignCurrencyDepositAdmittedCapture[] =
+        captureInputs.flatMap(({ capture }, index) =>
+          capture.product === "foreign-currency"
+            ? [
+                admitSinopacForeignCurrencyFinancialCapture(
+                  capture,
+                  `${captureOccurrenceId}:foreign:${index}`,
+                ),
+              ]
+            : [],
+        );
       if (financialInputs.length > 0) {
         await commitCanonicalSinopacDomesticDepositCaptureBatch(
           financialWriter,
@@ -1041,6 +1270,14 @@ export async function runSinopacStatements(
             (admission) => (admission.capture?.records.length ?? 0) > 0,
           )
         )
+          status = "financial-admitted";
+      }
+      if (foreignAdmissions.length > 0) {
+        await commitForeignCurrencyDepositCaptureBatch(
+          financialWriter,
+          foreignAdmissions,
+        );
+        if (foreignAdmissions.some((capture) => capture.records.length > 0))
           status = "financial-admitted";
       }
     }
@@ -1076,7 +1313,7 @@ export default workflow("sinopacStatements", {
   startUrl: LOGIN_URL,
   credentials: ["sinopac_user_id", "sinopac_account", "sinopac_password"],
   input: inputSchema,
-  output: outputSchema,
+  output: workflowOutputSchema,
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
     const { page } = ctx;
@@ -1097,6 +1334,22 @@ export default workflow("sinopacStatements", {
 
     console.log("automation-progress: 25");
     const accounts = await openTransactionPage(page);
+    if (input.identityValidation) {
+      const evidence = await runSinopacIdentityValidation(
+        page,
+        input.identityValidation,
+        accounts,
+      );
+      console.log("sinopac-identity-validation-complete", {
+        mode: evidence.mode,
+        captureCount: evidence.captures.length,
+        accountCount: evidence.accountCount,
+        rawValuesReturned: evidence.sideEffects.rawValuesReturned,
+      });
+      console.log("sinopac-identity-validation-summary", evidence);
+      console.log("automation-progress: 100");
+      return evidence;
+    }
     const result = await runSinopacStatements(page, input, accounts, {
       canonicalFinancialLedgerDir:
         process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,

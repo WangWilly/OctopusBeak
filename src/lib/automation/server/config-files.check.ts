@@ -8,8 +8,11 @@ import {
   AUTOMATION_CREDENTIALS_FORMAT,
   AUTOMATION_CREDENTIALS_PATH,
   AUTOMATION_SETTINGS_PATH,
+  CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+  FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   automationConfigEnv,
   credentialStatusFromValues,
+  ensureAutomationManagedSecrets,
   isAutomationCredentialCodecConfigured,
   migrateAutomationCredentialsFileEncryption,
   migrateAutomationEnvFile,
@@ -25,6 +28,8 @@ import { AUTOMATION_ENV_PATH } from "./settings.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "octopusbeak-config-"));
 const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
+const fubonPanFingerprintKey =
+  "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
 const maxSecretKey = "MAX_SECRET" + "_KEY";
 
 try {
@@ -70,6 +75,7 @@ try {
     EXCHANGE_RATE_UPDATE_TIME: "07:30",
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
     [fubonPasswordKey]: "pw",
+    [fubonPanFingerprintKey]: "synthetic-pan-fingerprint-key",
     MAX_SUB_ACCOUNT: "main",
   }), {
     settings: {
@@ -132,6 +138,10 @@ try {
   assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");
   assert.equal(AUTOMATION_ENV_PATH, ".env");
+  assert.equal(
+    CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+    FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+  );
 
   const importCwd = join(dir, "import-cwd");
   const runtimeCwd = join(dir, "runtime-cwd");
@@ -176,26 +186,62 @@ try {
   };
 
   const encryptedCredentialsPath = join(dir, "encrypted-credentials.json");
+  const managedSecret = "a".repeat(43);
   setAutomationCredentialCodec(null);
   assert.equal(isAutomationCredentialCodecConfigured(), false);
   setAutomationCredentialCodec(fakeCodec);
   assert.equal(isAutomationCredentialCodecConfigured(), true);
   writeAutomationCredentialsFile(encryptedCredentialsPath, {
-    [fubonPasswordKey]: "encrypted-secret",
+    [fubonPanFingerprintKey]: managedSecret,
   });
   const encryptedText = readFileSync(encryptedCredentialsPath, "utf8");
   const encryptedRecord = JSON.parse(encryptedText) as { format?: unknown; data?: unknown };
   assert.equal(encryptedRecord.format, AUTOMATION_CREDENTIALS_FORMAT);
   assert.equal(typeof encryptedRecord.data, "string");
-  assert.equal(encryptedText.includes("encrypted-secret"), false);
+  assert.equal(encryptedText.includes(managedSecret), false);
   assert.deepEqual(readAutomationCredentialsFile(encryptedCredentialsPath), {
-    [fubonPasswordKey]: "encrypted-secret",
+    [fubonPanFingerprintKey]: managedSecret,
   });
+
+  const generatedCredentialsPath = join(dir, "generated-credentials.json");
+  assert.deepEqual(
+    ensureAutomationManagedSecrets({
+      credentialsPath: generatedCredentialsPath,
+      generateFingerprintSecret: () => managedSecret,
+    }),
+    { created: true },
+  );
+  assert.equal(
+    readFileSync(generatedCredentialsPath, "utf8").includes(managedSecret),
+    false,
+  );
+  assert.equal(
+    readAutomationCredentialsFile(generatedCredentialsPath)[
+      FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY
+    ],
+    managedSecret,
+  );
+  assert.deepEqual(
+    ensureAutomationManagedSecrets({
+      credentialsPath: generatedCredentialsPath,
+      generateFingerprintSecret: () => {
+        throw new Error("must not rotate an existing managed secret");
+      },
+    }),
+    { created: false },
+  );
 
   setAutomationCredentialCodec(null);
   assert.equal(isAutomationCredentialCodecConfigured(), false);
   assert.throws(
     () => readAutomationCredentialsFile(encryptedCredentialsPath),
+    /Credential encryption is not configured/,
+  );
+  assert.throws(
+    () =>
+      ensureAutomationManagedSecrets({
+        credentialsPath: join(dir, "unencrypted-managed-secret.json"),
+      }),
     /Credential encryption is not configured/,
   );
 
