@@ -27,6 +27,28 @@ const sharedProviderAssistanceWorkflows = new Set([
   "yuanta-foreign-currency-statements.ts",
 ]);
 
+const solverBackedCaptchaWorkflows = [
+  { provider: "Fubon", source: "../workflows/fubon-auth.ts" },
+  { provider: "Yuanta Bank", source: "../workflows/yuanta-auth.ts" },
+  { provider: "HNCB", source: "../workflows/hncb-statements.ts" },
+  { provider: "Chunghwa Post", source: "../workflows/post-statements.ts" },
+  { provider: "SinoPac", source: "../workflows/sinopac-statements.ts" },
+  { provider: "E-Invoice", source: "../workflows/einvoice-personal-invoices.ts" },
+] as const;
+
+const explicitlyExcludedCaptchaWorkflows = [
+  {
+    provider: "Yuanta Trade",
+    source: "../workflows/yuanta-trade-statements.ts",
+    reason: "checkbox and image-selection remain human-assisted",
+  },
+  {
+    provider: "Cathay United Bank",
+    source: "../workflows/cathay-statements.ts",
+    reason: "Email OTP remains human-assisted",
+  },
+] as const;
+
 function rechecksInlineVerificationInput(source: string): boolean {
   if (source.includes("inputValue()).trim()")) return true;
 
@@ -80,6 +102,63 @@ test("all modelable human-assisted workflows publish a contract-backed stage", a
       `${file} must not put raw CAPTCHA data in a contract signal`,
     );
   }
+});
+
+test("solver-backed CAPTCHA workflow contract is explicit and excludes human flows", async () => {
+  const solverSources = await Promise.all(
+    solverBackedCaptchaWorkflows.map(async ({ provider, source }) => ({
+      provider,
+      source,
+      content: await readFile(new URL(source, import.meta.url), "utf8"),
+    })),
+  );
+  assert.deepEqual(
+    solverSources.map(({ provider }) => provider),
+    ["Fubon", "Yuanta Bank", "HNCB", "Chunghwa Post", "SinoPac", "E-Invoice"],
+  );
+  for (const { provider, content } of solverSources) {
+    assert.match(
+      content,
+      /challengeKind:\s*["']text-captcha["']/,
+      `${provider} must declare the text CAPTCHA consumed by the local solver`,
+    );
+    assert.match(
+      content,
+      /challengeImageRegion:/,
+      `${provider} must expose a challenge image region to the local solver`,
+    );
+  }
+
+  const excludedSources = await Promise.all(
+    explicitlyExcludedCaptchaWorkflows.map(async ({ provider, source, reason }) => ({
+      provider,
+      reason,
+      content: await readFile(new URL(source, import.meta.url), "utf8"),
+    })),
+  );
+  const solverSourcePaths = new Set<string>(
+    solverBackedCaptchaWorkflows.map(({ source }) => source),
+  );
+  for (const { provider, reason, content } of excludedSources) {
+    assert.ok(
+      !content.includes("challengeKind: \"text-captcha\""),
+      `${provider} must remain outside the solver-backed workflow table (${reason})`,
+    );
+  }
+  for (const { provider, source, reason } of explicitlyExcludedCaptchaWorkflows) {
+    assert.equal(
+      solverSourcePaths.has(source),
+      false,
+      `${provider} must remain outside the solver-backed workflow table (${reason})`,
+    );
+  }
+  const yuantaTrade = excludedSources.find(({ provider }) => provider === "Yuanta Trade");
+  assert.ok(yuantaTrade);
+  assert.match(yuantaTrade.content, /challengeKind:\s*["']checkbox["']/);
+  assert.match(yuantaTrade.content, /challengeKind:\s*["']image-selection["']/);
+  const cathay = excludedSources.find(({ provider }) => provider === "Cathay United Bank");
+  assert.ok(cathay);
+  assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
 });
 
 test("provider verification focus keeps the challenge readable", async () => {
