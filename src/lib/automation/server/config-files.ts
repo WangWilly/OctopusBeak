@@ -22,6 +22,17 @@ export const AUTOMATION_SETTINGS_PATH = "settings.json";
 export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
 export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
 
+// Gmail OTP state is owned by the host process.  These keys intentionally do
+// not belong to any workflow credential group: the refresh token and linked
+// address are never copied into a child workflow environment.
+export const CATHAY_GMAIL_OTP_ENABLED_KEY = "CATHAY_GMAIL_OTP_ENABLED";
+export const CATHAY_GMAIL_REFRESH_TOKEN_KEY = "CATHAY_GMAIL_REFRESH_TOKEN";
+export const CATHAY_GMAIL_CONNECTED_EMAIL_KEY = "CATHAY_GMAIL_CONNECTED_EMAIL";
+export const CATHAY_GMAIL_HOST_KEYS = [
+  CATHAY_GMAIL_REFRESH_TOKEN_KEY,
+  CATHAY_GMAIL_CONNECTED_EMAIL_KEY,
+] as const;
+
 export type AutomationCredentialCodec = {
   encrypt(text: string): string;
   decrypt(payload: string): string;
@@ -38,11 +49,21 @@ export function setAutomationCredentialCodec(codec: AutomationCredentialCodec | 
   automationCredentialCodec = codec;
 }
 
-const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
-const automationSecretKeys = new Set<string>(AUTOMATION_SECRET_KEYS);
-const automationKnownKeys = new Set<string>([
+export function isAutomationCredentialCodecConfigured() {
+  return automationCredentialCodec !== null;
+}
+
+const automationSettingKeys = new Set<string>([
   ...AUTOMATION_NON_SECRET_KEYS,
+  CATHAY_GMAIL_OTP_ENABLED_KEY,
+]);
+const automationSecretKeys = new Set<string>([
   ...AUTOMATION_SECRET_KEYS,
+  ...CATHAY_GMAIL_HOST_KEYS,
+]);
+const automationKnownKeys = new Set<string>([
+  ...automationSettingKeys,
+  ...automationSecretKeys,
 ]);
 
 function readJsonRecord(path: string) {
@@ -288,8 +309,13 @@ export function automationConfigEnv({
   const env = {
     ...baseEnv,
     ...settingsToEnv(settings),
-    ...credentials,
+    ...Object.fromEntries(
+      Object.entries(credentials).filter(
+        ([key]) => !CATHAY_GMAIL_HOST_KEYS.includes(key as typeof CATHAY_GMAIL_HOST_KEYS[number]),
+      ),
+    ),
   };
+  for (const key of CATHAY_GMAIL_HOST_KEYS) delete env[key];
   if (env.NODE_ENV === "production") env.NODE_ENV = "development";
   return env;
 }

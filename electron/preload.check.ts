@@ -7,6 +7,10 @@ assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:disconnectCathayGmailOtp"), true);
 
 const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
 assert.deepEqual(
@@ -25,4 +29,12 @@ for (const method of [
   ["confirmRestore", "dataIssues:confirmRestore"],
 ]) {
   assert.match(source, new RegExp(`${method[0]}: .*ipcRenderer\\.invoke\\("${method[1]}"`));
+}
+for (const [method, channel] of [
+  ["cathayGmailOtpStatus", "automation:cathayGmailOtpStatus"],
+  ["enableCathayGmailOtp", "automation:enableCathayGmailOtp"],
+  ["setCathayGmailOtpEnabled", "automation:setCathayGmailOtpEnabled"],
+  ["disconnectCathayGmailOtp", "automation:disconnectCathayGmailOtp"],
+]) {
+  assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
 }
