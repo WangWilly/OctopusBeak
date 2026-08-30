@@ -860,6 +860,84 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
   }
 });
 
+test("Yuanta billing lifecycle reuses one transaction while retaining status history", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-billing-lifecycle-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const unbilledLifecycleRow = row(null, {
+      consumeDate: "2026-06-10",
+      postedDate: "2026-06-10",
+      description: "SYNTHETIC BILLING LIFECYCLE PURCHASE",
+    });
+    const billedLifecycleRow = {
+      ...unbilledLifecycleRow,
+      period: "115/06",
+      paymentStatus: "已繳",
+    };
+    const first = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "billing-lifecycle-unbilled",
+        unbilledRows: [unbilledLifecycleRow, ...options().unbilledRows],
+      }),
+    );
+    const second = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "billing-lifecycle-billed",
+        billedRows: [...options().billedRows, billedLifecycleRow],
+      }),
+    );
+    const firstLifecycle = first.transactions.find(
+      (transaction) => transaction.description === unbilledLifecycleRow.description,
+    );
+    const secondLifecycle = second.transactions.find(
+      (transaction) => transaction.description === billedLifecycleRow.description,
+    );
+    assert.ok(firstLifecycle);
+    assert.ok(secondLifecycle);
+    assert.equal(firstLifecycle.sourceKey, secondLifecycle.sourceKey);
+    assert.equal(firstLifecycle.billingStatus, "unbilled");
+    assert.equal(secondLifecycle.billingStatus, "billed");
+
+    await commitYuantaCreditCardCapture(store, first);
+    await commitYuantaCreditCardCapture(store, second);
+
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
+      11,
+    );
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM canonical_credit_card_transaction_lifecycle
+        WHERE transaction_id = (
+          SELECT transaction_id FROM financial_transactions WHERE source_sequence = ?
+        )
+      `).get(secondLifecycle.sourceKey) as { n: number }).n),
+      2,
+    );
+    const lifecycle = store.db.prepare(`
+      SELECT billing_status, statement_key
+      FROM canonical_credit_card_transaction_lifecycle
+      WHERE transaction_id = (
+        SELECT transaction_id FROM financial_transactions WHERE source_sequence = ?
+      )
+      ORDER BY rowid
+    `).all(secondLifecycle.sourceKey) as Array<{
+      billing_status?: string;
+      statement_key?: string | null;
+    }>;
+    assert.deepEqual(lifecycle.map(({ billing_status, statement_key }) => ({
+      billing_status,
+      statement_key,
+    })), [
+      { billing_status: "unbilled", statement_key: null },
+      { billing_status: "billed", statement_key: secondLifecycle.statementKey },
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
 test("settled summary corrections create complete revisions without duplicating statements", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-summary-revisions-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import {
   buildEsunCanonicalCreditCardCapture,
   buildEsunSettledPeriodsFromIssuerSummaries,
+  attachEsunIssuerStatementPeriods,
   deriveEsunProjectedInstrumentIdentity,
   esunIssuerSummaryFromLabelRows,
   esunIssuerSummaryFromText,
@@ -195,7 +197,7 @@ assert.deepEqual(
 );
 
 const billedRow: StatementRow = {
-  statementPeriod: "2026-07",
+  issuerStatementPeriod: "2026-07",
   cardNumber: "4111-****-****-1234",
   consumeDate: "2026/07/15",
   description: "Synthetic Coffee",
@@ -207,7 +209,7 @@ const billedRow: StatementRow = {
   sourcePaymentStatus: "已入帳",
 };
 const unbilledRow: StatementRow = {
-  statementPeriod: "2026-08",
+  issuerStatementPeriod: "2026-08",
   cardNumber: "4111-****-****-1234",
   consumeDate: "2026/08/15",
   description: "Synthetic Transit",
@@ -245,6 +247,15 @@ const settledPeriods = [
     minimumPayment: "12.34",
   },
 ];
+const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(
+  [
+    { ...billedRow, issuerStatementPeriod: undefined },
+    { ...unbilledRow, issuerStatementPeriod: undefined },
+  ],
+  settledPeriods,
+);
+assert.equal(rowsWithIssuerPeriods[0]?.issuerStatementPeriod, "2026-07");
+assert.equal(rowsWithIssuerPeriods[1]?.issuerStatementPeriod, undefined);
 const canonicalCapture = buildEsunCanonicalCreditCardCapture({
   startDate: "2025/08/26",
   endDate: "2026/08/26",
@@ -293,6 +304,44 @@ assert.doesNotMatch(
   /4111|user-id-001|account-009|synthetic-esun-managed-secret/iu,
   "canonical E.SUN capture must retain only safe card keys and opaque identity",
 );
+
+test("rolling query range does not become a transaction statement period", () => {
+  const billedGridRow = { ...billedRow, issuerStatementPeriod: undefined };
+  const unbilledGridRow = { ...unbilledRow, issuerStatementPeriod: undefined };
+  const first = buildEsunCanonicalCreditCardCapture({
+    startDate: "2025/08/26",
+    endDate: "2026/08/26",
+    identity,
+    statementRows: [billedGridRow],
+    unbilledRows: [unbilledGridRow],
+    grid: completeGrid,
+    capture: completeCapture,
+    instrumentFingerprintSecret: managedSecret,
+  });
+  const second = buildEsunCanonicalCreditCardCapture({
+    startDate: "2025/08/27",
+    endDate: "2026/08/27",
+    identity,
+    statementRows: [billedGridRow],
+    unbilledRows: [unbilledGridRow],
+    grid: completeGrid,
+    capture: {
+      ...completeCapture,
+      captureId: "capture-esun-rolling-query",
+    },
+    instrumentFingerprintSecret: managedSecret,
+  });
+  assert(first);
+  assert(second);
+  assert.deepEqual(
+    first.transactions.map((transaction) => transaction.statementPeriod),
+    [undefined, undefined],
+  );
+  assert.deepEqual(
+    first.transactions.map((transaction) => transaction.sourceKey),
+    second.transactions.map((transaction) => transaction.sourceKey),
+  );
+});
 
 const noSettledEvidence = buildEsunCanonicalCreditCardCapture({
   startDate: "2025/08/26",

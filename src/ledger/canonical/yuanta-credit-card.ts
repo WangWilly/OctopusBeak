@@ -1077,6 +1077,10 @@ function yuantaCanonicalSpineCapture(
       throw new YuantaCreditCardAdmissionError(
         "Yuanta transaction instrument is missing from the validated capture.",
       );
+    // Billing status and issuer statement linkage are lifecycle evidence,
+    // not immutable transaction content. They are persisted by the
+    // credit-card extension so an unbilled transaction can later become
+    // billed without changing its shared financial authority.
     const compact = JSON.stringify({
       sourceRecordKey: transaction.sourceRecordKey,
       occurrenceIndex: transaction.occurrenceIndex,
@@ -1093,8 +1097,6 @@ function yuantaCanonicalSpineCapture(
       // immutable content identity on that same semantic value so harmless
       // provider whitespace/casing changes do not look like an overwrite.
       description: transaction.normalizedDescription,
-      billingStatus: transaction.billingStatus,
-      statementKey: transaction.statementKey ?? null,
     });
     return {
       occurrenceKey: transaction.sourceKey,

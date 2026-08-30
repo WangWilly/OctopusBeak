@@ -27,6 +27,14 @@ import {
   routeWaitingRunVerification,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
+import {
+  SINOPAC_DIALOG_OWNER_ENV,
+  sinopacHostDialogOwner,
+} from "../sinopac-captcha.ts";
+import {
+  YUANTA_DIALOG_OWNER_ENV,
+  yuantaHostDialogOwner,
+} from "../yuanta-captcha.ts";
 import type {
   AutomationTaskExecutionOptions,
   runAutomationTaskExecution,
@@ -39,7 +47,29 @@ type CaptchaRetryExecutionResult = Awaited<
 type RoutedExecution = {
   execution: CaptchaRetryExecutionResult;
   routing?: VerificationRoutingOutcome;
+  /** The current execution's exact session was already finalized and joined. */
+  sessionCleaned?: boolean;
 };
+
+const CAPTCHA_RESUME_JOIN_TIMEOUT_MS = 5_000;
+
+async function settleCaptchaResume(
+  promise: Promise<unknown>,
+  timeoutMs = CAPTCHA_RESUME_JOIN_TIMEOUT_MS,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    promise.then(
+      (value) => ({ timedOut: false as const, value }),
+      (error) => ({ timedOut: false as const, error }),
+    ),
+    new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return result;
+}
 
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
@@ -56,6 +86,8 @@ export type CaptchaRetryCoordinatorDependencies = {
    * use the verification router's normal implementation.
    */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
+  /** Exact-session cleanup seam used by the coordinator and focused tests. */
+  finalizeSessionForRun?: typeof finalizeAutomationSessionForRun;
 };
 
 function processResultOf(execution: CaptchaRetryExecutionResult) {
@@ -150,10 +182,11 @@ async function cleanUpCaptchaRetryRound(
   taskRunId: string,
   reason: string,
   activeOwner?: OwnedAutomationSession | null,
+  sessionAlreadyCleaned = false,
 ) {
   const run = taskRunById(taskDb, taskRunId);
   if (!run) return { ok: false as const, message: "Missing automation task run." };
-  const cleanup = (activeOwner ?? sessionFromRun(run))
+  const cleanup = !sessionAlreadyCleaned && (activeOwner ?? sessionFromRun(run))
     ? await finalizeAutomationSessionForRun(run, null, "exact", activeOwner)
     : null;
   if (cleanup?.cleanupFailed) {
@@ -199,6 +232,8 @@ export async function runCaptchaRetryCampaign(
   } = dependencies;
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
+  const finalizeSession = dependencies.finalizeSessionForRun
+    ?? finalizeAutomationSessionForRun;
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
 
   const executeAndRoute = async (
@@ -210,19 +245,54 @@ export async function runCaptchaRetryCampaign(
     }
 
     let resumed: RoutedExecution | null = null;
+    let resumePromise: Promise<void> | null = null;
+    let resumeSettled = false;
+    let sessionCleaned = false;
     let routing: VerificationRoutingOutcome;
+    const cleanupResumedSession = async () => {
+      if (sessionCleaned) return;
+      const currentRun = taskRunById(taskDb, execution.taskRunId);
+      if (!currentRun) return;
+      const cleanup = await finalizeSession(
+        currentRun,
+        null,
+        "exact",
+      );
+      if (cleanup.cleanupFailed) {
+        throw new Error(
+          cleanup.errorMessage ?? "CAPTCHA retry session cleanup failed.",
+        );
+      }
+      sessionCleaned = true;
+    };
     try {
       routing = await route({
         taskId,
         taskRunId: execution.taskRunId,
+        session: execution.session ?? undefined,
         db: taskDb,
-        scheduleResume: async (session) => {
-          resumed = await executeAndRoute({
+        scheduleResume: (session) => {
+          const nextResume = executeAndRoute({
             ...executionOptions,
             taskRunId: execution.taskRunId,
             resumeSession: session,
+            // The workflow may let the host probe own post-submit dialogs
+            // only for this explicit solver retry. Human/direct resumes keep
+            // their workflow-owned fail-fast dialog handler.
+            launchEnv: {
+              ...(executionOptions.launchEnv ?? {}),
+              [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner(session),
+              [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner(session),
+            },
           });
+          resumePromise = nextResume.then((result) => {
+            resumed = result;
+          }).finally(() => {
+            resumeSettled = true;
+          });
+          return resumePromise;
         },
+        cleanupSession: cleanupResumedSession,
         onChallengeCaptured: () => {
           const executionId = executionIdOf(execution);
           if (!executionId) return;
@@ -236,6 +306,26 @@ export async function runCaptchaRetryCampaign(
         },
         settings: launchVerificationSettings,
       });
+      // Providers should join their resumed execution as part of the probe.
+      // Keep the coordinator defensive as well: a route that returns while a
+      // resume is still in flight must terminate and join it before the outer
+      // campaign can clean up and start another round.
+      if (resumePromise && !resumeSettled) {
+        let cleanupError: unknown = null;
+        try {
+          await cleanupResumedSession();
+        } catch (error) {
+          cleanupError = error;
+        }
+        const joined = await settleCaptchaResume(resumePromise);
+        if (cleanupError) throw cleanupError;
+        if (joined.timedOut) {
+          throw new Error("CAPTCHA retry resume did not settle after cleanup.");
+        }
+        if ("error" in joined) throw joined.error;
+      } else if (resumePromise) {
+        await resumePromise;
+      }
     } catch (error) {
       await finalizeCaptchaRetryCampaign(
         taskDb,
@@ -244,10 +334,10 @@ export async function runCaptchaRetryCampaign(
         ledgerDir,
         errorMessage(error),
       );
-      return { execution, routing: { kind: "failed" } };
+      return { execution, routing: { kind: "failed" }, sessionCleaned };
     }
     if (routing.kind === "resumed" && resumed) return resumed;
-    return { execution, routing };
+    return { execution, routing, sessionCleaned };
   };
 
   let executionOptions = dependencies.initialExecutionOptions;
@@ -267,6 +357,18 @@ export async function runCaptchaRetryCampaign(
     }
 
     if (routed.routing?.kind === "failed") {
+      if ("taskRunId" in execution && !routed.sessionCleaned) {
+        // A provider-owned dialog may make the resumed child fail before the
+        // route returns. Finalize from the coordinator as well so a
+        // fail-closed route cannot leave that resumed session running.
+        await finalizeCaptchaRetryCampaign(
+          taskDb,
+          execution.taskRunId!,
+          execution,
+          ledgerDir,
+          "Verification route failed closed.",
+        );
+      }
       return { status: "failed" as const };
     }
     if (execution.status === "cancelled") {
@@ -304,7 +406,7 @@ export async function runCaptchaRetryCampaign(
     }
 
     const routeRetry = routed.routing?.kind === "retryable"
-      ? "solver-exhausted" as const
+      ? routed.routing.reason
       : null;
     if (routeRetry) {
       if (!("taskRunId" in execution)) return { status: "failed" as const };
@@ -342,6 +444,7 @@ export async function runCaptchaRetryCampaign(
         execution.taskRunId!,
         routeRetry,
         "owner" in execution ? execution.owner : null,
+        routed.sessionCleaned ?? false,
       );
       if (!cleanup.ok) {
         await finalizeCaptchaRetryCampaign(

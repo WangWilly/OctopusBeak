@@ -14,3 +14,15 @@ export const SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID =
 
 export const SINOPAC_CAPTCHA_NATURAL_WIDTH = 120;
 export const SINOPAC_CAPTCHA_NATURAL_HEIGHT = 40;
+
+/**
+ * A host-started solver retry may let the provider adapter own the
+ * post-submit dialog. Direct or human resumes intentionally omit this
+ * capability and keep the workflow's fail-fast dialog handler.
+ */
+export const SINOPAC_DIALOG_OWNER_ENV = "OCTOPUSBEAK_SINOPAC_DIALOG_OWNER";
+export const SINOPAC_HOST_DIALOG_OWNER_PREFIX = "provider-verification-host:";
+export function sinopacHostDialogOwner(session: string): string {
+  return SINOPAC_HOST_DIALOG_OWNER_PREFIX + session;
+}
+export const SINOPAC_DIALOG_DISMISS_TIMEOUT_MS = 500;

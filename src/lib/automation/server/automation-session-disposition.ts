@@ -4,6 +4,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  statSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -94,14 +95,23 @@ export function automationCleanupFailureDetails(
 }
 
 export function automationSessionFromLog(output: string) {
-  return output.match(/automation-session:\s+([A-Za-z0-9._-]+)/i)?.[1] ?? null;
+  const pattern = /automation-session:\s+([A-Za-z0-9._-]+)/gi;
+  let session: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(output)) !== null) {
+    session = match[1] ?? null;
+  }
+  return session;
 }
 
 export function resumeSessionFromLog(output: string) {
-  const match = output.match(
-    /libretto resume --session\s+([\w-]+)|Resume requested for session\s+["']?([\w-]+)/i,
-  );
-  return match?.[1] ?? match?.[2] ?? null;
+  const pattern = /libretto resume --session\s+([\w-]+)|Resume requested for session\s+["']?([\w-]+)/gi;
+  let session: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(output)) !== null) {
+    session = match[1] ?? match[2] ?? null;
+  }
+  return session;
 }
 
 export function sessionFromRun(run: AutomationTaskRun) {
@@ -109,14 +119,29 @@ export function sessionFromRun(run: AutomationTaskRun) {
     const buffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
     const descriptor = openSync(run.logPath, "r");
     let length: number;
+    let output: string;
     try {
       length = readSync(descriptor, buffer, 0, SESSION_LOG_PREFIX_BYTES, 0);
+      const prefix = buffer.toString("utf8", 0, length);
+      const size = statSync(run.logPath).size;
+      if (size > SESSION_LOG_PREFIX_BYTES) {
+        const tailBuffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
+        const tailLength = readSync(
+          descriptor,
+          tailBuffer,
+          0,
+          SESSION_LOG_PREFIX_BYTES,
+          Math.max(0, size - SESSION_LOG_PREFIX_BYTES),
+        );
+        output = `${prefix}\n${tailBuffer.toString("utf8", 0, tailLength)}`;
+      } else {
+        output = prefix;
+      }
     } finally {
       closeSync(descriptor);
     }
-    const output = buffer.toString("utf8", 0, length);
-    const session =
-      automationSessionFromLog(output) ?? resumeSessionFromLog(output);
+    output += `\n${run.logTail}`;
+    const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
     if (session) return session;
   } catch {
     // The bounded log tail remains the recovery source when the log file is unavailable.

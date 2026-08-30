@@ -11,7 +11,9 @@ import {
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
+  SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
 } from "../sinopac-captcha.ts";
+import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
@@ -20,6 +22,7 @@ import {
   refreshTargetRect,
   sendHumanVerificationInput,
   withViewerPage,
+  type ViewerDialogAccess,
   type ViewerTargetInputHandler,
   type ViewerPageAccess,
 } from "./automation-viewer.ts";
@@ -62,6 +65,7 @@ type ProviderVerificationAdapter = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handleInput?: ViewerTargetInputHandler;
+  probePostSubmit?: ProviderVerificationPostSubmitProbe;
   shouldCheckCompletion(inputType: unknown, semanticId: unknown): boolean;
   shouldAutoResume(
     contract: HumanAssistanceContract,
@@ -69,6 +73,18 @@ type ProviderVerificationAdapter = {
     verified: boolean,
   ): boolean;
 };
+
+export type ProviderVerificationPostSubmitOutcome =
+  | "none"
+  | "provider-rejected"
+  | "unrecognized-dialog";
+
+export type ProviderVerificationPostSubmitProbe = (
+  session: string,
+  contract: HumanAssistanceContract,
+  resume: () => Promise<void>,
+  cleanupSession?: () => Promise<void>,
+) => Promise<ProviderVerificationPostSubmitOutcome>;
 
 export type ProviderVerificationPageRunner = <T>(
   session: string,
@@ -101,6 +117,17 @@ export type ProviderVerificationHost = {
     rawInput: unknown,
     contract: HumanAssistanceContract,
   ): Promise<unknown>;
+  injectAnswer(
+    session: string,
+    contract: HumanAssistanceContract,
+    answer: string,
+  ): Promise<void>;
+  probePostSubmit(
+    session: string,
+    contract: HumanAssistanceContract,
+    resume: () => Promise<void>,
+    cleanupSession?: () => Promise<void>,
+  ): Promise<ProviderVerificationPostSubmitOutcome>;
   inspectCompletion(
     session: string,
     contract: HumanAssistanceContract,
@@ -181,10 +208,223 @@ const sinopacInputHandler: ViewerTargetInputHandler = async (page, input, target
   }
   if (input.type === "type") {
     await captcha.fill(input.text);
+    if ((await captcha.inputValue()).trim() !== input.text) {
+      // Retention is a provider-side input failure, not evidence that a new
+      // CAPTCHA challenge exists.  Keep it as an ordinary error so generic
+      // routing fails closed instead of silently spending a retry round.
+      throw new Error("SinoPac CAPTCHA input did not retain the solver answer.");
+    }
     return true;
   }
   return false;
 };
+
+function normalizeProviderDialogText(message: string) {
+  return message
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-TW")
+    .replace(/\s+/g, "");
+}
+
+/**
+ * Only the evidence-backed CAPTCHA rejection wording for a provider may
+ * advance the retry campaign. Other dialogs remain fail-closed and never
+ * become retry signals.
+ */
+function classifyProviderPostSubmitDialog(
+  dialog: ViewerDialogAccess,
+  evidenceBackedMessage: string,
+): ProviderVerificationPostSubmitOutcome {
+  let type = "unknown";
+  try {
+    type = dialog.type();
+  } catch {
+    return "unrecognized-dialog";
+  }
+  if (type !== "alert") return "unrecognized-dialog";
+
+  let message = "";
+  try {
+    message = normalizeProviderDialogText(dialog.message());
+  } catch {
+    return "unrecognized-dialog";
+  }
+  return message === normalizeProviderDialogText(evidenceBackedMessage)
+    ? "provider-rejected"
+    : "unrecognized-dialog";
+}
+
+function classifySinopacPostSubmitDialog(
+  dialog: ViewerDialogAccess,
+): ProviderVerificationPostSubmitOutcome {
+  return classifyProviderPostSubmitDialog(
+    dialog,
+    "驗證碼失效或輸入錯誤，請重新輸入。",
+  );
+}
+
+function classifyYuantaPostSubmitDialog(
+  dialog: ViewerDialogAccess,
+): ProviderVerificationPostSubmitOutcome {
+  return classifyProviderPostSubmitDialog(
+    dialog,
+    "驗證碼不正確，請重新輸入",
+  );
+}
+
+const PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS = 5_000;
+const PROVIDER_RESUME_JOIN_TIMEOUT_MS = 5_000;
+
+async function settleProviderPromise<T>(promise: Promise<T>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    promise.then(
+      (value) => ({ timedOut: false as const, value }),
+      (error) => ({ timedOut: false as const, error }),
+    ),
+    new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return result;
+}
+
+async function dismissProviderDialog(
+  dialog: ViewerDialogAccess,
+  timeoutMs: number,
+) {
+  const dismissal = Promise.resolve().then(() => dialog.dismiss());
+  // A native dialog implementation can reject or remain pending.  Observe
+  // the underlying promise even when the bounded wait expires so it cannot
+  // become an unhandled rejection later.
+  void dismissal.catch(() => undefined);
+  const result = await settleProviderPromise(
+    dismissal,
+    timeoutMs,
+  );
+  return !result.timedOut && !("error" in result);
+}
+
+function createProviderPostSubmitProbe(
+  withPage: ProviderVerificationPageRunner,
+  classifyDialog: (dialog: ViewerDialogAccess) => ProviderVerificationPostSubmitOutcome,
+  dismissTimeoutMs: number,
+): ProviderVerificationPostSubmitProbe {
+  return async (session, _contract, resume, cleanupSession) => withPage(session, async (page) => {
+    // Without both the dialog observer and exact-session cleanup capability,
+    // starting resume could leave a workflow blocked in its long navigation
+    // wait with nobody able to classify or terminate it.
+    if (!page.onDialog || !page.offDialog || !cleanupSession) {
+      return "unrecognized-dialog";
+    }
+
+    let dialogStarted = false;
+    let resolveDialog!: (dialog: {
+      outcome: ProviderVerificationPostSubmitOutcome;
+      settled: Promise<ProviderVerificationPostSubmitOutcome>;
+    }) => void;
+    const dialogObserved = new Promise<{
+      outcome: ProviderVerificationPostSubmitOutcome;
+      settled: Promise<ProviderVerificationPostSubmitOutcome>;
+    }>(
+      (resolve) => {
+        resolveDialog = resolve;
+      },
+    );
+    const dialogHandler = (dialog: ViewerDialogAccess) => {
+      if (dialogStarted) return;
+      dialogStarted = true;
+      // The provider adapter is the sole owner of post-submit dialogs when a
+      // host capability is present.  The dismissal is awaited (with a short
+      // bound) before the outcome is visible to the retry coordinator.
+      void (async () => {
+        let classified: ProviderVerificationPostSubmitOutcome;
+        try {
+          classified = classifyDialog(dialog);
+        } catch {
+          classified = "unrecognized-dialog";
+        }
+        const settled = dismissProviderDialog(dialog, dismissTimeoutMs).then(
+          (dismissed) => dismissed ? classified : "unrecognized-dialog",
+          () => "unrecognized-dialog" as const,
+        );
+        resolveDialog({ outcome: classified, settled });
+      })();
+    };
+    page.onDialog(dialogHandler);
+    try {
+      const resumePromise = Promise.resolve().then(resume);
+      const resumed = resumePromise.then(
+        () => ({ kind: "completed" as const }),
+        (error) => ({ kind: "failed" as const, error }),
+      );
+      const result = await Promise.race([
+        dialogObserved.then((outcome) => ({ kind: "dialog" as const, outcome })),
+        resumed,
+      ]);
+      if (result.kind === "dialog") {
+        const dialogOutcome = await result.outcome.settled;
+        // A host-owned dialog is retryable only after the resumed execution
+        // has been explicitly cleaned up and its process promise has settled.
+        // Without the capability callback there is no safe way to prevent a
+        // late resume from mutating the shared task-run owner, so fail closed.
+        const cleanupResult = await settleProviderPromise(
+          Promise.resolve().then(() => cleanupSession()),
+          PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS,
+        );
+        const resumeResult = await settleProviderPromise(
+          resumed,
+          PROVIDER_RESUME_JOIN_TIMEOUT_MS,
+        );
+        if (
+          cleanupResult.timedOut ||
+          ("error" in cleanupResult) ||
+          resumeResult.timedOut
+        ) {
+          return "unrecognized-dialog";
+        }
+        return dialogOutcome;
+      }
+      if (result.kind === "failed") throw result.error;
+      // A clean resume without a dialog is the ordinary success path. Any
+      // resume failure remains fail-closed and is propagated above.
+      return "none";
+    } finally {
+      page.offDialog(dialogHandler);
+    }
+  });
+}
+
+function createSinopacPostSubmitProbe(
+  withPage: ProviderVerificationPageRunner,
+): ProviderVerificationPostSubmitProbe {
+  return createProviderPostSubmitProbe(
+    withPage,
+    classifySinopacPostSubmitDialog,
+    SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
+  );
+}
+
+function createYuantaPostSubmitProbe(
+  withPage: ProviderVerificationPageRunner,
+): ProviderVerificationPostSubmitProbe {
+  const probe = createProviderPostSubmitProbe(
+    withPage,
+    classifyYuantaPostSubmitDialog,
+    YUANTA_DIALOG_DISMISS_TIMEOUT_MS,
+  );
+  return async (session, contract, resume, cleanupSession) => {
+    // The Yuanta adapter also owns the trade checkbox/image-selection stages.
+    // Only the bank's six-digit login CAPTCHA has evidence-backed rejection
+    // wording; trade stages keep their existing workflow behavior.
+    if (!yuantaBankCaptchaContract(contract)) {
+      await resume();
+      return "none";
+    }
+    return probe(session, contract, resume, cleanupSession);
+  };
+}
 
 function sinopacCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
@@ -393,7 +633,9 @@ async function refreshYuantaChallengeSubmitTarget(
   }));
 }
 
-function createAdapters(withPage: ProviderVerificationPageRunner): readonly ProviderVerificationAdapter[] {
+function createAdapters(
+  withPage: ProviderVerificationPageRunner,
+): readonly ProviderVerificationAdapter[] {
   const fubonSourceOwner = createLoadedCaptchaSourceOwner({
     id: FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
     withPage,
@@ -450,6 +692,7 @@ function createAdapters(withPage: ProviderVerificationPageRunner): readonly Prov
       refreshTarget: (session, contract) => refreshSinopacCaptchaTarget(withPage, session, contract),
       inspectCompletion: async () => false,
       handleInput: sinopacInputHandler,
+      probePostSubmit: createSinopacPostSubmitProbe(withPage),
       shouldCheckCompletion: () => false,
       shouldAutoResume: () => false,
     },
@@ -467,6 +710,7 @@ function createAdapters(withPage: ProviderVerificationPageRunner): readonly Prov
       )),
       refreshTarget: (session, contract) => refreshYuantaChallengeSubmitTarget(withPage, session, contract),
       inspectCompletion: (session, contract) => inspectYuantaCompletion(withPage, session, contract),
+      probePostSubmit: createYuantaPostSubmitProbe(withPage),
       shouldCheckCompletion: shouldCheckYuantaCompletion,
       shouldAutoResume: shouldAutoResumeYuantaTradeCaptcha,
     },
@@ -533,6 +777,43 @@ export function createProviderVerificationHost(
     return forwardInput(session, rawInput, contract, adapter?.handleInput);
   };
 
+  const injectAnswer = async (
+    session: string,
+    contract: HumanAssistanceContract,
+    answer: string,
+  ) => {
+    const focusTarget = contract.targets.find((target) =>
+      target.id === contract.focus.targetId && target.modes.includes("type")
+    );
+    const target = focusTarget
+      ?? contract.targets.find((candidate) => candidate.modes.includes("type"));
+    if (!target) {
+      throw new Error("Verification contract declares no type target for the solver answer.");
+    }
+    await sendInput(session, {
+      type: "type",
+      text: answer,
+      targetId: target.id,
+      contractVersion: contract.version,
+    }, contract);
+  };
+
+  const probePostSubmit = async (
+    session: string,
+    contract: HumanAssistanceContract,
+    resume: () => Promise<void>,
+    cleanupSession?: () => Promise<void>,
+  ): Promise<ProviderVerificationPostSubmitOutcome> => {
+    const adapter = matchingAdapters(contract).find(
+      (candidate) => candidate.probePostSubmit,
+    );
+    if (!adapter?.probePostSubmit) {
+      await resume();
+      return "none";
+    }
+    return adapter.probePostSubmit(session, contract, resume, cleanupSession);
+  };
+
   const inspectCompletion = async (
     session: string,
     contract: HumanAssistanceContract,
@@ -562,6 +843,8 @@ export function createProviderVerificationHost(
     handlesChallengeImage,
     refreshTarget,
     sendInput,
+    injectAnswer,
+    probePostSubmit,
     inspectCompletion,
     waitForCompletion,
     shouldCheckCompletion: (inputType, semanticId) =>
@@ -579,6 +862,8 @@ export const isProviderVerificationImageCurrent = defaultHost.isChallengeImageCu
 export const providerVerificationHandlesChallengeImage = defaultHost.handlesChallengeImage;
 export const refreshProviderVerificationTarget = defaultHost.refreshTarget;
 export const sendProviderVerificationInput = defaultHost.sendInput;
+export const injectProviderVerificationAnswer = defaultHost.injectAnswer;
+export const probeProviderVerificationPostSubmit = defaultHost.probePostSubmit;
 export const inspectProviderVerificationCompletion = defaultHost.inspectCompletion;
 export const waitForProviderVerificationCompletion = defaultHost.waitForCompletion;
 export const shouldCheckProviderVerificationCompletion = defaultHost.shouldCheckCompletion;

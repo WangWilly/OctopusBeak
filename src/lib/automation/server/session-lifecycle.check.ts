@@ -165,8 +165,9 @@ test("close timeout awaits exact helper exit before daemon escalation", async ()
   assert.deepEqual(events, ["terminate-start", "terminate-done", "verify-daemon", "SIGTERM", "verify-daemon"]);
 });
 
-test("helper termination timeout rejects even when the owned daemon is absent", async () => {
+test("helper termination timeout does not fail when the owned daemon is absent", async () => {
   const deadlines: Array<() => void> = [];
+  const warnings: Array<Record<string, unknown>> = [];
   ownAutomationSession({
     taskId: "task-helper-timeout-error",
     taskRunId: "run-helper-timeout-error",
@@ -184,6 +185,11 @@ test("helper termination timeout rejects even when the owned daemon is absent", 
       assert.equal(session, "ses-helper-timeout-error");
       return false;
     },
+    isSessionAbsent(session) {
+      assert.equal(session, "ses-helper-timeout-error");
+      return true;
+    },
+    onCleanupWarning(details) { warnings.push(details); },
     signalProcessGroup() { assert.fail("absent daemon must not be signalled"); },
     async wait() {},
     timerDeps: {
@@ -195,8 +201,107 @@ test("helper termination timeout rejects even when the owned daemon is absent", 
   deadlines.shift()?.();
   await new Promise((resolve) => setImmediate(resolve));
   deadlines.shift()?.();
-  await assert.rejects(finalizing, /close helper remained/i);
+  await finalizing;
   assert.equal(ownedAutomationSession("task-helper-timeout-error"), null);
+  assert.deepEqual(warnings, [{
+    sessionId: "ses-helper-timeout-error",
+    retainedPid: 128,
+    reason: "close-helper-termination-timeout-after-session-closed",
+  }]);
+});
+
+test("helper termination timeout fails when the exact session remains without a daemon", async () => {
+  const deadlines: Array<() => void> = [];
+  const warnings: Array<Record<string, unknown>> = [];
+  ownAutomationSession({
+    taskId: "task-helper-timeout-session-remains",
+    taskRunId: "run-helper-timeout-session-remains",
+    session: "ses-helper-timeout-session-remains",
+    pid: 130,
+  });
+  const finalizing = finalizeOwnedAutomationSession(
+    "task-helper-timeout-session-remains",
+    {
+      closeSession: () => new Promise<void>(() => {}),
+      startCloseSession: () => ({
+        completion: new Promise<void>(() => {}),
+        terminate: () => new Promise<void>(() => {}),
+      }),
+      isExpectedDaemon(pid, session) {
+        assert.equal(pid, 130);
+        assert.equal(session, "ses-helper-timeout-session-remains");
+        return false;
+      },
+      isSessionAbsent(session) {
+        assert.equal(session, "ses-helper-timeout-session-remains");
+        return false;
+      },
+      onCleanupWarning(details) { warnings.push(details); },
+      signalProcessGroup() { assert.fail("absent daemon must not be signalled"); },
+      async wait() {},
+      timerDeps: {
+        setTimer(callback) { deadlines.push(callback); return deadlines.length; },
+        clearTimer() {},
+      },
+    },
+  );
+
+  deadlines.shift()?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  deadlines.shift()?.();
+  await assert.rejects(finalizing, /close helper remained after 1500ms termination deadline/i);
+  assert.deepEqual(warnings, []);
+  assert.equal(ownedAutomationSession("task-helper-timeout-session-remains"), null);
+});
+
+test("helper termination timeout still fails when the owned daemon remains", async () => {
+  const deadlines: Array<() => void> = [];
+  const deadlineDurations: number[] = [];
+  const signals: NodeJS.Signals[] = [];
+  const waits: number[] = [];
+  const warnings: Array<Record<string, unknown>> = [];
+  ownAutomationSession({
+    taskId: "task-helper-timeout-daemon-remains",
+    taskRunId: "run-helper-timeout-daemon-remains",
+    session: "ses-helper-timeout-daemon-remains",
+    pid: 129,
+  });
+  const finalizing = finalizeOwnedAutomationSession(
+    "task-helper-timeout-daemon-remains",
+    {
+      closeSession: () => new Promise<void>(() => {}),
+      startCloseSession: () => ({
+        completion: new Promise<void>(() => {}),
+        terminate: () => new Promise<void>(() => {}),
+      }),
+      isExpectedDaemon(pid, session) {
+        assert.equal(pid, 129);
+        assert.equal(session, "ses-helper-timeout-daemon-remains");
+        return true;
+      },
+      onCleanupWarning(details) { warnings.push(details); },
+      signalProcessGroup(_pid, signal) { signals.push(signal); },
+      async wait(ms) { waits.push(ms); },
+      timerDeps: {
+        setTimer(callback, ms) {
+          deadlines.push(callback);
+          deadlineDurations.push(ms);
+          return deadlines.length;
+        },
+        clearTimer() {},
+      },
+    },
+  );
+
+  deadlines.shift()?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  deadlines.shift()?.();
+  await assert.rejects(finalizing, /close helper remained after 1500ms termination deadline/i);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.deepEqual(deadlineDurations, [1_000, 1_500]);
+  assert.deepEqual(waits, [1_500, 300]);
+  assert.deepEqual(warnings, []);
+  assert.equal(ownedAutomationSession("task-helper-timeout-daemon-remains"), null);
 });
 
 test("concurrent finalization closes once", async () => {

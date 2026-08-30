@@ -79,6 +79,45 @@ export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
 };
 
+type AutomationTaskExecutionRunnerInput = {
+  task: NonNullable<ReturnType<typeof taskById>>;
+  taskDb: ReturnType<typeof openLedgerDatabase>;
+  ledgerDir: string;
+  baseLaunchEnv: NodeJS.ProcessEnv;
+  currentTaskRunId: () => string | null;
+  onRunCreated: (taskRunId: string) => void;
+  isCancellationRequested: () => boolean;
+  runExecution?: typeof runAutomationTaskExecution;
+};
+
+/**
+ * Build the execution closure shared by every round in one user operation.
+ * The captured environment is the stable base; narrowly scoped per-execution
+ * capabilities, such as a session-bound dialog owner, override only their key.
+ */
+export function createAutomationTaskExecutionRunner(
+  input: AutomationTaskExecutionRunnerInput,
+) {
+  const execute = input.runExecution ?? runAutomationTaskExecution;
+  return (executionOptions: AutomationTaskExecutionOptions) =>
+    execute(
+      input.task,
+      input.taskDb,
+      input.ledgerDir,
+      {
+        ...executionOptions,
+        launchEnv: {
+          ...input.baseLaunchEnv,
+          ...(executionOptions.launchEnv ?? {}),
+        },
+        taskRunId:
+          executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
+        isCancellationRequested: input.isCancellationRequested,
+      },
+      input.onRunCreated,
+    );
+}
+
 function validateScheduledAtUtc(value: string | undefined) {
   if (
     value !== undefined &&
@@ -449,20 +488,16 @@ export async function runAutomationTask(
       taskRunId = createdTaskRunId;
       activeTaskRunIds.set(taskId, createdTaskRunId);
     };
-    const execution = (executionOptions: AutomationTaskExecutionOptions) =>
-      runAutomationTaskExecution(
-        task,
-        db!,
-        ledgerDir,
-        {
-          ...executionOptions,
-          launchEnv,
-          taskRunId: executionOptions.taskRunId ?? taskRunId ?? undefined,
-          isCancellationRequested: () =>
-            automationTaskCancellationRequested(taskId),
-        },
-        onRunCreated,
-      );
+    const execution = createAutomationTaskExecutionRunner({
+      task,
+      taskDb: db,
+      ledgerDir,
+      baseLaunchEnv: launchEnv,
+      currentTaskRunId: () => taskRunId,
+      onRunCreated,
+      isCancellationRequested: () =>
+        automationTaskCancellationRequested(taskId),
+    });
     return await runCaptchaRetryCampaign({
       taskId,
       taskDb: db,

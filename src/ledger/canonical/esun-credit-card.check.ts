@@ -40,7 +40,7 @@ const grid = {
 };
 
 const billedRow: EsunCreditCardSourceRow = {
-  statementPeriod: "2026-07",
+  issuerStatementPeriod: "2026-07",
   instrumentKey: "esun_instrument_synthetic_projection_1234",
   cardNumber: "****1234",
   consumeDate: "2026/07/15",
@@ -53,7 +53,7 @@ const billedRow: EsunCreditCardSourceRow = {
 };
 
 const unbilledRow: EsunCreditCardSourceRow = {
-  statementPeriod: "unbilled",
+  issuerStatementPeriod: "unbilled",
   instrumentKey: "esun_instrument_synthetic_projection_1234",
   cardNumber: "****1234",
   consumeDate: "2026/08/15",
@@ -331,6 +331,88 @@ test("E.SUN repeated captures retain one account/instrument authority and add pr
     assert.equal(count("canonical_credit_card_transaction_details"), 2);
     assert.equal(count("assertion_provenance"), 4);
     assert.equal(count("canonical_credit_card_statement_summary_evidence"), 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("E.SUN rolling query dates do not change canonical occurrence content", async () => {
+  const directory = mkdtempSync(join("/tmp", "esun-credit-card-rolling-query-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const rowsWithoutQueryPeriod = {
+      statementRows: [{ ...billedRow, issuerStatementPeriod: undefined }],
+      unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
+    };
+    const first = buildEsunCanonicalCreditCardCapture(
+      options({
+        ...rowsWithoutQueryPeriod,
+        captureId: "capture-esun-query-day-one",
+        observedAt: "2026-08-26T00:00:00.000Z",
+        startDate: "2025-08-26",
+        endDate: "2026-08-26",
+      }),
+    );
+    const second = buildEsunCanonicalCreditCardCapture(
+      options({
+        ...rowsWithoutQueryPeriod,
+        captureId: "capture-esun-query-day-two",
+        observedAt: "2026-08-27T00:00:00.000Z",
+        startDate: "2025-08-27",
+        endDate: "2026-08-27",
+      }),
+    );
+    await commitEsunCreditCardCapture(store, first);
+    await commitEsunCreditCardCapture(store, second);
+
+    const records = store.db.prepare(`
+      SELECT occurrence_key, content_hash, payload_json
+      FROM source_records
+      WHERE record_kind = 'esun-credit-card-transaction'
+      ORDER BY occurrence_key, rowid
+    `).all() as Array<{
+      occurrence_key?: string;
+      content_hash?: string;
+      payload_json?: string;
+    }>;
+    assert.equal(records.length, 4);
+    for (let index = 0; index < records.length; index += 2) {
+      const firstRecord = records[index]!;
+      const repeatedRecord = records[index + 1]!;
+      assert.equal(firstRecord.occurrence_key, repeatedRecord.occurrence_key);
+      assert.equal(firstRecord.content_hash, repeatedRecord.content_hash);
+      assert.equal(firstRecord.payload_json, repeatedRecord.payload_json);
+    }
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get() as {
+        count?: number;
+      }).count ?? 0),
+      2,
+    );
+    const scopes = (store.db.prepare(`
+      SELECT scope_start, scope_end
+      FROM source_captures
+      ORDER BY scope_start
+    `).all() as Array<{ scope_start?: string; scope_end?: string }>).map((scope) => ({
+      scope_start: scope.scope_start,
+      scope_end: scope.scope_end,
+    }));
+    assert.deepEqual(scopes, [
+      { scope_start: "2025-08-26", scope_end: "2026-08-26" },
+      { scope_start: "2025-08-27", scope_end: "2026-08-27" },
+    ]);
+
+    const changedIssuerPeriod = buildEsunCanonicalCreditCardCapture(
+      options({
+        captureId: "capture-esun-issuer-period-change",
+        statementRows: [{ ...billedRow, issuerStatementPeriod: "2026-08" }],
+        unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
+      }),
+    );
+    await assert.rejects(
+      commitEsunCreditCardCapture(store, changedIssuerPeriod),
+      /Source occurrence content overwrite is forbidden/i,
+    );
   } finally {
     store.close();
   }
