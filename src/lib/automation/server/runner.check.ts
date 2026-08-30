@@ -40,6 +40,7 @@ import {
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
+  createAutomationTaskExecutionRunner,
   createAutomationOutputBuffer,
   finalFailureMessage,
   finalizeTerminalAutomationSession,
@@ -66,6 +67,11 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
+import { taskById } from "./tasks.ts";
+import {
+  SINOPAC_DIALOG_OWNER_ENV,
+  sinopacHostDialogOwner,
+} from "../sinopac-captcha.ts";
 
 const TEST_TASK_SETTLE_TIMEOUT_MS = 30_000;
 
@@ -125,6 +131,48 @@ async function settleStartedBatchTasks(taskIds: readonly string[]) {
     }
   }
 }
+
+test("runner execution preserves base env and applies the current session dialog owner", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-runner-launch-env-"));
+  const db = openLedgerDatabase(ledgerDir);
+  const task = taskById("sinopac-statements");
+  assert.ok(task);
+  let captured: NodeJS.ProcessEnv | undefined;
+  try {
+    const execute = createAutomationTaskExecutionRunner({
+      task,
+      taskDb: db,
+      ledgerDir,
+      baseLaunchEnv: {
+        OCTOPUSBEAK_BASE_ENV_PROBE: "preserved",
+        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-stale"),
+      },
+      currentTaskRunId: () => "run-current",
+      onRunCreated: () => {},
+      isCancellationRequested: () => false,
+      runExecution: async (_task, _db, _ledgerDir, options) => {
+        captured = options.launchEnv;
+        return { status: "cancelled" as const };
+      },
+    });
+    await execute({
+      resumeSession: "ses-current",
+      launchEnv: {
+        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-current"),
+        OCTOPUSBEAK_EXECUTION_ENV_PROBE: "present",
+      },
+    });
+    assert.equal(captured?.OCTOPUSBEAK_BASE_ENV_PROBE, "preserved");
+    assert.equal(captured?.OCTOPUSBEAK_EXECUTION_ENV_PROBE, "present");
+    assert.equal(
+      captured?.[SINOPAC_DIALOG_OWNER_ENV],
+      sinopacHostDialogOwner("ses-current"),
+    );
+  } finally {
+    db.close();
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
 
 test("manual Fubon starts ignore persisted statement selection", async () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));

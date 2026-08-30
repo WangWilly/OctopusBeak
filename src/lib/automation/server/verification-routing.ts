@@ -26,12 +26,13 @@ import { localVerificationSolver } from "./local-verification-solver.ts";
 import {
   captureChallengeImageForContract,
   clickVerificationTarget,
-  injectVerificationAnswer,
   injectVerificationSelections,
 } from "./automation-viewer.ts";
 import {
   captureProviderVerificationImage,
+  injectProviderVerificationAnswer,
   isProviderVerificationImageCurrent,
+  probeProviderVerificationPostSubmit,
   providerVerificationHandlesChallengeImage,
 } from "./provider-verification.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
@@ -57,6 +58,7 @@ export type VerificationRoutingDependencies = {
     contract: HumanAssistanceContract,
     answer: string,
   ) => Promise<void>;
+  probePostSubmit?: ProviderVerificationHost["probePostSubmit"];
   injectSelections: (
     session: string,
     contract: HumanAssistanceContract,
@@ -69,6 +71,8 @@ export type VerificationRoutingDependencies = {
   ) => Promise<void>;
   resume: (session: string) => void | Promise<void>;
   finalizeFailed: (message: string) => void | Promise<void>;
+  /** Terminate and join the current resumed execution before a retry. */
+  cleanupSession?: () => Promise<void>;
   /** Called once after a non-empty challenge image has been captured. */
   onChallengeCaptured?: () => void | Promise<void>;
 };
@@ -124,7 +128,10 @@ export type VerificationRoutingOutcome =
   | { kind: "human" }
   | { kind: "resumed" }
   | { kind: "failed" }
-  | { kind: "retryable"; reason: "solver-exhausted" };
+  | {
+    kind: "retryable";
+    reason: "solver-exhausted" | "provider-rejected";
+  };
 
 const defaultLocalSolver = localVerificationSolver();
 
@@ -204,7 +211,21 @@ export async function routeVerificationActor(input: {
     return { kind: "failed" };
   }
   if (outcome.status === "solved" || outcome.status === "absent") {
-    await deps.resume(input.session);
+    const postSubmitOutcome = deps.probePostSubmit
+      ? await deps.probePostSubmit(
+        input.session,
+        contract!,
+        () => Promise.resolve(deps.resume(input.session)),
+        deps.cleanupSession,
+      )
+      : (await deps.resume(input.session), "none" as const);
+    if (postSubmitOutcome === "provider-rejected") {
+      return { kind: "retryable", reason: "provider-rejected" };
+    }
+    if (postSubmitOutcome === "unrecognized-dialog") {
+      await deps.finalizeFailed("Provider login dialog was not recognized.");
+      return { kind: "failed" };
+    }
     return { kind: "resumed" };
   }
   return { kind: "retryable", reason: "solver-exhausted" };
@@ -213,15 +234,21 @@ export async function routeVerificationActor(input: {
 export async function routeWaitingRunVerification(input: {
   taskId: string;
   taskRunId: string;
+  /** The session created by the current execution, when known. */
+  session?: string;
   db: LedgerDatabase;
   scheduleResume: (session: string) => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
+  providerProbePostSubmit?: ProviderVerificationHost["probePostSubmit"];
+  providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
   finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
+  /** Terminate and join the current resumed execution before a retry. */
+  cleanupSession?: VerificationRoutingDependencies["cleanupSession"];
   onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
@@ -240,7 +267,7 @@ export async function routeWaitingRunVerification(input: {
   const run = taskRunById(input.db, input.taskRunId);
   if (!run) return { kind: "human" };
   const contract = run.humanAssistanceContract;
-  const session = sessionFromRun(run);
+  const session = input.session ?? sessionFromRun(run);
 
   const finalizeFailed =
     input.finalizeFailed ??
@@ -289,11 +316,18 @@ export async function routeWaitingRunVerification(input: {
     captureChallengeImage: selectedCapture,
     validateChallengeImage: input.validateChallengeImage
       ?? imageSelection.validateChallengeImage,
-    injectAnswer: input.injectAnswer ?? injectVerificationAnswer,
+    injectAnswer: input.injectAnswer
+      ?? input.providerInjectAnswer
+      ?? injectProviderVerificationAnswer,
+    probePostSubmit: input.providerProbePostSubmit
+      ?? (input.providerVerification
+        ? undefined
+        : probeProviderVerificationPostSubmit),
     injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
     resume: (session) => input.scheduleResume(session),
     finalizeFailed,
+    cleanupSession: input.cleanupSession,
     onChallengeCaptured: input.onChallengeCaptured,
   };
 

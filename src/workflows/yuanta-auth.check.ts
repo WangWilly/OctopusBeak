@@ -5,9 +5,20 @@ import test from "node:test";
 import type { Frame, Page } from "playwright";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
-const { isYuantaSignedIn, yuantaBankCaptchaAssistanceStage } = await import(
+const {
+  isYuantaSignedIn,
+  yuantaBankCaptchaAssistanceStage,
+  classifyYuantaBankDialogMessage,
+  yuantaBankDialogFailureMessage,
+  yuantaBankDialogState,
+  yuantaPostSubmitDialogOwner,
+} = await import(
   "./yuanta-auth.ts",
 );
+import {
+  YUANTA_DIALOG_OWNER_ENV,
+  yuantaHostDialogOwner,
+} from "../lib/automation/yuanta-captcha.ts";
 
 type FakeFrame = {
   frameName: string;
@@ -190,6 +201,44 @@ test("Yuanta products delegate authentication to the shared CAPTCHA seam", async
       assert.match(source, /yuanta-auth\.ts/);
     }
   }
+});
+
+test("Yuanta post-submit dialog ownership is bound to the current hosted retry session", () => {
+  assert.equal(
+    yuantaPostSubmitDialogOwner("ses-yuanta-current", {
+      [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner("ses-yuanta-current"),
+    }),
+    "host",
+  );
+  assert.equal(
+    yuantaPostSubmitDialogOwner("ses-yuanta-current", {
+      [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner("ses-yuanta-stale"),
+    }),
+    "workflow",
+  );
+  assert.equal(yuantaPostSubmitDialogOwner("ses-yuanta-current", {}), "workflow");
+});
+
+test("Yuanta local dialog handling keeps provider text out of state and errors", async () => {
+  const rawMessage = "驗證碼不正確，請重新輸入";
+  const state = yuantaBankDialogState({
+    type: () => "alert",
+    message: () => rawMessage,
+  });
+  assert.deepEqual(state, { type: "alert", category: "captcha-rejected" });
+  assert.equal(classifyYuantaBankDialogMessage(rawMessage), "captcha-rejected");
+  const safeError = yuantaBankDialogFailureMessage(state.category);
+  assert.equal(safeError.includes(rawMessage), false);
+  assert.equal(safeError.includes("請重新輸入"), false);
+
+  const authSource = await readFile(
+    new URL("./yuanta-auth.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    authSource,
+    /console\.warn\([\s\S]*?bank-dialog[\s\S]*?message\s*:/,
+  );
 });
 
 test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observed GOTP image", async () => {

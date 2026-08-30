@@ -23,7 +23,7 @@
     "site:dev": "vite site --host 127.0.0.1 --port 4173",
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
-    "desktop:dev": "npm run build && OCTOPUSBEAK_CAPTCHA_DEBUG=1 electron .",
+    "desktop:dev": "npm run build && electron .",
     "desktop:dev:mock": "npm run run:seed-mock-ledger-db -- \"$PWD/data/mock-desktop/data/ledger\" && OCTOPUSBEAK_USER_DATA=\"$PWD/data/mock-desktop\" npm run desktop:dev",
     "desktop:package": "npm run build && npm run desktop:install-browsers && electron-forge package",
     "desktop:make": "npm run build && npm run desktop:install-browsers && electron-forge make",

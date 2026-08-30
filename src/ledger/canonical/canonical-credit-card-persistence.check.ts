@@ -69,7 +69,8 @@ function database(): DatabaseSync {
     CREATE TABLE transaction_revisions(
       revision_id BLOB PRIMARY KEY,
       transaction_id BLOB NOT NULL,
-      source_record_id BLOB NOT NULL
+      source_record_id BLOB NOT NULL,
+      revision_number INTEGER NOT NULL DEFAULT 1
     );
   `);
   db.prepare("INSERT INTO source_connections VALUES (?, ?)").run(blob(1), "esun");
@@ -87,6 +88,7 @@ function addSharedCapture(
   ordinal: number,
   captureKey: string,
   rows: readonly SharedRow[],
+  withRevisions = true,
 ): void {
   const captureId = blob(10 + ordinal);
   db.prepare("INSERT INTO source_captures VALUES (?, ?, ?, ?, ?)").run(
@@ -113,9 +115,10 @@ function addSharedCapture(
     db.prepare("INSERT OR IGNORE INTO financial_transactions VALUES (?, ?, ?)").run(
       transactionId, blob(2), row.sourceKey,
     );
-    db.prepare("INSERT INTO transaction_revisions VALUES (?, ?, ?)").run(
-      revisionId, transactionId, sourceRecordId,
-    );
+    if (withRevisions)
+      db.prepare("INSERT INTO transaction_revisions(revision_id, transaction_id, source_record_id) VALUES (?, ?, ?)").run(
+        revisionId, transactionId, sourceRecordId,
+      );
   });
 }
 
@@ -226,6 +229,74 @@ test("repeated capture adds provenance without rewriting authority", () => {
   assert.equal(count(db, "canonical_credit_card_instruments"), 1);
   assert.equal(count(db, "canonical_credit_card_instrument_evidence"), 2);
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 4);
+  db.close();
+});
+
+test("replaying the same capture is idempotent for lifecycle evidence", () => {
+  const db = database();
+  addSharedCapture(db, 0, "capture-a", [
+    { occurrence: "row-a-1", sourceKey: "source-1" },
+    { occurrence: "row-a-2", sourceKey: "source-2" },
+  ]);
+  const replayed = capture("capture-a");
+  persistCanonicalCreditCardExtensions(db, [replayed]);
+  persistCanonicalCreditCardExtensions(db, [replayed]);
+
+  assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 2);
+  assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
+  assert.equal(count(db, "canonical_credit_card_statement_summary_evidence"), 1);
+  assert.equal(count(db, "canonical_credit_card_relations"), 1);
+
+  const conflicting = structuredClone(replayed);
+  conflicting.transactions = conflicting.transactions.map((transaction, index) =>
+    index === 0
+      ? { ...transaction, billingStatus: "unbilled", statementKey: undefined }
+      : transaction,
+  );
+  assert.throws(
+    () => persistCanonicalCreditCardExtensions(db, [conflicting]),
+    /lifecycle observation key.*changed evidence/i,
+  );
+  assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 2);
+  db.close();
+});
+
+test("billing lifecycle appends status evidence without changing the transaction authority", () => {
+  const db = database();
+  addSharedCapture(db, 0, "capture-a", [
+    { occurrence: "row-a-1", sourceKey: "source-1" },
+    { occurrence: "row-a-2", sourceKey: "source-2" },
+  ]);
+  persistCanonicalCreditCardExtensions(db, [capture("capture-a")]);
+
+  addSharedCapture(db, 1, "capture-b", [
+    { occurrence: "row-b-1", sourceKey: "source-1" },
+    { occurrence: "row-b-2", sourceKey: "source-2" },
+  ], false);
+  const transitioned = capture("capture-b", "b");
+  transitioned.transactions = transitioned.transactions.map((transaction, index) =>
+    index === 0
+      ? { ...transaction, billingStatus: "unbilled", statementKey: undefined }
+      : transaction,
+  );
+  transitioned.statements = [];
+  persistCanonicalCreditCardExtensions(db, [transitioned]);
+
+  assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
+  assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 4);
+  const lifecycle = db.prepare(`
+    SELECT billing_status, statement_key
+    FROM canonical_credit_card_transaction_lifecycle
+    WHERE transaction_id = (SELECT transaction_id FROM financial_transactions WHERE source_sequence = 'source-1')
+    ORDER BY rowid
+  `).all() as Array<{ billing_status?: string; statement_key?: string | null }>;
+  assert.deepEqual(lifecycle.map(({ billing_status, statement_key }) => ({
+    billing_status,
+    statement_key,
+  })), [
+    { billing_status: "billed", statement_key: "statement-1" },
+    { billing_status: "unbilled", statement_key: null },
+  ]);
   db.close();
 });
 

@@ -85,6 +85,7 @@ function trackDependencies(overrides: Partial<VerificationRoutingDependencies> =
       calls.push("inject");
       injected.push(answer);
     }),
+    probePostSubmit: overrides.probePostSubmit,
     injectSelections: overrides.injectSelections ?? (async (_session, _contract, selections) => {
       calls.push("inject-selections");
       injectedSelections.push(selections);
@@ -131,6 +132,91 @@ test("a solver actor solves an inline challenge and resumes", async () => {
   assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
   assert.deepEqual(tracked.injected, ["1234"]);
   assert.deepEqual(tracked.resumed, ["ses-solver"]);
+});
+
+test("a failed answer injection fails closed without a CAPTCHA retry", async () => {
+  const tracked = trackDependencies({
+    injectAnswer: async () => {
+      throw new Error("SinoPac CAPTCHA input did not retain the solver answer.");
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: textCaptchaContract(),
+    session: "ses-injection-failed",
+    confidenceThreshold: 0.9,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "failed" });
+  assert.deepEqual(tracked.calls, ["capture", "finalize"]);
+  assert.deepEqual(tracked.resumed, []);
+  assert.deepEqual(
+    tracked.failed,
+    ["Verification solver failed to solve the challenge."],
+  );
+});
+
+test("a generic answer injection failure finalizes without a CAPTCHA retry", async () => {
+  const tracked = trackDependencies({
+    injectAnswer: async () => {
+      throw new Error("CDP transport closed while injecting the answer");
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: textCaptchaContract(),
+    session: "ses-injection-transport-failed",
+    confidenceThreshold: 0.9,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "failed" });
+  assert.deepEqual(tracked.calls, ["capture", "finalize"]);
+  assert.deepEqual(tracked.resumed, []);
+  assert.deepEqual(tracked.failed, ["Verification solver failed to solve the challenge."]);
+});
+
+test("a provider-proven CAPTCHA rejection reaches the retry campaign outcome", async () => {
+  const probeCalls: string[] = [];
+  const tracked = trackDependencies({
+    probePostSubmit: async (_session, _contract, resume) => {
+      probeCalls.push("probe");
+      await resume();
+      return "provider-rejected";
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: textCaptchaContract(),
+    session: "ses-provider-rejected",
+    confidenceThreshold: 0.9,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "retryable", reason: "provider-rejected" });
+  assert.deepEqual(tracked.calls, ["capture", "inject", "resume"]);
+  assert.deepEqual(probeCalls, ["probe"]);
+  assert.deepEqual(tracked.failed, []);
+});
+
+test("an unrecognized provider dialog fails closed without a CAPTCHA retry", async () => {
+  const probeCalls: string[] = [];
+  const tracked = trackDependencies({
+    probePostSubmit: async (_session, _contract, resume) => {
+      probeCalls.push("probe");
+      await resume();
+      return "unrecognized-dialog";
+    },
+  });
+  const outcome = await routeVerificationActor({
+    actor: "solver",
+    contract: textCaptchaContract(),
+    session: "ses-unrecognized-dialog",
+    confidenceThreshold: 0.9,
+    dependencies: tracked.dependencies,
+  });
+  assert.deepEqual(outcome, { kind: "failed" });
+  assert.deepEqual(tracked.calls, ["capture", "inject", "resume", "finalize"]);
+  assert.deepEqual(probeCalls, ["probe"]);
+  assert.deepEqual(tracked.failed, ["Provider login dialog was not recognized."]);
 });
 
 test("a direct solver route uses contract metadata before compatibility arguments", async () => {
@@ -335,6 +421,55 @@ test("waiting-run routing keeps the selected image owner through execution", asy
   }
 });
 
+test("waiting-run routing injects a solver answer through the provider owner", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-provider-input-"));
+  try {
+    const verificationContract = {
+      ...textCaptchaContract(),
+      targets: [{
+        ...textCaptchaContract().targets[0]!,
+        semanticId: "sinopac.login.captcha-input",
+      }],
+      challengeImageRegion: {
+        ...textCaptchaContract().challengeImageRegion!,
+        semanticId: "sinopac.login.captcha-image",
+      },
+    };
+    const run = createWaitingRun(ledgerDir, {
+      taskId: "sinopac-statements",
+      contract: verificationContract,
+    });
+    const injected: Array<{ session: string; answer: string }> = [];
+    const resumed: string[] = [];
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      db,
+      scheduleResume: (session) => {
+        resumed.push(session);
+      },
+      solver: confidentSolver("120987", 0.99),
+      providerVerification: {
+        handlesChallengeImage: () => true,
+        captureChallengeImage: async () => Buffer.from("sinopac-captcha"),
+        isChallengeImageCurrent: async () => true,
+      },
+      providerInjectAnswer: async (session, _contract, answer) => {
+        injected.push({ session, answer });
+      },
+      finalizeFailed: () => {},
+      settings: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(injected, [{ session: "ses-solver", answer: "120987" }]);
+    assert.deepEqual(resumed, ["ses-solver"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("waiting-run routing does not invoke generic capture after a provider owner claims the image", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-image-failure-"));
   try {
@@ -514,7 +649,11 @@ test("the solver answer never leaks into resume, failure, or click output", asyn
 
 function createWaitingRun(
   ledgerDir: string,
-  input: { taskId?: string; contract?: HumanAssistanceContract } = {},
+  input: {
+    taskId?: string;
+    contract?: HumanAssistanceContract;
+    logTail?: string;
+  } = {},
 ) {
   const taskId = input.taskId ?? "fubon-all-statements";
   const db = openLedgerDatabase(ledgerDir);
@@ -527,12 +666,52 @@ function createWaitingRun(
     maxAttempts: 1,
     startedAt: "2026-08-08T08:00:00.000Z",
     logPath: join(ledgerDir, "run.log"),
-    logTail: "automation-session: ses-solver\nWorkflow paused.",
+    logTail: input.logTail ?? "automation-session: ses-solver\nWorkflow paused.",
   });
   if (input.contract) updateHumanAssistanceContract(db, run.taskRunId, input.contract);
   db.close();
   return { taskRunId: run.taskRunId, taskId };
 }
+
+test("waiting-run routing uses the current execution session over an earlier log entry", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-current-session-"));
+  try {
+    const run = createWaitingRun(ledgerDir, {
+      contract: textCaptchaContract(),
+      logTail:
+        "automation-session: ses-round-one\n" +
+        "captcha-retry: restarting workflow\n" +
+        "automation-session: ses-round-two\nWorkflow paused.",
+    });
+    const capturedSessions: string[] = [];
+    const tracked = trackDependencies({
+      captureChallengeImage: async (session) => {
+        capturedSessions.push(session);
+        return Buffer.from("challenge-image");
+      },
+    });
+    const db = openLedgerDatabase(ledgerDir);
+    const outcome = await routeWaitingRunVerification({
+      taskId: run.taskId,
+      taskRunId: run.taskRunId,
+      session: "ses-round-two",
+      db,
+      scheduleResume: (session) => tracked.dependencies.resume(session),
+      solver: tracked.dependencies.solver,
+      captureChallengeImage: tracked.dependencies.captureChallengeImage,
+      injectAnswer: tracked.dependencies.injectAnswer,
+      clickTarget: tracked.dependencies.clickTarget,
+      finalizeFailed: tracked.dependencies.finalizeFailed,
+      settings: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "solver" },
+    });
+    db.close();
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.deepEqual(capturedSessions, ["ses-round-two"]);
+    assert.deepEqual(tracked.resumed, ["ses-round-two"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
 
 test("an unset Yuanta source routes as human and leaves the run untouched", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "verification-routing-human-"));

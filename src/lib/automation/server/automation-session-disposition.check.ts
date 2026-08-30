@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
+  automationSessionFromLog,
   automationSessionOwnerForRun,
   claimAutomationTaskRunSession,
   finalizeAutomationSessionForRun,
@@ -13,6 +14,7 @@ import {
   refreshAutomationSession,
   relinquishAutomationSessionForTask,
   resumeSessionFromLog,
+  sessionFromRun,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
 import { createTaskRun, taskRunById } from "./store.ts";
@@ -102,6 +104,35 @@ test("resume session parsing accepts Libretto resume output", () => {
     resumeSessionFromLog('Resume requested for session "ses-resume-output".'),
     "ses-resume-output",
   );
+});
+
+test("automation session parsing chooses the latest appended session", () => {
+  assert.equal(
+    automationSessionFromLog(
+      "automation-session: ses-round-one\n" +
+        "captcha-retry: restarting workflow\n" +
+        "automation-session: ses-round-two\n",
+    ),
+    "ses-round-two",
+  );
+});
+
+test("session recovery checks the bounded log tail for a later retry session", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-session-disposition-latest-tail-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createRun(db, ledgerDir, "running", "Workflow paused.");
+    writeFileSync(
+      run.logPath,
+      "automation-session: ses-round-one\n" +
+        "x".repeat(5_000) +
+        "\nautomation-session: ses-round-two\n",
+    );
+    assert.equal(sessionFromRun(run), "ses-round-two");
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
 });
 
 test("live session recovery requires exact daemon identity and a loopback CDP probe", async () => {

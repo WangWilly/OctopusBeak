@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import type {
   HumanAssistanceContract,
@@ -6,6 +7,7 @@ import type {
 } from "../human-assistance.ts";
 import {
   normalizeHumanVerificationInput,
+  type ViewerDialogAccess,
 } from "./automation-viewer.ts";
 import {
   createProviderVerificationHost,
@@ -62,6 +64,7 @@ type FakeLocatorOptions = {
   child?: (selector: string) => FakeLocator;
   onClick?: () => void;
   onFill?: (value: string) => void;
+  inputValue?: () => string;
   evaluateResult?: unknown;
 };
 
@@ -74,9 +77,11 @@ type FakeLocator = {
   evaluate(callback: (node: unknown) => unknown): Promise<unknown>;
   click(): Promise<void>;
   fill(value: string): Promise<void>;
+  inputValue(): Promise<string>;
 };
 
 function fakeLocator(options: FakeLocatorOptions = {}): FakeLocator {
+  let filledValue = "";
   const locator: FakeLocator = {
     first: () => locator,
     count: async () => options.count ?? 1,
@@ -85,7 +90,11 @@ function fakeLocator(options: FakeLocatorOptions = {}): FakeLocator {
     locator: (selector) => options.child?.(selector) ?? locator,
     evaluate: async (callback) => options.evaluateResult ?? callback(options.node),
     click: async () => options.onClick?.(),
-    fill: async (value) => options.onFill?.(value),
+    fill: async (value) => {
+      filledValue = value;
+      options.onFill?.(value);
+    },
+    inputValue: async () => options.inputValue?.() ?? filledValue,
   };
   return locator;
 }
@@ -458,6 +467,437 @@ test("SinoPac adapter owns selector-backed click and fill operations", async () 
   }, verificationContract);
   assert.deepEqual(clicks, ["click"]);
   assert.deepEqual(fills, ["1234"]);
+});
+
+test("SinoPac selector-backed fill fails when the field does not retain the answer", async () => {
+  const inputLocator = fakeLocator({ inputValue: () => "" });
+  const withPage = pageRunner(fakePage({ [SINOPAC_CAPTCHA_INPUT_SELECTOR]: inputLocator }));
+  const host = createProviderVerificationHost({
+    withPage,
+    sendInput: async (session, rawInput, verificationContract, handler) => {
+      const normalized = normalizeHumanVerificationInput(rawInput, verificationContract);
+      const target = verificationContract.targets[0];
+      assert.ok(target && handler);
+      return withPage(session, (page) => handler(page, normalized, target));
+    },
+  });
+  const verificationContract = contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID);
+  await assert.rejects(
+    host.injectAnswer("session-sinopac", verificationContract, "120987"),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === "SinoPac CAPTCHA input did not retain the solver answer.",
+  );
+});
+
+test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", async () => {
+  const dialogs = new EventEmitter();
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+        dismiss: async () => {},
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host probe keeps a proven rejection when resume fails after the dialog", async () => {
+  const dialogs = new EventEmitter();
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+        dismiss: async () => {},
+      });
+      throw new Error("workflow stopped at the provider dialog");
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host probe recognizes only the exact provider CAPTCHA wording", async () => {
+  const dialogs = new EventEmitter();
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+        dismiss: async () => {},
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host probe fails closed for near-match and account-lock wording", async () => {
+  for (const message of [
+    "驗證碼不正確，請重新輸入",
+    "驗證碼失效或輸入錯誤，請重新輸入",
+    "帳號已被鎖定，請聯絡客服",
+  ]) {
+    const dialogs = new EventEmitter();
+    let cleanupCount = 0;
+    let releaseResume!: () => void;
+    const host = createProviderVerificationHost({
+      withPage: async (_session, action) => action({
+        onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+        offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+      } as never),
+      sleep: async () => {},
+    });
+    const outcome = await host.probePostSubmit(
+      "session-sinopac-unknown-dialog",
+      sinopacCaptchaContract(),
+      async () => {
+        dialogs.emit("dialog", {
+          type: () => "alert",
+          message: () => message,
+          dismiss: async () => {},
+        });
+        await new Promise<void>((resolve) => {
+          releaseResume = resolve;
+        });
+      },
+      async () => {
+        cleanupCount += 1;
+        releaseResume();
+      },
+    );
+    assert.equal(outcome, "unrecognized-dialog");
+    assert.equal(cleanupCount, 1);
+    assert.equal(dialogs.listenerCount("dialog"), 0);
+  }
+});
+
+test("SinoPac host fails closed before resume when dialog hooks are unavailable", async () => {
+  let resumeCalls = 0;
+  let cleanupCalls = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({} as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac-missing-hooks",
+    sinopacCaptchaContract(),
+    async () => { resumeCalls += 1; },
+    async () => { cleanupCalls += 1; },
+  );
+  assert.equal(outcome, "unrecognized-dialog");
+  assert.equal(resumeCalls, 0);
+  assert.equal(cleanupCalls, 0);
+});
+
+test("SinoPac host fails closed before resume when cleanup capability is unavailable", async () => {
+  const dialogs = new EventEmitter();
+  let resumeCalls = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac-missing-cleanup",
+    sinopacCaptchaContract(),
+    async () => { resumeCalls += 1; },
+  );
+  assert.equal(outcome, "unrecognized-dialog");
+  assert.equal(resumeCalls, 0);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host joins cleanup before returning a CAPTCHA rejection", async () => {
+  const dialogs = new EventEmitter();
+  let dismissCount = 0;
+  let cleanupCount = 0;
+  let resumeSettled = false;
+  let releaseResume!: () => void;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcomePromise = host.probePostSubmit(
+    "session-sinopac-stalled-resume",
+    sinopacCaptchaContract(),
+    async () => new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    }).then(() => {
+      resumeSettled = true;
+    }),
+    async () => {
+      cleanupCount += 1;
+      releaseResume();
+    },
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  dialogs.emit("dialog", {
+    type: () => "alert",
+    message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+    dismiss: async () => {
+      dismissCount += 1;
+    },
+  });
+  const outcome = await outcomePromise;
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(dismissCount, 1);
+  assert.equal(cleanupCount, 1);
+  assert.equal(resumeSettled, true);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host fails closed when dialog dismissal exceeds its bound", async () => {
+  const dialogs = new EventEmitter();
+  let releaseResume!: () => void;
+  let dismissStarted = false;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcomePromise = host.probePostSubmit(
+    "session-sinopac-delayed-dismiss",
+    sinopacCaptchaContract(),
+    async () => new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    }),
+    async () => releaseResume(),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  dialogs.emit("dialog", {
+    type: () => "alert",
+    message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+    dismiss: async () => {
+      dismissStarted = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+    },
+  });
+  assert.equal(await outcomePromise, "unrecognized-dialog");
+  assert.equal(dismissStarted, true);
+});
+
+test("SinoPac host fails closed when dialog dismissal rejects", async () => {
+  const dialogs = new EventEmitter();
+  let releaseResume!: () => void;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcomePromise = host.probePostSubmit(
+    "session-sinopac-failed-dismiss",
+    sinopacCaptchaContract(),
+    async () => new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    }),
+    async () => releaseResume(),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  dialogs.emit("dialog", {
+    type: () => "alert",
+    message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
+    dismiss: async () => {
+      throw new Error("dialog already closed");
+    },
+  });
+  assert.equal(await outcomePromise, "unrecognized-dialog");
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host probe fails closed for a non-CAPTCHA dialog", async () => {
+  const dialogs = new EventEmitter();
+  let dismissCount = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "帳號或密碼錯誤",
+        dismiss: async () => {
+          dismissCount += 1;
+        },
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "unrecognized-dialog");
+  assert.equal(dismissCount, 1);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("SinoPac host probe returns normal completion when the resumed workflow succeeds without a dialog", async () => {
+  const dialogs = new EventEmitter();
+  let dismissCount = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac-success",
+    sinopacCaptchaContract(),
+    async () => {},
+    async () => {},
+  );
+  assert.equal(outcome, "none");
+  assert.equal(dismissCount, 0);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("Yuanta host probe routes the observed CAPTCHA rejection to the retry campaign", async () => {
+  const dialogs = new EventEmitter();
+  let dismissCount = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-yuanta",
+    yuantaBankCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼不正確，請重新輸入",
+        dismiss: async () => { dismissCount += 1; },
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(dismissCount, 1);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("Yuanta host probe fails closed for an unrecognized or non-CAPTCHA dialog", async () => {
+  for (const message of [
+    "驗證碼錯誤，請重新輸入",
+    "帳號或密碼錯誤",
+  ]) {
+    const dialogs = new EventEmitter();
+    let dismissCount = 0;
+    let releaseResume!: () => void;
+    const host = createProviderVerificationHost({
+      withPage: async (_session, action) => action({
+        onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+        offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+      } as never),
+      sleep: async () => {},
+    });
+    const outcomePromise = host.probePostSubmit(
+      "session-yuanta-unknown",
+      yuantaBankCaptchaContract(),
+      async () => {
+        dialogs.emit("dialog", {
+          type: () => "alert",
+          message: () => message,
+          dismiss: async () => { dismissCount += 1; },
+        });
+        await new Promise<void>((resolve) => { releaseResume = resolve; });
+      },
+      async () => releaseResume(),
+    );
+    const outcome = await outcomePromise;
+    assert.equal(outcome, "unrecognized-dialog");
+    assert.equal(dismissCount, 1);
+    assert.equal(dialogs.listenerCount("dialog"), 0);
+  }
+});
+
+test("Yuanta host probe joins cleanup before returning the observed rejection", async () => {
+  const dialogs = new EventEmitter();
+  const events: string[] = [];
+  let releaseResume!: () => void;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcomePromise = host.probePostSubmit(
+    "session-yuanta-stalled-resume",
+    yuantaBankCaptchaContract(),
+    async () => {
+      events.push("resume-started");
+      await new Promise<void>((resolve) => { releaseResume = resolve; });
+      events.push("resume-settled");
+    },
+    async () => {
+      events.push("cleanup-started");
+      releaseResume();
+    },
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  dialogs.emit("dialog", {
+    type: () => "alert",
+    message: () => "驗證碼不正確，請重新輸入",
+    dismiss: async () => { events.push("dismissed"); },
+  });
+  assert.equal(await outcomePromise, "provider-rejected");
+  assert.deepEqual(events, [
+    "resume-started",
+    "dismissed",
+    "cleanup-started",
+    "resume-settled",
+  ]);
+  assert.equal(dialogs.listenerCount("dialog"), 0);
 });
 
 test("Fubon source capture uses loaded 158 by 30 DOM pixels", async () => {

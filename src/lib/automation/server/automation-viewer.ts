@@ -1,4 +1,4 @@
-import type { Browser, ElementHandle, Frame, Locator, Page } from "playwright";
+import type { Browser, Dialog, ElementHandle, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceContract,
   HumanAssistanceContractInput,
@@ -16,6 +16,9 @@ export type ViewerInput =
   | { type: "type"; text: string }
   | { type: "press"; key: string };
 
+/** Provider-owned post-submit probes may classify and dismiss one dialog. */
+export type ViewerDialogAccess = Pick<Dialog, "type" | "message" | "dismiss">;
+
 /** The smallest browser seam provider adapters need: selector-backed access. */
 export type ViewerPageAccess = {
   locator(selector: string): Locator;
@@ -27,6 +30,9 @@ export type ViewerPageAccess = {
   url?: () => string;
   /** Capture a page-relative region without exposing the Playwright Page. */
   screenshot(options: { clip: HumanVerificationRect; type: "png" }): Promise<Buffer>;
+  /** Attach a short-lived provider-owned observer to native browser dialogs. */
+  onDialog?: (handler: (dialog: ViewerDialogAccess) => void) => void;
+  offDialog?: (handler: (dialog: ViewerDialogAccess) => void) => void;
 };
 
 /**
@@ -260,6 +266,8 @@ export function withViewerPage<T>(
     frame: (name) => page.frame({ name }),
     url: () => page.url(),
     screenshot: (options) => page.screenshot(options),
+    onDialog: (handler) => page.on("dialog", handler as (dialog: Dialog) => void),
+    offDialog: (handler) => page.off("dialog", handler as (dialog: Dialog) => void),
   }));
 }
 
