@@ -451,6 +451,17 @@ test("Fubon pagination derives terminal/page evidence from provider controls", (
   );
   assert.deepEqual(
     parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.activePageWithoutExplicitAriaState,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "resultGrid:dataGridCurrentPage",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
       FUBON_LOAN_PAGINATION_FIXTURES_V1.terminalPage,
     ),
     {
@@ -471,6 +482,17 @@ test("Fubon pagination derives terminal/page evidence from provider controls", (
       evidence: null,
     },
   );
+  for (const fixture of [
+    FUBON_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOnly,
+    FUBON_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOutsideResult,
+  ]) {
+    assert.deepEqual(parseFubonLoanPaginationSignal(fixture), {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    });
+  }
 });
 
 test("Fubon multi-page traversal preserves page ordinals and terminal evidence", () => {

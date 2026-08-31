@@ -929,6 +929,42 @@ test("loan query uses the versioned canonical schema without runtime DDL", () =>
   }
 });
 
+test("loan current and historical queries preserve the source-reported time basis", async () => {
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(
+      store,
+      admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
+    );
+    const current = queryCanonicalLoanCurrent(store, { sourceId: "fubon" });
+    const historical = queryCanonicalLoanHistorical(store, {
+      sourceId: "fubon",
+      financialAt: "2026-01-31",
+      knowledgeAt: current.knowledgeAt,
+    });
+    assert.deepEqual(
+      [
+        ...current.transactions,
+        ...historical.transactions,
+      ].map((transaction) => transaction.effectiveTimeBasis),
+      ["source-reported", "source-reported", "source-reported", "source-reported"],
+    );
+    const persisted = store.db
+      .prepare(
+        `SELECT DISTINCT effective_time_basis AS basis
+         FROM transaction_revisions
+         WHERE effective_time_rule_version = 'fubon/loan/canonical-v2'`,
+      )
+      .all() as Array<{ basis?: unknown }>;
+    assert.deepEqual(
+      persisted.map((row) => row.basis),
+      ["source-reported"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("loan event facts remain queryable from typed facts, not source payload JSON", async () => {
   const store = createCanonicalLoanStore(":memory:");
   try {

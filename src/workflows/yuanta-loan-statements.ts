@@ -153,11 +153,12 @@ function stripHtml(value: string): string {
 }
 
 function htmlAttribute(openingTag: string, name: string): string {
-  return (
-    openingTag.match(
-      new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "iu"),
-    )?.[2] ?? ""
-  );
+  const match = [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu,
+    ),
+  ].find((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
 }
 
 function htmlControlOpeningTag(controlHtml: string): string {
@@ -177,10 +178,73 @@ function htmlControlLabel(controlHtml: string): string {
 
 function isDisabledHtmlControl(openingTag: string): boolean {
   return (
-    /\bdisabled\b/iu.test(openingTag) ||
-    /aria-disabled\s*=\s*["']?true\b/iu.test(openingTag) ||
-    /\bdisabled\b/iu.test(htmlAttribute(openingTag, "class"))
+    hasHtmlBooleanAttribute(openingTag, "disabled") ||
+    htmlAttribute(openingTag, "aria-disabled").trim().toLowerCase() ===
+      "true" ||
+    hasHtmlClassToken(openingTag, "disabled")
   );
+}
+
+function hasHtmlBooleanAttribute(openingTag: string, name: string): boolean {
+  return [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gu,
+    ),
+  ].some((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+}
+
+function hasHtmlClassToken(openingTag: string, token: string): boolean {
+  return htmlAttribute(openingTag, "class")
+    .split(/\s+/u)
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function hasHtmlClassOrIdToken(openingTag: string, token: string): boolean {
+  return [htmlAttribute(openingTag, "class"), htmlAttribute(openingTag, "id")]
+    .flatMap((value) => value.split(/\s+/u))
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function extractBalancedHtmlElement(
+  html: string,
+  openingStart: number,
+  openingTag: string,
+): string {
+  const tagName = openingTag.match(/^<([a-z][\w:-]*)\b/iu)?.[1];
+  if (!tagName || /\/>$/u.test(openingTag)) return openingTag;
+  const tokens = [
+    ...html.slice(openingStart).matchAll(
+      new RegExp("<\\/?" + tagName + "\\b[^>]*>", "giu"),
+    ),
+  ];
+  let depth = 0;
+  for (const token of tokens) {
+    const value = token[0];
+    if (/^<\//u.test(value)) {
+      depth -= 1;
+      if (depth === 0) {
+        const end = (token.index ?? 0) + value.length;
+        return html.slice(openingStart, openingStart + end);
+      }
+    } else if (!/\/>$/u.test(value)) {
+      depth += 1;
+    }
+  }
+  return html.slice(openingStart);
+}
+
+function yuantaLoanResultMarkup(html: string): string {
+  const candidates: string[] = [];
+  for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)) {
+    const opening = match[0];
+    const tagName = match[1]?.toLowerCase();
+    if (!tagName || /^(?:input|meta|link|br|hr|img)$/u.test(tagName)) continue;
+    if (htmlAttribute(opening, "id").toLowerCase() !== "resultdiv") continue;
+    candidates.push(
+      extractBalancedHtmlElement(html, match.index ?? 0, opening),
+    );
+  }
+  return candidates.sort((left, right) => left.length - right.length)[0] ?? "";
 }
 
 function loanPagerTarget(controlHtml: string): string | null {
@@ -205,9 +269,15 @@ function isLoanNextControl(controlHtml: string): boolean {
   if (!/^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(text)) return false;
   const haystack = `${opening} ${text}`;
   if (/queryMonth|menuaction/iu.test(haystack)) return false;
+  const pagerTokens = [
+    htmlAttribute(opening, "class"),
+    htmlAttribute(opening, "id"),
+  ]
+    .flatMap((value) => value.split(/\s+/u))
+    .map((value) => value.toLowerCase());
   return (
     loanPagerTarget(controlHtml) !== null ||
-    /\b(?:pager|pagination)\b/iu.test(haystack)
+    pagerTokens.some((value) => value === "pager" || value === "pagination")
   );
 }
 
@@ -222,10 +292,18 @@ function isLoanNextControl(controlHtml: string): boolean {
 export function parseYuantaLoanPaginationSignal(
   html: string,
 ): YuantaLoanPaginationSignal {
+  const providerMarkup = yuantaLoanResultMarkup(html);
+  if (!providerMarkup) {
+    return {
+      nextPageTarget: null,
+      terminal: false,
+      evidence: null,
+    };
+  }
   const controls = [
-    ...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
-    ...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/giu),
-    ...html.matchAll(/<input\b[^>]*>/giu),
+    ...providerMarkup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
+    ...providerMarkup.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/giu),
+    ...providerMarkup.matchAll(/<input\b[^>]*>/giu),
   ].map((match) => match[0]);
   const nextControl = controls.find((control) => isLoanNextControl(control));
   if (nextControl)
@@ -238,20 +316,42 @@ export function parseYuantaLoanPaginationSignal(
   const hasDisabledNext = controls.some((control) => {
     const opening = htmlControlOpeningTag(control);
     return (
-      /(?:下一頁|下頁|next(?:\s*page)?)/iu.test(htmlControlLabel(control)) &&
-      isDisabledHtmlControl(opening)
+      /^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(
+        htmlControlLabel(control),
+      ) && isDisabledHtmlControl(opening)
     );
   });
-  const hasPagerState =
-    /(?:pager|pagination|goPage|setPage|currentPage|pageIndex|pageNo|下一頁|下頁)/iu.test(
-      html,
+  const hasProviderPager =
+    [...providerMarkup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)].some(
+      (match) => {
+        const tagName = match[1]?.toLowerCase();
+        return (
+          tagName !== undefined &&
+          /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
+          (hasHtmlClassOrIdToken(match[0], "pager") ||
+            hasHtmlClassOrIdToken(match[0], "pagination"))
+        );
+      },
     ) ||
-    /<(?:input|select)\b[^>]*(?:name|id)\s*=\s*["'][^"']*(?:page|pager|current)[^"']*["']/iu.test(
-      html,
+    /(?:goPage|setPage|currentPage|pageIndex|pageNo|pageNumber)\s*\(/iu.test(
+      providerMarkup,
     );
-  if (hasPagerState && (hasDisabledNext || !controls.some((control) =>
-    /(?:下一頁|下頁|next(?:\s*page)?)/iu.test(htmlControlLabel(control)),
-  )))
+  const hasProviderCurrentPage =
+    /<(?:input|select)\b[^>]*(?:name|id)\s*=\s*["'][^"']*(?:page|pager|current)[^"']*["']/iu.test(
+      providerMarkup,
+    );
+  const hasExplicitNoNext =
+    /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
+      providerMarkup,
+    );
+  const hasNextLabel = controls.some((control) =>
+    /^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(htmlControlLabel(control)),
+  );
+  if (
+    hasDisabledNext ||
+    hasExplicitNoNext ||
+    (hasProviderPager && hasProviderCurrentPage && !hasNextLabel)
+  )
     return {
       nextPageTarget: null,
       terminal: true,
