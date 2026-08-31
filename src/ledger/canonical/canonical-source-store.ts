@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 8;
+export const CANONICAL_SCHEMA_VERSION = 9;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -2376,6 +2376,8 @@ function validateCanonicalAuthorityRoutes(
           (capture.stream = ? AND registered.stream = ?)
           OR (capture.stream = 'credit-card' AND registered.stream = 'credit-card')
           OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
+          OR (capture.stream = 'loan' AND registered.stream = 'loan')
+          OR (capture.stream = 'domestic-deposit' AND registered.stream = 'domestic-deposit')
         )
         AND source_assertion.producer_id = capture.authority_route
         AND source_assertion.rule_lineage IN (capture.authority_route, revision.semantic_rule_version)
@@ -2384,6 +2386,32 @@ function validateCanonicalAuthorityRoutes(
             AND capture.completeness_rule_version = ?
             AND registered.integration_namespace = ?
             AND registered.contract_version = ?)
+          OR
+          (capture.authority_route = 'fubon/loan/canonical-v1'
+            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon'
+            AND capture.stream = 'loan' AND registered.stream = 'loan'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'loan/canonical/v1.fubon')
+          OR
+          (capture.authority_route = 'yuanta/loan/canonical-v1'
+            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta'
+            AND capture.stream = 'loan' AND registered.stream = 'loan'
+            AND registered.integration_namespace = 'yuanta'
+            AND registered.contract_version = 'loan/canonical/v1.yuanta')
+          OR
+          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
+            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon'
+            AND capture.stream = 'domestic-deposit'
+            AND registered.stream = 'domestic-deposit'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'loan/counterpart/v1.fubon')
+          OR
+          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
+            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta'
+            AND capture.stream = 'domestic-deposit'
+            AND registered.stream = 'domestic-deposit'
+            AND registered.integration_namespace = 'yuanta'
+            AND registered.contract_version = 'loan/counterpart/v1.yuanta')
           OR
           (capture.authority_route = 'fubon/credit-card/human-attested-v1'
             AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1'
@@ -3393,9 +3421,27 @@ function validateSelectedAssertionProvenance(
           capture.stream = ?
           OR capture.stream = 'credit-card'
           OR capture.stream = 'foreign-currency-deposit'
+          OR capture.stream = 'loan'
+          OR capture.stream = 'domestic-deposit'
         )
         AND (
           (capture.authority_route = ? AND capture.completeness_rule_version = ?)
+          OR
+          (capture.authority_route = 'fubon/loan/canonical-v1'
+            AND capture.stream = 'loan'
+            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon')
+          OR
+          (capture.authority_route = 'yuanta/loan/canonical-v1'
+            AND capture.stream = 'loan'
+            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta')
+          OR
+          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
+            AND capture.stream = 'domestic-deposit'
+            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon')
+          OR
+          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
+            AND capture.stream = 'domestic-deposit'
+            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta')
           OR
           (capture.authority_route = 'fubon/credit-card/human-attested-v1'
             AND capture.stream = 'credit-card'
@@ -5196,6 +5242,237 @@ function migrateV7ToV8(
     throw error;
   }
 }
+
+const SCHEMA_V9_LOAN_FINANCIAL = `
+CREATE TABLE IF NOT EXISTS loan_account_identities (
+  account_id BLOB PRIMARY KEY REFERENCES financial_accounts(account_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  account_key TEXT NOT NULL, account_no TEXT NOT NULL,
+  account_type TEXT NOT NULL CHECK(account_type IN ('loan','depository')),
+  stream TEXT NOT NULL CHECK(stream IN ('loan','domestic-deposit')),
+  UNIQUE(source_connection_id, identity_epoch_id, stream, account_key)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_account_identities_lookup
+  ON loan_account_identities(source_connection_id, identity_epoch_id, stream, account_no);
+CREATE TABLE IF NOT EXISTS loan_transaction_facts (
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB PRIMARY KEY REFERENCES transaction_revisions(revision_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  occurrence_index INTEGER NOT NULL CHECK(occurrence_index > 0),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('disbursement','payment','interest','fee')),
+  event_source_code TEXT NOT NULL, event_evidence_contract_version TEXT NOT NULL,
+  principal_coefficient TEXT, principal_scale INTEGER CHECK(principal_scale >= 0),
+  interest_coefficient TEXT, interest_scale INTEGER CHECK(interest_scale >= 0),
+  fee_coefficient TEXT, fee_scale INTEGER CHECK(fee_scale >= 0),
+  component_evidence_source_record_key TEXT,
+  component_evidence_contract_version TEXT,
+  UNIQUE(transaction_id, revision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_transaction_facts_transaction
+  ON loan_transaction_facts(transaction_id, revision_id);
+CREATE TABLE IF NOT EXISTS balance_observations (
+  observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  observation_key TEXT NOT NULL,
+  balance_kind TEXT NOT NULL CHECK(balance_kind IN ('loan_outstanding','outstanding_principal','outstanding_total')),
+  created_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(account_id, created_capture_id, observation_key, balance_kind)
+);
+CREATE TABLE IF NOT EXISTS balance_observation_revisions (
+  revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+  observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+  balance_coefficient TEXT NOT NULL, balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
+  currency TEXT NOT NULL CHECK(currency = 'TWD'), effective_at TEXT NOT NULL,
+  effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'source-reported'),
+  effective_time_rule_version TEXT NOT NULL,
+  effective_time_evidence_source_record_key TEXT NOT NULL,
+  effective_time_evidence_source_field TEXT NOT NULL CHECK(effective_time_evidence_source_field = 'statement-as-of'),
+  effective_time_evidence_value TEXT NOT NULL,
+  effective_time_evidence_contract_version TEXT NOT NULL,
+  observed_at TEXT NOT NULL, UNIQUE(observation_id, revision_number)
+);
+CREATE INDEX IF NOT EXISTS idx_balance_observation_revisions_current
+  ON balance_observation_revisions(observation_id, commit_id, effective_at);
+CREATE TABLE IF NOT EXISTS transaction_relations (
+  relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id), relation_key TEXT NOT NULL,
+  relation_kind TEXT NOT NULL CHECK(relation_kind = 'transfer_counterpart'),
+  from_account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  to_account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  from_source_record_key TEXT NOT NULL, to_source_record_key TEXT NOT NULL,
+  from_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  to_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  from_direction TEXT NOT NULL CHECK(from_direction IN ('inflow','outflow')),
+  to_direction TEXT NOT NULL CHECK(to_direction IN ('inflow','outflow')),
+  evidence_source_record_key TEXT NOT NULL, evidence_relation_id TEXT NOT NULL,
+  evidence_contract_version TEXT NOT NULL, UNIQUE(account_id, relation_key),
+  UNIQUE(source_connection_id, identity_epoch_id, relation_kind,
+         from_account_id, from_transaction_id, to_account_id, to_transaction_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_relations_knowledge
+  ON transaction_relations(account_id, relation_key, commit_id);
+CREATE TABLE IF NOT EXISTS transaction_relation_provenance (
+  relation_id BLOB NOT NULL REFERENCES transaction_relations(relation_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  evidence_source_record_key TEXT NOT NULL, evidence_relation_id TEXT NOT NULL,
+  evidence_contract_version TEXT NOT NULL, PRIMARY KEY(relation_id, source_record_id)
+);
+CREATE TABLE IF NOT EXISTS current_loan_accounts (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, account_id)
+);
+CREATE TABLE IF NOT EXISTS current_loan_balance_observations (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id), balance_kind TEXT NOT NULL,
+  observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+  revision_id BLOB NOT NULL REFERENCES balance_observation_revisions(revision_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, account_id, balance_kind)
+);
+CREATE TABLE IF NOT EXISTS current_loan_relations (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  relation_id BLOB NOT NULL REFERENCES transaction_relations(relation_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  relation_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, relation_id)
+);
+`;
+
+export function validateCanonicalLoanExtensionSchema(db: DatabaseSync): void {
+  for (const table of [
+    "loan_account_identities", "loan_transaction_facts", "balance_observations",
+    "balance_observation_revisions", "transaction_relations",
+    "transaction_relation_provenance", "current_loan_accounts",
+    "current_loan_balance_observations", "current_loan_relations",
+  ])
+    if (relationType(db, table) !== "table")
+      throw new Error(`Canonical schema v9 loan table ${table} is missing.`);
+}
+
+function normalizeLoanRelationsV9(db: DatabaseSync): void {
+  type RelationRow = {
+    relation_id: Uint8Array;
+    source_connection_id: Uint8Array;
+    identity_epoch_id: Uint8Array;
+    from_account_id: Uint8Array;
+    from_transaction_id: Uint8Array;
+    from_source_record_key: string;
+    from_direction: string;
+    to_account_id: Uint8Array;
+    to_transaction_id: Uint8Array;
+    to_source_record_key: string;
+    to_direction: string;
+  };
+  const rows = db.prepare("SELECT * FROM transaction_relations").all() as RelationRow[];
+  const groups = new Map<
+    string,
+    Array<{ row: RelationRow; from: "from" | "to" }>
+  >();
+  for (const row of rows) {
+    const fromKey = Buffer.concat([row.from_account_id, row.from_transaction_id]);
+    const toKey = Buffer.concat([row.to_account_id, row.to_transaction_id]);
+    const from = Buffer.compare(fromKey, toKey) <= 0 ? "from" : "to";
+    const firstAccount = from === "from" ? row.from_account_id : row.to_account_id;
+    const firstTransaction =
+      from === "from" ? row.from_transaction_id : row.to_transaction_id;
+    const secondAccount = from === "from" ? row.to_account_id : row.from_account_id;
+    const secondTransaction =
+      from === "from" ? row.to_transaction_id : row.from_transaction_id;
+    const key = [
+      "loan-relation-v9",
+      Buffer.from(row.source_connection_id).toString("hex"),
+      Buffer.from(row.identity_epoch_id).toString("hex"),
+      Buffer.from(firstAccount).toString("hex"),
+      Buffer.from(firstTransaction).toString("hex"),
+      Buffer.from(secondAccount).toString("hex"),
+      Buffer.from(secondTransaction).toString("hex"),
+    ].join(":");
+    const group = groups.get(key) ?? [];
+    group.push({ row, from });
+    groups.set(key, group);
+  }
+  for (const [key, group] of groups) {
+    const keeper = group[0]!;
+    for (const duplicate of group.slice(1)) {
+      db.prepare(
+        `INSERT OR IGNORE INTO transaction_relation_provenance(
+           relation_id, source_record_id, capture_id, commit_id,
+           evidence_source_record_key, evidence_relation_id,
+           evidence_contract_version
+         )
+         SELECT ?, source_record_id, capture_id, commit_id,
+                evidence_source_record_key, evidence_relation_id,
+                evidence_contract_version
+         FROM transaction_relation_provenance WHERE relation_id = ?`,
+      ).run(keeper.row.relation_id, duplicate.row.relation_id);
+      db.prepare("DELETE FROM transaction_relation_provenance WHERE relation_id = ?").run(
+        duplicate.row.relation_id,
+      );
+      db.prepare("DELETE FROM current_loan_relations WHERE relation_id = ?").run(
+        duplicate.row.relation_id,
+      );
+      db.prepare("DELETE FROM transaction_relations WHERE relation_id = ?").run(
+        duplicate.row.relation_id,
+      );
+    }
+    const row = keeper.row;
+    const reversed = keeper.from === "to";
+    db.prepare(
+      `UPDATE transaction_relations SET relation_key = ?,
+         from_account_id = ?, from_transaction_id = ?,
+         from_source_record_key = ?, from_direction = ?,
+         to_account_id = ?, to_transaction_id = ?,
+         to_source_record_key = ?, to_direction = ?
+       WHERE relation_id = ?`,
+    ).run(
+      key,
+      reversed ? row.to_account_id : row.from_account_id,
+      reversed ? row.to_transaction_id : row.from_transaction_id,
+      reversed ? row.to_source_record_key : row.from_source_record_key,
+      reversed ? row.to_direction : row.from_direction,
+      reversed ? row.from_account_id : row.to_account_id,
+      reversed ? row.from_transaction_id : row.to_transaction_id,
+      reversed ? row.from_source_record_key : row.to_source_record_key,
+      reversed ? row.from_direction : row.to_direction,
+      row.relation_id,
+    );
+  }
+}
+
+function migrateV8ToV9(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(SCHEMA_V9_LOAN_FINANCIAL);
+    normalizeLoanRelationsV9(db);
+    validateCanonicalLoanExtensionSchema(db);
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (9, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 9");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
 function applySchemaMigration(
   db: DatabaseSync,
   options: CanonicalDatabaseOptions = {},
@@ -5220,6 +5497,7 @@ function applySchemaMigration(
     migrateV5ToV6(db, options.injectMigrationFailure);
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 2) {
@@ -5229,6 +5507,7 @@ function applySchemaMigration(
     migrateV5ToV6(db, options.injectMigrationFailure);
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 3) {
@@ -5237,6 +5516,7 @@ function applySchemaMigration(
     migrateV5ToV6(db, options.injectMigrationFailure);
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 4) {
@@ -5244,17 +5524,20 @@ function applySchemaMigration(
     migrateV5ToV6(db, options.injectMigrationFailure);
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 5) {
     migrateV5ToV6(db, options.injectMigrationFailure);
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 6) {
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
+    migrateV8ToV9(db);
     return;
   }
   if (version === 7) {
@@ -5284,6 +5567,12 @@ function applySchemaMigration(
       throw error;
     }
     migrateV7ToV8(db, options.injectMigrationFailure);
+    migrateV8ToV9(db);
+    return;
+  }
+  if (version === 8) {
+    validateV8SourceEvidenceSchema(db);
+    migrateV8ToV9(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -5312,6 +5601,7 @@ function applySchemaMigration(
       ensureForeignCurrencyConversionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
+      validateCanonicalLoanExtensionSchema(db);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -5335,6 +5625,7 @@ function applySchemaMigration(
     freshV7Committed = true;
     db.exec("PRAGMA foreign_keys = ON");
     migrateV7ToV8(db, options.injectMigrationFailure);
+    migrateV8ToV9(db);
     return;
   } catch (error) {
     if (!freshV7Committed) db.exec("ROLLBACK");
@@ -5344,6 +5635,7 @@ function applySchemaMigration(
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
+  validateCanonicalLoanExtensionSchema(db);
   const requiredTables = [
     "capture_scopes",
     "capture_scope_pages",
@@ -5918,7 +6210,7 @@ export function openCanonicalDatabase(
     });
     if (!options.readOnly) {
       applySchemaMigration(db, options);
-      // Fresh v0 databases reach v8 through the historical migration path,
+      // Fresh v0 databases reach v9 through the historical migration path,
       // which predates the additive foreign-currency precision/rule allowlist.
       // Apply the same widening pass used by existing v8 ledgers before any
       // foreign capture can be admitted.
@@ -6838,6 +7130,49 @@ function rebuildCathayCanonicalProjectionOnce(
       SELECT generation_id, transaction_id, revision_id, projection_commit_id, 'rebuild'
       FROM projection_generation_transactions WHERE generation_id = ?`,
     ).run(generation);
+    db.prepare(
+      `INSERT INTO current_loan_accounts(
+         generation_id, account_id, projection_commit_id, created_commit_id
+       )
+       SELECT ?, identity.account_id, ?, identity.created_commit_id
+       FROM loan_account_identities identity
+       JOIN canonical_commits created ON created.commit_id = identity.created_commit_id
+       WHERE identity.account_type = 'loan' AND identity.stream = 'loan'
+         AND created.commit_sequence <= ?`,
+    ).run(generation, commitId, cutoff);
+    db.prepare(
+      `INSERT INTO current_loan_balance_observations(
+         generation_id, account_id, balance_kind, observation_id, revision_id,
+         projection_commit_id, revision_commit_id
+       )
+       SELECT ?, ranked.account_id, ranked.balance_kind, ranked.observation_id,
+              ranked.revision_id, ?, ranked.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind,
+                observation.observation_id, revision.revision_id, revision.commit_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind
+                  ORDER BY revision_commit.commit_sequence DESC,
+                           revision.effective_at DESC, revision.revision_id DESC
+                ) AS rank
+         FROM balance_observations observation
+         JOIN balance_observation_revisions revision
+           ON revision.observation_id = observation.observation_id
+         JOIN canonical_commits revision_commit
+           ON revision_commit.commit_id = revision.commit_id
+         WHERE revision_commit.commit_sequence <= ?
+       ) ranked WHERE ranked.rank = 1`,
+    ).run(generation, commitId, cutoff);
+    db.prepare(
+      `INSERT INTO current_loan_relations(
+         generation_id, relation_id, projection_commit_id, relation_commit_id
+       )
+       SELECT ?, relation.relation_id, ?, relation.commit_id
+       FROM transaction_relations relation
+       JOIN canonical_commits relation_commit
+         ON relation_commit.commit_id = relation.commit_id
+       WHERE relation_commit.commit_sequence <= ?`,
+    ).run(generation, commitId, cutoff);
     const insertField =
       db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -9123,6 +9458,7 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
     if (path !== ":memory:") verifyCanonicalRuntime(db);
     validateV8SourceEvidenceSchema(db);
+    validateCanonicalLoanExtensionSchema(db);
     return db;
   } catch (error) {
     db.close();
@@ -9161,6 +9497,7 @@ export function validateCanonicalSourceStore(
   if (version !== CANONICAL_SCHEMA_VERSION)
     throw new Error("Canonical source schema version is invalid.");
   validateV8SourceEvidenceSchema(store.db);
+  validateCanonicalLoanExtensionSchema(store.db);
   const integrity = String(
     (
       store.db.prepare("PRAGMA integrity_check").get() as {
