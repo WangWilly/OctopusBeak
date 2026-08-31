@@ -105,4 +105,44 @@ test("loan admission fails closed for inferred direction, incomplete range, and 
       }),
     /explicit source linkage/i,
   );
+  assert.throws(
+    () =>
+      admitCanonicalLoanCapture({
+        ...fixture,
+        relations: fixture.relations.map((relation) => ({
+          ...relation,
+          toSourceRecordKey: "sha256:missing-counterpart",
+        })),
+      }),
+    /connect.*loan.*persisted|counterpart/i,
+  );
+  assert.throws(
+    () =>
+      admitCanonicalLoanCapture({
+        ...fixture,
+        records: fixture.records.map((record, index) =>
+          index === 0
+            ? {
+                ...record,
+                eventEvidence: {
+                  ...record.eventEvidence,
+                  sourceCode: "LOAN-PAYMENT",
+                },
+              }
+            : record,
+        ),
+      }),
+    /source code.*event kind.*direction|source contract/i,
+  );
+  assert.throws(
+    () =>
+      admitCanonicalLoanCapture({
+        ...fixture,
+        balanceObservations: fixture.balanceObservations.map((observation) => ({
+          ...observation,
+          effectiveAt: "2026-01-30T23:59:59+08:00",
+        })),
+      }),
+    /source field evidence/i,
+  );
 });

@@ -73,7 +73,7 @@ export function queryYuantaLoanCurrent(store: LoanFinancialStore) {
 
 export function queryYuantaLoanHistorical(
   store: LoanFinancialStore,
-  request: LoanHistoricalQuery = {},
+  request: LoanHistoricalQuery,
 ) {
   return queryCanonicalLoanHistorical(store, { ...request, sourceId: "yuanta" });
 }
