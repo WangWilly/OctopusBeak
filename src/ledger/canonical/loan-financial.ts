@@ -263,6 +263,46 @@ export type LoanCapturePage = {
   proofKind: "source-declared-terminal-range";
 };
 
+/**
+ * The small, source-neutral seam used by statement workflows.  Workflows
+ * supply facts that were read from the provider page; this helper only wraps
+ * them in the canonical capture contract and never classifies free-form text.
+ */
+export type CanonicalLoanStatementRow = {
+  sourceRecordKey: string;
+  occurrenceIndex: number;
+  effectiveOn: string;
+  sourceTime: LoanTransactionInput["sourceTime"];
+  sourceCode: string;
+  eventKind: LoanEventKind;
+  direction: "inflow" | "outflow";
+  amount: LoanExactAmount;
+  description?: string;
+  balance?: {
+    observationKey: string;
+    balance: LoanExactAmount;
+    effectiveAt: string;
+  };
+};
+
+export type CanonicalLoanIdentityInput = {
+  sourceConnectionKey: string;
+  identityEpochKey: string;
+  accountKey: string;
+  subjectDigest: string;
+  accountNo: string;
+};
+
+export type CanonicalLoanCaptureBuildInput = {
+  captureId: string;
+  sourceId: LoanSourceId;
+  identity: CanonicalLoanIdentityInput;
+  observedAt: string;
+  startDate: string;
+  endDate: string;
+  rows: readonly CanonicalLoanStatementRow[];
+};
+
 export type LoanValidatedCapture = LoanCaptureInput & {
   readonly __runtimeValidatedCanonicalLoanCapture: true;
 };
@@ -405,6 +445,192 @@ function token(...parts: string[]): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(parts.join("\u0000"))
     .digest("base64url")}`;
+}
+
+/** Build an opaque, deterministic identity or source-record token. */
+export function canonicalLoanToken(...parts: string[]): `sha256:${string}` {
+  return token(...parts);
+}
+
+/**
+ * Project an account option value into the identity fields required by the
+ * canonical loan contract. The provider value stays in memory only; every
+ * persisted identity is opaque and scoped to the source connection.
+ */
+export function canonicalLoanSourceIdentity(
+  sourceId: LoanSourceId,
+  sourceConnectionScope: string,
+  accountValue: string,
+): CanonicalLoanIdentityInput {
+  const connectionScope = sourceConnectionScope.trim();
+  const selectedAccount = accountValue.trim();
+  if (!connectionScope || !selectedAccount)
+    throw new CanonicalLoanAdmissionError(
+      "Loan source connection scope and account option are required.",
+    );
+
+  const sourceConnectionKey = token(
+    sourceId,
+    "loan-source-connection-v1",
+    connectionScope,
+  );
+  const identityEpochKey = token(sourceId, "loan-identity-epoch-v1");
+  const accountKey = token(
+    sourceId,
+    "loan-account-key-v1",
+    connectionScope,
+    selectedAccount,
+  );
+  return {
+    sourceConnectionKey,
+    identityEpochKey,
+    accountKey,
+    subjectDigest: token(
+      sourceId,
+      "loan-subject-v1",
+      connectionScope,
+      selectedAccount,
+    ),
+    accountNo: token(sourceId, "loan-account-number-v1", selectedAccount),
+  };
+}
+
+/** Parse a provider amount without converting through a floating point value. */
+export function parseCanonicalLoanAmount(
+  value: string,
+  label = "Loan amount",
+): LoanExactAmount {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[\s,]/gu, "")
+    .replace(/^(?:NT\$|TWD|NTD)/iu, "");
+  const parenthesized = normalized.startsWith("(") && normalized.endsWith(")");
+  const unsigned = parenthesized
+    ? normalized.slice(1, -1)
+    : normalized.replace(/^[+-]/u, "");
+  const match = unsigned.match(/^(?:(\d+)(?:\.(\d+))?|\.(\d+))$/u);
+  if (!match)
+    throw new CanonicalLoanAdmissionError(`${label} is not an exact decimal.`);
+  const fraction = match[2] ?? match[3] ?? "";
+  const integer = match[1] ?? "0";
+  const coefficient = `${integer}${fraction}`.replace(/^0+(?=\d)/u, "");
+  return { coefficient, scale: fraction.length };
+}
+
+/** Convert the bank's displayed slash date to the canonical date form. */
+export function parseCanonicalLoanDate(
+  value: string,
+  label = "Loan source date",
+): string {
+  const normalized = value.normalize("NFKC").trim().replaceAll("/", "-");
+  if (!ISO_DATE.test(normalized))
+    throw new CanonicalLoanAdmissionError(`${label} must be YYYY/MM/DD.`);
+  return requireDate(normalized, label);
+}
+
+/** Wrap source-projected rows in the versioned canonical loan capture contract. */
+export function createCanonicalLoanCapture(
+  input: CanonicalLoanCaptureBuildInput,
+): LoanCaptureInput {
+  const contractVersion = expectedContract(input.sourceId);
+  const records = input.rows.map((row) => ({
+    sourceRecordKey: row.sourceRecordKey,
+    occurrenceIndex: row.occurrenceIndex,
+    effectiveOn: row.effectiveOn,
+    sourceTime: row.sourceTime,
+    postingStatus: "posted" as const,
+    eventKind: row.eventKind,
+    eventEvidence: {
+      kind: "source-coded-loan-event" as const,
+      sourceRecordKey: row.sourceRecordKey,
+      sourceCode: row.sourceCode,
+      contractVersion,
+    },
+    direction: row.direction,
+    amount: row.amount,
+    currency: "TWD" as const,
+    ...(row.description === undefined ? {} : { description: row.description }),
+    ...(row.balance === undefined
+      ? {}
+      : {
+          balanceSourceEvidence: [
+            {
+              kind: "source-reported-balance" as const,
+              balanceKind: "loan_outstanding" as const,
+              balanceField: "statement-balance" as const,
+              balance: row.balance.balance,
+              effectiveAtField: "statement-as-of" as const,
+              effectiveAt: row.balance.effectiveAt,
+              contractVersion,
+            },
+          ],
+        }),
+  }));
+  const balanceObservations = input.rows.flatMap((row) =>
+    row.balance === undefined
+      ? []
+      : [
+          {
+            observationKey: row.balance.observationKey,
+            sourceRecordKey: row.sourceRecordKey,
+            balanceKind: "loan_outstanding" as const,
+            balance: row.balance.balance,
+            currency: "TWD" as const,
+            effectiveAt: row.balance.effectiveAt,
+            effectiveTimeBasis: "source-reported" as const,
+            effectiveTimeRuleVersion: contractVersion,
+            effectiveTimeEvidence: {
+              kind: "source-reported-balance-effective-time" as const,
+              sourceRecordKey: row.sourceRecordKey,
+              sourceField: "statement-as-of" as const,
+              value: row.balance.effectiveAt,
+              contractVersion,
+            },
+          },
+        ],
+  );
+  return {
+    captureId: input.captureId,
+    sourceId: input.sourceId,
+    authorityRoute: expectedAuthority(input.sourceId),
+    contractVersion,
+    identity: {
+      ...input.identity,
+      accountType: "loan",
+      stream: "loan",
+      recordKind: expectedRecordKind(input.sourceId),
+      currency: "TWD",
+    },
+    observedAt: input.observedAt,
+    scope: {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: contractVersion,
+      pageCount: 1,
+      terminal: true,
+    },
+    semantics: {
+      status: "posted",
+      effectiveTimeBasis: "source-reported",
+      effectiveTimeRuleVersion: contractVersion,
+      timeZone: "Asia/Taipei",
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: records.length,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    records,
+    counterpartTransactions: [],
+    balanceObservations,
+    relations: [],
+  };
 }
 
 function requireText(value: unknown, label: string): string {

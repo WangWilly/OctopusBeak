@@ -342,7 +342,12 @@ export async function runFubonAllStatements(
         typeId: "loan",
         run: () =>
           runSectionOutOfForeground(page, "loans", () =>
-            runFubonLoanStatements(page, input.loans),
+            runFubonLoanStatements(page, input.loans, {
+              ...ledgerOverrides,
+              sourceConnectionScope:
+                fubonLoginScope(input.credentials)?.join("\u0000") ??
+                "fubon-loan-workflow",
+            }),
           ),
       },
     ]);

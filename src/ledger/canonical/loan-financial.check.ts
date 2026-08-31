@@ -19,6 +19,173 @@ import {
   rebuildCanonicalProjection,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import {
+  buildFubonLoanCapture,
+  persistFubonLoanCapture,
+  queryFubonLoanCurrent,
+  queryFubonLoanHistorical,
+  queryFubonLoanLineage,
+} from "./fubon-loan.ts";
+import {
+  buildYuantaLoanCapture,
+  persistYuantaLoanCapture,
+  queryYuantaLoanCurrent,
+  queryYuantaLoanHistorical,
+  queryYuantaLoanLineage,
+  YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+  YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
+} from "./yuanta-loan.ts";
+
+test("Fubon adapter commits source-scoped exact rows through all query seams", async () => {
+  const input = {
+    accountValue: "fubon-option-test",
+    sourceConnectionScope: "fubon-connection-test",
+    observedAt: "2026-02-01T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    rows: [
+      {
+        transactionDate: "2026/01/05",
+        transactionContent: "LOAN-DISBURSEMENT",
+        transactionAmount: "100000.00",
+        balanceAfterTransaction: "100000.00",
+      },
+      {
+        transactionDate: "2026/01/31",
+        transactionContent: "LOAN-PAYMENT",
+        transactionAmount: "12,500.00",
+        balanceAfterTransaction: "87,500.00",
+      },
+    ],
+  } as const;
+  const first = buildFubonLoanCapture(input);
+  const second = buildFubonLoanCapture({
+    ...input,
+    observedAt: "2026-02-02T00:00:00.000Z",
+  });
+  assert.equal(first.identity.accountKey, second.identity.accountKey);
+  assert.equal(first.records[0]?.sourceRecordKey, second.records[0]?.sourceRecordKey);
+  assert.equal(first.scope.completeness, "complete-range");
+  assert.equal(first.records[0]?.postingStatus, "posted");
+  assert.equal(first.records[0]?.eventEvidence.sourceCode, "LOAN-DISBURSEMENT");
+  assert.equal(first.records[0]?.direction, "outflow");
+  assert.deepEqual(first.records[1]?.amount, { coefficient: "1250000", scale: 2 });
+  assert.equal(first.records[1]?.eventEvidence.sourceRecordKey, first.records[1]?.sourceRecordKey);
+  assert.equal(first.balanceObservations.length, 2);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    const committed = await persistFubonLoanCapture(store, input);
+    assert.equal(committed.transactionCount, 2);
+    assert.equal(committed.balanceObservationCount, 2);
+    const current = queryFubonLoanCurrent(store);
+    assert.equal(current.accounts.length, 1);
+    assert.equal(current.transactions.length, 2);
+    assert.equal(current.balanceObservations.length, 1);
+    assert.equal(
+      queryFubonLoanHistorical(store, {
+        knowledgeAt: committed.commitSequence,
+        financialAt: "2026-01-31",
+      }).transactions.length,
+      2,
+    );
+    assert.equal(
+      queryFubonLoanLineage(store, {
+        sourceRecordKey: first.records[0]!.sourceRecordKey,
+      }).lineage.length,
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta adapter preserves explicit event mapping and exact source evidence", async () => {
+  const input = {
+    accountValue: "yuanta-option-test",
+    sourceConnectionScope: "yuanta-connection-test",
+    observedAt: "2026-02-01T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    rows: [
+      {
+        transactionDate: "2026/01/05",
+        postingDate: "2026/01/06",
+        paymentItem: "LOAN-PAYMENT",
+        transactionAmount: "12,500.00",
+        balanceAfterTransaction: "87,500.00",
+      },
+    ],
+  } as const;
+  const capture = buildYuantaLoanCapture(input);
+  assert.equal(capture.identity.accountKey, buildYuantaLoanCapture(input).identity.accountKey);
+  assert.equal(capture.records[0]?.eventKind, "payment");
+  assert.equal(capture.records[0]?.direction, "inflow");
+  assert.equal(capture.records[0]?.effectiveOn, "2026-01-06");
+  assert.deepEqual(capture.records[0]?.amount, { coefficient: "1250000", scale: 2 });
+  assert.equal(capture.records[0]?.eventEvidence.contractVersion, capture.contractVersion);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    const committed = await persistYuantaLoanCapture(store, input);
+    assert.equal(committed.transactionCount, 1);
+    const current = queryYuantaLoanCurrent(store);
+    assert.equal(current.accounts.length, 1);
+    assert.equal(current.transactions.length, 1);
+    assert.equal(
+      queryYuantaLoanHistorical(store, {
+        knowledgeAt: committed.commitSequence,
+        financialAt: "2026-01-31",
+      }).transactions.length,
+      1,
+    );
+    assert.equal(
+      queryYuantaLoanLineage(store, {
+        sourceRecordKey: capture.records[0]!.sourceRecordKey,
+      }).transactions.length,
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta source codebook maps the explicit temporary receipt to payment only", () => {
+  const capture = buildYuantaLoanCapture({
+    accountValue: "yuanta-option-temporary-receipt-test",
+    sourceConnectionScope: "yuanta-connection-test",
+    observedAt: "2026-02-01T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    rows: [
+      {
+        transactionDate: "2026/01/05",
+        postingDate: "2026/01/06",
+        paymentItem: "暫收款",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "90.00",
+      },
+    ],
+  });
+
+  assert.equal(
+    YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
+    "yuanta/loan-source-event-codebook/v1",
+  );
+  assert.equal(
+    capture.records[0]?.eventEvidence.sourceCode,
+    "LOAN-PAYMENT",
+  );
+  assert.equal(capture.records[0]?.eventKind, "payment");
+  assert.equal(capture.records[0]?.direction, "inflow");
+  assert.equal(capture.records[0]?.principal, undefined);
+  assert.equal(capture.records[0]?.interest, undefined);
+  assert.equal(capture.records[0]?.fee, undefined);
+  assert.equal(
+    YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.financialValuesRetained,
+    false,
+  );
+});
 
 test("loan canonical writer preserves source-scoped accounts and exact facts", async () => {
   const store = createCanonicalLoanStore(":memory:");
