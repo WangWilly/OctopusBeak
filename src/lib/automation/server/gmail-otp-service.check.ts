@@ -63,6 +63,28 @@ const fakeCredentialCodec = {
   decrypt(payload: string) { return Buffer.from(payload, "base64").toString().slice(5); },
 };
 
+function writeFakeOAuthClientConfig(
+  appRoot: string,
+  {
+    clientId = "desktop-client",
+    clientSecret = "desktop-secret",
+  }: { clientId?: string; clientSecret?: string } = {},
+) {
+  const oauthDir = join(appRoot, "data", "google-oauth");
+  mkdirSync(oauthDir, { recursive: true });
+  writeFileSync(
+    join(oauthDir, "google-oauth-desktop-client.json"),
+    JSON.stringify({
+      installed: {
+        client_id: clientId,
+        client_secret: clientSecret,
+        auth_uri: "https://accounts.google.com/o/oauth2/v2/auth",
+        token_uri: "https://oauth2.googleapis.com/token",
+      },
+    }),
+  );
+}
+
 test("PKCE, state, client config, and callback validation are strict", () => {
   const verifier = createPkceVerifier(() => new Uint8Array(32).fill(65));
   const challenge = pkceChallengeForVerifier(verifier);
@@ -87,16 +109,7 @@ test("initial Desktop OAuth exchange sends the provided client secret", async ()
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-initial-oauth-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
-  const oauthDir = join(dir, "data", "google-oauth");
-  mkdirSync(oauthDir, { recursive: true });
-  writeFileSync(join(oauthDir, "google-oauth-desktop-client.json"), JSON.stringify({
-    installed: {
-      client_id: "desktop-client",
-      client_secret: "desktop-secret",
-      auth_uri: "https://accounts.google.com/o/oauth2/v2/auth",
-      token_uri: "https://oauth2.googleapis.com/token",
-    },
-  }));
+  writeFakeOAuthClientConfig(dir);
   setAutomationCredentialCodec(fakeCredentialCodec);
   writeAutomationSettingsFile(settingsPath, {});
   writeAutomationCredentialsFile(credentialsPath, {});
@@ -145,14 +158,7 @@ test("token exchange failure returns a sanitized connection error", async () => 
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-token-error-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
-  const oauthDir = join(dir, "data", "google-oauth");
-  mkdirSync(oauthDir, { recursive: true });
-  writeFileSync(join(oauthDir, "google-oauth-desktop-client.json"), JSON.stringify({
-    installed: {
-      client_id: "desktop-client",
-      client_secret: "desktop-secret",
-    },
-  }));
+  writeFakeOAuthClientConfig(dir);
   setAutomationCredentialCodec(fakeCredentialCodec);
   writeAutomationSettingsFile(settingsPath, {});
   writeAutomationCredentialsFile(credentialsPath, {});
@@ -401,6 +407,7 @@ test("disabling keeps the grant and re-enabling refreshes it without OAuth", asy
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-reenable-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
+  writeFakeOAuthClientConfig(dir);
   writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
   writeAutomationCredentialsFile(credentialsPath, {
     [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh-grant",
@@ -410,6 +417,7 @@ test("disabling keeps the grant and re-enabling refreshes it without OAuth", asy
   let refreshCalls = 0;
   setAutomationCredentialCodec(fakeCredentialCodec);
   const service = createCathayGmailOtpService({
+    appRoot: dir,
     settingsPath,
     credentialsPath,
     fetch: async () => {
@@ -438,6 +446,7 @@ test("Gmail service keeps its credential codec when another operation resets the
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-codec-isolation-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
+  writeFakeOAuthClientConfig(dir);
   setAutomationCredentialCodec(fakeCredentialCodec);
   writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
   writeAutomationCredentialsFile(credentialsPath, {
@@ -445,6 +454,7 @@ test("Gmail service keeps its credential codec when another operation resets the
     [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
   });
   const service = createCathayGmailOtpService({
+    appRoot: dir,
     settingsPath,
     credentialsPath,
     fetch: async () => {
@@ -514,6 +524,7 @@ test("successful OTP is never written to a log by the host service", async () =>
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-no-log-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
+  writeFakeOAuthClientConfig(dir);
   setAutomationCredentialCodec(fakeCredentialCodec);
   writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
   writeAutomationCredentialsFile(credentialsPath, {
@@ -522,6 +533,7 @@ test("successful OTP is never written to a log by the host service", async () =>
   });
   let listCalls = 0;
   const service = createCathayGmailOtpService({
+    appRoot: dir,
     settingsPath,
     credentialsPath,
     oauthAuthorize: async () => ({ refreshToken: "refresh", connectedEmail: "test@gmail.com" }),
