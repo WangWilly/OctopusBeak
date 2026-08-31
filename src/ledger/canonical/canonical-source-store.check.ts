@@ -847,7 +847,7 @@ try {
   );
   assert.match(
     migratedRevisionSchema,
-    /effective_time_basis TEXT NOT NULL CHECK\(effective_time_basis IN \('accounting','transaction-time'\)\)/,
+    /effective_time_basis TEXT NOT NULL CHECK\(effective_time_basis IN \('accounting','transaction-time','source-reported'\)\)/,
   );
   validateCanonicalSourceStore(migrated);
   migrated.close();
@@ -906,7 +906,7 @@ try {
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+      "CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported'))",
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
@@ -1847,7 +1847,7 @@ try {
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+      "CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported'))",
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(

@@ -1516,7 +1516,7 @@ function canonicalLoanSpineCapture(
       economicStatus: "normal",
       administrativeState: "active",
       semanticRuleVersion: capture.authorityRoute,
-      effectiveTimeBasis: "transaction-time",
+      effectiveTimeBasis: "source-reported",
       effectiveTimeRuleVersion: capture.authorityRoute,
       timeZone: capture.semantics.timeZone,
       timePrecision: capture.records[0]?.sourceTime.precision ?? "date",
@@ -2663,6 +2663,13 @@ function accountRows(
   return rows.map(accountFromRow);
 }
 
+function loanSourceReportedTimeBasis(value: unknown): "source-reported" {
+  if (value === "source-reported") return value;
+  throw new CanonicalLoanConflictError(
+    "Loan transaction effective time basis is not source-reported.",
+  );
+}
+
 function transactionRows(
   db: DatabaseSync,
   knowledgeAt: number,
@@ -2767,7 +2774,7 @@ function transactionRows(
       sourceOccurrenceKey: String(row.source_sequence),
       occurrenceIndex: Number(row.occurrence_index),
       effectiveOn: String(row.effective_on),
-      effectiveTimeBasis: String(row.effective_time_basis) as "source-reported",
+      effectiveTimeBasis: loanSourceReportedTimeBasis(row.effective_time_basis),
       sourceTime: {
         localTime,
         timeZone: "Asia/Taipei",

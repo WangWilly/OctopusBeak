@@ -1503,7 +1503,7 @@ const SCHEMA_V5 = `${SCHEMA_V4}${SCHEMA_V5_APPEND}`
   )
   .replace(
     "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'accounting')",
-    "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time'))",
+    "effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported'))",
   )
   .replace(
     "time_precision TEXT NOT NULL CHECK(time_precision = 'second')",
@@ -5038,6 +5038,9 @@ function isCanonicalFinancialRevisionSchema(sql: string): boolean {
     ) &&
     /time_origin TEXT NOT NULL CHECK\(time_origin IN \('source_reported','defaulted_local_midnight'\)\)/.test(
       sql,
+    ) &&
+    /effective_time_basis TEXT NOT NULL CHECK\(effective_time_basis IN \('accounting','transaction-time','source-reported'\)\)/.test(
+      sql,
     )
   );
 }
@@ -5266,7 +5269,7 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
-      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
+      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported')),
       effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
@@ -6930,7 +6933,7 @@ export type CanonicalTransaction = {
   noteOrigin: "derived" | "user" | null;
   noteCommitSequence: number | null;
   effectiveOn: string;
-  effectiveTimeBasis: "accounting" | "transaction-time";
+  effectiveTimeBasis: "accounting" | "transaction-time" | "source-reported";
   effectiveTimeRuleVersion: string;
   transactionDateTimeLocal: string;
   timeZone: typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE;
@@ -9106,6 +9109,18 @@ function amountFromRow(
     scale: Number(row[`${prefix}amount_scale`]),
   };
 }
+function effectiveTimeBasisFromRow(
+  value: unknown,
+): CanonicalTransaction["effectiveTimeBasis"] {
+  if (
+    value === "accounting" ||
+    value === "transaction-time" ||
+    value === "source-reported"
+  )
+    return value;
+  throw new Error("Canonical transaction effective time basis is invalid.");
+}
+
 function transactionFromRow(
   row: Record<string, unknown>,
 ): CanonicalTransaction {
@@ -9166,8 +9181,7 @@ function transactionFromRow(
     noteOrigin: selectedNoteOrigin,
     noteCommitSequence: selectedNoteCommitSequence,
     effectiveOn: String(row.effective_on),
-    effectiveTimeBasis:
-      row.effective_time_basis as CanonicalTransaction["effectiveTimeBasis"],
+    effectiveTimeBasis: effectiveTimeBasisFromRow(row.effective_time_basis),
     effectiveTimeRuleVersion: String(row.effective_time_rule_version),
     transactionDateTimeLocal: String(row.transaction_date_time_local),
     timeZone: String(row.time_zone) as typeof CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,

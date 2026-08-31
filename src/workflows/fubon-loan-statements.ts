@@ -229,19 +229,94 @@ function stripHtml(value: string): string {
 }
 
 function htmlAttribute(openingTag: string, name: string): string {
-  return (
-    openingTag.match(
-      new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "iu"),
-    )?.[2] ?? ""
-  );
+  const match = [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu,
+    ),
+  ].find((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
 }
 
 function isDisabledHtmlControl(openingTag: string): boolean {
   return (
-    /\bdisabled\b/iu.test(openingTag) ||
-    /aria-disabled\s*=\s*["']?true\b/iu.test(openingTag) ||
-    /\bdisabled\b/iu.test(htmlAttribute(openingTag, "class"))
+    hasHtmlBooleanAttribute(openingTag, "disabled") ||
+    htmlAttribute(openingTag, "aria-disabled").trim().toLowerCase() ===
+      "true" ||
+    hasHtmlClassToken(openingTag, "disabled")
   );
+}
+
+function hasHtmlBooleanAttribute(openingTag: string, name: string): boolean {
+  return [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gu,
+    ),
+  ].some((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+}
+
+function hasHtmlClassToken(openingTag: string, token: string): boolean {
+  return htmlAttribute(openingTag, "class")
+    .split(/\s+/u)
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function hasHtmlClassOrIdToken(openingTag: string, token: string): boolean {
+  return [htmlAttribute(openingTag, "class"), htmlAttribute(openingTag, "id")]
+    .flatMap((value) => value.split(/\s+/u))
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function extractBalancedHtmlElement(
+  html: string,
+  openingStart: number,
+  openingTag: string,
+): string {
+  const tagName = openingTag.match(/^<([a-z][\w:-]*)\b/iu)?.[1];
+  if (!tagName || /\/>$/u.test(openingTag)) return openingTag;
+  const tokens = [
+    ...html.slice(openingStart).matchAll(
+      new RegExp("<\\/?" + tagName + "\\b[^>]*>", "giu"),
+    ),
+  ];
+  let depth = 0;
+  for (const token of tokens) {
+    const value = token[0];
+    if (/^<\//u.test(value)) {
+      depth -= 1;
+      if (depth === 0) {
+        const end = (token.index ?? 0) + value.length;
+        return html.slice(openingStart, openingStart + end);
+      }
+    } else if (!/\/>$/u.test(value)) {
+      depth += 1;
+    }
+  }
+  return html.slice(openingStart);
+}
+
+function fubonLoanResultMarkup(html: string): string {
+  const candidates: string[] = [];
+  for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)) {
+    const opening = match[0];
+    const tagName = match[1]?.toLowerCase();
+    if (!tagName || /^(?:input|meta|link|br|hr|img)$/u.test(tagName)) continue;
+    const marker = [
+      htmlAttribute(opening, "id"),
+      htmlAttribute(opening, "class"),
+      htmlAttribute(opening, "name"),
+    ].join(" ");
+    if (!/\bresultGrid\b/iu.test(marker)) continue;
+    candidates.push(
+      extractBalancedHtmlElement(html, match.index ?? 0, opening),
+    );
+  }
+  const withCurrentPage = candidates.filter((candidate) =>
+    /<(?:input|select)\b[^>]*(?:id|name)\s*=\s*["'][^"']*resultGrid:dataGridCurrentPage[^"']*["']/iu.test(
+      candidate,
+    ),
+  );
+  return (withCurrentPage.length > 0 ? withCurrentPage : candidates)
+    .sort((left, right) => left.length - right.length)[0] ?? "";
 }
 
 /**
@@ -255,7 +330,18 @@ function isDisabledHtmlControl(openingTag: string): boolean {
 export function parseFubonLoanPaginationSignal(
   html: string,
 ): FubonLoanPaginationSignal {
-  const links = [...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu)].map(
+  const providerMarkup = fubonLoanResultMarkup(html);
+  if (!providerMarkup) {
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    };
+  }
+  const links = [
+    ...providerMarkup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
+  ].map(
     (match) => {
       const markup = match[0];
       const opening = markup.match(/^<a\b[^>]*>/iu)?.[0] ?? "";
@@ -292,14 +378,34 @@ export function parseFubonLoanPaginationSignal(
     };
   }
 
-  const hasProviderPaginationState =
-    /(?:setDataGridCurrentPage|dataGridCurrentPage|dataGridPageCount|pager|pagination)/iu.test(
-      html,
+  const hasCurrentPageField =
+    /<(?:input|select)\b[^>]*(?:id|name)\s*=\s*["'][^"']*resultGrid:dataGridCurrentPage[^"']*["']/iu.test(
+      providerMarkup,
+    );
+  const hasProviderPager = [
+    ...providerMarkup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu),
+  ].some((match) => {
+    const tagName = match[1]?.toLowerCase();
+    return (
+      tagName !== undefined &&
+      /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
+      (hasHtmlClassOrIdToken(match[0], "pager") ||
+        hasHtmlClassOrIdToken(match[0], "pagination"))
+    );
+  });
+  const hasExplicitNoNext =
+    /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
+      providerMarkup,
     );
   const hasDisabledNext = nextLinks.some((link) =>
     isDisabledHtmlControl(link.opening),
   );
-  if (hasProviderPaginationState && (hasDisabledNext || nextLinks.length === 0))
+  if (
+    hasCurrentPageField &&
+    (hasDisabledNext ||
+      hasExplicitNoNext ||
+      (hasProviderPager && nextLinks.length === 0))
+  )
     return {
       nextPage: null,
       pageFieldName: null,

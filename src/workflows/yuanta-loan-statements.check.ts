@@ -165,6 +165,16 @@ test("Yuanta pagination derives terminal/page evidence from provider controls", 
   );
   assert.deepEqual(
     parseYuantaLoanPaginationSignal(
+      YUANTA_LOAN_PAGINATION_FIXTURES_V1.activePageWithoutExplicitAriaState,
+    ),
+    {
+      nextPageTarget: "page:2",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
+  assert.deepEqual(
+    parseYuantaLoanPaginationSignal(
       YUANTA_LOAN_PAGINATION_FIXTURES_V1.terminalPage,
     ),
     {
@@ -183,6 +193,16 @@ test("Yuanta pagination derives terminal/page evidence from provider controls", 
       evidence: null,
     },
   );
+  for (const fixture of [
+    YUANTA_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOnly,
+    YUANTA_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOutsideResult,
+  ]) {
+    assert.deepEqual(parseYuantaLoanPaginationSignal(fixture), {
+      nextPageTarget: null,
+      terminal: false,
+      evidence: null,
+    });
+  }
 });
 
 test("Yuanta multi-page traversal preserves page ordinals and terminal evidence", () => {

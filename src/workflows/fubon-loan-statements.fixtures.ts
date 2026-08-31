@@ -4,7 +4,10 @@
  * amount, or response data from a live session.
  */
 export const FUBON_LOAN_PAGINATION_FIXTURES_V1 = Object.freeze({
-  activePage: `<input name="resultGrid:dataGridCurrentPage" value="1"><span class="pager">第 1 頁</span><a onclick="setDataGridCurrentPage('resultGrid:dataGridCurrentPage', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a>`,
-  terminalPage: `<input name="resultGrid:dataGridCurrentPage" value="2"><span class="pager">第 2 頁</span><a class="disabled" aria-disabled="true">下一頁</a>`,
+  activePage: `<div id="resultGrid"><input name="resultGrid:dataGridCurrentPage" value="1"><span class="pager">第 1 頁</span><a aria-disabled="false" onclick="setDataGridCurrentPage('resultGrid:dataGridCurrentPage', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a></div>`,
+  activePageWithoutExplicitAriaState: `<div id="resultGrid"><input name="resultGrid:dataGridCurrentPage" value="1"><span class="pager">第 1 頁</span><a onclick="setDataGridCurrentPage('resultGrid:dataGridCurrentPage', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a></div>`,
+  terminalPage: `<div id="resultGrid"><input name="resultGrid:dataGridCurrentPage" value="2"><span class="pager">第 2 頁</span><a class="disabled" aria-disabled="true">下一頁</a></div>`,
+  unrelatedPagerOnly: `<nav class="pager"><a class="disabled" aria-disabled="true">下一頁</a></nav><table><tr><td>交易日期</td></tr></table>`,
+  unrelatedPagerOutsideResult: `<nav class="pager"><a class="disabled" aria-disabled="true">下一頁</a></nav><div id="resultGrid"><input name="resultGrid:dataGridCurrentPage" value="1"><table><tr><td>交易日期</td></tr></table></div>`,
   ambiguousTable: `<table><tr><td>交易日期</td></tr></table>`,
 } as const);
