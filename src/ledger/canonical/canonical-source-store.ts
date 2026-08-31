@@ -4493,18 +4493,24 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     /sinopac\/domestic-deposit\/human-attested-v1/.test(sql) &&
     /posting_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
     /posting_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
+    /posting_rule_version LIKE 'fubon\/loan\/%'/.test(sql) &&
+    /posting_rule_version LIKE 'yuanta\/loan\/%'/.test(sql) &&
     /posting_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
     /semantic_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
     /semantic_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
+    /semantic_rule_version LIKE 'fubon\/loan\/%'/.test(sql) &&
+    /semantic_rule_version LIKE 'yuanta\/loan\/%'/.test(sql) &&
     /semantic_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
     /effective_time_rule_version LIKE 'foreign-currency\/%'/.test(sql) &&
     /effective_time_rule_version LIKE 'fubon\/credit-card\/%'/.test(sql) &&
+    /effective_time_rule_version LIKE 'fubon\/loan\/%'/.test(sql) &&
+    /effective_time_rule_version LIKE 'yuanta\/loan\/%'/.test(sql) &&
     /effective_time_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
@@ -4539,15 +4545,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'esun/credit-card/%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'esun/credit-card/%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
