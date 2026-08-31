@@ -1060,6 +1060,66 @@ try {
   await rm(partialDirectory, { recursive: true, force: true });
 }
 
+test("v8 to v9 rebuilds the source assertion compatibility view", async () => {
+  for (const defect of ["missing", "malformed"] as const) {
+    const directory = await mkdtemp(
+      join(tmpdir(), `canonical-source-v8-compat-${defect}-`),
+    );
+    try {
+      const path = join(directory, "canonical.sqlite");
+      await commitCathayDomesticDeposit(
+        directory,
+        CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+      );
+      const seeded = new DatabaseSync(path);
+      const beforeSourceAssertionCount = Number(
+        (
+          seeded
+            .prepare("SELECT COUNT(*) AS count FROM source_assertions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      );
+      seeded.close();
+
+      const legacy = new DatabaseSync(path);
+      legacy.exec("PRAGMA foreign_keys = OFF");
+      legacy.exec("DROP VIEW source_assertions");
+      if (defect === "malformed")
+        legacy.exec(
+          "CREATE VIEW source_assertions AS SELECT assertion_id, transaction_id, revision_id, created_commit_id AS commit_id FROM assertions",
+        );
+      legacy.exec(
+        "DELETE FROM schema_migrations WHERE version = 9; PRAGMA user_version = 8",
+      );
+      legacy.close();
+
+      const migrated = createCanonicalSourceStore(path);
+      const sourceAssertionsView = String(
+        (
+          migrated.db
+            .prepare(
+              "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+            )
+            .get() as { sql?: unknown } | undefined
+        )?.sql ?? "",
+      );
+      assert.match(sourceAssertionsView, /revision\.source_record_id/i);
+      assert.equal(
+        (
+          migrated.db
+            .prepare("SELECT COUNT(*) AS count FROM source_assertions")
+            .get() as { count?: number }
+        ).count,
+        beforeSourceAssertionCount,
+      );
+      validateCanonicalSourceStore(migrated);
+      migrated.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 const closedScopeDirectory = await mkdtemp(
   join(tmpdir(), "canonical-source-closed-scope-v8-"),
 );
