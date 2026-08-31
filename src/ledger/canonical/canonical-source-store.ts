@@ -974,6 +974,317 @@ CREATE INDEX IF NOT EXISTS idx_assertion_provenance_authority ON assertion_prove
 CREATE INDEX IF NOT EXISTS idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);
 `;
 
+const SOURCE_ASSERTIONS_COMPATIBILITY_COLUMNS = [
+  "assertion_id",
+  "transaction_id",
+  "revision_id",
+  "source_record_id",
+  "commit_id",
+] as const;
+const SOURCE_ASSERTIONS_COMPATIBILITY_SELECT = `SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
+  revision.source_record_id, assertion.created_commit_id AS commit_id
+  FROM assertions assertion JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
+  WHERE assertion.origin = 'source' AND EXISTS (
+    SELECT 1 FROM assertion_provenance provenance
+    WHERE provenance.assertion_id = assertion.assertion_id
+      AND provenance.source_record_id IS NOT NULL
+      AND provenance.source_record_id = revision.source_record_id
+  )`;
+
+function sourceAssertionsViewSql(db: DatabaseSync): string {
+  return String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+}
+
+function sourceAssertionsRelationColumns(db: DatabaseSync): string[] {
+  return (
+    db.prepare("PRAGMA table_info(source_assertions)").all() as Array<{
+      name?: unknown;
+    }>
+  ).map((column) => String(column.name ?? ""));
+}
+
+const SOURCE_ASSERTIONS_SQL_KEYWORDS = new Set([
+  "AS",
+  "AND",
+  "OR",
+  "ON",
+  "WHERE",
+  "HAVING",
+  "FROM",
+  "SELECT",
+  "JOIN",
+  "LEFT",
+  "RIGHT",
+  "INNER",
+  "OUTER",
+  "CROSS",
+  "GROUP",
+  "ORDER",
+  "LIMIT",
+  "UNION",
+  "EXCEPT",
+  "INTERSECT",
+]);
+
+function sourceAssertionsSqlIdentifierPattern(identifier: string): string {
+  return identifier
+    .split("")
+    .map((character) =>
+      /[A-Za-z0-9_]/.test(character) ? character : `\\${character}`,
+    )
+    .join("");
+}
+
+function sourceAssertionsSqlAlias(
+  sql: string,
+  keyword: "FROM" | "JOIN",
+  relation: string,
+): string {
+  const relationPattern = sourceAssertionsSqlIdentifierPattern(relation);
+  const identifierPattern =
+    `(?:"([^"]+)"|\\[([^\\]]+)\\]|([A-Za-z_][A-Za-z0-9_$]*))`;
+  const match = sql.match(
+    new RegExp(
+      `\\b${keyword}\\s+(?:"${relationPattern}"|\\[${relationPattern}\\]|${relationPattern})(?:\\s+(?:AS\\s+)?${identifierPattern})?`,
+      "i",
+    ),
+  );
+  const candidate = match?.[1] ?? match?.[2] ?? match?.[3];
+  if (!candidate || SOURCE_ASSERTIONS_SQL_KEYWORDS.has(candidate.toUpperCase()))
+    return relation;
+  return candidate;
+}
+
+function sourceAssertionsSqlQualifiedColumnPattern(
+  alias: string,
+  relation: string,
+  column: string,
+): string {
+  const aliasPattern = sourceAssertionsSqlIdentifierPattern(alias);
+  const relationPattern = sourceAssertionsSqlIdentifierPattern(relation);
+  const columnPattern = sourceAssertionsSqlIdentifierPattern(column);
+  if (alias === relation)
+    return `(?:(?:${aliasPattern}|${relationPattern})\\s*\\.\\s*)?${columnPattern}`;
+  return `${aliasPattern}\\s*\\.\\s*${columnPattern}`;
+}
+
+function sourceAssertionsSqlRelationPattern(relation: string): string {
+  const relationPattern = sourceAssertionsSqlIdentifierPattern(relation);
+  return `(?:"${relationPattern}"|\\[${relationPattern}\\]|${relationPattern})`;
+}
+
+function sourceAssertionsViewSqlHasSourceSemantics(sql: string): boolean {
+  const normalized = sql.replace(/\s+/g, " ");
+  const assertionAlias = sourceAssertionsSqlAlias(
+    normalized,
+    "FROM",
+    "assertions",
+  );
+  const provenanceAlias = sourceAssertionsSqlAlias(
+    normalized,
+    "FROM",
+    "assertion_provenance",
+  );
+  const sourceOrigin = sourceAssertionsSqlQualifiedColumnPattern(
+    assertionAlias,
+    "assertions",
+    "origin",
+  );
+  const provenanceAssertionId = sourceAssertionsSqlQualifiedColumnPattern(
+    provenanceAlias,
+    "assertion_provenance",
+    "assertion_id",
+  );
+  const assertionId = sourceAssertionsSqlQualifiedColumnPattern(
+    assertionAlias,
+    "assertions",
+    "assertion_id",
+  );
+  const provenanceSourceRecordId =
+    sourceAssertionsSqlQualifiedColumnPattern(
+      provenanceAlias,
+      "assertion_provenance",
+      "source_record_id",
+    );
+  const provenanceAssertionLink = new RegExp(
+    `(?:${provenanceAssertionId}\\s*=\\s*${assertionId}|${assertionId}\\s*=\\s*${provenanceAssertionId})`,
+    "i",
+  );
+  return (
+    new RegExp(
+      `\\bFROM\\s+${sourceAssertionsSqlRelationPattern("assertions")}(?![A-Za-z0-9_$])`,
+      "i",
+    ).test(normalized) &&
+    new RegExp(
+      `\\b(?:FROM|JOIN)\\s+${sourceAssertionsSqlRelationPattern("transaction_revisions")}(?![A-Za-z0-9_$])`,
+      "i",
+    ).test(normalized) &&
+    new RegExp(
+      `\\b(?:FROM|JOIN)\\s+${sourceAssertionsSqlRelationPattern("assertion_provenance")}(?![A-Za-z0-9_$])`,
+      "i",
+    ).test(normalized) &&
+    new RegExp(`${sourceOrigin}\\s*=\\s*'source'`, "i").test(normalized) &&
+    provenanceAssertionLink.test(normalized) &&
+    new RegExp(
+      `${provenanceSourceRecordId}\\s+IS\\s+NOT\\s+NULL`,
+      "i",
+    ).test(normalized)
+  );
+}
+
+function sourceAssertionsViewMatchesContract(db: DatabaseSync): boolean {
+  const columns = SOURCE_ASSERTIONS_COMPATIBILITY_COLUMNS.join(", ");
+  try {
+    if (relationType(db, "source_assertions") !== "view") return false;
+    if (
+      sourceAssertionsRelationColumns(db).join(",") !==
+      SOURCE_ASSERTIONS_COMPATIBILITY_COLUMNS.join(",")
+    )
+      return false;
+    if (
+      !sourceAssertionsViewSqlHasSourceSemantics(sourceAssertionsViewSql(db))
+    )
+      return false;
+    const actualCount = Number(
+      (
+        db.prepare(`SELECT COUNT(*) AS count FROM source_assertions`).get() as {
+          count?: number;
+        }
+      ).count ?? 0,
+    );
+    const expectedCount = Number(
+      (
+        db.prepare(`SELECT COUNT(*) AS count FROM (${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT})`).get() as {
+          count?: number;
+        }
+      ).count ?? 0,
+    );
+    if (actualCount !== expectedCount) return false;
+    const invalidCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM source_assertions source_assertion
+             LEFT JOIN assertions assertion ON assertion.assertion_id = source_assertion.assertion_id
+             LEFT JOIN transaction_revisions revision ON revision.revision_id = source_assertion.revision_id
+             WHERE assertion.assertion_id IS NULL
+               OR assertion.origin <> 'source'
+               OR assertion.field_name <> 'transaction_revision'
+               OR assertion.target_kind <> 'transaction'
+               OR assertion.revision_id IS NULL
+               OR assertion.transaction_id IS NOT source_assertion.transaction_id
+               OR assertion.revision_id IS NOT source_assertion.revision_id
+               OR assertion.created_commit_id IS NOT source_assertion.commit_id
+               OR revision.revision_id IS NULL
+               OR revision.transaction_id IS NOT source_assertion.transaction_id
+               OR revision.source_record_id IS NULL
+               OR revision.source_record_id IS NOT source_assertion.source_record_id
+               OR source_assertion.source_record_id IS NULL
+               OR NOT EXISTS (
+                 SELECT 1 FROM assertion_provenance provenance
+                 WHERE provenance.assertion_id = assertion.assertion_id
+                   AND provenance.source_record_id IS NOT NULL
+                   AND provenance.source_record_id = revision.source_record_id
+               )`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    if (invalidCount !== 0) return false;
+    const expectedOnly = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM (${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT} EXCEPT SELECT ${columns} FROM source_assertions)`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    const actualOnly = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM (SELECT ${columns} FROM source_assertions EXCEPT ${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT})`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    return expectedOnly === 0 && actualOnly === 0;
+  } catch {
+    return false;
+  }
+}
+
+function legacySourceAssertionsTableMatchesContract(db: DatabaseSync): boolean {
+  if (relationType(db, "source_assertions") !== "table") return false;
+  if (
+    sourceAssertionsRelationColumns(db).join(",") !==
+    SOURCE_ASSERTIONS_COMPATIBILITY_COLUMNS.join(",")
+  )
+    return false;
+  try {
+    const integrityRows = db
+      .prepare("PRAGMA integrity_check(source_assertions)")
+      .all() as Array<{ integrity_check?: unknown }>;
+    if (
+      integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok") ||
+      db.prepare("PRAGMA foreign_key_check(source_assertions)").all().length !== 0
+    )
+      return false;
+    const invalidCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM source_assertions source_assertion
+             LEFT JOIN transaction_revisions revision ON revision.revision_id = source_assertion.revision_id
+             LEFT JOIN source_records source_record ON source_record.source_record_id = source_assertion.source_record_id
+             WHERE source_assertion.assertion_id IS NULL
+               OR source_assertion.transaction_id IS NULL
+               OR source_assertion.revision_id IS NULL
+               OR source_assertion.source_record_id IS NULL
+               OR source_assertion.commit_id IS NULL
+               OR revision.revision_id IS NULL
+               OR revision.transaction_id IS NOT source_assertion.transaction_id
+               OR revision.source_record_id IS NOT source_assertion.source_record_id
+               OR revision.commit_id IS NOT source_assertion.commit_id
+               OR source_record.source_record_id IS NULL
+               OR source_record.capture_id IS NOT revision.capture_id`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    return invalidCount === 0;
+  } catch {
+    return false;
+  }
+}
+
+function createCanonicalSourceAssertionsView(db: DatabaseSync): void {
+  db.exec(
+    `CREATE VIEW source_assertions AS ${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT}`,
+  );
+}
+
+function rebuildCanonicalSourceAssertionsView(db: DatabaseSync): void {
+  if (relationType(db, "source_assertions") === "view")
+    db.exec("DROP VIEW source_assertions");
+  else if (relationType(db, "source_assertions") !== null)
+    throw new Error(
+      "Canonical Source assertions compatibility relation is not a view.",
+    );
+  createCanonicalSourceAssertionsView(db);
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc_us INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS canonical_commits (
@@ -1726,38 +2037,25 @@ function ensureV6SharedAssertionSpine(db: DatabaseSync): void {
     );
   db.exec(SCHEMA_SHARED_ASSERTION_SPINE);
   const sourceAssertionRelation = relationType(db, "source_assertions");
-  const sourceAssertionSql = String(
-    (
-      db
-        .prepare(
-          "SELECT sql FROM sqlite_master WHERE name = 'source_assertions'",
-        )
-        .get() as { sql?: unknown } | undefined
-    )?.sql ?? "",
-  );
-  const sourceAssertionColumns = [
-    "assertion_id",
-    "transaction_id",
-    "revision_id",
-    "commit_id",
-  ];
-  const sourceAssertionHasExpectedAuthority =
+  let sourceAssertionHasExpectedAuthority =
     sourceAssertionRelation === "view" &&
-    /FROM\s+assertions\b/i.test(sourceAssertionSql) &&
-    /JOIN\s+transaction_revisions\s+revision\s+ON/i.test(
-      sourceAssertionSql,
-    ) &&
-    /revision\.source_record_id/i.test(sourceAssertionSql);
-  const sourceAssertionColumnsPresent =
-    (sourceAssertionRelation === "table" ||
-      sourceAssertionHasExpectedAuthority) &&
-    sourceAssertionColumns.every((column) =>
-      columnExists(db, "source_assertions", column),
+    sourceAssertionsViewMatchesContract(db);
+  if (sourceAssertionRelation === "view" && !sourceAssertionHasExpectedAuthority) {
+    // A compatibility view is derived state. Rebuild it before reading any
+    // rows so a token-compatible but semantically broad view cannot promote
+    // derived assertions or assertions without source provenance.
+    rebuildCanonicalSourceAssertionsView(db);
+    sourceAssertionHasExpectedAuthority = sourceAssertionsViewMatchesContract(db);
+  }
+  const sourceAssertionTableIsValid =
+    sourceAssertionRelation === "table" &&
+    legacySourceAssertionsTableMatchesContract(db);
+  if (sourceAssertionRelation === "table" && !sourceAssertionTableIsValid)
+    throw new Error(
+      "Canonical legacy Source assertions table is malformed; refusing to backfill it.",
     );
   const canBackfillSourceAssertions =
-    sourceAssertionColumnsPresent &&
-    (sourceAssertionRelation === "table" ||
-      sourceAssertionHasExpectedAuthority);
+    sourceAssertionTableIsValid || sourceAssertionHasExpectedAuthority;
   if (canBackfillSourceAssertions)
     db.exec(`INSERT OR IGNORE INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
       SELECT source_assertion.assertion_id, source_assertion.transaction_id, 'transaction_revision', 'transaction', 'source', capture.authority_route, capture.authority_route,
@@ -1891,13 +2189,7 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
   const compatibilityViews: Array<{ name: string; select: string }> = [
     {
       name: "source_assertions",
-      select: `SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
-        revision.source_record_id, assertion.created_commit_id AS commit_id
-        FROM assertions assertion JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-        WHERE assertion.origin = 'source' AND EXISTS (
-          SELECT 1 FROM assertion_provenance provenance
-          WHERE provenance.assertion_id = assertion.assertion_id AND provenance.source_record_id IS NOT NULL
-        )`,
+      select: SOURCE_ASSERTIONS_COMPATIBILITY_SELECT,
     },
     {
       name: "derived_assertions",
@@ -1949,6 +2241,13 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
   ];
   for (const compatibility of compatibilityViews) {
     if (relationType(db, compatibility.name) === "table") {
+      if (
+        compatibility.name === "source_assertions" &&
+        !legacySourceAssertionsTableMatchesContract(db)
+      )
+        throw new Error(
+          "Canonical legacy Source assertions table is malformed; refusing to convert it.",
+        );
       const legacyName = `${compatibility.name}_compat_legacy`;
       db.exec(`ALTER TABLE ${compatibility.name} RENAME TO ${legacyName}`);
       db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
@@ -1957,20 +2256,8 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
       relationType(db, compatibility.name) === "view" &&
       compatibility.name === "source_assertions"
     ) {
-      const existingSql = String(
-        (
-          db
-            .prepare(
-              "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
-            )
-            .get(compatibility.name) as { sql?: unknown } | undefined
-        )?.sql ?? "",
-      );
-      if (!/revision\.source_record_id/i.test(existingSql)) {
-        db.exec(
-          `DROP VIEW ${compatibility.name}; CREATE VIEW ${compatibility.name} AS ${compatibility.select}`,
-        );
-      }
+      if (!sourceAssertionsViewMatchesContract(db))
+        rebuildCanonicalSourceAssertionsView(db);
     } else if (relationType(db, compatibility.name) === null) {
       db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
     }
@@ -2086,17 +2373,16 @@ function validateCanonicalCompatibilityViews(db: DatabaseSync): void {
           .get(view) as { sql?: unknown } | undefined
       )?.sql ?? "",
     );
+    if (view === "source_assertions") {
+      if (!sourceAssertionsViewMatchesContract(db))
+        throw new Error(
+          "Canonical schema v6 Source compatibility view does not preserve source origin and provenance semantics.",
+        );
+      continue;
+    }
     if (!authority[view]!.test(sql))
       throw new Error(
         `Canonical schema v6 compatibility view ${view} is not backed by its shared authority.`,
-      );
-    if (
-      view === "source_assertions" &&
-      (!/JOIN\s+transaction_revisions\s+revision\s+ON/i.test(sql) ||
-        !/revision\.source_record_id/i.test(sql))
-    )
-      throw new Error(
-        "Canonical schema v6 Source compatibility view does not preserve revision source identity.",
       );
   }
 }
@@ -4846,16 +5132,7 @@ function financialRevisionRowDifference(
 function recreateCanonicalSourceAssertionsView(db: DatabaseSync): void {
   db.exec(`
     DROP VIEW IF EXISTS source_assertions;
-    CREATE VIEW source_assertions AS
-      SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
-        revision.source_record_id, assertion.created_commit_id AS commit_id
-      FROM assertions assertion
-      JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-      WHERE assertion.origin = 'source' AND EXISTS (
-        SELECT 1 FROM assertion_provenance provenance
-        WHERE provenance.assertion_id = assertion.assertion_id
-          AND provenance.source_record_id IS NOT NULL
-      );
+    CREATE VIEW source_assertions AS ${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT};
     CREATE INDEX IF NOT EXISTS idx_transaction_revisions_financial_time ON transaction_revisions(effective_on, utc_instant_utc_us, transaction_id, commit_id);
     CREATE INDEX IF NOT EXISTS idx_transaction_revisions_knowledge_time ON transaction_revisions(commit_id, transaction_id, revision_number);
     CREATE INDEX IF NOT EXISTS idx_transaction_revisions_lineage ON transaction_revisions(transaction_id, revision_number, revision_id);
@@ -5002,16 +5279,7 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     FROM transaction_revisions;
     DROP TABLE transaction_revisions;
     ALTER TABLE transaction_revisions_widened RENAME TO transaction_revisions;
-    CREATE VIEW source_assertions AS
-      SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
-        revision.source_record_id, assertion.created_commit_id AS commit_id
-      FROM assertions assertion
-      JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-      WHERE assertion.origin = 'source' AND EXISTS (
-        SELECT 1 FROM assertion_provenance provenance
-        WHERE provenance.assertion_id = assertion.assertion_id
-          AND provenance.source_record_id IS NOT NULL
-      );
+    CREATE VIEW source_assertions AS ${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT};
     CREATE INDEX idx_transaction_revisions_financial_time ON transaction_revisions(effective_on, utc_instant_utc_us, transaction_id, commit_id);
     CREATE INDEX idx_transaction_revisions_knowledge_time ON transaction_revisions(commit_id, transaction_id, revision_number);
     CREATE INDEX idx_transaction_revisions_lineage ON transaction_revisions(transaction_id, revision_number, revision_id);
@@ -6403,20 +6671,17 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     user_assertion_provenance: /FROM\s+assertion_provenance\b/i,
   };
   for (const [view, authority] of Object.entries(compatibilityAuthority)) {
+    if (view === "source_assertions") {
+      if (!sourceAssertionsViewMatchesContract(db))
+        throw new Error(
+          "Canonical schema v7 Source compatibility view does not preserve source origin and provenance semantics.",
+        );
+      continue;
+    }
     if (!authority.test(tableSql(view)))
       throw new Error(
         `Canonical schema v6 compatibility view ${view} is not backed by the shared assertion spine.`,
       );
-  }
-  if (
-    !/JOIN\s+transaction_revisions\s+revision\s+ON/i.test(
-      tableSql("source_assertions"),
-    ) ||
-    !/revision\.source_record_id/i.test(tableSql("source_assertions"))
-  ) {
-    throw new Error(
-      "Canonical schema v6 Source compatibility view does not preserve revision source identity.",
-    );
   }
   const triggerRows = db
     .prepare(
