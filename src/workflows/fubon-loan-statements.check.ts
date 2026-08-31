@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import { createServer } from "vite";
+import { FUBON_LOAN_PAGINATION_FIXTURES_V1 } from "./fubon-loan-statements.fixtures.ts";
 
 const { persistFubonLoanCapture } = await import(
   "../ledger/canonical/fubon-loan.ts"
@@ -279,10 +280,39 @@ const navigateToLoanStatementsPage = module.navigateToLoanStatementsPage as (
 const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
   rows: readonly string[][],
 ) => string[][];
-const parseFubonLoanCompletenessEvidence =
-  module.parseFubonLoanCompletenessEvidence as (
-    value: unknown,
-  ) => unknown;
+const parseFubonLoanPaginationSignal =
+  module.parseFubonLoanPaginationSignal as (html: string) => unknown;
+const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
+  pages: ReadonlyArray<{
+    accountType: string;
+    branchName: string;
+    currency: string;
+    rows: string[][];
+    pageOrdinal: number;
+    pagination: {
+      nextPage: string | null;
+      pageFieldName: string | null;
+      terminal: boolean;
+      evidence: "next-page" | "terminal-no-next" | null;
+    };
+  }>,
+  account: { label: string; value: string },
+  input: {
+    loanAccountLabels: string[];
+    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
+    quickMonths: "1" | "3" | "6";
+    downloadFormat: "EXCEL";
+    dateRange: { startDate: string; endDate: string };
+  },
+) => {
+  completeness: { pageCount: number; terminal: true } | null;
+  pages: ReadonlyArray<{
+    pageOrdinal: number;
+    terminal: boolean;
+    rowCount: number;
+  }>;
+  rows: string[][];
+};
 
 test("uses an already-rendered loan form without navigation or goto", async () => {
   const scope = fakeScope("txnFrame");
@@ -407,32 +437,113 @@ test("fails closed when a Fubon result contains an unexpected non-header row", (
   );
 });
 
-test("Fubon completeness requires explicit provider terminal/page evidence", () => {
-  assert.equal(parseFubonLoanCompletenessEvidence(undefined), null);
-  assert.equal(
-    parseFubonLoanCompletenessEvidence({
-      pageCount: 1,
+test("Fubon pagination derives terminal/page evidence from provider controls", () => {
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.activePage,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "resultGrid:dataGridCurrentPage",
       terminal: false,
-      proofKind: "source-declared-terminal-range",
-    }),
-    null,
+      evidence: "next-page",
+    },
   );
   assert.deepEqual(
-    parseFubonLoanCompletenessEvidence({
-      pageCount: 1,
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.terminalPage,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
       terminal: true,
-      proofKind: "source-declared-terminal-range",
-    }),
-    { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+      evidence: "terminal-no-next",
+    },
   );
   assert.deepEqual(
-    parseFubonLoanCompletenessEvidence({
-      pageCount: 3,
-      terminal: true,
-      proofKind: "source-declared-terminal-range",
-    }),
-    { pageCount: 3, terminal: true, proofKind: "source-declared-terminal-range" },
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.ambiguousTable,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    },
   );
+});
+
+test("Fubon multi-page traversal preserves page ordinals and terminal evidence", () => {
+  const parsed = assembleFubonLoanStatement(
+    [
+      {
+        accountType: "房屋貸款",
+        branchName: "sanitized-branch",
+        currency: "TWD",
+        rows: [
+          [
+            "2026/01/05",
+            "LOAN-DISBURSEMENT",
+            "100000.00",
+            "1.50",
+            "2026/01/05",
+            "2026/01/31",
+            "100000.00",
+            "",
+          ],
+        ],
+        pageOrdinal: 0,
+        pagination: {
+          nextPage: "2",
+          pageFieldName: "resultGrid:dataGridCurrentPage",
+          terminal: false,
+          evidence: "next-page",
+        },
+      },
+      {
+        accountType: "房屋貸款",
+        branchName: "sanitized-branch",
+        currency: "TWD",
+        rows: [
+          [
+            "2026/01/31",
+            "LOAN-PAYMENT",
+            "12500.00",
+            "1.50",
+            "2026/01/31",
+            "2026/02/28",
+            "87500.00",
+            "",
+          ],
+        ],
+        pageOrdinal: 1,
+        pagination: {
+          nextPage: null,
+          pageFieldName: null,
+          terminal: true,
+          evidence: "terminal-no-next",
+        },
+      },
+    ],
+    { label: "masked-loan", value: "opaque-loan" },
+    {
+      loanAccountLabels: [],
+      queryItems: ["TRANSACTION_DETAIL_QUERY"],
+      quickMonths: "6",
+      downloadFormat: "EXCEL",
+      dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+    },
+  );
+
+  assert.equal(parsed.completeness?.pageCount, 2);
+  assert.deepEqual(
+    parsed.pages.map((page) => [page.pageOrdinal, page.rowCount, page.terminal]),
+    [
+      [0, 1, false],
+      [1, 1, true],
+    ],
+  );
+  assert.equal(parsed.rows.length, 2);
 });
 
 test("bounds a frame probe that never resolves and fails closed", async () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
+import { YUANTA_LOAN_PAGINATION_FIXTURES_V1 } from "./yuanta-loan-statements.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -16,7 +17,10 @@ registerHooks({
 
 const { readYuantaLoanAccountOptions, parseYuantaLoanStatementRows } =
   await import("./yuanta-loan-statements.ts");
-const { parseYuantaLoanCompletenessEvidence } = await import(
+const { parseYuantaLoanPaginationSignal } = await import(
+  "./yuanta-loan-statements.ts"
+);
+const { assembleYuantaLoanStatement } = await import(
   "./yuanta-loan-statements.ts"
 );
 const { StatementComponentAbsentError } =
@@ -148,32 +152,96 @@ test("fails closed when a Yuanta result row does not have six source cells", () 
   );
 });
 
-test("Yuanta completeness requires explicit provider terminal/page evidence", () => {
-  assert.equal(parseYuantaLoanCompletenessEvidence(undefined), null);
-  assert.equal(
-    parseYuantaLoanCompletenessEvidence({
-      pageCount: 1,
+test("Yuanta pagination derives terminal/page evidence from provider controls", () => {
+  assert.deepEqual(
+    parseYuantaLoanPaginationSignal(
+      YUANTA_LOAN_PAGINATION_FIXTURES_V1.activePage,
+    ),
+    {
+      nextPageTarget: "page:2",
       terminal: false,
-      proofKind: "source-declared-terminal-range",
-    }),
-    null,
+      evidence: "next-page",
+    },
   );
   assert.deepEqual(
-    parseYuantaLoanCompletenessEvidence({
-      pageCount: 1,
+    parseYuantaLoanPaginationSignal(
+      YUANTA_LOAN_PAGINATION_FIXTURES_V1.terminalPage,
+    ),
+    {
+      nextPageTarget: null,
       terminal: true,
-      proofKind: "source-declared-terminal-range",
-    }),
-    { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+      evidence: "terminal-no-next",
+    },
   );
   assert.deepEqual(
-    parseYuantaLoanCompletenessEvidence({
-      pageCount: 3,
-      terminal: true,
-      proofKind: "source-declared-terminal-range",
-    }),
-    { pageCount: 3, terminal: true, proofKind: "source-declared-terminal-range" },
+    parseYuantaLoanPaginationSignal(
+      YUANTA_LOAN_PAGINATION_FIXTURES_V1.ambiguousTable,
+    ),
+    {
+      nextPageTarget: null,
+      terminal: false,
+      evidence: null,
+    },
   );
+});
+
+test("Yuanta multi-page traversal preserves page ordinals and terminal evidence", () => {
+  const parsed = assembleYuantaLoanStatement([
+    {
+      rows: [
+        {
+          accountLabel: "masked-loan",
+          transactionDate: "2026/01/05",
+          postingDate: "2026/01/06",
+          paymentItem: "LOAN-DISBURSEMENT",
+          interestStartDate: "",
+          interestEndDate: "",
+          transactionAmount: "100000.00",
+          balanceAfterTransaction: "100000.00",
+          overpayment: "",
+          sortTime: 1,
+        },
+      ],
+      pageOrdinal: 0,
+      pagination: {
+        nextPageTarget: "page:2",
+        terminal: false,
+        evidence: "next-page",
+      },
+    },
+    {
+      rows: [
+        {
+          accountLabel: "masked-loan",
+          transactionDate: "2026/01/31",
+          postingDate: "2026/02/01",
+          paymentItem: "LOAN-PAYMENT",
+          interestStartDate: "",
+          interestEndDate: "",
+          transactionAmount: "12500.00",
+          balanceAfterTransaction: "87500.00",
+          overpayment: "",
+          sortTime: 2,
+        },
+      ],
+      pageOrdinal: 1,
+      pagination: {
+        nextPageTarget: null,
+        terminal: true,
+        evidence: "terminal-no-next",
+      },
+    },
+  ]);
+
+  assert.equal(parsed.completeness?.pageCount, 2);
+  assert.deepEqual(
+    parsed.pages.map((page) => [page.pageOrdinal, page.rowCount, page.terminal]),
+    [
+      [0, 1, false],
+      [1, 1, true],
+    ],
+  );
+  assert.equal(parsed.rows.length, 2);
 });
 
 assert.deepEqual(

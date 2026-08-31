@@ -2,6 +2,7 @@ import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-sele
 import type { StatementSelectionGroup } from "../../lib/automation/statement-selection.ts";
 import {
   FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+  isFubonLoanLiveValidationAttestationValid,
 } from "./fubon-loan.ts";
 import {
   YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
@@ -138,10 +139,12 @@ export const ADVERTISED_LOAN_READINESS: readonly AdvertisedLoanReadinessEntry[] 
       // proves each readiness row has a real versioned, sanitized fixture.
       admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES[sourceId]);
       const liveVerified =
-        manifest.liveAttestation.status === "verified-live-run" &&
-        manifest.liveAttestation.financialValuesRetained === false &&
-        manifest.liveAttestation.authenticationSecretsRetained === false &&
-        manifest.liveAttestation.rawSourcePayloadRetained === false;
+        sourceId === "fubon"
+          ? isFubonLoanLiveValidationAttestationValid(manifest.liveAttestation)
+          : manifest.liveAttestation.status === "verified-live-run" &&
+            manifest.liveAttestation.financialValuesRetained === false &&
+            manifest.liveAttestation.authenticationSecretsRetained === false &&
+            manifest.liveAttestation.rawSourcePayloadRetained === false;
       return {
         sourceId,
         advertisedName: advertised.label,

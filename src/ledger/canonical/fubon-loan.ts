@@ -22,6 +22,9 @@ import {
   type LoanLineageQuery,
   type LoanValidatedCapture,
 } from "./loan-financial.ts";
+import {
+  FUBON_LOAN_LIVE_RUN_EVIDENCE_V1,
+} from "./fubon-loan-live-attestation.fixture.ts";
 
 export {
   FUBON_LOAN_AUTHORITY_ROUTE,
@@ -115,11 +118,15 @@ export const FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
   schemaVersion: "loan-live-validation-attestation/v1",
   sourceId: "fubon",
   workflow: "fubonLoanStatements",
+  authorityRoute: FUBON_LOAN_AUTHORITY_ROUTE,
   captureContractVersion: FUBON_LOAN_CONTRACT_VERSION,
   sourceEventCodebookVersion: FUBON_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
   validationMethod: "solver-assisted-electron-cdp",
   status: "verified-live-run",
   verifiedOn: "2026-08-31",
+  runEvidenceSchemaVersion: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion,
+  runEvidenceId: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId,
+  runEvidenceArtifact: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.artifact,
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
@@ -131,6 +138,54 @@ export const FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
     "loan-lineage:nonzero",
   ]),
 } as const);
+
+function hasExactFubonLoanSafeAssertions(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.safeAssertions.length &&
+    value.every(
+      (assertion, index) =>
+        assertion === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.safeAssertions[index],
+    )
+  );
+}
+
+/**
+ * Readiness may consume only the immutable attestation shape recorded with
+ * the sanitized run evidence. A copied object with a manually changed status
+ * is rejected unless every source, contract, date, privacy, assertion, and
+ * durable-evidence binding still matches this version.
+ */
+export function isFubonLoanLiveValidationAttestationValid(
+  value: unknown,
+): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const attestation = value as Record<string, unknown>;
+  return (
+    attestation.schemaVersion ===
+      FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.schemaVersion &&
+    attestation.sourceId === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.sourceId &&
+    attestation.workflow === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.workflow &&
+    attestation.authorityRoute ===
+      FUBON_LOAN_AUTHORITY_ROUTE &&
+    attestation.captureContractVersion === FUBON_LOAN_CONTRACT_VERSION &&
+    attestation.sourceEventCodebookVersion ===
+      FUBON_LOAN_SOURCE_EVENT_CODEBOOK_VERSION &&
+    attestation.validationMethod === "solver-assisted-electron-cdp" &&
+    attestation.status === "verified-live-run" &&
+    attestation.verifiedOn === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.verifiedOn &&
+    attestation.runEvidenceSchemaVersion ===
+      FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion &&
+    attestation.runEvidenceId === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId &&
+    attestation.runEvidenceArtifact ===
+      FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.artifact &&
+    attestation.financialValuesRetained === false &&
+    attestation.authenticationSecretsRetained === false &&
+    attestation.rawSourcePayloadRetained === false &&
+    hasExactFubonLoanSafeAssertions(attestation.safeAssertions)
+  );
+}
 
 export const FUBON_LOAN_SYNTHETIC_FIXTURE_V1 = LOAN_CONTRACT_FIXTURES.fubon;
 

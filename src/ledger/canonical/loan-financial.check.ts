@@ -31,6 +31,7 @@ import {
 import {
   buildFubonLoanCapture,
   FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+  isFubonLoanLiveValidationAttestationValid,
   persistFubonLoanCapture,
   queryFubonLoanCurrent,
   queryFubonLoanHistorical,
@@ -468,6 +469,12 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
 });
 
 test("Fubon live attestation records only sanitized v2 proof", () => {
+  assert.equal(
+    isFubonLoanLiveValidationAttestationValid(
+      FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+    ),
+    true,
+  );
   assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.status, "verified-live-run");
   assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.verifiedOn, "2026-08-31");
   assert.equal(
@@ -487,6 +494,50 @@ test("Fubon live attestation records only sanitized v2 proof", () => {
       "loan-lineage:nonzero",
     ],
   );
+  assert.match(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.runEvidenceId,
+    /^sha256:/,
+  );
+  assert.match(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.runEvidenceArtifact,
+    /fubon-loan-live-attestation\.fixture\.ts/u,
+  );
+});
+
+test("Fubon live readiness rejects a status-only or stale attestation", () => {
+  const statusOnly = {
+    sourceId: "fubon",
+    workflow: "fubonLoanStatements",
+    status: "verified-live-run",
+    financialValuesRetained: false,
+    authenticationSecretsRetained: false,
+    rawSourcePayloadRetained: false,
+  };
+  assert.equal(isFubonLoanLiveValidationAttestationValid(statusOnly), false);
+
+  for (const mutation of [
+    { captureContractVersion: "loan/canonical/v1.fubon" },
+    { sourceEventCodebookVersion: "fubon/loan-source-event-codebook/v0" },
+    { verifiedOn: "2026-08-30" },
+    { runEvidenceId: "sha256:stale" },
+    { runEvidenceArtifact: "sanitized:stale-artifact" },
+    { financialValuesRetained: true },
+    {
+      safeAssertions: [
+        "source-capture:nonzero",
+        "loan-account-identity:nonzero",
+      ],
+    },
+  ]) {
+    assert.equal(
+      isFubonLoanLiveValidationAttestationValid({
+        ...FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+        ...mutation,
+      }),
+      false,
+      `mutation should invalidate attestation: ${Object.keys(mutation)[0]}`,
+    );
+  }
 });
 
 test("Yuanta adapter preserves explicit event mapping and exact source evidence", async () => {
