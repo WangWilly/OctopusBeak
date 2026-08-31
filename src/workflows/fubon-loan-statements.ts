@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { createCanonicalLoanStore } from "../ledger/canonical/loan-financial.ts";
+import {
+  FUBON_LOAN_CONTRACT_VERSION,
+  createCanonicalLoanStore,
+} from "../ledger/canonical/loan-financial.ts";
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
   persistFubonLoanCapture,
@@ -166,6 +169,8 @@ type ParsedLoanStatement = {
   accountType: string;
   currency: string;
   rows: string[][];
+  pageCount: number;
+  terminal: true;
 };
 
 const loanHeaders = [
@@ -241,6 +246,24 @@ function loanRowSortTime(row: string[]): number | null {
     Number(match[3]),
   );
   return Number.isFinite(time) ? time : null;
+}
+
+/** Validate the provider's tabular result before any row is admitted. Empty
+ * layout rows are harmless; every non-empty result row must be the exact
+ * eight-column source shape and start with a source transaction date. */
+export function parseFubonLoanStatementRows(
+  sourceRows: readonly string[][],
+): string[][] {
+  return sourceRows.flatMap((sourceRow) => {
+    const row = sourceRow.map((value) => cleanText(value));
+    if (row.every((value) => value.length === 0)) return [];
+    if (
+      row.length !== loanHeaders.length ||
+      !/^\d{4}\/\d{2}\/\d{2}$/.test(row[0] ?? "")
+    )
+      throw new Error("Unexpected Fubon loan result row.");
+    return [row];
+  });
 }
 
 function compareLoanRowsByTransactionDateDesc(
@@ -841,10 +864,16 @@ async function parseLoanStatementHtml(
       const headerRowIndex = tableRows.findIndex((row) =>
         headers.every((header, index) => clean(row[index]).includes(header)),
       );
-      const rows = tableRows
-        .slice(headerRowIndex + 1)
-        .map((row) => headers.map((_, index) => clean(row[index])))
-        .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+      const rows = tableRows.slice(headerRowIndex + 1).map((row) => {
+        const normalized = row.map((value) => clean(value));
+        if (normalized.every((value) => value.length === 0)) return [];
+        if (
+          normalized.length !== headers.length ||
+          !/^\d{4}\/\d{2}\/\d{2}$/.test(normalized[0] ?? "")
+        )
+          throw new Error("Unexpected Fubon loan result row.");
+        return [normalized];
+      }).flat();
       const metadataRows = Array.from(doc.querySelectorAll("table"))
         .map((table) =>
           Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
@@ -867,6 +896,8 @@ async function parseLoanStatementHtml(
         branchName: metadataValue("分行名稱"),
         currency: metadataValue("幣別"),
         rows,
+        pageCount: 1,
+        terminal: true,
       };
     },
     { html, headers: loanHeaders },
@@ -875,6 +906,8 @@ async function parseLoanStatementHtml(
     branchName: string;
     currency: string;
     rows: string[][];
+    pageCount: number;
+    terminal: true;
   };
 
   return {
@@ -886,6 +919,8 @@ async function parseLoanStatementHtml(
     accountType: parsed.accountType,
     currency: parsed.currency,
     rows: parsed.rows,
+    pageCount: parsed.pageCount,
+    terminal: parsed.terminal,
   };
 }
 
@@ -1064,6 +1099,26 @@ export async function runFubonLoanStatements(
           observedAt: observedAt(),
           startDate: dateRange.startDate,
           endDate: dateRange.endDate,
+          scope: {
+            startDate: dateRange.startDate,
+            endDate: dateRange.endDate,
+            completeness: "complete-range",
+            completenessBasis: "source-declared-terminal-range",
+            completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+            pageCount: written.parsed.pageCount,
+            terminal: written.parsed.terminal,
+          },
+          pages: [
+            {
+              pageOrdinal: 0,
+              responseCode: "200",
+              terminal: written.parsed.terminal,
+              rowCount: written.parsed.rows.length,
+              proofKind: "source-declared-terminal-range",
+            },
+          ],
+          counterpartTransactions: [],
+          relations: [],
           rows: written.parsed.rows.map<FubonLoanStatementRow>((row) => ({
             transactionDate: row[0] ?? "",
             transactionContent: row[1] ?? "",

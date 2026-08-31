@@ -2837,6 +2837,12 @@ function validateCanonicalAuthorityRoutes(
             AND registered.integration_namespace = 'fubon'
             AND registered.contract_version = 'loan/canonical/v1.fubon')
           OR
+          (capture.authority_route = 'fubon/loan/canonical-v2'
+            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon'
+            AND capture.stream = 'loan' AND registered.stream = 'loan'
+            AND registered.integration_namespace = 'fubon'
+            AND registered.contract_version = 'loan/canonical/v2.fubon')
+          OR
           (capture.authority_route = 'yuanta/loan/canonical-v1'
             AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta'
             AND capture.stream = 'loan' AND registered.stream = 'loan'
@@ -3874,6 +3880,10 @@ function validateSelectedAssertionProvenance(
           (capture.authority_route = 'fubon/loan/canonical-v1'
             AND capture.stream = 'loan'
             AND capture.completeness_rule_version = 'loan/canonical/v1.fubon')
+          OR
+          (capture.authority_route = 'fubon/loan/canonical-v2'
+            AND capture.stream = 'loan'
+            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon')
           OR
           (capture.authority_route = 'yuanta/loan/canonical-v1'
             AND capture.stream = 'loan'
@@ -7801,14 +7811,28 @@ function rebuildCathayCanonicalProjectionOnce(
                 observation.observation_id, revision.revision_id, revision.commit_id,
                 ROW_NUMBER() OVER (
                   PARTITION BY observation.account_id, observation.balance_kind
-                  ORDER BY revision_commit.commit_sequence DESC,
-                           revision.effective_at DESC, revision.revision_id DESC
+                  ORDER BY revision.effective_at DESC,
+                           revision_commit.commit_sequence DESC,
+                           COALESCE(balance_fact.occurrence_index, -1) DESC,
+                           balance_record.occurrence_key DESC,
+                           observation.observation_key DESC,
+                           hex(revision.revision_id) DESC
                 ) AS rank
          FROM balance_observations observation
          JOIN balance_observation_revisions revision
            ON revision.observation_id = observation.observation_id
          JOIN canonical_commits revision_commit
            ON revision_commit.commit_id = revision.commit_id
+         JOIN source_records balance_record
+           ON balance_record.source_record_id = revision.source_record_id
+         LEFT JOIN loan_transaction_facts balance_fact
+           ON balance_fact.revision_id = (
+             SELECT transaction_revision.revision_id
+             FROM transaction_revisions transaction_revision
+             WHERE transaction_revision.source_record_id = revision.source_record_id
+             ORDER BY transaction_revision.revision_number DESC
+             LIMIT 1
+           )
          WHERE revision_commit.commit_sequence <= ?
        ) ranked WHERE ranked.rank = 1`,
     ).run(generation, commitId, cutoff);

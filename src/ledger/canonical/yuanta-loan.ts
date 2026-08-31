@@ -47,6 +47,10 @@ export type YuantaLoanCaptureBuildInput = {
   observedAt: string;
   startDate: string;
   endDate: string;
+  scope: LoanCaptureInput["scope"];
+  pages: LoanCaptureInput["pages"];
+  counterpartTransactions: LoanCaptureInput["counterpartTransactions"];
+  relations: LoanCaptureInput["relations"];
   rows: readonly YuantaLoanStatementRow[];
 };
 
@@ -119,8 +123,8 @@ export const YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
   captureContractVersion: YUANTA_LOAN_CONTRACT_VERSION,
   sourceEventCodebookVersion: YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
   validationMethod: "solver-assisted-electron-cdp",
-  status: "verified-live-run",
-  verifiedOn: "2026-08-31",
+  status: "pending",
+  verifiedOn: null,
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
@@ -205,7 +209,13 @@ function canonicalRows(
       row.balanceAfterTransaction,
       "Yuanta loan balance",
     );
-    const balanceEffectiveAt = `${effectiveOn}T23:59:59+08:00`;
+    // Yuanta reports the balance after a transaction. The source only
+    // distinguishes the transaction date; retain date precision and do not
+    // manufacture an end-of-day timestamp from the posting date.
+    const balanceEffectiveAt = parseCanonicalLoanDate(
+      row.transactionDate,
+      "Yuanta loan balance transaction date",
+    );
     const balanceIsHistorical =
       balance !== undefined &&
       Number.isFinite(observedAt) &&
@@ -234,6 +244,9 @@ function canonicalRows(
               ),
               balance,
               effectiveAt: balanceEffectiveAt,
+              effectiveAtPrecision: "date",
+              effectiveAtTimeOrigin: "source_reported",
+              effectiveAtField: "transaction-date",
             },
           }
         : {}),
@@ -266,6 +279,10 @@ export function buildYuantaLoanCapture(
     observedAt: input.observedAt,
     startDate: input.startDate,
     endDate: input.endDate,
+    scope: input.scope,
+    pages: input.pages,
+    counterpartTransactions: input.counterpartTransactions,
+    relations: input.relations,
     rows,
   });
 }

@@ -14,7 +14,7 @@ registerHooks({
   },
 });
 
-const { readYuantaLoanAccountOptions } =
+const { readYuantaLoanAccountOptions, parseYuantaLoanStatementRows } =
   await import("./yuanta-loan-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
@@ -87,6 +87,26 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
       observedAt: "2026-02-01T00:00:00.000Z",
       startDate: "2026-01-01",
       endDate: "2026-01-31",
+      scope: {
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: "loan/canonical/v1.yuanta",
+        pageCount: 1,
+        terminal: true,
+      },
+      pages: [
+        {
+          pageOrdinal: 0,
+          responseCode: "200",
+          terminal: true,
+          rowCount: 1,
+          proofKind: "source-declared-terminal-range",
+        },
+      ],
+      counterpartTransactions: [],
+      relations: [],
       rows: [
         {
           transactionDate: "2026/01/05",
@@ -108,6 +128,16 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
 
   assert.equal(commitCount, 1);
   assert.equal(admittedCaptures.length, 1);
+});
+
+test("fails closed when a Yuanta result row does not have six source cells", () => {
+  assert.throws(
+    () =>
+      parseYuantaLoanStatementRows("masked-loan", [
+        ["2026/01/01", "LOAN-PAYMENT", "", "10", "90"],
+      ]),
+    /unexpected Yuanta loan result row/i,
+  );
 });
 
 assert.deepEqual(

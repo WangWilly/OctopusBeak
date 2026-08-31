@@ -1,6 +1,12 @@
 import { BANK_STATEMENT_CAPABILITIES } from "../../lib/automation/statement-selection.ts";
 import type { StatementSelectionGroup } from "../../lib/automation/statement-selection.ts";
 import {
+  FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+} from "./fubon-loan.ts";
+import {
+  YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+} from "./yuanta-loan.ts";
+import {
   ADVERTISED_LOAN_SOURCE_IDS as CONTRACT_LOAN_SOURCE_IDS,
   FUBON_LOAN_AUTHORITY_ROUTE,
   FUBON_LOAN_CONTRACT_VERSION,
@@ -73,7 +79,9 @@ export type AdvertisedLoanReadinessEntry = {
   workflow: "fubonLoanStatements" | "yuantaLoanStatements";
   authority: string;
   contractVersion: string;
-  fixtureEvidence: "canonical-versioned-synthetic";
+  fixtureEvidence:
+    | "canonical-versioned-synthetic"
+    | "canonical-versioned-live-attested";
   accountBoundary: "source-scoped-loan-account";
   amountDirection: "source-coded-loan-boundary";
   optionalFacts: "source-distinguished-only";
@@ -81,7 +89,7 @@ export type AdvertisedLoanReadinessEntry = {
   relationEvidence: "explicit-source-linkage-only";
   completeness: "terminal-complete-range";
   contractComplete: true;
-  liveValidation: "pending";
+  liveValidation: "pending" | "complete";
   blockers: readonly AdvertisedLoanReadinessBlocker[];
 };
 
@@ -91,17 +99,25 @@ const MANIFESTS: Record<
     authority: string;
     contractVersion: string;
     workflow: AdvertisedLoanReadinessEntry["workflow"];
+    liveAttestation: {
+      status: "pending" | "verified-live-run";
+      financialValuesRetained: boolean;
+      authenticationSecretsRetained: boolean;
+      rawSourcePayloadRetained: boolean;
+    };
   }
 > = {
   fubon: {
     authority: FUBON_LOAN_AUTHORITY_ROUTE,
     contractVersion: FUBON_LOAN_CONTRACT_VERSION,
     workflow: "fubonLoanStatements",
+    liveAttestation: FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
   },
   yuanta: {
     authority: YUANTA_LOAN_AUTHORITY_ROUTE,
     contractVersion: YUANTA_LOAN_CONTRACT_VERSION,
     workflow: "yuantaLoanStatements",
+    liveAttestation: YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
   },
 };
 
@@ -121,13 +137,20 @@ export const ADVERTISED_LOAN_READINESS: readonly AdvertisedLoanReadinessEntry[] 
       // Import-time fixture admission is a deliberate contract tripwire. It
       // proves each readiness row has a real versioned, sanitized fixture.
       admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES[sourceId]);
+      const liveVerified =
+        manifest.liveAttestation.status === "verified-live-run" &&
+        manifest.liveAttestation.financialValuesRetained === false &&
+        manifest.liveAttestation.authenticationSecretsRetained === false &&
+        manifest.liveAttestation.rawSourcePayloadRetained === false;
       return {
         sourceId,
         advertisedName: advertised.label,
         workflow: manifest.workflow,
         authority: manifest.authority,
         contractVersion: manifest.contractVersion,
-        fixtureEvidence: "canonical-versioned-synthetic" as const,
+        fixtureEvidence: liveVerified
+          ? ("canonical-versioned-live-attested" as const)
+          : ("canonical-versioned-synthetic" as const),
         accountBoundary: "source-scoped-loan-account" as const,
         amountDirection: "source-coded-loan-boundary" as const,
         optionalFacts: "source-distinguished-only" as const,
@@ -135,8 +158,8 @@ export const ADVERTISED_LOAN_READINESS: readonly AdvertisedLoanReadinessEntry[] 
         relationEvidence: "explicit-source-linkage-only" as const,
         completeness: "terminal-complete-range" as const,
         contractComplete: true as const,
-        liveValidation: "pending" as const,
-        blockers: ["live-validation-pending"],
+        liveValidation: liveVerified ? ("complete" as const) : ("pending" as const),
+        blockers: liveVerified ? [] : ["live-validation-pending"],
       };
     }),
   );
@@ -155,7 +178,8 @@ export function isAdvertisedLoanEntryContractReady(
 ): boolean {
   return (
     entry.contractComplete === true &&
-    entry.fixtureEvidence === "canonical-versioned-synthetic" &&
+    (entry.fixtureEvidence === "canonical-versioned-synthetic" ||
+      entry.fixtureEvidence === "canonical-versioned-live-attested") &&
     entry.accountBoundary === "source-scoped-loan-account" &&
     entry.amountDirection === "source-coded-loan-boundary" &&
     entry.optionalFacts === "source-distinguished-only" &&
@@ -168,7 +192,11 @@ export function isAdvertisedLoanEntryContractReady(
 export function isAdvertisedLoanEntryReleaseReady(
   entry: AdvertisedLoanReadinessEntry,
 ): boolean {
-  return isAdvertisedLoanEntryContractReady(entry) && entry.blockers.length === 0;
+  return (
+    isAdvertisedLoanEntryContractReady(entry) &&
+    entry.liveValidation === "complete" &&
+    entry.blockers.length === 0
+  );
 }
 
 export function evaluateAdvertisedLoanReadiness(
