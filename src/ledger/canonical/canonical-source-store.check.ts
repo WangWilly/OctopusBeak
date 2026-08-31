@@ -1120,6 +1120,249 @@ test("v8 to v9 rebuilds the source assertion compatibility view", async () => {
   }
 });
 
+test("v9 reopen recovers an interrupted financial revision widening", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v9-revision-staging-"),
+  );
+  try {
+    const path = join(directory, "canonical.sqlite");
+    await commitCathayDomesticDeposit(
+      directory,
+      CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    );
+    const legacy = new DatabaseSync(path);
+    const currentRevisionSchema = String(
+      (
+        legacy
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    const interruptedFinalSchema = currentRevisionSchema.replace(
+      "CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%')",
+      "CHECK(posting_origin = 'provider_booked_history')",
+    );
+    assert.notEqual(interruptedFinalSchema, currentRevisionSchema);
+    const sourceAssertionsView = String(
+      (
+        legacy
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    const beforeRevisionCount = Number(
+      (
+        legacy
+          .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    assert.equal(
+      Number(
+        (legacy.prepare("PRAGMA user_version").get() as { user_version?: number })
+          .user_version,
+      ),
+      CANONICAL_SOURCE_SCHEMA_VERSION,
+    );
+    legacy.exec("PRAGMA foreign_keys = OFF");
+    legacy.exec(
+      "DROP VIEW IF EXISTS source_assertions; DROP INDEX IF EXISTS idx_transaction_revisions_financial_time; DROP INDEX IF EXISTS idx_transaction_revisions_knowledge_time; DROP INDEX IF EXISTS idx_transaction_revisions_lineage; CREATE TABLE transaction_revisions_backup AS SELECT * FROM transaction_revisions; DROP TABLE transaction_revisions;",
+    );
+    legacy.exec(interruptedFinalSchema);
+    legacy.exec(
+      "INSERT INTO transaction_revisions SELECT * FROM transaction_revisions_backup; DROP TABLE transaction_revisions_backup;",
+    );
+    const interruptedStagingSchema = currentRevisionSchema.replace(
+      /CREATE TABLE ["']?transaction_revisions["']?/,
+      "CREATE TABLE transaction_revisions_widened",
+    );
+    assert.notEqual(interruptedStagingSchema, currentRevisionSchema);
+    legacy.exec(interruptedStagingSchema);
+    legacy.exec(
+      "INSERT INTO transaction_revisions_widened SELECT * FROM transaction_revisions",
+    );
+    legacy.exec(sourceAssertionsView);
+    assert.equal(
+      legacy
+        .prepare(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('transaction_revisions', 'transaction_revisions_widened')",
+        )
+        .get()?.count,
+      2,
+    );
+    legacy.close();
+
+    assert.throws(
+      () => openCanonicalDatabase(directory, { readOnly: true }),
+      /staging.*writable recovery|widening staging/i,
+    );
+    const recovered = createCanonicalSourceStore(path);
+    const recoveredRevisionSchema = String(
+      (
+        recovered.db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    assert.match(
+      recoveredRevisionSchema,
+      /CHECK\(posting_origin IN .*synthetic_%/,
+    );
+    assert.equal(
+      recovered.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions_widened'",
+        )
+        .get(),
+      undefined,
+    );
+    assert.equal(
+      Number(
+        (
+          recovered.db
+            .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      beforeRevisionCount,
+    );
+    validateCanonicalSourceStore(recovered);
+    recovered.close();
+
+    const staleStaging = new DatabaseSync(path);
+    const canonicalSchemaAfterRecovery = String(
+      (
+        staleStaging
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    staleStaging.exec(
+      canonicalSchemaAfterRecovery.replace(
+        /CREATE TABLE ["']?transaction_revisions["']?/,
+        "CREATE TABLE transaction_revisions_widened",
+      ),
+    );
+    staleStaging.exec(
+      "INSERT INTO transaction_revisions_widened SELECT * FROM transaction_revisions",
+    );
+    staleStaging.close();
+
+    const reopened = createCanonicalSourceStore(path);
+    assert.equal(
+      reopened.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions_widened'",
+        )
+        .get(),
+      undefined,
+    );
+    validateCanonicalSourceStore(reopened);
+    reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v9 reopen rejects divergent financial revision widening staging", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v9-revision-ambiguous-"),
+  );
+  try {
+    const path = join(directory, "canonical.sqlite");
+    await commitCathayDomesticDeposit(
+      directory,
+      CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    );
+    const legacy = new DatabaseSync(path);
+    const currentRevisionSchema = String(
+      (
+        legacy
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+          )
+          .get() as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    const interruptedFinalSchema = currentRevisionSchema.replace(
+      "CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%')",
+      "CHECK(posting_origin = 'provider_booked_history')",
+    );
+    legacy.exec("PRAGMA foreign_keys = OFF");
+    legacy.exec(
+      "DROP VIEW IF EXISTS source_assertions; DROP INDEX IF EXISTS idx_transaction_revisions_financial_time; DROP INDEX IF EXISTS idx_transaction_revisions_knowledge_time; DROP INDEX IF EXISTS idx_transaction_revisions_lineage; CREATE TABLE transaction_revisions_backup AS SELECT * FROM transaction_revisions; DROP TABLE transaction_revisions;",
+    );
+    legacy.exec(interruptedFinalSchema);
+    legacy.exec(
+      "INSERT INTO transaction_revisions SELECT * FROM transaction_revisions_backup; DROP TABLE transaction_revisions_backup;",
+    );
+    legacy.exec(
+      currentRevisionSchema.replace(
+        /CREATE TABLE ["']?transaction_revisions["']?/,
+        "CREATE TABLE transaction_revisions_widened",
+      ),
+    );
+    legacy.exec(
+      "INSERT INTO transaction_revisions_widened SELECT * FROM transaction_revisions",
+    );
+    legacy.exec(
+      "UPDATE transaction_revisions_widened SET description = 'divergent staging row' WHERE revision_id = (SELECT revision_id FROM transaction_revisions LIMIT 1)",
+    );
+    const finalCountBefore = Number(
+      (
+        legacy
+          .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    const stagingCountBefore = Number(
+      (
+        legacy
+          .prepare("SELECT COUNT(*) AS count FROM transaction_revisions_widened")
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    legacy.close();
+
+    assert.throws(
+      () => createCanonicalSourceStore(path),
+      /ambiguous|divergent|discard or merge/i,
+    );
+    const rejected = new DatabaseSync(path);
+    assert.equal(
+      Number(
+        (
+          rejected
+            .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      finalCountBefore,
+    );
+    assert.equal(
+      Number(
+        (
+          rejected
+            .prepare("SELECT COUNT(*) AS count FROM transaction_revisions_widened")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      stagingCountBefore,
+    );
+    rejected.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 const closedScopeDirectory = await mkdtemp(
   join(tmpdir(), "canonical-source-closed-scope-v8-"),
 );
