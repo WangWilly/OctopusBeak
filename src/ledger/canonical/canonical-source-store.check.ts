@@ -1363,6 +1363,203 @@ test("v9 reopen rejects divergent financial revision widening staging", async ()
   }
 });
 
+test("source assertion compatibility views enforce origin and provenance semantics", async () => {
+  for (const defect of ["wrong-origin", "missing-provenance"] as const) {
+    const directory = await mkdtemp(
+      join(tmpdir(), `canonical-source-v8-compat-${defect}-`),
+    );
+    try {
+      const path = join(directory, "canonical.sqlite");
+      await commitCathayDomesticDeposit(
+        directory,
+        CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+      );
+      const legacy = new DatabaseSync(path);
+      const revision = legacy
+        .prepare(
+          "SELECT revision_id, transaction_id, source_record_id, commit_id FROM transaction_revisions LIMIT 1",
+        )
+        .get() as {
+        revision_id?: Uint8Array;
+        transaction_id?: Uint8Array;
+        source_record_id?: Uint8Array;
+        commit_id?: Uint8Array;
+      };
+      const commitId = revision.commit_id;
+      const transactionId = revision.transaction_id;
+      const revisionId = revision.revision_id;
+      assert.ok(commitId && transactionId && revisionId);
+      const beforeAssertionCount = Number(
+        (
+          legacy.prepare("SELECT COUNT(*) AS count FROM assertions").get() as {
+            count?: number;
+          }
+        ).count ?? 0,
+      );
+      const beforeSourceAssertionCount = Number(
+        (
+          legacy
+            .prepare("SELECT COUNT(*) AS count FROM source_assertions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      );
+      const sourceAssertion = legacy
+        .prepare(
+          "SELECT assertion_id, transaction_id, revision_id, source_record_id, commit_id FROM source_assertions LIMIT 1",
+        )
+        .get() as {
+        assertion_id?: Uint8Array;
+        transaction_id?: Uint8Array;
+        revision_id?: Uint8Array;
+        source_record_id?: Uint8Array;
+        commit_id?: Uint8Array;
+      };
+      assert.ok(
+        sourceAssertion.assertion_id &&
+          sourceAssertion.transaction_id &&
+          sourceAssertion.revision_id &&
+          sourceAssertion.source_record_id &&
+          sourceAssertion.commit_id,
+      );
+      const sourceAssertionId = sourceAssertion.assertion_id;
+      assert.ok(sourceAssertionId);
+      const extraAssertionId = createHash("sha256")
+        .update(`${defect}:extra`)
+        .digest()
+        .subarray(0, 16);
+      const fabricatedAssertionId = createHash("sha256")
+        .update(`${defect}:fabricated`)
+        .digest()
+        .subarray(0, 16);
+      if (defect === "wrong-origin") {
+        legacy
+          .prepare(
+            `INSERT INTO assertions(
+              assertion_id, transaction_id, field_name, target_kind, origin,
+              producer_id, rule_lineage, revision_id, value_text, created_commit_id
+            ) VALUES (?, ?, 'display_name', 'transaction', 'derived', ?, ?, NULL, ?, ?)`,
+          )
+          .run(
+            extraAssertionId,
+            transactionId,
+            "test/derived",
+            "test/derived/v1",
+            "not-source",
+            commitId,
+          );
+        legacy.exec(`
+          DROP VIEW source_assertions;
+          CREATE VIEW source_assertions AS
+            SELECT assertion.assertion_id, assertion.transaction_id,
+              revision.revision_id, revision.source_record_id,
+              assertion.created_commit_id AS commit_id
+            FROM assertions assertion
+            JOIN transaction_revisions revision
+              ON revision.transaction_id = assertion.transaction_id
+            UNION ALL
+            SELECT X'${fabricatedAssertionId.toString("hex")}', revision.transaction_id,
+              revision.revision_id, revision.source_record_id, revision.commit_id
+            FROM transaction_revisions revision LIMIT 1;
+        `);
+      } else {
+        legacy.exec(`
+          DROP VIEW source_assertions;
+            CREATE VIEW source_assertions AS
+            SELECT assertion.assertion_id, assertion.transaction_id,
+              revision.revision_id, revision.source_record_id,
+              assertion.created_commit_id AS commit_id
+            FROM assertions assertion
+            JOIN transaction_revisions revision
+              ON revision.revision_id = assertion.revision_id
+            WHERE assertion.origin = 'source'
+            UNION ALL
+            SELECT assertion.assertion_id, assertion.transaction_id,
+              revision.revision_id, NULL AS source_record_id,
+              assertion.created_commit_id AS commit_id
+            FROM assertions assertion
+            JOIN transaction_revisions revision
+              ON revision.revision_id = assertion.revision_id
+            WHERE assertion.assertion_id = X'${Buffer.from(sourceAssertionId).toString("hex")}';
+        `);
+      }
+      assert.equal(
+        Number(
+          (
+            legacy.prepare("SELECT COUNT(*) AS count FROM assertions").get() as {
+              count?: number;
+            }
+          ).count ?? 0,
+        ),
+        defect === "wrong-origin"
+          ? beforeAssertionCount + 1
+          : beforeAssertionCount,
+      );
+      legacy.exec(
+        "DELETE FROM schema_migrations WHERE version = 9; PRAGMA user_version = 8",
+      );
+      legacy.close();
+
+      const migrated = createCanonicalSourceStore(path);
+      const sourceAssertionsView = String(
+        (
+          migrated.db
+            .prepare(
+              "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'source_assertions'",
+            )
+            .get() as { sql?: unknown } | undefined
+        )?.sql ?? "",
+      );
+      assert.match(sourceAssertionsView, /assertion\.origin\s*=\s*'source'/i);
+      assert.match(
+        sourceAssertionsView,
+        /provenance\.source_record_id\s+IS\s+NOT\s+NULL/i,
+      );
+      assert.equal(
+        Number(
+          (
+            migrated.db
+              .prepare("SELECT COUNT(*) AS count FROM source_assertions")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        beforeSourceAssertionCount,
+      );
+      assert.equal(
+        migrated.db
+          .prepare("SELECT 1 FROM assertions WHERE assertion_id = ?")
+          .get(fabricatedAssertionId),
+        undefined,
+      );
+      assert.equal(
+        Number(
+          (
+            migrated.db.prepare("SELECT COUNT(*) AS count FROM assertions").get() as {
+              count?: number;
+            }
+          ).count ?? 0,
+        ),
+        defect === "wrong-origin"
+          ? beforeAssertionCount + 1
+          : beforeAssertionCount,
+      );
+      assert.equal(
+        migrated.db
+          .prepare("SELECT 1 FROM source_assertions WHERE assertion_id = ?")
+          .get(extraAssertionId),
+        undefined,
+      );
+      validateCanonicalSourceStore(migrated);
+      migrated.close();
+
+      const reopened = createCanonicalSourceStore(path);
+      validateCanonicalSourceStore(reopened);
+      reopened.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 const closedScopeDirectory = await mkdtemp(
   join(tmpdir(), "canonical-source-closed-scope-v8-"),
 );
