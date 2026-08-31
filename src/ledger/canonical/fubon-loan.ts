@@ -73,7 +73,7 @@ export function queryFubonLoanCurrent(store: LoanFinancialStore) {
 
 export function queryFubonLoanHistorical(
   store: LoanFinancialStore,
-  request: LoanHistoricalQuery = {},
+  request: LoanHistoricalQuery,
 ) {
   return queryCanonicalLoanHistorical(store, { ...request, sourceId: "fubon" });
 }
