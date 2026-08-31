@@ -6,6 +6,9 @@ import { z } from "zod";
 import {
   FUBON_LOAN_CONTRACT_VERSION,
   createCanonicalLoanStore,
+  parseCanonicalLoanCompletenessEvidence,
+  type LoanCapturePage,
+  type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
@@ -169,8 +172,8 @@ type ParsedLoanStatement = {
   accountType: string;
   currency: string;
   rows: string[][];
-  pageCount: number;
-  terminal: true;
+  completeness: LoanSourceCompletenessEvidence | null;
+  pages: readonly LoanCapturePage[];
 };
 
 const loanHeaders = [
@@ -264,6 +267,15 @@ export function parseFubonLoanStatementRows(
       throw new Error("Unexpected Fubon loan result row.");
     return [row];
   });
+}
+
+/** Accept a complete-range claim only when the provider response explicitly
+ * declares its terminal page and page count. The result table itself carries
+ * no such meaning. */
+export function parseFubonLoanCompletenessEvidence(
+  value: unknown,
+): LoanSourceCompletenessEvidence | null {
+  return parseCanonicalLoanCompletenessEvidence(value);
 }
 
 function compareLoanRowsByTransactionDateDesc(
@@ -891,13 +903,25 @@ async function parseLoanStatementHtml(
         return "";
       };
 
+      const completenessMarker = doc.querySelector(
+        "[data-loan-completeness]",
+      );
+      const completeness = completenessMarker
+        ? {
+            pageCount: completenessMarker.getAttribute("data-page-count"),
+            terminal: completenessMarker.getAttribute("data-terminal"),
+            proofKind: completenessMarker.getAttribute(
+              "data-loan-completeness",
+            ),
+          }
+        : null;
+
       return {
         accountType: metadataValue("帳號類別"),
         branchName: metadataValue("分行名稱"),
         currency: metadataValue("幣別"),
         rows,
-        pageCount: 1,
-        terminal: true,
+        completeness,
       };
     },
     { html, headers: loanHeaders },
@@ -906,10 +930,10 @@ async function parseLoanStatementHtml(
     branchName: string;
     currency: string;
     rows: string[][];
-    pageCount: number;
-    terminal: true;
+    completeness: unknown;
   };
 
+  const completeness = parseFubonLoanCompletenessEvidence(parsed.completeness);
   return {
     loanAccount: account.label,
     loanAccountId: loanAccountIdFor(account.label, account.label),
@@ -919,8 +943,18 @@ async function parseLoanStatementHtml(
     accountType: parsed.accountType,
     currency: parsed.currency,
     rows: parsed.rows,
-    pageCount: parsed.pageCount,
-    terminal: parsed.terminal,
+    completeness,
+    pages: completeness
+      ? [
+          {
+            pageOrdinal: 0,
+            responseCode: "200",
+            terminal: completeness.terminal,
+            rowCount: parsed.rows.length,
+            proofKind: completeness.proofKind,
+          },
+        ]
+      : [],
   };
 }
 
@@ -947,6 +981,14 @@ async function writeLoanStatementFiles(
   parsed: ParsedLoanStatement;
 }> {
   const parsed = await parseLoanStatementHtml(page, html, account, input);
+  if (
+    !parsed.completeness ||
+    parsed.pages.length !== parsed.completeness.pageCount
+  ) {
+    throw new Error(
+      "Fubon loan result lacks explicit complete terminal page evidence.",
+    );
+  }
 
   const downloadsDir = join(
     process.cwd(),
@@ -1093,6 +1135,12 @@ export async function runFubonLoanStatements(
           queryItem,
           input,
         );
+        const completeness = written.parsed.completeness;
+        if (!completeness || written.parsed.pages.length !== completeness.pageCount) {
+          throw new Error(
+            "Fubon loan result lacks explicit complete terminal page evidence.",
+          );
+        }
         await persist(store, {
           accountValue: written.parsed.sourceAccountValue,
           sourceConnectionScope,
@@ -1105,18 +1153,14 @@ export async function runFubonLoanStatements(
             completeness: "complete-range",
             completenessBasis: "source-declared-terminal-range",
             completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
-            pageCount: written.parsed.pageCount,
-            terminal: written.parsed.terminal,
+            pageCount: completeness.pageCount,
+            terminal: completeness.terminal,
           },
-          pages: [
-            {
-              pageOrdinal: 0,
-              responseCode: "200",
-              terminal: written.parsed.terminal,
-              rowCount: written.parsed.rows.length,
-              proofKind: "source-declared-terminal-range",
-            },
-          ],
+          pages: written.parsed.pages,
+          // The loan result has no source-linked deposit-side transaction.
+          // Keep this explicit: an empty linkage list is not complete
+          // relation evidence and must not be advertised as such.
+          relationCoverage: "not-asserted",
           counterpartTransactions: [],
           relations: [],
           rows: written.parsed.rows.map<FubonLoanStatementRow>((row) => ({

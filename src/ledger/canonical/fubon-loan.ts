@@ -11,6 +11,7 @@ import {
   createCanonicalLoanCapture,
   parseCanonicalLoanAmount,
   parseCanonicalLoanDate,
+  isCanonicalLoanSourceDateBeforeObservedAt,
   queryCanonicalLoanCurrent,
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
@@ -51,6 +52,7 @@ export type FubonLoanCaptureBuildInput = {
   pages: LoanCaptureInput["pages"];
   counterpartTransactions: LoanCaptureInput["counterpartTransactions"];
   relations: LoanCaptureInput["relations"];
+  relationCoverage?: LoanCaptureInput["relationCoverage"];
   rows: readonly FubonLoanStatementRow[];
 };
 
@@ -116,8 +118,8 @@ export const FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
   captureContractVersion: FUBON_LOAN_CONTRACT_VERSION,
   sourceEventCodebookVersion: FUBON_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
   validationMethod: "solver-assisted-electron-cdp",
-  status: "pending",
-  verifiedOn: null,
+  status: "verified-live-run",
+  verifiedOn: "2026-08-31",
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
@@ -176,7 +178,6 @@ function optionalAmount(value: string, label: string) {
 function canonicalRows(
   input: FubonLoanCaptureBuildInput,
 ): CanonicalLoanStatementRow[] {
-  const observedAt = Date.parse(input.observedAt);
   return input.rows.map((row, index) => {
     const sourceCode = sourceCodeFor(row.transactionContent);
     const mapping = LOAN_EVENT_CONTRACT_MAPPINGS.fubon[sourceCode]!;
@@ -205,8 +206,10 @@ function canonicalRows(
     const balanceEffectiveAt = effectiveOn;
     const balanceIsHistorical =
       balance !== undefined &&
-      Number.isFinite(observedAt) &&
-      Date.parse(balanceEffectiveAt) < observedAt;
+      isCanonicalLoanSourceDateBeforeObservedAt(
+        balanceEffectiveAt,
+        input.observedAt,
+      );
     return {
       sourceRecordKey,
       occurrenceIndex: index + 1,
@@ -270,6 +273,7 @@ export function buildFubonLoanCapture(
     pages: input.pages,
     counterpartTransactions: input.counterpartTransactions,
     relations: input.relations,
+    relationCoverage: input.relationCoverage,
     rows,
   });
 }

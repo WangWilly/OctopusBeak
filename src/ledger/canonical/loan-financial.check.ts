@@ -10,6 +10,9 @@ import {
   commitCanonicalLoanCapture,
   createCanonicalLoanStore,
   createCanonicalLoanCapture,
+  FUBON_LOAN_AUTHORITY_ROUTE,
+  FUBON_LOAN_LEGACY_AUTHORITY_ROUTE,
+  isCanonicalLoanSourceDateBeforeObservedAt,
   queryCanonicalLoanCurrent,
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
@@ -27,6 +30,7 @@ import {
 } from "./canonical-source-store.ts";
 import {
   buildFubonLoanCapture,
+  FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
   persistFubonLoanCapture,
   queryFubonLoanCurrent,
   queryFubonLoanHistorical,
@@ -230,9 +234,145 @@ test("Fubon loan contract correction preserves immutable v1 occurrences", async 
       )
       .get(legacyRoute) as { payload?: string } | undefined;
     assert.equal(legacyAfter?.payload, legacyPayload);
+
+    const current = queryCanonicalLoanCurrent(store, { sourceId: "fubon" });
+    assert.equal(current.accounts.length, 1);
+    assert.equal(current.transactions.length, 1);
+    assert.equal(current.balanceObservations.length, 1);
+    assert.equal(current.relations.length, 0);
+    const historical = queryCanonicalLoanHistorical(store, {
+      sourceId: "fubon",
+      knowledgeAt: current.knowledgeAt,
+      financialAt: "2026-01-31",
+    });
+    assert.equal(historical.accounts.length, 1);
+    assert.equal(historical.transactions.length, 1);
+    assert.equal(historical.balanceObservations.length, 1);
+    assert.equal(historical.relations.length, 0);
+    const allSourcesCurrent = queryCanonicalLoanCurrent(store);
+    assert.equal(allSourcesCurrent.accounts.length, 1);
+    assert.equal(allSourcesCurrent.transactions.length, 1);
+    assert.equal(allSourcesCurrent.balanceObservations.length, 1);
+    assert.equal(allSourcesCurrent.relations.length, 0);
+    assert.equal(
+      queryCanonicalLoanLineage(store, {
+        sourceId: "fubon",
+        sourceRecordKey: legacyCapture.records[0]!.occurrenceKey,
+      }).lineage.length,
+      0,
+    );
+    assert.equal(
+      queryCanonicalLoanLineage(store, {
+        sourceId: "fubon",
+        sourceRecordKey: corrected.records[0]!.sourceRecordKey,
+      }).lineage.length,
+      1,
+    );
   } finally {
     store.close();
   }
+});
+
+test("retired Fubon v1 route stays out of every canonical loan query surface", async () => {
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    const fixture = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(fixture));
+    const captureId = store.db
+      .prepare(
+        "SELECT capture_id, commit_id FROM source_captures WHERE capture_key = ?",
+      )
+      .get(fixture.captureId) as
+      | { capture_id?: Uint8Array; commit_id?: Uint8Array }
+      | undefined;
+    assert.ok(captureId?.capture_id instanceof Uint8Array);
+    assert.ok(captureId?.commit_id instanceof Uint8Array);
+    store.db
+      .prepare(
+        `INSERT OR IGNORE INTO source_authority_routes(
+           authority_route, integration_namespace, stream, contract_version,
+           created_commit_id
+         ) VALUES (?, 'fubon', 'loan', 'loan/canonical/v1.fubon', ?)`,
+      )
+      .run(FUBON_LOAN_LEGACY_AUTHORITY_ROUTE, captureId.commit_id);
+    store.db
+      .prepare("UPDATE source_captures SET authority_route = ? WHERE capture_id = ?")
+      .run(FUBON_LOAN_LEGACY_AUTHORITY_ROUTE, captureId.capture_id);
+
+    const current = queryCanonicalLoanCurrent(store, { sourceId: "fubon" });
+    const historical = queryCanonicalLoanHistorical(store, {
+      sourceId: "fubon",
+      knowledgeAt: current.knowledgeAt,
+      financialAt: "2026-01-31",
+    });
+    const lineage = queryCanonicalLoanLineage(store, {
+      sourceId: "fubon",
+      sourceRecordKey: fixture.records[0]!.sourceRecordKey,
+    });
+    assert.equal(current.accounts.length, 0);
+    assert.equal(current.transactions.length, 0);
+    assert.equal(current.balanceObservations.length, 0);
+    assert.equal(current.relations.length, 0);
+    assert.equal(historical.accounts.length, 0);
+    assert.equal(historical.transactions.length, 0);
+    assert.equal(historical.balanceObservations.length, 0);
+    assert.equal(historical.relations.length, 0);
+    assert.equal(lineage.lineage.length, 0);
+    assert.ok(
+      Number(
+        (
+          store.db
+            .prepare("SELECT COUNT(*) AS count FROM source_records")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ) > 0,
+    );
+
+    // A route/version mismatch must be hidden as well; checking only the
+    // authority route would allow a stale v1 completeness contract through.
+    store.db
+      .prepare(
+        "UPDATE source_captures SET authority_route = ?, completeness_rule_version = ? WHERE capture_id = ?",
+      )
+      .run(
+        FUBON_LOAN_AUTHORITY_ROUTE,
+        "loan/canonical/v1.fubon",
+        captureId.capture_id,
+      );
+    const mismatchedVersion = queryCanonicalLoanCurrent(store, {
+      sourceId: "fubon",
+    });
+    assert.equal(mismatchedVersion.accounts.length, 0);
+    assert.equal(mismatchedVersion.transactions.length, 0);
+    assert.equal(mismatchedVersion.balanceObservations.length, 0);
+    assert.equal(mismatchedVersion.relations.length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("loan source-date comparison uses Taipei midnight at an early local time", () => {
+  assert.equal(
+    isCanonicalLoanSourceDateBeforeObservedAt(
+      "2026-01-05",
+      "2026-01-04T16:30:00.000Z",
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLoanSourceDateBeforeObservedAt(
+      "2026-01-05",
+      "2026-01-05T00:30:00+08:00",
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLoanSourceDateBeforeObservedAt(
+      "2026-01-06",
+      "2026-01-04T16:30:00.000Z",
+    ),
+    false,
+  );
 });
 
 test("Fubon adapter commits source-scoped exact rows through all query seams", async () => {
@@ -325,6 +465,28 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
   } finally {
     store.close();
   }
+});
+
+test("Fubon live attestation records only sanitized v2 proof", () => {
+  assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.status, "verified-live-run");
+  assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.verifiedOn, "2026-08-31");
+  assert.equal(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.captureContractVersion,
+    "loan/canonical/v2.fubon",
+  );
+  assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.financialValuesRetained, false);
+  assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.authenticationSecretsRetained, false);
+  assert.equal(FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.rawSourcePayloadRetained, false);
+  assert.deepEqual(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.safeAssertions,
+    [
+      "source-capture:nonzero",
+      "loan-account-identity:nonzero",
+      "loan-transaction-facts:nonzero",
+      "current-loan-projection:nonzero",
+      "loan-lineage:nonzero",
+    ],
+  );
 });
 
 test("Yuanta adapter preserves explicit event mapping and exact source evidence", async () => {
@@ -921,6 +1083,27 @@ test("loan relation endpoints must share source connection and identity epoch", 
       }),
     /identity epoch|source scope/i,
   );
+});
+
+test("empty linkage arrays cannot claim complete relation coverage", () => {
+  const fixture = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  assert.throws(
+    () =>
+      admitCanonicalLoanCapture({
+        ...fixture,
+        relationCoverage: "source-linked-complete",
+        counterpartTransactions: [],
+        relations: [],
+      }),
+    /complete.*relation coverage|source-linked.*counterpart|relation evidence/i,
+  );
+  const admitted = admitCanonicalLoanCapture({
+    ...fixture,
+    relationCoverage: "not-asserted",
+    counterpartTransactions: [],
+    relations: [],
+  });
+  assert.equal(admitted.relationCoverage, "not-asserted");
 });
 
 test("loan identity uses accountKey and current queries read projection selections", async () => {

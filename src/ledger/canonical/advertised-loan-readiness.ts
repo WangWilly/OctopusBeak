@@ -206,15 +206,19 @@ export function evaluateAdvertisedLoanReadiness(
     .filter((entry) => !isAdvertisedLoanEntryContractReady(entry))
     .map((entry) => entry.sourceId);
   const pendingLiveValidationSourceIds = entries
-    .filter((entry) => entry.blockers.includes("live-validation-pending"))
+    .filter(
+      (entry) =>
+        entry.liveValidation !== "complete" ||
+        entry.blockers.includes("live-validation-pending"),
+    )
     .map((entry) => entry.sourceId);
+  // An empty inventory has no advertised source to release.  Array#every
+  // alone would treat it as ready and could hide a broken manifest import.
+  const releaseReady =
+    entries.length > 0 && entries.every(isAdvertisedLoanEntryReleaseReady);
   return {
-    status:
-      unreadySourceIds.length === 0 && pendingLiveValidationSourceIds.length === 0
-        ? "release-ready"
-        : "blocked",
-    releaseReady:
-      unreadySourceIds.length === 0 && pendingLiveValidationSourceIds.length === 0,
+    status: releaseReady ? "release-ready" : "blocked",
+    releaseReady,
     advertisedSourceCount: entries.length,
     unreadySourceIds,
     pendingLiveValidationSourceIds,

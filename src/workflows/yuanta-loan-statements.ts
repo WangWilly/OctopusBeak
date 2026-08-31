@@ -9,7 +9,12 @@ import {
 } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
-import { createCanonicalLoanStore } from "../ledger/canonical/loan-financial.ts";
+import {
+  createCanonicalLoanStore,
+  parseCanonicalLoanCompletenessEvidence,
+  type LoanCapturePage,
+  type LoanSourceCompletenessEvidence,
+} from "../ledger/canonical/loan-financial.ts";
 import {
   persistYuantaLoanCapture,
   type YuantaLoanCaptureBuildInput,
@@ -274,6 +279,14 @@ export function parseYuantaLoanStatementRows(
       },
     ];
   });
+}
+
+/** A Yuanta result is complete only when the provider response declares the
+ * terminal page and page count; table presence and row count are insufficient. */
+export function parseYuantaLoanCompletenessEvidence(
+  value: unknown,
+): LoanSourceCompletenessEvidence | null {
+  return parseCanonicalLoanCompletenessEvidence(value);
 }
 
 function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
@@ -579,7 +592,11 @@ async function queryLoanAccount(
 async function parseLoanStatementRows(
   page: Page,
   accountLabel: string,
-): Promise<StatementRow[]> {
+): Promise<{
+  rows: StatementRow[];
+  completeness: LoanSourceCompletenessEvidence | null;
+  pages: readonly LoanCapturePage[];
+}> {
   const scope = await findScopeWithSelector(page, "#resultdiv");
   const tables = scope.locator("table.normalTable");
   const tableCount = await tables.count();
@@ -604,7 +621,32 @@ async function parseLoanStatementRows(
     sourceRows.push(values);
   }
 
-  return parseYuantaLoanStatementRows(accountLabel, sourceRows);
+  const completenessMarker = await resultTable.getAttribute(
+    "data-loan-completeness",
+  );
+  const completeness = completenessMarker
+    ? parseYuantaLoanCompletenessEvidence({
+        pageCount: await resultTable.getAttribute("data-page-count"),
+        terminal: await resultTable.getAttribute("data-terminal"),
+        proofKind: completenessMarker,
+      })
+    : null;
+  const parsedRows = parseYuantaLoanStatementRows(accountLabel, sourceRows);
+  return {
+    rows: parsedRows,
+    completeness,
+    pages: completeness
+      ? [
+          {
+            pageOrdinal: 0,
+            responseCode: "200",
+            terminal: completeness.terminal,
+            rowCount: parsedRows.length,
+            proofKind: completeness.proofKind,
+          },
+        ]
+      : [],
+  };
 }
 
 export async function runYuantaLoanStatements(
@@ -639,7 +681,16 @@ export async function runYuantaLoanStatements(
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
       await queryLoanAccount(page, input, account);
-      const accountRows = await parseLoanStatementRows(page, maskedAccount);
+      const parsed = await parseLoanStatementRows(page, maskedAccount);
+      if (
+        !parsed.completeness ||
+        parsed.pages.length !== parsed.completeness.pageCount
+      ) {
+        throw new Error(
+          "Yuanta loan result lacks explicit complete terminal page evidence.",
+        );
+      }
+      const accountRows = parsed.rows;
       rows.push(...accountRows);
       sourceTables.push({
         account: maskedAccount,
@@ -657,18 +708,14 @@ export async function runYuantaLoanStatements(
           completeness: "complete-range",
           completenessBasis: "source-declared-terminal-range",
           completenessRuleVersion: "loan/canonical/v1.yuanta",
-          pageCount: 1,
-          terminal: true,
+          pageCount: parsed.completeness.pageCount,
+          terminal: parsed.completeness.terminal,
         },
-        pages: [
-          {
-            pageOrdinal: 0,
-            responseCode: "200",
-            terminal: true,
-            rowCount: accountRows.length,
-            proofKind: "source-declared-terminal-range",
-          },
-        ],
+        pages: parsed.pages,
+        // The loan result has no source-linked deposit-side transaction.
+        // Empty linkage arrays are therefore explicitly not asserted as
+        // complete relation coverage.
+        relationCoverage: "not-asserted",
         counterpartTransactions: [],
         relations: [],
         rows: accountRows.map<YuantaLoanStatementRow>((row) => ({

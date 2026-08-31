@@ -275,6 +275,12 @@ export type LoanCaptureInput = {
   counterpartTransactions: readonly LoanCounterpartTransactionInput[];
   balanceObservations: readonly LoanBalanceObservationInput[];
   relations: readonly LoanTransferRelationInput[];
+  /**
+   * A loan statement may contain no source evidence for the deposit side.
+   * Keep that state explicit so an empty linkage list can never be mistaken
+   * for a complete transfer-relation assertion.
+   */
+  relationCoverage?: "not-asserted" | "source-linked-complete";
 };
 
 export type LoanCapturePage = {
@@ -284,6 +290,46 @@ export type LoanCapturePage = {
   rowCount: number;
   proofKind: "source-declared-terminal-range";
 };
+
+export type LoanSourceCompletenessEvidence = {
+  pageCount: number;
+  terminal: true;
+  proofKind: "source-declared-terminal-range";
+};
+
+/**
+ * Normalize only an explicit provider completeness declaration. A result
+ * table, successful HTTP response, or empty next-page control is not enough
+ * to prove that the requested range is complete. Workflows pass provider
+ * metadata through this seam and receive null when the declaration is absent
+ * or partial, which makes canonical admission fail closed.
+ */
+export function parseCanonicalLoanCompletenessEvidence(
+  value: unknown,
+): LoanSourceCompletenessEvidence | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return null;
+  const record = value as Record<string, unknown>;
+  const pageCount =
+    typeof record.pageCount === "number"
+      ? record.pageCount
+      : typeof record.pageCount === "string" && /^\d+$/u.test(record.pageCount)
+        ? Number(record.pageCount)
+        : NaN;
+  const terminal = record.terminal === true || record.terminal === "true";
+  if (
+    !Number.isSafeInteger(pageCount) ||
+    pageCount < 1 ||
+    !terminal ||
+    record.proofKind !== "source-declared-terminal-range"
+  )
+    return null;
+  return {
+    pageCount,
+    terminal: true,
+    proofKind: "source-declared-terminal-range",
+  };
+}
 
 /**
  * The small, source-neutral seam used by statement workflows.  Workflows
@@ -330,6 +376,7 @@ export type CanonicalLoanCaptureBuildInput = {
   pages: readonly LoanCapturePage[];
   counterpartTransactions: readonly LoanCounterpartTransactionInput[];
   relations: readonly LoanTransferRelationInput[];
+  relationCoverage?: LoanCaptureInput["relationCoverage"];
   rows: readonly CanonicalLoanStatementRow[];
 };
 
@@ -566,6 +613,29 @@ export function parseCanonicalLoanDate(
   return requireDate(normalized, label);
 }
 
+/** Compare a source-reported date at Asia/Taipei midnight with collection
+ * time. Date-only JavaScript parsing is UTC by specification in many runtimes;
+ * spelling out +08:00 preserves the provider's local civil date at boundaries
+ * such as 00:30 Asia/Taipei. */
+export function isCanonicalLoanSourceDateBeforeObservedAt(
+  sourceDate: string,
+  observedAt: string,
+): boolean {
+  let canonicalDate: string;
+  try {
+    canonicalDate = requireDate(sourceDate, "Loan source date");
+  } catch {
+    return false;
+  }
+  const sourceEpoch = Date.parse(`${canonicalDate}T00:00:00+08:00`);
+  const observedEpoch = Date.parse(observedAt);
+  return (
+    Number.isFinite(sourceEpoch) &&
+    Number.isFinite(observedEpoch) &&
+    sourceEpoch < observedEpoch
+  );
+}
+
 /** Wrap source-projected rows in the versioned canonical loan capture contract. */
 export function createCanonicalLoanCapture(
   input: CanonicalLoanCaptureBuildInput,
@@ -661,6 +731,7 @@ export function createCanonicalLoanCapture(
     counterpartTransactions: input.counterpartTransactions,
     balanceObservations,
     relations: input.relations,
+    relationCoverage: input.relationCoverage ?? "not-asserted",
   };
 }
 
@@ -1139,6 +1210,22 @@ function validateCapture(capture: LoanCaptureInput): void {
     counterpartRecords.set(sourceRecordKey, counterpart);
   }
 
+  const relationCoverage = capture.relationCoverage ?? "not-asserted";
+  if (
+    relationCoverage !== "not-asserted" &&
+    relationCoverage !== "source-linked-complete"
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Loan relation coverage state is unsupported.",
+    );
+  if (
+    relationCoverage === "source-linked-complete" &&
+    (counterpartRecords.size === 0 || capture.relations.length === 0)
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Complete loan relation coverage requires source-linked counterpart and relation evidence.",
+    );
+
   const observationKeys = new Set<string>();
   for (const observation of capture.balanceObservations) {
     const observationKey = requireOpaque(
@@ -1236,8 +1323,10 @@ function validateCapture(capture: LoanCaptureInput): void {
       );
     }
     if (
-      Date.parse(`${observation.effectiveAt}T00:00:00+08:00`) >=
-      Date.parse(capture.observedAt)
+      !isCanonicalLoanSourceDateBeforeObservedAt(
+        observation.effectiveAt,
+        capture.observedAt,
+      )
     )
       throw new CanonicalLoanAdmissionError(
         "Loan balance effective time cannot use collection/import time.",
@@ -1453,6 +1542,7 @@ function canonicalLoanSpineCapture(
       metadataJson: JSON.stringify({
         pageOrdinal: page.pageOrdinal,
         rowCount: page.rowCount,
+        relationCoverage: capture.relationCoverage ?? "not-asserted",
       }),
     })),
     records,
@@ -1984,6 +2074,7 @@ function refreshCurrentLoanBalanceProjection(
   accountId: Uint8Array,
   projectionCommitId: Uint8Array,
 ): void {
+  const visibleRoute = canonicalLoanRoutePredicate("balance_capture");
   db.prepare(
     `DELETE FROM current_loan_balance_observations
      WHERE generation_id = ? AND account_id = ?`,
@@ -2014,6 +2105,8 @@ function refreshCurrentLoanBalanceProjection(
          ON revision_commit.commit_id = revision.commit_id
        JOIN source_records balance_record
          ON balance_record.source_record_id = revision.source_record_id
+       JOIN source_captures balance_capture
+         ON balance_capture.capture_id = revision.capture_id
        LEFT JOIN loan_transaction_facts balance_fact
          ON balance_fact.revision_id = (
            SELECT transaction_revision.revision_id
@@ -2023,9 +2116,15 @@ function refreshCurrentLoanBalanceProjection(
            LIMIT 1
          )
        WHERE observation.account_id = ?
+         AND ${visibleRoute.sql}
      ) ranked
      WHERE ranked.rank = 1`,
-  ).run(generationId, projectionCommitId, accountId);
+  ).run(
+    generationId,
+    projectionCommitId,
+    accountId,
+    ...visibleRoute.params,
+  );
 }
 
 type PersistedRelationEndpoint = {
@@ -2455,23 +2554,52 @@ function accountFromRow(row: Record<string, unknown>): LoanAccount {
   };
 }
 
-function currentLoanRoutePredicate(
+/**
+ * Canonical loan query surfaces expose only routes whose contract is still
+ * authoritative. Fubon v1 remains immutable raw source evidence, but its
+ * proven-wrong balance semantics are retired from current, historical, and
+ * lineage views. This policy is deliberately shared by every query shape.
+ */
+function canonicalLoanRoutePredicate(
   alias: string,
   sourceId?: LoanSourceId,
 ): { sql: string; params: string[] } {
-  if (sourceId === "fubon")
-    return {
-      sql: `${alias}.authority_route = ?`,
-      params: [FUBON_LOAN_AUTHORITY_ROUTE],
-    };
-  if (sourceId === "yuanta")
-    return {
-      sql: `${alias}.authority_route = ?`,
-      params: [YUANTA_LOAN_AUTHORITY_ROUTE],
-    };
+  const routes =
+    sourceId === "fubon"
+      ? [
+          {
+            authorityRoute: FUBON_LOAN_AUTHORITY_ROUTE,
+            contractVersion: FUBON_LOAN_CONTRACT_VERSION,
+          },
+        ]
+      : sourceId === "yuanta"
+        ? [
+            {
+              authorityRoute: YUANTA_LOAN_AUTHORITY_ROUTE,
+              contractVersion: YUANTA_LOAN_CONTRACT_VERSION,
+            },
+          ]
+        : [
+            {
+              authorityRoute: FUBON_LOAN_AUTHORITY_ROUTE,
+              contractVersion: FUBON_LOAN_CONTRACT_VERSION,
+            },
+            {
+              authorityRoute: YUANTA_LOAN_AUTHORITY_ROUTE,
+              contractVersion: YUANTA_LOAN_CONTRACT_VERSION,
+            },
+          ];
   return {
-    sql: `(${alias}.authority_route = ? OR ${alias}.authority_route = ?)`,
-    params: [FUBON_LOAN_AUTHORITY_ROUTE, YUANTA_LOAN_AUTHORITY_ROUTE],
+    sql: `(${routes
+      .map(
+        () =>
+          `(${alias}.authority_route = ? AND ${alias}.completeness_rule_version = ?)`,
+      )
+      .join(" OR ")})`,
+    params: routes.flatMap(({ authorityRoute, contractVersion }) => [
+      authorityRoute,
+      contractVersion,
+    ]),
   };
 }
 
@@ -2488,9 +2616,7 @@ function accountRows(
          ON current_account.generation_id = active.generation_id
        AND current_account.account_id = account.account_id`
     : "";
-  const currentRoute = currentOnly
-    ? currentLoanRoutePredicate("authority_capture", sourceId)
-    : { sql: "1 = 1", params: [] as string[] };
+  const visibleRoute = canonicalLoanRoutePredicate("authority_capture", sourceId);
   const rows = db
     .prepare(
       `SELECT account.account_id, loan_identity.account_no, account.account_type,
@@ -2516,21 +2642,21 @@ function accountRows(
          AND account.account_type = 'loan'
          AND account.stream = 'loan'
          AND (? IS NULL OR connection.integration_namespace = ?)
-         AND ${currentOnly ? `EXISTS (
+         AND EXISTS (
            SELECT 1 FROM source_captures authority_capture
            WHERE authority_capture.source_connection_id = account.source_connection_id
              AND authority_capture.identity_epoch_id = account.identity_epoch_id
              AND authority_capture.stream = 'loan'
              AND authority_capture.account_no = loan_identity.account_key
-             AND ${currentRoute.sql}
-         )` : currentRoute.sql}
+             AND ${visibleRoute.sql}
+         )
        ORDER BY connection.integration_namespace, account.account_no`,
     )
     .all(
       knowledgeAt,
       sourceId ?? null,
       sourceId ?? null,
-      ...currentRoute.params,
+      ...visibleRoute.params,
     ) as Array<
     Record<string, unknown>
   >;
@@ -2564,11 +2690,9 @@ function transactionRows(
     clauses.push("transaction_row.source_sequence = ?");
     params.push(sourceRecordKey);
   }
-  if (currentOnly) {
-    const currentRoute = currentLoanRoutePredicate("source_capture", sourceId);
-    clauses.push(currentRoute.sql);
-    params.push(...currentRoute.params);
-  }
+  const visibleRoute = canonicalLoanRoutePredicate("source_capture", sourceId);
+  clauses.push(visibleRoute.sql);
+  params.push(...visibleRoute.params);
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
          ON active.singleton_id = 1
@@ -2714,11 +2838,9 @@ function balanceRows(
     clauses.push("substr(revision.effective_at, 1, 10) <= ?");
     params.push(financialAt);
   }
-  if (currentOnly) {
-    const currentRoute = currentLoanRoutePredicate("capture", sourceId);
-    clauses.push(currentRoute.sql);
-    params.push(...currentRoute.params);
-  }
+  const visibleRoute = canonicalLoanRoutePredicate("capture", sourceId);
+  clauses.push(visibleRoute.sql);
+  params.push(...visibleRoute.params);
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
          ON active.singleton_id = 1
@@ -2862,21 +2984,19 @@ function relationRows(
     ) <= ?`);
     params.push(knowledgeAt, knowledgeAt, financialAt);
   }
-  if (currentOnly) {
-    const currentRoute = currentLoanRoutePredicate("relation_capture", sourceId);
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM transaction_revisions route_revision
-      JOIN source_captures relation_capture
-        ON relation_capture.capture_id = route_revision.capture_id
-      WHERE route_revision.transaction_id IN (
-        relation.from_transaction_id,
-        relation.to_transaction_id
-      )
-        AND ${currentRoute.sql}
-    )`);
-    params.push(...currentRoute.params);
-  }
+  const visibleRoute = canonicalLoanRoutePredicate("relation_capture", sourceId);
+  clauses.push(`EXISTS (
+    SELECT 1
+    FROM transaction_revisions route_revision
+    JOIN source_captures relation_capture
+      ON relation_capture.capture_id = route_revision.capture_id
+    WHERE route_revision.transaction_id IN (
+      relation.from_transaction_id,
+      relation.to_transaction_id
+    )
+      AND ${visibleRoute.sql}
+  )`);
+  params.push(...visibleRoute.params);
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
          ON active.singleton_id = 1
@@ -2957,10 +3077,8 @@ function lineageRows(
     sourceId ?? null,
     sourceId ?? null,
   ];
-  const currentRoute = currentOnly
-    ? currentLoanRoutePredicate("capture", sourceId)
-    : { sql: "1 = 1", params: [] as string[] };
-  params.push(...currentRoute.params);
+  const visibleRoute = canonicalLoanRoutePredicate("capture", sourceId);
+  params.push(...visibleRoute.params);
   const rows = db
     .prepare(
       `SELECT source_record.occurrence_key, capture.capture_key,
@@ -2973,7 +3091,7 @@ function lineageRows(
        WHERE source_record.occurrence_key = ?
          AND commit_row.commit_sequence <= ?
          AND (? IS NULL OR connection.integration_namespace = ?)
-         AND ${currentRoute.sql}
+         AND ${visibleRoute.sql}
        ORDER BY commit_row.commit_sequence, capture.capture_key`,
     )
     .all(...params) as Array<Record<string, unknown>>;
@@ -3286,6 +3404,7 @@ function fixture(sourceId: LoanSourceId): LoanCaptureInput {
         },
       },
     ],
+    relationCoverage: "source-linked-complete",
     balanceObservations: [
       {
         observationKey: fixtureToken(sourceId, "balance"),
