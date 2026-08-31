@@ -4662,21 +4662,39 @@ function ensureV7ProjectionSchema(db: DatabaseSync): void {
     );
 }
 
-/** Widen provider-specific financial semantics without weakening normalized
- * enums. Existing v8 ledgers keep their rows; the revision table is rebuilt
- * transactionally on the next writable open when it still has a closed
- * provider allowlist. */
-function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
-  const sql = String(
-    (
-      db
-        .prepare(
-          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
-        )
-        .get() as { sql?: unknown } | undefined
-    )?.sql ?? "",
-  );
-  if (
+const CANONICAL_FINANCIAL_REVISION_COLUMNS = [
+  "revision_id",
+  "transaction_id",
+  "source_record_id",
+  "capture_id",
+  "commit_id",
+  "revision_number",
+  "amount_coefficient",
+  "amount_scale",
+  "currency",
+  "direction",
+  "posting_status",
+  "posting_origin",
+  "posting_basis",
+  "posting_rule_version",
+  "description",
+  "economic_status",
+  "administrative_state",
+  "semantic_rule_version",
+  "effective_on",
+  "transaction_date_time_local",
+  "time_zone",
+  "time_precision",
+  "time_origin",
+  "effective_time_basis",
+  "effective_time_rule_version",
+  "utc_instant_utc_us",
+] as const;
+const CANONICAL_FINANCIAL_REVISION_COLUMN_LIST =
+  CANONICAL_FINANCIAL_REVISION_COLUMNS.join(", ");
+
+function isCanonicalFinancialRevisionSchema(sql: string): boolean {
+  return (
     /posting_origin TEXT NOT NULL CHECK\(posting_origin IN/.test(sql) &&
     /posting_basis TEXT NOT NULL CHECK\(posting_basis IN/.test(sql) &&
     /posting_rule_version TEXT NOT NULL CHECK\(posting_rule_version IN/.test(
@@ -4724,6 +4742,211 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
     ) &&
     /time_origin TEXT NOT NULL CHECK\(time_origin IN \('source_reported','defaulted_local_midnight'\)\)/.test(
       sql,
+    )
+  );
+}
+
+function financialRevisionSchemaSql(
+  db: DatabaseSync,
+  table: "transaction_revisions" | "transaction_revisions_widened",
+): string {
+  return String(
+    (
+      db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table) as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+}
+
+function financialRevisionColumnNames(
+  db: DatabaseSync,
+  table: "transaction_revisions" | "transaction_revisions_widened",
+): string[] {
+  return (
+    db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name?: unknown;
+    }>
+  ).map((column) => String(column.name ?? ""));
+}
+
+function assertFinancialRevisionTableIntegrity(
+  db: DatabaseSync,
+  table: "transaction_revisions" | "transaction_revisions_widened",
+  label: string,
+  requireCanonicalSchema = true,
+): void {
+  if (relationType(db, table) !== "table")
+    throw new Error(
+      `Canonical financial revision ${label} relation is not a table.`,
+    );
+  if (
+    requireCanonicalSchema &&
+    (!isCanonicalFinancialRevisionSchema(financialRevisionSchemaSql(db, table)) ||
+      financialRevisionColumnNames(db, table).join(",") !==
+        CANONICAL_FINANCIAL_REVISION_COLUMNS.join(","))
+  )
+    throw new Error(
+      `Canonical financial revision ${label} table is not compatible with the v9 schema.`,
+    );
+  const integrityRows = db
+    .prepare(`PRAGMA integrity_check(${table})`)
+    .all() as Array<{ integrity_check?: unknown }>;
+  if (
+    integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok")
+  )
+    throw new Error(
+      `Canonical financial revision ${label} table failed integrity validation.`,
+    );
+  if (db.prepare(`PRAGMA foreign_key_check(${table})`).all().length !== 0)
+    throw new Error(
+      `Canonical financial revision ${label} table has invalid foreign keys.`,
+    );
+}
+
+function financialRevisionRowCount(
+  db: DatabaseSync,
+  table: "transaction_revisions" | "transaction_revisions_widened",
+): number {
+  return Number(
+    (
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+}
+
+function financialRevisionRowDifference(
+  db: DatabaseSync,
+  left: "transaction_revisions" | "transaction_revisions_widened",
+  right: "transaction_revisions" | "transaction_revisions_widened",
+): number {
+  const leftOnly = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM (SELECT ${CANONICAL_FINANCIAL_REVISION_COLUMN_LIST} FROM ${left} EXCEPT SELECT ${CANONICAL_FINANCIAL_REVISION_COLUMN_LIST} FROM ${right})`,
+        )
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  const rightOnly = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM (SELECT ${CANONICAL_FINANCIAL_REVISION_COLUMN_LIST} FROM ${right} EXCEPT SELECT ${CANONICAL_FINANCIAL_REVISION_COLUMN_LIST} FROM ${left})`,
+        )
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  return leftOnly + rightOnly;
+}
+
+function recreateCanonicalSourceAssertionsView(db: DatabaseSync): void {
+  db.exec(`
+    DROP VIEW IF EXISTS source_assertions;
+    CREATE VIEW source_assertions AS
+      SELECT assertion.assertion_id, assertion.transaction_id, assertion.revision_id,
+        revision.source_record_id, assertion.created_commit_id AS commit_id
+      FROM assertions assertion
+      JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
+      WHERE assertion.origin = 'source' AND EXISTS (
+        SELECT 1 FROM assertion_provenance provenance
+        WHERE provenance.assertion_id = assertion.assertion_id
+          AND provenance.source_record_id IS NOT NULL
+      );
+    CREATE INDEX IF NOT EXISTS idx_transaction_revisions_financial_time ON transaction_revisions(effective_on, utc_instant_utc_us, transaction_id, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_transaction_revisions_knowledge_time ON transaction_revisions(commit_id, transaction_id, revision_number);
+    CREATE INDEX IF NOT EXISTS idx_transaction_revisions_lineage ON transaction_revisions(transaction_id, revision_number, revision_id);
+  `);
+}
+
+/** Recover a migration that was interrupted after creating the widened table.
+ * Both tables may be present after a process crash because the historical
+ * rebuild is a multi-statement operation. The staging table is only promoted
+ * when it is a valid v9 copy with exactly the same rows as the old table;
+ * otherwise startup fails closed and leaves both copies for diagnosis. */
+function recoverFinancialRevisionWideningStaging(
+  db: DatabaseSync,
+  finalSchemaIsCanonical: boolean,
+): void {
+  if (relationType(db, "transaction_revisions_widened") === null) return;
+  if (relationType(db, "transaction_revisions") !== "table")
+    throw new Error(
+      "Canonical financial revision widening is ambiguous: final table is missing or not a table.",
+    );
+
+  assertFinancialRevisionTableIntegrity(
+    db,
+    "transaction_revisions_widened",
+    "widening staging",
+  );
+  assertFinancialRevisionTableIntegrity(
+    db,
+    "transaction_revisions",
+    "final",
+    finalSchemaIsCanonical,
+  );
+  const finalCount = financialRevisionRowCount(db, "transaction_revisions");
+  const stagingCount = financialRevisionRowCount(
+    db,
+    "transaction_revisions_widened",
+  );
+  if (stagingCount === 0) {
+    db.exec("DROP TABLE transaction_revisions_widened");
+    return;
+  }
+  let rowDifference: number;
+  try {
+    rowDifference = financialRevisionRowDifference(
+      db,
+      "transaction_revisions",
+      "transaction_revisions_widened",
+    );
+  } catch (error) {
+    throw new Error(
+      "Canonical financial revision widening is ambiguous: staging rows cannot be compared safely.",
+      { cause: error },
+    );
+  }
+  if (finalCount !== stagingCount || rowDifference !== 0)
+    throw new Error(
+      "Canonical financial revision widening is ambiguous: refusing to discard or merge divergent rows.",
+    );
+
+  if (finalSchemaIsCanonical) {
+    db.exec("DROP TABLE transaction_revisions_widened");
+    return;
+  }
+
+  db.exec("DROP VIEW IF EXISTS source_assertions");
+  db.exec(
+    "DROP INDEX IF EXISTS idx_transaction_revisions_financial_time; DROP INDEX IF EXISTS idx_transaction_revisions_knowledge_time; DROP INDEX IF EXISTS idx_transaction_revisions_lineage; DROP TABLE transaction_revisions; ALTER TABLE transaction_revisions_widened RENAME TO transaction_revisions;",
+  );
+  recreateCanonicalSourceAssertionsView(db);
+}
+
+/** Widen provider-specific financial semantics without weakening normalized
+ * enums. Existing v8 ledgers keep their rows; the revision table is rebuilt
+ * transactionally on the next writable open when it still has a closed
+ * provider allowlist. */
+function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_revisions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const finalSchemaIsCanonical = isCanonicalFinancialRevisionSchema(sql);
+  recoverFinancialRevisionWideningStaging(db, finalSchemaIsCanonical);
+  if (
+    finalSchemaIsCanonical ||
+    isCanonicalFinancialRevisionSchema(
+      financialRevisionSchemaSql(db, "transaction_revisions"),
     )
   )
     return;
@@ -5791,6 +6014,10 @@ function applySchemaMigration(
 }
 
 function validateReadOnlyDatabase(db: DatabaseSync): void {
+  if (relationType(db, "transaction_revisions_widened") !== null)
+    throw new Error(
+      "Canonical financial revision widening staging requires writable recovery before read-only access.",
+    );
   validateCanonicalLoanExtensionSchema(db);
   const requiredTables = [
     "capture_scopes",
