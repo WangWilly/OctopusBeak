@@ -11,7 +11,6 @@ import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
   createCanonicalLoanStore,
-  parseCanonicalLoanCompletenessEvidence,
   type LoanCapturePage,
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
@@ -46,6 +45,20 @@ type StatementRow = {
   balanceAfterTransaction: string;
   overpayment: string;
   sortTime: number | null;
+};
+
+const YUANTA_LOAN_MAX_PAGES = 10_000;
+
+export type YuantaLoanPaginationSignal = {
+  nextPageTarget: string | null;
+  terminal: boolean;
+  evidence: "next-page" | "terminal-no-next" | null;
+};
+
+type ParsedYuantaLoanPage = {
+  rows: StatementRow[];
+  pageOrdinal: number;
+  pagination: YuantaLoanPaginationSignal;
 };
 
 const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
@@ -133,6 +146,123 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripHtml(value: string): string {
+  return cleanText(value.replace(/<[^>]*>/gu, " "));
+}
+
+function htmlAttribute(openingTag: string, name: string): string {
+  return (
+    openingTag.match(
+      new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "iu"),
+    )?.[2] ?? ""
+  );
+}
+
+function htmlControlOpeningTag(controlHtml: string): string {
+  return (
+    controlHtml.match(/^<(?:a|button|input)\b[^>]*>/iu)?.[0] ?? controlHtml
+  );
+}
+
+function htmlControlLabel(controlHtml: string): string {
+  const opening = htmlControlOpeningTag(controlHtml);
+  return (
+    stripHtml(controlHtml) ||
+    cleanText(htmlAttribute(opening, "value")) ||
+    cleanText(htmlAttribute(opening, "aria-label"))
+  );
+}
+
+function isDisabledHtmlControl(openingTag: string): boolean {
+  return (
+    /\bdisabled\b/iu.test(openingTag) ||
+    /aria-disabled\s*=\s*["']?true\b/iu.test(openingTag) ||
+    /\bdisabled\b/iu.test(htmlAttribute(openingTag, "class"))
+  );
+}
+
+function loanPagerTarget(controlHtml: string): string | null {
+  const opening = htmlControlOpeningTag(controlHtml);
+  if (isDisabledHtmlControl(opening)) return null;
+  const action = `${htmlAttribute(opening, "onclick")} ${htmlAttribute(opening, "href")}`;
+  const pageNumber = action.match(
+    /(?:goPage|setPage|currentPage|pageIndex|pageNo|pageNumber)\s*\([^)]*?(\d+)\s*\)?/iu,
+  )?.[1];
+  if (pageNumber) return `page:${pageNumber}`;
+  const queryPage = action.match(
+    /[?&#](?:page|pageNo|pageIndex)=([^&#"']+)/iu,
+  )?.[1];
+  if (queryPage) return `page:${queryPage}`;
+  return null;
+}
+
+function isLoanNextControl(controlHtml: string): boolean {
+  const opening = htmlControlOpeningTag(controlHtml);
+  if (isDisabledHtmlControl(opening)) return false;
+  const text = htmlControlLabel(controlHtml);
+  if (!/^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(text)) return false;
+  const haystack = `${opening} ${text}`;
+  if (/queryMonth|menuaction/iu.test(haystack)) return false;
+  return (
+    loanPagerTarget(controlHtml) !== null ||
+    /\b(?:pager|pagination)\b/iu.test(haystack)
+  );
+}
+
+/**
+ * Yuanta loan results use the same pager vocabulary as the existing
+ * credit-card result adapter (`下一頁`, `goPage(...)`, and page query
+ * parameters).  We retain only structural page signals: an active next
+ * control requests traversal, while a pager with no active next control is a
+ * provider terminal signal. A result table with no pager evidence is
+ * ambiguous and cannot be admitted as a complete range.
+ */
+export function parseYuantaLoanPaginationSignal(
+  html: string,
+): YuantaLoanPaginationSignal {
+  const controls = [
+    ...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
+    ...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/giu),
+    ...html.matchAll(/<input\b[^>]*>/giu),
+  ].map((match) => match[0]);
+  const nextControl = controls.find((control) => isLoanNextControl(control));
+  if (nextControl)
+    return {
+      nextPageTarget: loanPagerTarget(nextControl),
+      terminal: false,
+      evidence: loanPagerTarget(nextControl) ? "next-page" : null,
+    };
+
+  const hasDisabledNext = controls.some((control) => {
+    const opening = htmlControlOpeningTag(control);
+    return (
+      /(?:下一頁|下頁|next(?:\s*page)?)/iu.test(htmlControlLabel(control)) &&
+      isDisabledHtmlControl(opening)
+    );
+  });
+  const hasPagerState =
+    /(?:pager|pagination|goPage|setPage|currentPage|pageIndex|pageNo|下一頁|下頁)/iu.test(
+      html,
+    ) ||
+    /<(?:input|select)\b[^>]*(?:name|id)\s*=\s*["'][^"']*(?:page|pager|current)[^"']*["']/iu.test(
+      html,
+    );
+  if (hasPagerState && (hasDisabledNext || !controls.some((control) =>
+    /(?:下一頁|下頁|next(?:\s*page)?)/iu.test(htmlControlLabel(control)),
+  )))
+    return {
+      nextPageTarget: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    };
+
+  return {
+    nextPageTarget: null,
+    terminal: false,
+    evidence: null,
+  };
 }
 
 function toAsciiDigits(value: string): string {
@@ -279,14 +409,6 @@ export function parseYuantaLoanStatementRows(
       },
     ];
   });
-}
-
-/** A Yuanta result is complete only when the provider response declares the
- * terminal page and page count; table presence and row count are insufficient. */
-export function parseYuantaLoanCompletenessEvidence(
-  value: unknown,
-): LoanSourceCompletenessEvidence | null {
-  return parseCanonicalLoanCompletenessEvidence(value);
 }
 
 function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
@@ -592,10 +714,11 @@ async function queryLoanAccount(
 async function parseLoanStatementRows(
   page: Page,
   accountLabel: string,
+  pageOrdinal: number,
 ): Promise<{
   rows: StatementRow[];
-  completeness: LoanSourceCompletenessEvidence | null;
-  pages: readonly LoanCapturePage[];
+  pageOrdinal: number;
+  pagination: YuantaLoanPaginationSignal;
 }> {
   const scope = await findScopeWithSelector(page, "#resultdiv");
   const tables = scope.locator("table.normalTable");
@@ -621,32 +744,110 @@ async function parseLoanStatementRows(
     sourceRows.push(values);
   }
 
-  const completenessMarker = await resultTable.getAttribute(
-    "data-loan-completeness",
-  );
-  const completeness = completenessMarker
-    ? parseYuantaLoanCompletenessEvidence({
-        pageCount: await resultTable.getAttribute("data-page-count"),
-        terminal: await resultTable.getAttribute("data-terminal"),
-        proofKind: completenessMarker,
-      })
-    : null;
   const parsedRows = parseYuantaLoanStatementRows(accountLabel, sourceRows);
+  const renderedHtml = await scope.locator("body").innerHTML().catch(() => "");
   return {
     rows: parsedRows,
-    completeness,
-    pages: completeness
-      ? [
-          {
-            pageOrdinal: 0,
-            responseCode: "200",
-            terminal: completeness.terminal,
-            rowCount: parsedRows.length,
-            proofKind: completeness.proofKind,
-          },
-        ]
-      : [],
+    pageOrdinal,
+    pagination: parseYuantaLoanPaginationSignal(renderedHtml),
   };
+}
+
+async function findYuantaLoanNextPageControl(
+  scope: BrowserScope,
+): Promise<Locator | null> {
+  const result = scope.locator("#resultdiv").first();
+  if ((await result.count().catch(() => 0)) === 0) return null;
+  const controls = result.locator("a,button,input");
+  const count = await controls.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const control = controls.nth(index);
+    const markup = await control
+      .evaluate((element) => element.outerHTML)
+      .catch(() => "");
+    if (markup && isLoanNextControl(markup)) return control;
+  }
+  return null;
+}
+
+export function assembleYuantaLoanStatement(
+  pages: readonly ParsedYuantaLoanPage[],
+): {
+  rows: StatementRow[];
+  completeness: LoanSourceCompletenessEvidence | null;
+  pages: readonly LoanCapturePage[];
+} {
+  const terminalPage = pages.at(-1);
+  const complete =
+    terminalPage?.pagination.terminal === true &&
+    terminalPage.pagination.evidence === "terminal-no-next" &&
+    pages.every((page, index) =>
+      index === pages.length - 1
+        ? page.pagination.terminal
+        : page.pagination.evidence === "next-page" && !page.pagination.terminal,
+    );
+  return {
+    rows: pages.flatMap((page) => page.rows),
+    completeness: complete
+      ? {
+          pageCount: pages.length,
+          terminal: true,
+          proofKind: "source-declared-terminal-range",
+        }
+      : null,
+    pages: pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: "200",
+      terminal: page.pagination.terminal,
+      rowCount: page.rows.length,
+      proofKind: "source-declared-terminal-range",
+    })),
+  };
+}
+
+async function traverseYuantaLoanStatementPages(
+  page: Page,
+  accountLabel: string,
+): Promise<ReturnType<typeof assembleYuantaLoanStatement>> {
+  const pages: ParsedYuantaLoanPage[] = [];
+  const fingerprints = new Set<string>();
+
+  while (true) {
+    if (pages.length >= YUANTA_LOAN_MAX_PAGES)
+      throw new Error("Yuanta loan pagination exceeded the safe page limit.");
+    const parsed = await parseLoanStatementRows(
+      page,
+      accountLabel,
+      pages.length,
+    );
+    const fingerprint = JSON.stringify({
+      rows: parsed.rows.map((row) => [
+        row.transactionDate,
+        row.postingDate,
+        row.paymentItem,
+        row.transactionAmount,
+        row.balanceAfterTransaction,
+      ]),
+      nextPageTarget: parsed.pagination.nextPageTarget,
+    });
+    if (fingerprints.has(fingerprint))
+      throw new Error("Yuanta loan pagination repeated a page.");
+    fingerprints.add(fingerprint);
+    pages.push(parsed);
+    if (!parsed.pagination.nextPageTarget) break;
+
+    const scope = await findScopeWithSelector(page, "#resultdiv");
+    const nextControl = await findYuantaLoanNextPageControl(scope);
+    if (!nextControl)
+      throw new Error(
+        "Yuanta loan pagination control disappeared before traversal.",
+      );
+    await nextControl.click({ force: true });
+    await settleAfterNavigation(page);
+    await findScopeWithSelector(page, "#resultdiv");
+  }
+
+  return assembleYuantaLoanStatement(pages);
 }
 
 export async function runYuantaLoanStatements(
@@ -681,7 +882,7 @@ export async function runYuantaLoanStatements(
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
       await queryLoanAccount(page, input, account);
-      const parsed = await parseLoanStatementRows(page, maskedAccount);
+      const parsed = await traverseYuantaLoanStatementPages(page, maskedAccount);
       if (
         !parsed.completeness ||
         parsed.pages.length !== parsed.completeness.pageCount

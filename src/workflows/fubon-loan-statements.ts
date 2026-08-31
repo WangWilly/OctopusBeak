@@ -6,7 +6,6 @@ import { z } from "zod";
 import {
   FUBON_LOAN_CONTRACT_VERSION,
   createCanonicalLoanStore,
-  parseCanonicalLoanCompletenessEvidence,
   type LoanCapturePage,
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
@@ -163,6 +162,24 @@ type LoanPeriod = FubonLoanStatementsOutput["period"];
 
 let lastTimestamp = 0;
 
+const FUBON_LOAN_MAX_PAGES = 10_000;
+
+export type FubonLoanPaginationSignal = {
+  nextPage: string | null;
+  pageFieldName: string | null;
+  terminal: boolean;
+  evidence: "next-page" | "terminal-no-next" | null;
+};
+
+type ParsedFubonLoanPage = {
+  accountType: string;
+  branchName: string;
+  currency: string;
+  rows: string[][];
+  pageOrdinal: number;
+  pagination: FubonLoanPaginationSignal;
+};
+
 type ParsedLoanStatement = {
   loanAccount: string;
   loanAccountId: string;
@@ -205,6 +222,97 @@ function cleanText(value: string | null | undefined): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripHtml(value: string): string {
+  return cleanText(value.replace(/<[^>]*>/gu, " "));
+}
+
+function htmlAttribute(openingTag: string, name: string): string {
+  return (
+    openingTag.match(
+      new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "iu"),
+    )?.[2] ?? ""
+  );
+}
+
+function isDisabledHtmlControl(openingTag: string): boolean {
+  return (
+    /\bdisabled\b/iu.test(openingTag) ||
+    /aria-disabled\s*=\s*["']?true\b/iu.test(openingTag) ||
+    /\bdisabled\b/iu.test(htmlAttribute(openingTag, "class"))
+  );
+}
+
+/**
+ * Fubon statement pages expose pagination through the same JS postback
+ * control used by the deposit workflow (`setDataGridCurrentPage`).  A loan
+ * response is complete only when that provider signal either supplies the
+ * next page request or exposes the current-page state with no active next
+ * control.  An unrelated result table, an absent marker, or a malformed
+ * next-page action remains ambiguous and fails closed.
+ */
+export function parseFubonLoanPaginationSignal(
+  html: string,
+): FubonLoanPaginationSignal {
+  const links = [...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu)].map(
+    (match) => {
+      const markup = match[0];
+      const opening = markup.match(/^<a\b[^>]*>/iu)?.[0] ?? "";
+      return {
+        opening,
+        text: stripHtml(markup),
+        onclick: htmlAttribute(opening, "onclick"),
+      };
+    },
+  );
+  const nextLinks = links.filter((link) => /^(?:下一頁|下頁)$/u.test(link.text));
+  const activeNext = nextLinks.find(
+    (link) =>
+      !isDisabledHtmlControl(link.opening) &&
+      /setDataGridCurrentPage/iu.test(link.onclick),
+  );
+  if (activeNext) {
+    const nextMatch = activeNext.onclick.match(
+      /setDataGridCurrentPage\([^,]+,\s*(\d+),\s*["']([^"']+)["']/iu,
+    );
+    if (nextMatch?.[1] && nextMatch[2]) {
+      return {
+        nextPage: nextMatch[1],
+        pageFieldName: nextMatch[2],
+        terminal: false,
+        evidence: "next-page",
+      };
+    }
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    };
+  }
+
+  const hasProviderPaginationState =
+    /(?:setDataGridCurrentPage|dataGridCurrentPage|dataGridPageCount|pager|pagination)/iu.test(
+      html,
+    );
+  const hasDisabledNext = nextLinks.some((link) =>
+    isDisabledHtmlControl(link.opening),
+  );
+  if (hasProviderPaginationState && (hasDisabledNext || nextLinks.length === 0))
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    };
+
+  return {
+    nextPage: null,
+    pageFieldName: null,
+    terminal: false,
+    evidence: null,
+  };
 }
 
 function digitsOnly(value: string): string {
@@ -267,15 +375,6 @@ export function parseFubonLoanStatementRows(
       throw new Error("Unexpected Fubon loan result row.");
     return [row];
   });
-}
-
-/** Accept a complete-range claim only when the provider response explicitly
- * declares its terminal page and page count. The result table itself carries
- * no such meaning. */
-export function parseFubonLoanCompletenessEvidence(
-  value: unknown,
-): LoanSourceCompletenessEvidence | null {
-  return parseCanonicalLoanCompletenessEvidence(value);
 }
 
 function compareLoanRowsByTransactionDateDesc(
@@ -843,9 +942,8 @@ async function configureLoanQuery(
 async function parseLoanStatementHtml(
   page: Page,
   html: string,
-  account: LoanAccountOption,
-  input: FubonLoanStatementsInput,
-): Promise<ParsedLoanStatement> {
+  pageOrdinal: number,
+): Promise<ParsedFubonLoanPage> {
   const parsed = (await page.evaluate(
     ({ html: sourceHtml, headers }) => {
       const clean = (value: string | null | undefined) =>
@@ -903,25 +1001,11 @@ async function parseLoanStatementHtml(
         return "";
       };
 
-      const completenessMarker = doc.querySelector(
-        "[data-loan-completeness]",
-      );
-      const completeness = completenessMarker
-        ? {
-            pageCount: completenessMarker.getAttribute("data-page-count"),
-            terminal: completenessMarker.getAttribute("data-terminal"),
-            proofKind: completenessMarker.getAttribute(
-              "data-loan-completeness",
-            ),
-          }
-        : null;
-
       return {
         accountType: metadataValue("帳號類別"),
         branchName: metadataValue("分行名稱"),
         currency: metadataValue("幣別"),
         rows,
-        completeness,
       };
     },
     { html, headers: loanHeaders },
@@ -930,31 +1014,16 @@ async function parseLoanStatementHtml(
     branchName: string;
     currency: string;
     rows: string[][];
-    completeness: unknown;
   };
 
-  const completeness = parseFubonLoanCompletenessEvidence(parsed.completeness);
+  const pagination = parseFubonLoanPaginationSignal(html);
   return {
-    loanAccount: account.label,
-    loanAccountId: loanAccountIdFor(account.label, account.label),
-    sourceAccountValue: account.value,
-    queryPeriod: loanQueryPeriod(input),
-    branchName: parsed.branchName,
     accountType: parsed.accountType,
+    branchName: parsed.branchName,
     currency: parsed.currency,
     rows: parsed.rows,
-    completeness,
-    pages: completeness
-      ? [
-          {
-            pageOrdinal: 0,
-            responseCode: "200",
-            terminal: completeness.terminal,
-            rowCount: parsed.rows.length,
-            proofKind: completeness.proofKind,
-          },
-        ]
-      : [],
+    pageOrdinal,
+    pagination,
   };
 }
 
@@ -970,6 +1039,85 @@ async function fetchLoanQueryHtml(page: Page): Promise<string> {
   return html;
 }
 
+export function assembleFubonLoanStatement(
+  pages: readonly ParsedFubonLoanPage[],
+  account: LoanAccountOption,
+  input: FubonLoanStatementsInput,
+): ParsedLoanStatement {
+  const firstPage = pages[0];
+  if (!firstPage)
+    throw new Error("Fubon loan query returned no response page.");
+  const terminalPage = pages.at(-1);
+  const complete =
+    terminalPage?.pagination.terminal === true &&
+    terminalPage.pagination.evidence === "terminal-no-next" &&
+    pages.every((page, index) =>
+      index === pages.length - 1
+        ? page.pagination.terminal
+        : page.pagination.evidence === "next-page" && !page.pagination.terminal,
+    );
+  return {
+    loanAccount: account.label,
+    loanAccountId: loanAccountIdFor(account.label, account.label),
+    sourceAccountValue: account.value,
+    queryPeriod: loanQueryPeriod(input),
+    branchName: firstPage.branchName,
+    accountType: firstPage.accountType,
+    currency: firstPage.currency,
+    rows: pages.flatMap((page) => page.rows),
+    completeness: complete
+      ? {
+          pageCount: pages.length,
+          terminal: true,
+          proofKind: "source-declared-terminal-range",
+        }
+      : null,
+    pages: pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: "200",
+      terminal: page.pagination.terminal,
+      rowCount: page.rows.length,
+      proofKind: "source-declared-terminal-range",
+    })),
+  };
+}
+
+async function fetchFubonLoanStatementPages(
+  page: Page,
+  firstHtml: string,
+  account: LoanAccountOption,
+  input: FubonLoanStatementsInput,
+): Promise<ParsedLoanStatement> {
+  const pages: ParsedFubonLoanPage[] = [];
+  const requests = new Set<string>();
+  let html = firstHtml;
+
+  while (true) {
+    if (pages.length >= FUBON_LOAN_MAX_PAGES)
+      throw new Error("Fubon loan pagination exceeded the safe page limit.");
+    const parsed = await parseLoanStatementHtml(page, html, pages.length);
+    pages.push(parsed);
+    if (!parsed.pagination.nextPage) break;
+    if (!parsed.pagination.pageFieldName)
+      throw new Error("Fubon loan pagination control is missing its page field.");
+    const requestKey = `${parsed.pagination.pageFieldName}\u0000${parsed.pagination.nextPage}`;
+    if (requests.has(requestKey))
+      throw new Error("Fubon loan pagination repeated a page request.");
+    requests.add(requestKey);
+
+    const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
+    html = await fetchFormPostbackHtml(
+      scope.locator("form").first(),
+      undefined,
+      { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
+    );
+    await replaceDocumentHtml(scope, html);
+    await findScopeWithLocator(page, loanResultTable, "loan result table");
+  }
+
+  return assembleFubonLoanStatement(pages, account, input);
+}
+
 async function writeLoanStatementFiles(
   page: Page,
   html: string,
@@ -980,7 +1128,7 @@ async function writeLoanStatementFiles(
   download: FubonLoanStatementsOutput["downloads"][number];
   parsed: ParsedLoanStatement;
 }> {
-  const parsed = await parseLoanStatementHtml(page, html, account, input);
+  const parsed = await fetchFubonLoanStatementPages(page, html, account, input);
   if (
     !parsed.completeness ||
     parsed.pages.length !== parsed.completeness.pageCount
