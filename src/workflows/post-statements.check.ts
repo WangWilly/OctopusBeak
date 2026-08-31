@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chromium } from "playwright";
 import { DatabaseSync } from "node:sqlite";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildPostDomesticDepositCapture,
   dismissPostNoticeIfPresent,
+  postCaptchaAssistanceStage,
   postCaptchaGenerationUnchanged,
   postDetailLinkSelector,
   postLoginEntryUrl,
@@ -15,7 +19,9 @@ import {
   postProviderDateShape,
   postRowsToStatementRows,
   postStatementRowsToCsv,
+  runPostLoginAttempt,
   runPostStatements,
+  submitPostLoginAndWait,
   withPostAssistanceDeadline,
 } from "./post-statements.ts";
 
@@ -97,6 +103,138 @@ assert.equal(
   ),
   false,
 );
+
+class FakeDialogPage extends EventEmitter {}
+
+const fakeDialogPage = new FakeDialogPage();
+let fakeProbeStarted = false;
+let fakeProbeSettled = false;
+let fakeDialogDismissed = false;
+const fakeDialogRun = runPostLoginAttempt(fakeDialogPage as never, {
+  submit: async () => {
+    fakeDialogPage.emit("dialog", {
+      type: () => "alert",
+      dismiss: async () => {
+        fakeDialogDismissed = true;
+      },
+    });
+  },
+  waitForSuccess: (signal) => {
+    fakeProbeStarted = true;
+    return new Promise<void>((_resolve, reject) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          fakeProbeSettled = true;
+          reject(new Error("success probe aborted"));
+        },
+        { once: true },
+      );
+    });
+  },
+});
+await assert.rejects(
+  fakeDialogRun,
+  /iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry\./,
+);
+assert.equal(fakeProbeStarted, true);
+assert.equal(fakeProbeSettled, true);
+assert.equal(fakeDialogDismissed, true);
+assert.equal(fakeDialogPage.listenerCount("dialog"), 0);
+
+const fakeSuccessPage = new FakeDialogPage();
+let fakeSuccessSubmitted = false;
+let fakeSuccessProbeSawLiveSignal = false;
+let fakeSuccessSignal: AbortSignal | undefined;
+await runPostLoginAttempt(fakeSuccessPage as never, {
+  submit: async () => {
+    fakeSuccessSubmitted = true;
+  },
+  waitForSuccess: async (signal) => {
+    fakeSuccessSignal = signal;
+    fakeSuccessProbeSawLiveSignal = !signal.aborted;
+  },
+});
+assert.equal(fakeSuccessSubmitted, true);
+assert.equal(fakeSuccessProbeSawLiveSignal, true);
+assert.equal(fakeSuccessSignal?.aborted, true);
+assert.equal(fakeSuccessPage.listenerCount("dialog"), 0);
+
+const browser = await chromium.launch();
+try {
+  const successfulLoginPage = await browser.newPage();
+  await successfulLoginPage.setContent(`
+    <div id="tab1">
+      <div class="loginbtn">
+        <a href="#" onclick="document.body.dataset.clicked = 'yes'; return false;">登入</a>
+      </div>
+    </div>
+    <a class="btn_td_orange_dtl" href="#">帳戶明細</a>
+  `);
+  await submitPostLoginAndWait(successfulLoginPage);
+  assert.equal(await successfulLoginPage.locator("body").getAttribute("data-clicked"), "yes");
+  await successfulLoginPage.close();
+
+  const dialogLoginPage = await browser.newPage();
+  await dialogLoginPage.setContent(`
+    <div id="tab1">
+      <div class="loginbtn">
+        <a href="#" onclick="document.body.dataset.clicked = 'yes'; alert('iPost login check'); document.body.dataset.after = 'yes'; return false;">登入</a>
+      </div>
+    </div>
+  `);
+  const dialogStartedAt = Date.now();
+  await assert.rejects(
+    submitPostLoginAndWait(dialogLoginPage),
+    /iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry\./,
+  );
+  assert.ok(Date.now() - dialogStartedAt < 2_000);
+  assert.equal(await dialogLoginPage.locator("body").getAttribute("data-clicked"), "yes");
+  assert.equal(await dialogLoginPage.locator("body").getAttribute("data-after"), "yes");
+  await dialogLoginPage.close();
+
+  const captchaPage = await browser.newPage();
+  await captchaPage.setContent(`
+    <input name="captcha" style="width: 92px; height: 32px" />
+    <div class="codes_img">
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        style="width: 142px; height: 48px"
+        alt="iPost CAPTCHA"
+      />
+    </div>
+  `);
+  const captchaContract = await emitHumanAssistanceStage(
+    postCaptchaAssistanceStage(captchaPage),
+    (contract) => contract,
+  );
+  assert.equal(captchaContract.stageId, "ipost-login-captcha");
+  assert.equal(captchaContract.challengeKind, "text-captcha");
+  assert.equal(captchaContract.charset, "digits");
+  assert.deepEqual(captchaContract.imagePreprocessing, ["remove-interference-lines"]);
+  assert.deepEqual(captchaContract.ocrAttemptPlan, [
+    { ocrPageSegmentationMode: "single-line" },
+    { ocrPageSegmentationMode: "single-word" },
+  ]);
+  assert.deepEqual(captchaContract.solveAcceptancePolicy, {
+    mode: "confidence-or-agreement",
+    conflictResolution: "reject",
+  });
+  assert.equal(captchaContract.expectedAnswerLength, 4);
+  assert.equal(
+    captchaContract.targets[0]?.semanticId,
+    "post.login.captcha-input",
+  );
+  assert.equal(
+    captchaContract.challengeImageRegion?.semanticId,
+    "post.login.captcha-image",
+  );
+  assert.equal(captchaContract.challengeImageRegion?.rect?.width, 142);
+  assert.equal(captchaContract.challengeImageRegion?.rect?.height, 48);
+  await captchaPage.close();
+} finally {
+  await browser.close();
+}
 
 assert.equal(
   await withPostAssistanceDeadline(

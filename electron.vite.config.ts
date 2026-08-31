@@ -10,6 +10,9 @@ const external = [
   /^playwright/,
   /^zod/,
   /^@ai-sdk\/openai/,
+  /^tesseract\.js/,
+  /^onnxruntime-node/,
+  /^pngjs/,
 ];
 
 export default defineConfig({

@@ -7,6 +7,7 @@ import {
   captureFubonLoginDialogs,
   FubonDuplicateLoginTerminalError,
   fillFubonLoginCredentials,
+  fubonCaptchaAssistanceStage,
   hasFubonDuplicateLoginTerminal,
   inspectFubonOtpFromCurrentFrame,
   prepareFubonLoginDocument,
@@ -711,6 +712,41 @@ for (const fileName of [
     assert.doesNotMatch(source, /visiblePasswordFields/);
   });
 }
+
+test("Fubon declares three distinct agreement-only OCR strategies", () => {
+  const locator = {
+    boundingBox: async () => ({ x: 0, y: 0, width: 1, height: 1 }),
+    first() {
+      return this;
+    },
+  };
+  const frame = {
+    locator: () => locator,
+  } as unknown as Frame;
+
+  const stage = fubonCaptchaAssistanceStage(frame);
+
+  assert.equal(stage.challengeKind, "text-captcha");
+  assert.equal(stage.charset, "digits");
+  assert.equal(stage.expectedAnswerLength, 6);
+  assert.equal(stage.ocrPageSegmentationMode, "single-word");
+  assert.deepEqual(stage.ocrAttemptPlan, [
+    { imagePreprocessing: [], ocrPageSegmentationMode: "single-word" },
+    {
+      imagePreprocessing: ["fubon-luminance-foreground"],
+      ocrPageSegmentationMode: "single-word",
+    },
+    {
+      imagePreprocessing: ["fubon-min-channel-foreground"],
+      ocrPageSegmentationMode: "single-word",
+    },
+  ]);
+  assert.deepEqual(stage.solveAcceptancePolicy, { mode: "agreement-only" });
+  assert.equal(
+    stage.challengeImageRegion?.semanticId,
+    "fubon.login.captcha-image",
+  );
+});
 
 // The strip-types repository runner cannot resolve Libretto's nested TSX
 // loader. Run this gate with the actual TSX loader command instead.

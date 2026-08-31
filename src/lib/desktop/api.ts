@@ -1,5 +1,10 @@
 import type { AssetsPageDto } from "$lib/assets/types.ts";
-import type { AutomationCredentialGroup, AutomationPageModel, AutomationTaskHistoryRow } from "$lib/automation/types.ts";
+import type {
+  AutomationCredentialGroup,
+  AutomationPageModel,
+  AutomationTaskHistoryRow,
+  CathayGmailOtpStatus,
+} from "$lib/automation/types.ts";
 import type {
   ConfirmExclusionInput,
   ConfirmRestoreInput,
@@ -130,6 +135,10 @@ export type OctopusBeakApi = {
   automation: {
     load(): Promise<AutomationDesktopModel>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
+    cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
+    enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
+    setCathayGmailOtpEnabled(enabled: boolean): Promise<CathayGmailOtpStatus>;
+    disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
     selectCertificateFile(locale: "en" | "zh-TW"): Promise<CertificateFileSelectionResult>;
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string }>;
@@ -167,6 +176,10 @@ export const octopusBeakApiChannels = [
   "spending:updateTransactionOverride",
   "automation:load",
   "automation:saveCredentials",
+  "automation:cathayGmailOtpStatus",
+  "automation:enableCathayGmailOtp",
+  "automation:setCathayGmailOtpEnabled",
+  "automation:disconnectCathayGmailOtp",
   "automation:selectCertificateFile",
   "automation:openSetupGuideLink",
   "automation:run",

@@ -1,9 +1,57 @@
 import assert from "node:assert/strict";
+import { chromium } from "playwright";
 import type { Page } from "playwright";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   closeInvoiceDetailModal,
+  einvoiceCaptchaAssistanceStage,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
+
+const browser = await chromium.launch();
+try {
+  const captchaPage = await browser.newPage();
+  await captchaPage.setContent(`
+    <input id="captcha" style="width: 120px; height: 32px" />
+    <span class="input-group-text code_num">
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        style="width: 150px; height: 40px"
+        alt="圖形驗證碼"
+      />
+    </span>
+  `);
+  const captchaContract = await emitHumanAssistanceStage(
+    einvoiceCaptchaAssistanceStage(captchaPage),
+    (contract) => contract,
+  );
+  assert.equal(captchaContract.stageId, "einvoice-login-captcha");
+  assert.equal(captchaContract.challengeKind, "text-captcha");
+  assert.equal(captchaContract.charset, "digits");
+  assert.equal(captchaContract.imagePreprocessing, undefined);
+  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
+  assert.deepEqual(captchaContract.ocrAttemptPlan, [
+    { imagePreprocessing: ["mask-bottom-interference-band"] },
+    { imagePreprocessing: ["suppress-horizontal-interference"] },
+  ]);
+  assert.deepEqual(captchaContract.solveAcceptancePolicy, {
+    mode: "agreement-only",
+  });
+  assert.equal(captchaContract.expectedAnswerLength, 5);
+  assert.equal(
+    captchaContract.targets[0]?.semanticId,
+    "einvoice.login.captcha-input",
+  );
+  assert.equal(
+    captchaContract.challengeImageRegion?.semanticId,
+    "einvoice.login.captcha-image",
+  );
+  assert.equal(captchaContract.challengeImageRegion?.rect?.width, 150);
+  assert.equal(captchaContract.challengeImageRegion?.rect?.height, 40);
+  await captchaPage.close();
+} finally {
+  await browser.close();
+}
 
 const actions: string[] = [];
 let modalVisible = true;

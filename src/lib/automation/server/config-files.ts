@@ -25,6 +25,17 @@ export const AUTOMATION_SETTINGS_PATH = "settings.json";
 export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
 export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
 
+// Gmail OTP state is owned by the host process.  These keys intentionally do
+// not belong to any workflow credential group: the refresh token and linked
+// address are never copied into a child workflow environment.
+export const CATHAY_GMAIL_OTP_ENABLED_KEY = "CATHAY_GMAIL_OTP_ENABLED";
+export const CATHAY_GMAIL_REFRESH_TOKEN_KEY = "CATHAY_GMAIL_REFRESH_TOKEN";
+export const CATHAY_GMAIL_CONNECTED_EMAIL_KEY = "CATHAY_GMAIL_CONNECTED_EMAIL";
+export const CATHAY_GMAIL_HOST_KEYS = [
+  CATHAY_GMAIL_REFRESH_TOKEN_KEY,
+  CATHAY_GMAIL_CONNECTED_EMAIL_KEY,
+] as const;
+
 export type AutomationCredentialCodec = {
   encrypt(text: string): string;
   decrypt(payload: string): string;
@@ -41,8 +52,27 @@ export function setAutomationCredentialCodec(codec: AutomationCredentialCodec | 
   automationCredentialCodec = codec;
 }
 
-const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
-const automationSecretKeys = new Set<string>(AUTOMATION_SECRET_KEYS);
+/**
+ * Capture the codec currently owned by the host process for a long-lived
+ * service. Callers that perform asynchronous credential work should keep this
+ * snapshot instead of consulting the mutable process registration again.
+ */
+export function getAutomationCredentialCodec() {
+  return automationCredentialCodec;
+}
+
+export function isAutomationCredentialCodecConfigured() {
+  return automationCredentialCodec !== null;
+}
+
+const automationSettingKeys = new Set<string>([
+  ...AUTOMATION_NON_SECRET_KEYS,
+  CATHAY_GMAIL_OTP_ENABLED_KEY,
+]);
+const automationSecretKeys = new Set<string>([
+  ...AUTOMATION_SECRET_KEYS,
+  ...CATHAY_GMAIL_HOST_KEYS,
+]);
 const automationManagedSecretKeys = new Set<string>(
   AUTOMATION_MANAGED_SECRET_KEYS,
 );
@@ -52,8 +82,9 @@ const automationUserSecretKeys = new Set<string>(
   ),
 );
 const automationKnownKeys = new Set<string>([
-  ...AUTOMATION_NON_SECRET_KEYS,
+  ...automationSettingKeys,
   ...automationUserSecretKeys,
+  ...CATHAY_GMAIL_HOST_KEYS,
 ]);
 
 export const FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =
@@ -109,17 +140,22 @@ function encryptedAutomationCredentialsFile(
   };
 }
 
-function requireAutomationCredentialCodec() {
-  if (!automationCredentialCodec) {
+function requireAutomationCredentialCodec(
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
+  if (!codec) {
     throw new Error("Credential encryption is not configured. Refusing to read encrypted automation credentials.");
   }
-  return automationCredentialCodec;
+  return codec;
 }
 
-function decodeCredentialsRecord(record: Record<string, unknown>) {
+function decodeCredentialsRecord(
+  record: Record<string, unknown>,
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
   const encrypted = encryptedAutomationCredentialsFile(record);
   if (!encrypted) return record;
-  const text = requireAutomationCredentialCodec().decrypt(encrypted.data);
+  const text = requireAutomationCredentialCodec(codec).decrypt(encrypted.data);
   const parsed = JSON.parse(text) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${AUTOMATION_CREDENTIALS_PATH} encrypted payload must contain a JSON object.`);
@@ -127,12 +163,15 @@ function decodeCredentialsRecord(record: Record<string, unknown>) {
   return parsed as Record<string, unknown>;
 }
 
-function credentialsFileText(credentials: AutomationCredentialsFile) {
+function credentialsFileText(
+  credentials: AutomationCredentialsFile,
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
   const cleaned = cleanCredentials(credentials);
-  if (!automationCredentialCodec) return `${JSON.stringify(cleaned, null, 2)}\n`;
+  if (!codec) return `${JSON.stringify(cleaned, null, 2)}\n`;
   return `${JSON.stringify({
     format: AUTOMATION_CREDENTIALS_FORMAT,
-    data: automationCredentialCodec.encrypt(JSON.stringify(cleaned)),
+    data: codec.encrypt(JSON.stringify(cleaned)),
   }, null, 2)}\n`;
 }
 
@@ -144,24 +183,34 @@ export function readAutomationSettingsFile(path = AUTOMATION_SETTINGS_PATH) {
   return cleanSettings(readJsonRecord(path));
 }
 
-export function readAutomationCredentialsFile(path = AUTOMATION_CREDENTIALS_PATH) {
-  return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path)));
+export function readAutomationCredentialsFile(
+  path = AUTOMATION_CREDENTIALS_PATH,
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
+  return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path), codec));
 }
 
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
   atomicWrite(path, settingsFileText(settings));
 }
 
-export function writeAutomationCredentialsFile(path: string, credentials: AutomationCredentialsFile) {
-  atomicWrite(path, credentialsFileText(credentials));
+export function writeAutomationCredentialsFile(
+  path: string,
+  credentials: AutomationCredentialsFile,
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
+  atomicWrite(path, credentialsFileText(credentials, codec));
 }
 
 export function writeAutomationSettings(settings: AutomationSettingsFile) {
   writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, settings);
 }
 
-export function writeAutomationCredentials(credentials: AutomationCredentialsFile) {
-  writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials);
+export function writeAutomationCredentials(
+  credentials: AutomationCredentialsFile,
+  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+) {
+  writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials, codec);
 }
 
 function validManagedFingerprintSecret(value: string | undefined) {
@@ -175,12 +224,14 @@ function validManagedFingerprintSecret(value: string | undefined) {
 export function ensureAutomationManagedSecrets({
   credentialsPath = AUTOMATION_CREDENTIALS_PATH,
   generateFingerprintSecret = () => randomBytes(32).toString("base64url"),
+  codec = automationCredentialCodec,
 }: {
   credentialsPath?: string;
   generateFingerprintSecret?: () => string;
+  codec?: AutomationCredentialCodec | null;
 } = {}) {
-  requireAutomationCredentialCodec();
-  const credentials = readAutomationCredentialsFile(credentialsPath);
+  requireAutomationCredentialCodec(codec);
+  const credentials = readAutomationCredentialsFile(credentialsPath, codec);
   const existing = credentials[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   if (existing !== undefined) {
     if (!validManagedFingerprintSecret(existing)) {
@@ -196,10 +247,14 @@ export function ensureAutomationManagedSecrets({
   if (!automationManagedSecretKeys.has(FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY)) {
     throw new Error("Fubon card identity secret is not registered as managed.");
   }
-  writeAutomationCredentialsFile(credentialsPath, {
-    ...credentials,
-    [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: secret,
-  });
+  writeAutomationCredentialsFile(
+    credentialsPath,
+    {
+      ...credentials,
+      [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: secret,
+    },
+    codec,
+  );
   return { created: true as const };
 }
 
@@ -343,8 +398,13 @@ export function automationConfigEnv({
   const env = {
     ...baseEnv,
     ...settingsToEnv(settings),
-    ...credentials,
+    ...Object.fromEntries(
+      Object.entries(credentials).filter(
+        ([key]) => !CATHAY_GMAIL_HOST_KEYS.includes(key as typeof CATHAY_GMAIL_HOST_KEYS[number]),
+      ),
+    ),
   };
+  for (const key of CATHAY_GMAIL_HOST_KEYS) delete env[key];
   if (env.NODE_ENV === "production") env.NODE_ENV = "development";
   return env;
 }

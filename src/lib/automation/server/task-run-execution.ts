@@ -14,6 +14,16 @@ import {
   HUMAN_ASSISTANCE_HOST_FD_ENV,
   HUMAN_ASSISTANCE_HOST_PATH_ENV,
 } from "../human-assistance.ts";
+import {
+  GMAIL_OTP_IPC_ENDPOINT_ENV,
+  GMAIL_OTP_IPC_TOKEN_ENV,
+} from "../gmail-otp.ts";
+import { createGmailOtpIpcServer } from "./gmail-otp-broker.ts";
+import {
+  ensureCathayGmailOtpAccess,
+  prepareCathayGmailOtpRetrieval,
+  retrieveCathayGmailOtp,
+} from "./gmail-otp-service.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { validateLibrettoSessionName } from "./libretto-session.ts";
@@ -27,6 +37,7 @@ import {
   sessionFromRun,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
+import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
   isForceQuitRun,
@@ -50,6 +61,16 @@ const activeTaskChildren = new Map<string, ChildProcess>();
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
   resumeSession?: string;
+  /** Reuse the user-visible task run for an internal execution. */
+  taskRunId?: string;
+  /** Snapshot of process configuration captured at campaign launch. */
+  launchEnv?: NodeJS.ProcessEnv;
+  /** Identity used to correlate host-side CAPTCHA routing with this execution. */
+  executionId?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  /** Stop before launching a child when the host task was cancelled. */
+  isCancellationRequested?: () => boolean;
 };
 
 export function createAutomationSessionId(
@@ -136,16 +157,10 @@ function createAutomationTaskRunExecution(
   taskDb: ReturnType<typeof openLedgerDatabase>,
   options: AutomationTaskExecutionOptions,
 ): AutomationTaskRunExecution | null {
-  const attempt = 1;
-  const maxAttempts = 1;
+  const attempt = options.attempt ?? 1;
+  const maxAttempts = options.maxAttempts ?? 1;
   const startedAt = new Date().toISOString();
-  const logPath = join(
-    "data",
-    "automation",
-    "logs",
-    `${task.id}-${Date.now()}-${attempt}.log`,
-  );
-  const env = automationProcessEnv();
+  const env = { ...(options.launchEnv ?? automationProcessEnv()) };
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
     ? (options.resumeSession ?? createAutomationSessionId())
@@ -171,19 +186,42 @@ function createAutomationTaskRunExecution(
           sessionFromRun(candidate) === options.resumeSession,
       )
     : undefined;
-  const run = createTaskRun(taskDb, {
-    taskId: task.id,
-    script: command.display,
-    kind: task.kind,
-    status: "running",
-    attempt,
-    maxAttempts,
-    startedAt,
-    logPath,
-    humanAssistanceContract: resumeHumanAssistanceContract(
-      resumeFrom?.humanAssistanceContract,
-    ),
-  });
+  const existingRun = options.taskRunId
+    ? taskRunById(taskDb, options.taskRunId)
+    : resumeFrom;
+  if (options.taskRunId && !existingRun) return null;
+  const logPath = existingRun?.logPath ?? join(
+    "data",
+    "automation",
+    "logs",
+    `${task.id}-${Date.now()}-${attempt}.log`,
+  );
+  const run = existingRun
+    ? { taskRunId: existingRun.taskRunId }
+    : createTaskRun(taskDb, {
+        taskId: task.id,
+        script: command.display,
+        kind: task.kind,
+        status: "running",
+        attempt,
+        maxAttempts,
+        startedAt,
+        logPath,
+        humanAssistanceContract: resumeHumanAssistanceContract(
+          resumeFrom?.humanAssistanceContract,
+        ),
+      });
+  if (existingRun) {
+    updateTaskRun(taskDb, existingRun.taskRunId, {
+      status: "running",
+      attempt,
+      maxAttempts,
+      finishedAt: null,
+      exitCode: null,
+      signal: null,
+      errorMessage: null,
+    });
+  }
   const owner = session
     ? {
         taskId: task.id,
@@ -193,20 +231,35 @@ function createAutomationTaskRunExecution(
       }
     : null;
   if (session) {
-    appendLog(logPath, "automation-session: " + session + "\n");
-    if (
-      !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
-        resumeSession: options.resumeSession,
-        resumeFrom,
-      })
-    )
+    if (!options.resumeSession || !existingRun) {
+      appendLog(logPath, "automation-session: " + session + "\n");
+    }
+    if (!options.resumeSession) {
+      if (
+        !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
+          resumeFrom,
+        })
+      )
+        return null;
+    } else if (!ownAutomationSession(owner!)) {
       return null;
+    }
   }
-  return { task, taskDb, run, logPath, command, session, owner };
+  return {
+    task,
+    taskDb,
+    run,
+    logPath,
+    command,
+    session,
+    owner,
+    executionId: options.executionId ?? createAutomationSessionId(),
+  };
 }
 
 async function executeAutomationTaskProcess(
   execution: AutomationTaskRunExecution,
+  isCancellationRequested?: () => boolean,
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
@@ -222,6 +275,44 @@ async function executeAutomationTaskProcess(
   );
   let humanAssistanceReadOffset = 0;
   let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
+  let gmailOtpServer: ReturnType<typeof createGmailOtpIpcServer>;
+  try {
+    gmailOtpServer = createGmailOtpIpcServer({
+      service: {
+        ensureAccess: ensureCathayGmailOtpAccess,
+        prepareRetrieval: prepareCathayGmailOtpRetrieval,
+        retrieve: retrieveCathayGmailOtp,
+      },
+      onProtocolError: (reason) => {
+        console.warn(`gmail-otp-bridge-protocol-error: ${reason}`);
+      },
+    });
+    await gmailOtpServer.ready;
+  } catch {
+    return {
+      exitCode: null,
+      signal: null,
+      error: new Error("Gmail OTP bridge could not start."),
+      logTail,
+      resumeFailure: null,
+      statementSummary,
+      outputPersistenceWarnings,
+      externalPrerequisiteIds: [],
+    };
+  }
+  if (isCancellationRequested?.()) {
+    await gmailOtpServer.close();
+    return {
+      exitCode: null,
+      signal: null,
+      error: new Error("Automation task cancelled."),
+      logTail,
+      resumeFailure: null,
+      statementSummary,
+      outputPersistenceWarnings,
+      externalPrerequisiteIds: [],
+    };
+  }
   const result = await new Promise<
     Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">
   >((resolve) => {
@@ -312,34 +403,50 @@ async function executeAutomationTaskProcess(
       }
     };
     const child = spawn(execution.command.command, execution.command.args, {
+      // fd 3 is the existing human-assistance contract stream. Gmail OTP uses
+      // an authenticated local socket because child-process fd numbers are not
+      // stable across the Libretto CLI -> daemon spawn boundary.
       stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
       env: {
         ...execution.command.env,
         [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
         [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
+        [GMAIL_OTP_IPC_ENDPOINT_ENV]: gmailOtpServer.endpoint,
+        [GMAIL_OTP_IPC_TOKEN_ENV]: gmailOtpServer.token,
       },
     });
     activeTaskChildren.set(execution.task.id, child);
     child.stdout?.on("data", onOutput);
     child.stderr?.on("data", onOutput);
     child.stdio[3]?.on("data", hostContractParser.push);
-    child.on("error", (error) => {
+    let childSettled = false;
+    const finishChild = (processResult: {
+      exitCode: number | null;
+      signal: NodeJS.Signals | null;
+      error: Error | null;
+    }) => {
+      if (childSettled) return;
+      childSettled = true;
       activeTaskChildren.delete(execution.task.id);
       if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
       readHumanAssistanceFile();
       hostContractParser.flush();
       outputBuffer.flush();
       rmSync(humanAssistancePath, { force: true });
-      resolve({ exitCode: null, signal: null, error });
+      void gmailOtpServer.close().then(
+        async () => {
+          resolve(processResult);
+        },
+        async () => {
+          resolve(processResult);
+        },
+      );
+    };
+    child.on("error", (error) => {
+      finishChild({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
-      activeTaskChildren.delete(execution.task.id);
-      if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
-      readHumanAssistanceFile();
-      hostContractParser.flush();
-      outputBuffer.flush();
-      rmSync(humanAssistancePath, { force: true });
-      resolve({ exitCode, signal, error: null });
+      finishChild({ exitCode, signal, error: null });
     });
   });
   return {
@@ -367,11 +474,26 @@ export async function runAutomationTaskExecution(
   options: AutomationTaskExecutionOptions,
   onRunCreated: (taskRunId: string) => void,
 ) {
+  if (options.isCancellationRequested?.()) {
+    return { status: "cancelled" as const };
+  }
   const execution = createAutomationTaskRunExecution(task, taskDb, options);
   if (!execution) return { status: "failed" as const };
   onRunCreated(execution.run.taskRunId);
+  if (options.isCancellationRequested?.()) {
+    return {
+      status: "cancelled" as const,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+    };
+  }
   try {
-    const result = await executeAutomationTaskProcess(execution);
+    const result = await executeAutomationTaskProcess(
+      execution,
+      options.isCancellationRequested,
+    );
     const finalizationContext: AutomationTaskRunFinalizationContext = {
       taskDb,
       taskId: task.id,
@@ -380,7 +502,15 @@ export async function runAutomationTaskExecution(
       logPath: execution.logPath,
       ledgerDir,
     };
-    return await finalizeAutomationTaskRun(finalizationContext, result);
+    const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      result,
+    };
   } finally {
     activeTaskChildren.delete(task.id);
   }

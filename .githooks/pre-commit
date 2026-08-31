@@ -52,6 +52,13 @@ const staged = git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
   .split("\n")
   .filter(Boolean);
 
+const tesseractModel = /(?:^|\/)[^/]+\.traineddata(?:\.gz)?$/i;
+for (const file of staged) {
+  if (tesseractModel.test(file)) {
+    addFinding(`${file}: Tesseract OCR model files must not be committed.`);
+  }
+}
+
 if (staged.includes(".env")) {
   addFinding(".env is staged; unstage it with `git restore --staged .env`.");
 }

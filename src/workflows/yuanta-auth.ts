@@ -4,7 +4,14 @@ import {
   type LibrettoWorkflowContext,
 } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
+import {
+  YUANTA_DIALOG_OWNER_ENV,
+  yuantaHostDialogOwner,
+} from "../lib/automation/yuanta-captcha.ts";
 
 export const YUANTA_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const YUANTA_BANK_ORIGIN = new URL(YUANTA_ENTRY_URL).origin;
@@ -21,6 +28,80 @@ export type YuantaCredentials = {
   yuanta_account?: string;
   yuanta_password?: string;
 };
+
+export type YuantaBankDialogCategory =
+  | "captcha-rejected"
+  | "credentials-rejected"
+  | "account-locked"
+  | "active-session"
+  | "unknown";
+
+export type YuantaBankDialogState = {
+  type: string;
+  category: YuantaBankDialogCategory;
+};
+
+function normalizeYuantaDialogText(message: string): string {
+  return message
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-TW")
+    .replace(/\s+/g, "");
+}
+
+export function classifyYuantaBankDialogMessage(
+  message: string,
+): YuantaBankDialogCategory {
+  const normalized = normalizeYuantaDialogText(message);
+  if (normalized === normalizeYuantaDialogText("驗證碼不正確，請重新輸入")) {
+    return "captcha-rejected";
+  }
+  if (/帳號或密碼錯誤|使用者名稱或密碼錯誤/.test(normalized)) {
+    return "credentials-rejected";
+  }
+  if (/鎖定|停用|冻结|凍結/.test(normalized)) {
+    return "account-locked";
+  }
+  if (/同時登入|其他裝置登入|已有其他登入/.test(normalized)) {
+    return "active-session";
+  }
+  return "unknown";
+}
+
+export function yuantaBankDialogState(
+  dialog: Pick<Dialog, "type" | "message">,
+): YuantaBankDialogState {
+  let type = "unknown";
+  try {
+    type = dialog.type();
+  } catch {
+    // Keep the safe unknown category when the browser closes the dialog while
+    // its type is being inspected.
+  }
+  let category: YuantaBankDialogCategory = "unknown";
+  try {
+    category = classifyYuantaBankDialogMessage(dialog.message());
+  } catch {
+    // Do not retain or expose a provider dialog message on inspection errors.
+  }
+  return { type, category };
+}
+
+export function yuantaBankDialogFailureMessage(
+  category: YuantaBankDialogCategory,
+): string {
+  switch (category) {
+    case "captcha-rejected":
+      return "YuanTa login failed: the provider rejected the CAPTCHA.";
+    case "credentials-rejected":
+      return "YuanTa login failed: the credentials were rejected.";
+    case "account-locked":
+      return "YuanTa login failed: account access was blocked.";
+    case "active-session":
+      return "YuanTa login failed: another active session was detected.";
+    default:
+      return "YuanTa login failed: the provider dialog was not recognized.";
+  }
+}
 
 function requireCredential(
   credentials: YuantaCredentials,
@@ -46,6 +127,58 @@ async function waitForMainFrame(
     await page.waitForTimeout(250);
   }
   throw new Error('Timed out waiting for frame "main".');
+}
+
+export function yuantaBankCaptchaAssistanceStage(
+  loginFrame: Frame,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "yuanta-bank-login-captcha",
+    title: "Enter the YuanTa Bank CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "yuanta-bank.login.captcha-input",
+        modes: ["click", "type"],
+        locator: loginFrame.locator("#gcode"),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "yuanta-bank.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      {
+        ocrPageSegmentationMode: "single-word",
+      },
+      {
+        imagePreprocessing: [],
+        ocrOutputStage: "grayscale",
+        ocrPageSegmentationMode: "single-line",
+      },
+    ],
+    expectedAnswerLength: 6,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "yuanta-bank.login.captcha-image",
+      locator: loginFrame.locator('img[src*="GOTP"]:visible').first(),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
 }
 
 function cidFromUrl(url: string): string | null {
@@ -240,7 +373,7 @@ async function submitLogin(
 
 async function waitForSignedInState(
   page: Page,
-  getLastDialogMessage: () => string,
+  getLastDialogState: () => YuantaBankDialogState | null,
   replaceActiveSession: boolean,
 ): Promise<boolean> {
   const deadline = Date.now() + 120_000;
@@ -280,20 +413,34 @@ async function waitForSignedInState(
         .first()
         .isVisible()
         .catch(() => false));
-    const dialogMessage = getLastDialogMessage();
-    if (stillOnLogin && dialogMessage) {
-      throw new Error(`YuanTa login failed: ${dialogMessage}`);
+    const dialogState = getLastDialogState();
+    if (stillOnLogin && dialogState) {
+      throw new Error(yuantaBankDialogFailureMessage(dialogState.category));
     }
 
     await page.waitForTimeout(500);
   }
 
-  const dialogMessage = getLastDialogMessage();
+  const dialogState = getLastDialogState();
   throw new Error(
-    dialogMessage
-      ? `Timed out waiting for YuanTa signed-in state after dialog: ${dialogMessage}`
+    dialogState
+      ? `Timed out waiting for YuanTa signed-in state after ${dialogState.category} dialog.`
       : "Timed out waiting for YuanTa signed-in state.",
   );
+}
+
+/**
+ * The provider verification host owns post-submit dialogs only for the exact
+ * solver retry session it launched. Direct/manual runs keep the workflow's
+ * fail-fast fallback, and stale owners cannot suppress it.
+ */
+export function yuantaPostSubmitDialogOwner(
+  session: string,
+  env: NodeJS.ProcessEnv = process.env,
+): "host" | "workflow" {
+  return env[YUANTA_DIALOG_OWNER_ENV]?.trim() === yuantaHostDialogOwner(session)
+    ? "host"
+    : "workflow";
 }
 
 export async function authenticateYuantaBank(
@@ -301,55 +448,32 @@ export async function authenticateYuantaBank(
   credentials: YuantaCredentials,
   replaceActiveSession = true,
 ) {
-  const { page } = ctx;
-  let lastBankDialogMessage = "";
+  let lastBankDialogState: YuantaBankDialogState | null = null;
   let replacedActiveSession = false;
 
   const acceptBankDialog = async (dialog: Dialog) => {
-    lastBankDialogMessage = dialog.message();
+    lastBankDialogState = yuantaBankDialogState(dialog);
     console.warn("bank-dialog", {
-      type: dialog.type(),
-      message: lastBankDialogMessage,
+      type: lastBankDialogState.type,
+      category: lastBankDialogState.category,
     });
     await dialog.accept();
   };
-  page.on("dialog", acceptBankDialog);
 
-  try {
-    const authResult = await librettoAuthenticate(ctx, {
-      credentials,
-      isSignedIn: async ({ page: authPage }) => isYuantaSignedIn(authPage),
-      signIn: async ({ page: authPage, session }, signInCredentials) => {
-        const typedCredentials = signInCredentials as YuantaCredentials;
+  const authResult = await librettoAuthenticate(ctx, {
+    credentials,
+    isSignedIn: async ({ page: authPage }) => isYuantaSignedIn(authPage),
+    signIn: async ({ page: authPage, session }, signInCredentials) => {
+      const typedCredentials = signInCredentials as YuantaCredentials;
+      const workflowOwnsDialog = yuantaPostSubmitDialogOwner(session) === "workflow";
+      if (workflowOwnsDialog) authPage.on("dialog", acceptBankDialog);
+      try {
         await fillLoginForm(authPage, typedCredentials);
         let loginFrame = await waitForMainFrame(authPage);
         await dismissYuantaBankNotice(loginFrame, 5_000);
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-bank-login-captcha",
-          title: "Enter the YuanTa Bank CAPTCHA",
-          targets: [
-            {
-              id: "captcha-input",
-              label: "CAPTCHA input",
-              semanticId: "yuanta-bank.login.captcha-input",
-              modes: ["click", "type"],
-              locator: loginFrame.locator("#gcode"),
-            },
-          ],
-          contextRegions: [
-            {
-              id: "captcha-challenge",
-              label: "CAPTCHA challenge and instructions",
-              semanticId: "yuanta-bank.login.captcha-challenge",
-            },
-          ],
-          completion: { mode: "inline", targetIds: ["captcha-input"] },
-          focus: {
-            targetId: "captcha-input",
-            contextRegionIds: ["captcha-challenge"],
-            initialZoom: 1.15,
-          },
-        });
+        await emitHumanAssistanceStage(
+          yuantaBankCaptchaAssistanceStage(loginFrame),
+        );
         console.log(
           "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
             session +
@@ -375,23 +499,23 @@ export async function authenticateYuantaBank(
         }
         replacedActiveSession = await waitForSignedInState(
           authPage,
-          () => lastBankDialogMessage,
+          () => lastBankDialogState,
           replaceActiveSession,
         );
-      },
-    });
+      } finally {
+        if (workflowOwnsDialog) authPage.off("dialog", acceptBankDialog);
+      }
+    },
+  });
 
-    const usedExistingSession = authResult.usedProfile;
-    return {
-      usedExistingSession,
-      // Keep the Libretto-era field available to product adapters while they
-      // converge on the provider-neutral `usedExistingSession` name.
-      usedProfile: usedExistingSession,
-      replacedActiveSession,
-    };
-  } finally {
-    page.off("dialog", acceptBankDialog);
-  }
+  const usedExistingSession = authResult.usedProfile;
+  return {
+    usedExistingSession,
+    // Keep the Libretto-era field available to product adapters while they
+    // converge on the provider-neutral `usedExistingSession` name.
+    usedProfile: usedExistingSession,
+    replacedActiveSession,
+  };
 }
 
 export { currentCidFromFrameUrls, waitForMainFrame };

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, describe } from "node:test";
 import {
   chmodSync,
   mkdirSync,
@@ -40,6 +40,7 @@ import {
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
+  createAutomationTaskExecutionRunner,
   createAutomationOutputBuffer,
   finalFailureMessage,
   finalizeTerminalAutomationSession,
@@ -66,17 +67,122 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
+import { taskById } from "./tasks.ts";
+import {
+  SINOPAC_DIALOG_OWNER_ENV,
+  sinopacHostDialogOwner,
+} from "../sinopac-captcha.ts";
+
+const TEST_TASK_SETTLE_TIMEOUT_MS = 30_000;
+
+async function waitForTaskToSettle(taskId: string) {
+  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
+  while (activeAutomationTaskIds().includes(taskId)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${taskId} to settle.`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function settleStartedTasks(taskIds: readonly string[]) {
+  const pending = new Set(taskIds);
+  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
+  while (pending.size > 0) {
+    for (const taskId of pending) {
+      if (!activeAutomationTaskIds().includes(taskId)) {
+        pending.delete(taskId);
+        continue;
+      }
+      try {
+        await cancelAutomationTask(taskId);
+      } catch {
+        // The task can finish between the active check and cancellation.
+        if (!activeAutomationTaskIds().includes(taskId)) pending.delete(taskId);
+      }
+    }
+    if (pending.size === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for automation cleanup: ${[...pending].join(", ")}`,
+      );
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 async function settleStartedTask(taskId: string) {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    if (!hasActiveAutomationTask()) return;
-    try {
-      await cancelAutomationTask(taskId);
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+  await settleStartedTasks([taskId]);
+}
+
+async function settleStartedBatchTasks(taskIds: readonly string[]) {
+  await settleStartedTasks(taskIds);
+  // A crawler batch schedules its final import after the selected tasks
+  // settle. Let that callback and its promise continuations claim the
+  // dynamically-created import task before declaring the batch idle.
+  let idleTurns = 0;
+  while (idleTurns < 4) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (activeAutomationTaskIds().includes("import-downloads-csv")) {
+      idleTurns = 0;
+      await settleStartedTask("import-downloads-csv");
+    } else {
+      idleTurns += 1;
     }
   }
 }
+
+afterEach(async () => {
+  // A timeout or assertion failure must not leave the module-level task claim
+  // fenced for the next stateful runner test. Join every child before the
+  // next test starts so failures cannot cascade into "already running".
+  await settleStartedTasks(activeAutomationTaskIds());
+});
+
+describe("runner stateful operations", { concurrency: false }, () => {
+
+test("runner execution preserves base env and applies the current session dialog owner", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-runner-launch-env-"));
+  const db = openLedgerDatabase(ledgerDir);
+  const task = taskById("sinopac-statements");
+  assert.ok(task);
+  let captured: NodeJS.ProcessEnv | undefined;
+  try {
+    const execute = createAutomationTaskExecutionRunner({
+      task,
+      taskDb: db,
+      ledgerDir,
+      baseLaunchEnv: {
+        OCTOPUSBEAK_BASE_ENV_PROBE: "preserved",
+        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-stale"),
+      },
+      currentTaskRunId: () => "run-current",
+      onRunCreated: () => {},
+      isCancellationRequested: () => false,
+      runExecution: async (_task, _db, _ledgerDir, options) => {
+        captured = options.launchEnv;
+        return { status: "cancelled" as const };
+      },
+    });
+    await execute({
+      resumeSession: "ses-current",
+      launchEnv: {
+        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-current"),
+        OCTOPUSBEAK_EXECUTION_ENV_PROBE: "present",
+      },
+    });
+    assert.equal(captured?.OCTOPUSBEAK_BASE_ENV_PROBE, "preserved");
+    assert.equal(captured?.OCTOPUSBEAK_EXECUTION_ENV_PROBE, "present");
+    assert.equal(
+      captured?.[SINOPAC_DIALOG_OWNER_ENV],
+      sinopacHostDialogOwner("ses-current"),
+    );
+  } finally {
+    db.close();
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("manual Fubon starts ignore persisted statement selection", async () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
   const originalCwd = process.cwd();
@@ -107,7 +213,10 @@ test("batch starts allow Fubon without a persisted selection", async () => {
     assert.doesNotThrow(() =>
       startAutomationTasks(["exchange-rates", "fubon-all-statements"], dir),
     );
-    await settleStartedTask("fubon-all-statements");
+    await settleStartedBatchTasks([
+      "fubon-all-statements",
+      "exchange-rates",
+    ]);
     assert.deepEqual(activeAutomationTaskIds(), []);
   } finally {
     process.chdir(originalCwd);
@@ -151,7 +260,10 @@ test("batch starts allow SinoPac without a persisted selection", async () => {
     assert.doesNotThrow(() =>
       startAutomationTasks(["exchange-rates", "sinopac-statements"], dir),
     );
-    await settleStartedTask("sinopac-statements");
+    await settleStartedBatchTasks([
+      "sinopac-statements",
+      "exchange-rates",
+    ]);
     assert.deepEqual(activeAutomationTaskIds(), []);
   } finally {
     process.chdir(originalCwd);
@@ -169,6 +281,8 @@ test("resume bypasses fresh statement-selection validation", async () => {
     mkdirSync(binDir);
     writeFileSync(join(binDir, "libretto"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(binDir, "libretto"), 0o755);
+    writeFileSync(join(binDir, "npx"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(binDir, "npx"), 0o755);
     writeFileSync(
       join(root, "settings.json"),
       JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }),
@@ -179,11 +293,8 @@ test("resume bypasses fresh statement-selection validation", async () => {
       startAutomationResume("fubon-all-statements", "ses-existing", ledgerDir),
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!hasActiveAutomationTask()) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(hasActiveAutomationTask(), false);
+    await waitForTaskToSettle("fubon-all-statements");
+    assert.equal(activeAutomationTaskIds().includes("fubon-all-statements"), false);
     const db = openLedgerDatabase(ledgerDir);
     assert.equal(
       latestTaskRuns(db)["fubon-all-statements"]?.taskId,
@@ -840,10 +951,10 @@ test("batch startup validates every task before claiming any", async () => {
     () => startAutomationTasks(["exchange-rates", "unknown-task"]),
     /Unknown automation task/,
   );
-  const leaked = activeAutomationTaskIds();
-  if (leaked.includes("exchange-rates"))
+  if (activeAutomationTaskIds().includes("exchange-rates"))
     await cancelAutomationTask("exchange-rates");
-  assert.deepEqual(leaked, []);
+  await waitForTaskToSettle("exchange-rates");
+  assert.deepEqual(activeAutomationTaskIds(), []);
 });
 
 test("a queued batch task can be cancelled before its process starts", async () => {
@@ -852,7 +963,7 @@ test("a queued batch task can be cancelled before its process starts", async () 
   assert.deepEqual(await cancelAutomationTask("exchange-rates"), {
     cancelled: "exchange-rates",
   });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await waitForTaskToSettle("exchange-rates");
   assert.deepEqual(activeAutomationTaskIds(), []);
 });
 
@@ -879,10 +990,7 @@ test("an import-only batch runs once and releases its claim", async () => {
   try {
     startAutomationTasks(["import-downloads-csv"], ledgerDir);
     assert.deepEqual(activeAutomationTaskIds(), ["import-downloads-csv"]);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!activeAutomationTaskIds().includes("import-downloads-csv")) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForTaskToSettle("import-downloads-csv");
 
     assert.deepEqual(activeAutomationTaskIds(), []);
     assert.equal(readFileSync(capturePath, "utf8"), "import\n");
@@ -2144,11 +2252,7 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     throw new Error("Timed out waiting for automation command capture");
   };
   const waitForIdle = async (taskId: string) => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (!hasActiveAutomationTask()) return;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`Timed out waiting for ${taskId} to finish`);
+    await waitForTaskToSettle(taskId);
   };
   try {
     startAutomationTask("exchange-rates", ledgerDir, {
@@ -2208,4 +2312,5 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     }
     rmSync(root, { recursive: true, force: true });
   }
+});
 });

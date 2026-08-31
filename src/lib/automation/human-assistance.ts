@@ -1,4 +1,20 @@
+import {
+  assertSolveAcceptancePolicy,
+  type SolveAcceptancePolicy,
+} from "./solve-acceptance-policy.ts";
+
+export {
+  SOLVE_CONFLICT_RESOLUTIONS,
+  type SolveAcceptancePolicy,
+  type SolveConflictResolution,
+} from "./solve-acceptance-policy.ts";
+
 export const HUMAN_ASSISTANCE_SCHEMA_VERSION = 1 as const;
+
+// CAPTCHA answers are intentionally bounded to keep the workflow contract
+// descriptive rather than allowing an unbounded solver hint.
+export const MAX_EXPECTED_ANSWER_LENGTH = 32;
+export const MAX_OCR_ATTEMPT_STRATEGIES = 3;
 
 export const HUMAN_VERIFICATION_INTERACTION_MODES = [
   "click",
@@ -14,11 +30,49 @@ export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
   "failed",
 ] as const;
 
+export const VERIFICATION_CHALLENGE_KINDS = [
+  "text-captcha",
+  "image-selection",
+  "checkbox",
+] as const;
+
 export const HUMAN_ASSISTANCE_HOST_FD_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_FD";
 export const HUMAN_ASSISTANCE_HOST_PATH_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_PATH";
 
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
+export type VerificationChallengeKind = typeof VERIFICATION_CHALLENGE_KINDS[number];
+
+export const CHALLENGE_CHARACTER_SETS = ["digits", "alphanumeric"] as const;
+
+export type ChallengeCharacterSet = typeof CHALLENGE_CHARACTER_SETS[number];
+
+export const CAPTCHA_OCR_PAGE_SEGMENTATION_MODES = [
+  "single-line",
+  "single-word",
+  "raw-line",
+] as const;
+
+export type CaptchaOcrPageSegmentationMode =
+  typeof CAPTCHA_OCR_PAGE_SEGMENTATION_MODES[number];
+
+export const CAPTCHA_OCR_OUTPUT_STAGES = [
+  "grayscale",
+  "final",
+] as const;
+
+export type CaptchaOcrOutputStage = typeof CAPTCHA_OCR_OUTPUT_STAGES[number];
+
+export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
+  "remove-interference-lines",
+  "mask-bottom-interference-band",
+  "suppress-horizontal-interference",
+  "fubon-luminance-foreground",
+  "fubon-min-channel-foreground",
+] as const;
+
+export type CaptchaImagePreprocessingMode =
+  typeof CAPTCHA_IMAGE_PREPROCESSING_MODES[number];
 
 export type HumanVerificationRect = {
   x: number;
@@ -40,6 +94,13 @@ export type VerificationContextRegion = {
   label: string;
   semanticId: string;
   rect?: HumanVerificationRect | null;
+};
+
+export type VerificationChallengeImageRegion = {
+  id: string;
+  label: string;
+  semanticId: string;
+  rect: HumanVerificationRect;
 };
 
 export type HumanAssistanceCompletion = {
@@ -65,6 +126,23 @@ export type HumanAssistanceContractInput = {
   contextRegions: readonly VerificationContextRegion[];
   completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
+  challengeKind?: VerificationChallengeKind;
+  challengeImageRegion?: VerificationChallengeImageRegion;
+  charset?: ChallengeCharacterSet;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
+  solveAcceptancePolicy?: SolveAcceptancePolicy;
+  solverConfidenceThreshold?: number;
+  expectedAnswerLength?: number;
+  prompt?: string;
+};
+
+export type CaptchaOcrAttemptStrategy = {
+  /** Provider-calibrated overrides for one OCR view of the same image. */
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrOutputStage?: CaptchaOcrOutputStage;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -72,6 +150,151 @@ export type HumanAssistanceContract = HumanAssistanceContractInput & {
   version: number;
   completion: HumanAssistanceCompletion;
 };
+
+/**
+ * Project a validated contract back to its actor-neutral input shape.
+ *
+ * Runtime adapters use this projection when they need to change geometry or
+ * add a target. Keeping the projection here means new contract metadata is
+ * preserved by every transformation without another caller-owned copy list.
+ */
+export function projectHumanAssistanceContract(
+  contract: HumanAssistanceContract,
+): HumanAssistanceContractInput {
+  const {
+    schemaVersion: _schemaVersion,
+    version: _version,
+    ...input
+  } = contract;
+  return {
+    ...input,
+    targets: contract.targets.map((target) => ({
+      ...target,
+      modes: [...target.modes],
+      ...(target.rect === undefined
+        ? {}
+        : { rect: target.rect ? { ...target.rect } : null }),
+    })),
+    contextRegions: contract.contextRegions.map((region) => ({
+      ...region,
+      ...(region.rect === undefined
+        ? {}
+        : { rect: region.rect ? { ...region.rect } : null }),
+    })),
+    completion: {
+      mode: contract.completion.mode,
+      targetIds: [...contract.completion.targetIds],
+      status: contract.completion.status,
+    },
+    focus: {
+      targetId: contract.focus.targetId,
+      contextRegionIds: [...contract.focus.contextRegionIds],
+      ...(contract.focus.initialZoom === undefined
+        ? {}
+        : { initialZoom: contract.focus.initialZoom }),
+    },
+    ...(contract.challengeImageRegion === undefined
+      ? {}
+      : {
+        challengeImageRegion: {
+          ...contract.challengeImageRegion,
+          rect: { ...contract.challengeImageRegion.rect },
+        },
+      }),
+    ...(contract.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...contract.imagePreprocessing] }),
+    ...(contract.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: contract.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
+    ...(contract.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...contract.solveAcceptancePolicy } }),
+  };
+}
+
+/** Transform a validated contract while preserving all of its metadata. */
+export function transformHumanAssistanceContract(
+  contract: HumanAssistanceContract,
+  transform: (input: HumanAssistanceContractInput) => HumanAssistanceContractInput,
+): HumanAssistanceContractInput {
+  return transform(projectHumanAssistanceContract(contract));
+}
+
+export type HumanAssistanceSolverMetadata = Pick<
+  HumanAssistanceContractInput,
+  | "prompt"
+  | "charset"
+  | "imagePreprocessing"
+  | "ocrPageSegmentationMode"
+  | "ocrAttemptPlan"
+  | "solveAcceptancePolicy"
+  | "expectedAnswerLength"
+>;
+
+/** Project only the solver-facing metadata without letting routing rebuild it. */
+export function projectHumanAssistanceSolverMetadata(
+  contract: HumanAssistanceContract,
+): HumanAssistanceSolverMetadata {
+  return {
+    ...(contract.prompt === undefined ? {} : { prompt: contract.prompt }),
+    ...(contract.charset === undefined ? {} : { charset: contract.charset }),
+    ...(contract.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...contract.imagePreprocessing] }),
+    ...(contract.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: contract.ocrPageSegmentationMode }),
+    ...(contract.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: contract.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
+    ...(contract.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...contract.solveAcceptancePolicy } }),
+    ...(contract.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: contract.expectedAnswerLength }),
+  };
+}
+
+/**
+ * Merge legacy/direct-call compatibility metadata behind a contract. A
+ * contract value always wins, while omitted optional contract fields retain
+ * the compatibility value supplied by the caller.
+ */
+export function resolveHumanAssistanceSolverMetadata(
+  contract: HumanAssistanceContract | null,
+  fallback: HumanAssistanceSolverMetadata,
+): HumanAssistanceSolverMetadata {
+  return {
+    ...fallback,
+    ...(contract ? projectHumanAssistanceSolverMetadata(contract) : {}),
+  };
+}
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -96,6 +319,16 @@ function assertTarget(target: HumanVerificationTarget) {
     if (!HUMAN_VERIFICATION_INTERACTION_MODES.includes(mode)) {
       throw new Error(`Invalid human assistance contract: target ${target.id} has mode ${mode}.`);
     }
+  }
+}
+
+function assertChallengeImageRegion(region: VerificationChallengeImageRegion) {
+  nonEmpty(region.id, "challenge image region id");
+  nonEmpty(region.label, `challenge image region ${region.id} label`);
+  nonEmpty(region.semanticId, `challenge image region ${region.id} semanticId`);
+  const rect = region.rect;
+  if (!rect || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+    throw new Error(`Invalid human assistance contract: challenge image region ${region.semanticId} cannot be resolved.`);
   }
 }
 
@@ -140,6 +373,142 @@ export function createHumanAssistanceContract(
   if (input.focus.initialZoom !== undefined && (!Number.isFinite(input.focus.initialZoom) || input.focus.initialZoom <= 0)) {
     throw new Error("Invalid human assistance contract: initialZoom must be positive.");
   }
+  if (input.challengeKind !== undefined && !VERIFICATION_CHALLENGE_KINDS.includes(input.challengeKind)) {
+    throw new Error(`Invalid human assistance contract: unknown challenge kind ${input.challengeKind}.`);
+  }
+  if (input.charset !== undefined && !CHALLENGE_CHARACTER_SETS.includes(input.charset)) {
+    throw new Error(`Invalid human assistance contract: unknown challenge character set ${input.charset}.`);
+  }
+  if (input.imagePreprocessing !== undefined) {
+    uniqueIds(input.imagePreprocessing, "image preprocessing modes");
+    for (const mode of input.imagePreprocessing) {
+      if (!CAPTCHA_IMAGE_PREPROCESSING_MODES.includes(mode)) {
+        throw new Error(
+          `Invalid human assistance contract: unknown image preprocessing mode ${mode}.`,
+        );
+      }
+    }
+  }
+  if (
+    input.ocrPageSegmentationMode !== undefined
+    && !CAPTCHA_OCR_PAGE_SEGMENTATION_MODES.includes(input.ocrPageSegmentationMode)
+  ) {
+    throw new Error(
+      `Invalid human assistance contract: unknown OCR page segmentation mode ${input.ocrPageSegmentationMode}.`,
+    );
+  }
+  if (input.ocrAttemptPlan !== undefined) {
+    if (input.challengeKind !== "text-captcha") {
+      throw new Error(
+        "Invalid human assistance contract: OCR attempt plan requires a text CAPTCHA challenge.",
+      );
+    }
+    if (input.ocrAttemptPlan.length === 0) {
+      throw new Error(
+        "Invalid human assistance contract: OCR attempt plan must contain at least one strategy.",
+      );
+    }
+    if (input.ocrAttemptPlan.length > MAX_OCR_ATTEMPT_STRATEGIES) {
+      throw new Error(
+        `Invalid human assistance contract: OCR attempt plan cannot contain more than ${MAX_OCR_ATTEMPT_STRATEGIES} strategies.`,
+      );
+    }
+    const fingerprints = new Set<string>();
+    for (const [index, strategy] of input.ocrAttemptPlan.entries()) {
+      if (!strategy || typeof strategy !== "object") {
+        throw new Error(
+          `Invalid human assistance contract: OCR attempt strategy ${index + 1} must be an object.`,
+        );
+      }
+      if (
+        strategy.imagePreprocessing === undefined
+        && strategy.ocrPageSegmentationMode === undefined
+        && strategy.ocrOutputStage === undefined
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: OCR attempt strategy ${index + 1} must override at least one OCR setting.`,
+        );
+      }
+      if (strategy.imagePreprocessing !== undefined) {
+        uniqueIds(strategy.imagePreprocessing, `OCR attempt strategy ${index + 1} preprocessing modes`);
+        for (const mode of strategy.imagePreprocessing) {
+          if (!CAPTCHA_IMAGE_PREPROCESSING_MODES.includes(mode)) {
+            throw new Error(
+              `Invalid human assistance contract: unknown OCR attempt preprocessing mode ${mode}.`,
+            );
+          }
+        }
+      }
+      if (
+        strategy.ocrPageSegmentationMode !== undefined
+        && !CAPTCHA_OCR_PAGE_SEGMENTATION_MODES.includes(strategy.ocrPageSegmentationMode)
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: unknown OCR attempt page segmentation mode ${strategy.ocrPageSegmentationMode}.`,
+        );
+      }
+      if (
+        strategy.ocrOutputStage !== undefined
+        && !CAPTCHA_OCR_OUTPUT_STAGES.includes(strategy.ocrOutputStage)
+      ) {
+        throw new Error(
+          `Invalid human assistance contract: unknown OCR attempt output stage ${strategy.ocrOutputStage}.`,
+        );
+      }
+      const fingerprint = JSON.stringify({
+        imagePreprocessing: strategy.imagePreprocessing
+          ?? input.imagePreprocessing
+          ?? [],
+        ocrPageSegmentationMode: strategy.ocrPageSegmentationMode
+          ?? input.ocrPageSegmentationMode
+          ?? "single-line",
+        ocrOutputStage: strategy.ocrOutputStage ?? "final",
+      });
+      if (fingerprints.has(fingerprint)) {
+        throw new Error(
+          "Invalid human assistance contract: OCR attempt plan strategies must be distinct.",
+        );
+      }
+      fingerprints.add(fingerprint);
+    }
+  }
+  if (input.solveAcceptancePolicy !== undefined) {
+    assertSolveAcceptancePolicy(input.solveAcceptancePolicy, {
+      challengeKind: input.challengeKind,
+      strategyCount: input.ocrAttemptPlan?.length ?? 0,
+      errorPrefix: "Invalid human assistance contract",
+    });
+  }
+  if (
+    input.solverConfidenceThreshold !== undefined
+    && (
+      !Number.isFinite(input.solverConfidenceThreshold)
+      || input.solverConfidenceThreshold < 0
+      || input.solverConfidenceThreshold > 1
+    )
+  ) {
+    throw new Error(
+      "Invalid human assistance contract: solver confidence threshold must be finite and between 0 and 1.",
+    );
+  }
+  if (
+    input.expectedAnswerLength !== undefined
+    && (
+      !Number.isInteger(input.expectedAnswerLength)
+      || input.expectedAnswerLength <= 0
+      || input.expectedAnswerLength > MAX_EXPECTED_ANSWER_LENGTH
+    )
+  ) {
+    throw new Error(
+      `Invalid human assistance contract: expected answer length must be a positive integer no greater than ${MAX_EXPECTED_ANSWER_LENGTH}.`,
+    );
+  }
+  if (input.prompt !== undefined) {
+    nonEmpty(input.prompt, "prompt");
+  }
+  if (input.challengeImageRegion !== undefined) {
+    assertChallengeImageRegion(input.challengeImageRegion);
+  }
 
   return {
     schemaVersion: HUMAN_ASSISTANCE_SCHEMA_VERSION,
@@ -158,6 +527,40 @@ export function createHumanAssistanceContract(
       contextRegionIds: [...input.focus.contextRegionIds],
       ...(input.focus.initialZoom === undefined ? {} : { initialZoom: input.focus.initialZoom }),
     },
+    ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
+    ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
+    ...(input.charset === undefined ? {} : { charset: input.charset }),
+    ...(input.imagePreprocessing === undefined
+      ? {}
+      : { imagePreprocessing: [...input.imagePreprocessing] }),
+    ...(input.ocrPageSegmentationMode === undefined
+      ? {}
+      : { ocrPageSegmentationMode: input.ocrPageSegmentationMode }),
+    ...(input.ocrAttemptPlan === undefined
+      ? {}
+      : {
+        ocrAttemptPlan: input.ocrAttemptPlan.map((strategy) => ({
+          ...(strategy.imagePreprocessing === undefined
+            ? {}
+            : { imagePreprocessing: [...strategy.imagePreprocessing] }),
+          ...(strategy.ocrPageSegmentationMode === undefined
+            ? {}
+            : { ocrPageSegmentationMode: strategy.ocrPageSegmentationMode }),
+          ...(strategy.ocrOutputStage === undefined
+            ? {}
+            : { ocrOutputStage: strategy.ocrOutputStage }),
+        })),
+      }),
+    ...(input.solveAcceptancePolicy === undefined
+      ? {}
+      : { solveAcceptancePolicy: { ...input.solveAcceptancePolicy } }),
+    ...(input.solverConfidenceThreshold === undefined
+      ? {}
+      : { solverConfidenceThreshold: input.solverConfidenceThreshold }),
+    ...(input.expectedAnswerLength === undefined
+      ? {}
+      : { expectedAnswerLength: input.expectedAnswerLength }),
+    ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
   };
 }
 

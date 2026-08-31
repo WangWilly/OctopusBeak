@@ -21,7 +21,7 @@ assert.match(
 );
 assert.equal(
   authSource.match(/await waitForStableLocatorBox\(page, otpField\);/g)?.length,
-  2,
+  1,
 );
 
 const server = await createServer({

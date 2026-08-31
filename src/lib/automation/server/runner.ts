@@ -64,15 +64,59 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
+import {
+  runCaptchaRetryCampaign,
+} from "./captcha-retry-coordinator.ts";
+import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 
 export { closeLibrettoSession };
 
 const activeTaskRunIds = new Map<string, string>();
+const cancellationRequestedTaskIds = new Set<string>();
 let librettoRunCdpPatched = false;
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
 };
+
+type AutomationTaskExecutionRunnerInput = {
+  task: NonNullable<ReturnType<typeof taskById>>;
+  taskDb: ReturnType<typeof openLedgerDatabase>;
+  ledgerDir: string;
+  baseLaunchEnv: NodeJS.ProcessEnv;
+  currentTaskRunId: () => string | null;
+  onRunCreated: (taskRunId: string) => void;
+  isCancellationRequested: () => boolean;
+  runExecution?: typeof runAutomationTaskExecution;
+};
+
+/**
+ * Build the execution closure shared by every round in one user operation.
+ * The captured environment is the stable base; narrowly scoped per-execution
+ * capabilities, such as a session-bound dialog owner, override only their key.
+ */
+export function createAutomationTaskExecutionRunner(
+  input: AutomationTaskExecutionRunnerInput,
+) {
+  const execute = input.runExecution ?? runAutomationTaskExecution;
+  return (executionOptions: AutomationTaskExecutionOptions) =>
+    execute(
+      input.task,
+      input.taskDb,
+      input.ledgerDir,
+      {
+        ...executionOptions,
+        launchEnv: {
+          ...input.baseLaunchEnv,
+          ...(executionOptions.launchEnv ?? {}),
+        },
+        taskRunId:
+          executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
+        isCancellationRequested: input.isCancellationRequested,
+      },
+      input.onRunCreated,
+    );
+}
 
 function validateScheduledAtUtc(value: string | undefined) {
   if (
@@ -124,6 +168,11 @@ export function hasActiveAutomationTask() {
 
 export function activeAutomationTaskIds() {
   return Array.from(activeTaskRunIds.keys());
+}
+
+/** True after a user cancellation request until the current task exits. */
+export function automationTaskCancellationRequested(taskId: string) {
+  return cancellationRequestedTaskIds.has(taskId);
 }
 
 function claimTask(taskId: string) {
@@ -284,9 +333,17 @@ export async function cancelAutomationTask(taskId: string) {
     activeTaskRunIds.delete(taskId);
     return { cancelled: taskId };
   }
+  cancellationRequestedTaskIds.add(taskId);
   const child = automationTaskChild(taskId);
-  if (!child)
-    throw new Error(`Automation task has not started a process yet: ${taskId}`);
+  // A CAPTCHA retry round can be between child processes while its previous
+  // session is being cleaned up. Keep the cancellation request latched so the
+  // campaign coordinator observes it after cleanup and never starts round N+1.
+  if (!child) {
+    // Yield briefly so a pending execution can observe the latched request
+    // before a caller that polls cancellation in a tight loop continues.
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    return { cancelled: taskId };
+  }
   child.kill("SIGTERM");
   await relinquishAutomationSessionForTask(taskId);
   return { cancelled: taskId };
@@ -421,17 +478,42 @@ export async function runAutomationTask(
   let db: ReturnType<typeof openLedgerDatabase> | null = null;
   try {
     db = openLedgerDatabase(ledgerDir);
-    return await runAutomationTaskExecution(
+    const launchEnv = { ...automationProcessEnv() };
+    // Verification actor and solver settings belong to this user operation.
+    // Capture them once so a settings-file edit while a CAPTCHA campaign is
+    // between rounds cannot silently change the next execution's policy.
+    const launchVerificationSettings = { ...readAutomationSettings() };
+    let taskRunId: string | null = null;
+    const onRunCreated = (createdTaskRunId: string) => {
+      taskRunId = createdTaskRunId;
+      activeTaskRunIds.set(taskId, createdTaskRunId);
+    };
+    const execution = createAutomationTaskExecutionRunner({
       task,
-      db,
+      taskDb: db,
       ledgerDir,
-      options,
-      (taskRunId) => {
-        activeTaskRunIds.set(taskId, taskRunId);
+      baseLaunchEnv: launchEnv,
+      currentTaskRunId: () => taskRunId,
+      onRunCreated,
+      isCancellationRequested: () =>
+        automationTaskCancellationRequested(taskId),
+    });
+    return await runCaptchaRetryCampaign({
+      taskId,
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings,
+      initialExecutionOptions: {
+        scheduledAtUtc: options.scheduledAtUtc,
+        resumeSession: options.resumeSession,
       },
-    );
+      execute: execution,
+      isCancellationRequested: () =>
+        automationTaskCancellationRequested(taskId),
+    });
   } finally {
     activeTaskRunIds.delete(taskId);
+    cancellationRequestedTaskIds.delete(taskId);
     db?.close();
   }
 }

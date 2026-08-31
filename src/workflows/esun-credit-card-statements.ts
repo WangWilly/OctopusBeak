@@ -51,7 +51,8 @@ export type CaptureMetadata =
     };
 
 export type StatementRow = {
-  statementPeriod: string;
+  /** Optional issuer-settled period; never the rolling query range. */
+  issuerStatementPeriod?: string | null;
   cardNumber: string;
   consumeDate: string;
   description: string;
@@ -320,6 +321,30 @@ export function buildEsunSettledPeriodsFromIssuerSummaries(
   }));
 }
 
+/**
+ * Attach an issuer-settled period to billed rows when the issuer supplied an
+ * explicit cycle summary covering the row's consume date. A rolling query
+ * range is deliberately never used as a fallback period.
+ */
+export function attachEsunIssuerStatementPeriods(
+  rows: readonly StatementRow[],
+  settledPeriods: readonly EsunCreditCardSettledPeriod[],
+): StatementRow[] {
+  return rows.map((row) => {
+    if (row.issuerStatementPeriod?.trim() || row.paymentStatus !== "billed")
+      return row;
+    const consumeDate = isoDate(row.consumeDate);
+    if (!consumeDate) return row;
+    const settled = settledPeriods.find(
+      (period) =>
+        consumeDate >= period.cycleStart && consumeDate <= period.cycleEnd,
+    );
+    return settled
+      ? { ...row, issuerStatementPeriod: settled.period }
+      : row;
+  });
+}
+
 function optionalEsunManagedSecret(): string | undefined {
   const secret =
     process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
@@ -401,7 +426,9 @@ function mapEsunStatementRow(
     );
   }
   return {
-    statementPeriod: row.statementPeriod,
+    ...(row.issuerStatementPeriod?.trim()
+      ? { issuerStatementPeriod: row.issuerStatementPeriod.trim() }
+      : {}),
     cardNumber: projected.cardMask,
     instrumentKey: projected.instrumentKey,
     consumeDate: row.consumeDate,
@@ -617,7 +644,6 @@ async function gridState(frame: Frame): Promise<GridState> {
 
 async function readStatementRows(
   frame: Frame,
-  statementPeriod: string,
 ): Promise<StatementRow[]> {
   const table = frame.locator("#fcm01004\\:gridList_0_DataGridBody");
   const rows = await table.locator("tr").all();
@@ -632,7 +658,6 @@ async function readStatementRows(
     const charge = splitCurrencyAmount(cells[2] ?? "");
     const payment = splitCurrencyAmount(cells[3] ?? "");
     statementRows.push({
-      statementPeriod,
       cardNumber: cells[4] ?? "",
       consumeDate: cells[0] ?? "",
       description: cells[1] ?? "",
@@ -797,7 +822,7 @@ function statementRowsToCsv(rows: StatementRow[]): string {
   const csvRows = [
     statementHeaders,
     ...[...rows].sort(compareRowsByConsumeDateDesc).map((row) => [
-      row.statementPeriod,
+      row.issuerStatementPeriod ?? "",
       row.cardNumber,
       "",
       row.consumeDate,
@@ -840,7 +865,11 @@ async function writeStatementFile(
   const csvPath = join(dir, csvFilename);
   const jsonPath = join(dir, jsonFilename);
   const periods = [
-    ...new Set(rows.map((row) => row.statementPeriod).filter(Boolean)),
+    ...new Set(
+      rows
+        .map((row) => row.issuerStatementPeriod)
+        .filter((period): period is string => Boolean(period)),
+    ),
   ];
 
   await writeFile(csvPath, statementRowsToCsv(rows), "utf8");
@@ -922,14 +951,13 @@ export default workflow("esunCreditCardStatements", {
 
     const { frame, startDate, endDate } = await queryStatements(page, input);
     console.log("automation-progress: 60");
-    const period = `${startDate} ~ ${endDate}`;
-    const rows = await readStatementRows(frame, period);
+    const rows = await readStatementRows(frame);
     console.log("automation-progress: 80");
     const nextTimestamp = createTimestampGenerator();
-    const unbilledRows = rows.filter(
+    let unbilledRows = rows.filter(
       (row) => statementKind(row) === "unbilled",
     );
-    const billedRows = rows.filter((row) => statementKind(row) === "billed");
+    let billedRows = rows.filter((row) => statementKind(row) === "billed");
     const cardKeys = [
       ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
     ];
@@ -969,6 +997,18 @@ export default workflow("esunCreditCardStatements", {
           await readIssuerStatementSummaries(page),
         )
       : [];
+    if (settledPeriods.length > 0) {
+      const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(
+        rows,
+        settledPeriods,
+      );
+      unbilledRows = rowsWithIssuerPeriods.filter(
+        (row) => statementKind(row) === "unbilled",
+      );
+      billedRows = rowsWithIssuerPeriods.filter(
+        (row) => statementKind(row) === "billed",
+      );
+    }
     const files = [
       await writeStatementFile(
         nextTimestamp,

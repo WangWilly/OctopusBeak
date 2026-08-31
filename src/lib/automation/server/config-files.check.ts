@@ -13,6 +13,7 @@ import {
   automationConfigEnv,
   credentialStatusFromValues,
   ensureAutomationManagedSecrets,
+  isAutomationCredentialCodecConfigured,
   migrateAutomationCredentialsFileEncryption,
   migrateAutomationEnvFile,
   readAutomationCredentialsFile,
@@ -186,7 +187,10 @@ try {
 
   const encryptedCredentialsPath = join(dir, "encrypted-credentials.json");
   const managedSecret = "a".repeat(43);
+  setAutomationCredentialCodec(null);
+  assert.equal(isAutomationCredentialCodecConfigured(), false);
   setAutomationCredentialCodec(fakeCodec);
+  assert.equal(isAutomationCredentialCodecConfigured(), true);
   writeAutomationCredentialsFile(encryptedCredentialsPath, {
     [fubonPanFingerprintKey]: managedSecret,
   });
@@ -228,6 +232,7 @@ try {
   );
 
   setAutomationCredentialCodec(null);
+  assert.equal(isAutomationCredentialCodecConfigured(), false);
   assert.throws(
     () => readAutomationCredentialsFile(encryptedCredentialsPath),
     /Credential encryption is not configured/,

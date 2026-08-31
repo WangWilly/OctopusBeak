@@ -47,7 +47,71 @@ import {
 } from "./credential-file.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+import type {
+  CathayGmailOtpConnectionError,
+  CathayGmailOtpStatus,
+} from "../types.ts";
 import type { HumanAssistanceCompletion } from "../human-assistance.ts";
+import {
+  cathayGmailOtpStatus as readCathayGmailOtpStatus,
+  disconnectCathayGmailOtp as disconnectCathayGmailOtpCore,
+  enableCathayGmailOtp as enableCathayGmailOtpCore,
+  setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
+} from "./gmail-otp-service.ts";
+
+const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
+  "authorization-cancelled",
+  "authorization-failed",
+  "token-exchange-failed",
+  "gmail-profile-failed",
+  "credential-storage-failed",
+]);
+
+function sanitizedCathayGmailOtpStatus(
+  status = readCathayGmailOtpStatus(),
+): CathayGmailOtpStatus {
+  const connectedEmail =
+    typeof status.connectedEmail === "string" && status.connectedEmail.trim()
+      ? status.connectedEmail.trim()
+      : null;
+  const connectionError =
+    typeof status.connectionError === "string" &&
+    cathayGmailOtpConnectionErrors.has(status.connectionError as CathayGmailOtpConnectionError)
+      ? status.connectionError as CathayGmailOtpConnectionError
+      : null;
+  return {
+    enabled: status.enabled === true,
+    connectedEmail,
+    needsAuthorization: status.needsAuthorization === true,
+    ...(connectionError ? { connectionError } : {}),
+  };
+}
+
+/** Renderer-safe Gmail state; token material never crosses this boundary. */
+export function cathayGmailOtpStatus(): CathayGmailOtpStatus {
+  return sanitizedCathayGmailOtpStatus();
+}
+
+/** Starts the user-initiated OAuth flow and returns sanitized state only. */
+export async function enableCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
+  return sanitizedCathayGmailOtpStatus(await enableCathayGmailOtpCore());
+}
+
+/** Disabling keeps the Google grant; the core owns that lifecycle rule. */
+export async function setCathayGmailOtpEnabled(
+  enabled: boolean,
+): Promise<CathayGmailOtpStatus> {
+  if (typeof enabled !== "boolean") {
+    throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
+  }
+  return sanitizedCathayGmailOtpStatus(await setCathayGmailOtpEnabledCore(enabled));
+}
+
+/** Revokes/clears the grant through the core and always returns safe state. */
+export async function disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
+  await disconnectCathayGmailOtpCore();
+  return sanitizedCathayGmailOtpStatus();
+}
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 const certificateFileCredentialKeys = new Set([
@@ -146,25 +210,28 @@ export function loadAutomationDesktopModel(
       };
     });
     return {
-      automation: buildAutomationPageModel({
-        tasks: enabledAutomationTasks(enabledGroups),
-        latestRuns: latestTaskRuns(db),
-        todayRunTaskIds: todayTaskRunIds(db, {
-          startUtc: range.startUtc,
-          endUtc: range.endUtc,
+      automation: {
+        ...buildAutomationPageModel({
+          tasks: enabledAutomationTasks(enabledGroups),
+          latestRuns: latestTaskRuns(db),
+          todayRunTaskIds: todayTaskRunIds(db, {
+            startUtc: range.startUtc,
+            endUtc: range.endUtc,
+          }),
+          activeTaskIds,
+          credentials: credentialState.status,
+          importGate,
+          setupRequiredGroupIds: new Set(
+            credentialGroups
+              .filter((group) => group.statementSetupRequired)
+              .map((group) => group.id),
+          ),
+          externalPrerequisiteNotices: pagePrerequisiteNotices(db),
+          active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
+          businessDate: range.businessDate,
         }),
-        activeTaskIds,
-        credentials: credentialState.status,
-        importGate,
-        setupRequiredGroupIds: new Set(
-          credentialGroups
-            .filter((group) => group.statementSetupRequired)
-            .map((group) => group.id),
-        ),
-        externalPrerequisiteNotices: pagePrerequisiteNotices(db),
-        active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
-        businessDate: range.businessDate,
-      }),
+        cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
+      },
       credentialGroups,
     };
   } finally {

@@ -1186,6 +1186,7 @@ export default workflow("yuantaTradeStatements", {
         await emitHumanAssistanceStage({
           stageId: "yuanta-trade-captcha-checkbox",
           title: "Confirm the YuanTa Trade CAPTCHA checkbox",
+          challengeKind: "checkbox",
           targets: [{
             id: "captcha-checkbox",
             label: "CAPTCHA checkbox",
@@ -1227,6 +1228,7 @@ export default workflow("yuantaTradeStatements", {
           }
           const challengeSubmit = yuantaTradeCaptchaSubmit(challengeModal);
           const challengeSubmitVisible = await challengeSubmit.isVisible({ timeout: 3_000 }).catch(() => false);
+          const challengePrompt = (await challengeModal.innerText().catch(() => "")).trim();
           const challengeTargets = Array.from({ length: challengeImageCount }, (_, index) => ({
             id: `challenge-image-${index + 1}`,
             label: `Verification challenge image ${index + 1}`,
@@ -1246,6 +1248,14 @@ export default workflow("yuantaTradeStatements", {
           await emitHumanAssistanceStage({
             stageId: "yuanta-trade-captcha-challenge",
             title: `Complete the YuanTa Trade verification challenge (attempt ${challengeRetry + 1})`,
+            challengeKind: "image-selection",
+            challengeImageRegion: {
+              id: "challenge-images",
+              label: "Verification challenge images",
+              semanticId: "yuanta-trade.login.challenge-images",
+              locator: challengeModal,
+            },
+            prompt: challengePrompt || undefined,
             targets: challengeTargets,
             contextRegions: [{
               id: "challenge-modal",

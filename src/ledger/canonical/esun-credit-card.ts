@@ -91,7 +91,7 @@ export type EsunCreditCardTransactionInput = {
   foreignAmount?: string | EsunCreditCardExactAmount | null;
   description: string;
   billingStatus: "billed" | "unbilled";
-  /** Optional issuer-settled period key. It is evidence scope, not query date. */
+  /** Optional issuer-settled billed-period key; it is never a query date. */
   statementPeriod?: string | null;
   statementKey?: string;
   sourceKey?: string;
@@ -209,7 +209,11 @@ export type EsunCreditCardIdentityInput = EsunCreditCardCaptureInput["identity"]
 
 /** A row shape emitted by the E.SUN combined billed/unbilled grid. */
 export type EsunCreditCardSourceRow = {
-  statementPeriod: string;
+  /**
+   * Optional issuer-settled period supplied with the source row. This is
+   * intentionally separate from the workflow's rolling query range.
+   */
+  issuerStatementPeriod?: string | null;
   /** Opaque HMAC of the issuer's masked first-four + last-four projection. */
   instrumentKey: string;
   cardNumber: string;
@@ -952,7 +956,9 @@ function createSourceRowTransaction(
     foreignAmount: foreign.amount,
     description: text(row.description, "Transaction description"),
     billingStatus,
-    statementPeriod: row.statementPeriod.trim() || null,
+    ...(row.paymentStatus === "已入帳" && row.issuerStatementPeriod?.trim()
+      ? { statementPeriod: row.issuerStatementPeriod.trim() }
+      : {}),
   };
 }
 

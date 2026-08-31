@@ -7,7 +7,7 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Locator, Page, Response } from "playwright";
+import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   admitPostDomesticDepositCaptureEvidence,
@@ -26,7 +26,10 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -312,8 +315,140 @@ function postIdLoginButton(page: Page): Locator {
   return page.locator("#tab1 .loginbtn a").filter({ hasText: "登入" });
 }
 
+const POST_LOGIN_WAIT_TIMEOUT_MS = 300_000;
+
+type PostLoginAttemptDependencies = {
+  submit: () => Promise<void>;
+  waitForSuccess: (signal: AbortSignal) => Promise<void>;
+};
+
+const postLoginDialogError = () =>
+  new Error(
+    "iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry.",
+  );
+
+/**
+ * Submit the iPost login form and wait for the signed-in landing page.
+ *
+ * iPost may optionally open a browser dialog immediately after the click. A
+ * Playwright dialog blocks the page until it is handled, so keep the handler
+ * scoped to this login attempt and race it against the normal success probe.
+ * The dialog is intentionally not classified as a CAPTCHA rejection here:
+ * the first version only prevents the browser session from hanging and lets
+ * the caller report a normal login failure.
+ */
+export async function runPostLoginAttempt(
+  page: Page,
+  { submit, waitForSuccess }: PostLoginAttemptDependencies,
+): Promise<void> {
+  const probeAbortController = new AbortController();
+  let rejectDialog!: (error: Error) => void;
+  const dialogDetected = new Promise<never>((_resolve, reject) => {
+    rejectDialog = reject;
+  });
+  const dialogHandler = (dialog: Dialog): void => {
+    let type = "unknown";
+    try {
+      type = dialog.type();
+    } catch {
+      // Keep dialog cleanup fail-closed if the browser closes it concurrently.
+    }
+    console.warn("ipost-login-dialog", { type });
+    void dialog.dismiss().then(
+      () => {
+        probeAbortController.abort();
+        rejectDialog(postLoginDialogError());
+      },
+      () => {
+        probeAbortController.abort();
+        rejectDialog(postLoginDialogError());
+      },
+    );
+  };
+
+  page.on("dialog", dialogHandler);
+  try {
+    const successProbe = waitForSuccess(probeAbortController.signal);
+    void successProbe.catch(() => undefined);
+    const loginOutcome = (async () => {
+      await submit();
+      await successProbe;
+    })();
+    await Promise.race([loginOutcome, dialogDetected]);
+  } finally {
+    probeAbortController.abort();
+    page.off("dialog", dialogHandler);
+  }
+}
+
+export async function submitPostLoginAndWait(page: Page): Promise<void> {
+  await runPostLoginAttempt(page, {
+    submit: async () => {
+      await postIdLoginButton(page).click();
+    },
+    waitForSuccess: (signal) =>
+      visibleDetailLinks(page)
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: POST_LOGIN_WAIT_TIMEOUT_MS,
+          signal,
+        }),
+  });
+}
+
 export function postManualAuthMessage(session: string): string {
   return `manual-auth-required: enter the iPost CAPTCHA in the browser, then run \`npx libretto resume --session ${session}\`.`;
+}
+
+export function postCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  const captchaInput = page.locator('input[name="captcha"]:visible').first();
+  return {
+    stageId: "ipost-login-captcha",
+    title: "Enter the iPost CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "post.login.captcha-input",
+        modes: ["click", "type"],
+        locator: captchaInput,
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "post.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    imagePreprocessing: ["remove-interference-lines"],
+    ocrAttemptPlan: [
+      { ocrPageSegmentationMode: "single-line" },
+      { ocrPageSegmentationMode: "single-word" },
+    ],
+    solveAcceptancePolicy: {
+      mode: "confidence-or-agreement",
+      conflictResolution: "reject",
+    },
+    expectedAnswerLength: 4,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: "post.login.captcha-image",
+      locator: page.locator(".codes_img img:visible").first(),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
 }
 
 export async function dismissPostNoticeIfPresent(page: Page): Promise<boolean> {
@@ -380,43 +515,18 @@ async function signInPost(
   await page.locator("#userID_1_Input").fill(userCode);
   await page.locator("#userPWD_1_Input").fill(password);
   await dismissPostNoticeIfPresent(page);
-  const captchaInput = page.locator('input[name="captcha"]').first();
+  const captchaInput = page.locator('input[name="captcha"]:visible').first();
   await captchaInput.focus();
 
   if (captchaCode) {
     await captchaInput.fill(captchaCode);
-    await postIdLoginButton(page).click();
+    await submitPostLoginAndWait(page);
   } else {
     const assistanceUrl = page.url();
     const assistedCaptchaElement = await captchaInput.elementHandle();
     if (!assistedCaptchaElement)
       throw new Error("iPost CAPTCHA input is unavailable for assistance.");
-    await emitHumanAssistanceStage({
-      stageId: "ipost-login-captcha",
-      title: "Enter the iPost CAPTCHA",
-      targets: [
-        {
-          id: "captcha-input",
-          label: "CAPTCHA input",
-          semanticId: "ipost.login.captcha-input",
-          modes: ["click", "type"],
-          locator: captchaInput,
-        },
-      ],
-      contextRegions: [
-        {
-          id: "captcha-challenge",
-          label: "CAPTCHA challenge and instructions",
-          semanticId: "ipost.login.captcha-challenge",
-        },
-      ],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: {
-        targetId: "captcha-input",
-        contextRegionIds: ["captcha-challenge"],
-        initialZoom: 1.15,
-      },
-    });
+    await emitHumanAssistanceStage(postCaptchaAssistanceStage(page));
     console.log(postManualAuthMessage(session));
     await pause(session);
     if (
@@ -459,12 +569,8 @@ async function signInPost(
         "iPost CAPTCHA is empty. Enter it in the browser before resuming.",
       );
     }
-    await postIdLoginButton(page).click();
+    await submitPostLoginAndWait(page);
   }
-
-  await visibleDetailLinks(page)
-    .first()
-    .waitFor({ state: "visible", timeout: 300_000 });
 }
 
 export function postLoginEntryUrl(href: string): boolean {

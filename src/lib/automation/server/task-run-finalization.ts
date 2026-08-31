@@ -47,6 +47,7 @@ export type AutomationTaskRunExecution = {
   command: ReturnType<typeof resolveTaskCommand>;
   session: string | null;
   owner: OwnedAutomationSession | null;
+  executionId: string;
 };
 
 export type AutomationTaskRunFinalizationContext = {
@@ -247,6 +248,30 @@ export async function finalizeForceQuitTaskRun(
   });
   if (operationalError) throw operationalError;
   return { session: sessionCleanup.session };
+}
+
+export async function finalizeFailedWaitingRun(
+  db: ReturnType<typeof openLedgerDatabase>,
+  run: AutomationTaskRun,
+  workflowError: string,
+) {
+  const current = taskRunById(db, run.taskRunId);
+  if (!current || current.status !== "waiting_for_human") return;
+  const sessionCleanup = await finalizeAutomationSessionForRun(
+    current,
+    workflowError,
+    "exact",
+  );
+  await finalizeTaskRunTransition(db, run, {
+    status: "failed",
+    sessionDisposition: "relinquish",
+    exitCode: null,
+    signal: null,
+    errorMessage: null,
+    logTail: current.logTail,
+  }, {
+    sessionCleanup,
+  });
 }
 
 export async function finalizePersistedActiveRuns(

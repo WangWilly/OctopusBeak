@@ -3,6 +3,10 @@
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
+  import type {
+    CathayGmailOtpConnectionError,
+    CathayGmailOtpStatus,
+  } from "$lib/automation/types.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     canResumeAssist,
@@ -81,12 +85,20 @@
   let credentialFileDraftNames: Record<string, string> = {};
   let credentialFileErrors: Record<string, string> = {};
   let focusedCredentialKey: string | null = null;
+  let cathayGmailOtpBusy = false;
+  let cathayGmailOtpError = "";
   let statementSelectionDrafts: Record<string, string[]> = {};
   let statementSelectionConfirmed = false;
   let onboardingCredentialTargetKey: string | null = null;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
+  const defaultCathayGmailOtpStatus: CathayGmailOtpStatus = {
+    enabled: false,
+    connectedEmail: null,
+    needsAuthorization: false,
+  };
+  let cathayGmailOtpStatus: CathayGmailOtpStatus = defaultCathayGmailOtpStatus;
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
@@ -139,6 +151,7 @@
   }));
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
+  $: cathayGmailOtpStatus = automation.cathayGmailOtp ?? defaultCathayGmailOtpStatus;
   $: statementSelectionDirty = credentialGroups.some((group) =>
     (statementSelectionDrafts[group.id] ?? []).join(",") !== group.selectedStatementTypeIds.join(","),
   );
@@ -331,11 +344,26 @@
       : $t.automation.unreadableCertificateFile;
   }
 
+  function cathayGmailOtpConnectionErrorMessage(
+    error: CathayGmailOtpConnectionError | undefined,
+  ) {
+    if (error === "authorization-cancelled")
+      return $t.automation.cathayGmailOtpAuthorizationCancelled;
+    if (error === "token-exchange-failed")
+      return $t.automation.cathayGmailOtpTokenExchangeFailed;
+    if (error === "gmail-profile-failed")
+      return $t.automation.cathayGmailOtpProfileFailed;
+    if (error === "credential-storage-failed")
+      return $t.automation.cathayGmailOtpStorageFailed;
+    return $t.automation.cathayGmailOtpActionFailed;
+  }
+
   function resetCredentialChanges() {
     credentialDrafts = {};
     credentialFileDraftNames = {};
     credentialFileErrors = {};
     focusedCredentialKey = null;
+    cathayGmailOtpError = "";
     onboardingCredentialTargetKey = null;
     statementSelectionConfirmed = false;
     statementSelectionError = "";
@@ -386,6 +414,58 @@
       ...groupEnabled,
       [groupId]: !(groupEnabled[groupId] !== false),
     };
+  }
+
+  async function enableCathayGmailOtp() {
+    if (cathayGmailOtpBusy) return;
+    cathayGmailOtpBusy = true;
+    cathayGmailOtpError = "";
+    try {
+      const result = await window.octopusBeak.automation.enableCathayGmailOtp();
+      await reload();
+      if (result.connectionError)
+        cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
+    } catch {
+      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
+    } finally {
+      cathayGmailOtpBusy = false;
+    }
+  }
+
+  async function setCathayGmailOtpEnabled(enabled: boolean) {
+    if (cathayGmailOtpBusy) return;
+    cathayGmailOtpBusy = true;
+    cathayGmailOtpError = "";
+    try {
+      if (enabled) {
+        const result = await window.octopusBeak.automation.enableCathayGmailOtp();
+        await reload();
+        if (result.connectionError)
+          cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
+      } else {
+        await window.octopusBeak.automation.setCathayGmailOtpEnabled(false);
+        await reload();
+      }
+    } catch {
+      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
+    } finally {
+      cathayGmailOtpBusy = false;
+    }
+  }
+
+  async function disconnectCathayGmailOtp() {
+    if (cathayGmailOtpBusy) return;
+    if (!confirm($t.automation.confirmCathayGmailOtpDisconnect)) return;
+    cathayGmailOtpBusy = true;
+    cathayGmailOtpError = "";
+    try {
+      await window.octopusBeak.automation.disconnectCathayGmailOtp();
+      await reload();
+    } catch {
+      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
+    } finally {
+      cathayGmailOtpBusy = false;
+    }
   }
 
   function toggleStatementType(groupId: string, typeId: string) {
@@ -1657,6 +1737,71 @@
                 {/if}
               {/each}
             </div>
+            {#if selectedCredentialGroup.id === "cathay"}
+              <section class="gmail-otp-settings" aria-labelledby="cathay-gmail-otp-title">
+                <div class="gmail-otp-head">
+                  <div>
+                    <h4 id="cathay-gmail-otp-title">{$t.automation.cathayGmailOtpTitle}</h4>
+                    <p>{$t.automation.cathayGmailOtpDescription}</p>
+                  </div>
+                  <button
+                    class="switch credential-switch"
+                    type="button"
+                    aria-pressed={cathayGmailOtpStatus.enabled}
+                    disabled={cathayGmailOtpBusy}
+                    onclick={() => void setCathayGmailOtpEnabled(!cathayGmailOtpStatus.enabled)}
+                  >
+                    <span>{$t.automation.cathayGmailOtpToggle}</span>
+                    <span class="switch-track" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <p class="gmail-otp-status" aria-live="polite">
+                  {#if cathayGmailOtpStatus.needsAuthorization}
+                    {$t.automation.cathayGmailOtpNeedsAuthorization}
+                  {:else if cathayGmailOtpStatus.connectedEmail}
+                    {$t.automation.cathayGmailOtpConnected(cathayGmailOtpStatus.connectedEmail)}
+                  {:else}
+                    {$t.automation.cathayGmailOtpNotConnected}
+                  {/if}
+                </p>
+                <div class="gmail-otp-actions">
+                  {#if !cathayGmailOtpStatus.connectedEmail}
+                    <button
+                      class="button secondary"
+                      type="button"
+                      disabled={cathayGmailOtpBusy}
+                      onclick={() => void enableCathayGmailOtp()}
+                    >
+                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
+                      {$t.automation.cathayGmailOtpConnect}
+                    </button>
+                  {:else if cathayGmailOtpStatus.needsAuthorization}
+                    <button
+                      class="button secondary"
+                      type="button"
+                      disabled={cathayGmailOtpBusy}
+                      onclick={() => void enableCathayGmailOtp()}
+                    >
+                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
+                      {$t.automation.cathayGmailOtpReconnect}
+                    </button>
+                  {/if}
+                  {#if cathayGmailOtpStatus.connectedEmail}
+                    <button
+                      class="button secondary"
+                      type="button"
+                      disabled={cathayGmailOtpBusy}
+                      onclick={() => void disconnectCathayGmailOtp()}
+                    >
+                      {$t.automation.cathayGmailOtpDisconnect}
+                    </button>
+                  {/if}
+                </div>
+                {#if cathayGmailOtpError}
+                  <p class="credential-error" aria-live="polite">{cathayGmailOtpError}</p>
+                {/if}
+              </section>
+            {/if}
             {#if selectedCredentialGroup.id === "fubon" && selectedCredentialGroup.statementTypes?.length}
               <fieldset class="statement-selection" id="fubon-statement-selection" tabindex="-1">
                 <legend>{$t.automation.statementsToCollect}</legend>
@@ -3045,6 +3190,52 @@
   .credential-field input.dirty {
     border-color: color-mix(in oklch, var(--accent) 44%, var(--border));
     background: var(--accent-soft);
+  }
+
+  .gmail-otp-settings {
+    margin-top: var(--space-6);
+    padding: var(--space-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+  }
+
+  .gmail-otp-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .gmail-otp-head h4 {
+    margin: 0 0 var(--space-2);
+    font-size: 16px;
+  }
+
+  .gmail-otp-head p,
+  .gmail-otp-status {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .gmail-otp-status {
+    margin-top: var(--space-3);
+  }
+
+  .gmail-otp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+  }
+
+  .gmail-otp-actions .button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 36px;
   }
 
   .certificate-file-control {

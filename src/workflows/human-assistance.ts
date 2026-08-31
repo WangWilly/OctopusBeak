@@ -7,7 +7,14 @@ import {
   type HumanAssistanceContractInput,
   type HumanVerificationTarget,
   type VerificationContextRegion,
+  type VerificationChallengeImageRegion,
+  type VerificationChallengeKind,
+  type ChallengeCharacterSet,
+  type CaptchaImagePreprocessingMode,
+  type CaptchaOcrPageSegmentationMode,
+  type CaptchaOcrAttemptStrategy,
   type HumanAssistanceFocus,
+  type SolveAcceptancePolicy,
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
 
@@ -19,6 +26,10 @@ export type WorkflowHumanAssistanceContextRegion = Omit<VerificationContextRegio
   locator?: Pick<Locator, "boundingBox">;
 };
 
+export type WorkflowChallengeImageRegion = Omit<VerificationChallengeImageRegion, "rect"> & {
+  locator: Pick<Locator, "boundingBox">;
+};
+
 export type WorkflowHumanAssistanceStage = {
   stageId: string;
   title: string;
@@ -26,6 +37,16 @@ export type WorkflowHumanAssistanceStage = {
   contextRegions: readonly WorkflowHumanAssistanceContextRegion[];
   completion: HumanAssistanceCompletionInput;
   focus: HumanAssistanceFocus;
+  challengeKind?: VerificationChallengeKind;
+  challengeImageRegion?: WorkflowChallengeImageRegion;
+  charset?: ChallengeCharacterSet;
+  imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
+  ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
+  ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
+  solveAcceptancePolicy?: SolveAcceptancePolicy;
+  solverConfidenceThreshold?: number;
+  expectedAnswerLength?: number;
+  prompt?: string;
 };
 
 export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
@@ -78,13 +99,26 @@ export async function emitHumanAssistanceStage(
     contextRegions.push({ ...descriptor, ...(rect ? { rect } : {}) });
   }
 
+  let challengeImageRegion: VerificationChallengeImageRegion | undefined;
+  if (stage.challengeImageRegion) {
+    const rect = await stage.challengeImageRegion.locator.boundingBox().catch(() => null);
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const { locator: _locator, ...descriptor } = stage.challengeImageRegion;
+      challengeImageRegion = { ...descriptor, rect };
+    }
+  }
+
+  const {
+    targets: _stageTargets,
+    contextRegions: _stageContextRegions,
+    challengeImageRegion: _stageChallengeImageRegion,
+    ...contractMetadata
+  } = stage;
   const contract: HumanAssistanceContractInput = {
-    stageId: stage.stageId,
-    title: stage.title,
+    ...contractMetadata,
     targets,
     contextRegions,
-    completion: stage.completion,
-    focus: stage.focus,
+    ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
   };
   return publishHumanAssistanceContract(contract, publish);
 }

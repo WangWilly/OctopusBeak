@@ -4,6 +4,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  statSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
@@ -94,14 +95,23 @@ export function automationCleanupFailureDetails(
 }
 
 export function automationSessionFromLog(output: string) {
-  return output.match(/automation-session:\s+([A-Za-z0-9._-]+)/i)?.[1] ?? null;
+  const pattern = /automation-session:\s+([A-Za-z0-9._-]+)/gi;
+  let session: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(output)) !== null) {
+    session = match[1] ?? null;
+  }
+  return session;
 }
 
 export function resumeSessionFromLog(output: string) {
-  const match = output.match(
-    /libretto resume --session\s+([\w-]+)|Resume requested for session\s+["']?([\w-]+)/i,
-  );
-  return match?.[1] ?? match?.[2] ?? null;
+  const pattern = /libretto resume --session\s+([\w-]+)|Resume requested for session\s+["']?([\w-]+)/gi;
+  let session: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(output)) !== null) {
+    session = match[1] ?? match[2] ?? null;
+  }
+  return session;
 }
 
 export function sessionFromRun(run: AutomationTaskRun) {
@@ -109,14 +119,29 @@ export function sessionFromRun(run: AutomationTaskRun) {
     const buffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
     const descriptor = openSync(run.logPath, "r");
     let length: number;
+    let output: string;
     try {
       length = readSync(descriptor, buffer, 0, SESSION_LOG_PREFIX_BYTES, 0);
+      const prefix = buffer.toString("utf8", 0, length);
+      const size = statSync(run.logPath).size;
+      if (size > SESSION_LOG_PREFIX_BYTES) {
+        const tailBuffer = Buffer.alloc(SESSION_LOG_PREFIX_BYTES);
+        const tailLength = readSync(
+          descriptor,
+          tailBuffer,
+          0,
+          SESSION_LOG_PREFIX_BYTES,
+          Math.max(0, size - SESSION_LOG_PREFIX_BYTES),
+        );
+        output = `${prefix}\n${tailBuffer.toString("utf8", 0, tailLength)}`;
+      } else {
+        output = prefix;
+      }
     } finally {
       closeSync(descriptor);
     }
-    const output = buffer.toString("utf8", 0, length);
-    const session =
-      automationSessionFromLog(output) ?? resumeSessionFromLog(output);
+    output += `\n${run.logTail}`;
+    const session = automationSessionFromLog(output) ?? resumeSessionFromLog(output);
     if (session) return session;
   } catch {
     // The bounded log tail remains the recovery source when the log file is unavailable.
@@ -205,6 +230,12 @@ export async function isLiveOwnedAutomationSession(
 export function automationSessionOwnerForRun(
   run: AutomationTaskRun,
 ): OwnedAutomationSession | null {
+  // During a bounded CAPTCHA retry campaign one persisted task run owns
+  // several sequential browser sessions. The log is intentionally append-only
+  // and therefore may contain an earlier round's session first; while the
+  // process is live, the registry is the authoritative owner for this run.
+  const active = ownedAutomationSession(run.taskId);
+  if (active?.taskRunId === run.taskRunId) return active;
   const session = sessionFromRun(run);
   return session
     ? {
@@ -361,8 +392,12 @@ export async function finalizeAutomationSessionForRun(
   run: AutomationTaskRun,
   workflowError: string | null,
   mode: "exact" | "recovery",
+  activeOwner?: OwnedAutomationSession | null,
 ): Promise<AutomationSessionCleanupResult> {
-  const owner = automationSessionOwnerForRun(run);
+  // Live retry executions can append several session identities to one task
+  // log. The in-memory owner is authoritative while the task is running;
+  // only recovery callers should derive an identity from persisted log data.
+  const owner = activeOwner ?? automationSessionOwnerForRun(run);
   if (!owner) {
     return {
       session: null,

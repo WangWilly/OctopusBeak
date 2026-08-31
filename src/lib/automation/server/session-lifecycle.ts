@@ -6,6 +6,7 @@ import { readLibrettoSessionState } from "./libretto-session.ts";
 export const WAITING_SESSION_TIMEOUT_MS = 20 * 60 * 1_000;
 const TERM_GRACE_MS = 1_500;
 const KILL_GRACE_MS = 300;
+const HELPER_TERMINATION_GRACE_MS = 1_500;
 const CLOSE_TIMEOUT_MS = 1_000;
 
 export type OwnedAutomationSession = {
@@ -15,13 +16,21 @@ export type OwnedAutomationSession = {
   pid: number | null;
 };
 
+export type AutomationSessionCleanupWarning = {
+  sessionId: string;
+  retainedPid: number | null;
+  reason: "close-helper-termination-timeout-after-session-closed";
+};
+
 export type FinalizeSessionDeps = {
   closeSession(session: string): Promise<void>;
   terminateCloseSession?(session: string): void | Promise<void>;
   startCloseSession?(session: string): CloseSessionHandle;
   isExpectedDaemon(pid: number, session: string): boolean;
+  isSessionAbsent?(session: string): boolean;
   signalProcessGroup(pid: number, signal: NodeJS.Signals): void;
   wait(ms: number): Promise<void>;
+  onCleanupWarning?(warning: AutomationSessionCleanupWarning): void;
   timerDeps?: TimerDeps;
 };
 
@@ -193,6 +202,18 @@ async function closeOwnedSession(
   );
 
   if (pid === null) {
+    if (
+      canSuppressHelperTerminationError(
+        owned.session,
+        closeError,
+        helperTerminationError,
+        readError,
+        deps,
+      )
+    ) {
+      reportSuppressedHelperTermination(owned.session, pid, deps);
+      return;
+    }
     if (closeError) {
       const readContext = readError ? ` state read: ${String(readError)};` : "";
       throw new Error(
@@ -203,6 +224,23 @@ async function closeOwnedSession(
   }
 
   const daemonError = await terminateOwnedDaemon(pid, owned.session, deps);
+  // The close helper is only a transport for requesting session shutdown. If
+  // that transport outlives its termination grace period, suppress its error
+  // only after both the owned daemon and the exact session state are gone.
+  // A daemon or session that remains keeps cleanup fail-closed.
+  if (
+    !daemonError &&
+    canSuppressHelperTerminationError(
+      owned.session,
+      closeError,
+      helperTerminationError,
+      readError,
+      deps,
+    )
+  ) {
+    reportSuppressedHelperTermination(owned.session, pid, deps);
+    return;
+  }
   throwSessionFinalizationErrors(helperTerminationError, daemonError);
 }
 
@@ -218,6 +256,52 @@ function readOwnedSessionPid(owned: OwnedAutomationSession): {
     };
   } catch (readError) {
     return { pid: null, readError };
+  }
+}
+
+function canSuppressHelperTerminationError(
+  session: string,
+  closeError: unknown,
+  helperTerminationError: Error | null,
+  readError: unknown,
+  deps: FinalizeSessionDeps,
+): boolean {
+  return (
+    helperTerminationError !== null &&
+    closeError === helperTerminationError &&
+    !readError &&
+    isExactSessionAbsent(session, deps)
+  );
+}
+
+function isExactSessionAbsent(
+  session: string,
+  deps: FinalizeSessionDeps,
+): boolean {
+  try {
+    return deps.isSessionAbsent
+      ? deps.isSessionAbsent(session)
+      : readLibrettoSessionState(session) === null;
+  } catch {
+    return false;
+  }
+}
+
+function reportSuppressedHelperTermination(
+  session: string,
+  pid: number | null,
+  deps: FinalizeSessionDeps,
+): void {
+  const warning: AutomationSessionCleanupWarning = {
+    sessionId: session,
+    retainedPid: pid,
+    reason: "close-helper-termination-timeout-after-session-closed",
+  };
+  try {
+    if (deps.onCleanupWarning) deps.onCleanupWarning(warning);
+    else console.warn("automation-session-cleanup-warning", warning);
+  } catch {
+    // Logging must not change the cleanup outcome.
   }
 }
 
@@ -242,12 +326,12 @@ async function closeSessionHelper(
   if (closeResult.timedOut) {
     const termination = await settleWithin(
       closeHandle.terminate(),
-      KILL_GRACE_MS,
+      HELPER_TERMINATION_GRACE_MS,
       timerDeps,
     );
     if (termination.timedOut) {
       helperTerminationError = new Error(
-        `Libretto close helper remained after ${KILL_GRACE_MS}ms termination deadline`,
+        `Libretto close helper remained after ${HELPER_TERMINATION_GRACE_MS}ms termination deadline`,
       );
     }
     closeError = termination.timedOut

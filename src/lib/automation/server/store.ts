@@ -333,6 +333,8 @@ export function updateTaskRun(
     Pick<
       AutomationTaskRun,
       | "status"
+      | "attempt"
+      | "maxAttempts"
       | "finishedAt"
       | "exitCode"
       | "signal"
@@ -353,11 +355,13 @@ export function updateTaskRun(
   db.prepare(
     `
     UPDATE automation_task_runs
-    SET status = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
+    SET status = ?, attempt = ?, max_attempts = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
     WHERE task_run_id = ?
   `,
   ).run(
     next.status,
+    next.attempt,
+    next.maxAttempts,
     next.finishedAt,
     next.exitCode,
     next.signal,

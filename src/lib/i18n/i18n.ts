@@ -470,6 +470,29 @@ const en = {
     inlineLogTitle: (task: string) => `${task} · Live logs`,
     credentialsTitle: "Sign-in details",
     credentialsDescription: "Your sign-in details stay on this device.",
+    cathayGmailOtpTitle: "Cathay Gmail OTP",
+    cathayGmailOtpToggle: "Automatically enter Email OTP",
+    cathayGmailOtpDescription:
+      "When enabled, Cathay login can read one matching OTP from your Gmail account and submit it once.",
+    cathayGmailOtpConnected: (email: string) => `Connected Gmail: ${email}`,
+    cathayGmailOtpNotConnected: "No Google account connected.",
+    cathayGmailOtpNeedsAuthorization:
+      "Google authorization is required before Gmail can be read.",
+    cathayGmailOtpConnect: "Connect Google account",
+    cathayGmailOtpReconnect: "Reconnect Google account",
+    cathayGmailOtpDisconnect: "Disconnect Google account",
+    cathayGmailOtpActionFailed:
+      "The Gmail connection could not be updated. Cathay will use manual Email OTP entry.",
+    cathayGmailOtpAuthorizationCancelled:
+      "Google authorization was cancelled. The Gmail connection remains off.",
+    cathayGmailOtpTokenExchangeFailed:
+      "Google authorization could not be completed. Reconnect the Google account and try again.",
+    cathayGmailOtpProfileFailed:
+      "Gmail account details could not be read. Confirm Gmail API access and try again.",
+    cathayGmailOtpStorageFailed:
+      "Google authorization could not be stored securely on this device.",
+    confirmCathayGmailOtpDisconnect:
+      "Disconnect Google account and disable automatic Email OTP?",
     credentialSearch: "Search services",
     setupGuide: "Setup guide",
     whatYouNeed: "What you’ll need",
@@ -1234,6 +1257,28 @@ const zh: typeof en = {
     inlineLogTitle: (task) => `${task}・即時日誌`,
     credentialsTitle: "登入資料",
     credentialsDescription: "登入資料只儲存在這台裝置上。",
+    cathayGmailOtpTitle: "國泰 Gmail 驗證碼",
+    cathayGmailOtpToggle: "自動輸入 Email OTP",
+    cathayGmailOtpDescription:
+      "開啟後，國泰登入可以從 Gmail 取得符合條件的驗證碼，並自動送出一次。",
+    cathayGmailOtpConnected: (email) => `已連結 Gmail：${email}`,
+    cathayGmailOtpNotConnected: "尚未連結 Google 帳號。",
+    cathayGmailOtpNeedsAuthorization: "需要重新授權 Google，才能讀取 Gmail。",
+    cathayGmailOtpConnect: "連結 Google 帳號",
+    cathayGmailOtpReconnect: "重新連結 Google 帳號",
+    cathayGmailOtpDisconnect: "解除 Google 帳號連結",
+    cathayGmailOtpActionFailed:
+      "無法更新 Gmail 連結；國泰將改用人工輸入 Email OTP。",
+    cathayGmailOtpAuthorizationCancelled:
+      "已取消 Google 授權，Gmail 連結仍保持關閉。",
+    cathayGmailOtpTokenExchangeFailed:
+      "無法完成 Google 授權交換，請重新連結 Google 帳號後再試一次。",
+    cathayGmailOtpProfileFailed:
+      "無法讀取 Gmail 帳號資料，請確認 Gmail API 權限後再試一次。",
+    cathayGmailOtpStorageFailed:
+      "無法在這台裝置上安全保存 Google 授權。",
+    confirmCathayGmailOtpDisconnect:
+      "要解除 Google 帳號連結並關閉自動輸入 Email OTP 嗎？",
     credentialSearch: "搜尋服務",
     setupGuide: "設定說明",
     whatYouNeed: "需要準備",
