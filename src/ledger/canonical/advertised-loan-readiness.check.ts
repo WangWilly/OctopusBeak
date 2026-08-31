@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ADVERTISED_LOAN_SOURCE_IDS,
+  ADVERTISED_LOAN_READINESS,
   LOAN_CONTRACT_FIXTURES,
   admitCanonicalLoanCapture,
   evaluateAdvertisedLoanReadiness,
@@ -14,7 +15,7 @@ test("advertised loan contracts cover exactly Fubon and Yuanta", () => {
     const fixture = LOAN_CONTRACT_FIXTURES[sourceId];
     const admitted = admitCanonicalLoanCapture(fixture);
 
-    assert.match(admitted.contractVersion, /^loan\/canonical\/v1\./);
+    assert.match(admitted.contractVersion, /^loan\/canonical\/v[12]\./);
     assert.equal(admitted.identity.accountType, "loan");
     assert.equal(admitted.scope.completeness, "complete-range");
     assert.equal(admitted.semantics.status, "posted");
@@ -62,6 +63,18 @@ test("loan admission fails closed when balance effective time is substituted", (
   );
 });
 
+test("readiness stays blocked while either live attestation is pending", () => {
+  const pendingEntries = ADVERTISED_LOAN_READINESS.map((entry) => ({
+    ...entry,
+    fixtureEvidence: "canonical-versioned-synthetic" as const,
+    liveValidation: "pending" as const,
+    blockers: ["live-validation-pending"] as const,
+  }));
+  const readiness = evaluateAdvertisedLoanReadiness(pendingEntries);
+  assert.equal(readiness.status, "blocked");
+  assert.deepEqual(readiness.pendingLiveValidationSourceIds, ["fubon", "yuanta"]);
+});
+
 test("loan admission fails closed for inferred direction, incomplete range, and unsupported facts", () => {
   const fixture = structuredClone(LOAN_CONTRACT_FIXTURES.yuanta);
   assert.throws(
@@ -81,6 +94,14 @@ test("loan admission fails closed for inferred direction, incomplete range, and 
         scope: { ...fixture.scope, pageCount: 2 },
       }),
     /page count|completeness/i,
+  );
+  assert.throws(
+    () =>
+      admitCanonicalLoanCapture({
+        ...fixture,
+        pages: fixture.pages.map((page) => ({ ...page, terminal: false })),
+      }),
+    /terminal page|completeness/i,
   );
   assert.throws(
     () =>

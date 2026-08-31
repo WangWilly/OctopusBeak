@@ -7,6 +7,9 @@ import { createServer } from "vite";
 const { persistFubonLoanCapture } = await import(
   "../ledger/canonical/fubon-loan.ts"
 );
+const { FUBON_LOAN_CONTRACT_VERSION } = await import(
+  "../ledger/canonical/loan-financial.ts"
+);
 
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
@@ -271,6 +274,9 @@ const navigateToLoanStatementsPage = module.navigateToLoanStatementsPage as (
   page: Page,
   options?: LoanNavigationOptions,
 ) => Promise<unknown>;
+const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
+  rows: readonly string[][],
+) => string[][];
 
 test("uses an already-rendered loan form without navigation or goto", async () => {
   const scope = fakeScope("txnFrame");
@@ -388,6 +394,13 @@ test("aborts a stuck navigation action before probing the replaced frame", async
   assert.equal(landing.aborts, 2);
 });
 
+test("fails closed when a Fubon result contains an unexpected non-header row", () => {
+  assert.throws(
+    () => parseFubonLoanStatementRows([new Array(7).fill("unexpected")]),
+    /unexpected Fubon loan result row/i,
+  );
+});
+
 test("bounds a frame probe that never resolves and fails closed", async () => {
   const header = fakeScope("frame1");
   const landing = fakeScope("txnFrame");
@@ -422,6 +435,26 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
       observedAt: "2026-02-01T00:00:00.000Z",
       startDate: "2026-01-01",
       endDate: "2026-01-31",
+      scope: {
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+        pageCount: 1,
+        terminal: true,
+      },
+      pages: [
+        {
+          pageOrdinal: 0,
+          responseCode: "200",
+          terminal: true,
+          rowCount: 1,
+          proofKind: "source-declared-terminal-range",
+        },
+      ],
+      counterpartTransactions: [],
+      relations: [],
       rows: [
         {
           transactionDate: "2026/01/05",

@@ -9,10 +9,16 @@ import {
   admitCanonicalLoanCapture,
   commitCanonicalLoanCapture,
   createCanonicalLoanStore,
+  createCanonicalLoanCapture,
   queryCanonicalLoanCurrent,
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
 } from "./loan-financial.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import {
   CANONICAL_SQLITE_FILE,
   createCanonicalSourceStore,
@@ -36,6 +42,199 @@ import {
   YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
 } from "./yuanta-loan.ts";
 
+test("Fubon loan contract correction preserves immutable v1 occurrences", async () => {
+  const opaque = (label: string): `sha256:${string}` =>
+    `sha256:${label.padEnd(64, "0").slice(0, 64)}`;
+  const legacyRoute = "fubon/loan/canonical-v1";
+  const legacyPayload = JSON.stringify({
+    sourceRecordKey: opaque("legacy-occurrence"),
+    balanceSourceEvidence: [
+      {
+        sourceField: "statement-as-of",
+        value: "2026-01-05T23:59:59+08:00",
+        precision: "second",
+      },
+    ],
+  });
+  const legacyCapture = {
+    captureId: "fubon-loan-collision-regression-v1",
+    authorityRoute: legacyRoute,
+    contractVersion: "loan/canonical/v1.fubon",
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: opaque("legacy-connection"),
+      identityEpochKey: opaque("legacy-epoch"),
+      stream: "loan",
+      recordKind: "fubon-loan-transaction",
+      subjectDigest: opaque("legacy-subject"),
+      accountNo: opaque("legacy-account"),
+      accountType: "loan",
+      currency: "TWD",
+    },
+    observedAt: "2026-02-01T00:00:00.000Z",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.fubon",
+      absenceAuthority: null,
+      contractFingerprint: opaque("legacy-contract"),
+      preflightFingerprint: opaque("legacy-preflight"),
+      pageCount: 1,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: legacyRoute,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: legacyRoute,
+      effectiveTimeBasis: "transaction-time",
+      effectiveTimeRuleVersion: legacyRoute,
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      timeOrigin: "defaulted_local_midnight",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        responseDigest: opaque("legacy-response"),
+        proofKind: "source-declared-terminal-range",
+        contractFingerprint: opaque("legacy-contract"),
+        preflightFingerprint: opaque("legacy-preflight"),
+        metadataJson: "{}",
+      },
+    ],
+    records: [
+      {
+        occurrenceKey: opaque("legacy-occurrence"),
+        collisionKey: opaque("legacy-collision"),
+        providerKey: opaque("legacy-provider"),
+        contentHash: opaque("legacy-content"),
+        sequenceLexeme: "1",
+        compactJson: legacyPayload,
+        amount: { coefficient: "100", scale: 0 },
+        balanceAfter: null,
+        currency: "TWD",
+        direction: "outflow",
+        sourceTime: {
+          localDate: "2026-01-05",
+          localTime: "00:00:00",
+          timeZone: "Asia/Taipei",
+          epochMilliseconds: Date.parse("2026-01-05T00:00:00+08:00"),
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        effectiveOn: "2026-01-05",
+        transactionDateTimeLocal: "2026-01-05T00:00:00",
+        description: null,
+      },
+    ],
+  } satisfies CanonicalFinancialDepositCapture;
+  const correctedInput = {
+    accountValue: "fubon-collision-regression-account",
+    sourceConnectionScope: "fubon-collision-regression-connection",
+    observedAt: "2026-02-02T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
+    rows: [
+      {
+        transactionDate: "2026/01/05",
+        transactionContent: "LOAN-DISBURSEMENT",
+        transactionAmount: "100.00",
+        balanceAfterTransaction: "100.00",
+      },
+    ],
+  } as const;
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      admitCanonicalFinancialDepositCapture(legacyCapture),
+    );
+    const legacyBefore = store.db
+      .prepare(
+        `SELECT record.payload_json AS payload
+         FROM source_records record
+         JOIN source_captures capture ON capture.capture_id = record.capture_id
+         WHERE capture.authority_route = ?`,
+      )
+      .get(legacyRoute) as { payload?: string } | undefined;
+    assert.equal(legacyBefore?.payload, legacyPayload);
+
+    const corrected = buildFubonLoanCapture(correctedInput);
+    assert.equal(corrected.authorityRoute, "fubon/loan/canonical-v2");
+    assert.equal(corrected.contractVersion, "loan/canonical/v2.fubon");
+    assert.notEqual(
+      corrected.records[0]?.sourceRecordKey,
+      legacyCapture.records[0]?.occurrenceKey,
+    );
+    assert.notEqual(
+      corrected.identity.subjectDigest,
+      legacyCapture.identity.subjectDigest,
+    );
+
+    await persistFubonLoanCapture(store, correctedInput);
+    const routes = store.db
+      .prepare(
+        `SELECT authority_route AS route, COUNT(*) AS count
+         FROM source_captures
+         WHERE authority_route LIKE 'fubon/loan/%'
+         GROUP BY authority_route ORDER BY authority_route`,
+      )
+      .all() as Array<{ route?: string; count?: number }>;
+    assert.deepEqual(
+      routes.map(({ route, count }) => ({ route, count })),
+      [
+        { route: "fubon/loan/canonical-v1", count: 1 },
+        { route: "fubon/loan/canonical-v2", count: 1 },
+      ],
+    );
+    const legacyAfter = store.db
+      .prepare(
+        `SELECT record.payload_json AS payload
+         FROM source_records record
+         JOIN source_captures capture ON capture.capture_id = record.capture_id
+         WHERE capture.authority_route = ?`,
+      )
+      .get(legacyRoute) as { payload?: string } | undefined;
+    assert.equal(legacyAfter?.payload, legacyPayload);
+  } finally {
+    store.close();
+  }
+});
+
 test("Fubon adapter commits source-scoped exact rows through all query seams", async () => {
   const input = {
     accountValue: "fubon-option-test",
@@ -43,6 +242,26 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
     observedAt: "2026-02-01T00:00:00.000Z",
     startDate: "2026-01-01",
     endDate: "2026-01-31",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 2,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
     rows: [
       {
         transactionDate: "2026/01/05",
@@ -72,6 +291,12 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
   assert.deepEqual(first.records[1]?.amount, { coefficient: "1250000", scale: 2 });
   assert.equal(first.records[1]?.eventEvidence.sourceRecordKey, first.records[1]?.sourceRecordKey);
   assert.equal(first.balanceObservations.length, 2);
+  assert.equal(first.balanceObservations[1]?.effectiveAt, "2026-01-31");
+  assert.equal(first.balanceObservations[1]?.effectiveAtPrecision, "date");
+  assert.equal(
+    first.balanceObservations[1]?.effectiveTimeEvidence.sourceFieldRole,
+    "transaction-date",
+  );
 
   const store = createCanonicalLoanStore(":memory:");
   try {
@@ -82,6 +307,8 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
     assert.equal(current.accounts.length, 1);
     assert.equal(current.transactions.length, 2);
     assert.equal(current.balanceObservations.length, 1);
+    assert.equal(current.relations.length, 0);
+    assert.equal(committed.relationCount, 0);
     assert.equal(
       queryFubonLoanHistorical(store, {
         knowledgeAt: committed.commitSequence,
@@ -107,6 +334,26 @@ test("Yuanta adapter preserves explicit event mapping and exact source evidence"
     observedAt: "2026-02-01T00:00:00.000Z",
     startDate: "2026-01-01",
     endDate: "2026-01-31",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
     rows: [
       {
         transactionDate: "2026/01/05",
@@ -157,6 +404,26 @@ test("Yuanta source codebook maps the explicit temporary receipt to payment only
     observedAt: "2026-02-01T00:00:00.000Z",
     startDate: "2026-01-01",
     endDate: "2026-01-31",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
     rows: [
       {
         transactionDate: "2026/01/05",
@@ -282,6 +549,129 @@ test("loan canonical writer preserves source-scoped accounts and exact facts", a
     assert.equal(lineage.lineage[0]?.payload.eventKind, "disbursement");
   } finally {
     store.close();
+  }
+});
+
+test("canonical loan capture preserves explicitly supplied counterpart evidence", () => {
+  const fixture = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  const rows = fixture.records.map((record) => ({
+    sourceRecordKey: record.sourceRecordKey,
+    occurrenceIndex: record.occurrenceIndex,
+    effectiveOn: record.effectiveOn,
+    sourceTime: record.sourceTime,
+    sourceCode: record.eventEvidence.sourceCode,
+    eventKind: record.eventKind,
+    direction: record.direction,
+    amount: record.amount,
+    description: record.description ?? undefined,
+    ...(record.balanceSourceEvidence?.[0]
+      ? {
+            balance: {
+              observationKey: fixture.balanceObservations[0]!.observationKey,
+              balance: record.balanceSourceEvidence[0].balance,
+              effectiveAt: record.balanceSourceEvidence[0].effectiveAt,
+              effectiveAtPrecision: "date" as const,
+              effectiveAtTimeOrigin: "source_reported" as const,
+              effectiveAtField: record.balanceSourceEvidence[0].effectiveAtField,
+            },
+        }
+      : {}),
+  }));
+  const rebuilt = createCanonicalLoanCapture({
+    captureId: fixture.captureId,
+    sourceId: fixture.sourceId,
+    identity: fixture.identity,
+    observedAt: fixture.observedAt,
+    startDate: fixture.scope.startDate,
+    endDate: fixture.scope.endDate,
+    scope: fixture.scope,
+    pages: fixture.pages,
+    counterpartTransactions: fixture.counterpartTransactions,
+    relations: fixture.relations,
+    rows,
+  });
+
+  assert.deepEqual(rebuilt.counterpartTransactions, fixture.counterpartTransactions);
+  assert.deepEqual(rebuilt.relations, fixture.relations);
+  assert.deepEqual(rebuilt.scope, fixture.scope);
+  assert.deepEqual(rebuilt.pages, fixture.pages);
+});
+
+test("current loan balance selection is deterministic across input order and rebuild", async () => {
+  const makeInput = (rows: readonly {
+    transactionDate: string;
+    transactionAmount: string;
+    balanceAfterTransaction: string;
+  }[]) => ({
+    accountValue: "fubon-balance-order-test",
+    sourceConnectionScope: "fubon-balance-order-connection",
+    observedAt: "2026-03-01T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-02-28",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-02-28",
+      completeness: "complete-range" as const,
+      completenessBasis: "source-declared-terminal-range" as const,
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      pageCount: 1,
+      terminal: true as const,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200" as const,
+        terminal: true,
+        rowCount: rows.length,
+        proofKind: "source-declared-terminal-range" as const,
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
+    rows: rows.map((row) => ({
+      transactionDate: row.transactionDate.replaceAll("-", "/"),
+      transactionContent: "LOAN-PAYMENT",
+      transactionAmount: row.transactionAmount,
+      balanceAfterTransaction: row.balanceAfterTransaction,
+    })),
+  });
+  const older = {
+    transactionDate: "2026-01-31",
+    transactionAmount: "10.00",
+    balanceAfterTransaction: "90.00",
+  };
+  const newer = {
+    transactionDate: "2026-02-28",
+    transactionAmount: "20.00",
+    balanceAfterTransaction: "70.00",
+  };
+  const firstDir = await mkdtemp(join(tmpdir(), "loan-balance-order-first-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "loan-balance-order-second-"));
+  try {
+    const first = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    await persistFubonLoanCapture(first, makeInput([older, newer]));
+    const firstCurrent = queryFubonLoanCurrent(first).balanceObservations;
+    assert.deepEqual(firstCurrent.map((balance) => balance.effectiveAt), ["2026-02-28"]);
+    await rebuildCanonicalProjection(firstDir);
+    const firstAfterRebuild = queryFubonLoanCurrent(first).balanceObservations;
+    assert.deepEqual(firstAfterRebuild.map((balance) => balance.effectiveAt), ["2026-02-28"]);
+    first.close();
+
+    const second = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
+    await persistFubonLoanCapture(second, makeInput([newer, older]));
+    assert.deepEqual(
+      queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
+      ["2026-02-28"],
+    );
+    await rebuildCanonicalProjection(secondDir);
+    assert.deepEqual(
+      queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
+      ["2026-02-28"],
+    );
+    second.close();
+  } finally {
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
   }
 });
 
@@ -485,10 +875,10 @@ test("loan admission binds balance value, kind, and effective time to retained s
     { ...observation, balanceKind: "outstanding_principal" as const },
     {
       ...observation,
-      effectiveAt: "2026-01-30T23:59:59+08:00",
+      effectiveAt: "2026-01-30",
       effectiveTimeEvidence: {
         ...observation.effectiveTimeEvidence,
-        value: "2026-01-30T23:59:59+08:00",
+        value: "2026-01-30",
       },
     },
   ]) {

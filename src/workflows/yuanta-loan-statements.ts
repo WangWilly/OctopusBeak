@@ -238,6 +238,44 @@ function parseDateSortValue(value: string): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
+/** Convert the six source cells into typed workflow rows only after enforcing
+ * the exact result-row shape. Empty six-cell layout rows are ignored; a
+ * non-empty row with any other shape fails closed instead of disappearing. */
+export function parseYuantaLoanStatementRows(
+  accountLabel: string,
+  sourceRows: readonly string[][],
+): StatementRow[] {
+  return sourceRows.flatMap((sourceRow) => {
+    const values = sourceRow.map((value) => cleanText(value));
+    if (values.every((value) => value.length === 0)) return [];
+    if (values.length !== sourceStatementColumnCount)
+      throw new Error("Unexpected Yuanta loan result row.");
+
+    const [transactionDate, postingDate] = splitDatePair(values[0] ?? "");
+    if (
+      !/^\d{4}\/\d{2}\/\d{2}$/.test(transactionDate) ||
+      (postingDate.length > 0 && !/^\d{4}\/\d{2}\/\d{2}$/.test(postingDate))
+    )
+      throw new Error("Unexpected Yuanta loan result row.");
+    const [interestStartDate, interestEndDate] = splitDatePair(values[2] ?? "");
+
+    return [
+      {
+        accountLabel,
+        transactionDate,
+        postingDate,
+        paymentItem: values[1] ?? "",
+        interestStartDate,
+        interestEndDate,
+        transactionAmount: values[3] ?? "",
+        balanceAfterTransaction: values[4] ?? "",
+        overpayment: values[5] ?? "",
+        sortTime: parseDateSortValue(transactionDate),
+      },
+    ];
+  });
+}
+
 function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
   return [...rows].sort((left, right) => {
     if (left.sortTime === null && right.sortTime === null) return 0;
@@ -545,44 +583,28 @@ async function parseLoanStatementRows(
   const scope = await findScopeWithSelector(page, "#resultdiv");
   const tables = scope.locator("table.normalTable");
   const tableCount = await tables.count();
-  if (tableCount === 0) return [];
+  if (tableCount === 0)
+    throw new Error("Yuanta loan result is missing the source table.");
 
   const resultTable = tables.nth(tableCount - 1);
   await resultTable.locator("th").first().waitFor({ state: "attached" });
 
   const rows = resultTable.locator("tr");
   const rowCount = await rows.count();
-  const statements: StatementRow[] = [];
+  const sourceRows: string[][] = [];
 
   for (let rowIndex = 1; rowIndex < rowCount; rowIndex += 1) {
     const cells = rows.nth(rowIndex).locator("td");
     const cellCount = await cells.count();
-    if (cellCount !== sourceStatementColumnCount) continue;
 
     const values: string[] = [];
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
       values.push(cleanText(await cells.nth(cellIndex).innerText()));
     }
-    if (values.every((value) => value.length === 0)) continue;
-
-    const [transactionDate, postingDate] = splitDatePair(values[0]);
-    const [interestStartDate, interestEndDate] = splitDatePair(values[2]);
-
-    statements.push({
-      accountLabel,
-      transactionDate,
-      postingDate,
-      paymentItem: values[1],
-      interestStartDate,
-      interestEndDate,
-      transactionAmount: values[3],
-      balanceAfterTransaction: values[4],
-      overpayment: values[5],
-      sortTime: parseDateSortValue(transactionDate),
-    });
+    sourceRows.push(values);
   }
 
-  return statements;
+  return parseYuantaLoanStatementRows(accountLabel, sourceRows);
 }
 
 export async function runYuantaLoanStatements(
@@ -629,6 +651,26 @@ export async function runYuantaLoanStatements(
         observedAt: observedAt(),
         startDate: canonicalRange.startDate,
         endDate: canonicalRange.endDate,
+        scope: {
+          startDate: canonicalRange.startDate,
+          endDate: canonicalRange.endDate,
+          completeness: "complete-range",
+          completenessBasis: "source-declared-terminal-range",
+          completenessRuleVersion: "loan/canonical/v1.yuanta",
+          pageCount: 1,
+          terminal: true,
+        },
+        pages: [
+          {
+            pageOrdinal: 0,
+            responseCode: "200",
+            terminal: true,
+            rowCount: accountRows.length,
+            proofKind: "source-declared-terminal-range",
+          },
+        ],
+        counterpartTransactions: [],
+        relations: [],
         rows: accountRows.map<YuantaLoanStatementRow>((row) => ({
           transactionDate: row.transactionDate,
           postingDate: row.postingDate,

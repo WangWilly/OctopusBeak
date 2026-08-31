@@ -1,5 +1,7 @@
 import {
   LOAN_CONTRACT_FIXTURES,
+  FUBON_LOAN_AUTHORITY_ROUTE,
+  FUBON_LOAN_CONTRACT_VERSION,
   CanonicalLoanAdmissionError,
   LOAN_EVENT_CONTRACT_MAPPINGS,
   admitCanonicalLoanCapture,
@@ -45,6 +47,10 @@ export type FubonLoanCaptureBuildInput = {
   observedAt: string;
   startDate: string;
   endDate: string;
+  scope: LoanCaptureInput["scope"];
+  pages: LoanCaptureInput["pages"];
+  counterpartTransactions: LoanCaptureInput["counterpartTransactions"];
+  relations: LoanCaptureInput["relations"];
   rows: readonly FubonLoanStatementRow[];
 };
 
@@ -56,8 +62,8 @@ export type FubonLoanCaptureCommitDependencies = Partial<{
 export const FUBON_LOAN_CONTRACT = Object.freeze({
   source: "fubon",
   stream: "loan",
-  authority: "fubon/loan/canonical-v1",
-  contractVersion: "loan/canonical/v1.fubon",
+  authority: FUBON_LOAN_AUTHORITY_ROUTE,
+  contractVersion: FUBON_LOAN_CONTRACT_VERSION,
   workflow: "fubonLoanStatements",
   accountType: "loan",
   amountDirection: "source-coded-loan-boundary",
@@ -97,6 +103,32 @@ export const FUBON_LOAN_SOURCE_EVENT_CODES: Readonly<Record<string, string>> =
     費用: "LOAN-FEE",
     違約金: "LOAN-FEE",
   });
+
+export const FUBON_LOAN_SOURCE_EVENT_CODEBOOK_VERSION =
+  "fubon/loan-source-event-codebook/v1" as const;
+
+/** Sanitized evidence recorded only after the solver-assisted live workflow
+ * has produced non-zero canonical loan projections. */
+export const FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
+  schemaVersion: "loan-live-validation-attestation/v1",
+  sourceId: "fubon",
+  workflow: "fubonLoanStatements",
+  captureContractVersion: FUBON_LOAN_CONTRACT_VERSION,
+  sourceEventCodebookVersion: FUBON_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
+  validationMethod: "solver-assisted-electron-cdp",
+  status: "pending",
+  verifiedOn: null,
+  financialValuesRetained: false,
+  authenticationSecretsRetained: false,
+  rawSourcePayloadRetained: false,
+  safeAssertions: Object.freeze([
+    "source-capture:nonzero",
+    "loan-account-identity:nonzero",
+    "loan-transaction-facts:nonzero",
+    "current-loan-projection:nonzero",
+    "loan-lineage:nonzero",
+  ]),
+} as const);
 
 export const FUBON_LOAN_SYNTHETIC_FIXTURE_V1 = LOAN_CONTRACT_FIXTURES.fubon;
 
@@ -154,7 +186,7 @@ function canonicalRows(
     );
     const sourceRecordKey = canonicalLoanToken(
       "fubon",
-      "loan-source-record-v1",
+      "loan-source-record-v2",
       input.accountValue,
       String(index),
       row.transactionDate,
@@ -170,7 +202,7 @@ function canonicalRows(
       row.balanceAfterTransaction,
       "Fubon loan balance",
     );
-    const balanceEffectiveAt = `${effectiveOn}T23:59:59+08:00`;
+    const balanceEffectiveAt = effectiveOn;
     const balanceIsHistorical =
       balance !== undefined &&
       Number.isFinite(observedAt) &&
@@ -194,11 +226,14 @@ function canonicalRows(
             balance: {
               observationKey: canonicalLoanToken(
                 "fubon",
-                "loan-balance-observation-v1",
+                "loan-balance-observation-v2",
                 sourceRecordKey,
               ),
               balance,
               effectiveAt: balanceEffectiveAt,
+              effectiveAtPrecision: "date",
+              effectiveAtTimeOrigin: "source_reported",
+              effectiveAtField: "transaction-date",
             },
           }
         : {}),
@@ -218,7 +253,7 @@ export function buildFubonLoanCapture(
   return createCanonicalLoanCapture({
     captureId: canonicalLoanToken(
       "fubon",
-      "loan-capture-v1",
+      "loan-capture-v2",
       input.sourceConnectionScope,
       input.accountValue,
       input.observedAt,
@@ -231,6 +266,10 @@ export function buildFubonLoanCapture(
     observedAt: input.observedAt,
     startDate: input.startDate,
     endDate: input.endDate,
+    scope: input.scope,
+    pages: input.pages,
+    counterpartTransactions: input.counterpartTransactions,
+    relations: input.relations,
     rows,
   });
 }

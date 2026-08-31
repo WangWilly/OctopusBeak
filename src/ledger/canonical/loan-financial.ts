@@ -19,12 +19,21 @@ export type LoanSourceId = "fubon" | "yuanta";
 export const ADVERTISED_LOAN_SOURCE_IDS = ["fubon", "yuanta"] as const;
 
 export const LOAN_CANONICAL_CONTRACT_VERSION = "loan/canonical/v1" as const;
-export const FUBON_LOAN_CONTRACT_VERSION =
-  `${LOAN_CANONICAL_CONTRACT_VERSION}.fubon` as const;
+/**
+ * Fubon v1 is retained as historical evidence only.  The balance evidence
+ * correction changed the compact source payload, so the current contract must
+ * use a new route and identity namespace instead of attempting an immutable
+ * occurrence overwrite.
+ */
+export const FUBON_LOAN_LEGACY_CONTRACT_VERSION =
+  "loan/canonical/v1.fubon" as const;
+export const FUBON_LOAN_CONTRACT_VERSION = "loan/canonical/v2.fubon" as const;
 export const YUANTA_LOAN_CONTRACT_VERSION =
   `${LOAN_CANONICAL_CONTRACT_VERSION}.yuanta` as const;
 
-export const FUBON_LOAN_AUTHORITY_ROUTE = "fubon/loan/canonical-v1" as const;
+export const FUBON_LOAN_LEGACY_AUTHORITY_ROUTE =
+  "fubon/loan/canonical-v1" as const;
+export const FUBON_LOAN_AUTHORITY_ROUTE = "fubon/loan/canonical-v2" as const;
 export const YUANTA_LOAN_AUTHORITY_ROUTE = "yuanta/loan/canonical-v1" as const;
 export const FUBON_LOAN_COUNTERPART_AUTHORITY_ROUTE =
   "fubon/loan/counterpart-deposit-v1" as const;
@@ -111,10 +120,15 @@ export type LoanBalanceSourceEvidence = {
   kind: "source-reported-balance";
   balanceKind:
     "loan_outstanding" | "outstanding_principal" | "outstanding_total";
-  balanceField: "statement-balance";
+  /** This is a source-reported balance-after-transaction field. */
+  balanceField: "balance-after-transaction";
   balance: LoanExactAmount;
-  effectiveAtField: "statement-as-of";
+  /** The source date field, independent of the legacy storage column name. */
+  effectiveAtField: "transaction-date" | "accounting-date";
   effectiveAt: string;
+  effectiveAtPrecision: "date";
+  effectiveAtTimeOrigin: "source_reported";
+  storageAnchor: "effective-at-date-only";
   contractVersion: string;
   correctionOfObservationKey?: string;
 };
@@ -174,8 +188,14 @@ export type LoanCounterpartTransactionInput = {
 export type LoanBalanceEffectiveTimeEvidence = {
   kind: "source-reported-balance-effective-time";
   sourceRecordKey: string;
+  /** The v9 table's compatibility slot; never a claim that a statement
+   * or end-of-day timestamp was supplied by the provider. */
   sourceField: "statement-as-of";
+  sourceFieldRole: "transaction-date" | "accounting-date";
   value: string;
+  precision: "date";
+  timeOrigin: "source_reported";
+  storageAnchor: "effective-at-date-only";
   contractVersion: string;
 };
 
@@ -194,6 +214,8 @@ export type LoanBalanceObservationInput = {
   balance: LoanExactAmount;
   currency: "TWD";
   effectiveAt: string;
+  effectiveAtPrecision: "date";
+  effectiveAtTimeOrigin: "source_reported";
   effectiveTimeBasis: "source-reported";
   effectiveTimeRuleVersion: string;
   effectiveTimeEvidence: LoanBalanceEffectiveTimeEvidence;
@@ -282,6 +304,9 @@ export type CanonicalLoanStatementRow = {
     observationKey: string;
     balance: LoanExactAmount;
     effectiveAt: string;
+    effectiveAtPrecision: "date";
+    effectiveAtTimeOrigin: "source_reported";
+    effectiveAtField: "transaction-date" | "accounting-date";
   };
 };
 
@@ -300,6 +325,11 @@ export type CanonicalLoanCaptureBuildInput = {
   observedAt: string;
   startDate: string;
   endDate: string;
+  /** Scope, page and linkage evidence must come from the source workflow. */
+  scope: LoanCaptureInput["scope"];
+  pages: readonly LoanCapturePage[];
+  counterpartTransactions: readonly LoanCounterpartTransactionInput[];
+  relations: readonly LoanTransferRelationInput[];
   rows: readonly CanonicalLoanStatementRow[];
 };
 
@@ -469,15 +499,19 @@ export function canonicalLoanSourceIdentity(
       "Loan source connection scope and account option are required.",
     );
 
+  const identityNamespaceVersion = sourceId === "fubon" ? "v2" : "v1";
   const sourceConnectionKey = token(
     sourceId,
-    "loan-source-connection-v1",
+    `loan-source-connection-${identityNamespaceVersion}`,
     connectionScope,
   );
-  const identityEpochKey = token(sourceId, "loan-identity-epoch-v1");
+  const identityEpochKey = token(
+    sourceId,
+    `loan-identity-epoch-${identityNamespaceVersion}`,
+  );
   const accountKey = token(
     sourceId,
-    "loan-account-key-v1",
+    `loan-account-key-${identityNamespaceVersion}`,
     connectionScope,
     selectedAccount,
   );
@@ -487,11 +521,15 @@ export function canonicalLoanSourceIdentity(
     accountKey,
     subjectDigest: token(
       sourceId,
-      "loan-subject-v1",
+      `loan-subject-${identityNamespaceVersion}`,
       connectionScope,
       selectedAccount,
     ),
-    accountNo: token(sourceId, "loan-account-number-v1", selectedAccount),
+    accountNo: token(
+      sourceId,
+      `loan-account-number-${identityNamespaceVersion}`,
+      selectedAccount,
+    ),
   };
 }
 
@@ -557,10 +595,13 @@ export function createCanonicalLoanCapture(
             {
               kind: "source-reported-balance" as const,
               balanceKind: "loan_outstanding" as const,
-              balanceField: "statement-balance" as const,
+              balanceField: "balance-after-transaction" as const,
               balance: row.balance.balance,
-              effectiveAtField: "statement-as-of" as const,
+              effectiveAtField: row.balance.effectiveAtField,
               effectiveAt: row.balance.effectiveAt,
+              effectiveAtPrecision: row.balance.effectiveAtPrecision,
+              effectiveAtTimeOrigin: row.balance.effectiveAtTimeOrigin,
+              storageAnchor: "effective-at-date-only" as const,
               contractVersion,
             },
           ],
@@ -577,13 +618,19 @@ export function createCanonicalLoanCapture(
             balance: row.balance.balance,
             currency: "TWD" as const,
             effectiveAt: row.balance.effectiveAt,
+            effectiveAtPrecision: row.balance.effectiveAtPrecision,
+            effectiveAtTimeOrigin: row.balance.effectiveAtTimeOrigin,
             effectiveTimeBasis: "source-reported" as const,
             effectiveTimeRuleVersion: contractVersion,
             effectiveTimeEvidence: {
               kind: "source-reported-balance-effective-time" as const,
               sourceRecordKey: row.sourceRecordKey,
               sourceField: "statement-as-of" as const,
+              sourceFieldRole: row.balance.effectiveAtField,
               value: row.balance.effectiveAt,
+              precision: row.balance.effectiveAtPrecision,
+              timeOrigin: row.balance.effectiveAtTimeOrigin,
+              storageAnchor: "effective-at-date-only" as const,
               contractVersion,
             },
           },
@@ -602,34 +649,18 @@ export function createCanonicalLoanCapture(
       currency: "TWD",
     },
     observedAt: input.observedAt,
-    scope: {
-      startDate: input.startDate,
-      endDate: input.endDate,
-      completeness: "complete-range",
-      completenessBasis: "source-declared-terminal-range",
-      completenessRuleVersion: contractVersion,
-      pageCount: 1,
-      terminal: true,
-    },
+    scope: input.scope,
     semantics: {
       status: "posted",
       effectiveTimeBasis: "source-reported",
       effectiveTimeRuleVersion: contractVersion,
       timeZone: "Asia/Taipei",
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        terminal: true,
-        rowCount: records.length,
-        proofKind: "source-declared-terminal-range",
-      },
-    ],
+    pages: input.pages,
     records,
-    counterpartTransactions: [],
+    counterpartTransactions: input.counterpartTransactions,
     balanceObservations,
-    relations: [],
+    relations: input.relations,
   };
 }
 
@@ -1141,12 +1172,15 @@ function validateCapture(capture: LoanCaptureInput): void {
       (evidence) =>
         evidence.kind === "source-reported-balance" &&
         evidence.balanceKind === observation.balanceKind &&
-        evidence.balanceField === "statement-balance" &&
+        evidence.balanceField === "balance-after-transaction" &&
         evidence.balance.coefficient === observation.balance.coefficient &&
         evidence.balance.scale === observation.balance.scale &&
         evidence.effectiveAtField ===
-          observation.effectiveTimeEvidence.sourceField &&
+          observation.effectiveTimeEvidence.sourceFieldRole &&
         evidence.effectiveAt === observation.effectiveAt &&
+        evidence.effectiveAtPrecision === observation.effectiveAtPrecision &&
+        evidence.effectiveAtTimeOrigin === observation.effectiveAtTimeOrigin &&
+        evidence.storageAnchor === "effective-at-date-only" &&
         evidence.contractVersion === contractVersion,
     );
     if (!retainedEvidence)
@@ -1155,10 +1189,12 @@ function validateCapture(capture: LoanCaptureInput): void {
       );
     if (
       observation.currency !== "TWD" ||
+      observation.effectiveAtPrecision !== "date" ||
+      observation.effectiveAtTimeOrigin !== "source_reported" ||
       observation.effectiveTimeBasis !== "source-reported" ||
       observation.effectiveTimeRuleVersion !== contractVersion ||
-      !SOURCE_RFC3339.test(observation.effectiveAt) ||
-      Number.isNaN(Date.parse(observation.effectiveAt))
+      !ISO_DATE.test(observation.effectiveAt) ||
+      Number.isNaN(Date.parse(`${observation.effectiveAt}T00:00:00+08:00`))
     )
       throw new CanonicalLoanAdmissionError(
         "Loan balance effective time is not source-reported.",
@@ -1168,7 +1204,13 @@ function validateCapture(capture: LoanCaptureInput): void {
         "source-reported-balance-effective-time" ||
       observation.effectiveTimeEvidence.sourceRecordKey !== sourceRecordKey ||
       observation.effectiveTimeEvidence.sourceField !== "statement-as-of" ||
+      (observation.effectiveTimeEvidence.sourceFieldRole !== "transaction-date" &&
+        observation.effectiveTimeEvidence.sourceFieldRole !== "accounting-date") ||
       observation.effectiveTimeEvidence.value !== observation.effectiveAt ||
+      observation.effectiveTimeEvidence.precision !== "date" ||
+      observation.effectiveTimeEvidence.timeOrigin !== "source_reported" ||
+      observation.effectiveTimeEvidence.storageAnchor !==
+        "effective-at-date-only" ||
       observation.effectiveTimeEvidence.contractVersion !== contractVersion
     )
       throw new CanonicalLoanAdmissionError(
@@ -1193,11 +1235,14 @@ function validateCapture(capture: LoanCaptureInput): void {
         "Loan source correction evidence requires an explicit Observation correction.",
       );
     }
-    if (Date.parse(observation.effectiveAt) >= Date.parse(capture.observedAt))
+    if (
+      Date.parse(`${observation.effectiveAt}T00:00:00+08:00`) >=
+      Date.parse(capture.observedAt)
+    )
       throw new CanonicalLoanAdmissionError(
         "Loan balance effective time cannot use collection/import time.",
       );
-    const effectiveDate = dateFromEffectiveAt(observation.effectiveAt);
+    const effectiveDate = observation.effectiveAt;
     if (effectiveDate < start || effectiveDate > end)
       throw new CanonicalLoanAdmissionError(
         "Loan balance is outside the captured range.",
@@ -1930,6 +1975,59 @@ function projectLoanAccount(
   );
 }
 
+/** Recompute the loan balance selection from the same immutable ordering used
+ * by projection rebuild.  Effective source date is primary; knowledge commit,
+ * source ordinal, and opaque source identity are deterministic tie-breakers. */
+function refreshCurrentLoanBalanceProjection(
+  db: DatabaseSync,
+  generationId: number,
+  accountId: Uint8Array,
+  projectionCommitId: Uint8Array,
+): void {
+  db.prepare(
+    `DELETE FROM current_loan_balance_observations
+     WHERE generation_id = ? AND account_id = ?`,
+  ).run(generationId, accountId);
+  db.prepare(
+    `INSERT INTO current_loan_balance_observations(
+       generation_id, account_id, balance_kind, observation_id, revision_id,
+       projection_commit_id, revision_commit_id
+     )
+     SELECT ?, ranked.account_id, ranked.balance_kind, ranked.observation_id,
+            ranked.revision_id, ?, ranked.commit_id
+     FROM (
+       SELECT observation.account_id, observation.balance_kind,
+              observation.observation_id, revision.revision_id, revision.commit_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY observation.account_id, observation.balance_kind
+                ORDER BY revision.effective_at DESC,
+                         revision_commit.commit_sequence DESC,
+                         COALESCE(balance_fact.occurrence_index, -1) DESC,
+                         balance_record.occurrence_key DESC,
+                         observation.observation_key DESC,
+                         hex(revision.revision_id) DESC
+              ) AS rank
+       FROM balance_observations observation
+       JOIN balance_observation_revisions revision
+         ON revision.observation_id = observation.observation_id
+       JOIN canonical_commits revision_commit
+         ON revision_commit.commit_id = revision.commit_id
+       JOIN source_records balance_record
+         ON balance_record.source_record_id = revision.source_record_id
+       LEFT JOIN loan_transaction_facts balance_fact
+         ON balance_fact.revision_id = (
+           SELECT transaction_revision.revision_id
+           FROM transaction_revisions transaction_revision
+           WHERE transaction_revision.source_record_id = revision.source_record_id
+           ORDER BY transaction_revision.revision_number DESC
+           LIMIT 1
+         )
+       WHERE observation.account_id = ?
+     ) ranked
+     WHERE ranked.rank = 1`,
+  ).run(generationId, projectionCommitId, accountId);
+}
+
 type PersistedRelationEndpoint = {
   accountId: Uint8Array;
   transactionId: Uint8Array;
@@ -2087,26 +2185,14 @@ function persistLoanExtensions(
       observation.effectiveTimeEvidence.contractVersion,
       capture.observedAt,
     );
-    db.prepare(
-      `INSERT INTO current_loan_balance_observations(
-         generation_id, account_id, balance_kind, observation_id, revision_id,
-         projection_commit_id, revision_commit_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(generation_id, account_id, balance_kind) DO UPDATE SET
-         observation_id = excluded.observation_id,
-         revision_id = excluded.revision_id,
-         projection_commit_id = excluded.projection_commit_id,
-         revision_commit_id = excluded.revision_commit_id`,
-    ).run(
+  }
+  if (capture.balanceObservations.length > 0)
+    refreshCurrentLoanBalanceProjection(
+      db,
       generationId,
       context.accountId,
-      observation.balanceKind,
-      observationId,
-      revisionId,
-      context.commitId,
       context.commitId,
     );
-  }
   const transactionIds = new Map<
     string,
     { accountId: Uint8Array; transactionId: Uint8Array }
@@ -2369,6 +2455,26 @@ function accountFromRow(row: Record<string, unknown>): LoanAccount {
   };
 }
 
+function currentLoanRoutePredicate(
+  alias: string,
+  sourceId?: LoanSourceId,
+): { sql: string; params: string[] } {
+  if (sourceId === "fubon")
+    return {
+      sql: `${alias}.authority_route = ?`,
+      params: [FUBON_LOAN_AUTHORITY_ROUTE],
+    };
+  if (sourceId === "yuanta")
+    return {
+      sql: `${alias}.authority_route = ?`,
+      params: [YUANTA_LOAN_AUTHORITY_ROUTE],
+    };
+  return {
+    sql: `(${alias}.authority_route = ? OR ${alias}.authority_route = ?)`,
+    params: [FUBON_LOAN_AUTHORITY_ROUTE, YUANTA_LOAN_AUTHORITY_ROUTE],
+  };
+}
+
 function accountRows(
   db: DatabaseSync,
   knowledgeAt: number,
@@ -2380,8 +2486,11 @@ function accountRows(
          ON active.singleton_id = 1
        JOIN current_loan_accounts current_account
          ON current_account.generation_id = active.generation_id
-        AND current_account.account_id = account.account_id`
+       AND current_account.account_id = account.account_id`
     : "";
+  const currentRoute = currentOnly
+    ? currentLoanRoutePredicate("authority_capture", sourceId)
+    : { sql: "1 = 1", params: [] as string[] };
   const rows = db
     .prepare(
       `SELECT account.account_id, loan_identity.account_no, account.account_type,
@@ -2407,9 +2516,22 @@ function accountRows(
          AND account.account_type = 'loan'
          AND account.stream = 'loan'
          AND (? IS NULL OR connection.integration_namespace = ?)
+         AND ${currentOnly ? `EXISTS (
+           SELECT 1 FROM source_captures authority_capture
+           WHERE authority_capture.source_connection_id = account.source_connection_id
+             AND authority_capture.identity_epoch_id = account.identity_epoch_id
+             AND authority_capture.stream = 'loan'
+             AND authority_capture.account_no = loan_identity.account_key
+             AND ${currentRoute.sql}
+         )` : currentRoute.sql}
        ORDER BY connection.integration_namespace, account.account_no`,
     )
-    .all(knowledgeAt, sourceId ?? null, sourceId ?? null) as Array<
+    .all(
+      knowledgeAt,
+      sourceId ?? null,
+      sourceId ?? null,
+      ...currentRoute.params,
+    ) as Array<
     Record<string, unknown>
   >;
   return rows.map(accountFromRow);
@@ -2441,6 +2563,11 @@ function transactionRows(
   if (sourceRecordKey) {
     clauses.push("transaction_row.source_sequence = ?");
     params.push(sourceRecordKey);
+  }
+  if (currentOnly) {
+    const currentRoute = currentLoanRoutePredicate("source_capture", sourceId);
+    clauses.push(currentRoute.sql);
+    params.push(...currentRoute.params);
   }
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
@@ -2489,6 +2616,7 @@ function transactionRows(
        JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
        JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
        JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
+       JOIN source_captures source_capture ON source_capture.capture_id = source_record.capture_id
        JOIN loan_transaction_facts loan_fact ON loan_fact.revision_id = revision.revision_id
        ${currentJoin}
        WHERE ${clauses.join(" AND ")}
@@ -2543,6 +2671,28 @@ function transactionRows(
   });
 }
 
+function balanceSourceFieldRole(
+  payloadJson: unknown,
+): "transaction-date" | "accounting-date" {
+  const payload = parseCompact(payloadJson);
+  const evidence = Array.isArray(payload.balanceSourceEvidence)
+    ? payload.balanceSourceEvidence.find(
+        (value) =>
+          value !== null &&
+          typeof value === "object" &&
+          (value as Record<string, unknown>).kind === "source-reported-balance",
+      )
+    : undefined;
+  const field =
+    evidence !== undefined && typeof evidence === "object"
+      ? (evidence as Record<string, unknown>).effectiveAtField
+      : undefined;
+  if (field === "transaction-date" || field === "accounting-date") return field;
+  throw new CanonicalLoanConflictError(
+    "Loan balance source date precision evidence is missing from the source record.",
+  );
+}
+
 function balanceRows(
   db: DatabaseSync,
   knowledgeAt: number,
@@ -2564,6 +2714,11 @@ function balanceRows(
     clauses.push("substr(revision.effective_at, 1, 10) <= ?");
     params.push(financialAt);
   }
+  if (currentOnly) {
+    const currentRoute = currentLoanRoutePredicate("capture", sourceId);
+    clauses.push(currentRoute.sql);
+    params.push(...currentRoute.params);
+  }
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
          ON active.singleton_id = 1
@@ -2583,7 +2738,7 @@ function balanceRows(
               revision.effective_time_evidence_value,
               revision.effective_time_evidence_contract_version,
               revision.observed_at, revision.capture_id, revision.commit_id,
-              revision.source_record_id,
+              revision.source_record_id, source_record.payload_json AS source_payload_json,
               account.account_id, loan_identity.account_no,
               connection.integration_namespace,
               connection.source_connection_key, epoch.epoch_key, subject.record_kind,
@@ -2592,6 +2747,8 @@ function balanceRows(
        FROM balance_observations observation
        JOIN balance_observation_revisions revision
          ON revision.observation_id = observation.observation_id
+       JOIN source_records source_record
+         ON source_record.source_record_id = revision.source_record_id
        JOIN financial_accounts account ON account.account_id = observation.account_id
        JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
        JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
@@ -2619,6 +2776,7 @@ function balanceRows(
     .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const account = accountFromRow(row);
+    const sourceFieldRole = balanceSourceFieldRole(row.source_payload_json);
     return {
       observationKey: String(row.observation_key),
       sourceRecordKey: String(
@@ -2641,6 +2799,8 @@ function balanceRows(
       },
       currency: "TWD",
       effectiveAt: String(row.effective_at),
+      effectiveAtPrecision: "date",
+      effectiveAtTimeOrigin: "source_reported",
       effectiveTimeBasis: "source-reported",
       effectiveTimeRuleVersion: String(row.effective_time_rule_version),
       effectiveTimeEvidence: {
@@ -2649,7 +2809,11 @@ function balanceRows(
         sourceField: String(
           row.effective_time_evidence_source_field,
         ) as "statement-as-of",
+        sourceFieldRole,
         value: String(row.effective_time_evidence_value),
+        precision: "date",
+        timeOrigin: "source_reported",
+        storageAnchor: "effective-at-date-only",
         contractVersion: String(row.effective_time_evidence_contract_version),
       },
       accountId: binaryId(row.account_id),
@@ -2697,6 +2861,21 @@ function relationRows(
          AND to_commit.commit_sequence <= ?)
     ) <= ?`);
     params.push(knowledgeAt, knowledgeAt, financialAt);
+  }
+  if (currentOnly) {
+    const currentRoute = currentLoanRoutePredicate("relation_capture", sourceId);
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM transaction_revisions route_revision
+      JOIN source_captures relation_capture
+        ON relation_capture.capture_id = route_revision.capture_id
+      WHERE route_revision.transaction_id IN (
+        relation.from_transaction_id,
+        relation.to_transaction_id
+      )
+        AND ${currentRoute.sql}
+    )`);
+    params.push(...currentRoute.params);
   }
   const currentJoin = currentOnly
     ? `JOIN active_projection_generation active
@@ -2770,7 +2949,18 @@ function lineageRows(
   knowledgeAt: number,
   sourceRecordKey: string,
   sourceId?: LoanSourceId,
+  currentOnly = false,
 ): LoanLineageEntry[] {
+  const params: Array<number | string | null> = [
+    sourceRecordKey,
+    knowledgeAt,
+    sourceId ?? null,
+    sourceId ?? null,
+  ];
+  const currentRoute = currentOnly
+    ? currentLoanRoutePredicate("capture", sourceId)
+    : { sql: "1 = 1", params: [] as string[] };
+  params.push(...currentRoute.params);
   const rows = db
     .prepare(
       `SELECT source_record.occurrence_key, capture.capture_key,
@@ -2783,14 +2973,10 @@ function lineageRows(
        WHERE source_record.occurrence_key = ?
          AND commit_row.commit_sequence <= ?
          AND (? IS NULL OR connection.integration_namespace = ?)
+         AND ${currentRoute.sql}
        ORDER BY commit_row.commit_sequence, capture.capture_key`,
     )
-    .all(
-      sourceRecordKey,
-      knowledgeAt,
-      sourceId ?? null,
-      sourceId ?? null,
-    ) as Array<Record<string, unknown>>;
+    .all(...params) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     sourceRecordKey: String(row.occurrence_key),
     captureId: String(row.capture_key),
@@ -2870,6 +3056,7 @@ function queryLoan(
           knowledgeAt,
           request.sourceRecordKey,
           request.sourceId,
+          request.currentOnly,
         )
       : [];
     return {
@@ -3053,10 +3240,13 @@ function fixture(sourceId: LoanSourceId): LoanCaptureInput {
           {
             kind: "source-reported-balance",
             balanceKind: "loan_outstanding",
-            balanceField: "statement-balance",
+            balanceField: "balance-after-transaction",
             balance: { coefficient: "87500", scale: 2 },
-            effectiveAtField: "statement-as-of",
-            effectiveAt: "2026-01-31T23:59:59+08:00",
+            effectiveAtField: "transaction-date",
+            effectiveAt: "2026-01-31",
+            effectiveAtPrecision: "date",
+            effectiveAtTimeOrigin: "source_reported",
+            storageAnchor: "effective-at-date-only",
             contractVersion,
           },
         ],
@@ -3103,14 +3293,20 @@ function fixture(sourceId: LoanSourceId): LoanCaptureInput {
         balanceKind: "loan_outstanding",
         balance: { coefficient: "87500", scale: 2 },
         currency: "TWD",
-        effectiveAt: "2026-01-31T23:59:59+08:00",
+        effectiveAt: "2026-01-31",
+        effectiveAtPrecision: "date",
+        effectiveAtTimeOrigin: "source_reported",
         effectiveTimeBasis: "source-reported",
         effectiveTimeRuleVersion: contractVersion,
         effectiveTimeEvidence: {
           kind: "source-reported-balance-effective-time",
           sourceRecordKey: payment,
           sourceField: "statement-as-of",
-          value: "2026-01-31T23:59:59+08:00",
+          sourceFieldRole: "transaction-date",
+          value: "2026-01-31",
+          precision: "date",
+          timeOrigin: "source_reported",
+          storageAnchor: "effective-at-date-only",
           contractVersion,
         },
       },
