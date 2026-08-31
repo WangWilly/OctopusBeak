@@ -434,6 +434,47 @@ test("disabling keeps the grant and re-enabling refreshes it without OAuth", asy
   }
 });
 
+test("Gmail service keeps its credential codec when another operation resets the global", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-codec-isolation-"));
+  const settingsPath = join(dir, "settings.json");
+  const credentialsPath = join(dir, "credentials.json");
+  setAutomationCredentialCodec(fakeCredentialCodec);
+  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+  writeAutomationCredentialsFile(credentialsPath, {
+    [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh-grant",
+    [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
+  });
+  const service = createCathayGmailOtpService({
+    settingsPath,
+    credentialsPath,
+    fetch: async () => {
+      // Simulate config-files.check.ts cleaning up another test while this
+      // service is suspended in an asynchronous token refresh.
+      setAutomationCredentialCodec(null);
+      return new Response(JSON.stringify({ access_token: "access", expires_in: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    now: () => 1000,
+  });
+  try {
+    assert.deepEqual(await service.setEnabled(false), {
+      enabled: false,
+      connectedEmail: "test@gmail.com",
+      needsAuthorization: false,
+    });
+    assert.deepEqual(await service.enable(), {
+      enabled: true,
+      connectedEmail: "test@gmail.com",
+      needsAuthorization: false,
+    });
+  } finally {
+    setAutomationCredentialCodec(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("invalid_grant opens the browser path again through single-flight authorization", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-refresh-"));
   const settingsPath = join(dir, "settings.json");
