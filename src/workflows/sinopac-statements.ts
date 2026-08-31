@@ -7,10 +7,13 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Page } from "playwright";
+import type { Dialog, Page } from "playwright";
 import { z } from "zod";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 import {
   admitSinopacDomesticDepositFinancialCapture,
   admitSinopacStatementCaptureEvidence,
@@ -34,7 +37,14 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { SINOPAC_CAPTCHA_INPUT_SELECTOR } from "../lib/automation/sinopac-captcha.ts";
+import {
+  SINOPAC_CAPTCHA_IMAGE_SELECTOR,
+  SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
+  SINOPAC_CAPTCHA_INPUT_SELECTOR,
+  SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
+  SINOPAC_DIALOG_OWNER_ENV,
+  sinopacHostDialogOwner,
+} from "../lib/automation/sinopac-captcha.ts";
 import {
   SINOPAC_IDENTITY_FIELD_NAMES,
   summarizeSinopacIdentityEvidence,
@@ -479,15 +489,96 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function waitForSignedInState(page: Page): Promise<void> {
+async function waitForSignedInState(
+  page: Page,
+  signal?: AbortSignal,
+): Promise<void> {
   await page.waitForURL((url) => sinopacSignedInPageUrl(url.href), {
     timeout: 300_000,
+    signal,
   });
   await page.waitForLoadState("domcontentloaded", { timeout: 60_000 });
   await page
     .locator('a#user-logout, a[href*="MMALogout"]')
     .first()
     .waitFor({ state: "visible", timeout: 60_000 });
+}
+
+export type SinopacLoginAttemptDependencies = {
+  submit: () => Promise<void>;
+  waitForSuccess: (signal: AbortSignal) => Promise<void>;
+};
+
+/**
+ * The desktop host owns provider dialogs when the workflow has a host
+ * transport.  A direct CLI run has no host and keeps the local fail-fast
+ * fallback so it cannot wait for the full navigation timeout.
+ */
+export function sinopacPostSubmitDialogOwner(
+  session: string,
+  env: NodeJS.ProcessEnv = process.env,
+): "host" | "workflow" {
+  return env[SINOPAC_DIALOG_OWNER_ENV]?.trim() === sinopacHostDialogOwner(session)
+    ? "host"
+    : "workflow";
+}
+
+export async function runSinopacLoginAttempt(
+  page: Page,
+  session: string,
+  dependencies: SinopacLoginAttemptDependencies,
+): Promise<void> {
+  if (sinopacPostSubmitDialogOwner(session) === "host") {
+    const successProbe = dependencies.waitForSuccess(new AbortController().signal);
+    await dependencies.submit();
+    await successProbe;
+    return;
+  }
+
+  const probeAbortController = new AbortController();
+  let rejectDialog!: (error: Error) => void;
+  const dialogDetected = new Promise<never>((_resolve, reject) => {
+    rejectDialog = reject;
+  });
+  let dialogHandled = false;
+  const dialogHandler = async (dialog: Dialog): Promise<void> => {
+    if (dialogHandled) return;
+    dialogHandled = true;
+    let type = "unknown";
+    try {
+      type = dialog.type();
+    } catch {
+      // Keep the fail-fast path usable if the browser closes the dialog while
+      // it is being inspected.
+    }
+    console.warn("sinopac-login-dialog", { type });
+    const dismissal = Promise.resolve().then(() => dialog.dismiss());
+    void dismissal.catch(() => undefined);
+    let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      dismissal.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        dismissalTimer = setTimeout(resolve, SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+      }),
+    ]);
+    if (dismissalTimer) clearTimeout(dismissalTimer);
+    probeAbortController.abort();
+    rejectDialog(new Error("SinoPac login was interrupted by a browser dialog."));
+  };
+
+  page.on("dialog", dialogHandler);
+  try {
+    const successProbe = dependencies.waitForSuccess(probeAbortController.signal);
+    void successProbe.catch(() => undefined);
+    const loginOutcome = (async () => {
+      await dependencies.submit();
+      await successProbe;
+    })();
+    await Promise.race([loginOutcome, dialogDetected]);
+  } finally {
+    probeAbortController.abort();
+    page.off("dialog", dialogHandler);
+  }
 }
 
 export function sinopacManualAuthMessage(session: string): string {
@@ -565,6 +656,52 @@ async function fillLoginForm(
   await captcha.focus();
 }
 
+export function sinopacCaptchaAssistanceStage(
+  page: Page,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "sinopac-login-captcha",
+    title: "Enter the SinoPac CAPTCHA",
+    targets: [
+      {
+        id: "captcha-input",
+        label: "CAPTCHA input",
+        semanticId: "sinopac.login.captcha-input",
+        modes: ["click", "type"],
+        locator: page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "captcha-challenge",
+        label: "CAPTCHA challenge and instructions",
+        semanticId: "sinopac.login.captcha-challenge",
+      },
+    ],
+    challengeKind: "text-captcha",
+    charset: "digits",
+    ocrPageSegmentationMode: "single-line",
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["remove-interference-lines"] },
+    ],
+    solveAcceptancePolicy: { mode: "confidence-only" },
+    solverConfidenceThreshold: 0.9,
+    expectedAnswerLength: 6,
+    challengeImageRegion: {
+      id: "captcha-image",
+      label: "CAPTCHA image",
+      semanticId: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
+      locator: page.locator(SINOPAC_CAPTCHA_IMAGE_SELECTOR),
+    },
+    completion: { mode: "inline", targetIds: ["captcha-input"] },
+    focus: {
+      targetId: "captcha-input",
+      contextRegionIds: ["captcha-challenge"],
+      initialZoom: 1.15,
+    },
+  };
+}
+
 async function signInSinopac(
   ctx: LibrettoWorkflowContext,
   credentials: SinopacCredentials,
@@ -573,32 +710,7 @@ async function signInSinopac(
   await fillLoginForm(page, credentials);
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
   try {
-    await emitHumanAssistanceStage({
-      stageId: "sinopac-login-captcha",
-      title: "Enter the SinoPac CAPTCHA",
-      targets: [
-        {
-          id: "captcha-input",
-          label: "CAPTCHA input",
-          semanticId: "sinopac.login.captcha-input",
-          modes: ["click", "type"],
-          locator: captcha,
-        },
-      ],
-      contextRegions: [
-        {
-          id: "captcha-challenge",
-          label: "CAPTCHA challenge and instructions",
-          semanticId: "sinopac.login.captcha-challenge",
-        },
-      ],
-      completion: { mode: "inline", targetIds: ["captcha-input"] },
-      focus: {
-        targetId: "captcha-input",
-        contextRegionIds: ["captcha-challenge"],
-        initialZoom: 1.15,
-      },
-    });
+    await emitHumanAssistanceStage(sinopacCaptchaAssistanceStage(page));
   } catch (error) {
     // A plain CLI run has no desktop host contract channel.  Keep the
     // headed-browser CAPTCHA pause usable while preserving all other errors.
@@ -620,8 +732,10 @@ async function signInSinopac(
       "SinoPac CAPTCHA is empty. Enter it in the browser before resuming.",
     );
   }
-  await clickLoginButton(page);
-  await waitForSignedInState(page);
+  await runSinopacLoginAttempt(page, session, {
+    submit: () => clickLoginButton(page),
+    waitForSuccess: (signal) => waitForSignedInState(page, signal),
+  });
   await dismissPasswordExpiryNotice(page);
 }
 
@@ -1289,11 +1403,6 @@ export default workflow("sinopacStatements", {
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
     const { page } = ctx;
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
 
     await librettoAuthenticate(ctx, {
       credentials: input.credentials,

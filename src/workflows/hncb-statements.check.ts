@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { chromium, type Frame, type Page } from "playwright";
 import {
+  emitHumanAssistanceStage,
+} from "./human-assistance.ts";
+import {
+  hncbCaptchaAssistanceStage,
   ensureHncbStatementForm,
   isNoStatementDataText,
   normalizeHncbTransactionRows,
@@ -91,6 +95,42 @@ try {
     await form.locator('input[name="excel_download"]').inputValue(),
     "",
   );
+
+  const captchaPage = await browser.newPage();
+  await captchaPage.setContent(`
+    <input id="TrxCaptchaKey" style="width: 92px; height: 32px" />
+    <img
+      id="code_Cap"
+      src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+      width="80"
+      height="30"
+      alt="HNCB CAPTCHA"
+    />
+  `);
+  const captchaContract = await emitHumanAssistanceStage(
+    hncbCaptchaAssistanceStage(captchaPage),
+    (contract) => contract,
+  );
+  assert.equal(captchaContract.stageId, "hncb-login-captcha");
+  assert.equal(captchaContract.challengeKind, "text-captcha");
+  assert.equal(captchaContract.charset, "digits");
+  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
+  assert.equal(captchaContract.solverConfidenceThreshold, 0.8);
+  assert.equal(
+    captchaContract.targets[0]?.semanticId,
+    "hncb.login.captcha-input",
+  );
+  assert.equal(
+    captchaContract.challengeImageRegion?.semanticId,
+    "hncb.login.captcha-image",
+  );
+  assert.ok(captchaContract.challengeImageRegion?.rect);
+  assert.equal(
+    captchaContract.imagePreprocessing,
+    undefined,
+    "HNCB CAPTCHA must not request interference-line removal",
+  );
+  await captchaPage.close();
 } finally {
   await browser.close();
 }

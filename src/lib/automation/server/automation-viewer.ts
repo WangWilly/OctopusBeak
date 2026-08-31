@@ -1,4 +1,4 @@
-import type { Browser, ElementHandle, Frame, Page } from "playwright";
+import type { Browser, Dialog, ElementHandle, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceContract,
   HumanAssistanceContractInput,
@@ -6,28 +6,46 @@ import type {
   HumanVerificationTarget,
   VerificationInteractionMode,
 } from "../human-assistance.ts";
-import {
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
-} from "../yuanta-trade-captcha.ts";
-import {
-  SINOPAC_CAPTCHA_INPUT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
-} from "../sinopac-captcha.ts";
+import { transformHumanAssistanceContract } from "../human-assistance.ts";
+import type { VerificationSelectionPoint } from "./verification-solver.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
-
-export {
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
-};
 
 export type ViewerInput =
   | { type: "click"; x: number; y: number }
   | { type: "drag"; x: number; y: number; toX: number; toY: number }
   | { type: "type"; text: string }
   | { type: "press"; key: string };
+
+/** Provider-owned post-submit probes may classify and dismiss one dialog. */
+export type ViewerDialogAccess = Pick<Dialog, "type" | "message" | "dismiss">;
+
+/** The smallest browser seam provider adapters need: selector-backed access. */
+export type ViewerPageAccess = {
+  locator(selector: string): Locator;
+  /** The live top-level frame used by provider adapters that need DOM pixels. */
+  mainFrame?: () => Frame;
+  /** Resolve a named provider frame without exposing the Playwright Page. */
+  frame?: (name: string) => Frame | null;
+  /** The current page URL, used to bind provider-owned captures to navigation. */
+  url?: () => string;
+  /** Capture a page-relative region without exposing the Playwright Page. */
+  screenshot(options: { clip: HumanVerificationRect; type: "png" }): Promise<Buffer>;
+  /** Attach a short-lived provider-owned observer to native browser dialogs. */
+  onDialog?: (handler: (dialog: ViewerDialogAccess) => void) => void;
+  offDialog?: (handler: (dialog: ViewerDialogAccess) => void) => void;
+};
+
+/**
+ * A provider adapter may take over an operation whose target needs a
+ * provider-specific DOM interaction. Returning true means that the adapter
+ * performed the operation; returning false lets the generic viewer use its
+ * coordinate/keyboard mechanics.
+ */
+export type ViewerTargetInputHandler = (
+  page: ViewerPageAccess,
+  input: ViewerInput,
+  target: HumanVerificationTarget,
+) => Promise<boolean>;
 
 export type ViewerPoint = { x: number; y: number };
 export type InspectableTarget = {
@@ -43,11 +61,6 @@ export type ViewerInspectResult = {
   targetId?: string | null;
   contractVersion?: number;
   modes?: readonly VerificationInteractionMode[];
-};
-export type HumanAssistanceCompletionProbe = {
-  checkboxChecked: boolean;
-  challengeVisible: boolean;
-  challengeSubmitVisible: boolean;
 };
 export type ViewerScreenshotErrorKind = "unavailable" | "transient" | "failed";
 type InspectableRect = { x: number; y: number; width: number; height: number };
@@ -129,45 +142,6 @@ export function humanVerificationTargetAtPoint(
 ) {
   return contract.targets.find((target) => target.rect && viewerRectContainsPoint(target.rect, point)) ?? null;
 }
-
-export function humanAssistanceCompletionSatisfied(
-  semanticId: string,
-  probe: HumanAssistanceCompletionProbe,
-) {
-  if (semanticId === "yuanta-trade.login.captcha-checkbox") {
-    return probe.checkboxChecked || probe.challengeVisible;
-  }
-  if (semanticId === "yuanta-trade.login.challenge-control") {
-    return !probe.challengeVisible;
-  }
-  if (semanticId === "yuanta-trade.login.challenge-submit") return !probe.challengeVisible;
-  return false;
-}
-
-export function shouldAutoResumeYuantaTradeCaptcha(
-  contract: HumanAssistanceContract,
-  targetId: unknown,
-  verified: boolean,
-) {
-  if (!verified || contract.stageId !== "yuanta-trade-captcha-checkbox") return false;
-  if (contract.completion.mode !== "independent") return false;
-  return contract.targets.some((target) => (
-    target.id === targetId
-    && target.semanticId === "yuanta-trade.login.captcha-checkbox"
-  ));
-}
-
-export function shouldCheckYuantaTradeCompletion(
-  inputType: unknown,
-  semanticId: unknown,
-) {
-  if (inputType !== "click") return false;
-  return semanticId === "yuanta-trade.login.captcha-checkbox"
-    || semanticId === "yuanta-trade.login.challenge-submit";
-}
-
-export const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
-export const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 
 export const VIEWER_SCREENSHOT_OPTIONS = {
   type: "jpeg",
@@ -280,6 +254,21 @@ async function withPausedPage<T>(session: string, action: (page: Page) => Promis
   } finally {
     await browser.close();
   }
+}
+
+export function withViewerPage<T>(
+  session: string,
+  action: (page: ViewerPageAccess) => Promise<T>,
+) {
+  return withPausedPage(session, (page) => action({
+    locator: page.locator.bind(page),
+    mainFrame: () => page.mainFrame(),
+    frame: (name) => page.frame({ name }),
+    url: () => page.url(),
+    screenshot: (options) => page.screenshot(options),
+    onDialog: (handler) => page.on("dialog", handler as (dialog: Dialog) => void),
+    offDialog: (handler) => page.off("dialog", handler as (dialog: Dialog) => void),
+  }));
 }
 
 export function captureSessionScreenshot(session: string) {
@@ -409,153 +398,12 @@ export function refreshTargetRect(
     && target.rect.width === rect.width
     && target.rect.height === rect.height;
   if (unchanged) return null;
-  return {
-    stageId: contract.stageId,
-    title: contract.title,
-    targets: contract.targets.map((candidate) => (
+  return transformHumanAssistanceContract(contract, (input) => ({
+    ...input,
+    targets: input.targets.map((candidate) => (
       candidate.semanticId === semanticId ? { ...candidate, rect } : candidate
     )),
-    contextRegions: contract.contextRegions,
-    completion: contract.completion,
-    focus: contract.focus,
-  };
-}
-
-export async function refreshCathayEmailOtpTarget(
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  if (!contract.targets.some((target) => target.semanticId === "cathay.login.email-otp-input")) {
-    return null;
-  }
-  const rect = await withPausedPage(session, async (page) => {
-    const otp = page.locator(CATHAY_EMAIL_OTP_SELECTOR).first();
-    if (!await otp.isVisible().catch(() => false)) return null;
-    return await otp.boundingBox().catch(() => null);
-  });
-  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-  return refreshTargetRect(contract, "cathay.login.email-otp-input", rect);
-}
-
-async function visibleSinopacCaptchaInput(page: Page) {
-  const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  const count = await input.count().catch(() => 0);
-  if (count !== 1) {
-    throw new Error("SinoPac CAPTCHA input is missing or ambiguous.");
-  }
-  if (!await input.isVisible().catch(() => false)) {
-    throw new Error("SinoPac CAPTCHA input is not visible.");
-  }
-  const rect = await input.boundingBox().catch(() => null);
-  if (!rect || rect.width <= 0 || rect.height <= 0) {
-    throw new Error("SinoPac CAPTCHA input is not visible.");
-  }
-  return { input, rect };
-}
-
-export async function refreshSinopacCaptchaTargetFromPage(
-  page: Page,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  if (!contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)) {
-    return null;
-  }
-  const { rect } = await visibleSinopacCaptchaInput(page);
-  return refreshTargetRect(contract, SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, rect);
-}
-
-export async function refreshSinopacCaptchaTarget(
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  if (!contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)) {
-    return null;
-  }
-  return withPausedPage(session, (page) => refreshSinopacCaptchaTargetFromPage(page, contract));
-}
-
-export async function inspectHumanAssistanceCompletion(
-  session: string,
-  contract: HumanAssistanceContract,
-) {
-  if (contract.completion.mode !== "independent") return false;
-  return withPausedPage(session, async (page) => {
-    const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR).first();
-    const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
-    const checkboxChecked = await checkbox.evaluate((node) => {
-      if (node instanceof HTMLInputElement) return node.checked;
-      return node.getAttribute("aria-checked") === "true"
-        || node.classList.contains("checked")
-        || node.classList.contains("is-checked")
-        || node.parentElement?.getAttribute("aria-checked") === "true";
-    }).catch(() => false);
-    const challengeVisible = await challenge
-      .isVisible()
-      .catch(() => false);
-    const challengeSubmitVisible = await challenge.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first()
-      .isVisible()
-      .catch(() => false);
-    const probe = { checkboxChecked, challengeVisible, challengeSubmitVisible };
-    return contract.completion.targetIds.every((targetId) => {
-      const target = contract.targets.find((candidate) => candidate.id === targetId);
-      return target ? humanAssistanceCompletionSatisfied(target.semanticId, probe) : false;
-    });
-  });
-}
-
-export async function waitForHumanAssistanceCompletion(
-  session: string,
-  contract: HumanAssistanceContract,
-  attempts = 12,
-  intervalMs = 100,
-) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (await inspectHumanAssistanceCompletion(session, contract)) return true;
-    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return false;
-}
-
-export async function refreshYuantaTradeChallengeSubmitTarget(
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  const isChallengeStage = contract.targets.some(
-    (target) => target.semanticId === "yuanta-trade.login.challenge-control",
-  );
-  const alreadyDeclared = contract.targets.some((target) => target.id === "challenge-submit");
-  if (!isChallengeStage || alreadyDeclared) return null;
-
-  const submitRect = await withPausedPage(session, async (page) => {
-    const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
-    if (!await challenge.isVisible().catch(() => false)) return null;
-    const submit = challenge.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
-    if (!await submit.isVisible().catch(() => false)) return null;
-    return await submit.boundingBox().catch(() => null);
-  });
-  if (!submitRect || submitRect.width <= 0 || submitRect.height <= 0) return null;
-
-  return {
-    stageId: contract.stageId,
-    title: contract.title,
-    targets: [
-      ...contract.targets,
-      {
-        id: "challenge-submit",
-        label: "Verify challenge",
-        semanticId: "yuanta-trade.login.challenge-submit",
-        modes: ["click"],
-        rect: submitRect,
-      },
-    ],
-    contextRegions: contract.contextRegions,
-    completion: {
-      ...contract.completion,
-      targetIds: [...contract.completion.targetIds, "challenge-submit"],
-      status: "pending",
-    },
-    focus: contract.focus,
-  };
+  }));
 }
 
 export async function sendViewerInput(session: string, rawInput: unknown) {
@@ -567,12 +415,13 @@ export async function sendHumanVerificationInput(
   session: string,
   rawInput: unknown,
   contract: HumanAssistanceContract,
+  targetInputHandler?: ViewerTargetInputHandler,
 ) {
   const input = normalizeHumanVerificationInput(rawInput, contract);
   const targetId = rawRecord(rawInput).targetId as string;
   const target = contract.targets.find((candidate) => candidate.id === targetId);
   if (!target) throw new Error("Human verification target is not declared for this stage.");
-  return sendNormalizedViewerInput(session, input, target);
+  return sendNormalizedViewerInput(session, input, target, targetInputHandler);
 }
 
 export async function focusHumanVerificationTarget(page: Page, target: HumanVerificationTarget) {
@@ -642,11 +491,6 @@ async function fillHumanVerificationTarget(
   text: string,
 ): Promise<boolean> {
   if (!target.rect) throw new Error("Human verification target is not currently resolved.");
-  if (target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID) {
-    const { input } = await visibleSinopacCaptchaInput(page);
-    await input.fill(text);
-    return true;
-  }
   const element = await editableElementAtViewerPoint(page.mainFrame(), focusPointForViewerRect(target.rect));
   if (!element) return false;
   try {
@@ -661,15 +505,12 @@ async function sendNormalizedViewerInput(
   session: string,
   input: ViewerInput,
   target?: HumanVerificationTarget,
+  targetInputHandler?: ViewerTargetInputHandler,
 ) {
   await withPausedPage(session, async (page) => {
     if (input.type === "click") {
-      if (target?.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID) {
-        const { input: captcha } = await visibleSinopacCaptchaInput(page);
-        await captcha.click();
-      } else {
-        await page.mouse.click(input.x, input.y);
-      }
+      if (target && targetInputHandler && await targetInputHandler(page, input, target)) return;
+      await page.mouse.click(input.x, input.y);
     } else if (input.type === "drag") {
       await page.mouse.move(input.x, input.y);
       await page.mouse.down();
@@ -677,6 +518,7 @@ async function sendNormalizedViewerInput(
       await page.mouse.up();
     } else if (input.type === "type") {
       if (target) {
+        if (targetInputHandler && await targetInputHandler(page, input, target)) return;
         if (!await fillHumanVerificationTarget(page, target, input.text)) {
           throw new Error("Human verification target moved. Reload the current verification stage.");
         }
@@ -689,4 +531,82 @@ async function sendNormalizedViewerInput(
       await page.keyboard.press(input.key);
     }
   });
+}
+
+export async function captureChallengeImageForContract(
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<Buffer | null> {
+  const rect = contract.challengeImageRegion?.rect;
+  if (!rect) return null;
+  try {
+    return await withPausedPage(session, (page) =>
+      page.screenshot({
+        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        type: "png",
+      }),
+    );
+  } catch (error) {
+    if (viewerScreenshotErrorKind(error) === "unavailable") throw error;
+    return null;
+  }
+}
+
+export async function injectVerificationAnswer(
+  session: string,
+  contract: HumanAssistanceContract,
+  answer: string,
+) {
+  const focusTarget = contract.targets.find(
+    (candidate) =>
+      candidate.id === contract.focus.targetId &&
+      candidate.modes.includes("type"),
+  );
+  const target =
+    focusTarget ??
+    contract.targets.find((candidate) => candidate.modes.includes("type"));
+  if (!target) {
+    throw new Error("Verification contract declares no type target for the solver answer.");
+  }
+  await sendNormalizedViewerInput(session, { type: "type", text: answer }, target);
+}
+
+export async function clickVerificationTarget(
+  session: string,
+  contract: HumanAssistanceContract,
+  targetId: string,
+) {
+  const target = contract.targets.find((candidate) => candidate.id === targetId);
+  if (!target?.rect) {
+    throw new Error("Verification target is not resolved for the solver click.");
+  }
+  const point = focusPointForViewerRect(target.rect);
+  await sendNormalizedViewerInput(session, { type: "click", x: point.x, y: point.y }, target);
+}
+
+export async function clickVerificationSelectionsOnPage(
+  page: Page,
+  rect: HumanVerificationRect,
+  selections: readonly VerificationSelectionPoint[],
+) {
+  for (const selection of selections) {
+    await page.mouse.click(
+      Math.round(rect.x + selection.x),
+      Math.round(rect.y + selection.y),
+    );
+  }
+}
+
+export async function injectVerificationSelections(
+  session: string,
+  contract: HumanAssistanceContract,
+  selections: readonly VerificationSelectionPoint[],
+) {
+  const rect = contract.challengeImageRegion?.rect;
+  if (!rect) {
+    throw new Error("Verification contract declares no challenge image region for the solver selections.");
+  }
+  await withPausedPage(session, (page) =>
+    clickVerificationSelectionsOnPage(page, rect, selections),
+  );
 }

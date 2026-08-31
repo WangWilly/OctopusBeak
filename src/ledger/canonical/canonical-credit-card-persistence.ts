@@ -62,6 +62,7 @@ type SharedTransaction = {
   transactionId: Uint8Array;
   revisionId: Uint8Array;
   sourceRecordId: Uint8Array;
+  captureSourceRecordId: Uint8Array;
 };
 
 export class CanonicalCreditCardPersistenceError extends Error {
@@ -153,6 +154,22 @@ CREATE TABLE IF NOT EXISTS canonical_credit_card_transaction_details (
   billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
   statement_key TEXT,
   PRIMARY KEY(revision_id, source_record_id)
+);
+CREATE TABLE IF NOT EXISTS canonical_credit_card_transaction_lifecycle (
+  -- One immutable observation per source capture.  This is deliberately
+  -- separate from transaction_revisions: billing/statement membership can
+  -- change while the financial transaction authority remains the same.
+  lifecycle_event_id BLOB PRIMARY KEY CHECK(length(lifecycle_event_id) = 16),
+  integration_namespace TEXT NOT NULL,
+  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  instrument_id BLOB NOT NULL REFERENCES canonical_credit_card_instruments(instrument_id),
+  billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
+  statement_key TEXT,
+  UNIQUE(integration_namespace, account_id, transaction_id, revision_id, capture_id, source_record_id)
 );
 CREATE TABLE IF NOT EXISTS canonical_credit_card_statements (
   statement_id BLOB PRIMARY KEY CHECK(length(statement_id) = 16),
@@ -334,6 +351,7 @@ function persistCapture(
 
   const sharedTransactions = new Map<string, SharedTransaction>();
   for (const transaction of capture.transactions) {
+    const captureSourceRecordId = sourceRecord(db, scope, transaction.sourceRecordKey);
     const currentRow = db.prepare(`
       SELECT financial.transaction_id, revision.revision_id, record.source_record_id
       FROM source_records record
@@ -371,6 +389,7 @@ function persistCapture(
       transactionId: row.transaction_id,
       revisionId: row.revision_id,
       sourceRecordId: row.source_record_id,
+      captureSourceRecordId,
     });
   }
 
@@ -423,8 +442,7 @@ function persistCapture(
     if (existing && (existing.integration_namespace !== namespace || !existing.account_id ||
         !sameBlob(existing.account_id, scope.account_id) || !existing.transaction_id ||
         !sameBlob(existing.transaction_id, shared.transactionId) || !existing.instrument_id ||
-        !sameBlob(existing.instrument_id, instrumentId) || existing.billing_status !== transaction.billingStatus ||
-        (existing.statement_key ?? null) !== (transaction.statementKey ?? null)))
+        !sameBlob(existing.instrument_id, instrumentId)))
       throw new CanonicalCreditCardPersistenceError(
         "Transaction revision was reused with changed credit-card authority data.",
       );
@@ -435,6 +453,33 @@ function persistCapture(
       namespace, scope.account_id, shared.transactionId, shared.revisionId, shared.sourceRecordId,
       scope.capture_id, instrumentId, transaction.billingStatus, transaction.statementKey ?? null,
     );
+    const statementKey = transaction.statementKey ?? null;
+    db.prepare(`INSERT INTO canonical_credit_card_transaction_lifecycle(
+      lifecycle_event_id, integration_namespace, account_id, transaction_id, revision_id,
+      source_record_id, capture_id, instrument_id, billing_status, statement_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(integration_namespace, account_id, transaction_id, revision_id, capture_id, source_record_id)
+      DO NOTHING`).run(
+      id(), namespace, scope.account_id, shared.transactionId, shared.revisionId,
+      shared.captureSourceRecordId, scope.capture_id, instrumentId,
+      transaction.billingStatus, statementKey,
+    );
+    const lifecycle = db.prepare(`SELECT instrument_id, billing_status, statement_key
+      FROM canonical_credit_card_transaction_lifecycle
+      WHERE integration_namespace = ? AND account_id = ? AND transaction_id = ?
+        AND revision_id = ? AND capture_id = ? AND source_record_id = ?
+    `).get(
+      namespace, scope.account_id, shared.transactionId, shared.revisionId,
+      scope.capture_id, shared.captureSourceRecordId,
+    ) as
+      | { instrument_id?: Uint8Array; billing_status?: string; statement_key?: string | null }
+      | undefined;
+    if (!lifecycle?.instrument_id || !sameBlob(lifecycle.instrument_id, instrumentId) ||
+        lifecycle.billing_status !== transaction.billingStatus ||
+        (lifecycle.statement_key ?? null) !== statementKey)
+      throw new CanonicalCreditCardPersistenceError(
+        "Credit-card lifecycle observation key was reused with changed evidence.",
+      );
   }
 
   for (const statement of capture.statements) {

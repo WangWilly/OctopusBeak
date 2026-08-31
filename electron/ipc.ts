@@ -9,6 +9,9 @@ import { createDataIssueIpcHandlers } from "../src/lib/desktop/api.ts";
 import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
+  cathayGmailOtpStatus,
+  disconnectCathayGmailOtp,
+  enableCathayGmailOtp,
   automationResume,
   automationRun,
   automationRunMany,
@@ -17,6 +20,7 @@ import {
   automationSetupGuideLink,
   externalPrerequisiteById,
   loadAutomationDesktopModel,
+  setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
@@ -24,17 +28,17 @@ import {
 } from "../src/lib/automation/server/credential-file.ts";
 import {
   captureSessionScreenshot,
-  inspectHumanAssistanceCompletion,
   isClosedViewerSessionError,
   inspectHumanVerificationPoint,
-  refreshCathayEmailOtpTarget,
-  refreshSinopacCaptchaTarget,
-  refreshYuantaTradeChallengeSubmitTarget,
-  sendHumanVerificationInput,
-  shouldAutoResumeYuantaTradeCaptcha,
-  shouldCheckYuantaTradeCompletion,
-  waitForHumanAssistanceCompletion,
 } from "../src/lib/automation/server/automation-viewer.ts";
+import {
+  inspectProviderVerificationCompletion,
+  refreshProviderVerificationTarget,
+  sendProviderVerificationInput,
+  shouldAutoResumeProviderVerification,
+  shouldCheckProviderVerificationCompletion,
+  waitForProviderVerificationCompletion,
+} from "../src/lib/automation/server/provider-verification.ts";
 import {
   forceQuitHumanSessionForTask,
   humanAssistanceContractForTask,
@@ -135,6 +139,24 @@ export function registerOctopusBeakIpc({
     (_event, updates: Record<string, string>) =>
       automationSaveCredentials(updates),
   );
+  ipcMain.handle("automation:cathayGmailOtpStatus", () =>
+    cathayGmailOtpStatus(),
+  );
+  ipcMain.handle("automation:enableCathayGmailOtp", () =>
+    enableCathayGmailOtp(),
+  );
+  ipcMain.handle(
+    "automation:setCathayGmailOtpEnabled",
+    (_event, enabled: unknown) => {
+      if (typeof enabled !== "boolean") {
+        throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
+      }
+      return setCathayGmailOtpEnabled(enabled);
+    },
+  );
+  ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
+    disconnectCathayGmailOtp(),
+  );
   ipcMain.handle(
     "automation:selectCertificateFile",
     async (event, locale: "en" | "zh-TW") => {
@@ -219,8 +241,7 @@ export function registerOctopusBeakIpc({
           "Human assistance contract is missing; force quit this legacy run.",
         );
       const refreshedContractInput =
-        (await refreshCathayEmailOtpTarget(session, contract)) ??
-        (await refreshSinopacCaptchaTarget(session, contract));
+        await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
         ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
         : contract;
@@ -237,56 +258,55 @@ export function registerOctopusBeakIpc({
           "Human assistance contract is missing; force quit this legacy run.",
         );
       const refreshedContractInput =
-        (await refreshCathayEmailOtpTarget(session, contract)) ??
-        (await refreshSinopacCaptchaTarget(session, contract));
+        await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
         ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
         : contract;
-      await sendHumanVerificationInput(session, input, refreshedContract);
-      const refreshedYuantaContractInput =
-        await refreshYuantaTradeChallengeSubmitTarget(
+      await sendProviderVerificationInput(session, input, refreshedContract);
+      const refreshedContractInputAfterInput =
+        await refreshProviderVerificationTarget(
           session,
           refreshedContract,
         );
-      const refreshedYuantaContract = refreshedYuantaContractInput
+      const refreshedContractAfterInput = refreshedContractInputAfterInput
         ? updateHumanAssistanceContractForTask(
             taskId,
-            refreshedYuantaContractInput,
+            refreshedContractInputAfterInput,
           )
-        : refreshedContract;
+          : refreshedContract;
       const record =
         input && typeof input === "object"
           ? (input as Record<string, unknown>)
           : {};
       const clickedTarget =
         typeof record.targetId === "string"
-          ? refreshedYuantaContract.targets.find(
+          ? refreshedContractAfterInput.targets.find(
               (target) => target.id === record.targetId,
             )
           : undefined;
-      const shouldCheckYuantaCompletion = shouldCheckYuantaTradeCompletion(
+      const shouldCheckCompletion = shouldCheckProviderVerificationCompletion(
         record.type,
         clickedTarget?.semanticId,
       );
       const verified =
-        shouldCheckYuantaCompletion &&
-        (await waitForHumanAssistanceCompletion(
+        shouldCheckCompletion &&
+        (await waitForProviderVerificationCompletion(
           session,
-          refreshedYuantaContract,
+          refreshedContractAfterInput,
         ));
       const isTextInputOnCompletionTarget =
         record.type === "type" &&
-        refreshedYuantaContract.completion.mode === "inline" &&
+        refreshedContractAfterInput.completion.mode === "inline" &&
         typeof record.targetId === "string" &&
-        refreshedYuantaContract.completion.targetIds.includes(record.targetId);
+        refreshedContractAfterInput.completion.targetIds.includes(record.targetId);
       const updatedContract = verified
         ? updateHumanAssistanceCompletionForTask(taskId, "verified")
         : isTextInputOnCompletionTarget
           ? updateHumanAssistanceCompletionForTask(taskId, "entered")
-          : refreshedYuantaContract;
+          : refreshedContractAfterInput;
       const resumed =
         typeof record.targetId === "string" &&
-        shouldAutoResumeYuantaTradeCaptcha(
+        shouldAutoResumeProviderVerification(
           updatedContract,
           record.targetId,
           verified,
@@ -305,11 +325,11 @@ export function registerOctopusBeakIpc({
           "Human assistance contract is missing; force quit this legacy run.",
         );
       const refreshedContractInput =
-        await refreshYuantaTradeChallengeSubmitTarget(session, contract);
+        await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
         ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
         : contract;
-      const verified = await inspectHumanAssistanceCompletion(
+      const verified = await inspectProviderVerificationCompletion(
         session,
         refreshedContract,
       );

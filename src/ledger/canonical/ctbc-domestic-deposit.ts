@@ -79,13 +79,13 @@ export const preflightCtbcDomesticDeposit =
   createAdvertisedDomesticDepositPreflight(CTBC_DOMESTIC_DEPOSIT_CONTRACT);
 
 export const CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
-  "capture-evidence-v1" as const;
+  "capture-evidence-v2" as const;
 export const CTBC_DOMESTIC_DEPOSIT_SOURCE_ROUTE =
-  "ctbc/domestic-deposit/capture-evidence-v1" as const;
+  "ctbc/domestic-deposit/capture-evidence-v2" as const;
 export const CTBC_DOMESTIC_DEPOSIT_SOURCE_RULE_VERSION =
   CTBC_DOMESTIC_DEPOSIT_SOURCE_ROUTE;
 export const CTBC_DOMESTIC_DEPOSIT_SOURCE_RECORD_KIND =
-  "ctbc-domestic-deposit-row-v1" as const;
+  "ctbc-domestic-deposit-row-v2" as const;
 export const CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE;
 export const CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
@@ -107,6 +107,14 @@ export type CtbcDomesticDepositCaptureResponse = {
   rows: CtbcDomesticDepositCaptureRow[];
   nextKey: string | null;
   terminal: boolean;
+  responseShape: {
+    hasRsData: boolean;
+    rsDataKind: "object" | "null" | "other";
+    hasDetailList: boolean;
+    detailListIsArray: boolean;
+    detailListRowCount: number | null;
+    nextKeyPresent: boolean;
+  };
 };
 export type CtbcDomesticDepositCaptureEvidence = {
   evidenceVersion: typeof CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
@@ -253,10 +261,51 @@ export function admitCtbcDomesticDepositCaptureEvidence(
         diagnostics.push("rows-invalid");
         continue;
       }
-      if (
-        (response.code === "9201" && response.rows.length !== 0) ||
-        (response.code === "0000" && response.rows.length === 0)
-      )
+      const shape = response.responseShape;
+      const shapeStructurallyValid =
+        shape &&
+        typeof shape.hasRsData === "boolean" &&
+        (shape.rsDataKind === "object" ||
+          shape.rsDataKind === "null" ||
+          shape.rsDataKind === "other") &&
+        typeof shape.hasDetailList === "boolean" &&
+        typeof shape.detailListIsArray === "boolean" &&
+        (shape.detailListRowCount === null ||
+          (Number.isInteger(shape.detailListRowCount) &&
+            shape.detailListRowCount >= 0)) &&
+        typeof shape.nextKeyPresent === "boolean";
+      if (!shapeStructurallyValid) {
+        diagnostics.push("response-shape-invalid");
+      } else {
+        if (shape.nextKeyPresent !== (response.nextKey !== null))
+          diagnostics.push("response-next-key-evidence-conflict");
+        if (response.code === "9201") {
+          if (
+            !shape.hasRsData ||
+            shape.rsDataKind !== "null" ||
+            shape.hasDetailList ||
+            shape.detailListIsArray ||
+            shape.detailListRowCount !== null ||
+            shape.nextKeyPresent
+          )
+            diagnostics.push("provider-no-data-shape-invalid");
+        } else if (
+          !shape.hasRsData ||
+          shape.rsDataKind !== "object" ||
+          !shape.hasDetailList ||
+          !shape.detailListIsArray ||
+          shape.detailListRowCount !== response.rows.length
+        ) {
+          diagnostics.push("provider-success-shape-invalid");
+        }
+        if (
+          response.code === "0000" &&
+          response.rows.length === 0 &&
+          (!response.terminal || shape.nextKeyPresent)
+        )
+          diagnostics.push("provider-success-empty-not-terminal");
+      }
+      if (response.code === "9201" && response.rows.length !== 0)
         diagnostics.push("response-row-conflict");
       for (const [rowOrdinal, row] of response.rows.entries()) {
         if (row?.rowOrdinal !== rowOrdinal)
@@ -363,6 +412,9 @@ export function createCtbcDomesticDepositSourceEvidence(
         providerTerminal: response.terminal,
         providerCode: response.code,
         providerExplicitNoData: response.code === "9201",
+        providerSuccessEmpty:
+          response.code === "0000" && response.rows.length === 0,
+        responseShape: response.responseShape,
       },
     })),
     records: capture.responses.flatMap((response) =>

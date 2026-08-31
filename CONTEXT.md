@@ -558,6 +558,10 @@ _Avoid_: Local-only product, anonymous financial data
 A login password, one-time code, session token, cookie, API key, credential answer, or equivalent material that can authenticate as the person. It is never exposed to a model or agent tool, even when other financial data is locally observable.
 _Avoid_: Financial account identifier, account data
 
+**Gmail OTP mailbox authorization**:
+The person's explicit Google OAuth grant that lets the application read only the Gmail messages needed to retrieve Cathay Bank login one-time codes. The first supported mailbox family is Gmail and Google Workspace; the application never asks for or stores the person's Google password. The person can turn automatic retrieval on or off, and first authorization begins only when they turn it on. While the feature remains enabled, an expired or invalid refresh token opens the system browser directly for renewed authorization during the Cathay workflow; cancellation or failure returns that run to human assistance. Automatic entry occurs only when exactly one post-request message and exactly one code satisfy the Cathay sender, template, timing, and format rules; disabled, revoked, missing, or ambiguous retrieval returns Cathay email verification to human assistance.
+_Avoid_: Email password, unrestricted mailbox ownership, generic email login
+
 **Authentication certificate file**:
 A user-owned certificate file selected for a supported source's authentication flow. The application retains a reference to the original file without copying it, presents only its filename in ordinary UI, and treats its password separately as an authentication secret.
 _Avoid_: Sign-in detail, copied certificate, uploaded certificate
@@ -687,24 +691,28 @@ The decision to retain an automation session for human assistance or relinquish 
 **Automation task run force-quit**:
 An operator-initiated action that ends a task run waiting for human input by relinquishing its exact automation session and finalizing the run as failed.
 
-**Human verification target**:
-A workflow-declared browser control or verification modal area that a person may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. Assist permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed human assistance.
+**Verification target**:
+A workflow-declared browser control or verification modal area that a Verification Actor may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. The host permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed verification.
 _Avoid_: Generic editable target, nearest input target
 
+**Verification actor**:
+The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `human`; the two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
+_Avoid_: Viewer mode, interaction mode, fallback actor
+
 **Verification completion**:
-The condition that permits an automation task to resume after human assistance. For an independent verification flow, completion requires confirmation from the workflow or host; for inline verification submitted together with login information, the available pre-submit condition is that the declared verification field is non-empty, while login success remains the final correctness check.
+The condition that permits an automation task to resume after verification. For a `human` actor, an independent verification flow requires confirmation from the workflow or host, while inline verification submitted together with login information uses a non-empty declared field as the available pre-submit condition; for a `solver` actor, completion is the solver answer satisfying the declared Solve Acceptance Policy. Login success remains the final correctness check for both actors.
 _Avoid_: Input has value means verification succeeded
 
 **Verification focus view**:
-A zoomed Assist presentation centered on the declared human verification target while preserving the challenge instructions, image, and surrounding context needed to solve it. A person may pan or zoom the presentation to inspect the full challenge context, but viewport manipulation is not a browser operation and only declared targets remain actionable.
+A zoomed Assist presentation centered on the declared verification target while preserving the challenge instructions, image, and surrounding context needed to solve it. A person may pan or zoom the presentation to inspect the full challenge context, but viewport manipulation is not a browser operation and only declared targets remain actionable.
 _Avoid_: Full-page Assist, arbitrary zoom
 
 **Verification context region**:
-A workflow-declared visual region that must remain visible in the verification focus view so a person has the instructions, challenge, and surrounding evidence needed to complete a human verification target. The region may be visible without being actionable.
+A workflow-declared visual region that must remain visible in the verification focus view so a person has the instructions, challenge, and surrounding evidence needed to complete a verification target. The region may be visible without being actionable.
 _Avoid_: Whole-page context, inferred nearest region
 
 **Human assistance contract**:
-A structured, persisted description emitted by a workflow when an automation task waits for human assistance. It declares the actionable human verification targets, the verification context regions that must remain visible, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth; the workflow emits structured updates and Assist only reads and presents them. A single task run may publish versioned contract updates as the verification flow changes; the contract ends when the workflow succeeds, fails, or is force-quit. Assist consumes this contract rather than inferring interaction rules from screenshots, DOM proximity, or log text.
+A structured, persisted description emitted by a workflow when an automation task waits for human assistance (a `human` Verification Actor). It declares the actionable verification targets, the verification context regions that must remain visible, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth; the workflow emits structured updates and Assist only reads and presents them. A single task run may publish versioned contract updates as the verification flow changes; the contract ends when the workflow succeeds, fails, or is force-quit. Assist consumes this contract rather than inferring interaction rules from screenshots, DOM proximity, or log text.
 _Avoid_: Screenshot-derived affordance, log-derived interaction contract
 
 **Human interaction stage**:
@@ -712,31 +720,103 @@ A versioned phase of a human assistance contract with a finite allowlist of acti
 _Avoid_: Full viewer stage, unrestricted page interaction
 
 **Verification interaction mode**:
-The operation explicitly permitted for a human verification target, such as click, type, or drag. The automation server rejects operations that the current target has not declared, even if the underlying browser control could technically receive them.
+The operation explicitly permitted for a verification target, such as click, type, or drag. The automation server rejects operations that the current target has not declared, even if the underlying browser control could technically receive them.
 _Avoid_: Generic viewer capability, inferred operation
 
-**Human verification retry**:
-The continuation of a resumed automation task run that discovers the human verification is incomplete or incorrect. The run returns to waiting for human assistance with refreshed challenge context and a new contract version, preserving the task's execution lineage instead of immediately becoming terminally failed. Retries are bounded by the workflow or external verification service; the app never retries indefinitely, and an exhausted or locked verification becomes an explicit task failure.
-_Avoid_: Restarting the whole workflow, treating an incorrect answer as an ordinary infrastructure failure
+**Verification retry**:
+The continuation of verification after an incomplete or incorrect result. For a `human` actor the run returns to waiting with refreshed challenge context and a new contract version; for a `solver` actor the first version restarts the provider workflow so the next retry begins a new CAPTCHA Challenge Round rather than repeating OCR against the rejected challenge. Retries are bounded, and an exhausted or locked verification becomes an explicit task failure; provider-specific in-session refresh is deferred beyond the first version.
+_Avoid_: Repeating a rejected challenge, treating an incorrect answer as an ordinary infrastructure failure
+
+**Verification solver**:
+The automated producer behind a `solver` Verification Actor, which reads a verification challenge image and returns an answer with a Solve Confidence. The first version is a lightweight Local Verification Solver run by the automation host; a future Remote Verification Solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
+_Avoid_: Workflow-side solver, generic input scanner
+
+**Local verification solver**:
+The first-release client-resident Verification Solver. It may preserve source-image fidelity, apply deterministic provider-declared preprocessing, and generate candidates with the bundled Tesseract runtime, but it does not ship provider-trained models, custom neural recognizers, PaddleOCR, or another heavyweight OCR runtime. When those lightweight methods cannot support an answer, the attempt fails or refreshes the challenge instead of expanding the client model stack.
+_Avoid_: Client-side provider model, client-side fine-tuning runtime
+
+**Remote verification solver**:
+A future Verification Solver deployment boundary for provider-specific trained models, heavyweight OCR, calibrated ensembles, and centralized hard-case learning. It remains behind the Verification Solver contract and may receive a de-identified challenge image only with explicit consent.
+_Avoid_: Hidden remote fallback, unconsented CAPTCHA upload
+
+**Solve confidence**:
+The probability a Verification Solver reports with its answer. It is one form of acceptance evidence; a result below the challenge's confidence threshold is insufficient by itself but may contribute to a declared OCR Agreement.
+_Avoid_: Absolute certainty, human confidence
+
+**Solve acceptance policy**:
+The provider-declared rule that determines whether solver evidence supports submitting one answer. Confidence-only acceptance is the default; a provider may additionally accept agreement alongside confidence or require agreement among distinct declared strategies. Under agreement-only acceptance, Solve Confidence never substitutes for missing agreement. One provider's policy does not change another provider's policy.
+_Avoid_: Global lowered threshold, provider-name special case, implicit fallback
+
+**OCR agreement**:
+The concordance reached when two or more provider-declared OCR strategies evaluate the same verification challenge and return the same normalized answer. It is acceptance evidence distinct from Solve Confidence and cannot be established by repeating an identical strategy.
+_Avoid_: Repeated OCR attempt, inflated confidence, majority guess
+
+**Solve attempt**:
+One invocation of a distinct provider-declared OCR strategy against the image belonging to one CAPTCHA Challenge Round. A round permits at most three Solve Attempts; repeating an identical strategy does not create another attempt or establish OCR Agreement.
+_Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
+
+**CAPTCHA challenge round**:
+The CAPTCHA image successfully captured by one workflow execution, the one to three distinct Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after image capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while a captured image that violates the declared challenge contract consumes a round without submission. First-version campaigns apply to solver-backed `text-captcha` and `image-selection` challenges, not ordinary checkbox interaction or a `human` Verification Actor, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the first version treats that restarted execution as the new-round boundary and does not compare image identity across rounds.
+_Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
+
+**CAPTCHA retry campaign**:
+The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed without switching from the `solver` Verification Actor to human assistance. Only a new explicit user operation starts a new campaign with a fresh budget.
+_Avoid_: Independent failed history item per round, per-process retry counter, automatically renewed retry budget
+
+**CAPTCHA campaign launch snapshot**:
+The provider, collection choices, verification configuration, and Sign-in Details selected when a CAPTCHA Retry Campaign begins and reused unchanged by every internal workflow restart in that campaign. Configuration edits made while it runs apply only to a later user-initiated operation; Sign-in Details remain non-persistent execution input and neither they nor solver answers enter campaign history or audit.
+_Avoid_: Per-round settings reload, persisted authentication secret, mixed-configuration campaign
+
+**CAPTCHA retry trigger**:
+The provider-verifiable reason that permits a CAPTCHA Retry Campaign to advance to another round: either the current round produced no answer satisfying its Solve Acceptance Policy, or a provider-specific rejection probe explicitly establishes that the provider rejected the submitted CAPTCHA answer. A provider without fixture or live evidence for a stable rejection signal may retry solver exhaustion but must treat an ambiguous post-submission failure as non-retryable. Incorrect sign-in details, account restrictions, transport or browser-control failures, workflow defects, and ambiguous login failures are non-retryable and end the campaign without consuming another round.
+_Avoid_: Any login failure, inferred CAPTCHA rejection, generic workflow error retry
+
+**CAPTCHA round outcome**:
+The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, or the round ended for a non-retryable reason. A provider-rejected result is reserved for a future provider adapter with proven rejection evidence. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing human-assistance contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
+_Avoid_: Retry log marker, error-message matching, inferred process failure
+
+**Yuanta Bank login CAPTCHA**:
+The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.
+_Avoid_: Yuanta five-digit CAPTCHA, mixed-provider CAPTCHA corpus
+
+**Bank SinoPac login CAPTCHA**:
+The single supported CAPTCHA family on the Bank SinoPac login workflow: a 120-by-40-pixel image whose answer is exactly six decimal digits and whose glyphs are crossed by multiple colored straight interference lines. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Bank SinoPac CAPTCHA, mixed-layout Bank SinoPac CAPTCHA corpus
+
+**E-Invoice login CAPTCHA**:
+The single supported CAPTCHA family on the E-Invoice login workflow: a 150-by-40-pixel image whose answer is exactly five decimal digits and whose interference appears along the lower part of the image. A capture with different dimensions, answer length, character set, or interference layout is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
+
+**Taipei Fubon login CAPTCHA**:
+The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflow: a 158-by-30-pixel white-background image whose answer is exactly six decimal digits rendered as colored, variably tilted glyphs without an interference-line requirement. Automatic submission requires OCR Agreement from at least two distinct provider-declared preprocessing strategies; missing agreement fails closed. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
+
+**Cathay login Email OTP**:
+The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Any missing, stale, unauthenticated, differently shaped, ambiguous, rejected, or uncertain candidate returns to human assistance without persisting the message or answer.
+_Avoid_: Numeric-only Cathay OTP, arbitrary six-digit email code, recipient-address equality
+
+**Verification challenge presence**:
+The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.
+_Avoid_: Assumed challenge, unconditional solve
 
 **Human assistance contract resolution failure**:
 A state in which the current semantic target or verification context region cannot be resolved against the live browser session. Assist remains waiting with Resume disabled, does not fall back to unrestricted page interaction, and exits only after a contract update or an explicit force-quit.
 _Avoid_: Nearest-element fallback, silent target substitution
 
 **Human verification target accessibility**:
-The keyboard and pointer operation paths a declared human verification target makes available. Type targets receive focus, click targets expose equivalent keyboard activation where possible, and pointer-only drag targets require an explicit workflow declaration and user guidance.
+The keyboard and pointer operation paths a declared verification target makes available to a `human` actor. Type targets receive focus, click targets expose equivalent keyboard activation where possible, and pointer-only drag targets require an explicit workflow declaration and user guidance.
 _Avoid_: Pointer-only by accident, keyboard bypass of target rules
 
 **Human assistance contract freshness**:
 The requirement that every human interaction carries the current task run's contract version. The automation server rejects operations from a stale stage after navigation, modal changes, or contract updates, and Assist must reload the current contract before presenting another actionable target.
 _Avoid_: Stale-coordinate interaction, client-only stage tracking
 
-**Human verification input privacy**:
-The boundary that keeps raw text entered into human verification targets out of the human assistance contract, task logs, and analytics. CAPTCHA, OTP, password, and other authentication material is forwarded only to the live CDP session; persisted records retain target, operation, outcome, and timing metadata without reconstructing the input.
+**Verification input privacy**:
+The boundary that keeps raw text entered into verification targets out of the human assistance contract, task logs, and analytics. CAPTCHA, OTP, password, and other authentication material is forwarded only to the live CDP session; persisted records retain target, operation, outcome, and timing metadata without reconstructing the input. A solver-produced answer is held only by the host for the live injection and is likewise never persisted or logged.
 _Avoid_: Logged verification text, replayable input screenshot
 
-**Human verification screenshot privacy**:
-The rule that challenge screenshots and verification focus views exist only in the active Assist session's memory. They are cleared when Assist closes or the browser session ends, and are never persisted in task records, logs, analytics, or user-accessible exports.
+**Verification screenshot privacy**:
+The rule that challenge screenshots and verification focus views exist only in the active Assist session's memory. They are cleared when Assist closes or the browser session ends, and are never persisted in task records, logs, analytics, or user-accessible exports. A local Verification Solver reads the challenge image on-device without persisting it; a remote or third-party solver may receive the challenge image only with explicit consent, de-identified from any login page, account, or personal context.
 _Avoid_: Diagnostic screenshot archive, persisted challenge image
 
 **Legacy human assistance run**:

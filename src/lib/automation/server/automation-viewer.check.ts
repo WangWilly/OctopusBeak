@@ -3,7 +3,6 @@ import {
   isClosedViewerSessionError,
   viewerScreenshotErrorKind,
   isNestedFrameElement,
-  humanAssistanceCompletionSatisfied,
   humanVerificationTargetAtPoint,
   focusHumanVerificationTarget,
   focusPointForViewerRect,
@@ -13,24 +12,13 @@ import {
   normalizeViewerInput,
   normalizeViewerPoint,
   refreshTargetRect,
-  refreshSinopacCaptchaTargetFromPage,
   selectAllShortcut,
   selectViewerPage,
-  shouldAutoResumeYuantaTradeCaptcha,
-  shouldCheckYuantaTradeCompletion,
   VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
-  YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
+  clickVerificationSelectionsOnPage,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
-import {
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as sharedChallengeSelector,
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR as sharedSubmitSelector,
-} from "../yuanta-trade-captcha.ts";
 
 assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
   type: "jpeg",
@@ -48,8 +36,6 @@ assert.equal(viewerScreenshotErrorKind(new Error("Unexpected screenshot failure"
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
-assert.equal(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR, sharedChallengeSelector);
-assert.equal(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR, sharedSubmitSelector);
 
 assert.deepEqual(
   normalizeViewerInput({ type: "click", x: 10.2, y: 20.8 }),
@@ -173,51 +159,47 @@ assert.equal(
   refreshTargetRect(humanContract, "captcha.input", humanContract.targets[0]!.rect!),
   null,
 );
-
-const sinopacContract: HumanAssistanceContract = {
-  schemaVersion: 1,
-  version: 1,
-  stageId: "sinopac-login-captcha",
-  title: "Complete CAPTCHA",
-  targets: [{
-    id: "sinopac-captcha-input",
-    label: "CAPTCHA input",
-    semanticId: SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
-    modes: ["click", "type"],
-    rect: { x: 589.03125, y: 447, width: 122, height: 35 },
-  }],
-  contextRegions: [],
-  completion: { mode: "inline", targetIds: ["sinopac-captcha-input"], status: "pending" },
-  focus: { targetId: "sinopac-captcha-input", contextRegionIds: [] },
-};
-const sinopacLocator = {
-  count: async () => 1,
-  isVisible: async () => true,
-  boundingBox: async () => ({ x: 589.03125, y: 487.5, width: 122, height: 35 }),
-};
-const sinopacPage = {
-  locator: (selector: string) => {
-    assert.equal(selector, SINOPAC_CAPTCHA_INPUT_SELECTOR);
-    return sinopacLocator;
+const metadataContract: HumanAssistanceContract = {
+  ...humanContract,
+  challengeKind: "text-captcha",
+  challengeImageRegion: {
+    id: "challenge-image",
+    label: "Challenge image",
+    semanticId: "captcha.challenge-image",
+    rect: { x: 800, y: 300, width: 120, height: 48 },
   },
+  charset: "digits",
+  imagePreprocessing: ["remove-interference-lines"],
+  ocrPageSegmentationMode: "single-word",
+  ocrAttemptPlan: [
+    { ocrPageSegmentationMode: "single-word" },
+    { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
+  ],
+  solveAcceptancePolicy: { mode: "agreement-only" },
+  solverConfidenceThreshold: 0.8,
+  expectedAnswerLength: 5,
+  prompt: "Enter the digits shown.",
 };
-const refreshedSinopac = await refreshSinopacCaptchaTargetFromPage(
-  sinopacPage as never,
-  sinopacContract,
+const refreshedMetadataContract = refreshTargetRect(
+  metadataContract,
+  "captcha.input",
+  { x: 700, y: 440, width: 96, height: 96 },
 );
-assert.equal(refreshedSinopac?.targets[0]?.rect?.y, 487.5);
-await assert.rejects(
-  () => refreshSinopacCaptchaTargetFromPage({
-    locator: () => ({ ...sinopacLocator, count: async () => 2 }),
-  } as never, sinopacContract),
-  /missing or ambiguous/,
-);
-await assert.rejects(
-  () => refreshSinopacCaptchaTargetFromPage({
-    locator: () => ({ ...sinopacLocator, isVisible: async () => false }),
-  } as never, sinopacContract),
-  /not visible/,
-);
+assert.equal(refreshedMetadataContract?.challengeKind, "text-captcha");
+assert.deepEqual(refreshedMetadataContract?.challengeImageRegion, metadataContract.challengeImageRegion);
+assert.equal(refreshedMetadataContract?.charset, "digits");
+assert.deepEqual(refreshedMetadataContract?.imagePreprocessing, [
+  "remove-interference-lines",
+]);
+assert.equal(refreshedMetadataContract?.ocrPageSegmentationMode, "single-word");
+assert.deepEqual(refreshedMetadataContract?.ocrAttemptPlan, metadataContract.ocrAttemptPlan);
+assert.deepEqual(refreshedMetadataContract?.solveAcceptancePolicy, {
+  mode: "agreement-only",
+});
+assert.equal(refreshedMetadataContract?.solverConfidenceThreshold, 0.8);
+assert.equal(refreshedMetadataContract?.expectedAnswerLength, 5);
+assert.equal(refreshedMetadataContract?.prompt, "Enter the digits shown.");
+
 const focusCalls: Array<[number, number]> = [];
 await focusHumanVerificationTarget({
   evaluate: async () => false,
@@ -248,116 +230,6 @@ assert.equal(
   "captcha-input",
 );
 assert.equal(humanVerificationTargetAtPoint(humanContract, { x: 810, y: 400 }), null);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.captcha-checkbox", {
-    checkboxChecked: true,
-    challengeVisible: true,
-    challengeSubmitVisible: false,
-  }),
-  true,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.captcha-checkbox", {
-    checkboxChecked: false,
-    challengeVisible: true,
-    challengeSubmitVisible: false,
-  }),
-  true,
-);
-assert.equal(
-  shouldCheckYuantaTradeCompletion("click", "yuanta-trade.login.challenge-control"),
-  false,
-);
-assert.equal(
-  shouldCheckYuantaTradeCompletion("click", "yuanta-trade.login.challenge-submit"),
-  true,
-);
-assert.equal(
-  shouldCheckYuantaTradeCompletion("type", "yuanta-trade.login.challenge-submit"),
-  false,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
-    checkboxChecked: true,
-    challengeVisible: true,
-    challengeSubmitVisible: false,
-  }),
-  false,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
-    checkboxChecked: true,
-    challengeVisible: true,
-    challengeSubmitVisible: true,
-  }),
-  false,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-control", {
-    checkboxChecked: true,
-    challengeVisible: false,
-    challengeSubmitVisible: false,
-  }),
-  true,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("yuanta-trade.login.challenge-submit", {
-    checkboxChecked: true,
-    challengeVisible: false,
-    challengeSubmitVisible: false,
-  }),
-  true,
-);
-assert.equal(
-  humanAssistanceCompletionSatisfied("unknown.semantic-id", {
-    checkboxChecked: true,
-    challengeVisible: false,
-    challengeSubmitVisible: false,
-  }),
-  false,
-);
-assert.equal(
-  shouldAutoResumeYuantaTradeCaptcha({
-    ...humanContract,
-    stageId: "yuanta-trade-captcha-checkbox",
-    completion: { mode: "independent", targetIds: ["captcha-input"], status: "verified" },
-    targets: [{
-      ...humanContract.targets[0]!,
-      semanticId: "yuanta-trade.login.captcha-checkbox",
-      modes: ["click"],
-    }],
-  }, "captcha-input", true),
-  true,
-);
-assert.equal(
-  shouldAutoResumeYuantaTradeCaptcha({
-    ...humanContract,
-    stageId: "yuanta-trade-captcha-checkbox",
-    completion: { mode: "independent", targetIds: ["captcha-input"], status: "pending" },
-    targets: [{
-      ...humanContract.targets[0]!,
-      semanticId: "yuanta-trade.login.captcha-checkbox",
-      modes: ["click"],
-    }],
-  }, "captcha-input", false),
-  false,
-);
-assert.equal(
-  shouldAutoResumeYuantaTradeCaptcha({
-    ...humanContract,
-    completion: { mode: "independent", targetIds: ["captcha-input"], status: "verified" },
-  }, "captcha-input", true),
-  false,
-);
-assert.equal(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR, "#chbYCaptchaV2");
-assert.equal(
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
-  "#modalYCaptchaV2, #captchaModal, .captcha-modal",
-);
-assert.equal(
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
-  'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
-);
 assert.deepEqual(
   normalizeHumanVerificationInput({
     type: "click",
@@ -409,3 +281,16 @@ assert.equal(selectViewerPage([
   { url: () => "devtools://devtools/bundled/inspector.html" },
   { url: () => "https://last.example" },
 ])?.url(), "https://last.example");
+
+const selectionClicks: Array<[number, number]> = [];
+await clickVerificationSelectionsOnPage({
+  mouse: {
+    click: async (x: number, y: number) => {
+      selectionClicks.push([x, y]);
+    },
+  },
+} as never, { x: 100, y: 200, width: 300, height: 200 }, [
+  { x: 10, y: 20 },
+  { x: 50.6, y: 80.4 },
+]);
+assert.deepEqual(selectionClicks, [[110, 220], [151, 280]]);
