@@ -6,6 +6,7 @@ import {
   LOAN_CONTRACT_FIXTURES,
   admitCanonicalLoanCapture,
   evaluateAdvertisedLoanReadiness,
+  isAdvertisedLoanEntryReleaseReady,
 } from "./advertised-loan-readiness.ts";
 
 test("advertised loan contracts cover exactly Fubon and Yuanta", () => {
@@ -46,6 +47,14 @@ test("advertised loan contracts cover exactly Fubon and Yuanta", () => {
   assert.equal(readiness.advertisedSourceCount, 2);
   assert.deepEqual(readiness.unreadySourceIds, []);
   assert.equal(readiness.entries.every((entry) => entry.contractComplete), true);
+  assert.equal(
+    readiness.entries.find((entry) => entry.sourceId === "fubon")?.liveValidation,
+    "complete",
+  );
+  assert.equal(
+    readiness.entries.find((entry) => entry.sourceId === "yuanta")?.liveValidation,
+    "pending",
+  );
 });
 
 test("loan admission fails closed when balance effective time is substituted", () => {
@@ -73,6 +82,26 @@ test("readiness stays blocked while either live attestation is pending", () => {
   const readiness = evaluateAdvertisedLoanReadiness(pendingEntries);
   assert.equal(readiness.status, "blocked");
   assert.deepEqual(readiness.pendingLiveValidationSourceIds, ["fubon", "yuanta"]);
+});
+
+test("pending live validation cannot pass readiness without an explicit blocker", () => {
+  const pendingEntries = ADVERTISED_LOAN_READINESS.map((entry) => ({
+    ...entry,
+    liveValidation: "pending" as const,
+    blockers: [] as const,
+  }));
+  assert.equal(isAdvertisedLoanEntryReleaseReady(pendingEntries[0]!), false);
+  const readiness = evaluateAdvertisedLoanReadiness(pendingEntries);
+  assert.equal(readiness.status, "blocked");
+  assert.equal(readiness.releaseReady, false);
+  assert.deepEqual(readiness.pendingLiveValidationSourceIds, ["fubon", "yuanta"]);
+});
+
+test("an empty advertised loan inventory cannot pass the release gate", () => {
+  const readiness = evaluateAdvertisedLoanReadiness([]);
+  assert.equal(readiness.status, "blocked");
+  assert.equal(readiness.releaseReady, false);
+  assert.equal(readiness.advertisedSourceCount, 0);
 });
 
 test("loan admission fails closed for inferred direction, incomplete range, and unsupported facts", () => {

@@ -26,6 +26,8 @@ assert.doesNotMatch(
 );
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
+assert.doesNotMatch(source, /pageCount:\s*1/);
+assert.match(source, /relationCoverage:\s*["']not-asserted["']/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonLoanStatements"),
 );
@@ -277,6 +279,10 @@ const navigateToLoanStatementsPage = module.navigateToLoanStatementsPage as (
 const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
   rows: readonly string[][],
 ) => string[][];
+const parseFubonLoanCompletenessEvidence =
+  module.parseFubonLoanCompletenessEvidence as (
+    value: unknown,
+  ) => unknown;
 
 test("uses an already-rendered loan form without navigation or goto", async () => {
   const scope = fakeScope("txnFrame");
@@ -401,6 +407,34 @@ test("fails closed when a Fubon result contains an unexpected non-header row", (
   );
 });
 
+test("Fubon completeness requires explicit provider terminal/page evidence", () => {
+  assert.equal(parseFubonLoanCompletenessEvidence(undefined), null);
+  assert.equal(
+    parseFubonLoanCompletenessEvidence({
+      pageCount: 1,
+      terminal: false,
+      proofKind: "source-declared-terminal-range",
+    }),
+    null,
+  );
+  assert.deepEqual(
+    parseFubonLoanCompletenessEvidence({
+      pageCount: 1,
+      terminal: true,
+      proofKind: "source-declared-terminal-range",
+    }),
+    { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+  );
+  assert.deepEqual(
+    parseFubonLoanCompletenessEvidence({
+      pageCount: 3,
+      terminal: true,
+      proofKind: "source-declared-terminal-range",
+    }),
+    { pageCount: 3, terminal: true, proofKind: "source-declared-terminal-range" },
+  );
+});
+
 test("bounds a frame probe that never resolves and fails closed", async () => {
   const header = fakeScope("frame1");
   const landing = fakeScope("txnFrame");
@@ -453,6 +487,7 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
           proofKind: "source-declared-terminal-range",
         },
       ],
+      relationCoverage: "not-asserted",
       counterpartTransactions: [],
       relations: [],
       rows: [
@@ -475,6 +510,10 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
 
   assert.equal(commitCount, 1);
   assert.equal(admittedCaptures.length, 1);
+  assert.equal(
+    (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
+    "not-asserted",
+  );
 });
 
 test("emits non-sensitive bounded navigation stage telemetry", async () => {

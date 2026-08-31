@@ -16,6 +16,9 @@ registerHooks({
 
 const { readYuantaLoanAccountOptions, parseYuantaLoanStatementRows } =
   await import("./yuanta-loan-statements.ts");
+const { parseYuantaLoanCompletenessEvidence } = await import(
+  "./yuanta-loan-statements.ts"
+);
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
 const { persistYuantaLoanCapture } = await import(
@@ -105,6 +108,7 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
           proofKind: "source-declared-terminal-range",
         },
       ],
+      relationCoverage: "not-asserted",
       counterpartTransactions: [],
       relations: [],
       rows: [
@@ -128,6 +132,10 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
 
   assert.equal(commitCount, 1);
   assert.equal(admittedCaptures.length, 1);
+  assert.equal(
+    (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
+    "not-asserted",
+  );
 });
 
 test("fails closed when a Yuanta result row does not have six source cells", () => {
@@ -137,6 +145,34 @@ test("fails closed when a Yuanta result row does not have six source cells", () 
         ["2026/01/01", "LOAN-PAYMENT", "", "10", "90"],
       ]),
     /unexpected Yuanta loan result row/i,
+  );
+});
+
+test("Yuanta completeness requires explicit provider terminal/page evidence", () => {
+  assert.equal(parseYuantaLoanCompletenessEvidence(undefined), null);
+  assert.equal(
+    parseYuantaLoanCompletenessEvidence({
+      pageCount: 1,
+      terminal: false,
+      proofKind: "source-declared-terminal-range",
+    }),
+    null,
+  );
+  assert.deepEqual(
+    parseYuantaLoanCompletenessEvidence({
+      pageCount: 1,
+      terminal: true,
+      proofKind: "source-declared-terminal-range",
+    }),
+    { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+  );
+  assert.deepEqual(
+    parseYuantaLoanCompletenessEvidence({
+      pageCount: 3,
+      terminal: true,
+      proofKind: "source-declared-terminal-range",
+    }),
+    { pageCount: 3, terminal: true, proofKind: "source-declared-terminal-range" },
   );
 });
 

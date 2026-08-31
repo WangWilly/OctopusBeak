@@ -10,6 +10,7 @@ import {
   createCanonicalLoanCapture,
   parseCanonicalLoanAmount,
   parseCanonicalLoanDate,
+  isCanonicalLoanSourceDateBeforeObservedAt,
   queryCanonicalLoanCurrent,
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
@@ -51,6 +52,7 @@ export type YuantaLoanCaptureBuildInput = {
   pages: LoanCaptureInput["pages"];
   counterpartTransactions: LoanCaptureInput["counterpartTransactions"];
   relations: LoanCaptureInput["relations"];
+  relationCoverage?: LoanCaptureInput["relationCoverage"];
   rows: readonly YuantaLoanStatementRow[];
 };
 
@@ -181,7 +183,6 @@ function optionalAmount(value: string, label: string) {
 function canonicalRows(
   input: YuantaLoanCaptureBuildInput,
 ): CanonicalLoanStatementRow[] {
-  const observedAt = Date.parse(input.observedAt);
   return input.rows.map((row, index) => {
     const sourceCode = sourceCodeFor(row.paymentItem);
     const mapping = LOAN_EVENT_CONTRACT_MAPPINGS.yuanta[sourceCode]!;
@@ -218,8 +219,10 @@ function canonicalRows(
     );
     const balanceIsHistorical =
       balance !== undefined &&
-      Number.isFinite(observedAt) &&
-      Date.parse(balanceEffectiveAt) < observedAt;
+      isCanonicalLoanSourceDateBeforeObservedAt(
+        balanceEffectiveAt,
+        input.observedAt,
+      );
     return {
       sourceRecordKey,
       occurrenceIndex: index + 1,
@@ -283,6 +286,7 @@ export function buildYuantaLoanCapture(
     pages: input.pages,
     counterpartTransactions: input.counterpartTransactions,
     relations: input.relations,
+    relationCoverage: input.relationCoverage,
     rows,
   });
 }
