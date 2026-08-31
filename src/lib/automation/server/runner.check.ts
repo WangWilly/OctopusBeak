@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, describe } from "node:test";
 import {
   chmodSync,
   mkdirSync,
@@ -131,6 +131,15 @@ async function settleStartedBatchTasks(taskIds: readonly string[]) {
     }
   }
 }
+
+afterEach(async () => {
+  // A timeout or assertion failure must not leave the module-level task claim
+  // fenced for the next stateful runner test. Join every child before the
+  // next test starts so failures cannot cascade into "already running".
+  await settleStartedTasks(activeAutomationTaskIds());
+});
+
+describe("runner stateful operations", { concurrency: false }, () => {
 
 test("runner execution preserves base env and applies the current session dialog owner", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "automation-runner-launch-env-"));
@@ -272,6 +281,8 @@ test("resume bypasses fresh statement-selection validation", async () => {
     mkdirSync(binDir);
     writeFileSync(join(binDir, "libretto"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(binDir, "libretto"), 0o755);
+    writeFileSync(join(binDir, "npx"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(binDir, "npx"), 0o755);
     writeFileSync(
       join(root, "settings.json"),
       JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }),
@@ -2301,4 +2312,5 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     }
     rmSync(root, { recursive: true, force: true });
   }
+});
 });
