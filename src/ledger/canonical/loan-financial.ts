@@ -1,0 +1,1675 @@
+import { createHash, randomBytes } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
+  type CanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositCommitResult,
+  type CanonicalFinancialDepositValidatedCapture,
+} from "./canonical-financial-deposit-writer.ts";
+import {
+  createCanonicalSourceStore,
+  type CanonicalSourceStore,
+} from "./canonical-source-store.ts";
+
+export type LoanSourceId = "fubon" | "yuanta";
+
+export const ADVERTISED_LOAN_SOURCE_IDS = ["fubon", "yuanta"] as const;
+
+export const LOAN_CANONICAL_CONTRACT_VERSION = "loan/canonical/v1" as const;
+export const FUBON_LOAN_CONTRACT_VERSION =
+  `${LOAN_CANONICAL_CONTRACT_VERSION}.fubon` as const;
+export const YUANTA_LOAN_CONTRACT_VERSION =
+  `${LOAN_CANONICAL_CONTRACT_VERSION}.yuanta` as const;
+
+export const FUBON_LOAN_AUTHORITY_ROUTE = "fubon/loan/canonical-v1" as const;
+export const YUANTA_LOAN_AUTHORITY_ROUTE = "yuanta/loan/canonical-v1" as const;
+
+export type LoanExactAmount = {
+  coefficient: string;
+  scale: number;
+};
+
+export type LoanEventKind = "disbursement" | "payment" | "interest" | "fee";
+
+export type LoanEventEvidence = {
+  kind: "source-coded-loan-event";
+  sourceRecordKey: string;
+  sourceCode: string;
+  contractVersion: string;
+};
+
+export type LoanComponentEvidence = {
+  kind: "explicit-source-component";
+  sourceRecordKey: string;
+  contractVersion: string;
+};
+
+export type LoanTransactionInput = {
+  sourceRecordKey: string;
+  occurrenceIndex: number;
+  effectiveOn: string;
+  sourceTime: {
+    localTime: string;
+    precision: "date" | "minute" | "second";
+    timeOrigin: "source_reported" | "defaulted_local_midnight";
+  };
+  postingStatus: "posted";
+  eventKind: LoanEventKind;
+  eventEvidence: LoanEventEvidence;
+  direction: "inflow" | "outflow";
+  amount: LoanExactAmount;
+  currency: "TWD";
+  description?: string;
+  principal?: LoanExactAmount;
+  interest?: LoanExactAmount;
+  fee?: LoanExactAmount;
+  componentEvidence?: LoanComponentEvidence;
+};
+
+export type LoanBalanceObservationInput = {
+  observationKey: string;
+  sourceRecordKey: string;
+  balanceKind: "loan_outstanding" | "outstanding_principal" | "outstanding_total";
+  balance: LoanExactAmount;
+  currency: "TWD";
+  effectiveAt: string;
+  effectiveTimeBasis: "source-reported";
+  effectiveTimeRuleVersion: string;
+};
+
+export type LoanTransferRelationInput = {
+  kind: "transfer_counterpart";
+  fromSourceRecordKey: string;
+  toSourceRecordKey: string;
+  fromDirection: "inflow" | "outflow";
+  toDirection: "inflow" | "outflow";
+  evidence: {
+    kind: "explicit-source-linkage";
+    sourceRecordKey: string;
+    relationId: string;
+    contractVersion: string;
+  };
+};
+
+export type LoanCaptureInput = {
+  captureId: string;
+  sourceId: LoanSourceId;
+  authorityRoute: string;
+  contractVersion: string;
+  identity: {
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    accountKey: string;
+    subjectDigest: string;
+    accountType: "loan";
+    accountNo: string;
+    stream: "loan";
+    recordKind: string;
+    currency: "TWD";
+  };
+  observedAt: string;
+  scope: {
+    startDate: string;
+    endDate: string;
+    completeness: "complete-range";
+    completenessBasis: "source-declared-terminal-range";
+    completenessRuleVersion: string;
+    pageCount: number;
+    terminal: true;
+  };
+  semantics: {
+    status: "posted";
+    effectiveTimeBasis: "source-reported";
+    effectiveTimeRuleVersion: string;
+    timeZone: "Asia/Taipei";
+  };
+  pages: readonly LoanCapturePage[];
+  records: readonly LoanTransactionInput[];
+  balanceObservations: readonly LoanBalanceObservationInput[];
+  relations: readonly LoanTransferRelationInput[];
+};
+
+export type LoanCapturePage = {
+  pageOrdinal: number;
+  responseCode: "200";
+  terminal: boolean;
+  rowCount: number;
+  proofKind: "source-declared-terminal-range";
+};
+
+export type LoanValidatedCapture = LoanCaptureInput & {
+  readonly __runtimeValidatedCanonicalLoanCapture: true;
+};
+
+export type LoanFinancialStore = {
+  readonly db: DatabaseSync;
+  readonly databasePath: string;
+  readonly sourceStore: CanonicalSourceStore;
+  readonly commitClock: () => number;
+  close(): void;
+};
+
+export type LoanFinancialCommitResult = CanonicalFinancialDepositCommitResult & {
+  balanceObservationCount: number;
+  relationCount: number;
+};
+
+export type LoanAccount = {
+  id: string;
+  sourceId: LoanSourceId;
+  sourceConnectionKey: string;
+  identityEpochKey: string;
+  accountKey: string;
+  accountNo: string;
+  accountType: "loan";
+  stream: "loan";
+  recordKind: string;
+  currency: "TWD";
+};
+
+export type LoanTransaction = {
+  id: string;
+  accountId: string;
+  account: LoanAccount;
+  sourceRecordKey: string;
+  /** Compatibility spelling used by the source-record query APIs. */
+  sourceOccurrenceKey: string;
+  occurrenceIndex: number | null;
+  effectiveOn: string;
+  effectiveTimeBasis: "source-reported";
+  sourceTime: {
+    localTime: string;
+    timeZone: "Asia/Taipei";
+    precision: "date" | "minute" | "second";
+    timeOrigin: "source_reported" | "defaulted_local_midnight";
+  };
+  postingStatus: "posted";
+  eventKind: LoanEventKind;
+  direction: "inflow" | "outflow";
+  amount: LoanExactAmount;
+  currency: "TWD";
+  description: string | null;
+  principal: LoanExactAmount | null;
+  interest: LoanExactAmount | null;
+  fee: LoanExactAmount | null;
+  knowledgeCommitSequence: number;
+};
+
+export type LoanBalanceObservation = LoanBalanceObservationInput & {
+  accountId: string;
+  account: LoanAccount;
+  captureId: string;
+  commitSequence: number;
+  observedAt: string;
+};
+
+export type LoanTransferRelation = LoanTransferRelationInput & {
+  accountId: string;
+  commitSequence: number;
+  fromTransactionId: string | null;
+  toTransactionId: string | null;
+};
+
+export type LoanLineageEntry = {
+  sourceRecordKey: string;
+  captureId: string;
+  commitSequence: number;
+  contentHash: string;
+  payload: Record<string, unknown>;
+};
+
+export type LoanQueryResult = {
+  status: "canonical-live";
+  kind: "current" | "historical" | "lineage";
+  accounts: LoanAccount[];
+  financialAccounts: LoanAccount[];
+  transactions: LoanTransaction[];
+  balanceObservations: LoanBalanceObservation[];
+  balanceEvidence: LoanBalanceObservation[];
+  relations: LoanTransferRelation[];
+  transferRelations: LoanTransferRelation[];
+  lineage: LoanLineageEntry[];
+  provenance: LoanLineageEntry[];
+  knowledgeAt: number;
+  financialAt: string | null;
+};
+
+export type LoanHistoricalQuery = {
+  knowledgeAt?: number;
+  financialAt?: string;
+  sourceId?: LoanSourceId;
+  integrationNamespace?: LoanSourceId;
+};
+
+export type LoanLineageQuery = {
+  sourceRecordKey?: string;
+  sourceOccurrenceKey?: string;
+  sourceId?: LoanSourceId;
+  integrationNamespace?: LoanSourceId;
+};
+
+export class CanonicalLoanAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalLoanAdmissionError";
+  }
+}
+
+export class CanonicalLoanConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalLoanConflictError";
+  }
+}
+
+const VALIDATED_CAPTURES = new WeakSet<object>();
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_LOCAL_TIME = /^\d{2}:\d{2}:\d{2}$/;
+const OPAQUE_TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const SOURCE_RFC3339 =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?\+08:00$/;
+
+function id(): Uint8Array {
+  return randomBytes(16);
+}
+
+function token(...parts: string[]): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(parts.join("\u0000"))
+    .digest("base64url")}`;
+}
+
+function requireText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "")
+    throw new CanonicalLoanAdmissionError(`${label} is required.`);
+  return value.trim();
+}
+
+function requireOpaque(value: unknown, label: string): string {
+  const text = requireText(value, label);
+  if (!OPAQUE_TOKEN.test(text))
+    throw new CanonicalLoanAdmissionError(`${label} must be an opaque sha256 token.`);
+  return text;
+}
+
+function requireDate(value: unknown, label: string): string {
+  if (typeof value !== "string" || !ISO_DATE.test(value))
+    throw new CanonicalLoanAdmissionError(`${label} must be YYYY-MM-DD.`);
+  const date = new Date(`${value}T00:00:00Z`);
+  if (date.toISOString().slice(0, 10) !== value)
+    throw new CanonicalLoanAdmissionError(`${label} must be a valid calendar date.`);
+  return value;
+}
+
+function requireSourceTime(
+  value: LoanTransactionInput["sourceTime"],
+): void {
+  if (!ISO_LOCAL_TIME.test(value.localTime))
+    throw new CanonicalLoanAdmissionError("Loan source local time is invalid.");
+  const [hour, minute, second] = value.localTime.split(":").map(Number);
+  if (hour > 23 || minute > 59 || second > 59)
+    throw new CanonicalLoanAdmissionError("Loan source local time is invalid.");
+  if (value.precision === "date") {
+    if (value.localTime !== "00:00:00" || value.timeOrigin !== "defaulted_local_midnight")
+      throw new CanonicalLoanAdmissionError(
+        "Date-only loan time must be explicitly marked defaulted_local_midnight.",
+      );
+  } else if (value.timeOrigin !== "source_reported") {
+    throw new CanonicalLoanAdmissionError(
+      "Minute/second loan time must be source-reported.",
+    );
+  }
+}
+
+function requireAmount(value: unknown, label: string): LoanExactAmount {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof (value as LoanExactAmount).coefficient !== "string" ||
+    !/^(?:0|[1-9]\d*)$/.test((value as LoanExactAmount).coefficient) ||
+    !Number.isSafeInteger((value as LoanExactAmount).scale) ||
+    (value as LoanExactAmount).scale < 0
+  )
+    throw new CanonicalLoanAdmissionError(
+      `${label} must be an exact non-negative coefficient/scale amount.`,
+    );
+  return {
+    coefficient: (value as LoanExactAmount).coefficient,
+    scale: (value as LoanExactAmount).scale,
+  };
+}
+
+function sourceEpoch(localDate: string, localTime: string): number {
+  const value = Date.parse(`${localDate}T${localTime}+08:00`);
+  if (!Number.isSafeInteger(value))
+    throw new CanonicalLoanAdmissionError("Loan source time is not representable.");
+  return value;
+}
+
+function dateFromSourceTime(
+  effectiveOn: string,
+  localTime: string,
+): string {
+  return `${effectiveOn}T${localTime}`;
+}
+
+function dateFromEffectiveAt(value: string): string {
+  return value.slice(0, 10);
+}
+
+function expectedContract(sourceId: LoanSourceId): string {
+  return sourceId === "fubon"
+    ? FUBON_LOAN_CONTRACT_VERSION
+    : YUANTA_LOAN_CONTRACT_VERSION;
+}
+
+function expectedAuthority(sourceId: LoanSourceId): string {
+  return sourceId === "fubon"
+    ? FUBON_LOAN_AUTHORITY_ROUTE
+    : YUANTA_LOAN_AUTHORITY_ROUTE;
+}
+
+function expectedRecordKind(sourceId: LoanSourceId): string {
+  return `${sourceId}-loan-transaction`;
+}
+
+function validateRelation(
+  relation: LoanTransferRelationInput,
+  records: ReadonlyMap<string, LoanTransactionInput>,
+  contractVersion: string,
+): void {
+  requireOpaque(relation.fromSourceRecordKey, "Loan relation from source record key");
+  requireOpaque(relation.toSourceRecordKey, "Loan relation to source record key");
+  if (relation.fromSourceRecordKey === relation.toSourceRecordKey)
+    throw new CanonicalLoanAdmissionError("Loan relation cannot connect a record to itself.");
+  const from = records.get(relation.fromSourceRecordKey);
+  const to = records.get(relation.toSourceRecordKey);
+  if (from && from.direction !== relation.fromDirection)
+    throw new CanonicalLoanAdmissionError("Loan relation source direction is not evidenced.");
+  if (to && to.direction !== relation.toDirection)
+    throw new CanonicalLoanAdmissionError("Loan relation target direction is not evidenced.");
+  if (!from && !to)
+    throw new CanonicalLoanAdmissionError("Loan relation must include a captured source record.");
+  if (
+    relation.kind !== "transfer_counterpart" ||
+    relation.fromDirection === relation.toDirection ||
+    relation.evidence?.kind !== "explicit-source-linkage" ||
+    relation.evidence.contractVersion !== contractVersion ||
+    !requireOpaque(relation.evidence.sourceRecordKey, "Loan relation evidence source record key") ||
+    !requireOpaque(relation.evidence.relationId, "Loan relation evidence ID") ||
+    !records.has(relation.evidence.sourceRecordKey) ||
+    (relation.evidence.sourceRecordKey !== relation.fromSourceRecordKey &&
+      relation.evidence.sourceRecordKey !== relation.toSourceRecordKey)
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Loan transfer relations require explicit source linkage evidence.",
+    );
+}
+
+function validateCapture(capture: LoanCaptureInput): void {
+  if (capture === null || typeof capture !== "object")
+    throw new CanonicalLoanAdmissionError("A loan capture object is required.");
+  requireText(capture.captureId, "Loan capture ID");
+  if (capture.sourceId !== "fubon" && capture.sourceId !== "yuanta")
+    throw new CanonicalLoanAdmissionError("Loan source is not advertised.");
+  const contractVersion = expectedContract(capture.sourceId);
+  if (capture.contractVersion !== contractVersion)
+    throw new CanonicalLoanAdmissionError("Loan contract version is unsupported.");
+  if (capture.authorityRoute !== expectedAuthority(capture.sourceId))
+    throw new CanonicalLoanAdmissionError("Loan authority route is unsupported.");
+  const identity = capture.identity;
+  if (
+    identity.accountType !== "loan" ||
+    identity.stream !== "loan" ||
+    identity.currency !== "TWD" ||
+    identity.recordKind !== expectedRecordKind(capture.sourceId)
+  )
+    throw new CanonicalLoanAdmissionError("Loan account identity is not source-scoped.");
+  for (const [value, label] of [
+    [identity.sourceConnectionKey, "Loan source connection key"],
+    [identity.identityEpochKey, "Loan identity epoch key"],
+    [identity.accountKey, "Loan account key"],
+    [identity.subjectDigest, "Loan subject digest"],
+    [identity.accountNo, "Loan account number"],
+  ] as const)
+    requireOpaque(value, label);
+  if (!RFC3339.test(capture.observedAt) || Number.isNaN(Date.parse(capture.observedAt)))
+    throw new CanonicalLoanAdmissionError("Loan observedAt must be RFC3339 UTC.");
+  const start = requireDate(capture.scope.startDate, "Loan scope start date");
+  const end = requireDate(capture.scope.endDate, "Loan scope end date");
+  if (start > end)
+    throw new CanonicalLoanAdmissionError("Loan scope dates are inverted.");
+  if (
+    capture.scope.completeness !== "complete-range" ||
+    capture.scope.completenessBasis !== "source-declared-terminal-range" ||
+    capture.scope.completenessRuleVersion !== contractVersion ||
+    !Number.isSafeInteger(capture.scope.pageCount) ||
+    capture.scope.pageCount < 1 ||
+    capture.scope.terminal !== true
+  )
+    throw new CanonicalLoanAdmissionError("Loan completeness contract is incomplete.");
+  if (
+    capture.semantics.status !== "posted" ||
+    capture.semantics.effectiveTimeBasis !== "source-reported" ||
+    capture.semantics.effectiveTimeRuleVersion !== contractVersion ||
+    capture.semantics.timeZone !== "Asia/Taipei"
+  )
+    throw new CanonicalLoanAdmissionError("Loan source time/status semantics are unsupported.");
+  if (!Array.isArray(capture.pages) || capture.pages.length !== capture.scope.pageCount)
+    throw new CanonicalLoanAdmissionError("Loan page count does not match the contract.");
+  let pageRows = 0;
+  let terminalPages = 0;
+  for (const [index, page] of capture.pages.entries()) {
+    if (
+      page.pageOrdinal !== index ||
+      page.responseCode !== "200" ||
+      !Number.isSafeInteger(page.rowCount) ||
+      page.rowCount < 0 ||
+      page.proofKind !== "source-declared-terminal-range"
+    )
+      throw new CanonicalLoanAdmissionError("Loan page evidence is incomplete.");
+    pageRows += page.rowCount;
+    if (page.terminal) terminalPages += 1;
+    if (index < capture.pages.length - 1 && page.terminal)
+      throw new CanonicalLoanAdmissionError("Loan terminal page cannot precede the final page.");
+  }
+  if (terminalPages !== 1 || !capture.pages.at(-1)?.terminal)
+    throw new CanonicalLoanAdmissionError("Loan capture must have one terminal page.");
+  if (pageRows !== capture.records.length)
+    throw new CanonicalLoanAdmissionError("Loan page row counts do not match records.");
+
+  const records = new Map<string, LoanTransactionInput>();
+  const collisions = new Set<string>();
+  for (const record of capture.records) {
+    const sourceRecordKey = requireOpaque(record.sourceRecordKey, "Loan source record key");
+    if (records.has(sourceRecordKey))
+      throw new CanonicalLoanConflictError("Duplicate loan source record key.");
+    if (!Number.isSafeInteger(record.occurrenceIndex) || record.occurrenceIndex < 1)
+      throw new CanonicalLoanAdmissionError("Loan occurrence index is invalid.");
+    if (collisions.has(String(record.occurrenceIndex)))
+      throw new CanonicalLoanConflictError("Duplicate loan occurrence index.");
+    collisions.add(String(record.occurrenceIndex));
+    const effectiveOn = requireDate(record.effectiveOn, "Loan transaction effective date");
+    if (effectiveOn < start || effectiveOn > end)
+      throw new CanonicalLoanAdmissionError("Loan transaction is outside the captured range.");
+    requireSourceTime(record.sourceTime);
+    if (record.postingStatus !== "posted" || record.currency !== "TWD")
+      throw new CanonicalLoanAdmissionError("Loan transaction status/currency is unsupported.");
+    if (
+      record.eventEvidence?.kind !== "source-coded-loan-event" ||
+      record.eventEvidence.sourceRecordKey !== sourceRecordKey ||
+      record.eventEvidence.contractVersion !== contractVersion ||
+      !requireText(record.eventEvidence.sourceCode, "Loan event source code")
+    )
+      throw new CanonicalLoanAdmissionError("Loan event direction requires source-coded evidence.");
+    const expectedDirection = record.eventKind === "disbursement" ? "outflow" : "inflow";
+    if (record.direction !== expectedDirection)
+      throw new CanonicalLoanAdmissionError(
+        "Loan disbursement/payment direction does not match the source contract.",
+      );
+    if (!["disbursement", "payment", "interest", "fee"].includes(record.eventKind))
+      throw new CanonicalLoanAdmissionError("Loan event kind is unsupported.");
+    const amount = requireAmount(record.amount, "Loan transaction amount");
+    if (amount.coefficient === "0")
+      throw new CanonicalLoanAdmissionError("Loan transaction amount must be positive.");
+    for (const [component, label] of [
+      [record.principal, "Loan principal"],
+      [record.interest, "Loan interest"],
+      [record.fee, "Loan fee"],
+    ] as const)
+      if (component !== undefined) requireAmount(component, label);
+    const hasComponents =
+      record.principal !== undefined ||
+      record.interest !== undefined ||
+      record.fee !== undefined;
+    if (hasComponents) {
+      if (
+        record.componentEvidence?.kind !== "explicit-source-component" ||
+        record.componentEvidence.sourceRecordKey !== sourceRecordKey ||
+        record.componentEvidence.contractVersion !== contractVersion
+      )
+        throw new CanonicalLoanAdmissionError(
+          "Loan principal/interest/fee requires explicit source component evidence.",
+        );
+    } else if (record.componentEvidence !== undefined) {
+      throw new CanonicalLoanAdmissionError(
+        "Loan component evidence cannot exist without source-distinguished components.",
+      );
+    }
+    records.set(sourceRecordKey, record);
+  }
+
+  const observationKeys = new Set<string>();
+  for (const observation of capture.balanceObservations) {
+    const observationKey = requireOpaque(observation.observationKey, "Loan balance observation key");
+    if (observationKeys.has(observationKey))
+      throw new CanonicalLoanConflictError("Duplicate loan balance observation key.");
+    observationKeys.add(observationKey);
+    const sourceRecordKey = requireOpaque(
+      observation.sourceRecordKey,
+      "Loan balance source record key",
+    );
+    if (!records.has(sourceRecordKey))
+      throw new CanonicalLoanAdmissionError("Loan balance must cite a captured source record.");
+    if (
+      observation.balanceKind !== "loan_outstanding" &&
+      observation.balanceKind !== "outstanding_principal" &&
+      observation.balanceKind !== "outstanding_total"
+    )
+      throw new CanonicalLoanAdmissionError("Loan balance kind is unsupported.");
+    requireAmount(observation.balance, "Loan balance amount");
+    if (
+      observation.currency !== "TWD" ||
+      observation.effectiveTimeBasis !== "source-reported" ||
+      observation.effectiveTimeRuleVersion !== contractVersion ||
+      !SOURCE_RFC3339.test(observation.effectiveAt) ||
+      Number.isNaN(Date.parse(observation.effectiveAt))
+    )
+      throw new CanonicalLoanAdmissionError("Loan balance effective time is not source-reported.");
+    if (Date.parse(observation.effectiveAt) >= Date.parse(capture.observedAt))
+      throw new CanonicalLoanAdmissionError(
+        "Loan balance effective time cannot use collection/import time.",
+      );
+    const effectiveDate = dateFromEffectiveAt(observation.effectiveAt);
+    if (effectiveDate < start || effectiveDate > end)
+      throw new CanonicalLoanAdmissionError("Loan balance is outside the captured range.");
+  }
+  for (const relation of capture.relations)
+    validateRelation(relation, records, contractVersion);
+}
+
+function freezeDeep<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value as object)) return value;
+  seen.add(value as object);
+  for (const key of Reflect.ownKeys(value as object)) {
+    const child = (value as Record<PropertyKey, unknown>)[key];
+    if (child !== null && typeof child === "object") freezeDeep(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+export function admitCanonicalLoanCapture(
+  capture: LoanCaptureInput,
+): LoanValidatedCapture {
+  validateCapture(capture);
+  freezeDeep(capture);
+  VALIDATED_CAPTURES.add(capture);
+  return capture as LoanValidatedCapture;
+}
+
+function hasValidatedBrand(value: unknown): value is LoanValidatedCapture {
+  return value !== null && typeof value === "object" && VALIDATED_CAPTURES.has(value);
+}
+
+function opaqueText(value: string): string {
+  return value;
+}
+
+function compactRecord(record: LoanTransactionInput): Record<string, unknown> {
+  return {
+    sourceRecordKey: opaqueText(record.sourceRecordKey),
+    occurrenceIndex: record.occurrenceIndex,
+    effectiveOn: record.effectiveOn,
+    sourceTime: record.sourceTime,
+    postingStatus: record.postingStatus,
+    eventKind: record.eventKind,
+    eventEvidence: record.eventEvidence,
+    direction: record.direction,
+    amount: record.amount,
+    currency: record.currency,
+    ...(record.description === undefined ? {} : { description: record.description }),
+    ...(record.principal === undefined ? {} : { principal: record.principal }),
+    ...(record.interest === undefined ? {} : { interest: record.interest }),
+    ...(record.fee === undefined ? {} : { fee: record.fee }),
+    ...(record.componentEvidence === undefined
+      ? {}
+      : { componentEvidence: record.componentEvidence }),
+  };
+}
+
+function compactHash(compact: Record<string, unknown>): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(compact))
+    .digest("base64url")}`;
+}
+
+function canonicalDateTime(record: LoanTransactionInput): string {
+  return dateFromSourceTime(record.effectiveOn, record.sourceTime.localTime);
+}
+
+function canonicalLoanSpineCapture(
+  capture: LoanValidatedCapture,
+): CanonicalFinancialDepositValidatedCapture {
+  const records = capture.records.map((record) => {
+    const compact = compactRecord(record);
+    const sourceTime = {
+      localDate: record.effectiveOn,
+      localTime: record.sourceTime.localTime,
+      timeZone: "Asia/Taipei",
+      epochMilliseconds: sourceEpoch(record.effectiveOn, record.sourceTime.localTime),
+      precision: record.sourceTime.precision,
+      timeOrigin: record.sourceTime.timeOrigin,
+    } satisfies {
+      localDate: string;
+      localTime: string;
+      timeZone: string;
+      epochMilliseconds: number;
+      precision: "date" | "minute" | "second";
+      timeOrigin: "source_reported" | "defaulted_local_midnight";
+    };
+    return {
+      occurrenceKey: record.sourceRecordKey,
+      collisionKey: token(capture.sourceId, capture.identity.accountKey, String(record.occurrenceIndex)),
+      providerKey: token(capture.sourceId, record.eventEvidence.sourceCode, String(record.occurrenceIndex)),
+      contentHash: compactHash(compact),
+      sequenceLexeme: String(record.occurrenceIndex),
+      compactJson: JSON.stringify(compact),
+      amount: record.amount,
+      balanceAfter: null,
+      currency: record.currency,
+      direction: record.direction,
+      sourceTime,
+      effectiveOn: record.effectiveOn,
+      transactionDateTimeLocal: canonicalDateTime(record),
+      description: record.description ?? null,
+    };
+  });
+  return admitCanonicalFinancialDepositCapture({
+    captureId: capture.captureId,
+    authorityRoute: capture.authorityRoute,
+    contractVersion: capture.contractVersion,
+    identity: {
+      integrationNamespace: capture.sourceId,
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      stream: capture.identity.stream,
+      recordKind: capture.identity.recordKind,
+      subjectDigest: capture.identity.subjectDigest,
+      accountNo: capture.identity.accountNo,
+      accountType: capture.identity.accountType,
+      currency: capture.identity.currency,
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: capture.scope.completenessBasis,
+      completenessRuleVersion: capture.scope.completenessRuleVersion,
+      absenceAuthority: null,
+      contractFingerprint: token("loan-contract", capture.contractVersion),
+      preflightFingerprint: token("loan-scope", capture.captureId),
+      pageCount: capture.scope.pageCount,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: capture.semantics.status,
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: capture.authorityRoute,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: capture.authorityRoute,
+      effectiveTimeBasis: "transaction-time",
+      effectiveTimeRuleVersion: capture.authorityRoute,
+      timeZone: capture.semantics.timeZone,
+      timePrecision: capture.records[0]?.sourceTime.precision ?? "date",
+      timeOrigin: capture.records[0]?.sourceTime.timeOrigin ?? "defaulted_local_midnight",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: page.responseCode,
+      terminal: page.terminal,
+      rowCount: page.rowCount,
+      responseDigest: token("loan-page", capture.captureId, String(page.pageOrdinal)),
+      proofKind: page.proofKind,
+      contractFingerprint: token("loan-contract", capture.contractVersion),
+      preflightFingerprint: token("loan-scope", capture.captureId),
+      metadataJson: JSON.stringify({
+        pageOrdinal: page.pageOrdinal,
+        rowCount: page.rowCount,
+      }),
+    })),
+    records,
+  });
+}
+
+function ensureLoanExtensionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS balance_observations (
+      observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      observation_key TEXT NOT NULL,
+      balance_kind TEXT NOT NULL CHECK(balance_kind IN ('loan_outstanding','outstanding_principal','outstanding_total')),
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(account_id, observation_key, balance_kind)
+    );
+    CREATE TABLE IF NOT EXISTS balance_observation_revisions (
+      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+      balance_coefficient TEXT NOT NULL,
+      balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
+      currency TEXT NOT NULL CHECK(currency = 'TWD'),
+      effective_at TEXT NOT NULL,
+      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'source-reported'),
+      effective_time_rule_version TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      UNIQUE(observation_id, revision_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_balance_observation_revisions_current
+      ON balance_observation_revisions(observation_id, commit_id, effective_at);
+    CREATE TABLE IF NOT EXISTS transaction_relations (
+      relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      relation_key TEXT NOT NULL,
+      relation_kind TEXT NOT NULL CHECK(relation_kind = 'transfer_counterpart'),
+      from_source_record_key TEXT NOT NULL,
+      to_source_record_key TEXT NOT NULL,
+      from_transaction_id BLOB REFERENCES financial_transactions(transaction_id),
+      to_transaction_id BLOB REFERENCES financial_transactions(transaction_id),
+      from_direction TEXT NOT NULL CHECK(from_direction IN ('inflow','outflow')),
+      to_direction TEXT NOT NULL CHECK(to_direction IN ('inflow','outflow')),
+      evidence_source_record_key TEXT NOT NULL,
+      evidence_relation_id TEXT NOT NULL,
+      evidence_contract_version TEXT NOT NULL,
+      UNIQUE(account_id, relation_key, commit_id),
+      CHECK(from_transaction_id IS NOT NULL OR to_transaction_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_transaction_relations_knowledge
+      ON transaction_relations(account_id, relation_key, commit_id);
+  `);
+}
+
+function hasLoanExtensionSchema(db: DatabaseSync): boolean {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name IN ('balance_observations', 'balance_observation_revisions', 'transaction_relations')`,
+    )
+    .get() as { count?: number };
+  return Number(row.count ?? 0) === 3;
+}
+
+export function createCanonicalLoanStore(
+  databasePath: string,
+  options: { commitClock?: () => number } = {},
+): LoanFinancialStore {
+  const sourceStore = createCanonicalSourceStore(databasePath, options);
+  ensureLoanExtensionSchema(sourceStore.db);
+  let closed = false;
+  return {
+    db: sourceStore.db,
+    databasePath: sourceStore.databasePath,
+    sourceStore,
+    commitClock: sourceStore.commitClock,
+    close() {
+      if (!closed) {
+        sourceStore.close();
+        closed = true;
+      }
+    },
+  };
+}
+
+function asWriterStore(store: LoanFinancialStore | CanonicalSourceStore): {
+  db: DatabaseSync;
+  databasePath: string;
+  commitClock: () => number;
+} {
+  return {
+    db: store.db,
+    databasePath: store.databasePath,
+    commitClock: store.commitClock,
+  };
+}
+
+function binaryId(value: unknown): string {
+  if (!(value instanceof Uint8Array) || value.byteLength !== 16)
+    throw new Error("Canonical loan ID is invalid.");
+  const hex = Buffer.from(value).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function sourceCaptureContext(
+  db: DatabaseSync,
+  captureId: string,
+): { captureId: Uint8Array; commitId: Uint8Array; accountId: Uint8Array } {
+  const row = db
+    .prepare(
+      `SELECT capture.capture_id, capture.commit_id, scope.account_id
+       FROM source_captures capture
+       JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+       WHERE capture.capture_key = ? LIMIT 1`,
+    )
+    .get(captureId) as
+    | { capture_id?: unknown; commit_id?: unknown; account_id?: unknown }
+    | undefined;
+  if (!row || !(row.capture_id instanceof Uint8Array) || !(row.commit_id instanceof Uint8Array) || !(row.account_id instanceof Uint8Array))
+    throw new Error("Canonical loan source capture context is missing.");
+  return {
+    captureId: row.capture_id,
+    commitId: row.commit_id,
+    accountId: row.account_id,
+  };
+}
+
+function sourceRecordContext(
+  db: DatabaseSync,
+  captureId: Uint8Array,
+  sourceRecordKey: string,
+): Uint8Array {
+  const row = db
+    .prepare(
+      `SELECT source_record_id FROM source_records
+       WHERE capture_id = ? AND occurrence_key = ? LIMIT 1`,
+    )
+    .get(captureId, sourceRecordKey) as { source_record_id?: unknown } | undefined;
+  if (!(row?.source_record_id instanceof Uint8Array))
+    throw new CanonicalLoanAdmissionError(
+      "Loan extension evidence source record is missing after canonical commit.",
+    );
+  return row.source_record_id;
+}
+
+function persistLoanExtensions(
+  db: DatabaseSync,
+  capture: LoanValidatedCapture,
+): void {
+  ensureLoanExtensionSchema(db);
+  const context = sourceCaptureContext(db, capture.captureId);
+  for (const observation of capture.balanceObservations) {
+    const sourceRecordId = sourceRecordContext(
+      db,
+      context.captureId,
+      observation.sourceRecordKey,
+    );
+    const existingObservation = db
+      .prepare(
+        `SELECT observation_id FROM balance_observations
+         WHERE account_id = ? AND observation_key = ? AND balance_kind = ?`,
+      )
+      .get(
+        context.accountId,
+        observation.observationKey,
+        observation.balanceKind,
+      ) as
+      | { observation_id?: unknown }
+      | undefined;
+    const observationId =
+      existingObservation?.observation_id instanceof Uint8Array
+        ? existingObservation.observation_id
+        : id();
+    if (!existingObservation)
+      db.prepare(
+        `INSERT INTO balance_observations(
+          observation_id, account_id, observation_key, balance_kind, created_commit_id
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        observationId,
+        context.accountId,
+        observation.observationKey,
+        observation.balanceKind,
+        context.commitId,
+      );
+    const priorRevision = db
+      .prepare(
+        `SELECT COALESCE(MAX(revision_number), 0) AS revision_number
+         FROM balance_observation_revisions WHERE observation_id = ?`,
+      )
+      .get(observationId) as { revision_number?: number };
+    db.prepare(
+      `INSERT INTO balance_observation_revisions(
+        revision_id, observation_id, source_record_id, capture_id, commit_id,
+        revision_number, balance_coefficient, balance_scale, currency,
+        effective_at, effective_time_basis, effective_time_rule_version, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id(),
+      observationId,
+      sourceRecordId,
+      context.captureId,
+      context.commitId,
+      Number(priorRevision.revision_number ?? 0) + 1,
+      observation.balance.coefficient,
+      observation.balance.scale,
+      observation.currency,
+      observation.effectiveAt,
+      observation.effectiveTimeBasis,
+      observation.effectiveTimeRuleVersion,
+      capture.observedAt,
+    );
+  }
+  for (const relation of capture.relations) {
+    const relationKey = token(
+      capture.sourceId,
+      capture.identity.accountKey,
+      relation.evidence.relationId,
+    );
+    const fromTransaction = db
+      .prepare(
+        `SELECT transaction_id FROM financial_transactions
+         WHERE account_id = ? AND source_sequence = ?`,
+      )
+      .get(context.accountId, relation.fromSourceRecordKey) as
+      | { transaction_id?: unknown }
+      | undefined;
+    const toTransaction = db
+      .prepare(
+        `SELECT transaction_id FROM financial_transactions
+         WHERE account_id = ? AND source_sequence = ?`,
+      )
+      .get(context.accountId, relation.toSourceRecordKey) as
+      | { transaction_id?: unknown }
+      | undefined;
+    db.prepare(
+      `INSERT INTO transaction_relations(
+        relation_id, account_id, commit_id, relation_key, relation_kind,
+        from_source_record_key, to_source_record_key, from_direction, to_direction,
+        from_transaction_id, to_transaction_id, evidence_source_record_key,
+        evidence_relation_id, evidence_contract_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id(),
+      context.accountId,
+      context.commitId,
+      relationKey,
+      relation.kind,
+      relation.fromSourceRecordKey,
+      relation.toSourceRecordKey,
+      relation.fromDirection,
+      relation.toDirection,
+      fromTransaction?.transaction_id instanceof Uint8Array
+        ? fromTransaction.transaction_id
+        : null,
+      toTransaction?.transaction_id instanceof Uint8Array
+        ? toTransaction.transaction_id
+        : null,
+      relation.evidence.sourceRecordKey,
+      relation.evidence.relationId,
+      relation.evidence.contractVersion,
+    );
+  }
+}
+
+export async function commitCanonicalLoanCapture(
+  store: LoanFinancialStore | CanonicalSourceStore,
+  capture: LoanValidatedCapture,
+): Promise<LoanFinancialCommitResult> {
+  if (!hasValidatedBrand(capture))
+    throw new CanonicalLoanConflictError(
+      "Loan capture did not cross the runtime-validated admission seam.",
+    );
+  validateCapture(capture);
+  const result = await commitCanonicalFinancialDepositCaptureBatch(
+    asWriterStore(store),
+    [canonicalLoanSpineCapture(capture)],
+    () => persistLoanExtensions(store.db, capture),
+  );
+  const committed = result[0]!;
+  return {
+    ...committed,
+    balanceObservationCount: capture.balanceObservations.length,
+    relationCount: capture.relations.length,
+  };
+}
+
+function latestCommitSequence(db: DatabaseSync): number {
+  return Number(
+    (
+      db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as {
+        value?: number;
+      }
+    ).value ?? 0,
+  );
+}
+
+function parseCompact(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function amountFrom(value: unknown): LoanExactAmount | null {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof (value as LoanExactAmount).coefficient !== "string" ||
+    typeof (value as LoanExactAmount).scale !== "number"
+  )
+    return null;
+  return {
+    coefficient: String((value as LoanExactAmount).coefficient),
+    scale: Number((value as LoanExactAmount).scale),
+  };
+}
+
+function accountFromRow(row: Record<string, unknown>): LoanAccount {
+  return {
+    id: binaryId(row.account_id),
+    sourceId: String(row.integration_namespace) as LoanSourceId,
+    sourceConnectionKey: String(row.source_connection_key),
+    identityEpochKey: String(row.epoch_key),
+    accountKey: String(row.subject_digest ?? row.account_no),
+    accountNo: String(row.account_no),
+    accountType: "loan",
+    stream: "loan",
+    recordKind: String(row.record_kind),
+    currency: "TWD",
+  };
+}
+
+function accountRows(
+  db: DatabaseSync,
+  knowledgeAt: number,
+  sourceId?: LoanSourceId,
+): LoanAccount[] {
+  const rows = db
+    .prepare(
+      `SELECT account.account_id, account.account_no, account.account_type,
+              account.stream, account.currency, connection.integration_namespace,
+              connection.source_connection_key, epoch.epoch_key,
+              subject.record_kind, subject.subject_digest
+       FROM financial_accounts account
+       JOIN canonical_commits account_commit ON account_commit.commit_id = account.created_commit_id
+       JOIN source_connections connection
+         ON connection.source_connection_id = account.source_connection_id
+       JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
+       LEFT JOIN source_subjects subject
+         ON subject.source_connection_id = account.source_connection_id
+        AND subject.identity_epoch_id = account.identity_epoch_id
+        AND subject.stream = account.stream
+       WHERE account_commit.commit_sequence <= ?
+         AND account.account_type = 'loan'
+         AND account.stream = 'loan'
+         AND (? IS NULL OR connection.integration_namespace = ?)
+       ORDER BY connection.integration_namespace, account.account_no`,
+    )
+    .all(knowledgeAt, sourceId ?? null, sourceId ?? null) as Array<Record<string, unknown>>;
+  return rows.map(accountFromRow);
+}
+
+function transactionRows(
+  db: DatabaseSync,
+  knowledgeAt: number,
+  financialAt: string | null,
+  sourceId?: LoanSourceId,
+  sourceRecordKey?: string,
+): LoanTransaction[] {
+  const clauses = [
+    "revision_commit.commit_sequence <= ?",
+    "connection.integration_namespace IN ('fubon','yuanta')",
+    "account.account_type = 'loan'",
+    "account.stream = 'loan'",
+  ];
+  const params: Array<number | string | null> = [knowledgeAt];
+  if (sourceId) {
+    clauses.push("connection.integration_namespace = ?");
+    params.push(sourceId);
+  }
+  if (financialAt) {
+    clauses.push("revision.effective_on <= ?");
+    params.push(financialAt);
+  }
+  if (sourceRecordKey) {
+    clauses.push("transaction_row.source_sequence = ?");
+    params.push(sourceRecordKey);
+  }
+  const rows = db
+    .prepare(
+      `SELECT transaction_row.transaction_id, account.account_id, account.account_no,
+              connection.integration_namespace, connection.source_connection_key,
+              epoch.epoch_key, subject.record_kind, subject.subject_digest,
+              transaction_row.source_sequence,
+              revision.amount_coefficient, revision.amount_scale, revision.currency,
+              revision.direction, revision.posting_status, revision.effective_on,
+              revision.transaction_date_time_local, revision.time_precision,
+              revision.time_origin, revision.description, revision_commit.commit_sequence,
+              source_record.payload_json
+       FROM financial_transactions transaction_row
+       JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+       JOIN source_connections connection
+         ON connection.source_connection_id = account.source_connection_id
+       JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
+       LEFT JOIN source_subjects subject
+         ON subject.source_connection_id = account.source_connection_id
+        AND subject.identity_epoch_id = account.identity_epoch_id
+        AND subject.stream = account.stream
+       JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
+       JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+       JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
+       WHERE ${clauses.join(" AND ")}
+         AND NOT EXISTS (
+           SELECT 1 FROM transaction_revisions newer
+           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+           WHERE newer.transaction_id = revision.transaction_id
+             AND newer_commit.commit_sequence <= ?
+             AND newer_commit.commit_sequence > revision_commit.commit_sequence
+         )
+       ORDER BY connection.integration_namespace, account.account_no,
+                revision.effective_on, transaction_row.source_sequence`,
+    )
+    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
+  return rows.map((row) => {
+    const compact = parseCompact(row.payload_json);
+    const sourceTime = (compact.sourceTime ?? {}) as Record<string, unknown>;
+    const account = accountFromRow(row);
+    return {
+      id: binaryId(row.transaction_id),
+      accountId: binaryId(row.account_id),
+      account,
+      sourceRecordKey: String(row.source_sequence),
+      sourceOccurrenceKey: String(row.source_sequence),
+      occurrenceIndex:
+        typeof compact.occurrenceIndex === "number" ? compact.occurrenceIndex : null,
+      effectiveOn: String(row.effective_on),
+      effectiveTimeBasis: "source-reported",
+      sourceTime: {
+        localTime: String(sourceTime.localTime ?? "00:00:00"),
+        timeZone: "Asia/Taipei",
+        precision: String(sourceTime.precision ?? row.time_precision) as
+          | "date"
+          | "minute"
+          | "second",
+        timeOrigin: String(sourceTime.timeOrigin ?? row.time_origin) as
+          | "source_reported"
+          | "defaulted_local_midnight",
+      },
+      postingStatus: "posted",
+      eventKind: String(compact.eventKind) as LoanEventKind,
+      direction: String(row.direction) as "inflow" | "outflow",
+      amount: {
+        coefficient: String(row.amount_coefficient),
+        scale: Number(row.amount_scale),
+      },
+      currency: "TWD",
+      description: row.description == null ? null : String(row.description),
+      principal: amountFrom(compact.principal),
+      interest: amountFrom(compact.interest),
+      fee: amountFrom(compact.fee),
+      knowledgeCommitSequence: Number(row.commit_sequence),
+    };
+  });
+}
+
+function balanceRows(
+  db: DatabaseSync,
+  knowledgeAt: number,
+  financialAt: string | null,
+  sourceId?: LoanSourceId,
+): LoanBalanceObservation[] {
+  const clauses = [
+    "commit_row.commit_sequence <= ?",
+    "connection.integration_namespace IN ('fubon','yuanta')",
+    "account.account_type = 'loan'",
+  ];
+  const params: Array<number | string> = [knowledgeAt];
+  if (sourceId) {
+    clauses.push("connection.integration_namespace = ?");
+    params.push(sourceId);
+  }
+  if (financialAt) {
+    clauses.push("substr(revision.effective_at, 1, 10) <= ?");
+    params.push(financialAt);
+  }
+  const rows = db
+    .prepare(
+      `SELECT observation.observation_key, observation.balance_kind,
+              revision.balance_coefficient,
+              revision.balance_scale, revision.currency, revision.effective_at,
+              revision.effective_time_basis, revision.effective_time_rule_version,
+              revision.observed_at, revision.capture_id, revision.commit_id,
+              revision.source_record_id,
+              account.account_id, account.account_no, connection.integration_namespace,
+              connection.source_connection_key, epoch.epoch_key, subject.record_kind,
+              subject.subject_digest,
+              capture.capture_key, commit_row.commit_sequence
+       FROM balance_observations observation
+       JOIN balance_observation_revisions revision
+         ON revision.observation_id = observation.observation_id
+       JOIN financial_accounts account ON account.account_id = observation.account_id
+       JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+       JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
+       LEFT JOIN source_subjects subject
+         ON subject.source_connection_id = account.source_connection_id
+        AND subject.identity_epoch_id = account.identity_epoch_id
+        AND subject.stream = account.stream
+       JOIN source_captures capture ON capture.capture_id = revision.capture_id
+       JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       WHERE ${clauses.join(" AND ")}
+         AND NOT EXISTS (
+           SELECT 1 FROM balance_observation_revisions newer
+           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+           WHERE newer.observation_id = observation.observation_id
+             AND newer_commit.commit_sequence <= ?
+             AND newer_commit.commit_sequence > commit_row.commit_sequence
+         )
+       ORDER BY connection.integration_namespace, account.account_no, revision.effective_at`,
+    )
+    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
+  return rows.map((row) => {
+    const account = accountFromRow(row);
+    return {
+      observationKey: String(row.observation_key),
+      sourceRecordKey: String(
+        (
+          db.prepare("SELECT occurrence_key FROM source_records WHERE capture_id = ? AND source_record_id = ?")
+            .get(row.capture_id as Uint8Array, row.source_record_id as Uint8Array) as
+            | { occurrence_key?: unknown }
+            | undefined
+        )?.occurrence_key ?? "",
+      ),
+      balanceKind: String(row.balance_kind) as
+        | "loan_outstanding"
+        | "outstanding_principal"
+        | "outstanding_total",
+      balance: {
+        coefficient: String(row.balance_coefficient),
+        scale: Number(row.balance_scale),
+      },
+      currency: "TWD",
+      effectiveAt: String(row.effective_at),
+      effectiveTimeBasis: "source-reported",
+      effectiveTimeRuleVersion: String(row.effective_time_rule_version),
+      accountId: binaryId(row.account_id),
+      account,
+      captureId: String(row.capture_key),
+      commitSequence: Number(row.commit_sequence),
+      observedAt: String(row.observed_at),
+    };
+  });
+}
+
+function relationRows(
+  db: DatabaseSync,
+  knowledgeAt: number,
+  financialAt: string | null,
+  sourceId?: LoanSourceId,
+): LoanTransferRelation[] {
+  const clauses = [
+    "commit_row.commit_sequence <= ?",
+    "(? IS NULL OR connection.integration_namespace = ?)",
+  ];
+  const params: Array<number | string | null> = [
+    knowledgeAt,
+    sourceId ?? null,
+    sourceId ?? null,
+  ];
+  if (financialAt) {
+    clauses.push(`COALESCE(
+      (SELECT MAX(from_revision.effective_on)
+       FROM financial_transactions from_transaction
+       JOIN transaction_revisions from_revision
+         ON from_revision.transaction_id = from_transaction.transaction_id
+       JOIN canonical_commits from_commit
+         ON from_commit.commit_id = from_revision.commit_id
+       WHERE from_transaction.account_id = relation.account_id
+         AND from_transaction.source_sequence = relation.from_source_record_key
+         AND from_commit.commit_sequence <= ?),
+      (SELECT MAX(to_revision.effective_on)
+       FROM financial_transactions to_transaction
+       JOIN transaction_revisions to_revision
+         ON to_revision.transaction_id = to_transaction.transaction_id
+       JOIN canonical_commits to_commit
+         ON to_commit.commit_id = to_revision.commit_id
+       WHERE to_transaction.account_id = relation.account_id
+         AND to_transaction.source_sequence = relation.to_source_record_key
+         AND to_commit.commit_sequence <= ?)
+    ) <= ?`);
+    params.push(knowledgeAt, knowledgeAt, financialAt);
+  }
+  const rows = db
+    .prepare(
+      `SELECT relation.relation_kind, relation.from_source_record_key,
+              relation.to_source_record_key, relation.from_direction,
+              relation.to_direction, relation.evidence_source_record_key,
+              relation.evidence_relation_id, relation.evidence_contract_version,
+              relation.from_transaction_id, relation.to_transaction_id,
+              account.account_id, connection.integration_namespace,
+              commit_row.commit_sequence
+       FROM transaction_relations relation
+       JOIN financial_accounts account ON account.account_id = relation.account_id
+       JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+       JOIN canonical_commits commit_row ON commit_row.commit_id = relation.commit_id
+       WHERE ${clauses.join(" AND ")}
+         AND NOT EXISTS (
+           SELECT 1 FROM transaction_relations newer
+           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+           WHERE newer.account_id = relation.account_id
+             AND newer.relation_key = relation.relation_key
+             AND newer_commit.commit_sequence <= ?
+             AND newer_commit.commit_sequence > commit_row.commit_sequence
+         )
+       ORDER BY connection.integration_namespace, commit_row.commit_sequence, relation.relation_key`,
+    )
+    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    kind: "transfer_counterpart",
+    fromSourceRecordKey: String(row.from_source_record_key),
+    toSourceRecordKey: String(row.to_source_record_key),
+    fromDirection: String(row.from_direction) as "inflow" | "outflow",
+    toDirection: String(row.to_direction) as "inflow" | "outflow",
+    evidence: {
+      kind: "explicit-source-linkage",
+      sourceRecordKey: String(row.evidence_source_record_key),
+      relationId: String(row.evidence_relation_id),
+      contractVersion: String(row.evidence_contract_version),
+    },
+    accountId: binaryId(row.account_id),
+    commitSequence: Number(row.commit_sequence),
+    fromTransactionId:
+      row.from_transaction_id instanceof Uint8Array
+        ? binaryId(row.from_transaction_id)
+        : null,
+    toTransactionId:
+      row.to_transaction_id instanceof Uint8Array
+        ? binaryId(row.to_transaction_id)
+        : null,
+  }));
+}
+
+function lineageRows(
+  db: DatabaseSync,
+  knowledgeAt: number,
+  sourceRecordKey: string,
+  sourceId?: LoanSourceId,
+): LoanLineageEntry[] {
+  const rows = db
+    .prepare(
+      `SELECT source_record.occurrence_key, capture.capture_key,
+              source_record.content_hash, source_record.payload_json,
+              commit_row.commit_sequence
+       FROM source_records source_record
+       JOIN source_captures capture ON capture.capture_id = source_record.capture_id
+       JOIN canonical_commits commit_row ON commit_row.commit_id = source_record.commit_id
+       JOIN source_connections connection ON connection.source_connection_id = capture.source_connection_id
+       WHERE source_record.occurrence_key = ?
+         AND commit_row.commit_sequence <= ?
+         AND (? IS NULL OR connection.integration_namespace = ?)
+       ORDER BY commit_row.commit_sequence, capture.capture_key`,
+    )
+    .all(sourceRecordKey, knowledgeAt, sourceId ?? null, sourceId ?? null) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    sourceRecordKey: String(row.occurrence_key),
+    captureId: String(row.capture_key),
+    commitSequence: Number(row.commit_sequence),
+    contentHash: String(row.content_hash),
+    payload: parseCompact(row.payload_json),
+  }));
+}
+
+function normalizeFinancialDate(value: string): string {
+  if (!ISO_DATE.test(value))
+    throw new Error("Loan financial cutoff must be YYYY-MM-DD.");
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (parsed.toISOString().slice(0, 10) !== value)
+    throw new Error("Loan financial cutoff must be a calendar date.");
+  return value;
+}
+
+function queryLoan(
+  store: LoanFinancialStore | CanonicalSourceStore,
+  request: {
+    kind: LoanQueryResult["kind"];
+    knowledgeAt: number;
+    financialAt: string | null;
+    sourceId?: LoanSourceId;
+    sourceRecordKey?: string;
+  },
+): LoanQueryResult {
+  const extensionAvailable = hasLoanExtensionSchema(store.db);
+  if (!extensionAvailable && "sourceStore" in store) ensureLoanExtensionSchema(store.db);
+  const accounts = accountRows(store.db, request.knowledgeAt, request.sourceId);
+  const transactions = transactionRows(
+    store.db,
+    request.knowledgeAt,
+    request.financialAt,
+    request.sourceId,
+    request.sourceRecordKey,
+  );
+  const balanceObservations = hasLoanExtensionSchema(store.db)
+    ? balanceRows(
+        store.db,
+        request.knowledgeAt,
+        request.financialAt,
+        request.sourceId,
+      )
+    : [];
+  const relations = hasLoanExtensionSchema(store.db)
+    ? relationRows(
+        store.db,
+        request.knowledgeAt,
+        request.financialAt,
+        request.sourceId,
+      )
+    : [];
+  const lineage = request.sourceRecordKey
+    ? lineageRows(store.db, request.knowledgeAt, request.sourceRecordKey, request.sourceId)
+    : [];
+  return {
+    status: "canonical-live",
+    kind: request.kind,
+    accounts,
+    financialAccounts: accounts,
+    transactions,
+    balanceObservations,
+    balanceEvidence: balanceObservations,
+    relations,
+    transferRelations: relations,
+    lineage,
+    provenance: lineage,
+    knowledgeAt: request.knowledgeAt,
+    financialAt: request.financialAt,
+  };
+}
+
+export function queryCanonicalLoanCurrent(
+  store: LoanFinancialStore | CanonicalSourceStore,
+  request: { sourceId?: LoanSourceId; integrationNamespace?: LoanSourceId } = {},
+): LoanQueryResult {
+  return queryLoan(store, {
+    kind: "current",
+    knowledgeAt: latestCommitSequence(store.db),
+    financialAt: null,
+    sourceId: request.sourceId ?? request.integrationNamespace,
+  });
+}
+
+export function queryCanonicalLoanHistorical(
+  store: LoanFinancialStore | CanonicalSourceStore,
+  request: LoanHistoricalQuery = {},
+): LoanQueryResult {
+  const knowledgeAt = request.knowledgeAt ?? latestCommitSequence(store.db);
+  if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0)
+    throw new Error("Loan knowledge cutoff must be a safe non-negative integer.");
+  const financialAt =
+    request.financialAt === undefined
+      ? null
+      : normalizeFinancialDate(request.financialAt);
+  return queryLoan(store, {
+    kind: "historical",
+    knowledgeAt,
+    financialAt,
+    sourceId: request.sourceId ?? request.integrationNamespace,
+  });
+}
+
+export function queryCanonicalLoanLineage(
+  store: LoanFinancialStore | CanonicalSourceStore,
+  request: LoanLineageQuery,
+): LoanQueryResult {
+  const sourceRecordKey = requireOpaque(
+    request.sourceRecordKey ?? request.sourceOccurrenceKey,
+    "Loan lineage source record key",
+  );
+  return queryLoan(store, {
+    kind: "lineage",
+    knowledgeAt: latestCommitSequence(store.db),
+    financialAt: null,
+    sourceId: request.sourceId ?? request.integrationNamespace,
+    sourceRecordKey,
+  });
+}
+
+export const queryLoanCurrent = queryCanonicalLoanCurrent;
+export const queryLoanHistorical = queryCanonicalLoanHistorical;
+export const queryLoanLineage = queryCanonicalLoanLineage;
+
+function fixtureToken(sourceId: LoanSourceId, label: string): `sha256:${string}` {
+  return token("fixture", sourceId, label);
+}
+
+function fixture(sourceId: LoanSourceId): LoanCaptureInput {
+  const contractVersion = expectedContract(sourceId);
+  const accountKey = fixtureToken(sourceId, "loan-account");
+  const disbursement = fixtureToken(sourceId, "disbursement");
+  const payment = fixtureToken(sourceId, "payment");
+  return {
+    captureId: fixtureToken(sourceId, "capture"),
+    sourceId,
+    authorityRoute: expectedAuthority(sourceId),
+    contractVersion,
+    identity: {
+      sourceConnectionKey: fixtureToken(sourceId, "connection"),
+      identityEpochKey: fixtureToken(sourceId, "epoch"),
+      accountKey,
+      subjectDigest: accountKey,
+      accountType: "loan",
+      accountNo: accountKey,
+      stream: "loan",
+      recordKind: expectedRecordKind(sourceId),
+      currency: "TWD",
+    },
+    observedAt: "2026-02-02T02:00:00.000Z",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: contractVersion,
+      pageCount: 1,
+      terminal: true,
+    },
+    semantics: {
+      status: "posted",
+      effectiveTimeBasis: "source-reported",
+      effectiveTimeRuleVersion: contractVersion,
+      timeZone: "Asia/Taipei",
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 2,
+        proofKind: "source-declared-terminal-range",
+      },
+    ],
+    records: [
+      {
+        sourceRecordKey: disbursement,
+        occurrenceIndex: 1,
+        effectiveOn: "2026-01-05",
+        sourceTime: {
+          localTime: "00:00:00",
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        postingStatus: "posted",
+        eventKind: "disbursement",
+        eventEvidence: {
+          kind: "source-coded-loan-event",
+          sourceRecordKey: disbursement,
+          sourceCode: "LOAN-DISBURSEMENT",
+          contractVersion,
+        },
+        direction: "outflow",
+        amount: { coefficient: "100000", scale: 2 },
+        currency: "TWD",
+        description: "sanitized loan disbursement",
+      },
+      {
+        sourceRecordKey: payment,
+        occurrenceIndex: 2,
+        effectiveOn: "2026-01-31",
+        sourceTime: {
+          localTime: "00:00:00",
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        postingStatus: "posted",
+        eventKind: "payment",
+        eventEvidence: {
+          kind: "source-coded-loan-event",
+          sourceRecordKey: payment,
+          sourceCode: "LOAN-PAYMENT",
+          contractVersion,
+        },
+        direction: "inflow",
+        amount: { coefficient: "12500", scale: 2 },
+        currency: "TWD",
+        description: "sanitized loan payment",
+      },
+    ],
+    balanceObservations: [
+      {
+        observationKey: fixtureToken(sourceId, "balance"),
+        sourceRecordKey: payment,
+        balanceKind: "loan_outstanding",
+        balance: { coefficient: "87500", scale: 2 },
+        currency: "TWD",
+        effectiveAt: "2026-01-31T23:59:59+08:00",
+        effectiveTimeBasis: "source-reported",
+        effectiveTimeRuleVersion: contractVersion,
+      },
+    ],
+    relations: [
+      {
+        kind: "transfer_counterpart",
+        fromSourceRecordKey: disbursement,
+        toSourceRecordKey: fixtureToken(sourceId, "deposit-counterpart"),
+        fromDirection: "outflow",
+        toDirection: "inflow",
+        evidence: {
+          kind: "explicit-source-linkage",
+          sourceRecordKey: disbursement,
+          relationId: fixtureToken(sourceId, "transfer-relation"),
+          contractVersion,
+        },
+      },
+    ],
+  };
+}
+
+export const LOAN_CONTRACT_FIXTURES: Readonly<Record<LoanSourceId, LoanCaptureInput>> =
+  Object.freeze({
+    fubon: fixture("fubon"),
+    yuanta: fixture("yuanta"),
+  });
+
+export function advertisedLoanSourceIds(
+  registry: Record<string, { id: string; statementTypes: readonly { id: string }[] }>,
+): LoanSourceId[] {
+  const ids = Object.values(registry)
+    .filter((group) => group.statementTypes.some((type) => type.id === "loan"))
+    .map((group) => group.id);
+  if (ids.some((id) => id !== "fubon" && id !== "yuanta"))
+    throw new Error(`Advertised loan source is not contract-supported: ${ids.join(", ")}`);
+  return ids as LoanSourceId[];
+}

@@ -88,11 +88,23 @@ export {
   evaluateAdvertisedForeignCurrencyDepositReadiness,
   isAdvertisedForeignCurrencyDepositEntryReleaseReady,
 } from "./advertised-foreign-currency-deposit-readiness.ts";
+export {
+  ADVERTISED_LOAN_READINESS,
+  ADVERTISED_LOAN_SOURCE_IDS,
+  evaluateAdvertisedLoanReadiness,
+  isAdvertisedLoanEntryContractReady,
+  isAdvertisedLoanEntryReleaseReady,
+} from "./advertised-loan-readiness.ts";
 export type {
   AdvertisedForeignCurrencyDepositReadinessEntry,
   AdvertisedForeignCurrencyDepositReadinessGate,
   AdvertisedForeignCurrencyDepositSourceId,
 } from "./advertised-foreign-currency-deposit-readiness.ts";
+export type {
+  AdvertisedLoanReadinessEntry,
+  AdvertisedLoanReadinessGate,
+  AdvertisedLoanReadinessBlocker,
+} from "./advertised-loan-readiness.ts";
 
 const DOMESTIC_DEPOSIT_STATEMENT_TYPE_IDS = new Set([
   "deposit",
