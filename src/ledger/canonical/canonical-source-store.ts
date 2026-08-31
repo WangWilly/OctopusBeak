@@ -1725,11 +1725,45 @@ function ensureV6SharedAssertionSpine(db: DatabaseSync): void {
       "ALTER TABLE assertion_provenance RENAME TO assertion_provenance_v5",
     );
   db.exec(SCHEMA_SHARED_ASSERTION_SPINE);
-  db.exec(`INSERT OR IGNORE INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
-    SELECT source_assertion.assertion_id, source_assertion.transaction_id, 'transaction_revision', 'transaction', 'source', capture.authority_route, capture.authority_route,
-      source_assertion.revision_id, NULL, source_assertion.commit_id
-    FROM source_assertions source_assertion JOIN transaction_revisions revision ON revision.revision_id = source_assertion.revision_id
-      JOIN source_captures capture ON capture.capture_id = revision.capture_id`);
+  const sourceAssertionRelation = relationType(db, "source_assertions");
+  const sourceAssertionSql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE name = 'source_assertions'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const sourceAssertionColumns = [
+    "assertion_id",
+    "transaction_id",
+    "revision_id",
+    "commit_id",
+  ];
+  const sourceAssertionHasExpectedAuthority =
+    sourceAssertionRelation === "view" &&
+    /FROM\s+assertions\b/i.test(sourceAssertionSql) &&
+    /JOIN\s+transaction_revisions\s+revision\s+ON/i.test(
+      sourceAssertionSql,
+    ) &&
+    /revision\.source_record_id/i.test(sourceAssertionSql);
+  const sourceAssertionColumnsPresent =
+    (sourceAssertionRelation === "table" ||
+      sourceAssertionHasExpectedAuthority) &&
+    sourceAssertionColumns.every((column) =>
+      columnExists(db, "source_assertions", column),
+    );
+  const canBackfillSourceAssertions =
+    sourceAssertionColumnsPresent &&
+    (sourceAssertionRelation === "table" ||
+      sourceAssertionHasExpectedAuthority);
+  if (canBackfillSourceAssertions)
+    db.exec(`INSERT OR IGNORE INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+      SELECT source_assertion.assertion_id, source_assertion.transaction_id, 'transaction_revision', 'transaction', 'source', capture.authority_route, capture.authority_route,
+        source_assertion.revision_id, NULL, source_assertion.commit_id
+      FROM source_assertions source_assertion JOIN transaction_revisions revision ON revision.revision_id = source_assertion.revision_id
+        JOIN source_captures capture ON capture.capture_id = revision.capture_id`);
   db.exec(`INSERT OR IGNORE INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, coordinate_id, user_id, commit_id, event_kind)
     SELECT event.event_id, event.assertion_id, event.transaction_id, 'transaction_revision', event.capture_id, event.scope_id, NULL, NULL, NULL, event.commit_id, event.event_kind
     FROM assertion_lifecycle_events event`);
@@ -1940,6 +1974,130 @@ function convertV6CompatibilityTables(db: DatabaseSync): void {
     } else if (relationType(db, compatibility.name) === null) {
       db.exec(`CREATE VIEW ${compatibility.name} AS ${compatibility.select}`);
     }
+  }
+}
+
+function ensureV6CompatibilitySchema(db: DatabaseSync): void {
+  ensureV6SharedAssertionSpine(db);
+  if (relationType(db, "assertion_lifecycle_events") !== "view")
+    db.exec(SCHEMA_V6_APPEND);
+  rebuildCurrentTransactionFieldsForSharedAssertions(db);
+  convertV6CompatibilityTables(db);
+}
+
+function validateCanonicalCompatibilityViews(db: DatabaseSync): void {
+  const compatibilityViews: Record<string, string[]> = {
+    source_assertions: [
+      "assertion_id",
+      "transaction_id",
+      "revision_id",
+      "source_record_id",
+      "commit_id",
+    ],
+    derived_assertions: [
+      "assertion_id",
+      "transaction_id",
+      "field_name",
+      "producer_id",
+      "origin",
+      "rule_lineage",
+      "value_text",
+      "run_id",
+      "commit_id",
+    ],
+    user_assertions: [
+      "assertion_id",
+      "transaction_id",
+      "field_name",
+      "user_id",
+      "value_text",
+      "commit_id",
+    ],
+    assertion_lifecycle_events: [
+      "event_id",
+      "assertion_id",
+      "transaction_id",
+      "revision_id",
+      "capture_id",
+      "scope_id",
+      "commit_id",
+      "event_kind",
+    ],
+    derived_assertion_lifecycle_events: [
+      "event_id",
+      "assertion_id",
+      "transaction_id",
+      "field_name",
+      "run_id",
+      "coordinate_id",
+      "commit_id",
+      "event_kind",
+    ],
+    user_assertion_lifecycle_events: [
+      "event_id",
+      "assertion_id",
+      "transaction_id",
+      "field_name",
+      "user_id",
+      "commit_id",
+      "event_kind",
+    ],
+    derived_assertion_provenance: [
+      "assertion_id",
+      "run_id",
+      "coordinate_id",
+      "commit_id",
+    ],
+    user_assertion_provenance: ["assertion_id", "commit_id"],
+  };
+  const authority: Record<string, RegExp> = {
+    source_assertions: /FROM\s+assertions\b/i,
+    derived_assertions: /FROM\s+assertions\b/i,
+    user_assertions: /FROM\s+assertions\b/i,
+    assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    derived_assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    user_assertion_lifecycle_events: /FROM\s+assertion_transitions\b/i,
+    derived_assertion_provenance: /FROM\s+assertion_provenance\b/i,
+    user_assertion_provenance: /FROM\s+assertion_provenance\b/i,
+  };
+  for (const [view, columns] of Object.entries(compatibilityViews)) {
+    if (relationType(db, view) !== "view")
+      throw new Error(
+        `Canonical schema v6 compatibility relation ${view} is not a read-only view.`,
+      );
+    const actual = new Set(
+      (
+        db.prepare(`PRAGMA table_info(${view})`).all() as Array<{
+          name?: string;
+        }>
+      ).map((column) => column.name),
+    );
+    for (const column of columns)
+      if (!actual.has(column))
+        throw new Error(
+          `Canonical schema v6 compatibility view ${view}.${column} is missing.`,
+        );
+    const sql = String(
+      (
+        db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+          )
+          .get(view) as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    );
+    if (!authority[view]!.test(sql))
+      throw new Error(
+        `Canonical schema v6 compatibility view ${view} is not backed by its shared authority.`,
+      );
+    if (
+      view === "source_assertions" &&
+      (!/JOIN\s+transaction_revisions\s+revision\s+ON/i.test(sql) ||
+        !/revision\.source_record_id/i.test(sql))
+    )
+      throw new Error(
+        "Canonical schema v6 Source compatibility view does not preserve revision source identity.",
+      );
   }
 }
 
@@ -5458,8 +5616,11 @@ function normalizeLoanRelationsV9(db: DatabaseSync): void {
 }
 
 function migrateV8ToV9(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN IMMEDIATE");
   try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
     db.exec(SCHEMA_V9_LOAN_FINANCIAL);
     normalizeLoanRelationsV9(db);
     validateCanonicalLoanExtensionSchema(db);
@@ -5468,8 +5629,10 @@ function migrateV8ToV9(db: DatabaseSync): void {
     ).run(currentUtcMicros());
     db.exec("PRAGMA user_version = 9");
     db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
   } catch (error) {
     db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
 }
@@ -5547,11 +5710,7 @@ function applySchemaMigration(
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("BEGIN IMMEDIATE");
     try {
-      ensureV6SharedAssertionSpine(db);
-      if (relationType(db, "assertion_lifecycle_events") !== "view")
-        db.exec(SCHEMA_V6_APPEND);
-      rebuildCurrentTransactionFieldsForSharedAssertions(db);
-      convertV6CompatibilityTables(db);
+      ensureV6CompatibilitySchema(db);
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
       ensureFinancialAccountCurrencySchema(db);
@@ -5588,11 +5747,8 @@ function applySchemaMigration(
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("BEGIN IMMEDIATE");
     try {
-      ensureV6SharedAssertionSpine(db);
-      if (relationType(db, "assertion_lifecycle_events") !== "view")
-        db.exec(SCHEMA_V6_APPEND);
-      rebuildCurrentTransactionFieldsForSharedAssertions(db);
-      convertV6CompatibilityTables(db);
+      ensureV6CompatibilitySchema(db);
+      validateCanonicalCompatibilityViews(db);
       ensureV6ProjectionOriginConstraints(db);
       ensureCanonicalCaptureScopeSchema(db);
       ensureFinancialAccountCurrencySchema(db);
@@ -6225,6 +6381,7 @@ export function openCanonicalDatabase(
         busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000,
       });
       verifyCanonicalRuntime(db);
+      validateCanonicalCompatibilityViews(db);
     } else {
       const row = db.prepare("PRAGMA user_version").get() as {
         user_version?: number;
@@ -9458,6 +9615,7 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
     if (path !== ":memory:") verifyCanonicalRuntime(db);
     validateV8SourceEvidenceSchema(db);
+    validateCanonicalCompatibilityViews(db);
     validateCanonicalLoanExtensionSchema(db);
     return db;
   } catch (error) {
@@ -9497,6 +9655,7 @@ export function validateCanonicalSourceStore(
   if (version !== CANONICAL_SCHEMA_VERSION)
     throw new Error("Canonical source schema version is invalid.");
   validateV8SourceEvidenceSchema(store.db);
+  validateCanonicalCompatibilityViews(store.db);
   validateCanonicalLoanExtensionSchema(store.db);
   const integrity = String(
     (
