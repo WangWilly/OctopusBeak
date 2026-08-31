@@ -3042,7 +3042,7 @@ for (const version of [1, 2] as const) {
         migrated
           .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
           .get()?.count,
-        8,
+        CANONICAL_SCHEMA_VERSION,
         `v${version} migration history`,
       );
       assert.equal(
@@ -3297,7 +3297,7 @@ try {
       migratedV3
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get()?.count,
-      5,
+      CANONICAL_SCHEMA_VERSION - 3,
     );
     assert.equal(
       migratedV3

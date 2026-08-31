@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   LOAN_CONTRACT_FIXTURES,
@@ -9,7 +13,12 @@ import {
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
 } from "./loan-financial.ts";
-import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import {
+  CANONICAL_SQLITE_FILE,
+  createCanonicalSourceStore,
+  rebuildCanonicalProjection,
+  validateCanonicalSourceStore,
+} from "./canonical-source-store.ts";
 
 test("loan canonical writer preserves source-scoped accounts and exact facts", async () => {
   const store = createCanonicalLoanStore(":memory:");
@@ -121,29 +130,29 @@ test("loan historical queries require both cutoffs", () => {
   }
 });
 
-test("loan queries fail closed without creating an uninitialized extension schema", () => {
+test("loan query uses the versioned canonical schema without runtime DDL", () => {
   const sourceStore = createCanonicalSourceStore(":memory:");
   try {
+    const schemaBefore = sourceStore.db
+      .prepare("SELECT name, sql FROM sqlite_master ORDER BY name")
+      .all();
     assert.throws(
       () => queryCanonicalLoanCurrent(sourceStore),
-      /initialized loan schema/i,
+      /current projection cutoff is missing/i,
+    );
+    assert.deepEqual(
+      sourceStore.db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all(),
+      schemaBefore,
     );
     assert.equal(
       Number(
         (
           sourceStore.db
-            .prepare(
-              `SELECT COUNT(*) AS count FROM sqlite_master
-               WHERE type = 'table' AND name IN (
-                 'loan_account_identities', 'loan_transaction_facts',
-                 'balance_observations', 'balance_observation_revisions',
-                 'transaction_relations'
-               )`,
-            )
+            .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 9")
             .get() as { count?: number }
         ).count ?? 0,
       ),
-      0,
+      1,
     );
   } finally {
     sourceStore.close();
@@ -454,6 +463,15 @@ test("independent balance measurements create observations while corrections cre
         captureId: "sha256:independent-balance-counterpart",
       }),
     );
+    second.relations = second.relations.map((relation) => ({
+      ...relation,
+      fromSourceRecordKey: relation.toSourceRecordKey,
+      toSourceRecordKey: relation.fromSourceRecordKey,
+      fromAccountKey: relation.toAccountKey,
+      toAccountKey: relation.fromAccountKey,
+      fromDirection: relation.toDirection,
+      toDirection: relation.fromDirection,
+    }));
     await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(second));
     assert.equal(
       Number(
@@ -479,6 +497,77 @@ test("independent balance measurements create observations while corrections cre
     );
   } finally {
     store.close();
+  }
+});
+
+test("file-backed loan current projections survive rebuild and schema migration is stable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-loan-v9-"));
+  const databasePath = join(directory, CANONICAL_SQLITE_FILE);
+  try {
+    const v9Seed = createCanonicalSourceStore(databasePath);
+    v9Seed.close();
+    const v8 = new DatabaseSync(databasePath);
+    v8.exec(`PRAGMA foreign_keys = OFF;
+      DROP TABLE current_loan_relations;
+      DROP TABLE current_loan_balance_observations;
+      DROP TABLE current_loan_accounts;
+      DROP TABLE transaction_relation_provenance;
+      DROP TABLE transaction_relations;
+      DROP TABLE balance_observation_revisions;
+      DROP TABLE balance_observations;
+      DROP TABLE loan_transaction_facts;
+      DROP TABLE loan_account_identities;
+      DELETE FROM schema_migrations WHERE version = 9;
+      PRAGMA user_version = 8;`);
+    v8.close();
+
+    const initial = createCanonicalLoanStore(databasePath);
+    await commitCanonicalLoanCapture(
+      initial,
+      admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
+    );
+    const before = queryCanonicalLoanCurrent(initial, { sourceId: "fubon" });
+    assert.deepEqual(
+      [before.accounts.length, before.transactions.length, before.balanceObservations.length, before.relations.length],
+      [1, 2, 1, 1],
+    );
+    initial.close();
+
+    await rebuildCanonicalProjection(directory);
+    const reopened = createCanonicalLoanStore(databasePath);
+    validateCanonicalSourceStore(reopened.sourceStore);
+    const after = queryCanonicalLoanCurrent(reopened, { sourceId: "fubon" });
+    assert.deepEqual(
+      [after.accounts.length, after.transactions.length, after.balanceObservations.length, after.relations.length],
+      [1, 2, 1, 1],
+    );
+    assert.equal(
+      Number(
+        (
+          reopened.db
+            .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 9")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    reopened.close();
+
+    const reopenedAgain = createCanonicalLoanStore(databasePath);
+    validateCanonicalSourceStore(reopenedAgain.sourceStore);
+    assert.equal(
+      Number(
+        (
+          reopenedAgain.db
+            .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 9")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    reopenedAgain.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

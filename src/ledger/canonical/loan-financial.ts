@@ -9,6 +9,7 @@ import {
 } from "./canonical-financial-deposit-writer.ts";
 import {
   createCanonicalSourceStore,
+  validateCanonicalLoanExtensionSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
@@ -1327,149 +1328,13 @@ function canonicalLoanCounterpartCapture(
   });
 }
 
-function ensureLoanExtensionSchema(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS loan_account_identities (
-      account_id BLOB PRIMARY KEY REFERENCES financial_accounts(account_id),
-      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
-      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
-      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      account_key TEXT NOT NULL,
-      account_no TEXT NOT NULL,
-      account_type TEXT NOT NULL CHECK(account_type IN ('loan','depository')),
-      stream TEXT NOT NULL CHECK(stream IN ('loan','domestic-deposit')),
-      UNIQUE(source_connection_id, identity_epoch_id, stream, account_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_loan_account_identities_lookup
-      ON loan_account_identities(source_connection_id, identity_epoch_id, stream, account_no);
-    CREATE TABLE IF NOT EXISTS loan_transaction_facts (
-      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-      revision_id BLOB PRIMARY KEY REFERENCES transaction_revisions(revision_id),
-      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      occurrence_index INTEGER NOT NULL CHECK(occurrence_index > 0),
-      event_kind TEXT NOT NULL CHECK(event_kind IN ('disbursement','payment','interest','fee')),
-      event_source_code TEXT NOT NULL,
-      event_evidence_contract_version TEXT NOT NULL,
-      principal_coefficient TEXT,
-      principal_scale INTEGER CHECK(principal_scale >= 0),
-      interest_coefficient TEXT,
-      interest_scale INTEGER CHECK(interest_scale >= 0),
-      fee_coefficient TEXT,
-      fee_scale INTEGER CHECK(fee_scale >= 0),
-      component_evidence_source_record_key TEXT,
-      component_evidence_contract_version TEXT,
-      UNIQUE(transaction_id, revision_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_loan_transaction_facts_transaction
-      ON loan_transaction_facts(transaction_id, revision_id);
-    CREATE TABLE IF NOT EXISTS balance_observations (
-      observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
-      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      observation_key TEXT NOT NULL,
-      balance_kind TEXT NOT NULL CHECK(balance_kind IN ('loan_outstanding','outstanding_principal','outstanding_total')),
-      created_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      UNIQUE(account_id, created_capture_id, observation_key, balance_kind)
-    );
-    CREATE TABLE IF NOT EXISTS balance_observation_revisions (
-      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
-      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
-      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      revision_number INTEGER NOT NULL CHECK(revision_number > 0),
-      balance_coefficient TEXT NOT NULL,
-      balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
-      currency TEXT NOT NULL CHECK(currency = 'TWD'),
-      effective_at TEXT NOT NULL,
-      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis = 'source-reported'),
-      effective_time_rule_version TEXT NOT NULL,
-      effective_time_evidence_source_record_key TEXT NOT NULL,
-      effective_time_evidence_source_field TEXT NOT NULL CHECK(effective_time_evidence_source_field = 'statement-as-of'),
-      effective_time_evidence_value TEXT NOT NULL,
-      effective_time_evidence_contract_version TEXT NOT NULL,
-      observed_at TEXT NOT NULL,
-      UNIQUE(observation_id, revision_number)
-    );
-    CREATE INDEX IF NOT EXISTS idx_balance_observation_revisions_current
-      ON balance_observation_revisions(observation_id, commit_id, effective_at);
-    CREATE TABLE IF NOT EXISTS transaction_relations (
-      relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
-      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
-      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
-      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      relation_key TEXT NOT NULL,
-      relation_kind TEXT NOT NULL CHECK(relation_kind = 'transfer_counterpart'),
-      from_account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      to_account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      from_source_record_key TEXT NOT NULL,
-      to_source_record_key TEXT NOT NULL,
-      from_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-      to_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-      from_direction TEXT NOT NULL CHECK(from_direction IN ('inflow','outflow')),
-      to_direction TEXT NOT NULL CHECK(to_direction IN ('inflow','outflow')),
-      evidence_source_record_key TEXT NOT NULL,
-      evidence_relation_id TEXT NOT NULL,
-      evidence_contract_version TEXT NOT NULL,
-      UNIQUE(account_id, relation_key),
-      UNIQUE(source_connection_id, identity_epoch_id, relation_kind,
-             from_account_id, from_transaction_id, to_account_id, to_transaction_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_transaction_relations_knowledge
-      ON transaction_relations(account_id, relation_key, commit_id);
-    CREATE TABLE IF NOT EXISTS transaction_relation_provenance (
-      relation_id BLOB NOT NULL REFERENCES transaction_relations(relation_id),
-      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      evidence_source_record_key TEXT NOT NULL,
-      evidence_relation_id TEXT NOT NULL,
-      evidence_contract_version TEXT NOT NULL,
-      PRIMARY KEY(relation_id, source_record_id)
-    );
-    CREATE TABLE IF NOT EXISTS current_loan_accounts (
-      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
-      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      PRIMARY KEY(generation_id, account_id)
-    );
-    CREATE TABLE IF NOT EXISTS current_loan_balance_observations (
-      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
-      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-      balance_kind TEXT NOT NULL,
-      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
-      revision_id BLOB NOT NULL REFERENCES balance_observation_revisions(revision_id),
-      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      PRIMARY KEY(generation_id, account_id, balance_kind)
-    );
-    CREATE TABLE IF NOT EXISTS current_loan_relations (
-      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
-      relation_id BLOB NOT NULL REFERENCES transaction_relations(relation_id),
-      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      relation_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-      PRIMARY KEY(generation_id, relation_id)
-    );
-  `);
-}
-
 function hasLoanExtensionSchema(db: DatabaseSync): boolean {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count FROM sqlite_master
-       WHERE type = 'table' AND name IN (
-         'loan_account_identities', 'loan_transaction_facts',
-         'balance_observations', 'balance_observation_revisions', 'transaction_relations',
-         'transaction_relation_provenance', 'current_loan_accounts',
-         'current_loan_balance_observations', 'current_loan_relations'
-       )`,
-    )
-    .get() as { count?: number };
-  return Number(row.count ?? 0) === 9;
+  try {
+    validateCanonicalLoanExtensionSchema(db);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function createCanonicalLoanStore(
@@ -1477,7 +1342,7 @@ export function createCanonicalLoanStore(
   options: { commitClock?: () => number } = {},
 ): LoanFinancialStore {
   const sourceStore = createCanonicalSourceStore(databasePath, options);
-  ensureLoanExtensionSchema(sourceStore.db);
+  validateCanonicalLoanExtensionSchema(sourceStore.db);
   let closed = false;
   return {
     db: sourceStore.db,
@@ -1839,12 +1704,46 @@ function projectLoanAccount(
   );
 }
 
+type PersistedRelationEndpoint = {
+  accountId: Uint8Array;
+  transactionId: Uint8Array;
+  accountKey: string;
+  sourceRecordKey: string;
+  direction: "inflow" | "outflow";
+};
+
+function canonicalRelationEndpoints(
+  left: PersistedRelationEndpoint,
+  right: PersistedRelationEndpoint,
+): readonly [PersistedRelationEndpoint, PersistedRelationEndpoint] {
+  const leftKey = Buffer.concat([left.accountId, left.transactionId]);
+  const rightKey = Buffer.concat([right.accountId, right.transactionId]);
+  return Buffer.compare(leftKey, rightKey) <= 0 ? [left, right] : [right, left];
+}
+
+function canonicalRelationKey(
+  sourceConnectionId: Uint8Array,
+  identityEpochId: Uint8Array,
+  from: PersistedRelationEndpoint,
+  to: PersistedRelationEndpoint,
+): string {
+  return [
+    "loan-relation-v9",
+    Buffer.from(sourceConnectionId).toString("hex"),
+    Buffer.from(identityEpochId).toString("hex"),
+    Buffer.from(from.accountId).toString("hex"),
+    Buffer.from(from.transactionId).toString("hex"),
+    Buffer.from(to.accountId).toString("hex"),
+    Buffer.from(to.transactionId).toString("hex"),
+  ].join(":");
+}
+
 function persistLoanExtensions(
   db: DatabaseSync,
   capture: LoanValidatedCapture,
   counterpartCaptures: readonly LoanCounterpartTransactionInput[],
 ): void {
-  ensureLoanExtensionSchema(db);
+  validateCanonicalLoanExtensionSchema(db);
   const context = sourceCaptureContext(db, capture.captureId);
   const generationId = activeLoanProjectionGeneration(db);
   persistLoanAccountIdentity(db, context, {
@@ -2007,21 +1906,43 @@ function persistLoanExtensions(
     });
   }
   for (const relation of capture.relations) {
-    const relationKey = token(
-      capture.identity.sourceConnectionKey,
-      capture.identity.identityEpochKey,
-      relation.kind,
-      relation.fromAccountKey,
-      relation.fromSourceRecordKey,
-      relation.toAccountKey,
-      relation.toSourceRecordKey,
-    );
     const fromTransaction = transactionIds.get(relation.fromSourceRecordKey);
     const toTransaction = transactionIds.get(relation.toSourceRecordKey);
     if (!fromTransaction || !toTransaction)
       throw new CanonicalLoanConflictError(
         "Loan relation endpoints must be persisted transactions.",
       );
+    const scope = db
+      .prepare(
+        `SELECT source_connection_id, identity_epoch_id
+         FROM loan_account_identities WHERE account_id = ?`,
+      )
+      .get(context.accountId) as Record<string, unknown> | undefined;
+    if (
+      !(scope?.source_connection_id instanceof Uint8Array) ||
+      !(scope.identity_epoch_id instanceof Uint8Array)
+    )
+      throw new CanonicalLoanConflictError("Loan relation source scope is missing.");
+    const [from, to] = canonicalRelationEndpoints(
+      {
+        ...fromTransaction,
+        accountKey: relation.fromAccountKey,
+        sourceRecordKey: relation.fromSourceRecordKey,
+        direction: relation.fromDirection,
+      },
+      {
+        ...toTransaction,
+        accountKey: relation.toAccountKey,
+        sourceRecordKey: relation.toSourceRecordKey,
+        direction: relation.toDirection,
+      },
+    );
+    const relationKey = canonicalRelationKey(
+      scope.source_connection_id,
+      scope.identity_epoch_id,
+      from,
+      to,
+    );
     const existing = db
       .prepare(
         `SELECT relation_id, from_account_id, to_account_id,
@@ -2038,15 +1959,12 @@ function persistLoanExtensions(
         Buffer.from(left).equals(Buffer.from(right));
       if (
         !(existing.relation_id instanceof Uint8Array) ||
-        !equalBlob(existing.from_account_id, fromTransaction.accountId) ||
-        !equalBlob(existing.to_account_id, toTransaction.accountId) ||
-        !equalBlob(
-          existing.from_transaction_id,
-          fromTransaction.transactionId,
-        ) ||
-        !equalBlob(existing.to_transaction_id, toTransaction.transactionId) ||
-        existing.from_direction !== relation.fromDirection ||
-        existing.to_direction !== relation.toDirection
+        !equalBlob(existing.from_account_id, from.accountId) ||
+        !equalBlob(existing.to_account_id, to.accountId) ||
+        !equalBlob(existing.from_transaction_id, from.transactionId) ||
+        !equalBlob(existing.to_transaction_id, to.transactionId) ||
+        existing.from_direction !== from.direction ||
+        existing.to_direction !== to.direction
       )
         throw new CanonicalLoanConflictError(
           "Loan transfer relation identity overwrite is forbidden.",
@@ -2054,19 +1972,6 @@ function persistLoanExtensions(
       relationId = existing.relation_id;
     } else {
       relationId = id();
-      const scope = db
-        .prepare(
-          `SELECT source_connection_id, identity_epoch_id
-           FROM loan_account_identities WHERE account_id = ?`,
-        )
-        .get(context.accountId) as Record<string, unknown> | undefined;
-      if (
-        !(scope?.source_connection_id instanceof Uint8Array) ||
-        !(scope.identity_epoch_id instanceof Uint8Array)
-      )
-        throw new CanonicalLoanConflictError(
-          "Loan relation source scope is missing.",
-        );
       db.prepare(
         `INSERT INTO transaction_relations(
           relation_id, account_id, source_connection_id, identity_epoch_id,
@@ -2083,14 +1988,14 @@ function persistLoanExtensions(
         context.commitId,
         relationKey,
         relation.kind,
-        relation.fromSourceRecordKey,
-        relation.toSourceRecordKey,
-        relation.fromDirection,
-        relation.toDirection,
-        fromTransaction.accountId,
-        toTransaction.accountId,
-        fromTransaction.transactionId,
-        toTransaction.transactionId,
+        from.sourceRecordKey,
+        to.sourceRecordKey,
+        from.direction,
+        to.direction,
+        from.accountId,
+        to.accountId,
+        from.transactionId,
+        to.transactionId,
         relation.evidence.sourceRecordKey,
         relation.evidence.relationId,
         relation.evidence.contractVersion,
