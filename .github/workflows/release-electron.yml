@@ -217,6 +217,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GOOGLE_OAUTH_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_DESKTOP_CLIENT_ID }}
+          GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           missing=()
@@ -225,6 +227,8 @@ jobs:
           [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
           [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
           [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          [[ -n "$GOOGLE_OAUTH_DESKTOP_CLIENT_ID" ]] || missing+=(GOOGLE_OAUTH_DESKTOP_CLIENT_ID)
+          [[ -n "$GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET" ]] || missing+=(GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET)
 
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing release secrets: %s\n' "${missing[*]}" >&2
@@ -293,8 +297,21 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
+      - name: Create temporary Google OAuth client config
+        env:
+          GOOGLE_OAUTH_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_DESKTOP_CLIENT_ID }}
+          GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_DESKTOP_CLIENT_SECRET }}
+        run: node scripts/create-google-oauth-config.mjs
+
       - name: Build signed and notarized app
-        run: npm run desktop:make:signed
+        run: |
+          set -euo pipefail
+          trap 'rm -f -- data/google-oauth/google-oauth-desktop-client.json' EXIT
+          npm run desktop:make:signed
+
+      - name: Remove temporary Google OAuth client config
+        if: always()
+        run: rm -f -- data/google-oauth/google-oauth-desktop-client.json
 
       - name: Verify signed app
         run: |

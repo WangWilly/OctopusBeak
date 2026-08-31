@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { mock } from "node:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -15,6 +16,15 @@ registerHooks({
       return nextResolve("./cathay-statements.ts", context);
     return nextResolve(specifier, context);
   },
+});
+
+// Keep the historical fixture inside the one-week provider scope regardless
+// of the day the check runs.  The production builder intentionally derives
+// its range from the current clock, so the check supplies an explicit as-of
+// date instead of allowing the fixture to age out of the scope.
+mock.timers.enable({
+  apis: ["Date"],
+  now: new Date("2026-08-24T12:00:00.000Z"),
 });
 
 const { buildCathayForeignCurrencyCaptureInput } = await import(
@@ -164,3 +174,5 @@ try {
 } finally {
   await rm(cathayEmptyDirectory, { recursive: true, force: true });
 }
+
+mock.timers.reset();
