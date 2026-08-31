@@ -8,6 +8,14 @@ import {
   hasAttachedLocator,
 } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import { createCanonicalLoanStore } from "../ledger/canonical/loan-financial.ts";
+import {
+  persistYuantaLoanCapture,
+  type YuantaLoanCaptureBuildInput,
+  type YuantaLoanStatementRow,
+} from "../ledger/canonical/yuanta-loan.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
   type YuantaCredentials,
@@ -81,6 +89,19 @@ const outputSchema = z.object({
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
 type SourceTable = z.infer<typeof sourceTableSchema>;
+type YuantaLoanStatementsOutput = z.infer<typeof outputSchema>;
+
+export type YuantaLoanStatementsRunDependencies = Partial<{
+  canonicalLedgerDir: string;
+  canonicalFinancialLedgerDir: string;
+  sourceConnectionScope: string;
+  observedAt: () => string;
+  createLoanStore: typeof createCanonicalLoanStore;
+  persistLoanCapture: (
+    store: ReturnType<typeof createCanonicalLoanStore>,
+    input: YuantaLoanCaptureBuildInput,
+  ) => ReturnType<typeof persistYuantaLoanCapture>;
+}>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   three_months: "三個月",
@@ -146,6 +167,37 @@ function describeDateRange(input: WorkflowInput): string {
     return `${input.customDateRange.startDate}-${input.customDateRange.endDate}`;
   }
   return dateRangeLabels[input.dateRange];
+}
+
+function addMonthsClamped(date: Date, months: number): Date {
+  const targetYear = date.getFullYear();
+  const targetMonth = date.getMonth() + months;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
+}
+
+function canonicalLoanDateRange(input: WorkflowInput): {
+  startDate: string;
+  endDate: string;
+} {
+  if (input.customDateRange) {
+    return {
+      startDate: input.customDateRange.startDate.replaceAll("/", "-"),
+      endDate: input.customDateRange.endDate.replaceAll("/", "-"),
+    };
+  }
+
+  const months = {
+    three_months: 3,
+    six_months: 6,
+    one_year: 12,
+  }[input.dateRange];
+  const today = new Date();
+  const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startDate = addMonthsClamped(endDate, -months);
+  const format = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  return { startDate: format(startDate), endDate: format(endDate) };
 }
 
 function csvCell(value: string): string {
@@ -533,6 +585,77 @@ async function parseLoanStatementRows(
   return statements;
 }
 
+export async function runYuantaLoanStatements(
+  page: Page,
+  input: WorkflowInput,
+  overrides: YuantaLoanStatementsRunDependencies = {},
+): Promise<Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">> {
+  const ledgerDir =
+    overrides.canonicalFinancialLedgerDir ??
+    overrides.canonicalLedgerDir ??
+    DEFAULT_LEDGER_DIR;
+  const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
+    canonicalSqlitePath(ledgerDir),
+  );
+  const persist = overrides.persistLoanCapture ?? persistYuantaLoanCapture;
+  const sourceConnectionScope =
+    overrides.sourceConnectionScope ?? "yuanta-loan-workflow";
+  const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
+
+  try {
+    await openLoanStatementPage(page);
+    const accounts = await readYuantaLoanAccountOptions(
+      page,
+      input.loanAccountFilters,
+    );
+    const rows: StatementRow[] = [];
+    const sourceTables: SourceTable[] = [];
+    const nextTimestamp = createTimestampGenerator();
+    const dateRange = describeDateRange(input);
+    const canonicalRange = canonicalLoanDateRange(input);
+
+    for (const account of accounts) {
+      const maskedAccount = maskAccountLabel(account.label);
+      await queryLoanAccount(page, input, account);
+      const accountRows = await parseLoanStatementRows(page, maskedAccount);
+      rows.push(...accountRows);
+      sourceTables.push({
+        account: maskedAccount,
+        rowCount: accountRows.length,
+      });
+      await persist(store, {
+        accountValue: account.value,
+        sourceConnectionScope,
+        observedAt: observedAt(),
+        startDate: canonicalRange.startDate,
+        endDate: canonicalRange.endDate,
+        rows: accountRows.map<YuantaLoanStatementRow>((row) => ({
+          transactionDate: row.transactionDate,
+          postingDate: row.postingDate,
+          paymentItem: row.paymentItem,
+          transactionAmount: row.transactionAmount,
+          balanceAfterTransaction: row.balanceAfterTransaction,
+        })),
+      });
+    }
+
+    const file = await writeLoanStatementsFile(
+      nextTimestamp,
+      dateRange,
+      rows,
+      sourceTables,
+    );
+
+    return {
+      dateRange,
+      count: 1,
+      files: [file],
+    };
+  } finally {
+    store.close();
+  }
+}
+
 export default workflow("yuantaLoanStatements", {
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
@@ -547,42 +670,23 @@ export default workflow("yuantaLoanStatements", {
       credentials,
       input.replaceActiveSession,
     );
-    const replacedActiveSession = authResult.replacedActiveSession;
-
-    await openLoanStatementPage(page);
-    const accounts = await readYuantaLoanAccountOptions(
-      page,
-      input.loanAccountFilters,
-    );
-    const rows: StatementRow[] = [];
-    const sourceTables: SourceTable[] = [];
-    const nextTimestamp = createTimestampGenerator();
-
-    for (const account of accounts) {
-      const maskedAccount = maskAccountLabel(account.label);
-      await queryLoanAccount(page, input, account);
-      const accountRows = await parseLoanStatementRows(page, maskedAccount);
-      rows.push(...accountRows);
-      sourceTables.push({
-        account: maskedAccount,
-        rowCount: accountRows.length,
-      });
-    }
-
-    const dateRange = describeDateRange(input);
-    const file = await writeLoanStatementsFile(
-      nextTimestamp,
-      dateRange,
-      rows,
-      sourceTables,
-    );
-
+    const output = await runYuantaLoanStatements(page, input, {
+      canonicalLedgerDir:
+        process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+        process.env.LEDGER_DIR ??
+        DEFAULT_LEDGER_DIR,
+      canonicalFinancialLedgerDir:
+        process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR ??
+        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+        process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+        process.env.LEDGER_DIR ??
+        DEFAULT_LEDGER_DIR,
+      sourceConnectionScope: `${credentials.yuanta_user_id ?? ""}\u0000${credentials.yuanta_account ?? ""}`,
+    });
     return {
-      dateRange,
+      ...output,
       usedExistingSession: authResult.usedProfile,
-      replacedActiveSession,
-      count: 1,
-      files: [file],
+      replacedActiveSession: authResult.replacedActiveSession,
     };
   },
 });

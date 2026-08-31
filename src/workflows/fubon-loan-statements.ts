@@ -3,6 +3,14 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { createCanonicalLoanStore } from "../ledger/canonical/loan-financial.ts";
+import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  persistFubonLoanCapture,
+  type FubonLoanCaptureBuildInput,
+  type FubonLoanStatementRow,
+} from "../ledger/canonical/fubon-loan.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   activateControlWithoutPointer,
   fillInputWithoutPointer,
@@ -133,6 +141,18 @@ export {
 export type FubonLoanStatementsInput = z.infer<typeof inputSchema>;
 export type FubonLoanStatementsOutput = z.infer<typeof outputSchema>;
 
+export type FubonLoanStatementsRunDependencies = Partial<{
+  canonicalLedgerDir: string;
+  canonicalFinancialLedgerDir: string;
+  sourceConnectionScope: string;
+  observedAt: () => string;
+  createLoanStore: typeof createCanonicalLoanStore;
+  persistLoanCapture: (
+    store: ReturnType<typeof createCanonicalLoanStore>,
+    input: FubonLoanCaptureBuildInput,
+  ) => ReturnType<typeof persistFubonLoanCapture>;
+}>;
+
 type LoanPeriod = FubonLoanStatementsOutput["period"];
 
 let lastTimestamp = 0;
@@ -140,6 +160,7 @@ let lastTimestamp = 0;
 type ParsedLoanStatement = {
   loanAccount: string;
   loanAccountId: string;
+  sourceAccountValue: string;
   queryPeriod: string;
   branchName: string;
   accountType: string;
@@ -645,18 +666,28 @@ function addMonthsClamped(date: Date, months: number): Date {
 }
 
 function loanQueryPeriod(input: FubonLoanStatementsInput): string {
+  const { startDate, endDate } = canonicalLoanDateRange(input);
+  return `${startDate.replaceAll("-", "/")}~${endDate.replaceAll("-", "/")}`;
+}
+
+function canonicalLoanDateRange(input: FubonLoanStatementsInput): {
+  startDate: string;
+  endDate: string;
+} {
   if (input.dateRange) {
-    return `${input.dateRange.startDate}~${input.dateRange.endDate}`;
+    return {
+      startDate: input.dateRange.startDate.replaceAll("/", "-"),
+      endDate: input.dateRange.endDate.replaceAll("/", "-"),
+    };
   }
 
   const today = new Date();
-  const endDate = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate(),
-  );
+  const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const startDate = addMonthsClamped(endDate, -Number(input.quickMonths));
-  return `${formatDate(startDate)}~${formatDate(endDate)}`;
+  return {
+    startDate: formatDate(startDate).replaceAll("/", "-"),
+    endDate: formatDate(endDate).replaceAll("/", "-"),
+  };
 }
 
 async function readLoanAccountOptions(
@@ -777,7 +808,7 @@ async function configureLoanQuery(
 async function parseLoanStatementHtml(
   page: Page,
   html: string,
-  fallbackLoanAccount: string,
+  account: LoanAccountOption,
   input: FubonLoanStatementsInput,
 ): Promise<ParsedLoanStatement> {
   const parsed = (await page.evaluate(
@@ -847,8 +878,9 @@ async function parseLoanStatementHtml(
   };
 
   return {
-    loanAccount: fallbackLoanAccount,
-    loanAccountId: loanAccountIdFor(fallbackLoanAccount, fallbackLoanAccount),
+    loanAccount: account.label,
+    loanAccountId: loanAccountIdFor(account.label, account.label),
+    sourceAccountValue: account.value,
     queryPeriod: loanQueryPeriod(input),
     branchName: parsed.branchName,
     accountType: parsed.accountType,
@@ -872,11 +904,14 @@ async function fetchLoanQueryHtml(page: Page): Promise<string> {
 async function writeLoanStatementFiles(
   page: Page,
   html: string,
-  loanAccount: string,
+  account: LoanAccountOption,
   queryItem: z.infer<typeof queryItemSchema>,
   input: FubonLoanStatementsInput,
-): Promise<FubonLoanStatementsOutput["downloads"][number]> {
-  const parsed = await parseLoanStatementHtml(page, html, loanAccount, input);
+): Promise<{
+  download: FubonLoanStatementsOutput["downloads"][number];
+  parsed: ParsedLoanStatement;
+}> {
+  const parsed = await parseLoanStatementHtml(page, html, account, input);
 
   const downloadsDir = join(
     process.cwd(),
@@ -912,27 +947,31 @@ async function writeLoanStatementFiles(
   const jsonStat = await stat(jsonPath);
 
   return {
-    loanAccountId: parsed.loanAccountId,
-    loanAccount: parsed.loanAccount,
-    queryItem,
-    queryPeriod: parsed.queryPeriod,
-    branchName: parsed.branchName,
-    accountType: parsed.accountType,
-    currency: parsed.currency,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
+    download: {
+      loanAccountId: parsed.loanAccountId,
+      loanAccount: parsed.loanAccount,
+      queryItem,
+      queryPeriod: parsed.queryPeriod,
+      branchName: parsed.branchName,
+      accountType: parsed.accountType,
+      currency: parsed.currency,
+      baseName,
+      csvFilename,
+      csvPath,
+      csvBytes: csvStat.size,
+      jsonFilename,
+      jsonPath,
+      jsonBytes: jsonStat.size,
+      rowCount: rows.length,
+    },
+    parsed,
   };
 }
 
 export async function runFubonLoanStatements(
   page: Page,
   input: FubonLoanStatementsInput,
+  overrides: FubonLoanStatementsRunDependencies = {},
 ): Promise<FubonLoanStatementsOutput> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
@@ -940,31 +979,62 @@ export async function runFubonLoanStatements(
     );
   }
 
-  let scope = await openLoanStatementsPage(page);
-  const loanAccounts = await readLoanAccountOptions(
-    scope,
-    input.loanAccountLabels,
+  const ledgerDir =
+    overrides.canonicalFinancialLedgerDir ??
+    overrides.canonicalLedgerDir ??
+    DEFAULT_LEDGER_DIR;
+  const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
+    canonicalSqlitePath(ledgerDir),
   );
-  const queryItems = requestedQueryItems(input);
-  const explicitQueryItems = hasExplicitQueryItems(input);
-  const period = describeLoanPeriod(input);
+  const persist = overrides.persistLoanCapture ?? persistFubonLoanCapture;
+  const sourceConnectionScope =
+    overrides.sourceConnectionScope ?? "fubon-loan-workflow";
+  const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
 
-  const downloads: FubonLoanStatementsOutput["downloads"] = [];
-  const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
-
-  for (const account of loanAccounts) {
-    scope = await selectLoanAccount(page, account);
-    const availableQueryItems = await readAvailableLoanQueryItems(scope);
-    const accountQueryItems = queryItems.filter((queryItem) =>
-      availableQueryItems.includes(queryItem),
+  try {
+    let scope = await openLoanStatementsPage(page);
+    const loanAccounts = await readLoanAccountOptions(
+      scope,
+      input.loanAccountLabels,
     );
-    const unavailableQueryItems = queryItems.filter(
-      (queryItem) => !availableQueryItems.includes(queryItem),
-    );
+    const queryItems = requestedQueryItems(input);
+    const explicitQueryItems = hasExplicitQueryItems(input);
+    const period = describeLoanPeriod(input);
+    const dateRange = canonicalLoanDateRange(input);
 
-    if (explicitQueryItems) {
-      for (const queryItem of unavailableQueryItems) {
-        const reason = `Loan query item is not available for this account: ${queryItem}`;
+    const downloads: FubonLoanStatementsOutput["downloads"] = [];
+    const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
+
+    for (const account of loanAccounts) {
+      scope = await selectLoanAccount(page, account);
+      const availableQueryItems = await readAvailableLoanQueryItems(scope);
+      const accountQueryItems = queryItems.filter((queryItem) =>
+        availableQueryItems.includes(queryItem),
+      );
+      const unavailableQueryItems = queryItems.filter(
+        (queryItem) => !availableQueryItems.includes(queryItem),
+      );
+
+      if (explicitQueryItems) {
+        for (const queryItem of unavailableQueryItems) {
+          const reason = `Loan query item is not available for this account: ${queryItem}`;
+          console.warn("loan-query-skipped", {
+            loanAccount: account.label,
+            queryItem,
+            reason,
+          });
+          skippedAccounts.push({
+            loanAccount: account.label,
+            queryItem,
+            reason,
+          });
+        }
+      }
+
+      if (accountQueryItems.length === 0) {
+        const queryItem = queryItems[0];
+        const reason =
+          "No requested loan query items are available for this account.";
         console.warn("loan-query-skipped", {
           loanAccount: account.label,
           queryItem,
@@ -975,54 +1045,53 @@ export async function runFubonLoanStatements(
           queryItem,
           reason,
         });
+        continue;
+      }
+
+      for (const queryItem of accountQueryItems) {
+        scope = await configureLoanQuery(page, input, queryItem);
+        const html = await fetchLoanQueryHtml(page);
+        const written = await writeLoanStatementFiles(
+          page,
+          html,
+          account,
+          queryItem,
+          input,
+        );
+        await persist(store, {
+          accountValue: written.parsed.sourceAccountValue,
+          sourceConnectionScope,
+          observedAt: observedAt(),
+          startDate: dateRange.startDate,
+          endDate: dateRange.endDate,
+          rows: written.parsed.rows.map<FubonLoanStatementRow>((row) => ({
+            transactionDate: row[0] ?? "",
+            transactionContent: row[1] ?? "",
+            transactionAmount: row[2] ?? "",
+            balanceAfterTransaction: row[6] ?? "",
+          })),
+        });
+        downloads.push(written.download);
       }
     }
 
-    if (accountQueryItems.length === 0) {
-      const queryItem = queryItems[0];
-      const reason =
-        "No requested loan query items are available for this account.";
-      console.warn("loan-query-skipped", {
-        loanAccount: account.label,
-        queryItem,
-        reason,
-      });
-      skippedAccounts.push({
-        loanAccount: account.label,
-        queryItem,
-        reason,
-      });
-      continue;
-    }
-
-    for (const queryItem of accountQueryItems) {
-      scope = await configureLoanQuery(page, input, queryItem);
-      const html = await fetchLoanQueryHtml(page);
-      const download = await writeLoanStatementFiles(
-        page,
-        html,
-        account.label,
-        queryItem,
-        input,
+    if (downloads.length === 0 && skippedAccounts.length > 0) {
+      throw new StatementComponentAbsentError(
+        `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
       );
-      downloads.push(download);
     }
-  }
 
-  if (downloads.length === 0 && skippedAccounts.length > 0) {
-    throw new StatementComponentAbsentError(
-      `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
-    );
+    return {
+      queryItems,
+      period,
+      downloadFormat: input.downloadFormat,
+      count: downloads.length,
+      downloads,
+      skippedAccounts,
+    };
+  } finally {
+    store.close();
   }
-
-  return {
-    queryItems,
-    period,
-    downloadFormat: input.downloadFormat,
-    count: downloads.length,
-    downloads,
-    skippedAccounts,
-  };
 }
 
 export default workflow("fubonLoanStatements", {
@@ -1042,6 +1111,18 @@ export default workflow("fubonLoanStatements", {
     };
     await openLoanLoginForm(page);
     await completeFubonHumanLogin(page, session, values);
-    return await runFubonLoanStatements(page, input);
+    const sourceLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+      process.env.LEDGER_DIR ??
+      DEFAULT_LEDGER_DIR;
+    const financialLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR ??
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+      sourceLedgerDir;
+    return await runFubonLoanStatements(page, input, {
+      canonicalLedgerDir: sourceLedgerDir,
+      canonicalFinancialLedgerDir: financialLedgerDir,
+      sourceConnectionScope: `${values.userId}\u0000${values.account}`,
+    });
   },
 });

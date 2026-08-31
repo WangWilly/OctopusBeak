@@ -4,6 +4,10 @@ import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import { createServer } from "vite";
 
+const { persistFubonLoanCapture } = await import(
+  "../ledger/canonical/fubon-loan.ts"
+);
+
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
   "utf8",
@@ -405,6 +409,39 @@ test("bounds a frame probe that never resolves and fails closed", async () => {
     new Error("Could not navigate to the loan statement page."),
   );
   assert.ok(landing.probeAborts > 0);
+});
+
+test("commits one canonical capture for a parsed Fubon loan result", async () => {
+  let commitCount = 0;
+  const admittedCaptures: unknown[] = [];
+  await persistFubonLoanCapture(
+    null as never,
+    {
+      accountValue: "fubon-option-test",
+      sourceConnectionScope: "fubon-connection-test",
+      observedAt: "2026-02-01T00:00:00.000Z",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      rows: [
+        {
+          transactionDate: "2026/01/05",
+          transactionContent: "LOAN-DISBURSEMENT",
+          transactionAmount: "100000.00",
+          balanceAfterTransaction: "100000.00",
+        },
+      ],
+    },
+    {
+      commit: async (_store, admitted) => {
+        commitCount += 1;
+        admittedCaptures.push(admitted);
+        return {} as never;
+      },
+    },
+  );
+
+  assert.equal(commitCount, 1);
+  assert.equal(admittedCaptures.length, 1);
 });
 
 test("emits non-sensitive bounded navigation stage telemetry", async () => {

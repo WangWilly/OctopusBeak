@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import { registerHooks } from "node:module";
 
 registerHooks({
@@ -17,6 +18,9 @@ const { readYuantaLoanAccountOptions } =
   await import("./yuanta-loan-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
+const { persistYuantaLoanCapture } = await import(
+  "../ledger/canonical/yuanta-loan.ts"
+);
 
 function loanOptionsPage(
   options: Array<{ value: string; label: string }>,
@@ -71,6 +75,40 @@ assert.deepEqual(
     { value: "loan-2", label: "信用貸款" },
   ],
 );
+
+test("commits one canonical capture for a parsed Yuanta loan result", async () => {
+  let commitCount = 0;
+  const admittedCaptures: unknown[] = [];
+  await persistYuantaLoanCapture(
+    null as never,
+    {
+      accountValue: "yuanta-option-test",
+      sourceConnectionScope: "yuanta-connection-test",
+      observedAt: "2026-02-01T00:00:00.000Z",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      rows: [
+        {
+          transactionDate: "2026/01/05",
+          postingDate: "2026/01/06",
+          paymentItem: "LOAN-DISBURSEMENT",
+          transactionAmount: "100000.00",
+          balanceAfterTransaction: "100000.00",
+        },
+      ],
+    },
+    {
+      commit: async (_store, admitted) => {
+        commitCount += 1;
+        admittedCaptures.push(admitted);
+        return {} as never;
+      },
+    },
+  );
+
+  assert.equal(commitCount, 1);
+  assert.equal(admittedCaptures.length, 1);
+});
 
 assert.deepEqual(
   await readYuantaLoanAccountOptions(
