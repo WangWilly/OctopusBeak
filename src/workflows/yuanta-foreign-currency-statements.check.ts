@@ -29,6 +29,11 @@ const {
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
 
+const fixedForeignDateRange = {
+  startDate: "2026-08-14",
+  endDate: "2026-08-24",
+};
+
 function locatorForOptions(options: Array<{ value: string; label: string }>) {
   return {
     first: () => ({
@@ -158,7 +163,7 @@ const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-observation-1",
@@ -221,6 +226,7 @@ const yuantaMultipleRowsFromOneAccount =
     ],
     {
       dateRange: "three_months",
+      customDateRange: fixedForeignDateRange,
       accountFilters: [],
       currencyFilters: [],
       channelType: "all",
@@ -261,7 +267,7 @@ const yuantaZeroPaddedInflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-zero-padded-inflow",
@@ -304,7 +310,7 @@ const yuantaZeroPaddedOutflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-zero-padded-outflow",
@@ -339,7 +345,7 @@ const yuantaUnpaddedInflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-unpadded-inflow",
@@ -372,7 +378,7 @@ const yuantaDifferentForeignAmount = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-different-amount",
@@ -407,7 +413,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-both-nonzero",
@@ -440,7 +446,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-both-zero",
@@ -473,7 +479,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-invalid-amount",
@@ -504,7 +510,7 @@ const yuantaCorrectedMutableFacts = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-1",
   "2026-08-24T13:00:00+08:00",
   "yuanta-foreign-check-observation-2",
@@ -526,7 +532,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+      { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-observation-invalid",
@@ -536,7 +542,7 @@ assert.throws(
 
 const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
   [],
-  { dateRange: "one_week", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
   "fx-empty-133",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-empty-observation",
