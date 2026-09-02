@@ -1066,7 +1066,7 @@ try {
   );
   const v4Seed = openCanonicalDatabase(populatedV4ScopeMigrationDir);
   v4Seed.exec(
-    "UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
+    "PRAGMA foreign_keys = OFF; UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
   v4Seed.close();
   const migratedV4Writer = openCanonicalDatabase(populatedV4ScopeMigrationDir);
@@ -1127,7 +1127,7 @@ try {
     provenanceOnlyV4MigrationDir,
   );
   provenanceOnlyV4Seed.exec(
-    "DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
+    "PRAGMA foreign_keys = OFF; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
   provenanceOnlyV4Seed.close();
   const provenanceOnlyV4Writer = openCanonicalDatabase(
@@ -1194,7 +1194,7 @@ try {
   );
   const restorationV4Seed = openCanonicalDatabase(restorationV4MigrationDir);
   restorationV4Seed.exec(
-    "UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
+    "PRAGMA foreign_keys = OFF; UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
   restorationV4Seed.close();
   assert.throws(
@@ -3279,7 +3279,7 @@ try {
     "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;",
   );
   v3Seed.exec(
-    "DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3;",
+    "PRAGMA foreign_keys = OFF; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; PRAGMA user_version = 3; PRAGMA foreign_keys = ON;",
   );
   v3Seed.close();
   const migratedV3 = openCanonicalDatabase(v3MigrationDir);
@@ -3321,7 +3321,7 @@ try {
     );
     const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
     downgrade.exec(
-      "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;",
+      "PRAGMA foreign_keys = OFF; DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable; PRAGMA foreign_keys = ON;",
     );
     downgrade.close();
     assert.throws(

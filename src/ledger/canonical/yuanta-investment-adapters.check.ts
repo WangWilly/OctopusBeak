@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { admitCanonicalInvestmentCapture } from "./investment-financial.ts";
+import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCapture,
+  createCanonicalInvestmentStore,
+} from "./investment-financial.ts";
 import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
 const token = (c: string) => `sha256:${c.repeat(64)}`;
 for (const sourceId of ["yuanta-fund", "yuanta-trade"] as const)
@@ -94,6 +98,56 @@ test("Yuanta adapter does not guess an ambiguous transaction action", () => {
           },
         ],
       }),
-    /explicit buy\/sell/,
+    /explicit supported action/,
   );
+});
+
+test("repeated Yuanta source rows do not put capture-local keys into source occurrence content", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = (captureId: string, observedAt: string) => ({
+    sourceId: "yuanta-trade" as const,
+    captureId,
+    sourceConnectionKey: token("a"),
+    identityEpochKey: token("b"),
+    accountKey: token("c"),
+    reportingCurrency: "TWD",
+    observedAt,
+    sourceEffectiveOn: "2026-08-30",
+    holdings: [
+      {
+        sourceRecordKey: token("d"),
+        producerSecurityId: "TWSE:2330",
+        currency: "TWD",
+        effectiveOn: "2026-08-30",
+        quantity: { coefficient: "1000", scale: 0 },
+        valuation: { coefficient: "500000", scale: 0, currency: "TWD" },
+      },
+    ],
+    transactions: [
+      {
+        sourceRecordKey: token("e"),
+        producerSecurityId: "TWSE:2330",
+        currency: "TWD",
+        effectiveOn: "2026-08-29",
+        action: "buy" as const,
+        quantity: { coefficient: "1000", scale: 0 },
+        cashEffect: { coefficient: "500000", scale: 0, currency: "TWD" },
+      },
+    ],
+  });
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(
+      buildYuantaInvestmentCapture(input("first", "2026-08-31T12:00:00.000Z")),
+    ),
+  );
+  await assert.doesNotReject(
+    commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(
+        buildYuantaInvestmentCapture(input("second", "2026-09-01T12:00:00.000Z")),
+      ),
+    ),
+  );
+  store.close();
 });

@@ -6,7 +6,9 @@ import {
   withCanonicalWriterQueue,
 } from "./canonical-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
-import type { InvestmentFundingEvidence } from "./investment-financial.ts";
+import type {
+  InvestmentFundingEvidence,
+} from "./investment-financial.ts";
 
 type LinkedFundingEvidence = Extract<
   InvestmentFundingEvidence,
@@ -22,6 +24,7 @@ type InvestmentRow = {
   investmentAccountId: Uint8Array;
   sourceRecordId: Uint8Array;
   commitId: Uint8Array;
+  // The resolver query is intentionally restricted to these two actions.
   action: "buy" | "sell";
   effectiveOn: string;
   cashCoefficient: string;
@@ -628,6 +631,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
               it.effective_on AS effectiveOn,
               it.funding_evidence_json AS fundingEvidenceJson
          FROM investment_transactions it
+        WHERE it.action IN ('buy','sell')
         ORDER BY it.account_id,it.effective_on,it.transaction_id`,
     )
     .all() as InvestmentRow[];

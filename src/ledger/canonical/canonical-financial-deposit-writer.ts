@@ -1187,6 +1187,30 @@ function latestLifecycle(
   return row?.event_kind ?? null;
 }
 
+/**
+ * Content-overwrite errors must be useful in a live integration without
+ * putting financial values, account numbers, or descriptions in its log.
+ */
+function compactPayloadDifferenceKeys(
+  priorPayloadJson: string,
+  currentPayloadJson: string,
+): string {
+  try {
+    const prior = JSON.parse(priorPayloadJson) as Record<string, unknown>;
+    const current = JSON.parse(currentPayloadJson) as Record<string, unknown>;
+    const keys = new Set([...Object.keys(prior), ...Object.keys(current)]);
+    const changed = [...keys]
+      .filter(
+        (key) => JSON.stringify(prior[key]) !== JSON.stringify(current[key]),
+      )
+      .sort()
+      .slice(0, 8);
+    return changed.length > 0 ? changed.join(",") : "opaque-compact-payload";
+  } catch {
+    return "opaque-compact-payload";
+  }
+}
+
 function commitOnce(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
@@ -1350,12 +1374,13 @@ function commitOnce(
         );
       const prior = db
         .prepare(
-          `SELECT provider_key, content_hash FROM source_records
+          `SELECT provider_key, content_hash, payload_json AS payloadJson FROM source_records
            WHERE source_subject_id = ? AND occurrence_key = ?`,
         )
         .all(subjectId, record.occurrenceKey) as Array<{
         provider_key?: unknown;
         content_hash?: unknown;
+        payloadJson?: unknown;
       }>;
       if (
         capture.authorityRoute !== "fubon/credit-card/human-attested-v1" &&
@@ -1364,12 +1389,12 @@ function commitOnce(
         throw new CanonicalFinancialDepositConflictError(
           "Source occurrence provider identity overwrite is forbidden.",
         );
-      if (
-        !capture.authorityRoute.includes("/foreign-currency/") &&
-        prior.some((row) => String(row.content_hash) !== record.contentHash)
-      )
+      const contentOverwrite = prior.find(
+        (row) => String(row.content_hash) !== record.contentHash,
+      );
+      if (!capture.authorityRoute.includes("/foreign-currency/") && contentOverwrite)
         throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence content overwrite is forbidden.",
+          `Source occurrence content overwrite is forbidden; changed compact fields: ${compactPayloadDifferenceKeys(String(contentOverwrite.payloadJson ?? ""), record.compactJson)}.`,
         );
     }
 

@@ -902,10 +902,12 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
 
     const downgrade = new DatabaseSync(path);
     downgrade.exec(`
-      DELETE FROM canonical_contract_purges
-       WHERE purge_id = 'source-connection-identity/v1:fubon-yuanta:v11';
-      DELETE FROM schema_migrations WHERE version = 11;
+      PRAGMA foreign_keys = OFF;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 10;
       PRAGMA user_version = 10;
+      PRAGMA foreign_keys = ON;
     `);
     downgrade.close();
 
@@ -1167,6 +1169,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
     assert.deepEqual(reopened.db.prepare("PRAGMA foreign_key_check").all(), []);
     validateCanonicalSourceStore(reopened);
     reopened.close();
+
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1271,12 +1274,16 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
        WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
       DELETE FROM schema_migrations WHERE version >= 12;
       ALTER TABLE canonical_contract_purge_commits
         RENAME TO canonical_contract_purge_commits_v12;
@@ -1806,8 +1813,13 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
+      DELETE FROM schema_migrations WHERE version = 19;
       DELETE FROM schema_migrations WHERE version = 17;
       ALTER TABLE canonical_contract_purge_commits
         RENAME TO canonical_contract_purge_commits_v16;
@@ -1845,7 +1857,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
         (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
           .user_version,
       ),
-      17,
+      19,
     );
     assert.equal(countCaptures(migrated.db, "yuanta-trade", "investment"), 0);
     assert.equal(
@@ -1906,7 +1918,6 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
       streams: ["investment"],
     });
     assert.match(String(audit.closure_fingerprint), /^sha256:/);
-
     const liveCapture = buildYuantaInvestmentCapture({
         sourceId: "yuanta-trade",
         captureId: "legacy-yuanta-trade",
@@ -2008,6 +2019,42 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
     assert.deepEqual(reopened.db.prepare("PRAGMA foreign_key_check").all(), []);
     validateCanonicalSourceStore(reopened);
     reopened.close();
+
+    // The production boundary: a v18 database contains a live trade capture
+    // written before source-content-v3. Upgrade must remove just that scope.
+    const v18 = new DatabaseSync(path);
+    v18.exec(`
+      PRAGMA foreign_keys = OFF;
+      DELETE FROM schema_migrations WHERE version = 19;
+      PRAGMA user_version = 18;
+      PRAGMA foreign_keys = ON;
+    `);
+    v18.close();
+    const v19 = createCanonicalSourceStore(path);
+    assert.equal(countCaptures(v19.db, "yuanta-trade", "investment"), 0);
+    assert.equal(countCaptures(v19.db, "yuanta-fund", "investment"), 1);
+    const v19Audit = v19.db
+      .prepare(
+        `SELECT schema_version, deleted_row_count, scope_json, closure_fingerprint
+           FROM canonical_contract_purges
+          WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19'`,
+      )
+      .get() as {
+      schema_version?: number;
+      deleted_row_count?: number;
+      scope_json?: string;
+      closure_fingerprint?: string;
+    };
+    assert.equal(Number(v19Audit.schema_version), 19);
+    assert.ok(Number(v19Audit.deleted_row_count) > 0);
+    assert.deepEqual(JSON.parse(String(v19Audit.scope_json)), {
+      integrationNamespaces: ["yuanta-trade"],
+      streams: ["investment"],
+    });
+    assert.match(String(v19Audit.closure_fingerprint), /^sha256:/);
+    assert.deepEqual(v19.db.prepare("PRAGMA foreign_key_check").all(), []);
+    validateCanonicalSourceStore(v19);
+    v19.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2828,9 +2875,14 @@ test("v8 to v9 rebuilds the source assertion compatibility view", async () => {
         legacy.exec(
           "CREATE VIEW source_assertions AS SELECT assertion_id, transaction_id, revision_id, created_commit_id AS commit_id FROM assertions",
         );
-      legacy.exec(
-        "DELETE FROM schema_migrations WHERE version = 9; PRAGMA user_version = 8",
-      );
+      legacy.exec(`
+        PRAGMA foreign_keys = OFF;
+        DELETE FROM canonical_contract_purge_commits;
+        DELETE FROM canonical_contract_purges;
+        DELETE FROM schema_migrations WHERE version > 8;
+        PRAGMA user_version = 8;
+        PRAGMA foreign_keys = ON;
+      `);
       legacy.close();
 
       const migrated = createCanonicalSourceStore(path);
@@ -3243,9 +3295,14 @@ test("source assertion compatibility views enforce origin and provenance semanti
           ? beforeAssertionCount + 1
           : beforeAssertionCount,
       );
-      legacy.exec(
-        "DELETE FROM schema_migrations WHERE version = 9; PRAGMA user_version = 8",
-      );
+      legacy.exec(`
+        PRAGMA foreign_keys = OFF;
+        DELETE FROM canonical_contract_purge_commits;
+        DELETE FROM canonical_contract_purges;
+        DELETE FROM schema_migrations WHERE version > 8;
+        PRAGMA user_version = 8;
+        PRAGMA foreign_keys = ON;
+      `);
       legacy.close();
 
       const migrated = createCanonicalSourceStore(path);

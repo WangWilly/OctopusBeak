@@ -4,6 +4,7 @@ import type { Page } from "playwright";
 import {
   dismissPasswordChangeReminderIfPresent,
   assertYuantaTradeCanonicalOccurrenceIdentities,
+  explicitAction,
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
@@ -470,4 +471,42 @@ test("canonical occurrence identity is order invariant and rejects indistinguish
       ),
     ),
   );
+});
+
+test("holding occurrence identity does not require a buy or sell action", () => {
+  const holding = {
+    as_of_date: "2026-09-02",
+    product_code: "SANITIZED",
+    quantity: "1000",
+    market_value_twd: "500000",
+  };
+
+  const first = yuantaTradeCanonicalOccurrenceIdentity(
+    "SANITIZED-ACCOUNT",
+    "holding",
+    holding,
+    0,
+  );
+  assert.equal(
+    first,
+    yuantaTradeCanonicalOccurrenceIdentity(
+      "SANITIZED-ACCOUNT",
+      "holding",
+      { ...holding, action: "買進" },
+      1,
+    ),
+  );
+});
+
+test("normalizes the explicit provider event labels from live Yuanta trade rows", () => {
+  for (const value of ["B", "buy", "買進", "買入", "普通買進"]) {
+    assert.equal(explicitAction(value), "buy");
+  }
+  for (const value of ["S", "sell", "賣出", "普通賣出"]) {
+    assert.equal(explicitAction(value), "sell");
+  }
+  assert.equal(explicitAction("公司活動-移入"), "corporate_action_in");
+  assert.equal(explicitAction("公司活動-移出"), "corporate_action_out");
+  assert.equal(explicitAction("配息"), "dividend");
+  assert.throws(() => explicitAction("未知事件"), /supported provider event/);
 });
