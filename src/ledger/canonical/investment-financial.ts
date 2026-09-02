@@ -42,6 +42,11 @@ export type HoldingEffectiveTimeEvidence = {
   sourceField: string;
   value: string;
   contractVersion: string;
+  components?: readonly {
+    role: "reference-nav" | "reference-fx" | "market-price";
+    sourceField: string;
+    value: string;
+  }[];
 };
 export type InvestmentCaptureInput = {
   captureId: string;

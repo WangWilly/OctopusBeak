@@ -25,6 +25,33 @@ for (const sourceId of ["yuanta-fund", "yuanta-trade"] as const)
           effectiveOn: "2026-08-30",
           quantity: { coefficient: "1000", scale: 2 },
           valuation: { coefficient: "500000", scale: 0, currency: "TWD" },
+          effectiveTimeEvidence:
+            sourceId === "yuanta-fund"
+              ? {
+                  sourceField: "reference-nav-and-fx-basis-date",
+                  components: [
+                    {
+                      role: "reference-nav",
+                      sourceField: "贖回/參考基準日",
+                      value: "2026-08-29",
+                    },
+                    {
+                      role: "reference-fx",
+                      sourceField: "匯率/參考基準日",
+                      value: "2026-08-30",
+                    },
+                  ],
+                }
+              : {
+                  sourceField: "市價日期",
+                  components: [
+                    {
+                      role: "market-price",
+                      sourceField: "市價日期",
+                      value: "2026-08-30",
+                    },
+                  ],
+                },
         },
       ],
       transactions: [
@@ -42,6 +69,7 @@ for (const sourceId of ["yuanta-fund", "yuanta-trade"] as const)
     });
     assert.doesNotThrow(() => admitCanonicalInvestmentCapture(capture));
     assert.equal(capture.transactions[0]?.fundingEvidence.kind, "unresolved");
+    assert.ok(capture.holdings[0]?.effectiveTimeEvidence.components?.length);
   });
 
 test("Yuanta adapter does not guess an ambiguous transaction action", () => {

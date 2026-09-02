@@ -17,6 +17,14 @@ export type YuantaCanonicalInvestmentRow = {
   valuation?: InvestmentMoney;
   action?: "buy" | "sell";
   cashEffect?: InvestmentMoney;
+  effectiveTimeEvidence?: {
+    sourceField: string;
+    components?: readonly {
+      role: "reference-nav" | "reference-fx" | "market-price";
+      sourceField: string;
+      value: string;
+    }[];
+  };
 };
 export type YuantaInvestmentAdapterInput = {
   sourceId: InvestmentSourceId;
@@ -92,9 +100,10 @@ export function buildYuantaInvestmentCapture(
       effectiveTimeEvidence: {
         kind: "source-reported-as-of" as const,
         sourceRecordKey: row.sourceRecordKey,
-        sourceField: "as_of_date",
+        sourceField: row.effectiveTimeEvidence?.sourceField ?? "as_of_date",
         value: row.effectiveOn,
         contractVersion,
+        components: row.effectiveTimeEvidence?.components,
       },
       lineage: { page: 0, row: index, contractVersion },
     })),
