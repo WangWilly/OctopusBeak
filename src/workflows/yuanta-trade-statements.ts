@@ -15,6 +15,7 @@ import {
   commitCanonicalInvestmentCaptureBatch,
   createCanonicalInvestmentStore,
   YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+  type InvestmentFundingEvidence,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial.ts";
 import {
@@ -25,6 +26,8 @@ import {
   deriveYuantaForeignSettlementLinkageKey,
   resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
 } from "../ledger/canonical/investment-funding-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
@@ -287,6 +290,50 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export type YuantaSettlementMarket =
+  typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
+
+/**
+ * Normalize only market labels explicitly supplied by the YuanTa report.
+ * Currency, asset type, and security identifiers are deliberately excluded:
+ * YuanTa's settlement schedule varies by market even when the currency is
+ * the same.
+ */
+export function normalizeYuantaSettlementMarket(
+  value: string | null | undefined,
+): YuantaSettlementMarket | undefined {
+  const normalized = cleanText(value).normalize("NFKC").toLocaleUpperCase("en-US");
+  if (normalized === "US" || normalized === "美股")
+    return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
+  return undefined;
+}
+
+export function buildYuantaTradeFundingEvidence(input: {
+  sourceRecordKey: string;
+  stableLoginIdentity: string;
+  currency: string;
+  market?: string | null;
+}): InvestmentFundingEvidence {
+  const settlementMarket = normalizeYuantaSettlementMarket(input.market);
+  if (!settlementMarket)
+    return { kind: "unresolved", sourceRecordKey: input.sourceRecordKey };
+
+  return {
+    kind: "source-settlement-contract",
+    sourceRecordKey: input.sourceRecordKey,
+    sourceLinkageKey: deriveYuantaForeignSettlementLinkageKey(
+      input.stableLoginIdentity,
+      input.currency,
+    ),
+    linkageContractVersion: YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+    settlementMarket,
+    settlementMarketContractVersion:
+      YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+    settlementModel: "account-currency-date-net",
+    contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+  };
 }
 
 function decodeHtml(value: string): string {
@@ -1362,18 +1409,12 @@ async function commitYuantaTradeCanonicalIfComplete(
         ...mapped,
         action: explicitAction(row.action ?? ""),
         cashEffect,
-        fundingEvidence: {
-          kind: "source-settlement-contract" as const,
+        fundingEvidence: buildYuantaTradeFundingEvidence({
           sourceRecordKey: mapped.sourceRecordKey,
-          sourceLinkageKey: deriveYuantaForeignSettlementLinkageKey(
-            credentials.yuanta_trade_user_id ?? "",
-            cashEffect.currency,
-          ),
-          linkageContractVersion:
-            YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
-          settlementModel: "account-currency-date-net" as const,
-          contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
-        },
+          stableLoginIdentity: credentials.yuanta_trade_user_id ?? "",
+          currency: cashEffect.currency,
+          market: row.market,
+        }),
       };
     });
     const capture = buildYuantaInvestmentCapture({

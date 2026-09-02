@@ -16,6 +16,8 @@ import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
   resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
 } from "./investment-funding-relations.ts";
 import {
   admitCanonicalLoanCapture,
@@ -62,6 +64,8 @@ export type InvestmentFundingEvidence =
       sourceRecordKey: string;
       sourceLinkageKey: string;
       linkageContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION;
+      settlementMarket: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
+      settlementMarketContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION;
       settlementModel: "account-currency-date-net";
       contractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION;
     };
@@ -438,6 +442,9 @@ export function admitCanonicalInvestmentCapture(
       if (
         funding.linkageContractVersion !==
           YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
+        funding.settlementMarket !== YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY ||
+        funding.settlementMarketContractVersion !==
+          YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION ||
         funding.settlementModel !== "account-currency-date-net" ||
         funding.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION
       )
@@ -1264,6 +1271,8 @@ export {
   queryCanonicalInvestmentFundingRelations,
   resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
 } from "./investment-funding-relations.ts";
 export function queryCanonicalInvestmentCurrent(
   store: CanonicalInvestmentStore,
