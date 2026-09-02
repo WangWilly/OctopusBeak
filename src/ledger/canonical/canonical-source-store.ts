@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 14;
+export const CANONICAL_SCHEMA_VERSION = 15;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -7526,6 +7526,108 @@ function migrateV13ToV14(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
+  migrateV14ToV15(db);
+}
+
+export const SCHEMA_V15_INVESTMENTS = `
+CREATE TABLE IF NOT EXISTS investment_captures (
+  capture_id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  source_connection_key TEXT NOT NULL,
+  identity_epoch_key TEXT NOT NULL,
+  authority_route TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  effective_on TEXT NOT NULL,
+  commit_sequence INTEGER NOT NULL,
+  recorded_at_utc_us INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS investment_accounts (
+  account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16),
+  source_id TEXT NOT NULL,
+  source_connection_key TEXT NOT NULL,
+  account_key TEXT NOT NULL,
+  account_type TEXT NOT NULL CHECK(account_type = 'investment'),
+  UNIQUE(source_id, source_connection_key, account_key)
+);
+CREATE TABLE IF NOT EXISTS investment_securities (
+  security_id BLOB PRIMARY KEY CHECK(length(security_id) = 16),
+  source_id TEXT NOT NULL,
+  security_key TEXT NOT NULL,
+  producer_security_id TEXT NOT NULL,
+  name TEXT,
+  ticker TEXT,
+  currency TEXT NOT NULL,
+  UNIQUE(source_id, security_key)
+);
+CREATE TABLE IF NOT EXISTS investment_holding_observations (
+  observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
+  security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+  measurement_key TEXT NOT NULL,
+  correction_of_measurement_key TEXT,
+  source_record_key TEXT NOT NULL,
+  quantity_coefficient TEXT,
+  quantity_scale INTEGER,
+  valuation_coefficient TEXT,
+  valuation_scale INTEGER,
+  valuation_currency TEXT,
+  effective_on TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  lineage_json TEXT NOT NULL,
+  CHECK(quantity_coefficient IS NOT NULL OR valuation_coefficient IS NOT NULL),
+  UNIQUE(capture_id, measurement_key)
+);
+CREATE TABLE IF NOT EXISTS investment_transactions (
+  transaction_id BLOB PRIMARY KEY CHECK(length(transaction_id) = 16),
+  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
+  security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+  transaction_key TEXT NOT NULL,
+  source_record_key TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('buy','sell')),
+  quantity_coefficient TEXT NOT NULL,
+  quantity_scale INTEGER NOT NULL,
+  cash_coefficient TEXT NOT NULL,
+  cash_scale INTEGER NOT NULL,
+  cash_currency TEXT NOT NULL,
+  effective_on TEXT NOT NULL,
+  funding_evidence_json TEXT NOT NULL,
+  UNIQUE(capture_id, transaction_key)
+);
+CREATE TABLE IF NOT EXISTS investment_margin_balance_observations (
+  observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
+  source_record_key TEXT NOT NULL,
+  balance_kind TEXT NOT NULL CHECK(balance_kind = 'margin_loan'),
+  coefficient TEXT NOT NULL,
+  scale INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  effective_on TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_investment_holdings_account_time ON investment_holding_observations(account_id, effective_on, observed_at);
+CREATE INDEX IF NOT EXISTS idx_investment_transactions_account_time ON investment_transactions(account_id, effective_on);
+`;
+
+export function validateCanonicalInvestmentExtensionSchema(db: DatabaseSync): void {
+  for (const name of ["investment_captures", "investment_accounts", "investment_securities", "investment_holding_observations", "investment_transactions", "investment_margin_balance_observations"])
+    if (!tableExists(db, name)) throw new Error(`Canonical investment table ${name} is missing.`);
+}
+
+function migrateV14ToV15(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(SCHEMA_V15_INVESTMENTS);
+    validateCanonicalInvestmentExtensionSchema(db);
+    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (15, ?)").run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 15");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function applySchemaMigration(
@@ -7684,6 +7786,10 @@ function applySchemaMigration(
     migrateV13ToV14(db);
     return;
   }
+  if (version === 14) {
+    migrateV14ToV15(db);
+    return;
+  }
   if (version === CANONICAL_SCHEMA_VERSION) {
     if (!tableExists(db, "schema_migrations"))
       throw new Error("Canonical SQLite schema version metadata is missing.");
@@ -7763,6 +7869,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
       "Canonical financial revision widening staging requires writable recovery before read-only access.",
     );
   validateCanonicalLoanExtensionSchema(db);
+  validateCanonicalInvestmentExtensionSchema(db);
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
   validateCanonicalContractPurgeSchema(db, {
@@ -11616,6 +11723,7 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     validateV8SourceEvidenceSchema(db);
     validateCanonicalCompatibilityViews(db);
     validateCanonicalLoanExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db);
     validateCanonicalLoanRepaymentRelationSchema(db);
     validateCanonicalRelationResolutionCommitSchema(db);
     validateCanonicalContractPurgeSchema(db, {
@@ -11662,6 +11770,7 @@ export function validateCanonicalSourceStore(
   validateV8SourceEvidenceSchema(store.db);
   validateCanonicalCompatibilityViews(store.db);
   validateCanonicalLoanExtensionSchema(store.db);
+  validateCanonicalInvestmentExtensionSchema(store.db);
   validateCanonicalLoanRepaymentRelationSchema(store.db);
   validateCanonicalRelationResolutionCommitSchema(store.db);
   validateCanonicalContractPurgeSchema(store.db, {
