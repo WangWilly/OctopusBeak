@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 16;
+export const CANONICAL_SCHEMA_VERSION = 17;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -6486,7 +6486,7 @@ function migrateV9ToV10(db: DatabaseSync): void {
 const SCHEMA_V11_CONTRACT_PURGE_AUDIT = `
 CREATE TABLE IF NOT EXISTS canonical_contract_purges (
   purge_id TEXT PRIMARY KEY,
-  schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14)),
+  schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14, 17)),
   reason TEXT NOT NULL,
   scope_json TEXT NOT NULL,
   deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
@@ -6527,12 +6527,17 @@ const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID =
   "fubon-domestic-deposit/observed-composite-v1:v14";
 const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES = ["fubon"] as const;
 const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS = ["domestic-deposit"] as const;
+const YUANTA_TRADE_INVESTMENT_V2_PURGE_ID =
+  "yuanta-trade-investment/market-evidence-v2:v17";
+const YUANTA_TRADE_INVESTMENT_V2_PURGE_NAMESPACES = ["yuanta-trade"] as const;
+const YUANTA_TRADE_INVESTMENT_V2_PURGE_STREAMS = ["investment"] as const;
 
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
   options: Readonly<{
     requireCreditCardPurge?: boolean;
     requireFubonDepositOccurrencePurge?: boolean;
+    requireYuantaTradeInvestmentPurge?: boolean;
   }> = {},
 ): void {
   if (relationType(db, "canonical_contract_purges") !== "table")
@@ -6618,6 +6623,32 @@ function validateCanonicalContractPurgeSchema(
         "Canonical schema v14 Fubon deposit occurrence Contract Purge audit is incomplete.",
       );
   }
+  if (options.requireYuantaTradeInvestmentPurge) {
+    const yuantaTradeAudit = db
+      .prepare(
+        "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get(YUANTA_TRADE_INVESTMENT_V2_PURGE_ID) as
+      | {
+          schema_version?: number;
+          scope_json?: string;
+          deleted_table_counts_json?: string;
+          closure_fingerprint?: string;
+        }
+      | undefined;
+    if (
+      !yuantaTradeAudit ||
+      Number(yuantaTradeAudit.schema_version) !== 17 ||
+      typeof yuantaTradeAudit.scope_json !== "string" ||
+      typeof yuantaTradeAudit.deleted_table_counts_json !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]+$/u.test(
+        String(yuantaTradeAudit.closure_fingerprint ?? ""),
+      )
+    )
+      throw new Error(
+        "Canonical schema v17 Yuanta trade investment Contract Purge audit is incomplete.",
+      );
+  }
 }
 
 /**
@@ -6632,6 +6663,12 @@ function ensureCanonicalContractPurgeSchemaV12(db: DatabaseSync): void {
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
     )
     .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*,\s*17\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
   if (
     /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*\)\s*\)/iu.test(
       String(schema?.sql ?? ""),
@@ -7005,7 +7042,7 @@ function purgeLegacySourceConnectionIdentityScopes(db: DatabaseSync): void {
 
 type CanonicalContractPurgeAudit = Readonly<{
   purgeId: string;
-  schemaVersion: 12 | 14;
+  schemaVersion: 12 | 14 | 17;
   reason: string;
   integrationNamespaces: readonly string[];
   streams: readonly string[];
@@ -7168,6 +7205,38 @@ function purgeFubonDepositOccurrenceV1Scope(db: DatabaseSync): void {
         "replace Fubon deposit occurrence identity that treated provider-window-dependent notes as stable; recollect under observed-composite-v2",
       integrationNamespaces: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES,
       streams: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS,
+    },
+  );
+}
+
+function purgeYuantaTradeInvestmentV2Scope(db: DatabaseSync): void {
+  if (
+    db
+      .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+      .get(YUANTA_TRADE_INVESTMENT_V2_PURGE_ID)
+  )
+    return;
+  purgeCanonicalClosureToAudit(
+    db,
+    legacySourceConnectionIdentityClosure(db, {
+      namespaces: YUANTA_TRADE_INVESTMENT_V2_PURGE_NAMESPACES,
+      streams: YUANTA_TRADE_INVESTMENT_V2_PURGE_STREAMS,
+      includeLoanResolverImplications: false,
+      stopAtTables: [
+        "source_connections",
+        "identity_epochs",
+        "source_authority_routes",
+        "canonical_commits",
+        "projection_generations",
+      ],
+    }),
+    {
+      purgeId: YUANTA_TRADE_INVESTMENT_V2_PURGE_ID,
+      schemaVersion: 17,
+      reason:
+        "replace Yuanta trade investment captures with versioned live MarketNo settlement evidence; recollect under market-v2",
+      integrationNamespaces: YUANTA_TRADE_INVESTMENT_V2_PURGE_NAMESPACES,
+      streams: YUANTA_TRADE_INVESTMENT_V2_PURGE_STREAMS,
     },
   );
 }
@@ -7574,6 +7643,12 @@ function widenCanonicalContractPurgeAuditForV14(db: DatabaseSync): void {
     )
     .get() as { sql?: string } | undefined;
   if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*,\s*17\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
+  if (
     /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*\)\s*\)/iu.test(
       String(schema?.sql ?? ""),
     )
@@ -7632,6 +7707,45 @@ function migrateV13ToV14(db: DatabaseSync): void {
     throw error;
   }
   migrateV14ToV15(db);
+}
+
+function widenCanonicalContractPurgeAuditForV17(db: DatabaseSync): void {
+  const schema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*,\s*17\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
+  db.exec(`
+    CREATE TABLE canonical_contract_purges_v17 (
+      purge_id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14, 17)),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    INSERT INTO canonical_contract_purges_v17
+      SELECT * FROM canonical_contract_purges;
+    CREATE TABLE canonical_contract_purge_commits_v17 (
+      purge_id TEXT NOT NULL REFERENCES canonical_contract_purges_v17(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    INSERT INTO canonical_contract_purge_commits_v17
+      SELECT * FROM canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purges;
+    ALTER TABLE canonical_contract_purges_v17 RENAME TO canonical_contract_purges;
+    ALTER TABLE canonical_contract_purge_commits_v17 RENAME TO canonical_contract_purge_commits;
+  `);
 }
 
 export const SCHEMA_V15_INVESTMENTS = `
@@ -7819,6 +7933,39 @@ function migrateV15ToV16(db: DatabaseSync): void {
     db.exec("ROLLBACK");
     throw error;
   }
+  migrateV16ToV17(db);
+}
+
+function migrateV16ToV17(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
+    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentFundingRelationSchema(db);
+    widenCanonicalContractPurgeAuditForV17(db);
+    purgeYuantaTradeInvestmentV2Scope(db);
+    validateCanonicalContractPurgeSchema(db, {
+      requireCreditCardPurge: true,
+      requireFubonDepositOccurrencePurge: true,
+      requireYuantaTradeInvestmentPurge: true,
+    });
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v17 Yuanta trade investment migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (17, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 17");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
 }
 
 function applySchemaMigration(
@@ -7985,6 +8132,10 @@ function applySchemaMigration(
     migrateV15ToV16(db);
     return;
   }
+  if (version === 16) {
+    migrateV16ToV17(db);
+    return;
+  }
   if (version === CANONICAL_SCHEMA_VERSION) {
     if (!tableExists(db, "schema_migrations"))
       throw new Error("Canonical SQLite schema version metadata is missing.");
@@ -8023,6 +8174,7 @@ function applySchemaMigration(
       validateCanonicalContractPurgeSchema(db, {
         requireCreditCardPurge: true,
         requireFubonDepositOccurrencePurge: true,
+        requireYuantaTradeInvestmentPurge: true,
       });
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
@@ -8073,6 +8225,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   validateCanonicalContractPurgeSchema(db, {
     requireCreditCardPurge: true,
     requireFubonDepositOccurrencePurge: true,
+    requireYuantaTradeInvestmentPurge: true,
   });
   const requiredTables = [
     "capture_scopes",
@@ -11926,6 +12079,7 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     validateCanonicalContractPurgeSchema(db, {
       requireCreditCardPurge: true,
       requireFubonDepositOccurrencePurge: true,
+      requireYuantaTradeInvestmentPurge: true,
     });
     return db;
   } catch (error) {
@@ -11973,6 +12127,7 @@ export function validateCanonicalSourceStore(
   validateCanonicalContractPurgeSchema(store.db, {
     requireCreditCardPurge: true,
     requireFubonDepositOccurrencePurge: true,
+    requireYuantaTradeInvestmentPurge: true,
   });
   const integrity = String(
     (

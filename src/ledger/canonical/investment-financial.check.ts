@@ -27,6 +27,7 @@ import {
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
+import { queryCanonicalSourceCurrent } from "./canonical-source-store.ts";
 
 const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
@@ -38,6 +39,7 @@ const SYNTHETIC_YUANTA_OTHER_LOGIN_ACCOUNT = "9001" + "0020" + "0300" + "4008";
 const YUANTA_SETTLEMENT_LINKAGE_KEY =
   deriveYuantaForeignSettlementLinkageKey("synthetic-yuanta-login", "USD");
 const YUANTA_SETTLEMENT_MARKET_EVIDENCE = {
+  sourceMarketCode: "52",
   settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
   settlementMarketContractVersion:
     YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
@@ -1889,6 +1891,61 @@ test("Yuanta settlement evidence requires an explicitly supported market contrac
   );
 });
 
+test("Yuanta market-v2 evidence retains and validates the exact source MarketNo", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-market-code-provenance");
+  input.transactions[0]!.fundingEvidence = {
+    kind: "source-settlement-contract",
+    sourceRecordKey: input.transactions[0]!.sourceRecordKey,
+    sourceLinkageKey: YUANTA_SETTLEMENT_LINKAGE_KEY,
+    linkageContractVersion: YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+    sourceMarketCode: "52",
+    settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+    settlementMarketContractVersion:
+      YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+    settlementModel: "account-currency-date-net",
+    contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+  };
+  const admitted = admitCanonicalInvestmentCapture(input);
+  assert.equal(
+    admitted.transactions[0]!.fundingEvidence.kind,
+    "source-settlement-contract",
+  );
+  if (admitted.transactions[0]!.fundingEvidence.kind !== "source-settlement-contract")
+    throw new Error("Expected source-settlement contract evidence.");
+  assert.equal(admitted.transactions[0]!.fundingEvidence.sourceMarketCode, "52");
+  await commitCanonicalInvestmentCapture(store, admitted);
+  const retained = queryCanonicalSourceCurrent(store).records.find(
+    (record) => record.compact.kind === "investment-transaction",
+  );
+  assert.equal(
+    (retained?.compact.fundingEvidence as { sourceMarketCode?: string })
+      ?.sourceMarketCode,
+    "52",
+  );
+  store.close();
+
+  const mismatchedCode = fixture("yuanta-market-code-mismatch");
+  mismatchedCode.transactions[0]!.fundingEvidence = {
+    ...input.transactions[0]!.fundingEvidence,
+    sourceMarketCode: "51",
+  } as never;
+  assert.throws(
+    () => admitCanonicalInvestmentCapture(mismatchedCode),
+    /outside the versioned mapping contract/,
+  );
+
+  const mismatchedVersion = fixture("yuanta-market-version-mismatch");
+  mismatchedVersion.transactions[0]!.fundingEvidence = {
+    ...input.transactions[0]!.fundingEvidence,
+    settlementMarketContractVersion: "yuanta/foreign-settlement/market-v1",
+  } as never;
+  assert.throws(
+    () => admitCanonicalInvestmentCapture(mismatchedVersion),
+    /outside the (live-verified|versioned mapping) contract/,
+  );
+});
+
 test("a v15 database migrates and reopens with investment funding relations", async () => {
   const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v16-"));
   const path = join(dir, "canonical.sqlite");
@@ -1912,7 +1969,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
           }
         ).user_version,
       ),
-      16,
+      17,
     );
     assert.deepEqual(
       migrated.db

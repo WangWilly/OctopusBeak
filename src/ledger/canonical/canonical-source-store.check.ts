@@ -42,6 +42,11 @@ import {
   queryCanonicalInvestmentHistorical,
   queryCanonicalInvestmentLineage,
 } from "./investment-financial.ts";
+import {
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+} from "./investment-funding-relations.ts";
 import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
 import {
   admitHncbDomesticDepositCaptureEvidence,
@@ -527,7 +532,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        3,
+        4,
       );
       assert.deepEqual(migrated.prepare("PRAGMA foreign_key_check").all(), []);
       validateCanonicalSourceStore({
@@ -1264,10 +1269,14 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
        WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
       DELETE FROM schema_migrations WHERE version >= 12;
       ALTER TABLE canonical_contract_purge_commits
         RENAME TO canonical_contract_purge_commits_v12;
@@ -1608,6 +1617,319 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
     } finally {
       afterFailure.close();
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v16 to v17 purges only legacy Yuanta trade investment scope and allows live recollection", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v17-yuanta-trade-purge-"),
+  );
+  const path = join(directory, "canonical.sqlite");
+  const tradeConnectionKey = token("v17-yuanta-trade-connection");
+  const tradeEpochKey = token("v17-yuanta-trade-epoch");
+  const tradeAccountKey = token("v17-yuanta-trade-account");
+  const tradeHoldingRecordKey = token("v17-yuanta-trade-holding");
+  const tradeRecordKey = token("v17-yuanta-trade-record");
+  const tradeCapture = buildYuantaInvestmentCapture({
+    sourceId: "yuanta-trade",
+    captureId: "legacy-yuanta-trade",
+    sourceConnectionKey: tradeConnectionKey,
+    identityEpochKey: tradeEpochKey,
+    accountKey: tradeAccountKey,
+    reportingCurrency: "TWD",
+    observedAt: "2026-08-31T12:00:00.000Z",
+    sourceEffectiveOn: "2026-08-30",
+    holdings: [
+      {
+        sourceRecordKey: tradeHoldingRecordKey,
+        producerSecurityId: "NYSE:NET",
+        securityName: "CLOUD NETWORK",
+        ticker: "NET",
+        currency: "USD",
+        effectiveOn: "2026-08-30",
+        quantity: { coefficient: "1", scale: 0 },
+      },
+    ],
+    transactions: [
+      {
+        sourceRecordKey: tradeRecordKey,
+        producerSecurityId: "NYSE:NET",
+        securityName: "CLOUD NETWORK",
+        ticker: "NET",
+        currency: "USD",
+        effectiveOn: "2026-08-30",
+        action: "buy",
+        quantity: { coefficient: "1", scale: 0 },
+        cashEffect: { coefficient: "10000", scale: 2, currency: "USD" },
+      },
+    ],
+  });
+  const fundCapture = buildYuantaInvestmentCapture({
+    sourceId: "yuanta-fund",
+    captureId: "preserved-yuanta-fund",
+    sourceConnectionKey: token("v17-yuanta-fund-connection"),
+    identityEpochKey: token("v17-yuanta-fund-epoch"),
+    accountKey: token("v17-yuanta-fund-account"),
+    reportingCurrency: "TWD",
+    observedAt: "2026-08-31T12:00:00.000Z",
+    sourceEffectiveOn: "2026-08-30",
+    holdings: [
+      {
+        sourceRecordKey: token("v17-yuanta-fund-holding"),
+        producerSecurityId: "FUND-001",
+        currency: "TWD",
+        effectiveOn: "2026-08-30",
+        quantity: { coefficient: "10", scale: 0 },
+      },
+    ],
+    transactions: [],
+  });
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const legacy = createCanonicalSourceStore(path);
+    await commitCanonicalInvestmentCapture(
+      legacy,
+      admitCanonicalInvestmentCapture(tradeCapture),
+    );
+    await commitCanonicalInvestmentCapture(
+      legacy,
+      admitCanonicalInvestmentCapture(fundCapture),
+    );
+    const countCaptures = (db: DatabaseSync, namespace: string, stream: string) =>
+      Number(
+        (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM source_captures capture
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = capture.source_connection_id
+                WHERE connection.integration_namespace = ?
+                  AND capture.stream = ?`,
+            )
+            .get(namespace, stream) as { count?: number }
+        ).count ?? 0,
+      );
+    const cathayCaptureCount = countCaptures(
+      legacy.db,
+      "cathay",
+      "domestic-deposit",
+    );
+    assert.equal(countCaptures(legacy.db, "yuanta-trade", "investment"), 1);
+    assert.equal(countCaptures(legacy.db, "yuanta-fund", "investment"), 1);
+    assert.ok(cathayCaptureCount > 0);
+    legacy.close();
+
+    // Reconstruct a v16 database before the market-v2 migration existed.
+    const historical = new DatabaseSync(path);
+    historical.exec(`
+      PRAGMA foreign_keys = OFF;
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
+      DELETE FROM schema_migrations WHERE version = 17;
+      ALTER TABLE canonical_contract_purge_commits
+        RENAME TO canonical_contract_purge_commits_v16;
+      ALTER TABLE canonical_contract_purges
+        RENAME TO canonical_contract_purges_v16;
+      CREATE TABLE canonical_contract_purges (
+        purge_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14)),
+        reason TEXT NOT NULL,
+        scope_json TEXT NOT NULL,
+        deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+        deleted_table_counts_json TEXT NOT NULL,
+        closure_fingerprint TEXT NOT NULL,
+        applied_at_utc_us INTEGER NOT NULL
+      );
+      INSERT INTO canonical_contract_purges
+        SELECT * FROM canonical_contract_purges_v16;
+      CREATE TABLE canonical_contract_purge_commits (
+        purge_id TEXT NOT NULL REFERENCES canonical_contract_purges(purge_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        PRIMARY KEY(purge_id, commit_id)
+      );
+      INSERT INTO canonical_contract_purge_commits
+        SELECT * FROM canonical_contract_purge_commits_v16;
+      DROP TABLE canonical_contract_purge_commits_v16;
+      DROP TABLE canonical_contract_purges_v16;
+      PRAGMA user_version = 16;
+      PRAGMA foreign_keys = ON;
+    `);
+    historical.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    assert.equal(
+      Number(
+        (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
+          .user_version,
+      ),
+      17,
+    );
+    assert.equal(countCaptures(migrated.db, "yuanta-trade", "investment"), 0);
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM investment_transactions transaction_row
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = (
+                     SELECT account.source_connection_id
+                       FROM investment_accounts account
+                      WHERE account.account_id = transaction_row.account_id
+                   )
+                WHERE connection.integration_namespace = 'yuanta-trade'`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      0,
+    );
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM source_captures capture
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = capture.source_connection_id
+                WHERE connection.integration_namespace = 'yuanta-fund'
+                  AND capture.stream = 'investment'`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    assert.equal(
+      countCaptures(migrated.db, "cathay", "domestic-deposit"),
+      cathayCaptureCount,
+    );
+    const audit = migrated.db
+      .prepare(
+        `SELECT deleted_row_count, scope_json, closure_fingerprint
+           FROM canonical_contract_purges
+          WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17'`,
+      )
+      .get() as {
+      deleted_row_count?: number;
+      scope_json?: string;
+      closure_fingerprint?: string;
+    };
+    assert.ok(Number(audit.deleted_row_count) > 0);
+    assert.deepEqual(JSON.parse(String(audit.scope_json)), {
+      integrationNamespaces: ["yuanta-trade"],
+      streams: ["investment"],
+    });
+    assert.match(String(audit.closure_fingerprint), /^sha256:/);
+
+    const liveCapture = buildYuantaInvestmentCapture({
+        sourceId: "yuanta-trade",
+        captureId: "legacy-yuanta-trade",
+        sourceConnectionKey: tradeConnectionKey,
+        identityEpochKey: tradeEpochKey,
+        accountKey: tradeAccountKey,
+        reportingCurrency: "TWD",
+        observedAt: "2026-08-31T12:00:00.000Z",
+        sourceEffectiveOn: "2026-08-30",
+        holdings: tradeCapture.holdings.map((holding) => ({
+          sourceRecordKey: holding.sourceRecordKey,
+          producerSecurityId: "NYSE:NET",
+          securityName: "CLOUD NETWORK",
+          ticker: "NET",
+          currency: "USD",
+          effectiveOn: "2026-08-30",
+          quantity: { coefficient: "1", scale: 0 },
+        })),
+        transactions: [
+          {
+            sourceRecordKey: tradeRecordKey,
+            producerSecurityId: "NYSE:NET",
+            securityName: "CLOUD NETWORK",
+            ticker: "NET",
+            currency: "USD",
+            effectiveOn: "2026-08-30",
+            action: "buy" as const,
+            quantity: { coefficient: "1", scale: 0 },
+            cashEffect: { coefficient: "10000", scale: 2, currency: "USD" },
+            fundingEvidence: {
+              kind: "source-settlement-contract" as const,
+              sourceRecordKey: tradeRecordKey,
+              sourceLinkageKey: token("v17-yuanta-live-linkage"),
+              linkageContractVersion:
+                YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+              sourceMarketCode: "52" as const,
+              settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+              settlementMarketContractVersion:
+                YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+              settlementModel: "account-currency-date-net" as const,
+              contractVersion:
+                "yuanta/foreign-settlement/human-attested-v1" as const,
+            },
+          },
+        ],
+    });
+    await commitCanonicalInvestmentCapture(
+      migrated,
+      admitCanonicalInvestmentCapture(liveCapture),
+    );
+    const retained = queryCanonicalSourceCurrent(migrated).records.find(
+      (record) => record.compact.kind === "investment-transaction",
+    );
+    assert.equal(
+      (retained?.compact.fundingEvidence as { sourceMarketCode?: string })
+        ?.sourceMarketCode,
+      "52",
+    );
+    assert.equal(
+      (retained?.compact.fundingEvidence as {
+        settlementMarketContractVersion?: string;
+      })?.settlementMarketContractVersion,
+      YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+    );
+    migrated.close();
+
+    const reopened = createCanonicalSourceStore(path);
+    assert.equal(
+      Number(
+        (
+          reopened.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM source_captures capture
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = capture.source_connection_id
+                WHERE connection.integration_namespace = 'yuanta-trade'
+                  AND capture.stream = 'investment'`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    assert.equal(
+      Number(
+        (
+          reopened.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM canonical_contract_purges
+                WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17'`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    assert.deepEqual(reopened.db.prepare("PRAGMA foreign_key_check").all(), []);
+    validateCanonicalSourceStore(reopened);
+    reopened.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
