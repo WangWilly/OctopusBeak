@@ -53,6 +53,22 @@ export const YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION =
 export const YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION =
   "yuanta/foreign-settlement/market-v2" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY = "us-equity" as const;
+export type YuantaForeignSettlementMarketCode = "52" | "53" | "54";
+export const YUANTA_FOREIGN_SETTLEMENT_MARKET_CODEBOOK: Readonly<
+  Record<YuantaForeignSettlementMarketCode, typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY>
+> = {
+  "52": YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+  "53": YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+  "54": YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+};
+export function isYuantaForeignSettlementMarketCode(
+  value: unknown,
+): value is YuantaForeignSettlementMarketCode {
+  return (
+    typeof value === "string" &&
+    Object.hasOwn(YUANTA_FOREIGN_SETTLEMENT_MARKET_CODEBOOK, value)
+  );
+}
 export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_CONTRACT_VERSION =
   "yuanta/foreign-settlement/calendar-v1" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START = "2026-01-01" as const;

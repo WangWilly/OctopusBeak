@@ -15,10 +15,12 @@ import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
   resolveCanonicalInvestmentFundingRelations,
+  isYuantaForeignSettlementMarketCode,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
 } from "./investment-funding-relations.ts";
+import type { YuantaForeignSettlementMarketCode } from "./investment-funding-relations.ts";
 import {
   admitCanonicalLoanCapture,
   canonicalLoanCaptureSpines,
@@ -66,6 +68,7 @@ export type InvestmentFundingEvidence =
       linkageContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION;
       settlementMarket: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
       settlementMarketContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION;
+      sourceMarketCode?: YuantaForeignSettlementMarketCode;
       settlementModel: "account-currency-date-net";
       contractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION;
     };
@@ -450,6 +453,15 @@ export function admitCanonicalInvestmentCapture(
       )
         throw new CanonicalInvestmentAdmissionError(
           "Funding settlement contract is outside the live-verified contract.",
+        );
+      if (
+        funding.sourceMarketCode !== undefined &&
+        (!isYuantaForeignSettlementMarketCode(funding.sourceMarketCode) ||
+          funding.settlementMarketContractVersion !==
+            YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION)
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Funding settlement source market code is outside the versioned mapping contract.",
         );
     }
   }

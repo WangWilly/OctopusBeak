@@ -24,10 +24,12 @@ import {
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
+  isYuantaForeignSettlementMarketCode,
   resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+  type YuantaForeignSettlementMarketCode,
 } from "../ledger/canonical/investment-funding-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
@@ -300,8 +302,18 @@ export type YuantaSettlementMarket =
  * explicit 52/53/54 mapping is part of the canonical market-v2 contract
  * emitted by buildYuantaTradeFundingEvidence below.
  */
-const YUANTA_US_SETTLEMENT_MARKET_NOS = new Set(["52", "53", "54"]);
 const YUANTA_SOURCE_MARKET_NO_FIELD = "__source_market_no";
+
+function normalizeYuantaSourceMarketCode(
+  value: string | number | null | undefined,
+): YuantaForeignSettlementMarketCode | undefined {
+  const normalized = cleanText(
+    value === null || value === undefined ? "" : String(value),
+  ).normalize("NFKC");
+  return isYuantaForeignSettlementMarketCode(normalized)
+    ? normalized
+    : undefined;
+}
 
 /**
  * Normalize only market labels explicitly supplied by the YuanTa report.
@@ -319,7 +331,7 @@ export function normalizeYuantaSettlementMarket(
     .toLocaleUpperCase("en-US");
   if (normalized === "US" || normalized === "美股")
     return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
-  if (YUANTA_US_SETTLEMENT_MARKET_NOS.has(normalized))
+  if (normalizeYuantaSourceMarketCode(normalized))
     return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
   return undefined;
 }
@@ -331,6 +343,7 @@ export function buildYuantaTradeFundingEvidence(input: {
   market?: string | number | null;
 }): InvestmentFundingEvidence {
   const settlementMarket = normalizeYuantaSettlementMarket(input.market);
+  const sourceMarketCode = normalizeYuantaSourceMarketCode(input.market);
   if (!settlementMarket)
     return { kind: "unresolved", sourceRecordKey: input.sourceRecordKey };
 
@@ -345,6 +358,7 @@ export function buildYuantaTradeFundingEvidence(input: {
     settlementMarket,
     settlementMarketContractVersion:
       YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+    ...(sourceMarketCode ? { sourceMarketCode } : {}),
     settlementModel: "account-currency-date-net",
     contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   };
