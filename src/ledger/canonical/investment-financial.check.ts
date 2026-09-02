@@ -130,10 +130,10 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
     );
     assert.deepEqual(
       store.db
-          .prepare(
-            "SELECT DISTINCT t.time_origin AS timeOrigin FROM transaction_time_observations t JOIN source_records r ON r.source_record_id=t.source_record_id JOIN source_captures c ON c.capture_id=r.capture_id WHERE c.capture_key=?",
-          )
-          .all("yuanta-trade-sanitized-1")
+        .prepare(
+          "SELECT DISTINCT t.time_origin AS timeOrigin FROM transaction_time_observations t JOIN source_records r ON r.source_record_id=t.source_record_id JOIN source_captures c ON c.capture_id=r.capture_id WHERE c.capture_key=?",
+        )
+        .all("yuanta-trade-sanitized-1")
         .map((row) => ({ ...row })),
       [{ timeOrigin: "defaulted_local_midnight" }],
     );
@@ -389,6 +389,49 @@ test("independent margin borrowing creates a canonical liability account", async
   const loan = queryCanonicalLoanCurrent(store, { sourceId: "yuanta" });
   assert.equal(loan.accounts.length, 1);
   assert.equal(loan.balanceObservations.length, 1);
+  store.close();
+});
+
+test("independent margin credit uses the canonical credit liability path", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("independent-margin-credit");
+  input.margin = {
+    kind: "independent-account",
+    accountKey: token("u"),
+    accountType: "credit",
+    amount: { coefficient: "15000", scale: 0, currency: "TWD" },
+    effectiveOn: "2026-08-30",
+    sourceRecordKey: token("v"),
+    identityEvidence: {
+      kind: "producer-margin-account-id",
+      producerAccountId: "SANITIZED-MARGIN-CREDIT",
+      contractVersion: "yuanta-trade/investment/margin-credit-canonical-v1",
+    },
+    sourceEventCode: "LOAN-DISBURSEMENT",
+  };
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+  assert.deepEqual(
+    queryCanonicalInvestmentCurrent(
+      store,
+      token("a"),
+    ).independentMarginAccounts.map((row) => ({ ...row })),
+    [{ accountType: "credit", currency: "TWD" }],
+  );
+  assert.equal(
+    Number(
+      (
+        store.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM source_captures WHERE stream='investment-margin'",
+          )
+          .get() as { count: number }
+      ).count,
+    ),
+    1,
+  );
   store.close();
 });
 

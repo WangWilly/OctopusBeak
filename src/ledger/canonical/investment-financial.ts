@@ -106,14 +106,14 @@ export type InvestmentCaptureInput = {
     | {
         kind: "independent-account";
         accountKey: string;
-        accountType: "loan";
+        accountType: "loan" | "credit";
         amount: InvestmentMoney;
         effectiveOn: string;
         sourceRecordKey: string;
         identityEvidence: {
           kind: "producer-margin-account-id";
           producerAccountId: string;
-          contractVersion: "loan/canonical/v1.yuanta";
+          contractVersion: string;
         };
         sourceEventCode: "LOAN-DISBURSEMENT";
       };
@@ -382,7 +382,9 @@ export function admitCanonicalInvestmentCapture(
       capture.margin.identityEvidence?.kind !== "producer-margin-account-id" ||
       !capture.margin.identityEvidence.producerAccountId.trim() ||
       capture.margin.identityEvidence.contractVersion !==
-        "loan/canonical/v1.yuanta" ||
+        (capture.margin.accountType === "loan"
+          ? "loan/canonical/v1.yuanta"
+          : `${capture.sourceId}/investment/margin-credit-canonical-v1`) ||
       capture.margin.sourceEventCode !== "LOAN-DISBURSEMENT"
     )
       throw new CanonicalInvestmentAdmissionError(
@@ -560,7 +562,11 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
 function canonicalMarginLoanCapture(
   capture: InvestmentValidatedCapture,
 ): LoanValidatedCapture | null {
-  if (capture.margin?.kind !== "independent-account") return null;
+  if (
+    capture.margin?.kind !== "independent-account" ||
+    capture.margin.accountType !== "loan"
+  )
+    return null;
   const margin = capture.margin;
   const contractVersion = "loan/canonical/v1.yuanta" as const;
   const balanceEvidence = {
@@ -680,6 +686,104 @@ function canonicalMarginLoanCapture(
     ],
     relations: [],
     relationCoverage: "not-asserted",
+  });
+}
+
+function canonicalMarginCreditSpine(
+  capture: InvestmentValidatedCapture,
+): ReturnType<typeof admitCanonicalFinancialDepositCapture> | null {
+  if (
+    capture.margin?.kind !== "independent-account" ||
+    capture.margin.accountType !== "credit"
+  )
+    return null;
+  const margin = capture.margin;
+  const contractVersion = `${capture.sourceId}/investment/margin-credit-canonical-v1`;
+  const record = spineRecord(
+    capture,
+    margin,
+    { ...margin, recordKind: "independent-margin-credit" },
+    margin.amount,
+    "outflow",
+    0,
+  );
+  return admitCanonicalFinancialDepositCapture({
+    captureId: `${capture.captureId}:margin-credit`,
+    authorityRoute: contractVersion,
+    contractVersion,
+    identity: {
+      integrationNamespace: capture.sourceId,
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      stream: "investment-margin",
+      recordKind: "investment-margin-credit",
+      subjectDigest: digest(
+        capture.sourceId,
+        capture.identity.sourceConnectionKey,
+        capture.identity.identityEpochKey,
+        margin.accountKey,
+      ),
+      accountNo: margin.accountKey,
+      accountType: "credit",
+      currency: margin.amount.currency,
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: margin.effectiveOn,
+      endDate: margin.effectiveOn,
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-independent-margin-balance",
+      completenessRuleVersion: contractVersion,
+      absenceAuthority: null,
+      contractFingerprint: digest("investment-margin-credit", contractVersion),
+      preflightFingerprint: digest(
+        "investment-margin-credit",
+        capture.captureId,
+      ),
+      pageCount: 1,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: contractVersion,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: contractVersion,
+      effectiveTimeBasis: "source-reported",
+      effectiveTimeRuleVersion: contractVersion,
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      timeOrigin: "defaulted_local_midnight",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        responseDigest: digest(
+          "investment-margin-credit-page",
+          capture.captureId,
+        ),
+        proofKind: "source-reported-independent-margin-account",
+        contractFingerprint: digest(
+          "investment-margin-credit",
+          contractVersion,
+        ),
+        preflightFingerprint: digest(
+          "investment-margin-credit",
+          capture.captureId,
+        ),
+        metadataJson: stableJson({ effectiveOn: margin.effectiveOn }),
+      },
+    ],
+    records: [record],
   });
 }
 export function createCanonicalInvestmentStore(
@@ -968,11 +1072,21 @@ export async function commitCanonicalInvestmentCaptureBatch(
   const marginLoans = captures
     .map(canonicalMarginLoanCapture)
     .filter((capture): capture is LoanValidatedCapture => capture !== null);
+  const marginCredits = captures
+    .map(canonicalMarginCreditSpine)
+    .filter(
+      (
+        capture,
+      ): capture is NonNullable<
+        ReturnType<typeof canonicalMarginCreditSpine>
+      > => capture !== null,
+    );
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
     [
       ...captures.map(canonicalSpine),
       ...marginLoans.flatMap(canonicalLoanCaptureSpines),
+      ...marginCredits,
     ],
     (db) => {
       for (const capture of captures) extensionRows(db, capture);
@@ -1037,12 +1151,22 @@ function queryRows(
         `SELECT m.balance_kind AS balanceKind,m.coefficient,m.scale,m.currency,m.effective_on AS effectiveOn FROM investment_margin_balance_observations m JOIN investment_accounts a ON a.account_id=m.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY m.effective_on`,
       )
       .all(sourceConnectionKey);
+    const independentMarginAccounts = store.db
+      .prepare(
+        `SELECT a.account_type AS accountType,a.currency
+           FROM financial_accounts a
+           JOIN source_connections c ON c.source_connection_id=a.source_connection_id
+          WHERE c.source_connection_key=? AND a.stream='investment-margin'
+          ORDER BY a.account_type,a.currency`,
+      )
+      .all(sourceConnectionKey);
     return {
       accounts,
       securities,
       holdings,
       transactions,
       marginBalances,
+      independentMarginAccounts,
       relations: [] as never[],
     };
   });
