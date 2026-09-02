@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   InvestmentCaptureInput,
   InvestmentExactAmount,
+  InvestmentFundingEvidence,
   InvestmentMoney,
   InvestmentSourceId,
 } from "./investment-financial.ts";
@@ -17,6 +18,7 @@ export type YuantaCanonicalInvestmentRow = {
   valuation?: InvestmentMoney;
   action?: "buy" | "sell";
   cashEffect?: InvestmentMoney;
+  fundingEvidence?: InvestmentFundingEvidence;
   effectiveTimeEvidence?: {
     sourceField: string;
     components?: readonly {
@@ -126,8 +128,10 @@ export function buildYuantaInvestmentCapture(
         cashEffect: row.cashEffect,
         effectiveOn: row.effectiveOn,
         fundingEvidence: {
-          kind: "unresolved" as const,
-          sourceRecordKey: row.sourceRecordKey,
+          ...(row.fundingEvidence ?? {
+            kind: "unresolved" as const,
+            sourceRecordKey: row.sourceRecordKey,
+          }),
         },
       };
     }),

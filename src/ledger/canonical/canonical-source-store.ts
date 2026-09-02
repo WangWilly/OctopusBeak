@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 15;
+export const CANONICAL_SCHEMA_VERSION = 16;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -7743,6 +7743,82 @@ function migrateV14ToV15(db: DatabaseSync): void {
     db.exec("ROLLBACK");
     throw error;
   }
+  migrateV15ToV16(db);
+}
+
+export const SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS = `
+CREATE TABLE IF NOT EXISTS investment_funding_relations (
+  relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
+  relation_key TEXT NOT NULL UNIQUE,
+  settlement_group_key TEXT NOT NULL,
+  investment_account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
+  funding_account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+  funding_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  funding_source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  settlement_effective_on TEXT NOT NULL,
+  settlement_model TEXT NOT NULL CHECK(settlement_model IN ('single-transaction','account-currency-date-net')),
+  coefficient TEXT NOT NULL,
+  scale INTEGER NOT NULL CHECK(scale >= 0),
+  currency TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')),
+  source_linkage_key TEXT NOT NULL,
+  evidence_contract_version TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE TABLE IF NOT EXISTS investment_funding_relation_members (
+  relation_id BLOB NOT NULL REFERENCES investment_funding_relations(relation_id),
+  investment_transaction_id BLOB NOT NULL REFERENCES investment_transactions(transaction_id),
+  investment_source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  action TEXT NOT NULL CHECK(action IN ('buy','sell')),
+  coefficient TEXT NOT NULL,
+  scale INTEGER NOT NULL CHECK(scale >= 0),
+  currency TEXT NOT NULL,
+  PRIMARY KEY(relation_id, investment_transaction_id)
+);
+CREATE TABLE IF NOT EXISTS investment_funding_relation_events (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  relation_id BLOB NOT NULL REFERENCES investment_funding_relations(relation_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','withdrawn')),
+  reason TEXT NOT NULL,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  recorded_at_utc_us INTEGER NOT NULL,
+  UNIQUE(relation_id, event_kind, commit_id, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_investment_funding_relation_lookup
+  ON investment_funding_relations(investment_account_id, settlement_effective_on, currency);
+CREATE INDEX IF NOT EXISTS idx_investment_funding_relation_events_current
+  ON investment_funding_relation_events(relation_id, recorded_at_utc_us, event_id);
+`;
+
+export function validateCanonicalInvestmentFundingRelationSchema(
+  db: DatabaseSync,
+): void {
+  for (const name of [
+    "investment_funding_relations",
+    "investment_funding_relation_members",
+    "investment_funding_relation_events",
+  ]) {
+    if (!tableExists(db, name)) {
+      throw new Error(`Canonical investment funding table ${name} is missing.`);
+    }
+  }
+}
+
+function migrateV15ToV16(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    validateCanonicalInvestmentExtensionSchema(db);
+    db.exec(SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS);
+    validateCanonicalInvestmentFundingRelationSchema(db);
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (16, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 16");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function applySchemaMigration(
@@ -7905,6 +7981,10 @@ function applySchemaMigration(
     migrateV14ToV15(db);
     return;
   }
+  if (version === 15) {
+    migrateV15ToV16(db);
+    return;
+  }
   if (version === CANONICAL_SCHEMA_VERSION) {
     if (!tableExists(db, "schema_migrations"))
       throw new Error("Canonical SQLite schema version metadata is missing.");
@@ -7936,6 +8016,8 @@ function applySchemaMigration(
       db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
       ensureInstitutionRepaymentNoteDateContractColumn(db);
       validateCanonicalLoanExtensionSchema(db);
+      validateCanonicalInvestmentExtensionSchema(db);
+      validateCanonicalInvestmentFundingRelationSchema(db);
       validateCanonicalLoanRepaymentRelationSchema(db);
       validateCanonicalRelationResolutionCommitSchema(db);
       validateCanonicalContractPurgeSchema(db, {
@@ -7985,6 +8067,7 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     );
   validateCanonicalLoanExtensionSchema(db);
   validateCanonicalInvestmentExtensionSchema(db);
+  validateCanonicalInvestmentFundingRelationSchema(db);
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
   validateCanonicalContractPurgeSchema(db, {

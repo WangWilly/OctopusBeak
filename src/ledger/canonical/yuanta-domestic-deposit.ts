@@ -766,7 +766,9 @@ export type YuantaDomesticDepositAccountIdentity = {
   subjectDigest: string;
 };
 
-function sourceAccountDigest(accountValue: string): string {
+export function deriveYuantaDomesticDepositAccountKey(
+  accountValue: string,
+): string {
   return yuantaDigest("yuanta-account-selector-v1", accountValue);
 }
 
@@ -803,7 +805,7 @@ export function deriveYuantaDomesticDepositAccountIdentity(
 ): YuantaDomesticDepositAccountIdentity {
   const v2 =
     manifest.authorityRoute === YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE;
-  const subjectDigest = sourceAccountDigest(account.value);
+  const subjectDigest = deriveYuantaDomesticDepositAccountKey(account.value);
   return {
     accountNo: subjectDigest,
     sourceConnectionKey:

@@ -14,12 +14,14 @@ import {
   admitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCaptureBatch,
   createCanonicalInvestmentStore,
+  YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial.ts";
 import {
   buildYuantaInvestmentCapture,
   type YuantaCanonicalInvestmentRow,
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
+import { resolveCanonicalInvestmentFundingRelations } from "../ledger/canonical/investment-funding-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
@@ -1338,14 +1340,6 @@ async function commitYuantaTradeCanonicalIfComplete(
     const holdings = accountHoldings.map((row, index) =>
       mapRow(row, "holding", index),
     );
-    const transactions = accountTrades.map((row, index) => ({
-      ...mapRow(row, "transaction", index),
-      action: explicitAction(row.action ?? ""),
-      cashEffect: {
-        ...exactAmount(row.settlement_amount || row.gross_amount || ""),
-        currency: (row.settlement_currency || row.currency || "TWD").trim(),
-      },
-    }));
     const sourceConnectionKey = deriveSourceConnectionIdentityKey(
       "yuanta-trade",
       credentials.yuanta_trade_user_id ?? "",
@@ -1354,6 +1348,28 @@ async function commitYuantaTradeCanonicalIfComplete(
       "yuanta-trade-account",
       accountNumber!,
     );
+    const transactions = accountTrades.map((row, index) => {
+      const mapped = mapRow(row, "transaction", index);
+      const cashEffect = {
+        ...exactAmount(row.settlement_amount || row.gross_amount || ""),
+        currency: (row.settlement_currency || row.currency || "TWD").trim(),
+      };
+      return {
+        ...mapped,
+        action: explicitAction(row.action ?? ""),
+        cashEffect,
+        fundingEvidence: {
+          kind: "source-settlement-contract" as const,
+          sourceRecordKey: mapped.sourceRecordKey,
+          sourceLinkageKey: deriveSourceConnectionIdentityKey(
+            "yuanta-foreign-settlement-linkage",
+            [accountKey, cashEffect.currency],
+          ),
+          settlementModel: "account-currency-date-net" as const,
+          contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+        },
+      };
+    });
     const capture = buildYuantaInvestmentCapture({
       sourceId: "yuanta-trade",
       captureId: `yuanta-trade-investment:${deriveSourceConnectionIdentityKey("yuanta-trade-capture", [sourceConnectionKey, accountKey, observedAt])}`,
@@ -1377,6 +1393,10 @@ async function commitYuantaTradeCanonicalIfComplete(
   );
   try {
     await commitCanonicalInvestmentCaptureBatch(store, captures);
+    // Run only after the source-capture transaction is durable.  The bank
+    // workflow may have been collected earlier or may complete this relation
+    // later; either order is safe because the resolver is idempotent.
+    resolveCanonicalInvestmentFundingRelations(store);
   } finally {
     store.close();
   }
