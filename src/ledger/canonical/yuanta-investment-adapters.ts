@@ -78,6 +78,11 @@ export function buildYuantaInvestmentCapture(
         String(index),
         row.sourceRecordKey,
       ),
+      measurementSubjectKey: digest(
+        input.accountKey,
+        row.producerSecurityId,
+        row.effectiveOn,
+      ),
       sourceRecordKey: row.sourceRecordKey,
       securityKey: `${input.sourceId}:${row.producerSecurityId}`,
       quantity: row.quantity,

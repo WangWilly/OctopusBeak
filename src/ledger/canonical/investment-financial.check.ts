@@ -10,6 +10,7 @@ import {
   createCanonicalInvestmentStore,
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
+  queryCanonicalInvestmentLineage,
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
 
@@ -48,6 +49,7 @@ function fixture(
     holdings: [
       {
         measurementKey: token("d"),
+        measurementSubjectKey: token("s"),
         sourceRecordKey: token("e"),
         securityKey: "yuanta-trade:TWSE:2330",
         quantity: { coefficient: "1000", scale: 0 },
@@ -154,6 +156,22 @@ test("investment admission fails closed for ambiguous actions and unstable secur
       ],
     }),
   );
+  assert.throws(
+    () =>
+      admitCanonicalInvestmentCapture({
+        ...fixture(),
+        observedAt: "2026-08-31 12:00:00",
+      }),
+    /RFC3339/,
+  );
+  assert.throws(
+    () =>
+      admitCanonicalInvestmentCapture({
+        ...fixture(),
+        observedAt: "2026-02-30T12:00:00Z",
+      }),
+    /RFC3339/,
+  );
 });
 
 test("a correction target is resolved against prior canonical measurements", async () => {
@@ -161,7 +179,13 @@ test("a correction target is resolved against prior canonical measurements", asy
   const input = fixture();
   input.holdings[0] = {
     ...input.holdings[0]!,
-    correctionOfMeasurementKey: token("z"),
+    correction: {
+      ofMeasurementKey: token("z"),
+      stableCorrectionKey: token("y"),
+      proofKind: "source-stable-correction-key",
+      contractVersion: input.contractVersion,
+      priorEffectiveOn: "2026-08-30",
+    },
   };
   await assert.rejects(
     commitCanonicalInvestmentCapture(
@@ -184,7 +208,13 @@ test("a contract-proven correction revises current selection and preserves histo
   corrected.holdings[0] = {
     ...corrected.holdings[0]!,
     measurementKey: token("i"),
-    correctionOfMeasurementKey: token("d"),
+    correction: {
+      ofMeasurementKey: token("d"),
+      stableCorrectionKey: token("y"),
+      proofKind: "source-stable-correction-key",
+      contractVersion: corrected.contractVersion,
+      priorEffectiveOn: "2026-08-30",
+    },
     sourceRecordKey: token("j"),
     observedAt: corrected.observedAt,
     valuation: { coefficient: "510000", scale: 0, currency: "TWD" },
@@ -204,6 +234,101 @@ test("a contract-proven correction revises current selection and preserves histo
   assert.equal(
     queryCanonicalInvestmentHistorical(store, token("a")).holdings.length,
     2,
+  );
+  assert.equal(
+    queryCanonicalInvestmentLineage(store, token("a"), token("d")).holdings
+      .length,
+    2,
+  );
+  store.close();
+});
+
+test("a correction cannot cross Security or measurement-subject identity", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(fixture("subject-base")),
+  );
+  const correction = fixture("wrong-subject");
+  correction.holdings[0] = {
+    ...correction.holdings[0]!,
+    measurementKey: token("i"),
+    measurementSubjectKey: token("x"),
+    sourceRecordKey: token("j"),
+    effectiveTimeEvidence: {
+      ...correction.holdings[0]!.effectiveTimeEvidence,
+      sourceRecordKey: token("j"),
+    },
+    correction: {
+      ofMeasurementKey: token("d"),
+      stableCorrectionKey: token("y"),
+      proofKind: "source-stable-correction-key",
+      contractVersion: correction.contractVersion,
+      priorEffectiveOn: "2026-08-30",
+    },
+  };
+  await assert.rejects(
+    commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(correction),
+    ),
+    /same account, Security, measurement subject/,
+  );
+  store.close();
+});
+
+test("transaction-only Securities remain queryable", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("transaction-only");
+  input.holdings = [];
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+  const current = queryCanonicalInvestmentCurrent(store, token("a"));
+  assert.equal(current.holdings.length, 0);
+  assert.equal(current.securities.length, 1);
+  assert.equal(current.transactions.length, 1);
+  store.close();
+});
+
+test("independent margin borrowing creates a canonical liability account", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("independent-margin");
+  input.margin = {
+    kind: "independent-account",
+    accountKey: token("m"),
+    accountType: "loan",
+    amount: { coefficient: "25000", scale: 0, currency: "TWD" },
+    effectiveOn: "2026-08-30",
+    sourceRecordKey: token("n"),
+    identityEvidence: {
+      kind: "producer-margin-account-id",
+      producerAccountId: "SANITIZED-MARGIN-ACCOUNT",
+      contractVersion: input.contractVersion,
+    },
+  };
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+  const liability = store.db
+    .prepare(
+      "SELECT account_type AS accountType FROM financial_accounts WHERE stream='investment-margin'",
+    )
+    .get() as { accountType: string };
+  assert.equal(liability.accountType, "loan");
+  assert.equal(
+    Number(
+      (
+        store.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM source_captures WHERE stream='investment-margin'",
+          )
+          .get() as { count: number }
+      ).count,
+    ),
+    1,
   );
   store.close();
 });

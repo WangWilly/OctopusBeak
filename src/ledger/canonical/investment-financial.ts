@@ -61,7 +61,14 @@ export type InvestmentCaptureInput = {
   }>;
   holdings: Array<{
     measurementKey: string;
-    correctionOfMeasurementKey?: string;
+    measurementSubjectKey: string;
+    correction?: {
+      ofMeasurementKey: string;
+      stableCorrectionKey: string;
+      proofKind: "source-stable-correction-key";
+      contractVersion: string;
+      priorEffectiveOn: string;
+    };
     sourceRecordKey: string;
     securityKey: string;
     quantity?: InvestmentExactAmount;
@@ -88,7 +95,19 @@ export type InvestmentCaptureInput = {
         effectiveOn: string;
         sourceRecordKey: string;
       }
-    | { kind: "independent-account"; accountKey: string };
+    | {
+        kind: "independent-account";
+        accountKey: string;
+        accountType: "loan" | "credit";
+        amount: InvestmentMoney;
+        effectiveOn: string;
+        sourceRecordKey: string;
+        identityEvidence: {
+          kind: "producer-margin-account-id";
+          producerAccountId: string;
+          contractVersion: string;
+        };
+      };
 };
 export type InvestmentValidatedCapture = InvestmentCaptureInput & {
   readonly __investmentValidated: true;
@@ -124,6 +143,29 @@ function date(value: string, label: string) {
     throw new CanonicalInvestmentAdmissionError(
       `${label} must be a calendar date.`,
     );
+  return value;
+}
+function rfc3339(value: string, label: string) {
+  const match = value.match(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/,
+  );
+  if (!match) {
+    throw new CanonicalInvestmentAdmissionError(`${label} must be RFC3339.`);
+  }
+  try {
+    date(match[1]!, label);
+  } catch {
+    throw new CanonicalInvestmentAdmissionError(`${label} must be RFC3339.`);
+  }
+  const [, , hour, minute, second, zone, offsetHour, offsetMinute] = match;
+  if (
+    Number(hour) > 23 ||
+    Number(minute) > 59 ||
+    Number(second) > 59 ||
+    (zone !== "Z" && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) ||
+    !Number.isFinite(Date.parse(value))
+  )
+    throw new CanonicalInvestmentAdmissionError(`${label} must be RFC3339.`);
   return value;
 }
 function amount(value: InvestmentExactAmount, label: string) {
@@ -184,10 +226,7 @@ export function admitCanonicalInvestmentCapture(
     );
   required(capture.authorityRoute, "Authority route");
   required(capture.contractVersion, "Contract version");
-  if (!Number.isFinite(Date.parse(capture.observedAt)))
-    throw new CanonicalInvestmentAdmissionError(
-      "Observation time must be RFC3339.",
-    );
+  rfc3339(capture.observedAt, "Observation time");
   token(capture.identity.sourceConnectionKey, "Source connection key");
   token(capture.identity.identityEpochKey, "Identity epoch key");
   token(capture.identity.accountKey, "Account key");
@@ -212,6 +251,7 @@ export function admitCanonicalInvestmentCapture(
   const measurements = new Set<string>();
   for (const holding of capture.holdings) {
     token(holding.measurementKey, "Measurement key");
+    token(holding.measurementSubjectKey, "Measurement subject key");
     token(holding.sourceRecordKey, "Holding source record key");
     if (measurements.has(holding.measurementKey))
       throw new CanonicalInvestmentAdmissionError(
@@ -246,8 +286,22 @@ export function admitCanonicalInvestmentCapture(
       throw new CanonicalInvestmentAdmissionError(
         "Holding requires contract-established source effective-time evidence.",
       );
-    if (holding.correctionOfMeasurementKey)
-      token(holding.correctionOfMeasurementKey, "Holding correction target");
+    if (holding.correction) {
+      token(holding.correction.ofMeasurementKey, "Holding correction target");
+      token(holding.correction.stableCorrectionKey, "Holding correction proof");
+      date(
+        holding.correction.priorEffectiveOn,
+        "Prior holding effective identity",
+      );
+      if (
+        holding.correction.proofKind !== "source-stable-correction-key" ||
+        holding.correction.contractVersion !== capture.contractVersion ||
+        holding.correction.priorEffectiveOn !== holding.effectiveOn
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Holding correction requires contract-versioned stable proof for the same effective identity.",
+        );
+    }
   }
   for (const transaction of capture.transactions) {
     if (transaction.action !== "buy" && transaction.action !== "sell")
@@ -269,10 +323,21 @@ export function admitCanonicalInvestmentCapture(
     token(capture.margin.sourceRecordKey, "Margin source record key");
     date(capture.margin.effectiveOn, "Margin effective time");
   }
-  if (capture.margin?.kind === "independent-account")
-    throw new CanonicalInvestmentAdmissionError(
-      "Independent margin borrowing lacks typed loan/credit details and must use the canonical loan/credit account contract.",
-    );
+  if (capture.margin?.kind === "independent-account") {
+    token(capture.margin.accountKey, "Margin account key");
+    token(capture.margin.sourceRecordKey, "Margin source record key");
+    amount(capture.margin.amount, "Independent margin debt");
+    date(capture.margin.effectiveOn, "Margin effective time");
+    if (
+      capture.margin.identityEvidence?.kind !== "producer-margin-account-id" ||
+      !capture.margin.identityEvidence.producerAccountId.trim() ||
+      capture.margin.identityEvidence.contractVersion !==
+        capture.contractVersion
+    )
+      throw new CanonicalInvestmentAdmissionError(
+        "Independent margin borrowing requires contract-proven loan/credit account identity.",
+      );
+  }
   freeze(capture);
   VALIDATED.add(capture);
   return capture as InvestmentValidatedCapture;
@@ -429,6 +494,100 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
   };
   return admitCanonicalFinancialDepositCapture(financial);
 }
+
+function canonicalMarginSpine(
+  capture: InvestmentValidatedCapture,
+): ReturnType<typeof admitCanonicalFinancialDepositCapture> | null {
+  if (capture.margin?.kind !== "independent-account") return null;
+  const margin = capture.margin;
+  const contractVersion = `${capture.sourceId}/investment/margin-canonical-v1`;
+  const record = spineRecord(
+    capture,
+    margin,
+    { ...margin, recordKind: "independent-margin-borrowing" },
+    margin.amount,
+    "outflow",
+    0,
+  );
+  return admitCanonicalFinancialDepositCapture({
+    captureId: `${capture.captureId}:margin`,
+    authorityRoute: contractVersion,
+    contractVersion,
+    identity: {
+      integrationNamespace: capture.sourceId,
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      stream: "investment-margin",
+      recordKind: "investment-margin-borrowing",
+      subjectDigest: digest(
+        capture.sourceId,
+        capture.identity.sourceConnectionKey,
+        capture.identity.identityEpochKey,
+        margin.accountKey,
+      ),
+      accountNo: margin.accountKey,
+      accountType: margin.accountType,
+      currency: margin.amount.currency,
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: margin.effectiveOn,
+      endDate: margin.effectiveOn,
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-independent-margin-balance",
+      completenessRuleVersion: contractVersion,
+      absenceAuthority: null,
+      contractFingerprint: digest(
+        "investment-margin-contract",
+        contractVersion,
+      ),
+      preflightFingerprint: digest(
+        "investment-margin-capture",
+        capture.captureId,
+      ),
+      pageCount: 1,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: contractVersion,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: contractVersion,
+      effectiveTimeBasis: "source-reported",
+      effectiveTimeRuleVersion: contractVersion,
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      timeOrigin: "source_reported",
+      requireBalance: false,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: 1,
+        responseDigest: digest("investment-margin-page", capture.captureId),
+        proofKind: "source-reported-independent-margin-account",
+        contractFingerprint: digest(
+          "investment-margin-contract",
+          contractVersion,
+        ),
+        preflightFingerprint: digest(
+          "investment-margin-capture",
+          capture.captureId,
+        ),
+        metadataJson: stableJson({ effectiveOn: margin.effectiveOn }),
+      },
+    ],
+    records: [record],
+  });
+}
 export function createCanonicalInvestmentStore(
   path: string,
 ): CanonicalInvestmentStore {
@@ -515,15 +674,22 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
   };
   for (const holding of capture.holdings) {
     const coordinate =
-      holding.correctionOfMeasurementKey ?? holding.measurementKey;
+      holding.correction?.ofMeasurementKey ?? holding.measurementKey;
     let prior:
-      { observationId: Uint8Array; revisionNumber: number } | undefined;
-    if (holding.correctionOfMeasurementKey) {
+      | {
+          observationId: Uint8Array;
+          revisionNumber: number;
+          securityId: Uint8Array;
+          effectiveOn: string;
+          lineageJson: string;
+        }
+      | undefined;
+    if (holding.correction) {
       const candidates = db
         .prepare(
-          "SELECT observation_id AS observationId,revision_number AS revisionNumber FROM investment_holding_observations WHERE account_id=? AND measurement_key=? AND is_current=1",
+          "SELECT observation_id AS observationId,revision_number AS revisionNumber,security_id AS securityId,effective_on AS effectiveOn,lineage_json AS lineageJson FROM investment_holding_observations WHERE account_id=? AND measurement_key=? AND is_current=1",
         )
-        .all(spine.accountId, holding.correctionOfMeasurementKey) as Array<
+        .all(spine.accountId, holding.correction.ofMeasurementKey) as Array<
         NonNullable<typeof prior>
       >;
       if (candidates.length > 1)
@@ -532,10 +698,26 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
         );
       prior = candidates[0];
     }
-    if (holding.correctionOfMeasurementKey && !prior)
+    if (holding.correction && !prior)
       throw new CanonicalInvestmentAdmissionError(
         "Holding correction target was not found in prior canonical measurements.",
       );
+    if (prior) {
+      const priorLineage = JSON.parse(prior.lineageJson) as {
+        measurementSubjectKey?: string;
+      };
+      const sameSecurity =
+        Buffer.from(prior.securityId).toString("hex") ===
+        Buffer.from(securityId(holding.securityKey)).toString("hex");
+      if (
+        !sameSecurity ||
+        prior.effectiveOn !== holding.correction!.priorEffectiveOn ||
+        priorLineage.measurementSubjectKey !== holding.measurementSubjectKey
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Holding correction proof does not identify the same account, Security, measurement subject, and effective identity.",
+        );
+    }
     if (prior)
       db.prepare(
         "UPDATE investment_holding_observations SET is_current=0 WHERE observation_id=?",
@@ -562,6 +744,8 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       holding.observedAt,
       stableJson({
         ...holding.lineage,
+        measurementSubjectKey: holding.measurementSubjectKey,
+        correctionProof: holding.correction ?? null,
         effectiveTimeEvidence: holding.effectiveTimeEvidence,
       }),
     );
@@ -682,7 +866,12 @@ export async function commitCanonicalInvestmentCaptureBatch(
       );
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
-    captures.map(canonicalSpine),
+    captures.flatMap((capture) => {
+      const margin = canonicalMarginSpine(capture);
+      return margin
+        ? [canonicalSpine(capture), margin]
+        : [canonicalSpine(capture)];
+    }),
     (db) => {
       for (const capture of captures) extensionRows(db, capture);
     },
@@ -703,9 +892,21 @@ function queryRows(
       .all(sourceConnectionKey);
     const securities = store.db
       .prepare(
-        `SELECT DISTINCT s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency FROM investment_securities s JOIN investment_holding_observations h ON h.security_id=s.security_id JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY s.security_key`,
+        `SELECT DISTINCT s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency
+           FROM investment_securities s
+          WHERE EXISTS (
+            SELECT 1 FROM investment_holding_observations h
+            JOIN investment_accounts a ON a.account_id=h.account_id
+            JOIN source_connections c ON c.source_connection_id=a.source_connection_id
+            WHERE h.security_id=s.security_id AND c.source_connection_key=?
+          ) OR EXISTS (
+            SELECT 1 FROM investment_transactions t
+            JOIN investment_accounts a ON a.account_id=t.account_id
+            JOIN source_connections c ON c.source_connection_id=a.source_connection_id
+            WHERE t.security_id=s.security_id AND c.source_connection_key=?
+          ) ORDER BY s.security_key`,
       )
-      .all(sourceConnectionKey);
+      .all(sourceConnectionKey, sourceConnectionKey);
     const holdings = store.db
       .prepare(
         `SELECT * FROM (SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,h.quantity_coefficient AS quantityCoefficient,h.valuation_coefficient AS valuationCoefficient,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson,ROW_NUMBER() OVER (PARTITION BY h.account_id,h.security_id ORDER BY h.observed_at DESC,h.rowid DESC) AS selectionRank FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? AND h.is_current=1) ${currentOnly ? "WHERE selectionRank=1" : ""} ORDER BY effectiveOn,observedAt,revisionNumber`,
@@ -767,7 +968,10 @@ export function queryCanonicalInvestmentLineage(
   sourceConnectionKey: string,
   measurementKey: string,
 ) {
-  const historical = queryRows(store, sourceConnectionKey, false);
+  const historical = queryCanonicalInvestmentHistorical(
+    store,
+    sourceConnectionKey,
+  );
   return {
     ...historical,
     holdings: historical.holdings.filter(
