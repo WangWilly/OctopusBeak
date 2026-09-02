@@ -8,11 +8,13 @@ import {
   commitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCaptureBatch,
   createCanonicalInvestmentStore,
+  deriveInvestmentHoldingCorrectionProofKey,
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
   queryCanonicalInvestmentLineage,
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
+import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
 
 const token = (letter: string) => `sha256:${letter.repeat(64)}`;
 
@@ -116,6 +118,25 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
     assert.equal(current.marginBalances[0]?.balanceKind, "margin_loan");
     assert.equal(current.transactions[0]?.fundingEvidence.kind, "unresolved");
     assert.equal(current.relations.length, 0);
+    assert.deepEqual(
+      {
+        ...(store.db
+          .prepare(
+            "SELECT s.scope_start AS startDate,s.scope_end AS endDate FROM capture_scopes s JOIN source_captures c ON c.capture_id=s.capture_id WHERE c.capture_key=?",
+          )
+          .get("yuanta-trade-sanitized-1") as object),
+      },
+      { startDate: "2026-08-29", endDate: "2026-08-30" },
+    );
+    assert.deepEqual(
+      store.db
+          .prepare(
+            "SELECT DISTINCT t.time_origin AS timeOrigin FROM transaction_time_observations t JOIN source_records r ON r.source_record_id=t.source_record_id JOIN source_captures c ON c.capture_id=r.capture_id WHERE c.capture_key=?",
+          )
+          .all("yuanta-trade-sanitized-1")
+        .map((row) => ({ ...row })),
+      [{ timeOrigin: "defaulted_local_midnight" }],
+    );
     store.close();
     store = createCanonicalInvestmentStore(path);
     current = queryCanonicalInvestmentCurrent(store, token("a"));
@@ -156,6 +177,16 @@ test("investment admission fails closed for ambiguous actions and unstable secur
       ],
     }),
   );
+  const offset = fixture();
+  offset.observedAt = "2026-08-31T20:00:00+08:00";
+  offset.holdings[0] = {
+    ...offset.holdings[0]!,
+    observedAt: offset.observedAt,
+  };
+  assert.equal(
+    admitCanonicalInvestmentCapture(offset).observedAt,
+    "2026-08-31T12:00:00.000Z",
+  );
   assert.throws(
     () =>
       admitCanonicalInvestmentCapture({
@@ -181,7 +212,15 @@ test("a correction target is resolved against prior canonical measurements", asy
     ...input.holdings[0]!,
     correction: {
       ofMeasurementKey: token("z"),
-      stableCorrectionKey: token("y"),
+      stableCorrectionKey: deriveInvestmentHoldingCorrectionProofKey({
+        contractVersion: input.contractVersion,
+        sourceRecordKey: token("e"),
+        targetSourceRecordKey: token("k"),
+        measurementSubjectKey: token("s"),
+        effectiveOn: "2026-08-30",
+      }),
+      sourceRecordKey: token("e"),
+      targetSourceRecordKey: token("k"),
       proofKind: "source-stable-correction-key",
       contractVersion: input.contractVersion,
       priorEffectiveOn: "2026-08-30",
@@ -210,7 +249,15 @@ test("a contract-proven correction revises current selection and preserves histo
     measurementKey: token("i"),
     correction: {
       ofMeasurementKey: token("d"),
-      stableCorrectionKey: token("y"),
+      stableCorrectionKey: deriveInvestmentHoldingCorrectionProofKey({
+        contractVersion: corrected.contractVersion,
+        sourceRecordKey: token("j"),
+        targetSourceRecordKey: token("e"),
+        measurementSubjectKey: token("s"),
+        effectiveOn: "2026-08-30",
+      }),
+      sourceRecordKey: token("j"),
+      targetSourceRecordKey: token("e"),
       proofKind: "source-stable-correction-key",
       contractVersion: corrected.contractVersion,
       priorEffectiveOn: "2026-08-30",
@@ -261,7 +308,15 @@ test("a correction cannot cross Security or measurement-subject identity", async
     },
     correction: {
       ofMeasurementKey: token("d"),
-      stableCorrectionKey: token("y"),
+      stableCorrectionKey: deriveInvestmentHoldingCorrectionProofKey({
+        contractVersion: correction.contractVersion,
+        sourceRecordKey: token("j"),
+        targetSourceRecordKey: token("e"),
+        measurementSubjectKey: token("x"),
+        effectiveOn: "2026-08-30",
+      }),
+      sourceRecordKey: token("j"),
+      targetSourceRecordKey: token("e"),
       proofKind: "source-stable-correction-key",
       contractVersion: correction.contractVersion,
       priorEffectiveOn: "2026-08-30",
@@ -305,8 +360,9 @@ test("independent margin borrowing creates a canonical liability account", async
     identityEvidence: {
       kind: "producer-margin-account-id",
       producerAccountId: "SANITIZED-MARGIN-ACCOUNT",
-      contractVersion: input.contractVersion,
+      contractVersion: "loan/canonical/v1.yuanta",
     },
+    sourceEventCode: "LOAN-DISBURSEMENT",
   };
   await commitCanonicalInvestmentCapture(
     store,
@@ -314,7 +370,7 @@ test("independent margin borrowing creates a canonical liability account", async
   );
   const liability = store.db
     .prepare(
-      "SELECT account_type AS accountType FROM financial_accounts WHERE stream='investment-margin'",
+      "SELECT account_type AS accountType FROM financial_accounts WHERE stream='loan'",
     )
     .get() as { accountType: string };
   assert.equal(liability.accountType, "loan");
@@ -323,13 +379,16 @@ test("independent margin borrowing creates a canonical liability account", async
       (
         store.db
           .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE stream='investment-margin'",
+            "SELECT COUNT(*) AS count FROM source_captures WHERE stream='loan'",
           )
           .get() as { count: number }
       ).count,
     ),
     1,
   );
+  const loan = queryCanonicalLoanCurrent(store, { sourceId: "yuanta" });
+  assert.equal(loan.accounts.length, 1);
+  assert.equal(loan.balanceObservations.length, 1);
   store.close();
 });
 

@@ -1237,7 +1237,7 @@ export function yuantaTradeCanonicalOccurrenceIdentity(
   accountNumber: string,
   rowKind: "holding" | "transaction",
   row: CsvRow,
-  occurrenceOrdinal: number,
+  _occurrenceOrdinal: number,
 ): string {
   const stableSourceIdentity = row.source_transaction_reference?.trim();
   return deriveSourceConnectionIdentityKey("yuanta-trade-record", [
@@ -1249,8 +1249,21 @@ export function yuantaTradeCanonicalOccurrenceIdentity(
     row.quantity ?? "",
     row.settlement_amount ?? row.market_value_twd ?? "",
     stableSourceIdentity || "no-source-reference",
-    `complete-order:${occurrenceOrdinal}`,
   ]);
+}
+export function assertYuantaTradeCanonicalOccurrenceIdentities(
+  accountNumber: string,
+  rowKind: "holding" | "transaction",
+  rows: readonly CsvRow[],
+): string[] {
+  const identities = rows.map((row, index) =>
+    yuantaTradeCanonicalOccurrenceIdentity(accountNumber, rowKind, row, index),
+  );
+  if (new Set(identities).size !== identities.length)
+    throw new Error(
+      "Yuanta Trade canonical capture contains indistinguishable duplicate rows without a provider-stable row identity.",
+    );
+  return identities;
 }
 async function commitYuantaTradeCanonicalIfComplete(
   input: WorkflowInput,
@@ -1281,6 +1294,16 @@ async function commitYuantaTradeCanonicalIfComplete(
       (row) => row.account_number?.trim() === accountNumber,
     );
     if (accountHoldings.length === 0 && accountTrades.length === 0) continue;
+    assertYuantaTradeCanonicalOccurrenceIdentities(
+      accountNumber!,
+      "holding",
+      accountHoldings,
+    );
+    assertYuantaTradeCanonicalOccurrenceIdentities(
+      accountNumber!,
+      "transaction",
+      accountTrades,
+    );
     const observedAt = new Date().toISOString();
     const effectiveDates = [
       ...new Set(

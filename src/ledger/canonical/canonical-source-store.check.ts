@@ -36,6 +36,14 @@ import {
   createCanonicalLoanStore,
 } from "./loan-financial.ts";
 import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCapture,
+  queryCanonicalInvestmentCurrent,
+  queryCanonicalInvestmentHistorical,
+  queryCanonicalInvestmentLineage,
+} from "./investment-financial.ts";
+import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
+import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
   commitCanonicalHncbDomesticDepositCapture,
@@ -666,6 +674,35 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
         yuantaCreditCardFinancialCapture("v2", "legacy-yuanta-card"),
       ),
     );
+    const investmentConnectionKey = token("v");
+    const investmentCapture = admitCanonicalInvestmentCapture(
+      buildYuantaInvestmentCapture({
+        sourceId: "yuanta-trade",
+        captureId: "legacy-yuanta-investment",
+        sourceConnectionKey: investmentConnectionKey,
+        identityEpochKey: token("w"),
+        accountKey: token("x"),
+        reportingCurrency: "TWD",
+        observedAt: "2026-08-31T12:00:00.000Z",
+        sourceEffectiveOn: "2026-08-30",
+        holdings: [
+          {
+            sourceRecordKey: token("y"),
+            producerSecurityId: "SANITIZED-SECURITY",
+            currency: "TWD",
+            effectiveOn: "2026-08-30",
+            quantity: { coefficient: "1", scale: 0 },
+          },
+        ],
+        transactions: [],
+      }),
+    );
+    await commitCanonicalInvestmentCapture(
+      legacy.sourceStore,
+      investmentCapture,
+    );
+    const investmentMeasurementKey =
+      investmentCapture.holdings[0]!.measurementKey;
     const fubonLoanRow = legacy.db
       .prepare(
         `SELECT connection.source_connection_id, account.identity_epoch_id,
@@ -834,8 +871,8 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
                  ON route.authority_route = binding.authority_route
                JOIN source_connections connection
                  ON connection.source_connection_id = binding.source_connection_id
-              WHERE connection.integration_namespace IN ('fubon','yuanta')
-                AND route.stream IN ('domestic-deposit','loan','credit-card')`,
+              WHERE connection.integration_namespace IN ('fubon','yuanta','yuanta-fund','yuanta-trade')
+                AND route.stream IN ('domestic-deposit','loan','credit-card','investment','investment-margin')`,
           )
           .get() as { count?: number }
       ).count ?? 0,
@@ -868,6 +905,36 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
     downgrade.close();
 
     const migrated = createCanonicalSourceStore(path);
+    assert.equal(
+      queryCanonicalInvestmentCurrent(migrated, investmentConnectionKey)
+        .holdings.length,
+      0,
+    );
+    assert.equal(
+      queryCanonicalInvestmentHistorical(migrated, investmentConnectionKey)
+        .holdings.length,
+      0,
+    );
+    assert.equal(
+      queryCanonicalInvestmentLineage(
+        migrated,
+        investmentConnectionKey,
+        investmentMeasurementKey,
+      ).holdings.length,
+      0,
+    );
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM investment_holding_observations",
+            )
+            .get() as { count: number }
+        ).count,
+      ),
+      0,
+    );
     assert.equal(
       Number(
         (
@@ -1004,8 +1071,14 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
       "route binding deletion is represented in the immutable purge audit",
     );
     assert.deepEqual(JSON.parse(String(audit.scope_json)), {
-      integrationNamespaces: ["fubon", "yuanta"],
-      streams: ["domestic-deposit", "loan", "credit-card"],
+      integrationNamespaces: ["fubon", "yuanta", "yuanta-fund", "yuanta-trade"],
+      streams: [
+        "domestic-deposit",
+        "loan",
+        "credit-card",
+        "investment",
+        "investment-margin",
+      ],
     });
     assert.match(String(audit.closure_fingerprint), /^sha256:/);
 
