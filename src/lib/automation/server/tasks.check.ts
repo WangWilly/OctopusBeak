@@ -3,9 +3,20 @@ import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_MANAGED_SECRET_KEYS,
   AUTOMATION_NON_SECRET_KEYS,
+  AUTOMATION_TASKS,
   enabledAutomationTasks,
   taskById,
 } from "./tasks.ts";
+
+assert.deepEqual(
+  AUTOMATION_TASKS.filter((task) =>
+    [task.id, task.label, task.script, ...task.command].some((value) =>
+      /diagnostic/iu.test(value),
+    ),
+  ).map((task) => task.id),
+  [],
+  "production automation tasks must not expose development diagnostics",
+);
 
 const task = taskById("exchange-rates");
 
@@ -30,52 +41,6 @@ assert.deepEqual(yuantaAllStatements.command, [
   "--headless",
   "--params",
   '{"statements":{"telemetry":true}}',
-]);
-const fubonAuthMenuDiagnostic = taskById("fubon-auth-menu-diagnostic");
-assert.ok(fubonAuthMenuDiagnostic);
-assert.equal(fubonAuthMenuDiagnostic.credentialGroupId, "fubon");
-assert.equal(fubonAuthMenuDiagnostic.script, "run:fubon-auth-menu-diagnostic");
-assert.deepEqual(fubonAuthMenuDiagnostic.command, [
-  "libretto",
-  "run",
-  "src/workflows/fubon-auth-menu-diagnostic.ts",
-  "--headless",
-]);
-const fubonApprovedLoanMenuDiagnostic = taskById(
-  "fubon-approved-loan-menu-diagnostic",
-);
-assert.ok(fubonApprovedLoanMenuDiagnostic);
-assert.equal(fubonApprovedLoanMenuDiagnostic.credentialGroupId, "fubon");
-assert.deepEqual(fubonApprovedLoanMenuDiagnostic.command, [
-  "libretto",
-  "run",
-  "src/workflows/fubon-auth-menu-diagnostic.ts",
-  "--headless",
-  "--params",
-  '{"expandApprovedMenu":"loan"}',
-]);
-const yuantaAuthMenuDiagnostic = taskById("yuanta-auth-menu-diagnostic");
-assert.ok(yuantaAuthMenuDiagnostic);
-assert.equal(yuantaAuthMenuDiagnostic.credentialGroupId, "yuanta");
-assert.equal(yuantaAuthMenuDiagnostic.script, "run:yuanta-auth-menu-diagnostic");
-assert.deepEqual(yuantaAuthMenuDiagnostic.command, [
-  "libretto",
-  "run",
-  "src/workflows/yuanta-auth-menu-diagnostic.ts",
-  "--headless",
-]);
-const yuantaApprovedFunctionOverviewDiagnostic = taskById(
-  "yuanta-approved-function-overview-diagnostic",
-);
-assert.ok(yuantaApprovedFunctionOverviewDiagnostic);
-assert.equal(yuantaApprovedFunctionOverviewDiagnostic.credentialGroupId, "yuanta");
-assert.deepEqual(yuantaApprovedFunctionOverviewDiagnostic.command, [
-  "libretto",
-  "run",
-  "src/workflows/yuanta-auth-menu-diagnostic.ts",
-  "--headless",
-  "--params",
-  '{"expandApprovedMenu":"function-overview"}',
 ]);
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);

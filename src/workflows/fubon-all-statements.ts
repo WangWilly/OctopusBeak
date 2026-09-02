@@ -34,11 +34,6 @@ import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
 } from "./fubon-source-connection.ts";
-import {
-  collectRepaymentRouteInventory,
-  emitRepaymentRouteInventory,
-  FUBON_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
-} from "./repayment-route-inventory.ts";
 
 export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
@@ -310,14 +305,6 @@ export async function runFubonAllStatements(
 
   await signInFubon(page, session, input.credentials);
   await keepBrowserWindowOutOfForeground(page);
-  // Inspect the signed-in menu before any component navigation. This is a
-  // bounded DOM read only; the emitted event contains no raw href/onclick.
-  emitRepaymentRouteInventory(
-    await collectRepaymentRouteInventory(page, {
-      provider: "fubon",
-      contractVersion: FUBON_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
-    }),
-  );
   console.log("automation-progress: 20");
 
   const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
