@@ -15,6 +15,7 @@ import {
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import {
+  buildYuantaLoanCapture,
   persistYuantaLoanCapture,
   type YuantaLoanCaptureBuildInput,
   type YuantaLoanStatementRow,
@@ -22,19 +23,40 @@ import {
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
+import {
+  persistCounterpartyAccountEvidence,
+  resolveLoanRepaymentRelations,
+  type LoanRepaymentRelationResolutionResult,
+  type TransactionCounterpartyAccountEvidenceInput,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import {
+  deriveSourceConnectionIdentityKey,
+  requireSourceConnectionIdentity,
+} from "../ledger/canonical/source-connection-identity.ts";
+import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
+import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
+import {
+  collectRepaymentRouteInventory,
+  emitRepaymentRouteInventory,
+  YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
+} from "./repayment-route-inventory.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 
 type BrowserScope = Page | Frame;
 
-type LoanAccountOption = {
+export type LoanAccountOption = {
   label: string;
   value: string;
 };
 
-type StatementRow = {
+export const YUANTA_LOAN_SELECTOR_ACCOUNT_MANDATE_CONTRACT_VERSION =
+  "yuanta/loan-statement-selector-account/v1" as const;
+
+export type StatementRow = {
   accountLabel: string;
   transactionDate: string;
   postingDate: string;
@@ -102,6 +124,16 @@ const outputSchema = z.object({
   replacedActiveSession: z.boolean(),
   count: z.number().int().nonnegative(),
   files: z.array(tableFileSchema),
+  relationResolution: z
+    .object({
+      status: z.literal("canonical-live"),
+      outcome: z.enum(["changed", "unchanged", "no-admission"]),
+      resolutionId: z.string().nullable(),
+      exactRelationIds: z.array(z.string()),
+      settlementGroupIds: z.array(z.string()),
+      reason: z.string().optional(),
+    })
+    .optional(),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
@@ -113,12 +145,46 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
   canonicalLedgerDir: string;
   canonicalFinancialLedgerDir: string;
   sourceConnectionScope: string;
+  sourceConnectionKey: string;
   observedAt: () => string;
   createLoanStore: typeof createCanonicalLoanStore;
+  /** Test/live-adapter seams; production uses the provider page functions. */
+  openLoanStatementPage: (page: Page) => Promise<unknown>;
+  readLoanAccountOptions: typeof readYuantaLoanAccountOptions;
+  queryLoanAccount: (
+    page: Page,
+    input: WorkflowInput,
+    account: LoanAccountOption,
+  ) => Promise<void>;
+  traverseLoanStatementPages: (
+    page: Page,
+    accountLabel: string,
+  ) => Promise<ReturnType<typeof assembleYuantaLoanStatement>>;
+  writeLoanStatementsFile: typeof writeLoanStatementsFile;
+  /**
+   * Optional live-page adapter for exact source-provided repayment-account or
+   * mandate evidence.  The default Yuanta loan page exposes no such field,
+   * so the production path leaves it empty instead of guessing from dates or
+   * amounts.
+   */
+  readCounterpartyAccountEvidence: (
+    page: Page,
+    account: LoanAccountOption,
+    rows: readonly StatementRow[],
+  ) =>
+    | readonly YuantaCounterpartyAccountEvidence[]
+    | Promise<readonly YuantaCounterpartyAccountEvidence[]>;
+  /** Optional provider-explicit transaction links supplied by a live adapter. */
+  explicitRelationLinks: Parameters<typeof resolveLoanRepaymentRelations>[1]["explicitLinks"];
+  resolveRelations: typeof resolveLoanRepaymentRelations;
   persistLoanCapture: (
     store: ReturnType<typeof createCanonicalLoanStore>,
     input: YuantaLoanCaptureBuildInput,
   ) => ReturnType<typeof persistYuantaLoanCapture>;
+  /** Test seam; production uses the bounded DOM-only inventory collector. */
+  collectRepaymentRouteInventory: typeof collectRepaymentRouteInventory;
+  /** Test seam; production uses the versioned workflow-output emitter. */
+  emitRepaymentRouteInventory: typeof emitRepaymentRouteInventory;
 }>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
@@ -282,6 +348,98 @@ function isLoanNextControl(controlHtml: string): boolean {
 }
 
 /**
+ * The Yuanta loan page is server-rendered and its terminal shape is not
+ * exposed by the row parser. Keep the live probe deliberately structural:
+ * this records only counts/flags needed to review pagination, never source
+ * rows, account labels, or control values.
+ */
+const YUANTA_LOAN_TERMINAL_RULE_VERSION = "yuanta-loan-terminal-v2";
+
+function logYuantaLoanPaginationObservation(observation: {
+  resultContext: boolean;
+  providerResultTable?: boolean;
+  rowCount?: number;
+  tableCount?: number;
+  headerCellCount?: number;
+  pageSize?: number | null;
+  currentPageFieldCount?: number;
+  pageSizeControlPresent?: boolean;
+  nextControlCount?: number;
+  activeNextControlCount?: number;
+  disabledNextControlCount?: number;
+  providerPager?: boolean;
+  explicitNoNext?: boolean;
+  terminal?: boolean;
+  evidence?: YuantaLoanPaginationSignal["evidence"];
+}): void {
+  console.log("yuanta-loan-pagination-observation", {
+    ruleVersion: YUANTA_LOAN_TERMINAL_RULE_VERSION,
+    ...observation,
+  });
+}
+
+function htmlControls(html: string): string[] {
+  return [
+    ...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
+    ...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/giu),
+    ...html.matchAll(/<input\b[^>]*>/giu),
+  ].map((match) => match[0]);
+}
+
+function providerResultTableOpenings(html: string): string[] {
+  return [...html.matchAll(/<table\b[^>]*>/giu)]
+    .map((match) => match[0])
+    .filter((opening) => hasHtmlClassToken(opening, "normalTable"));
+}
+
+function providerCurrentPageFieldCount(html: string): number {
+  return [...html.matchAll(/<(?:input|select)\b[^>]*>/giu)].filter((match) =>
+    [htmlAttribute(match[0], "id"), htmlAttribute(match[0], "name")].some(
+      (value) =>
+        /(?:currentPage|page(?:Index|No|Number)?|pager)/iu.test(value),
+    ),
+  ).length;
+}
+
+function providerPageSizeControl(html: string): {
+  present: boolean;
+  value: number | null;
+} {
+  const controls = [...html.matchAll(/<(?:input|select)\b[^>]*>/giu)].map(
+    (match) => match[0],
+  );
+  const control = controls.find((opening) =>
+    [htmlAttribute(opening, "id"), htmlAttribute(opening, "name")].some(
+      (value) => /page(?:[-_:]?size)|(?:^|[-_:])size(?:$|[-_:])/iu.test(value),
+    ),
+  );
+  if (!control) return { present: false, value: null };
+  const raw = htmlAttribute(control, "value");
+  return {
+    present: true,
+    value: /^\d+$/u.test(raw) ? Number(raw) : null,
+  };
+}
+
+function providerPagerPresent(html: string): boolean {
+  return [...html.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)].some((match) => {
+    const tagName = match[1]?.toLowerCase();
+    return (
+      tagName !== undefined &&
+      /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
+      (hasHtmlClassOrIdToken(match[0], "pager") ||
+        hasHtmlClassOrIdToken(match[0], "pagination"))
+    );
+  });
+}
+
+function explicitNoNextPresent(html: string): boolean {
+  return /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
+    html,
+  );
+}
+
+/**
  * Yuanta loan results use the same pager vocabulary as the existing
  * credit-card result adapter (`下一頁`, `goPage(...)`, and page query
  * parameters).  We retain only structural page signals: an active next
@@ -291,72 +449,115 @@ function isLoanNextControl(controlHtml: string): boolean {
  */
 export function parseYuantaLoanPaginationSignal(
   html: string,
+  rowCount?: number,
+  structural?: {
+    providerResultTable?: boolean;
+    tableCount?: number;
+    headerCellCount?: number;
+  },
 ): YuantaLoanPaginationSignal {
   const providerMarkup = yuantaLoanResultMarkup(html);
   if (!providerMarkup) {
+    logYuantaLoanPaginationObservation({ resultContext: false });
     return {
       nextPageTarget: null,
       terminal: false,
       evidence: null,
     };
   }
-  const controls = [
-    ...providerMarkup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
-    ...providerMarkup.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/giu),
-    ...providerMarkup.matchAll(/<input\b[^>]*>/giu),
-  ].map((match) => match[0]);
-  const nextControl = controls.find((control) => isLoanNextControl(control));
-  if (nextControl)
-    return {
-      nextPageTarget: loanPagerTarget(nextControl),
-      terminal: false,
-      evidence: loanPagerTarget(nextControl) ? "next-page" : null,
-    };
-
-  const hasDisabledNext = controls.some((control) => {
-    const opening = htmlControlOpeningTag(control);
-    return (
-      /^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(
-        htmlControlLabel(control),
-      ) && isDisabledHtmlControl(opening)
-    );
-  });
-  const hasProviderPager =
-    [...providerMarkup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)].some(
-      (match) => {
-        const tagName = match[1]?.toLowerCase();
-        return (
-          tagName !== undefined &&
-          /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
-          (hasHtmlClassOrIdToken(match[0], "pager") ||
-            hasHtmlClassOrIdToken(match[0], "pagination"))
-        );
-      },
-    ) ||
-    /(?:goPage|setPage|currentPage|pageIndex|pageNo|pageNumber)\s*\(/iu.test(
-      providerMarkup,
-    );
-  const hasProviderCurrentPage =
-    /<(?:input|select)\b[^>]*(?:name|id)\s*=\s*["'][^"']*(?:page|pager|current)[^"']*["']/iu.test(
-      providerMarkup,
-    );
-  const hasExplicitNoNext =
-    /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
-      providerMarkup,
-    );
-  const hasNextLabel = controls.some((control) =>
+  const controls = htmlControls(providerMarkup);
+  const providerResultTableCount = providerResultTableOpenings(providerMarkup).length;
+  const tableCount = structural?.tableCount ?? providerResultTableCount;
+  const headerCellCount =
+    structural?.headerCellCount ??
+    [...providerMarkup.matchAll(/<th\b[^>]*>/giu)].length;
+  const hasProviderResultTable =
+    structural?.providerResultTable ?? providerResultTableCount > 0;
+  const pageSize = providerPageSizeControl(providerMarkup);
+  const currentPageFieldCount = providerCurrentPageFieldCount(providerMarkup);
+  const hasProviderPager = providerPagerPresent(providerMarkup);
+  const hasExplicitNoNext = explicitNoNextPresent(providerMarkup);
+  const nextControls = controls.filter((control) =>
     /^(?:下一頁|下頁|next(?:\s*page)?)$/iu.test(htmlControlLabel(control)),
   );
+  const activeNextControlCount = nextControls.filter((control) =>
+    isLoanNextControl(control),
+  ).length;
+  const disabledNextControlCount = nextControls.filter((control) =>
+    isDisabledHtmlControl(htmlControlOpeningTag(control)),
+  ).length;
+  const observationBase = {
+    resultContext: true,
+    providerResultTable: hasProviderResultTable,
+    ...(rowCount === undefined ? {} : { rowCount }),
+    tableCount,
+    ...(headerCellCount === undefined ? {} : { headerCellCount }),
+    pageSize: pageSize.value,
+    currentPageFieldCount,
+    pageSizeControlPresent: pageSize.present,
+    nextControlCount: nextControls.length,
+    activeNextControlCount,
+    disabledNextControlCount,
+    providerPager: hasProviderPager,
+    explicitNoNext: hasExplicitNoNext,
+  };
+  const nextControl = controls.find((control) => isLoanNextControl(control));
+  if (nextControl) {
+    const nextPageTarget = loanPagerTarget(nextControl);
+    logYuantaLoanPaginationObservation({
+      ...observationBase,
+      terminal: false,
+      evidence: nextPageTarget ? "next-page" : null,
+    });
+    return {
+      nextPageTarget,
+      terminal: false,
+      evidence: nextPageTarget ? "next-page" : null,
+    };
+  }
+
+  const hasDisabledNext = disabledNextControlCount > 0;
+  const hasProviderCurrentPage = currentPageFieldCount > 0;
+  /**
+   * Live Yuanta loan responses use a single six-column `normalTable` result
+   * with no pager or page controls. This is a provider-specific terminal
+   * contract: the parser has already validated every data row against the
+   * six-cell loan layout, and an empty table is deliberately not complete.
+   */
+  const hasYuantaStaticResultTerminal =
+    hasProviderResultTable &&
+    tableCount > 0 &&
+    rowCount !== undefined &&
+    rowCount > 0 &&
+    headerCellCount === 6 &&
+    !pageSize.present &&
+    currentPageFieldCount === 0 &&
+    nextControls.length === 0 &&
+    !hasProviderPager &&
+    !hasExplicitNoNext;
   if (
     hasDisabledNext ||
     hasExplicitNoNext ||
-    (hasProviderPager && hasProviderCurrentPage && !hasNextLabel)
-  )
+    (hasProviderPager && hasProviderCurrentPage && nextControls.length === 0) ||
+    hasYuantaStaticResultTerminal
+  ) {
+    logYuantaLoanPaginationObservation({
+      ...observationBase,
+      terminal: true,
+      evidence: "terminal-no-next",
+    });
     return {
       nextPageTarget: null,
       terminal: true,
       evidence: "terminal-no-next",
     };
+  }
+
+  logYuantaLoanPaginationObservation({
+    ...observationBase,
+    terminal: false,
+    evidence: null,
+  });
 
   return {
     nextPageTarget: null,
@@ -799,6 +1000,38 @@ export async function readYuantaLoanAccountOptions(
   return availableAccounts;
 }
 
+/**
+ * The live loan statement form exposes the full 14-digit loan account in
+ * both the option label and option value.  Requiring both representations to
+ * agree prevents an opaque query token from being mistaken for an account.
+ */
+export function yuantaLoanSelectorAccountEvidence(
+  account: LoanAccountOption,
+): YuantaCounterpartyAccountEvidence {
+  const valueDigits = account.value;
+  const labelRuns =
+    toAsciiDigits(account.label).match(/(?<!\d)\d{14}(?!\d)/gu) ?? [];
+  if (
+    !/^\d{14}$/u.test(valueDigits) ||
+    labelRuns.length !== 1 ||
+    labelRuns[0] !== valueDigits
+  ) {
+    throw new Error(
+      "Yuanta loan selector did not expose one matching full 14-digit account.",
+    );
+  }
+  return {
+    rowOrdinal: 0,
+    accountValue: valueDigits,
+    role: "beneficiary",
+    purpose: "loan_repayment",
+    scope: "loan_contract",
+    evidenceKind: "repayment-mandate",
+    sourceField: "貸款帳號",
+    contractVersion: YUANTA_LOAN_SELECTOR_ACCOUNT_MANDATE_CONTRACT_VERSION,
+  };
+}
+
 async function queryLoanAccount(
   page: Page,
   input: WorkflowInput,
@@ -828,6 +1061,7 @@ async function parseLoanStatementRows(
 
   const resultTable = tables.nth(tableCount - 1);
   await resultTable.locator("th").first().waitFor({ state: "attached" });
+  const headerCellCount = await resultTable.locator("th").count();
 
   const rows = resultTable.locator("tr");
   const rowCount = await rows.count();
@@ -849,7 +1083,15 @@ async function parseLoanStatementRows(
   return {
     rows: parsedRows,
     pageOrdinal,
-    pagination: parseYuantaLoanPaginationSignal(renderedHtml),
+    pagination: parseYuantaLoanPaginationSignal(
+      renderedHtml,
+      parsedRows.length,
+      {
+        providerResultTable: tableCount > 0,
+        tableCount,
+        headerCellCount,
+      },
+    ),
   };
 }
 
@@ -905,6 +1147,69 @@ export function assembleYuantaLoanStatement(
   };
 }
 
+type YuantaLoanCaptureForEvidence = {
+  captureId: string;
+  identity: {
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    accountKey: string;
+  };
+  scope: {
+    startDate: string;
+    endDate: string;
+  };
+  records: readonly {
+    sourceRecordKey: string;
+    occurrenceIndex: number;
+  }[];
+};
+
+function sourceRecordKeyForYuantaLoanEvidence(
+  capture: YuantaLoanCaptureForEvidence,
+  evidence: YuantaCounterpartyAccountEvidence,
+): string {
+  if (evidence.sourceRecordKey?.trim()) return evidence.sourceRecordKey.trim();
+  if (evidence.rowOrdinal === undefined)
+    throw new Error(
+      "Yuanta loan counterparty evidence must identify a source record or row ordinal.",
+    );
+  if (!Number.isSafeInteger(evidence.rowOrdinal) || evidence.rowOrdinal < 0)
+    throw new Error("Yuanta loan counterparty evidence row ordinal is invalid.");
+  const rowOrdinal = evidence.rowOrdinal;
+  const candidates = capture.records.filter(
+    (record) => record.occurrenceIndex === rowOrdinal + 1,
+  );
+  if (candidates.length !== 1)
+    throw new Error(
+      "Yuanta loan counterparty evidence row does not identify exactly one canonical source record.",
+    );
+  return candidates[0]!.sourceRecordKey;
+}
+
+function materializeYuantaLoanCounterpartyEvidence(
+  capture: YuantaLoanCaptureForEvidence,
+  evidence: YuantaCounterpartyAccountEvidence,
+): TransactionCounterpartyAccountEvidenceInput {
+  return {
+    ...evidence,
+    ...(evidence.evidenceKind === "repayment-mandate" && !evidence.accountKey
+      ? { accountKey: capture.identity.accountKey }
+      : {}),
+    ...(evidence.evidenceKind === "repayment-mandate" &&
+    evidence.effectiveStartDate === undefined &&
+    evidence.effectiveEndDate === undefined
+      ? {
+          effectiveStartDate: capture.scope.startDate,
+          effectiveEndDate: capture.scope.endDate,
+        }
+      : {}),
+    captureId: capture.captureId,
+    sourceRecordKey: sourceRecordKeyForYuantaLoanEvidence(capture, evidence),
+    sourceConnectionKey: capture.identity.sourceConnectionKey,
+    identityEpochKey: capture.identity.identityEpochKey,
+  };
+}
+
 async function traverseYuantaLoanStatementPages(
   page: Page,
   accountLabel: string,
@@ -955,6 +1260,16 @@ export async function runYuantaLoanStatements(
   input: WorkflowInput,
   overrides: YuantaLoanStatementsRunDependencies = {},
 ): Promise<Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">> {
+  const openStatementPage =
+    overrides.openLoanStatementPage ?? openLoanStatementPage;
+  const readAccounts =
+    overrides.readLoanAccountOptions ?? readYuantaLoanAccountOptions;
+  const queryAccount = overrides.queryLoanAccount ?? queryLoanAccount;
+  const traversePages =
+    overrides.traverseLoanStatementPages ?? traverseYuantaLoanStatementPages;
+  const write = overrides.writeLoanStatementsFile ?? writeLoanStatementsFile;
+  const { sourceConnectionScope, sourceConnectionKey } =
+    requireSourceConnectionIdentity("yuanta", "Yuanta loan", overrides);
   const ledgerDir =
     overrides.canonicalFinancialLedgerDir ??
     overrides.canonicalLedgerDir ??
@@ -963,13 +1278,28 @@ export async function runYuantaLoanStatements(
     canonicalSqlitePath(ledgerDir),
   );
   const persist = overrides.persistLoanCapture ?? persistYuantaLoanCapture;
-  const sourceConnectionScope =
-    overrides.sourceConnectionScope ?? "yuanta-loan-workflow";
+  const collectRoutes =
+    overrides.collectRepaymentRouteInventory ?? collectRepaymentRouteInventory;
+  const emitRoutes =
+    overrides.emitRepaymentRouteInventory ?? emitRepaymentRouteInventory;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
+  const resolveRelations =
+    overrides.resolveRelations ?? resolveLoanRepaymentRelations;
+  let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
 
   try {
-    await openLoanStatementPage(page);
-    const accounts = await readYuantaLoanAccountOptions(
+    // The loan opener verifies the authenticated loan form before returning.
+    // Probe the now-stable page and its menu frames before any account or date
+    // control is mutated; the combined workflow therefore emits one event at
+    // the useful ready seam instead of an early shell snapshot.
+    await openStatementPage(page);
+    emitRoutes(
+      await collectRoutes(page, {
+        provider: "yuanta",
+        contractVersion: YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
+      }),
+    );
+    const accounts = await readAccounts(
       page,
       input.loanAccountFilters,
     );
@@ -981,8 +1311,8 @@ export async function runYuantaLoanStatements(
 
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
-      await queryLoanAccount(page, input, account);
-      const parsed = await traverseYuantaLoanStatementPages(page, maskedAccount);
+      await queryAccount(page, input, account);
+      const parsed = await traversePages(page, maskedAccount);
       if (
         !parsed.completeness ||
         parsed.pages.length !== parsed.completeness.pageCount
@@ -997,7 +1327,7 @@ export async function runYuantaLoanStatements(
         account: maskedAccount,
         rowCount: accountRows.length,
       });
-      await persist(store, {
+      const captureInput: YuantaLoanCaptureBuildInput = {
         accountValue: account.value,
         sourceConnectionScope,
         observedAt: observedAt(),
@@ -1026,10 +1356,40 @@ export async function runYuantaLoanStatements(
           transactionAmount: row.transactionAmount,
           balanceAfterTransaction: row.balanceAfterTransaction,
         })),
-      });
+      };
+      // Build once before commit so optional source evidence can refer to the
+      // exact immutable source-record keys that the Yuanta adapter will
+      // persist.  The core writer still owns admission and commit.
+      const capture = buildYuantaLoanCapture(captureInput);
+      await persist(store, captureInput);
+
+      const sourceEvidence = overrides.readCounterpartyAccountEvidence
+        ? await overrides.readCounterpartyAccountEvidence(
+            page,
+            account,
+            accountRows,
+          )
+        : [yuantaLoanSelectorAccountEvidence(account)];
+      for (const evidence of sourceEvidence) {
+        await persistCounterpartyAccountEvidence(
+          store,
+          materializeYuantaLoanCounterpartyEvidence(capture, evidence),
+        );
+      }
+      relationResolution = await resolveLoanRelationsAfterCapture(
+        store,
+        resolveRelations,
+        {
+          sourceConnectionKey,
+          integrationNamespace: "yuanta",
+          observedAt: capture.observedAt,
+          failureEvent: "yuanta-loan-relation-resolution-failed",
+          explicitLinks: overrides.explicitRelationLinks,
+        },
+      );
     }
 
-    const file = await writeLoanStatementsFile(
+    const file = await write(
       nextTimestamp,
       dateRange,
       rows,
@@ -1040,6 +1400,15 @@ export async function runYuantaLoanStatements(
       dateRange,
       count: 1,
       files: [file],
+      ...(relationResolution
+        ? {
+            relationResolution: {
+              ...relationResolution,
+              exactRelationIds: [...relationResolution.exactRelationIds],
+              settlementGroupIds: [...relationResolution.settlementGroupIds],
+            },
+          }
+        : {}),
     };
   } finally {
     store.close();
@@ -1055,6 +1424,7 @@ export default workflow("yuantaLoanStatements", {
     const credentials = (
       input as typeof input & { credentials: YuantaCredentials }
     ).credentials;
+    const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
     const authResult = await sharedAuthenticateYuantaBank(
       ctx,
       credentials,
@@ -1071,7 +1441,11 @@ export default workflow("yuantaLoanStatements", {
         process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
         process.env.LEDGER_DIR ??
         DEFAULT_LEDGER_DIR,
-      sourceConnectionScope: `${credentials.yuanta_user_id ?? ""}\u0000${credentials.yuanta_account ?? ""}`,
+      sourceConnectionScope,
+      sourceConnectionKey: deriveSourceConnectionIdentityKey(
+        "yuanta",
+        sourceConnectionScope,
+      ),
     });
     return {
       ...output,

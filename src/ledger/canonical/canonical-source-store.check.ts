@@ -27,6 +27,14 @@ import {
   commitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { ensureCanonicalCreditCardSchema } from "./canonical-credit-card-persistence.ts";
+import { ensureFubonCreditCardSchema } from "./fubon-credit-card.ts";
+import {
+  LOAN_CONTRACT_FIXTURES,
+  admitCanonicalLoanCapture,
+  commitCanonicalLoanCapture,
+  createCanonicalLoanStore,
+} from "./loan-financial.ts";
 import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
@@ -212,6 +220,136 @@ const yuantaCreditCardFinancialCapture = (
   };
 };
 
+type CardSentinelScope = {
+  captureId: Uint8Array;
+  accountId: Uint8Array;
+  sourceRecordId: Uint8Array;
+  transactionId: Uint8Array;
+  revisionId: Uint8Array;
+};
+
+function cardSentinelScope(
+  db: DatabaseSync,
+  captureKey: string,
+): CardSentinelScope {
+  const row = db
+    .prepare(
+      `SELECT capture.capture_id AS captureId,
+              scope.account_id AS accountId,
+              record.source_record_id AS sourceRecordId,
+              transaction_row.transaction_id AS transactionId,
+              revision.revision_id AS revisionId
+         FROM source_captures capture
+         JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+         JOIN source_records record ON record.capture_id = capture.capture_id
+         JOIN transaction_revisions revision
+           ON revision.source_record_id = record.source_record_id
+         JOIN financial_transactions transaction_row
+           ON transaction_row.transaction_id = revision.transaction_id
+        WHERE capture.capture_key = ?
+        LIMIT 1`,
+    )
+    .get(captureKey) as CardSentinelScope | undefined;
+  if (!row) throw new Error(`Card sentinel scope is missing: ${captureKey}`);
+  return row;
+}
+
+function seedFubonCardExtensionSentinel(
+  db: DatabaseSync,
+  captureKey: string,
+  marker: number,
+): void {
+  ensureFubonCreditCardSchema(db);
+  const scope = cardSentinelScope(db, captureKey);
+  const instrumentId = Buffer.alloc(16, marker);
+  db.prepare(
+    `INSERT INTO fubon_credit_instrument_details(
+       instrument_id, account_id, instrument_key, card_mask, role, lifecycle
+     ) VALUES (?, ?, ?, '****1234', 'primary', 'active')`,
+  ).run(instrumentId, scope.accountId, `fubon-sentinel-${marker}`);
+  db.prepare(
+    `INSERT INTO fubon_credit_account_identity_details(
+       account_id, identity_method, pan_fingerprint, pan_last4,
+       pan_fingerprint_key_version
+     ) VALUES (?, 'human-attested', NULL, NULL, NULL)`,
+  ).run(scope.accountId);
+  db.prepare(
+    `INSERT INTO fubon_credit_transaction_details(
+       transaction_id, revision_id, source_record_id, capture_id,
+       instrument_id, billing_status, statement_key
+     ) VALUES (?, ?, ?, ?, ?, 'unbilled', NULL)`,
+  ).run(
+    scope.transactionId,
+    scope.revisionId,
+    scope.sourceRecordId,
+    scope.captureId,
+    instrumentId,
+  );
+}
+
+function seedYuantaCardExtensionSentinel(
+  db: DatabaseSync,
+  captureKey: string,
+  marker: number,
+): void {
+  ensureCanonicalCreditCardSchema(db);
+  const scope = cardSentinelScope(db, captureKey);
+  const instrumentId = Buffer.alloc(16, marker);
+  const lifecycleEventId = Buffer.alloc(16, marker + 1);
+  db.prepare(
+    `INSERT INTO canonical_credit_card_account_identities(
+       integration_namespace, account_id, opaque_identity_key,
+       identity_method, created_capture_id
+     ) VALUES ('yuanta', ?, ?, 'human-attested', ?)`,
+  ).run(scope.accountId, `yuanta-sentinel-${marker}`, scope.captureId);
+  db.prepare(
+    `INSERT INTO canonical_credit_card_instruments(
+       instrument_id, integration_namespace, account_id, instrument_key,
+       card_mask, role, lifecycle
+     ) VALUES (?, 'yuanta', ?, ?, '****5678', 'primary', 'active')`,
+  ).run(instrumentId, scope.accountId, `yuanta-sentinel-${marker}`);
+  db.prepare(
+    `INSERT INTO canonical_credit_card_instrument_evidence(
+       instrument_id, integration_namespace, account_id, capture_id,
+       source_record_id
+     ) VALUES (?, 'yuanta', ?, ?, ?)`,
+  ).run(
+    instrumentId,
+    scope.accountId,
+    scope.captureId,
+    scope.sourceRecordId,
+  );
+  db.prepare(
+    `INSERT INTO canonical_credit_card_transaction_details(
+       integration_namespace, account_id, transaction_id, revision_id,
+       source_record_id, capture_id, instrument_id, billing_status,
+       statement_key
+     ) VALUES ('yuanta', ?, ?, ?, ?, ?, ?, 'unbilled', NULL)`,
+  ).run(
+    scope.accountId,
+    scope.transactionId,
+    scope.revisionId,
+    scope.sourceRecordId,
+    scope.captureId,
+    instrumentId,
+  );
+  db.prepare(
+    `INSERT INTO canonical_credit_card_transaction_lifecycle(
+       lifecycle_event_id, integration_namespace, account_id,
+       transaction_id, revision_id, source_record_id, capture_id,
+       instrument_id, billing_status, statement_key
+     ) VALUES (?, 'yuanta', ?, ?, ?, ?, ?, ?, 'unbilled', NULL)`,
+  ).run(
+    lifecycleEventId,
+    scope.accountId,
+    scope.transactionId,
+    scope.revisionId,
+    scope.sourceRecordId,
+    scope.captureId,
+    instrumentId,
+  );
+}
+
 const evidence = (captureId: string): CanonicalSourceEvidence => ({
   captureId,
   integrationNamespace: "synthetic",
@@ -263,6 +401,1100 @@ const lineageRequest = {
   subjectDigest: token("c"),
   occurrenceKey: token("d"),
 } as const;
+
+function namespaceFinancialSnapshot(db: DatabaseSync, namespace: string) {
+  const select = (sql: string) => db.prepare(sql).all(namespace);
+  return {
+    connections: select(
+      `SELECT hex(source_connection_id) AS id, source_connection_key
+         FROM source_connections WHERE integration_namespace = ? ORDER BY id`,
+    ),
+    epochs: select(
+      `SELECT hex(epoch.identity_epoch_id) AS id,
+              hex(epoch.source_connection_id) AS connection_id, epoch.epoch_key
+         FROM identity_epochs epoch
+         JOIN source_connections connection
+           ON connection.source_connection_id = epoch.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+    captures: select(
+      `SELECT hex(capture.capture_id) AS id, capture.stream,
+              capture.capture_key, capture.observed_at
+         FROM source_captures capture
+         JOIN source_connections connection
+           ON connection.source_connection_id = capture.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+    subjects: select(
+      `SELECT hex(subject.source_subject_id) AS id, subject.stream,
+              subject.record_kind, subject.subject_digest
+         FROM source_subjects subject
+         JOIN source_connections connection
+           ON connection.source_connection_id = subject.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+    routeBindings: select(
+      `SELECT binding.authority_route,
+              hex(binding.source_connection_id) AS connection_id,
+              hex(binding.created_commit_id) AS commit_id
+         FROM source_route_bindings binding
+         JOIN source_connections connection
+           ON connection.source_connection_id = binding.source_connection_id
+        WHERE connection.integration_namespace = ?
+        ORDER BY binding.authority_route, connection_id`,
+    ),
+    records: select(
+      `SELECT hex(record.source_record_id) AS id, record.record_kind,
+              record.occurrence_key, record.content_hash
+         FROM source_records record
+         JOIN source_captures capture ON capture.capture_id = record.capture_id
+         JOIN source_connections connection
+           ON connection.source_connection_id = capture.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+    accounts: select(
+      `SELECT hex(account.account_id) AS id, account.stream,
+              account.account_no, account.account_type
+         FROM financial_accounts account
+         JOIN source_connections connection
+           ON connection.source_connection_id = account.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+    transactions: select(
+      `SELECT hex(transaction_row.transaction_id) AS id,
+              transaction_row.source_sequence
+         FROM financial_transactions transaction_row
+         JOIN financial_accounts account
+           ON account.account_id = transaction_row.account_id
+         JOIN source_connections connection
+           ON connection.source_connection_id = account.source_connection_id
+        WHERE connection.integration_namespace = ? ORDER BY id`,
+    ),
+  };
+}
+
+test("v10 to v12 adds a missing repayment-note date contract payload before validation", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v10-missing-note-payload-"),
+  );
+  try {
+    const path = join(directory, "canonical.sqlite");
+    const current = createCanonicalSourceStore(path);
+    current.close();
+
+    // Reconstruct the exact shape of a real v10 database that predates the
+    // additive payload column while retaining the rest of the v10 schema.
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE institution_repayment_note_evidence
+        DROP COLUMN date_contract_json;
+      DROP TABLE canonical_contract_purge_commits;
+      DROP TABLE canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version = 11;
+      PRAGMA user_version = 10;
+    `);
+    legacy.close();
+
+    const migrated = openCanonicalDatabase(directory);
+    try {
+      assert.equal(
+        Number(
+          (migrated.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        CANONICAL_SOURCE_SCHEMA_VERSION,
+      );
+      assert.ok(
+        migrated
+          .prepare(
+            "SELECT 1 FROM pragma_table_info('institution_repayment_note_evidence') WHERE name = 'date_contract_json'",
+          )
+          .get(),
+      );
+      assert.equal(
+        Number(
+          (
+            migrated
+              .prepare("SELECT COUNT(*) AS count FROM canonical_contract_purges")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        2,
+      );
+      assert.deepEqual(migrated.prepare("PRAGMA foreign_key_check").all(), []);
+      validateCanonicalSourceStore({
+        db: migrated,
+        databasePath: path,
+        commitClock: () => 0,
+        close() {},
+      });
+    } finally {
+      migrated.close();
+    }
+
+    const reopened = openCanonicalDatabase(directory);
+    try {
+      assert.equal(
+        Number(
+          (reopened.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        CANONICAL_SOURCE_SCHEMA_VERSION,
+      );
+      assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v10 to v11 rolls back the additive payload when a later schema check fails", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v10-migration-rollback-"),
+  );
+  try {
+    const path = join(directory, "canonical.sqlite");
+    const current = createCanonicalSourceStore(path);
+    current.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE institution_repayment_note_evidence
+        DROP COLUMN date_contract_json;
+      ALTER TABLE transaction_relations
+        DROP COLUMN from_identity_epoch_id;
+      DROP TABLE canonical_contract_purge_commits;
+      DROP TABLE canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version = 11;
+      PRAGMA user_version = 10;
+    `);
+    legacy.close();
+
+    assert.throws(
+      () => openCanonicalDatabase(directory),
+      /Canonical schema v10 relation column from_identity_epoch_id is missing/,
+    );
+
+    const afterFailure = new DatabaseSync(path);
+    try {
+      assert.equal(
+        Number(
+          (afterFailure.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        10,
+      );
+      assert.equal(
+        afterFailure
+          .prepare(
+            "SELECT 1 FROM pragma_table_info('institution_repayment_note_evidence') WHERE name = 'date_contract_json'",
+          )
+          .get(),
+        undefined,
+      );
+      assert.equal(
+        afterFailure
+          .prepare(
+            "SELECT 1 FROM pragma_table_info('transaction_relations') WHERE name = 'from_identity_epoch_id'",
+          )
+          .get(),
+        undefined,
+      );
+      assert.equal(
+        Number(
+          (afterFailure.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number })
+            .foreign_keys,
+        ),
+        1,
+      );
+      assert.equal(
+        afterFailure
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
+          )
+          .get(),
+        undefined,
+      );
+    } finally {
+      afterFailure.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v11-identity-purge-"),
+  );
+  try {
+    const path = join(directory, "canonical.sqlite");
+    await commitCathayDomesticDeposit(
+      directory,
+      CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    );
+
+    const legacy = createCanonicalLoanStore(path);
+    await commitCanonicalLoanCapture(
+      legacy,
+      admitCanonicalLoanCapture(structuredClone(LOAN_CONTRACT_FIXTURES.fubon)),
+    );
+    await commitCanonicalLoanCapture(
+      legacy,
+      admitCanonicalLoanCapture(structuredClone(LOAN_CONTRACT_FIXTURES.yuanta)),
+    );
+    await commitCanonicalFinancialDepositCapture(
+      legacy.sourceStore,
+      admitCanonicalFinancialDepositCapture(
+        fubonCreditCardFinancialCapture("v2", "legacy-fubon-card"),
+      ),
+    );
+    await commitCanonicalFinancialDepositCapture(
+      legacy.sourceStore,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "legacy-yuanta-card"),
+      ),
+    );
+    const fubonLoanRow = legacy.db
+      .prepare(
+        `SELECT connection.source_connection_id, account.identity_epoch_id,
+                transaction_row.transaction_id, revision.source_record_id,
+                revision.capture_id, revision.commit_id
+           FROM financial_transactions transaction_row
+           JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+           JOIN source_connections connection
+             ON connection.source_connection_id = account.source_connection_id
+           JOIN transaction_revisions revision
+             ON revision.transaction_id = transaction_row.transaction_id
+          WHERE connection.integration_namespace = 'fubon'
+            AND account.stream = 'loan' LIMIT 1`,
+      )
+      .get() as {
+      source_connection_id: Uint8Array;
+      identity_epoch_id: Uint8Array;
+      transaction_id: Uint8Array;
+      source_record_id: Uint8Array;
+      capture_id: Uint8Array;
+      commit_id: Uint8Array;
+    };
+    const generationId = Number(
+      (
+        legacy.db
+          .prepare(
+            "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1",
+          )
+          .get() as { generation_id?: number }
+      ).generation_id,
+    );
+    const resolutionId = Buffer.alloc(16, 201);
+    const groupId = Buffer.alloc(16, 202);
+    const eventId = Buffer.alloc(16, 203);
+    const accountEvidenceId = Buffer.alloc(16, 204);
+    legacy.db
+      .prepare(
+        `INSERT INTO loan_repayment_resolution_runs(
+           resolution_id, resolution_key, source_connection_id,
+           resolver_version, coverage_state, outcome, reason, observed_at,
+           commit_id
+         ) VALUES (?, 'legacy-resolution', ?, 'resolver-v1', 'complete',
+                   'changed', NULL, '2026-08-31T00:00:00.000Z', ?)`,
+      )
+      .run(
+        resolutionId,
+        fubonLoanRow.source_connection_id,
+        fubonLoanRow.commit_id,
+      );
+    legacy.db
+      .prepare(
+        `INSERT INTO loan_repayment_settlement_groups(
+           settlement_group_id, source_connection_id, group_key,
+           resolver_version, created_commit_id
+         ) VALUES (?, ?, 'legacy-group', 'resolver-v1', ?)`,
+      )
+      .run(groupId, fubonLoanRow.source_connection_id, fubonLoanRow.commit_id);
+    legacy.db
+      .prepare(
+        `INSERT INTO loan_repayment_settlement_group_members(
+           settlement_group_id, transaction_id, member_kind,
+           source_record_id, capture_id, commit_id
+         ) VALUES (?, ?, 'loan_payment', ?, ?, ?)`,
+      )
+      .run(
+        groupId,
+        fubonLoanRow.transaction_id,
+        fubonLoanRow.source_record_id,
+        fubonLoanRow.capture_id,
+        fubonLoanRow.commit_id,
+      );
+    legacy.db
+      .prepare(
+        `INSERT INTO loan_repayment_relation_events(
+           event_id, resolution_id, settlement_group_id, event_kind,
+           support_kind, support_key, evidence_json, commit_id
+         ) VALUES (?, ?, ?, 'observed', 'verified-repayment-destination',
+                   'legacy-support', '{}', ?)`,
+      )
+      .run(eventId, resolutionId, groupId, fubonLoanRow.commit_id);
+    legacy.db
+      .prepare(
+        `INSERT INTO current_loan_repayment_settlement_groups(
+           generation_id, settlement_group_id, projection_commit_id
+         ) VALUES (?, ?, ?)`,
+      )
+      .run(generationId, groupId, fubonLoanRow.commit_id);
+    legacy.db
+      .prepare(
+        `INSERT INTO transaction_counterparty_account_evidence(
+           evidence_id, transaction_id, source_record_id, capture_id,
+           source_connection_id, identity_epoch_id, source_value,
+           normalized_value, value_digest, role, purpose, scope,
+           evidence_kind, source_field, contract_version, created_commit_id
+         ) VALUES (?, ?, ?, ?, ?, ?, '1234567890', '1234567890',
+                   'sha256:legacy-account', 'beneficiary', 'loan_repayment',
+                   'loan_contract', 'transaction-counterparty-account',
+                   'beneficiary-account', 'legacy-contract', ?)`,
+      )
+      .run(
+        accountEvidenceId,
+        fubonLoanRow.transaction_id,
+        fubonLoanRow.source_record_id,
+        fubonLoanRow.capture_id,
+        fubonLoanRow.source_connection_id,
+        fubonLoanRow.identity_epoch_id,
+        fubonLoanRow.commit_id,
+      );
+    const preservedFubonRoute =
+      "fubon/foreign-deposit/source-connection-v11-preserved-test";
+    legacy.db
+      .prepare(
+        `INSERT INTO source_authority_routes(
+           authority_route, integration_namespace, stream, contract_version,
+           created_commit_id
+         ) VALUES (?, 'fubon', 'foreign-deposit', 'preserved-contract', ?)`,
+      )
+      .run(preservedFubonRoute, fubonLoanRow.commit_id);
+    legacy.db
+      .prepare(
+        `INSERT INTO source_route_bindings(
+           authority_route, source_connection_id, created_commit_id
+         ) VALUES (?, ?, ?)`,
+      )
+      .run(
+        preservedFubonRoute,
+        fubonLoanRow.source_connection_id,
+        fubonLoanRow.commit_id,
+      );
+    legacy.db
+      .prepare(
+        `INSERT INTO counterparty_account_evidence_support(
+           evidence_id, source_record_id, capture_id, commit_id
+         ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        accountEvidenceId,
+        fubonLoanRow.source_record_id,
+        fubonLoanRow.capture_id,
+        fubonLoanRow.commit_id,
+      );
+    legacy.db.exec(`
+      CREATE TABLE local_credentials_sentinel(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE automation_settings_sentinel(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO local_credentials_sentinel VALUES ('bank-login', 'preserved-outside-canonical-contract');
+      INSERT INTO automation_settings_sentinel VALUES ('schedule', 'preserved');
+    `);
+    const cathayBefore = namespaceFinancialSnapshot(legacy.db, "cathay");
+    const legacyConnectionCount = Number(
+      (
+        legacy.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM source_connections WHERE integration_namespace IN ('fubon','yuanta')",
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    assert.ok(legacyConnectionCount > 0);
+    const affectedRouteBindingCount = Number(
+      (
+        legacy.db
+          .prepare(
+            `SELECT COUNT(*) AS count
+               FROM source_route_bindings binding
+               JOIN source_authority_routes route
+                 ON route.authority_route = binding.authority_route
+               JOIN source_connections connection
+                 ON connection.source_connection_id = binding.source_connection_id
+              WHERE connection.integration_namespace IN ('fubon','yuanta')
+                AND route.stream IN ('domestic-deposit','loan','credit-card')`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    assert.ok(affectedRouteBindingCount > 0);
+    assert.ok(
+      Number(
+        (
+          legacy.db
+            .prepare(
+              `SELECT COUNT(*) AS count FROM financial_accounts account
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = account.source_connection_id
+                WHERE connection.integration_namespace IN ('fubon','yuanta')
+                  AND account.stream IN ('domestic-deposit','loan','credit-card')`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ) >= 6,
+    );
+    legacy.close();
+
+    const downgrade = new DatabaseSync(path);
+    downgrade.exec(`
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'source-connection-identity/v1:fubon-yuanta:v11';
+      DELETE FROM schema_migrations WHERE version = 11;
+      PRAGMA user_version = 10;
+    `);
+    downgrade.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              `SELECT COUNT(*) AS count FROM source_captures capture
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = capture.source_connection_id
+                WHERE connection.integration_namespace IN ('fubon','yuanta')
+                  AND capture.stream IN ('domestic-deposit','loan','credit-card')`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      0,
+    );
+    for (const table of ["financial_accounts", "source_subjects"] as const) {
+      assert.equal(
+        Number(
+          (
+            migrated.db
+              .prepare(
+                `SELECT COUNT(*) AS count FROM ${table} scoped
+                   JOIN source_connections connection
+                     ON connection.source_connection_id = scoped.source_connection_id
+                  WHERE connection.integration_namespace IN ('fubon','yuanta')
+                    AND scoped.stream IN ('domestic-deposit','loan','credit-card')`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+        `${table} target scope removed`,
+      );
+    }
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM source_route_bindings binding
+                 JOIN source_authority_routes route
+                   ON route.authority_route = binding.authority_route
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = binding.source_connection_id
+                WHERE connection.integration_namespace IN ('fubon','yuanta')
+                  AND route.stream IN ('domestic-deposit','loan','credit-card')`,
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      0,
+      "affected provider/product route bindings are removed",
+    );
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              `SELECT COUNT(*) AS count FROM source_route_bindings
+                WHERE authority_route = ?`,
+            )
+            .get(preservedFubonRoute) as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+      "an unrelated route on the same connection is preserved",
+    );
+    for (const table of [
+      "transaction_relations",
+      "transaction_relation_provenance",
+      "loan_repayment_settlement_groups",
+      "loan_repayment_settlement_group_members",
+      "current_loan_repayment_settlement_groups",
+      "current_loan_relations",
+      "transaction_counterparty_account_evidence",
+      "counterparty_account_evidence_support",
+      "loan_repayment_resolution_runs",
+      "loan_repayment_relation_events",
+    ]) {
+      assert.equal(
+        Number(
+          (
+            migrated.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+              count?: number;
+            }
+          ).count ?? 0,
+        ),
+        0,
+        `${table} has no legacy relation closure`,
+      );
+    }
+    assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
+    assert.deepEqual(namespaceFinancialSnapshot(migrated.db, "cathay"), cathayBefore);
+    assert.deepEqual(
+      migrated.db
+        .prepare("SELECT * FROM local_credentials_sentinel")
+        .all()
+        .map((row) => ({ ...row })),
+      [
+        {
+          name: "bank-login",
+          value: "preserved-outside-canonical-contract",
+        },
+      ],
+    );
+    assert.deepEqual(
+      migrated.db
+        .prepare("SELECT * FROM automation_settings_sentinel")
+        .all()
+        .map((row) => ({ ...row })),
+      [{ name: "schedule", value: "preserved" }],
+    );
+    const audit = migrated.db
+      .prepare(
+        "SELECT deleted_row_count, deleted_table_counts_json, scope_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get("source-connection-identity/v1:fubon-yuanta:v11") as {
+      deleted_row_count?: number;
+      deleted_table_counts_json?: string;
+      scope_json?: string;
+      closure_fingerprint?: string;
+    };
+    assert.ok(Number(audit.deleted_row_count) > 0);
+    assert.equal(
+      JSON.parse(String(audit.deleted_table_counts_json)).source_route_bindings,
+      affectedRouteBindingCount,
+      "route binding deletion is represented in the immutable purge audit",
+    );
+    assert.deepEqual(JSON.parse(String(audit.scope_json)), {
+      integrationNamespaces: ["fubon", "yuanta"],
+      streams: ["domestic-deposit", "loan", "credit-card"],
+    });
+    assert.match(String(audit.closure_fingerprint), /^sha256:/);
+
+    // Orphan connection rows are deliberately retained: they carry no
+    // financial/source subject selector and let a corrected deterministic key
+    // be reused without a UNIQUE collision during recollection.
+    assert.equal(
+      Number(
+        (
+          migrated.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM source_connections WHERE integration_namespace IN ('fubon','yuanta')",
+            )
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      legacyConnectionCount,
+    );
+    assert.equal(
+      queryCanonicalSourceCurrent(migrated).records.some(
+        (record) =>
+          record.identity.integrationNamespace === "fubon" ||
+          record.identity.integrationNamespace === "yuanta",
+      ),
+      false,
+    );
+
+    const correctedConnectionKey =
+      LOAN_CONTRACT_FIXTURES.fubon.identity.sourceConnectionKey;
+    const corrected = admitCanonicalSourceEvidence({
+      ...evidence("post-v11-fubon-recollection"),
+      integrationNamespace: "fubon",
+      sourceConnectionKey: correctedConnectionKey,
+      identityEpoch: token("9"),
+      stream: "domestic-deposit",
+      recordKind: "fubon-post-v11-recollection",
+      routeKey: "fubon/domestic-deposit/source-connection-v1-test",
+      contractVersion: "fubon/domestic-deposit/source-connection-v1-test",
+      subjectDigest: token("8"),
+      records: [
+        {
+          ...evidence("post-v11-fubon-recollection").records[0]!,
+          occurrenceKey: token("6"),
+          providerKey: token("5"),
+          contentHash: token("4"),
+        },
+      ],
+    });
+    await commitCanonicalSourceEvidence(migrated, corrected);
+    assert.equal(
+      queryCanonicalSourceCurrent(migrated).records.filter(
+        (record) => record.identity.integrationNamespace === "fubon",
+      ).length,
+      1,
+    );
+    migrated.close();
+
+    const reopened = createCanonicalSourceStore(path);
+    assert.equal(
+      queryCanonicalSourceCurrent(reopened).records.filter(
+        (record) => record.identity.integrationNamespace === "fubon",
+      ).length,
+      1,
+      "v11 recollection survives reopen",
+    );
+    assert.equal(
+      Number(
+        (
+          reopened.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM canonical_contract_purges WHERE purge_id = ?",
+            )
+            .get("source-connection-identity/v1:fubon-yuanta:v11") as {
+            count?: number;
+          }
+        ).count ?? 0,
+      ),
+      1,
+      "reopen does not repeat the migration",
+    );
+    assert.deepEqual(reopened.db.prepare("PRAGMA foreign_key_check").all(), []);
+    validateCanonicalSourceStore(reopened);
+    reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v11 to v12 purges only Fubon/Yuanta credit-card closure and preserves shared siblings", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v12-credit-card-purge-"),
+  );
+  const path = join(directory, "canonical.sqlite");
+  try {
+    await commitCathayDomesticDeposit(
+      directory,
+      CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    );
+    const legacy = createCanonicalSourceStore(path);
+    await commitCanonicalFinancialDepositCapture(
+      legacy,
+      admitCanonicalFinancialDepositCapture(
+        fubonCreditCardFinancialCapture("v2", "v12-legacy-fubon-card"),
+      ),
+    );
+    await commitCanonicalFinancialDepositCapture(
+      legacy,
+      admitCanonicalFinancialDepositCapture(
+        yuantaCreditCardFinancialCapture("v2", "v12-legacy-yuanta-card"),
+      ),
+    );
+
+    // Both sibling captures deliberately reuse the same provider connection
+    // key as the legacy card capture. The v12 scope must remove only the
+    // credit-card children and leave these source-only records available.
+    const preservedFubon = {
+      ...evidence("v12-preserved-fubon-deposit"),
+      integrationNamespace: "fubon",
+      sourceConnectionKey: token("j"),
+      identityEpoch: token("1"),
+      stream: "domestic-deposit",
+      recordKind: "fubon-preserved-domestic-deposit",
+      routeKey: "fubon/domestic-deposit/preserved-v12-test",
+      subjectDigest: token("2"),
+    };
+    const preservedYuanta = {
+      ...evidence("v12-preserved-yuanta-deposit"),
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: token("y"),
+      identityEpoch: token("3"),
+      stream: "domestic-deposit",
+      recordKind: "yuanta-preserved-domestic-deposit",
+      routeKey: "yuanta/domestic-deposit/preserved-v12-test",
+      subjectDigest: token("4"),
+    };
+    await commitCanonicalSourceEvidence(
+      legacy,
+      admitCanonicalSourceEvidence(preservedFubon),
+    );
+    await commitCanonicalSourceEvidence(
+      legacy,
+      admitCanonicalSourceEvidence(preservedYuanta),
+    );
+
+    // Include provider extension rows as well as the shared canonical rows so
+    // the migration proves the exact dependent closure, not just its roots.
+    seedFubonCardExtensionSentinel(
+      legacy.db,
+      "v12-legacy-fubon-card",
+      41,
+    );
+    seedYuantaCardExtensionSentinel(
+      legacy.db,
+      "v12-legacy-yuanta-card",
+      42,
+    );
+    const connectionCount = Number(
+      (
+        legacy.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM source_connections
+              WHERE integration_namespace IN ('fubon', 'yuanta')`,
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    );
+    const preservedCaptureKeys = [
+      "v12-preserved-fubon-deposit",
+      "v12-preserved-yuanta-deposit",
+    ];
+    const preservedBefore = legacy.db
+      .prepare(
+        `SELECT capture_key, stream, integration_namespace
+           FROM source_captures capture
+           JOIN source_connections connection
+             ON connection.source_connection_id = capture.source_connection_id
+          WHERE capture.capture_key IN (?, ?)
+          ORDER BY capture_key`,
+      )
+      .all(...preservedCaptureKeys) as Array<Record<string, unknown>>;
+    assert.equal(preservedBefore.length, 2);
+    legacy.close();
+
+    // Model the exact historical v11 boundary: v11 already completed its
+    // source-connection purge, then a card recollection happened under the
+    // wrapped product key. Its audit table still has the old v11-only CHECK.
+    const historical = new DatabaseSync(path);
+    historical.exec(`
+      PRAGMA foreign_keys = OFF;
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
+      DELETE FROM schema_migrations WHERE version = 12;
+      ALTER TABLE canonical_contract_purge_commits
+        RENAME TO canonical_contract_purge_commits_v12;
+      ALTER TABLE canonical_contract_purges
+        RENAME TO canonical_contract_purges_v12;
+      CREATE TABLE canonical_contract_purges (
+        purge_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL CHECK(schema_version = 11),
+        reason TEXT NOT NULL,
+        scope_json TEXT NOT NULL,
+        deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+        deleted_table_counts_json TEXT NOT NULL,
+        closure_fingerprint TEXT NOT NULL,
+        applied_at_utc_us INTEGER NOT NULL
+      );
+      INSERT INTO canonical_contract_purges(
+        purge_id, schema_version, reason, scope_json, deleted_row_count,
+        deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      )
+      SELECT purge_id, schema_version, reason, scope_json, deleted_row_count,
+             deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+        FROM canonical_contract_purges_v12;
+      CREATE TABLE canonical_contract_purge_commits (
+        purge_id TEXT NOT NULL REFERENCES canonical_contract_purges(purge_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        PRIMARY KEY(purge_id, commit_id)
+      );
+      INSERT INTO canonical_contract_purge_commits(purge_id, commit_id)
+        SELECT purge_id, commit_id FROM canonical_contract_purge_commits_v12;
+      DROP TABLE canonical_contract_purge_commits_v12;
+      DROP TABLE canonical_contract_purges_v12;
+      PRAGMA user_version = 11;
+      PRAGMA foreign_keys = ON;
+    `);
+    historical.close();
+
+    const migrated = openCanonicalDatabase(directory);
+    let migratedClosed = false;
+    try {
+      assert.equal(
+        Number(
+          (migrated.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        CANONICAL_SOURCE_SCHEMA_VERSION,
+      );
+      assert.equal(
+        Number(
+          (
+            migrated
+              .prepare(
+                `SELECT COUNT(*) AS count FROM source_captures capture
+                   JOIN source_connections connection
+                     ON connection.source_connection_id = capture.source_connection_id
+                  WHERE connection.integration_namespace IN ('fubon', 'yuanta')
+                    AND capture.stream = 'credit-card'`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+      assert.deepEqual(
+        migrated
+          .prepare(
+            `SELECT capture_key, stream, integration_namespace
+               FROM source_captures capture
+               JOIN source_connections connection
+                 ON connection.source_connection_id = capture.source_connection_id
+              WHERE capture.capture_key IN (?, ?)
+              ORDER BY capture_key`,
+          )
+          .all(...preservedCaptureKeys),
+        preservedBefore,
+      );
+      assert.equal(
+        Number(
+          (
+            migrated
+              .prepare(
+                `SELECT COUNT(*) AS count FROM source_connections
+                  WHERE integration_namespace IN ('fubon', 'yuanta')`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        connectionCount,
+        "shared Source Connection parents remain available",
+      );
+      for (const table of [
+        "fubon_credit_instrument_details",
+        "fubon_credit_account_identity_details",
+        "fubon_credit_transaction_details",
+        "canonical_credit_card_account_identities",
+        "canonical_credit_card_instruments",
+        "canonical_credit_card_instrument_evidence",
+        "canonical_credit_card_transaction_details",
+        "canonical_credit_card_transaction_lifecycle",
+      ])
+        assert.equal(
+          Number(
+            (migrated.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+              count?: number;
+            }).count ?? 0,
+          ),
+          0,
+          `${table} card closure is removed`,
+        );
+      assert.equal(
+        Number(
+          (
+            migrated
+              .prepare(
+                `SELECT COUNT(*) AS count FROM canonical_contract_purges
+                  WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12'`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+      );
+      const audit = migrated
+        .prepare(
+          `SELECT schema_version, deleted_row_count,
+                  deleted_table_counts_json, scope_json, closure_fingerprint
+             FROM canonical_contract_purges
+            WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12'`,
+        )
+        .get() as {
+        schema_version?: number;
+        deleted_row_count?: number;
+        deleted_table_counts_json?: string;
+        scope_json?: string;
+        closure_fingerprint?: string;
+      };
+      assert.equal(audit.schema_version, 12);
+      assert.ok(Number(audit.deleted_row_count) > 0);
+      const deletedCounts = JSON.parse(String(audit.deleted_table_counts_json));
+      assert.ok(Number(deletedCounts.fubon_credit_instrument_details) > 0);
+      assert.ok(Number(deletedCounts.canonical_credit_card_instruments) > 0);
+      assert.deepEqual(JSON.parse(String(audit.scope_json)), {
+        integrationNamespaces: ["fubon", "yuanta"],
+        streams: ["credit-card"],
+      });
+      assert.match(String(audit.closure_fingerprint), /^sha256:/);
+      assert.deepEqual(migrated.prepare("PRAGMA foreign_key_check").all(), []);
+
+      // A corrected recollection can reuse the retained connection parent and
+      // remains durable across the v12 reopen boundary.
+      migrated.close();
+      migratedClosed = true;
+      const recollected = createCanonicalSourceStore(path);
+      await commitCanonicalFinancialDepositCapture(
+        recollected,
+        admitCanonicalFinancialDepositCapture(
+          fubonCreditCardFinancialCapture("v2", "v12-new-fubon-card"),
+        ),
+      );
+      assert.equal(
+        recollected.db
+          .prepare(
+            `SELECT source_connection.source_connection_key
+               FROM source_captures capture
+               JOIN source_connections source_connection
+                 ON source_connection.source_connection_id = capture.source_connection_id
+              WHERE capture.capture_key = ?`,
+          )
+          .get("v12-new-fubon-card")?.source_connection_key,
+        token("j"),
+      );
+      recollected.close();
+    } finally {
+      if (!migratedClosed) migrated.close();
+    }
+
+    const reopened = openCanonicalDatabase(directory);
+    try {
+      assert.equal(
+        Number(
+          (reopened.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        CANONICAL_SOURCE_SCHEMA_VERSION,
+      );
+      assert.equal(
+        Number(
+          (
+            reopened
+              .prepare(
+                `SELECT COUNT(*) AS count FROM source_captures
+                  WHERE capture_key = 'v12-new-fubon-card'`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+      );
+      assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
+      validateCanonicalSourceStore({
+        db: reopened,
+        databasePath: path,
+        commitClock: () => 0,
+        close() {},
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v11 to v12 rolls back the credit-card purge when canonical schema validation fails", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-source-v12-credit-card-rollback-"),
+  );
+  const path = join(directory, "canonical.sqlite");
+  try {
+    const legacy = createCanonicalSourceStore(path);
+    await commitCanonicalFinancialDepositCapture(
+      legacy,
+      admitCanonicalFinancialDepositCapture(
+        fubonCreditCardFinancialCapture("v2", "v12-rollback-fubon-card"),
+      ),
+    );
+    seedFubonCardExtensionSentinel(
+      legacy.db,
+      "v12-rollback-fubon-card",
+      51,
+    );
+    legacy.close();
+
+    const historical = new DatabaseSync(path);
+    historical.exec(`
+      PRAGMA foreign_keys = OFF;
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
+      DELETE FROM schema_migrations WHERE version = 12;
+      ALTER TABLE transaction_relations DROP COLUMN from_identity_epoch_id;
+      PRAGMA user_version = 11;
+      PRAGMA foreign_keys = ON;
+    `);
+    historical.close();
+
+    assert.throws(
+      () => openCanonicalDatabase(directory),
+      /Canonical schema v10 relation column from_identity_epoch_id is missing/,
+    );
+
+    const afterFailure = new DatabaseSync(path);
+    try {
+      assert.equal(
+        Number(
+          (afterFailure.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        11,
+      );
+      assert.equal(
+        Number(
+          (
+            afterFailure
+              .prepare(
+                `SELECT COUNT(*) AS count FROM source_captures
+                   WHERE capture_key = 'v12-rollback-fubon-card'`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+      );
+      assert.equal(
+        Number(
+          (
+            afterFailure
+              .prepare("SELECT COUNT(*) AS count FROM fubon_credit_instrument_details")
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+      );
+      assert.equal(
+        Number(
+          (
+            afterFailure
+              .prepare(
+                `SELECT COUNT(*) AS count FROM canonical_contract_purges
+                  WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12'`,
+              )
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+      assert.equal(
+        Number(
+          (afterFailure.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number })
+            .foreign_keys,
+        ),
+        1,
+      );
+    } finally {
+      afterFailure.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const directory = await mkdtemp(join(tmpdir(), "canonical-source-v8-"));
 try {

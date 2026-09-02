@@ -1,21 +1,21 @@
 /**
- * Versioned, sanitized evidence for the Fubon loan v2 live run.  This module
- * intentionally contains only contract metadata and aggregate-safe assertions;
- * it is not a copy of the bank response or a durable financial record.
+ * Versioned, sanitized evidence for the Yuanta loan v1 live run. This module
+ * retains contract metadata and aggregate-safe assertions only; it is neither
+ * a bank response nor a durable financial record.
  */
-export const FUBON_LOAN_LIVE_RUN_EVIDENCE_V1 = Object.freeze({
+export const YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1 = Object.freeze({
   schemaVersion: "loan-live-validation-run-evidence/v1",
   fieldEvidenceVersion: "loan-live-field-observation/v1",
-  fieldEvidenceId: "sha256:fubon-loan-v2-field-observation-20260831",
-  evidenceId: "sha256:fubon-loan-v2-live-run-evidence-20260831",
+  fieldEvidenceId: "sha256:yuanta-loan-v1-field-observation-20260901",
+  evidenceId: "sha256:yuanta-loan-v1-live-run-evidence-20260901",
   artifact:
-    "src/ledger/canonical/fubon-loan-live-attestation.fixture.ts#FUBON_LOAN_LIVE_RUN_EVIDENCE_V1",
-  sourceId: "fubon",
-  workflow: "fubonLoanStatements",
-  authorityRoute: "fubon/loan/canonical-v2",
-  captureContractVersion: "loan/canonical/v2.fubon",
-  sourceEventCodebookVersion: "fubon/loan-source-event-codebook/v1",
-  verifiedOn: "2026-08-31",
+    "src/ledger/canonical/yuanta-loan-live-attestation.fixture.ts#YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1",
+  sourceId: "yuanta",
+  workflow: "yuantaLoanStatements",
+  authorityRoute: "yuanta/loan/canonical-v1",
+  captureContractVersion: "loan/canonical/v1.yuanta",
+  sourceEventCodebookVersion: "yuanta/loan-source-event-codebook/v1",
+  verifiedOn: "2026-09-01",
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
@@ -37,26 +37,26 @@ export const FUBON_LOAN_LIVE_RUN_EVIDENCE_V1 = Object.freeze({
         "transaction-amount",
         "balance-after-transaction",
       ]),
-      directionBasis: "provider-event-code-at-loan-boundary",
+      directionBasis: "provider-payment-item-at-loan-boundary",
       precision: "source-decimal-text",
     }),
     time: Object.freeze({
-      providerFields: Object.freeze(["transaction-date"]),
-      transactionTimeBasis: "source-reported-date",
+      providerFields: Object.freeze(["transaction-date", "posting-date"]),
+      transactionTimeBasis: "source-posting-date-with-transaction-date-fallback",
       balanceEffectiveTimeBasis: "source-transaction-date",
     }),
     status: Object.freeze({
-      providerFields: Object.freeze(["transaction-content"]),
+      providerFields: Object.freeze(["payment-item"]),
       interpretation: "versioned-provider-event-codebook",
     }),
     completeness: Object.freeze({
       providerSignals: Object.freeze([
-        "result-table-shape",
+        "six-column-result-table",
         "current-page",
         "page-size",
         "next-control-state",
       ]),
-      terminalRule: "fubon-loan-terminal-v2",
+      terminalRule: "yuanta-loan-terminal-v2",
       rangeBasis: "requested-start-end-and-terminal-pagination",
     }),
     queries: Object.freeze({

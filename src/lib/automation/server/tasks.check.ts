@@ -31,6 +31,52 @@ assert.deepEqual(yuantaAllStatements.command, [
   "--params",
   '{"statements":{"telemetry":true}}',
 ]);
+const fubonAuthMenuDiagnostic = taskById("fubon-auth-menu-diagnostic");
+assert.ok(fubonAuthMenuDiagnostic);
+assert.equal(fubonAuthMenuDiagnostic.credentialGroupId, "fubon");
+assert.equal(fubonAuthMenuDiagnostic.script, "run:fubon-auth-menu-diagnostic");
+assert.deepEqual(fubonAuthMenuDiagnostic.command, [
+  "libretto",
+  "run",
+  "src/workflows/fubon-auth-menu-diagnostic.ts",
+  "--headless",
+]);
+const fubonApprovedLoanMenuDiagnostic = taskById(
+  "fubon-approved-loan-menu-diagnostic",
+);
+assert.ok(fubonApprovedLoanMenuDiagnostic);
+assert.equal(fubonApprovedLoanMenuDiagnostic.credentialGroupId, "fubon");
+assert.deepEqual(fubonApprovedLoanMenuDiagnostic.command, [
+  "libretto",
+  "run",
+  "src/workflows/fubon-auth-menu-diagnostic.ts",
+  "--headless",
+  "--params",
+  '{"expandApprovedMenu":"loan"}',
+]);
+const yuantaAuthMenuDiagnostic = taskById("yuanta-auth-menu-diagnostic");
+assert.ok(yuantaAuthMenuDiagnostic);
+assert.equal(yuantaAuthMenuDiagnostic.credentialGroupId, "yuanta");
+assert.equal(yuantaAuthMenuDiagnostic.script, "run:yuanta-auth-menu-diagnostic");
+assert.deepEqual(yuantaAuthMenuDiagnostic.command, [
+  "libretto",
+  "run",
+  "src/workflows/yuanta-auth-menu-diagnostic.ts",
+  "--headless",
+]);
+const yuantaApprovedFunctionOverviewDiagnostic = taskById(
+  "yuanta-approved-function-overview-diagnostic",
+);
+assert.ok(yuantaApprovedFunctionOverviewDiagnostic);
+assert.equal(yuantaApprovedFunctionOverviewDiagnostic.credentialGroupId, "yuanta");
+assert.deepEqual(yuantaApprovedFunctionOverviewDiagnostic.command, [
+  "libretto",
+  "run",
+  "src/workflows/yuanta-auth-menu-diagnostic.ts",
+  "--headless",
+  "--params",
+  '{"expandApprovedMenu":"function-overview"}',
+]);
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");

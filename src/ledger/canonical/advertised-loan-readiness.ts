@@ -6,6 +6,7 @@ import {
 } from "./fubon-loan.ts";
 import {
   YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+  isYuantaLoanLiveValidationAttestationValid,
 } from "./yuanta-loan.ts";
 import {
   ADVERTISED_LOAN_SOURCE_IDS as CONTRACT_LOAN_SOURCE_IDS,
@@ -141,10 +142,9 @@ export const ADVERTISED_LOAN_READINESS: readonly AdvertisedLoanReadinessEntry[] 
       const liveVerified =
         sourceId === "fubon"
           ? isFubonLoanLiveValidationAttestationValid(manifest.liveAttestation)
-          : manifest.liveAttestation.status === "verified-live-run" &&
-            manifest.liveAttestation.financialValuesRetained === false &&
-            manifest.liveAttestation.authenticationSecretsRetained === false &&
-            manifest.liveAttestation.rawSourcePayloadRetained === false;
+          : isYuantaLoanLiveValidationAttestationValid(
+              manifest.liveAttestation,
+            );
       return {
         sourceId,
         advertisedName: advertised.label,

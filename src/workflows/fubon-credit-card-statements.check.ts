@@ -26,6 +26,22 @@ const {
   resolveFubonSettledStatementCycles,
 } =
   await import("./fubon-credit-card-statements.ts");
+const { deriveFubonSourceConnectionKey } = await import(
+  "./fubon-source-connection.ts"
+);
+
+const fubonLoginSourceConnectionKey = deriveFubonSourceConnectionKey({
+  fubon_user_id: "synthetic-fubon-user",
+  fubon_account: "synthetic-fubon-account",
+})!;
+const fubonAutomaticSourceConnectionKey = deriveFubonSourceConnectionKey({
+  fubon_user_id: "synthetic-fubon-automatic-user",
+  fubon_account: "synthetic-fubon-automatic-account",
+})!;
+const fubonOtherSourceConnectionKey = deriveFubonSourceConnectionKey({
+  fubon_user_id: "synthetic-fubon-other-user",
+  fubon_account: "synthetic-fubon-other-account",
+})!;
 
 const source = await readFile(
   new URL("./fubon-credit-card-statements.ts", import.meta.url),
@@ -214,7 +230,7 @@ for (const providerStatus of ["尚未出帳", "尚未出帳（待定）", "Not y
 }
 const canonicalInput = fubonCreditCardStatementsInputSchema.parse({
   canonicalHumanAttestation: {
-    sourceConnectionKey: "fubon-login-connection-v2",
+    sourceConnectionKey: fubonLoginSourceConnectionKey,
     identityEpochKey: "fubon-credit-epoch-v2",
     humanAttestedAccountKey: "portfolio-primary-a",
   },
@@ -702,7 +718,7 @@ for (const invalidGridStates of [
 const automaticFingerprintKey = { secret: "synthetic-managed-fingerprint-key" };
 const automaticInput = fubonCreditCardStatementsInputSchema.parse({
   canonicalHumanAttestation: {
-    sourceConnectionKey: "fubon-automatic-source-v2",
+    sourceConnectionKey: fubonAutomaticSourceConnectionKey,
     identityEpochKey: "fubon-credit-card-human-attested-v2",
     humanAttestedAccountKey: "portfolio_automatic_a",
   },
@@ -1045,7 +1061,7 @@ const rotatedAutomaticCaptures = buildFubonCanonicalCreditCardCaptures({
   ...canonicalBuildOptions,
   input: fubonCreditCardStatementsInputSchema.parse({
     canonicalHumanAttestation: {
-      sourceConnectionKey: "fubon-other-source-v2",
+      sourceConnectionKey: fubonOtherSourceConnectionKey,
       identityEpochKey: "fubon-credit-card-human-attested-v2",
       humanAttestedAccountKey: "portfolio-other-a",
     },
@@ -1059,7 +1075,7 @@ assert.notDeepEqual(
 );
 const panInput = fubonCreditCardStatementsInputSchema.parse({
   canonicalHumanAttestation: {
-    sourceConnectionKey: "fubon-login-connection-v2",
+    sourceConnectionKey: fubonLoginSourceConnectionKey,
     identityEpochKey: "fubon-credit-epoch-v2",
     humanAttestedAccountKey: "portfolio-pan-a",
   },

@@ -53,8 +53,10 @@ test("advertised loan contracts cover exactly Fubon and Yuanta", () => {
   );
   assert.equal(
     readiness.entries.find((entry) => entry.sourceId === "yuanta")?.liveValidation,
-    "pending",
+    "complete",
   );
+  assert.equal(readiness.status, "release-ready");
+  assert.deepEqual(readiness.pendingLiveValidationSourceIds, []);
 });
 
 test("loan admission fails closed when balance effective time is substituted", () => {

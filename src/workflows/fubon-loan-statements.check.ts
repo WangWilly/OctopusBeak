@@ -3,14 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import { createServer } from "vite";
-import { FUBON_LOAN_PAGINATION_FIXTURES_V1 } from "./fubon-loan-statements.fixtures.ts";
+import {
+  FUBON_LOAN_PAGINATION_FIXTURES_V1,
+  FUBON_LOAN_PAGINATION_FIXTURES_V2,
+} from "./fubon-loan-statements.fixtures.ts";
 
-const { persistFubonLoanCapture } = await import(
-  "../ledger/canonical/fubon-loan.ts"
-);
-const { FUBON_LOAN_CONTRACT_VERSION } = await import(
-  "../ledger/canonical/loan-financial.ts"
-);
+const { persistFubonLoanCapture } =
+  await import("../ledger/canonical/fubon-loan.ts");
+const { runFubonLoanStatements } = await import("./fubon-loan-statements.ts");
+const { FUBON_LOAN_CONTRACT_VERSION } =
+  await import("../ledger/canonical/loan-financial.ts");
 
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
@@ -32,7 +34,48 @@ assert.match(source, /relationCoverage:\s*["']not-asserted["']/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonLoanStatements"),
 );
-assert.doesNotMatch(runSource, /catch \(error\)/);
+assert.match(
+  runSource,
+  /resolveLoanRepaymentRelations|resolveRelations/,
+  "a successful complete loan capture must trigger the independent relation resolver",
+);
+assert.match(
+  runSource,
+  /fubon-loan-relation-resolution-failed/,
+  "relation resolution failures must not withdraw a committed capture",
+);
+assert.doesNotMatch(
+  source,
+  /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
+  "date+amount loan payment candidates must not be emitted or stored",
+);
+assert.match(
+  source,
+  /FUBON_LOAN_TERMINAL_RULE_VERSION\s*=\s*["']fubon-loan-terminal-v2["']/u,
+  "the live-verified static result terminal rule must be versioned",
+);
+const loanCommitMarker = runSource.indexOf("await persist(store");
+const loanResolverMarker = runSource.indexOf(
+  "await resolveLoanRelationsAfterCapture(store",
+);
+assert.ok(
+  loanCommitMarker >= 0 && loanResolverMarker > loanCommitMarker,
+  "loan relation resolution must happen after the canonical capture commit",
+);
+assert.match(source, /resolveLoanRelationsAfterCapture/u);
+
+test("Fubon exported loan run fails closed without caller Source Connection identity", async () => {
+  await assert.rejects(
+    () =>
+      runFubonLoanStatements(
+        {} as Page,
+        { downloadFormat: "EXCEL" } as Parameters<
+          typeof runFubonLoanStatements
+        >[1],
+      ),
+    /stable caller-supplied Source Connection scope and key/u,
+  );
+});
 
 type FakeLocator = Locator & {
   selector: string;
@@ -313,6 +356,39 @@ const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   }>;
   rows: string[][];
 };
+const extractFubonLoanAccountEvidence =
+  module.extractFubonLoanAccountEvidence as (
+    optionValue: string,
+    optionLabel: string,
+  ) => string | null;
+
+test("extracts only a complete unmasked Fubon loan selector account", () => {
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "01234567890123 (學貸-留貸)",
+    ),
+    "01234567890123",
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence("01234567890123", "masked"),
+    null,
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "**********0123 (學貸-留貸)",
+    ),
+    null,
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "01234567890123 arbitrary suffix",
+    ),
+    null,
+  );
+});
 
 test("uses an already-rendered loan form without navigation or goto", async () => {
   const scope = fakeScope("txnFrame");
@@ -444,7 +520,7 @@ test("Fubon pagination derives terminal/page evidence from provider controls", (
     ),
     {
       nextPage: "2",
-      pageFieldName: "resultGrid:dataGridCurrentPage",
+      pageFieldName: "form1:opaque_DataGrid:dataGridCurrentPage",
       terminal: false,
       evidence: "next-page",
     },
@@ -455,7 +531,7 @@ test("Fubon pagination derives terminal/page evidence from provider controls", (
     ),
     {
       nextPage: "2",
-      pageFieldName: "resultGrid:dataGridCurrentPage",
+      pageFieldName: "form1:opaque_DataGrid:dataGridCurrentPage",
       terminal: false,
       evidence: "next-page",
     },
@@ -493,6 +569,53 @@ test("Fubon pagination derives terminal/page evidence from provider controls", (
       evidence: null,
     });
   }
+});
+
+test("Fubon live-verified provider result shape is a versioned terminal signal", () => {
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithoutRows,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    },
+  );
+  for (const fixture of [
+    FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithoutCurrentPageField,
+    FUBON_LOAN_PAGINATION_FIXTURES_V2.unrelatedTable,
+  ]) {
+    assert.deepEqual(parseFubonLoanPaginationSignal(fixture), {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    });
+  }
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithActiveNext,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "resultGrid:dataGridCurrentPage",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
 });
 
 test("Fubon multi-page traversal preserves page ordinals and terminal evidence", () => {
@@ -559,7 +682,11 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
 
   assert.equal(parsed.completeness?.pageCount, 2);
   assert.deepEqual(
-    parsed.pages.map((page) => [page.pageOrdinal, page.rowCount, page.terminal]),
+    parsed.pages.map((page) => [
+      page.pageOrdinal,
+      page.rowCount,
+      page.terminal,
+    ]),
     [
       [0, 1, false],
       [1, 1, true],

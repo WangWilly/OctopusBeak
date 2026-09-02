@@ -3,6 +3,17 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "vite";
+import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+
+const evidenceSourceConnectionScope =
+  "FUBON-EVIDENCE-USER\u0000FUBON-EVIDENCE-ACCOUNT";
+const evidenceSourceConnectionIdentity = {
+  sourceConnectionScope: evidenceSourceConnectionScope,
+  sourceConnectionKey: deriveSourceConnectionIdentityKey(
+    "fubon",
+    evidenceSourceConnectionScope,
+  ),
+};
 
 const server = await createServer({
   configFile: false,
@@ -248,10 +259,15 @@ assert.throws(
 );
 
 const calls: string[] = [];
+const isolatedCanonicalLedgerDirectory = await mkdtemp(
+  join(tmpdir(), "fubon-evidence-canonical-"),
+);
 const output = await module.runFubonStatements(
   {},
   { dateRanges: ["1"], downloadFormat: "EXCEL" },
   {
+    ...evidenceSourceConnectionIdentity,
+    canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
     openTransactionDetailForAccountIndex: async () => {
       calls.push("open");
       return "********9012";
@@ -302,6 +318,8 @@ try {
     {},
     { dateRanges: ["1"], downloadFormat: "EXCEL" },
     {
+      ...evidenceSourceConnectionIdentity,
+      canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
       openTransactionDetailForAccountIndex: async () => "********9012",
       readDepositAccountOptions: async () => [
         { value: accountValue, label: accountLabel },
@@ -356,6 +374,8 @@ await assert.rejects(
     {},
     { dateRanges: ["1"], downloadFormat: "EXCEL" },
     {
+      ...evidenceSourceConnectionIdentity,
+      canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
       openTransactionDetailForAccountIndex: async () => "********9012",
       readDepositAccountOptions: async () => [
         { value: accountValue, label: accountLabel },
@@ -383,3 +403,4 @@ await assert.rejects(
   /evidence admission blocked:.*(?:query-range-invalid|page-missing)/,
 );
 assert.equal(malformedWriterCalls, 0);
+await rm(isolatedCanonicalLedgerDirectory, { recursive: true, force: true });

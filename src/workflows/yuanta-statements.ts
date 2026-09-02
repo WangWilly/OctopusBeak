@@ -29,13 +29,27 @@ import {
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
+  type CanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  deriveSourceConnectionIdentityKey,
+  requireSourceConnectionIdentity,
+} from "../ledger/canonical/source-connection-identity.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
   dismissYuantaBankNotice,
+  yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
+import {
+  persistCounterpartyAccountEvidence,
+  resolveLoanRepaymentRelations,
+  YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
+  type LoanRepaymentRelationResolutionResult,
+  type TransactionCounterpartyAccountEvidenceInput,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
 import {
   writeYuantaOccurrenceDiagnosticCandidate,
   yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
@@ -87,6 +101,16 @@ const outputSchema = z.object({
     }),
   ),
   files: z.array(tableFileSchema),
+  relationResolution: z
+    .object({
+      status: z.literal("canonical-live"),
+      outcome: z.enum(["changed", "unchanged", "no-admission"]),
+      resolutionId: z.string().nullable(),
+      exactRelationIds: z.array(z.string()),
+      settlementGroupIds: z.array(z.string()),
+      reason: z.string().optional(),
+    })
+    .optional(),
   telemetry: z
     .array(
       z.object({
@@ -159,10 +183,34 @@ type SourceDownloadMetadata = {
   rowCount: number;
 };
 
-type YuantaStatementDownload = {
+/**
+ * Evidence supplied by a Yuanta detail or repayment-setting page.  The
+ * regular domestic CSV does not populate this shape: its account column is
+ * the selected account itself, so treating it as a counterparty would be an
+ * identity guess.  A future live adapter may provide an exact source row
+ * ordinal, or an exact canonical source-record key after inspecting the
+ * provider page.
+ */
+export type YuantaCounterpartyAccountEvidence = Readonly<
+  Omit<
+    TransactionCounterpartyAccountEvidenceInput,
+    | "captureId"
+    | "sourceRecordKey"
+    | "sourceConnectionKey"
+    | "identityEpochKey"
+  > & {
+    sourceRecordKey?: string;
+    pageOrdinal?: number;
+    rowOrdinal?: number;
+  }
+>;
+
+export type YuantaStatementDownload = {
   filename: string;
   rows: BankTransactionRow[];
   source: YuantaDomesticDepositDownloadEvidence;
+  /** Optional exact evidence from a provider detail/mandate page. */
+  counterpartyAccountEvidence?: readonly YuantaCounterpartyAccountEvidence[];
 };
 
 export type YuantaStatementsRunDependencies = {
@@ -182,6 +230,14 @@ export type YuantaStatementsRunDependencies = {
   canonicalFinancialLedgerDir?: string;
   /** Explicit opt-in directory for raw, local-only occurrence diagnostics. */
   occurrenceDiagnosticDirectory?: string | null;
+  /** Stable provider-login scope; never contains a password or session. */
+  sourceConnectionScope?: string;
+  /** Stable source key derived from the provider-login scope. */
+  sourceConnectionKey?: string;
+  /** Deterministic capture clock for checks; production uses Taiwan local time. */
+  observedAt?: () => string;
+  /** Injected in checks; production uses the canonical resolver. */
+  resolveRelations?: typeof resolveLoanRepaymentRelations;
 };
 
 type BankTransactionRow = {
@@ -199,12 +255,6 @@ const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
   one_week: "一週",
   one_month: "一個月",
   three_months: "三個月",
-};
-
-const dateRangeDays: Record<z.infer<typeof dateRangeSchema>, number> = {
-  one_week: 7,
-  one_month: 31,
-  three_months: 92,
 };
 
 function formatDateOnly(date: Date): string {
@@ -248,7 +298,22 @@ export function deriveYuantaDomesticDepositQueryRange(
   if (!Number.isFinite(endDate.getTime()))
     throw new Error("Yuanta telemetry observedAt has an invalid local date.");
   const startDate = new Date(endDate);
-  startDate.setUTCDate(startDate.getUTCDate() - dateRangeDays[dateRange] + 1);
+  if (dateRange === "one_week") {
+    startDate.setUTCDate(startDate.getUTCDate() - 6);
+  } else {
+    const monthOffset = dateRange === "one_month" ? 1 : 3;
+    const targetMonth = endDate.getUTCMonth() - monthOffset;
+    const targetYear = endDate.getUTCFullYear() + Math.floor(targetMonth / 12);
+    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+    const lastTargetDay = new Date(
+      Date.UTC(targetYear, normalizedMonth + 1, 0),
+    ).getUTCDate();
+    startDate.setUTCFullYear(
+      targetYear,
+      normalizedMonth,
+      Math.min(endDate.getUTCDate(), lastTargetDay),
+    );
+  }
   return {
     dateRange,
     startDate: formatDateOnly(startDate),
@@ -277,6 +342,32 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Provider-versioned live rule: Yuanta domestic-deposit CSV 備註 contains a
+ * complete loan account as `00` + the 14-digit loan selector account.  The
+ * source 16 digits remain durable evidence while the normalized 14 digits
+ * are used only for equality with the canonical loan account identity.
+ */
+export function yuantaLoanAccountEvidenceFromTransactionNote(
+  noteValue: string,
+  rowOrdinal: number,
+): YuantaCounterpartyAccountEvidence | null {
+  const sourceValue = toAsciiDigits(cleanText(noteValue));
+  if (!/^00\d{14}$/u.test(sourceValue)) return null;
+  return {
+    rowOrdinal,
+    accountValue: sourceValue,
+    normalizedAccountValue: sourceValue.slice(2),
+    role: "beneficiary",
+    purpose: "loan_repayment",
+    scope: "loan_contract",
+    evidenceKind: "transaction-counterparty-account",
+    sourceField: "備註",
+    contractVersion:
+      YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
+  };
 }
 
 function toAsciiDigits(value: string): string {
@@ -681,11 +772,7 @@ async function queryAccount(
 async function downloadStatementRows(
   page: Page,
   account: { label: string; value: string },
-): Promise<{
-  filename: string;
-  rows: BankTransactionRow[];
-  source: YuantaDomesticDepositDownloadEvidence;
-}> {
+): Promise<YuantaStatementDownload> {
   const scope = await findScopeWithLocator(
     page,
     (candidate) =>
@@ -710,9 +797,19 @@ async function downloadStatementRows(
     downloaded.content,
     publicAccountLabel,
   );
+  const counterpartyAccountEvidence = rows.flatMap((row) => {
+    const evidence = yuantaLoanAccountEvidenceFromTransactionNote(
+      row.values[9] ?? "",
+      row.sourceRowOrdinal,
+    );
+    return evidence ? [evidence] : [];
+  });
   return {
     filename,
     rows,
+    ...(counterpartyAccountEvidence.length > 0
+      ? { counterpartyAccountEvidence }
+      : {}),
     source: {
       filename,
       byteLength: downloaded.byteLength,
@@ -760,6 +857,65 @@ function buildYuantaCapture(
   };
 }
 
+type YuantaFinancialCaptureForEvidence = {
+  captureId: string;
+  identity: {
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+  };
+  records: readonly {
+    occurrenceKey: string;
+    compactJson: string;
+  }[];
+};
+
+function sourceRecordKeyForYuantaEvidence(
+  capture: YuantaFinancialCaptureForEvidence,
+  evidence: YuantaCounterpartyAccountEvidence,
+): string {
+  if (evidence.sourceRecordKey?.trim()) return evidence.sourceRecordKey.trim();
+  if (evidence.rowOrdinal === undefined)
+    throw new Error(
+      "Yuanta counterparty evidence must identify a source record or row ordinal.",
+    );
+  if (!Number.isSafeInteger(evidence.rowOrdinal) || evidence.rowOrdinal < 0)
+    throw new Error("Yuanta counterparty evidence row ordinal is invalid.");
+
+  const candidates = capture.records.filter((record) => {
+    try {
+      const compact = JSON.parse(record.compactJson) as {
+        pageOrdinal?: unknown;
+        rowOrdinal?: unknown;
+      };
+      return (
+        compact.rowOrdinal === evidence.rowOrdinal &&
+        (evidence.pageOrdinal === undefined ||
+          compact.pageOrdinal === evidence.pageOrdinal)
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (candidates.length !== 1)
+    throw new Error(
+      "Yuanta counterparty evidence row does not identify exactly one canonical source record.",
+    );
+  return candidates[0]!.occurrenceKey;
+}
+
+function materializeYuantaCounterpartyEvidence(
+  capture: YuantaFinancialCaptureForEvidence,
+  evidence: YuantaCounterpartyAccountEvidence,
+): TransactionCounterpartyAccountEvidenceInput {
+  return {
+    ...evidence,
+    captureId: capture.captureId,
+    sourceRecordKey: sourceRecordKeyForYuantaEvidence(capture, evidence),
+    sourceConnectionKey: capture.identity.sourceConnectionKey,
+    identityEpochKey: capture.identity.identityEpochKey,
+  };
+}
+
 /**
  * Run the domestic Yuanta capture after authentication/navigation. Source
  * evidence is always durable; financial projection is enabled only by an
@@ -770,6 +926,12 @@ export async function runYuantaStatements(
   input: YuantaStatementsInput,
   overrides: YuantaStatementsRunDependencies = {},
 ): Promise<z.infer<typeof outputSchema>> {
+  const { sourceConnectionScope, sourceConnectionKey } =
+    requireSourceConnectionIdentity("yuanta", "Yuanta deposit", overrides);
+  const stableSourceIdentity = {
+    sourceConnectionScope,
+    sourceConnectionKey,
+  } as const;
   const readAccounts =
     overrides.readDepositAccountOptions ??
     ((candidatePage: Page) =>
@@ -798,12 +960,14 @@ export async function runYuantaStatements(
       }
     : null;
   const financialUsesSourceStore = financialStore === sourceStore;
+  const resolveRelations =
+    overrides.resolveRelations ?? resolveLoanRepaymentRelations;
   const occurrenceDiagnosticDirectory =
     overrides.occurrenceDiagnosticDirectory === undefined
       ? yuantaOccurrenceDiagnosticDirectoryFromEnvironment()
       : overrides.occurrenceDiagnosticDirectory;
   const nextTimestamp = createTimestampGenerator();
-  const observedAt = yuantaObservedAt();
+  const observedAt = overrides.observedAt?.() ?? yuantaObservedAt();
   const queryRange = deriveYuantaDomesticDepositQueryRange(
     input.dateRange,
     observedAt,
@@ -817,6 +981,7 @@ export async function runYuantaStatements(
     status: "financial-admitted" | "source-only";
     reason: string | null;
   }> = [];
+  let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
 
   try {
     // The canonical domestic scope is all visible TWD selectors. Input
@@ -872,6 +1037,11 @@ export async function runYuantaStatements(
         capture,
         captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
         humanAttestation: getYuantaHumanAttestedV2Manifest(),
+        // Financial Source Connection identity comes only from the stable
+        // login pair. The attestation manifest remains provenance for the
+        // independently versioned account/identity epoch.
+        sourceConnectionScope,
+        sourceConnectionKey,
       };
       const financialAdmission =
         admitYuantaDomesticDepositFinancialCapture(financialInput);
@@ -894,6 +1064,7 @@ export async function runYuantaStatements(
           sourceStore,
           capture,
           sourceCaptureId,
+          stableSourceIdentity,
         );
       } else {
         if (
@@ -922,6 +1093,7 @@ export async function runYuantaStatements(
               sourceStore,
               capture,
               sourceCaptureId,
+              stableSourceIdentity,
             );
             throw new Error(
               `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
@@ -943,17 +1115,44 @@ export async function runYuantaStatements(
               financialInput,
             );
             status = "financial-admitted";
+            const financialCapture = financialAdmission.capture;
+            if (!financialCapture)
+              throw new Error(
+                "Yuanta domestic deposit admission lost its canonical capture.",
+              );
+            for (const evidence of
+              downloaded.counterpartyAccountEvidence ?? []) {
+              await persistCounterpartyAccountEvidence(
+                financialStore!,
+                materializeYuantaCounterpartyEvidence(
+                  financialCapture,
+                  evidence,
+                ),
+              );
+            }
+            relationResolution = await resolveLoanRelationsAfterCapture(
+              financialStore!,
+              resolveRelations,
+              {
+                sourceConnectionKey,
+                integrationNamespace: "yuanta",
+                observedAt: financialCapture.observedAt,
+                failureEvent: "yuanta-loan-relation-resolution-failed",
+              },
+            );
             if (!financialUsesSourceStore)
               await commitYuantaDomesticDepositSourceEvidence(
                 sourceStore,
                 capture,
                 sourceCaptureId,
+                stableSourceIdentity,
               );
           } catch (error) {
             await commitYuantaDomesticDepositSourceEvidence(
               sourceStore,
               capture,
               sourceCaptureId,
+              stableSourceIdentity,
             );
             throw error;
           }
@@ -963,6 +1162,7 @@ export async function runYuantaStatements(
             sourceStore,
             capture,
             sourceCaptureId,
+            stableSourceIdentity,
           );
       }
 
@@ -986,6 +1186,15 @@ export async function runYuantaStatements(
       count: 1,
       admissions,
       files: [file],
+      ...(relationResolution
+        ? {
+            relationResolution: {
+              ...relationResolution,
+              exactRelationIds: [...relationResolution.exactRelationIds],
+              settlementGroupIds: [...relationResolution.settlementGroupIds],
+            },
+          }
+        : {}),
       ...(telemetry.length > 0 ? { telemetry } : {}),
     };
   } finally {
@@ -1018,8 +1227,14 @@ export default workflow("yuantaStatements", {
       DEFAULT_LEDGER_DIR;
     const explicitFinancialLedgerDir =
       process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
+    const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
     const output = await runYuantaStatements(page, input, {
       canonicalLedgerDir: configuredSourceLedgerDir,
+      sourceConnectionScope,
+      sourceConnectionKey: deriveSourceConnectionIdentityKey(
+        "yuanta",
+        sourceConnectionScope,
+      ),
       ...(explicitFinancialLedgerDir
         ? { canonicalFinancialLedgerDir: explicitFinancialLedgerDir }
         : {}),
