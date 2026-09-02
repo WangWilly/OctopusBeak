@@ -296,16 +296,30 @@ export type YuantaSettlementMarket =
   typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
 
 /**
+ * MarketNo is a provider-owned code, not a ticker or currency hint.  Its
+ * explicit 52/53/54 mapping is part of the canonical market-v2 contract
+ * emitted by buildYuantaTradeFundingEvidence below.
+ */
+const YUANTA_US_SETTLEMENT_MARKET_NOS = new Set(["52", "53", "54"]);
+const YUANTA_SOURCE_MARKET_NO_FIELD = "__source_market_no";
+
+/**
  * Normalize only market labels explicitly supplied by the YuanTa report.
  * Currency, asset type, and security identifiers are deliberately excluded:
  * YuanTa's settlement schedule varies by market even when the currency is
  * the same.
  */
 export function normalizeYuantaSettlementMarket(
-  value: string | null | undefined,
+  value: string | number | null | undefined,
 ): YuantaSettlementMarket | undefined {
-  const normalized = cleanText(value).normalize("NFKC").toLocaleUpperCase("en-US");
+  const normalized = cleanText(
+    value === null || value === undefined ? "" : String(value),
+  )
+    .normalize("NFKC")
+    .toLocaleUpperCase("en-US");
   if (normalized === "US" || normalized === "美股")
+    return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
+  if (YUANTA_US_SETTLEMENT_MARKET_NOS.has(normalized))
     return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
   return undefined;
 }
@@ -314,7 +328,7 @@ export function buildYuantaTradeFundingEvidence(input: {
   sourceRecordKey: string;
   stableLoginIdentity: string;
   currency: string;
-  market?: string | null;
+  market?: string | number | null;
 }): InvestmentFundingEvidence {
   const settlementMarket = normalizeYuantaSettlementMarket(input.market);
   if (!settlementMarket)
@@ -526,7 +540,7 @@ function uniqueKey(
   return `${withSuffix} ${index}`;
 }
 
-function normalizeRows(
+export function normalizeRows(
   rawRows: unknown[],
   columns: GridColumn[],
 ): Record<string, unknown>[] {
@@ -547,6 +561,11 @@ function normalizeRows(
         );
         normalized[key] = row[column.field];
       }
+      // Kendo receives MarketNo in the raw row even though the UI omits that
+      // metadata column. Preserve only this contract-approved source field;
+      // arbitrary server properties must not leak into normalized evidence.
+      if ("MarketNo" in row)
+        normalized[YUANTA_SOURCE_MARKET_NO_FIELD] = row.MarketNo;
       return normalized;
     });
 }
@@ -611,7 +630,7 @@ function extractAssetSummaryRows(html: string): AssetSummaryRow[] {
   return rows;
 }
 
-function parseReportPage(
+export function parseReportPage(
   html: string,
   url: string,
   reportType: string,
@@ -903,7 +922,7 @@ export function isCompleteHoldingCapture(
   });
 }
 
-function normalizeTradeRows(
+export function normalizeTradeRows(
   pages: ReportPage[],
   dateRange: { startDate: string; endDate: string },
 ): CsvRow[] {
@@ -1001,6 +1020,7 @@ function normalizeTradeRows(
             "支出",
           ]),
           settlement_currency: rowValue(row, ["交割幣別"]),
+          market: rowValue(row, [YUANTA_SOURCE_MARKET_NO_FIELD, "MarketNo"]),
           realized_pnl: rowValue(row, [
             "已實現損益",
             "含息投資損益",

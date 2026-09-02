@@ -49,8 +49,9 @@ const YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION =
   "yuanta/foreign-settlement/human-attested-v1";
 export const YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION =
   "yuanta/foreign-settlement/linkage-v1" as const;
+/** v2 adds the live OverseaTrade MarketNo 52/53/54 source-code mapping. */
 export const YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION =
-  "yuanta/foreign-settlement/market-v1" as const;
+  "yuanta/foreign-settlement/market-v2" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY = "us-equity" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_CONTRACT_VERSION =
   "yuanta/foreign-settlement/calendar-v1" as const;

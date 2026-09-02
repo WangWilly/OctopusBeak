@@ -9,6 +9,9 @@ import {
   isCompleteHoldingCapture,
   buildYuantaTradeFundingEvidence,
   normalizeYuantaSettlementMarket,
+  normalizeRows,
+  normalizeTradeRows,
+  parseReportPage,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
@@ -284,8 +287,118 @@ test("creates settlement evidence only for an explicit US market label", () => {
   assert.equal(evidence.settlementMarket, "us-equity");
   assert.equal(
     evidence.settlementMarketContractVersion,
-    "yuanta/foreign-settlement/market-v1",
+    "yuanta/foreign-settlement/market-v2",
   );
+});
+
+test("maps live OverseaTrade MarketNo codes into settlement evidence", () => {
+  const page = parseReportPage(
+    `
+      <script>
+        var currAssetType = 'Oversea';
+        var currTradeType = 'OverseaTrade';
+        var startDate = '2026/08/01';
+        var endDate = '2026/08/31';
+        $("#gridOversea").kendoGrid({
+          columns: [
+            { field: 'TradeDate_T2', title: '交易日期' },
+            { field: 'StockID_T3', title: '股票代號' },
+            { field: 'TradeType_T5', title: '交易類別' },
+            { field: 'Currency_T15', title: '交易幣別' },
+            { field: 'AccountReceivableOrPayable_T17', title: '應收付' },
+            { field: 'SettlementCurrency_T16', title: '交割幣別' }
+          ],
+          data: [
+            { "TradeDate_T2": "2026/08/30", "StockID_T3": "NET", "TradeType_T5": "買進", "Currency_T15": "USD", "AccountReceivableOrPayable_T17": "100", "SettlementCurrency_T16": "USD", "MarketNo": 52 },
+            { "TradeDate_T2": "2026/08/29", "StockID_T3": "SPY", "TradeType_T5": "買進", "Currency_T15": "USD", "AccountReceivableOrPayable_T17": "100", "SettlementCurrency_T16": "USD", "MarketNo": 53 },
+            { "TradeDate_T2": "2026/08/28", "StockID_T3": "AAPL", "TradeType_T5": "買進", "Currency_T15": "USD", "AccountReceivableOrPayable_T17": "100", "SettlementCurrency_T16": "USD", "MarketNo": 54 }
+          ]
+        });
+      </script>
+    `,
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/OverseaTrade",
+    "OverseaTrade",
+  );
+  const rows = normalizeTradeRows([page], {
+    startDate: "2026/08/01",
+    endDate: "2026/08/31",
+  });
+  assert.deepEqual(
+    rows.map((row) => row.market),
+    ["52", "53", "54"],
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.product_code, row.settlement_amount]),
+    [
+      ["NET", "100"],
+      ["SPY", "100"],
+      ["AAPL", "100"],
+    ],
+  );
+  for (const [index, market] of rows.map((row) => row.market).entries()) {
+    const evidence = buildYuantaTradeFundingEvidence({
+      sourceRecordKey: `SANITIZED-LIVE-ROW-${index}`,
+      stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
+      currency: "USD",
+      market,
+    });
+    assert.equal(evidence.kind, "source-settlement-contract");
+    if (evidence.kind !== "source-settlement-contract") continue;
+    assert.equal(evidence.settlementMarket, "us-equity");
+  }
+});
+
+test("does not treat missing or unsupported live MarketNo as US settlement evidence", () => {
+  const columns = [{ field: "交易日期", title: "交易日期" }];
+  const rows = normalizeTradeRows(
+    [
+      {
+        reportType: "OverseaTrade",
+        url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/OverseaTrade",
+        title: "",
+        currentAssetType: "Oversea",
+        currentTradeType: "OverseaTrade",
+        currentFinanceType: null,
+        queryDateType: null,
+        startDate: null,
+        endDate: null,
+        subCategory: "Stock",
+        accountOptions: [],
+        summaryRows: [],
+        grids: [
+          {
+            gridId: "gridOversea",
+            category: "Oversea",
+            columns,
+            rows: normalizeRows(
+              [
+                { 交易日期: "2026/08/30", MarketNo: 0 },
+                { 交易日期: "2026/08/29", MarketNo: 51 },
+                { 交易日期: "2026/08/28" },
+              ],
+              columns,
+            ),
+          },
+        ],
+      },
+    ],
+    { startDate: "2026/08/01", endDate: "2026/08/31" },
+  );
+  assert.deepEqual(
+    rows.map((row) => row.market),
+    ["0", "51", ""],
+  );
+  for (const [index, market] of rows.map((row) => row.market).entries()) {
+    assert.equal(
+      buildYuantaTradeFundingEvidence({
+        sourceRecordKey: `SANITIZED-UNSUPPORTED-LIVE-ROW-${index}`,
+        stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
+        currency: "USD",
+        market,
+      }).kind,
+      "unresolved",
+    );
+  }
 });
 
 test("canonical occurrence identity is order invariant and rejects indistinguishable duplicates", () => {
