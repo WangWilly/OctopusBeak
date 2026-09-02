@@ -16,6 +16,7 @@ import {
   createCanonicalInvestmentStore,
   YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   type InvestmentFundingEvidence,
+  type InvestmentTransactionAction,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial.ts";
 import {
@@ -1307,12 +1308,17 @@ function sourceDate(value: string): string {
     throw new Error("Yuanta Trade canonical source date is missing.");
   return normalized;
 }
-function explicitAction(value: string): "buy" | "sell" {
+export function explicitAction(value: string): InvestmentTransactionAction {
   const normalized = value.trim().toLocaleLowerCase("en-US");
-  if (["buy", "買進", "買入"].includes(normalized)) return "buy";
-  if (["sell", "賣出"].includes(normalized)) return "sell";
+  if (["b", "buy", "買進", "買入", "普通買進"].includes(normalized))
+    return "buy";
+  if (["s", "sell", "賣出", "普通賣出"].includes(normalized))
+    return "sell";
+  if (normalized === "公司活動-移入") return "corporate_action_in";
+  if (normalized === "公司活動-移出") return "corporate_action_out";
+  if (normalized === "配息") return "dividend";
   throw new Error(
-    "Yuanta Trade canonical action is not an explicit buy/sell value.",
+    "Yuanta Trade canonical action is not an explicit supported provider event.",
   );
 }
 export function yuantaTradeCanonicalOccurrenceIdentity(
@@ -1322,12 +1328,17 @@ export function yuantaTradeCanonicalOccurrenceIdentity(
   _occurrenceOrdinal: number,
 ): string {
   const stableSourceIdentity = row.source_transaction_reference?.trim();
+  // Holdings are point-in-time observations, not buy/sell events. The source
+  // does not provide an action for them, so make that semantic distinction
+  // explicit instead of passing an empty required identity part downstream.
+  const actionIdentity =
+    rowKind === "holding" ? "holding-observation" : row.action ?? "";
   return deriveSourceConnectionIdentityKey("yuanta-trade-record", [
     accountNumber,
     rowKind,
     row.product_code ?? "",
     row.as_of_date ?? row.trade_date ?? "",
-    row.action ?? "",
+    actionIdentity,
     row.quantity ?? "",
     row.settlement_amount ?? row.market_value_twd ?? "",
     stableSourceIdentity || "no-source-reference",
@@ -1434,16 +1445,20 @@ async function commitYuantaTradeCanonicalIfComplete(
         ...exactAmount(row.settlement_amount || row.gross_amount || ""),
         currency: (row.settlement_currency || row.currency || "TWD").trim(),
       };
+      const action = explicitAction(row.action ?? "");
       return {
         ...mapped,
-        action: explicitAction(row.action ?? ""),
+        action,
         cashEffect,
-        fundingEvidence: buildYuantaTradeFundingEvidence({
-          sourceRecordKey: mapped.sourceRecordKey,
-          stableLoginIdentity: credentials.yuanta_trade_user_id ?? "",
-          currency: cashEffect.currency,
-          market: row.market,
-        }),
+        fundingEvidence:
+          action === "buy" || action === "sell"
+            ? buildYuantaTradeFundingEvidence({
+                sourceRecordKey: mapped.sourceRecordKey,
+                stableLoginIdentity: credentials.yuanta_trade_user_id ?? "",
+                currency: cashEffect.currency,
+                market: row.market,
+              })
+            : { kind: "unresolved" as const, sourceRecordKey: mapped.sourceRecordKey },
       };
     });
     const capture = buildYuantaInvestmentCapture({

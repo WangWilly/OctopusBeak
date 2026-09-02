@@ -390,7 +390,7 @@ test("investment admission fails closed for ambiguous actions and unstable secur
           { ...fixture().transactions[0]!, action: "unknown" as "buy" },
         ],
       }),
-    /buy or sell/,
+    /supported provider event/,
   );
   assert.throws(
     () =>
@@ -437,6 +437,61 @@ test("investment admission fails closed for ambiguous actions and unstable secur
       }),
     /RFC3339/,
   );
+});
+
+test("investment admission preserves source-proven corporate actions and dividends without funding relations", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("source-proven-non-trade-events");
+  const base = input.transactions[0]!;
+  input.transactions = [
+    {
+      ...base,
+      sourceRecordKey: token("corporate-action-in-record"),
+      transactionKey: token("corporate-action-in-transaction"),
+      action: "corporate_action_in",
+      quantity: { coefficient: "5", scale: 0 },
+      cashEffect: { coefficient: "0", scale: 0, currency: "USD" },
+      fundingEvidence: {
+        kind: "unresolved",
+        sourceRecordKey: token("corporate-action-in-record"),
+      },
+    },
+    {
+      ...base,
+      sourceRecordKey: token("corporate-action-out-record"),
+      transactionKey: token("corporate-action-out-transaction"),
+      action: "corporate_action_out",
+      quantity: { coefficient: "5", scale: 0 },
+      cashEffect: { coefficient: "0", scale: 0, currency: "USD" },
+      fundingEvidence: {
+        kind: "unresolved",
+        sourceRecordKey: token("corporate-action-out-record"),
+      },
+    },
+    {
+      ...base,
+      sourceRecordKey: token("dividend-record"),
+      transactionKey: token("dividend-transaction"),
+      action: "dividend",
+      quantity: { coefficient: "0", scale: 0 },
+      cashEffect: { coefficient: "125", scale: 2, currency: "USD" },
+      fundingEvidence: {
+        kind: "unresolved",
+        sourceRecordKey: token("dividend-record"),
+      },
+    },
+  ];
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+  const current = queryCanonicalInvestmentCurrent(store, token("a"));
+  assert.deepEqual(
+    current.transactions.map(({ action }) => action),
+    ["corporate_action_in", "corporate_action_out", "dividend"],
+  );
+  assert.equal(current.relations.length, 0);
+  store.close();
 });
 
 test("a correction target is resolved against prior canonical measurements", async () => {
@@ -1955,6 +2010,11 @@ test("a v15 database migrates and reopens with investment funding relations", as
   try {
     const initial = createCanonicalInvestmentStore(path);
     initial.db.exec(`
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
+      DELETE FROM schema_migrations WHERE version=19;
       DROP TABLE investment_funding_relation_events;
       DROP TABLE investment_funding_relation_members;
       DROP TABLE investment_funding_relations;
@@ -1972,7 +2032,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
           }
         ).user_version,
       ),
-      17,
+      19,
     );
     assert.deepEqual(
       migrated.db

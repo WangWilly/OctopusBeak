@@ -1212,6 +1212,9 @@ for (const [label, corrupt] of [
       INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
         SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
       DROP TABLE projection_generation_provenance_legacy;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
     const writer = openCanonicalDatabase(dir);
@@ -1279,6 +1282,9 @@ for (const [label, corrupt] of [
       INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
         SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
       DROP TABLE projection_generation_provenance_legacy;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
     const writer = openCanonicalDatabase(dir);

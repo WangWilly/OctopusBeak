@@ -5,6 +5,7 @@ import type {
   InvestmentFundingEvidence,
   InvestmentMoney,
   InvestmentSourceId,
+  InvestmentTransactionAction,
 } from "./investment-financial.ts";
 
 export type YuantaCanonicalInvestmentRow = {
@@ -16,7 +17,7 @@ export type YuantaCanonicalInvestmentRow = {
   effectiveOn: string;
   quantity?: InvestmentExactAmount;
   valuation?: InvestmentMoney;
-  action?: "buy" | "sell";
+  action?: InvestmentTransactionAction;
   cashEffect?: InvestmentMoney;
   fundingEvidence?: InvestmentFundingEvidence;
   effectiveTimeEvidence?: {
@@ -112,14 +113,14 @@ export function buildYuantaInvestmentCapture(
     transactions: input.transactions.map((row, index) => {
       if (!row.action || !row.quantity || !row.cashEffect)
         throw new Error(
-          "Yuanta investment transaction requires explicit buy/sell, quantity, and cash effect.",
+          "Yuanta investment transaction requires an explicit supported action, quantity, and cash effect.",
         );
       return {
         sourceRecordKey: row.sourceRecordKey,
         transactionKey: digest(
-          input.captureId,
+          input.sourceId,
           "transaction",
-          String(index),
+          input.accountKey,
           row.sourceRecordKey,
         ),
         securityKey: `${input.sourceId}:${row.producerSecurityId}`,

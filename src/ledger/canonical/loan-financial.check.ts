@@ -1526,7 +1526,9 @@ test("file-backed loan current projections survive rebuild and schema migration 
       DROP TABLE balance_observations;
       DROP TABLE loan_transaction_facts;
       DROP TABLE loan_account_identities;
-      DELETE FROM schema_migrations WHERE version = 9;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 8;
       PRAGMA user_version = 8;`);
     v8.close();
 

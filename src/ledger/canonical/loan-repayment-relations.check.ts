@@ -411,8 +411,12 @@ test("v9 loan relation schema migrates transactionally and survives reopen", asy
       "counterparty_account_evidence_support",
       "transaction_counterparty_account_evidence",
     ]) downgraded.exec(`DROP TABLE ${table}`);
-    downgraded.prepare("DELETE FROM schema_migrations WHERE version = 10").run();
-    downgraded.exec("PRAGMA user_version = 9");
+    downgraded.exec(`
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 9;
+      PRAGMA user_version = 9;
+    `);
     downgraded.close();
 
     const reopened = createCanonicalSourceStore(path);

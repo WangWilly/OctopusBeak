@@ -46,6 +46,13 @@ export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
 ] as const;
 export type InvestmentExactAmount = { coefficient: string; scale: number };
 export type InvestmentMoney = InvestmentExactAmount & { currency: string };
+/** A provider-reported investment event, never an inference from amounts. */
+export type InvestmentTransactionAction =
+  | "buy"
+  | "sell"
+  | "corporate_action_in"
+  | "corporate_action_out"
+  | "dividend";
 export type InvestmentFundingEvidence =
   | { kind: "unresolved"; sourceRecordKey: string }
   | {
@@ -131,7 +138,7 @@ export type InvestmentCaptureInput = {
     sourceRecordKey: string;
     transactionKey: string;
     securityKey: string;
-    action: "buy" | "sell";
+    action: InvestmentTransactionAction;
     quantity: InvestmentExactAmount;
     cashEffect: InvestmentMoney;
     effectiveOn: string;
@@ -395,9 +402,17 @@ export function admitCanonicalInvestmentCapture(
     }
   }
   for (const transaction of capture.transactions) {
-    if (transaction.action !== "buy" && transaction.action !== "sell")
+    if (
+      ![
+        "buy",
+        "sell",
+        "corporate_action_in",
+        "corporate_action_out",
+        "dividend",
+      ].includes(transaction.action)
+    )
       throw new CanonicalInvestmentAdmissionError(
-        "Investment transaction action must be buy or sell; ambiguous action is rejected.",
+        "Investment transaction action must be an explicit supported provider event; ambiguous action is rejected.",
       );
     token(transaction.sourceRecordKey, "Transaction source record key");
     token(transaction.transactionKey, "Transaction key");
@@ -412,6 +427,14 @@ export function admitCanonicalInvestmentCapture(
     if (funding.sourceRecordKey !== transaction.sourceRecordKey)
       throw new CanonicalInvestmentAdmissionError(
         "Investment funding evidence must belong to its transaction source record.",
+      );
+    if (
+      transaction.action !== "buy" &&
+      transaction.action !== "sell" &&
+      funding.kind !== "unresolved"
+    )
+      throw new CanonicalInvestmentAdmissionError(
+        "Only explicit buy or sell events may carry investment funding evidence.",
       );
     if (funding.kind === "source-linked-account") {
       token(funding.fundingAccountKey, "Funding account key");
@@ -544,7 +567,13 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
       spineRecord(
         capture,
         holding,
-        { kind: "holding-measurement", ...holding },
+        (() => {
+          const { measurementKey, observedAt, lineage, ...sourceFact } = holding;
+          // These are capture-local projection coordinates.  A Source Record
+          // describes provider evidence, so recollection must not change its
+          // content merely because this Capture has a new timestamp or row.
+          return { kind: "holding-measurement", ...sourceFact };
+        })(),
         holding.valuation ?? {
           ...holding.quantity!,
           currency: capture.identity.reportingCurrency,
@@ -557,9 +586,18 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
       spineRecord(
         capture,
         transaction,
-        { kind: "investment-transaction", ...transaction },
+        (() => {
+          const { transactionKey, ...sourceFact } = transaction;
+          // transactionKey is a canonical projection key, not provider
+          // evidence.  Including it would make an otherwise identical source
+          // occurrence appear overwritten on a later Capture.
+          return { kind: "investment-transaction", ...sourceFact };
+        })(),
         transaction.cashEffect,
-        transaction.action === "buy" ? "outflow" : "inflow",
+        transaction.action === "buy" ||
+          transaction.action === "corporate_action_out"
+          ? "outflow"
+          : "inflow",
         capture.holdings.length + index,
       ),
     ),
@@ -1238,7 +1276,7 @@ function queryRows(
           `SELECT t.action,t.effective_on AS effectiveOn,t.funding_evidence_json AS fundingEvidenceJson FROM investment_transactions t JOIN investment_accounts a ON a.account_id=t.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY t.effective_on`,
         )
         .all(sourceConnectionKey) as Array<{
-        action: "buy" | "sell";
+        action: InvestmentTransactionAction;
         effectiveOn: string;
         fundingEvidenceJson: string;
       }>

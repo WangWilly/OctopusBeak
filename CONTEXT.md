@@ -130,6 +130,10 @@ _Avoid_: Crypto holding observation, token, UI wallet label
 A source-reported quantity, cost, or valuation of a Security held in an investment financial account, recorded as a distinct evidence checkpoint only when its integration contract can establish when the measurement was financially effective. The current holding is a projection from the latest valid observation, while transaction history remains a separate event record.
 _Avoid_: Investment transaction, mutable current holding, liability balance
 
+**Investment transaction action**:
+A source-reported investment event whose meaning is explicit in the provider record. `buy` and `sell` move both Security quantity and settlement cash; `corporate_action_in` and `corporate_action_out` move Security quantity with provider-reported zero cash; `dividend` records provider-reported cash with zero Security quantity. An unfamiliar provider label is not coerced from date, amount, or direction and instead rejects the Capture. Only buy and sell actions may participate in a bank-settlement Transaction Relation.
+_Avoid_: Inferred trade, zero-price buy or sell, dividend as a Security purchase, corporate action as a funding relation
+
 **Crypto holding observation**:
 A holding observation that references a Security classified as `cryptocurrency` within a crypto financial account. BTC, ETH, and similar assets are Securities held by the account rather than separate financial accounts; borrowing is not represented as a negative or liability holding.
 _Avoid_: Crypto financial account, wallet, crypto loan

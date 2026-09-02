@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 17;
+export const CANONICAL_SCHEMA_VERSION = 19;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -6531,6 +6531,10 @@ const YUANTA_TRADE_INVESTMENT_V2_PURGE_ID =
   "yuanta-trade-investment/market-evidence-v2:v17";
 const YUANTA_TRADE_INVESTMENT_V2_PURGE_NAMESPACES = ["yuanta-trade"] as const;
 const YUANTA_TRADE_INVESTMENT_V2_PURGE_STREAMS = ["investment"] as const;
+const YUANTA_TRADE_INVESTMENT_V3_PURGE_ID =
+  "yuanta-trade-investment/source-occurrence-content-v3:v19";
+const YUANTA_TRADE_INVESTMENT_V3_PURGE_NAMESPACES = ["yuanta-trade"] as const;
+const YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS = ["investment"] as const;
 
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
@@ -6538,6 +6542,7 @@ function validateCanonicalContractPurgeSchema(
     requireCreditCardPurge?: boolean;
     requireFubonDepositOccurrencePurge?: boolean;
     requireYuantaTradeInvestmentPurge?: boolean;
+    requireYuantaTradeInvestmentV3Purge?: boolean;
   }> = {},
 ): void {
   if (relationType(db, "canonical_contract_purges") !== "table")
@@ -6647,6 +6652,30 @@ function validateCanonicalContractPurgeSchema(
     )
       throw new Error(
         "Canonical schema v17 Yuanta trade investment Contract Purge audit is incomplete.",
+      );
+  }
+  if (options.requireYuantaTradeInvestmentV3Purge) {
+    const audit = db
+      .prepare(
+        "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get(YUANTA_TRADE_INVESTMENT_V3_PURGE_ID) as
+      | {
+          schema_version?: number;
+          scope_json?: string;
+          deleted_table_counts_json?: string;
+          closure_fingerprint?: string;
+        }
+      | undefined;
+    if (
+      !audit ||
+      Number(audit.schema_version) !== 19 ||
+      typeof audit.scope_json !== "string" ||
+      typeof audit.deleted_table_counts_json !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]+$/u.test(String(audit.closure_fingerprint ?? ""))
+    )
+      throw new Error(
+        "Canonical schema v19 Yuanta trade investment Contract Purge audit is incomplete.",
       );
   }
 }
@@ -7042,7 +7071,7 @@ function purgeLegacySourceConnectionIdentityScopes(db: DatabaseSync): void {
 
 type CanonicalContractPurgeAudit = Readonly<{
   purgeId: string;
-  schemaVersion: 12 | 14 | 17;
+  schemaVersion: 12 | 14 | 17 | 19;
   reason: string;
   integrationNamespaces: readonly string[];
   streams: readonly string[];
@@ -7239,6 +7268,41 @@ function purgeYuantaTradeInvestmentV2Scope(db: DatabaseSync): void {
       streams: YUANTA_TRADE_INVESTMENT_V2_PURGE_STREAMS,
     },
   );
+}
+
+function purgeYuantaTradeInvestmentV3Scope(db: DatabaseSync): boolean {
+  if (
+    db
+      .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+      .get(YUANTA_TRADE_INVESTMENT_V3_PURGE_ID)
+  )
+    return true;
+  const closure = legacySourceConnectionIdentityClosure(db, {
+    namespaces: YUANTA_TRADE_INVESTMENT_V3_PURGE_NAMESPACES,
+    streams: YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS,
+    includeLoanResolverImplications: false,
+    stopAtTables: [
+      "source_connections",
+      "identity_epochs",
+      "source_authority_routes",
+      "canonical_commits",
+      "projection_generations",
+    ],
+  });
+  if (![...closure.values()].some((rows) => rows.size > 0)) return false;
+  purgeCanonicalClosureToAudit(
+    db,
+    closure,
+    {
+      purgeId: YUANTA_TRADE_INVESTMENT_V3_PURGE_ID,
+      schemaVersion: 19,
+      reason:
+        "remove Yuanta trade investment source occurrences that embedded capture-local keys and timestamps; recollect under source-content-v3",
+      integrationNamespaces: YUANTA_TRADE_INVESTMENT_V3_PURGE_NAMESPACES,
+      streams: YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS,
+    },
+  );
+  return true;
 }
 
 /**
@@ -7748,6 +7812,44 @@ function widenCanonicalContractPurgeAuditForV17(db: DatabaseSync): void {
   `);
 }
 
+function widenCanonicalContractPurgeAuditForV19(db: DatabaseSync): void {
+  const schema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*,\s*17\s*,\s*19\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
+  db.exec(`
+    CREATE TABLE canonical_contract_purges_v19 (
+      purge_id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14, 17, 19)),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    INSERT INTO canonical_contract_purges_v19 SELECT * FROM canonical_contract_purges;
+    CREATE TABLE canonical_contract_purge_commits_v19 (
+      purge_id TEXT NOT NULL REFERENCES canonical_contract_purges_v19(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    INSERT INTO canonical_contract_purge_commits_v19
+      SELECT * FROM canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purges;
+    ALTER TABLE canonical_contract_purges_v19 RENAME TO canonical_contract_purges;
+    ALTER TABLE canonical_contract_purge_commits_v19 RENAME TO canonical_contract_purge_commits;
+  `);
+}
+
 export const SCHEMA_V15_INVESTMENTS = `
 CREATE TABLE IF NOT EXISTS investment_captures (
   capture_id BLOB PRIMARY KEY REFERENCES source_captures(capture_id),
@@ -7966,6 +8068,113 @@ function migrateV16ToV17(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
+  migrateV17ToV18(db);
+}
+
+/**
+ * Investment history has source-proven non-trade events.  Rebuild only the
+ * transaction extension and its relation-member child: existing buy/sell
+ * records remain byte-for-byte evidence-compatible, while new captures may
+ * persist corporate actions and dividends.  Funding-relation members remain
+ * deliberately buy/sell-only because those are the only events with a bank
+ * settlement relation contract.
+ */
+function migrateV17ToV18(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentFundingRelationSchema(db);
+    db.exec(`
+      ALTER TABLE investment_transactions RENAME TO investment_transactions_v17;
+      ALTER TABLE investment_funding_relation_members
+        RENAME TO investment_funding_relation_members_v17;
+      CREATE TABLE investment_transactions (
+        transaction_id BLOB PRIMARY KEY REFERENCES financial_transactions(transaction_id),
+        capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
+        security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+        source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+        action TEXT NOT NULL CHECK(action IN (
+          'buy','sell','corporate_action_in','corporate_action_out','dividend'
+        )),
+        quantity_coefficient TEXT NOT NULL,
+        quantity_scale INTEGER NOT NULL,
+        cash_coefficient TEXT NOT NULL,
+        cash_scale INTEGER NOT NULL,
+        cash_currency TEXT NOT NULL,
+        effective_on TEXT NOT NULL,
+        funding_evidence_json TEXT NOT NULL
+      );
+      INSERT INTO investment_transactions
+        SELECT * FROM investment_transactions_v17;
+      CREATE TABLE investment_funding_relation_members (
+        relation_id BLOB NOT NULL REFERENCES investment_funding_relations(relation_id),
+        investment_transaction_id BLOB NOT NULL REFERENCES investment_transactions(transaction_id),
+        investment_source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+        action TEXT NOT NULL CHECK(action IN ('buy','sell')),
+        coefficient TEXT NOT NULL,
+        scale INTEGER NOT NULL CHECK(scale >= 0),
+        currency TEXT NOT NULL,
+        PRIMARY KEY(relation_id, investment_transaction_id)
+      );
+      INSERT INTO investment_funding_relation_members
+        SELECT * FROM investment_funding_relation_members_v17;
+      DROP TABLE investment_funding_relation_members_v17;
+      DROP TABLE investment_transactions_v17;
+      CREATE INDEX IF NOT EXISTS idx_investment_transactions_account_time
+        ON investment_transactions(account_id, effective_on);
+    `);
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v18 investment event migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (18, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 18");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+  migrateV18ToV19(db);
+}
+
+function migrateV18ToV19(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
+    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentFundingRelationSchema(db);
+    widenCanonicalContractPurgeAuditForV19(db);
+    const hasYuantaTradeInvestmentV3Purge = purgeYuantaTradeInvestmentV3Scope(db);
+    validateCanonicalContractPurgeSchema(db, {
+      requireCreditCardPurge: true,
+      requireFubonDepositOccurrencePurge: true,
+      requireYuantaTradeInvestmentPurge: true,
+      requireYuantaTradeInvestmentV3Purge: hasYuantaTradeInvestmentV3Purge,
+    });
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v19 Yuanta trade source-content migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (19, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 19");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
 }
 
 function applySchemaMigration(
@@ -8134,6 +8343,14 @@ function applySchemaMigration(
   }
   if (version === 16) {
     migrateV16ToV17(db);
+    return;
+  }
+  if (version === 17) {
+    migrateV17ToV18(db);
+    return;
+  }
+  if (version === 18) {
+    migrateV18ToV19(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
