@@ -68,7 +68,7 @@ export type InvestmentFundingEvidence =
       linkageContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION;
       settlementMarket: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
       settlementMarketContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION;
-      sourceMarketCode?: YuantaForeignSettlementMarketCode;
+      sourceMarketCode: YuantaForeignSettlementMarketCode;
       settlementModel: "account-currency-date-net";
       contractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION;
     };
@@ -455,10 +455,9 @@ export function admitCanonicalInvestmentCapture(
           "Funding settlement contract is outside the live-verified contract.",
         );
       if (
-        funding.sourceMarketCode !== undefined &&
-        (!isYuantaForeignSettlementMarketCode(funding.sourceMarketCode) ||
-          funding.settlementMarketContractVersion !==
-            YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION)
+        !isYuantaForeignSettlementMarketCode(funding.sourceMarketCode) ||
+        funding.settlementMarketContractVersion !==
+          YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION
       )
         throw new CanonicalInvestmentAdmissionError(
           "Funding settlement source market code is outside the versioned mapping contract.",

@@ -1865,12 +1865,15 @@ test("Yuanta settlement evidence requires an explicitly supported market contrac
     sourceRecordKey: missingMarket.transactions[0]!.sourceRecordKey,
     sourceLinkageKey: YUANTA_SETTLEMENT_LINKAGE_KEY,
     linkageContractVersion: YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+    settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+    settlementMarketContractVersion:
+      YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
     settlementModel: "account-currency-date-net",
     contractVersion: "yuanta/foreign-settlement/human-attested-v1",
   } as never;
   assert.throws(
     () => admitCanonicalInvestmentCapture(missingMarket),
-    /outside the live-verified contract/,
+    /outside the versioned mapping contract/,
   );
 
   const unsupportedMarket = fixture("unsupported-settlement-market");
