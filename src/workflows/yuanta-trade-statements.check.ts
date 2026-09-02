@@ -7,6 +7,8 @@ import {
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
+  buildYuantaTradeFundingEvidence,
+  normalizeYuantaSettlementMarket,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
@@ -234,6 +236,55 @@ test("rejects a partial YuanTa holdings capture", () => {
   assert.equal(
     isCompleteHoldingCapture([completeHoldingPage], ["Stock", "Bond"]),
     false,
+  );
+});
+
+test("leaves YuanTa funding evidence unresolved when the source omits market", () => {
+  assert.equal(normalizeYuantaSettlementMarket(undefined), undefined);
+  assert.deepEqual(
+    buildYuantaTradeFundingEvidence({
+      sourceRecordKey: "SANITIZED-SOURCE-RECORD",
+      stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
+      currency: "USD",
+      market: undefined,
+    }),
+    {
+      kind: "unresolved",
+      sourceRecordKey: "SANITIZED-SOURCE-RECORD",
+    },
+  );
+});
+
+test("leaves YuanTa funding evidence unresolved for an unsupported market", () => {
+  assert.equal(normalizeYuantaSettlementMarket("HK"), undefined);
+  assert.deepEqual(
+    buildYuantaTradeFundingEvidence({
+      sourceRecordKey: "SANITIZED-SOURCE-RECORD-HK",
+      stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
+      currency: "USD",
+      market: "HK",
+    }),
+    {
+      kind: "unresolved",
+      sourceRecordKey: "SANITIZED-SOURCE-RECORD-HK",
+    },
+  );
+});
+
+test("creates settlement evidence only for an explicit US market label", () => {
+  const evidence = buildYuantaTradeFundingEvidence({
+    sourceRecordKey: "SANITIZED-SOURCE-RECORD-US",
+    stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
+    currency: "USD",
+    market: "US",
+  });
+
+  assert.equal(evidence.kind, "source-settlement-contract");
+  if (evidence.kind !== "source-settlement-contract") return;
+  assert.equal(evidence.settlementMarket, "us-equity");
+  assert.equal(
+    evidence.settlementMarketContractVersion,
+    "yuanta/foreign-settlement/market-v1",
   );
 });
 

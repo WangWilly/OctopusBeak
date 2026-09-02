@@ -49,6 +49,9 @@ const YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION =
   "yuanta/foreign-settlement/human-attested-v1";
 export const YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION =
   "yuanta/foreign-settlement/linkage-v1" as const;
+export const YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION =
+  "yuanta/foreign-settlement/market-v1" as const;
+export const YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY = "us-equity" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_CONTRACT_VERSION =
   "yuanta/foreign-settlement/calendar-v1" as const;
 export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START = "2026-01-01" as const;
@@ -112,7 +115,10 @@ function isBusinessDay(dateValue: string): boolean {
 function addSettlementBusinessDays(
   effectiveOn: string,
   action: "buy" | "sell",
+  settlementMarket: string | undefined,
 ): string | null {
+  if (settlementMarket !== YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY)
+    return null;
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(effectiveOn) ||
     effectiveOn < YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START ||
@@ -323,40 +329,214 @@ function fundingCoverageState(
   db: DatabaseSync,
   settlementEffectiveOn: string,
   currency: string,
+  direction: "inflow" | "outflow" | null,
+  expectedLinkageKey: string,
 ): FundingCoverageState {
   const rows = db
     .prepare(
       `SELECT scope.scope_start AS scopeStart,scope.scope_end AS scopeEnd,
-              scope.completeness,scope.terminal
+              scope.completeness,scope.terminal,
+              revision.direction,revision.description,
+              source_record.payload_json AS payloadJson
          FROM financial_accounts account
          JOIN source_connections connection
            ON connection.source_connection_id=account.source_connection_id
-         JOIN capture_scopes scope ON scope.account_id=account.account_id
+         JOIN financial_transactions transaction_row
+           ON transaction_row.account_id=account.account_id
+         JOIN current_transactions current_row
+           ON current_row.transaction_id=transaction_row.transaction_id
+         JOIN transaction_revisions revision
+           ON revision.revision_id=current_row.revision_id
+         JOIN source_records source_record
+           ON source_record.source_record_id=revision.source_record_id
+         JOIN source_record_scopes record_scope
+           ON record_scope.source_record_id=source_record.source_record_id
+         JOIN capture_scopes scope ON scope.scope_id=record_scope.scope_id
         WHERE connection.integration_namespace='yuanta'
           AND account.stream='foreign-currency-deposit'
           AND account.account_type='depository'
-          AND EXISTS (
-            SELECT 1
-              FROM financial_transactions transaction_row
-              JOIN current_transactions current_row
-                ON current_row.transaction_id=transaction_row.transaction_id
-              JOIN transaction_revisions revision
-                ON revision.revision_id=current_row.revision_id
-             WHERE transaction_row.account_id=account.account_id
-               AND revision.currency=?
-          )
-          AND scope.scope_start<=? AND scope.scope_end>=?`,
+          AND revision.currency=?
+          AND revision.posting_status='posted'
+          AND revision.economic_status='normal'
+          AND revision.administrative_state='active'
+          AND scope.scope_start<=? AND scope.scope_end>=?
+          AND (? IS NULL OR revision.direction=?)`,
     )
-    .all(currency, settlementEffectiveOn, settlementEffectiveOn) as Array<{
+    .all(
+      currency,
+      settlementEffectiveOn,
+      settlementEffectiveOn,
+      direction,
+      direction,
+    ) as Array<{
     scopeStart: string;
     scopeEnd: string;
     completeness: string;
     terminal: number;
+    direction: "inflow" | "outflow";
+    description: string | null;
+    payloadJson: string;
   }>;
-  if (rows.length === 0) return "missing";
-  if (rows.some((row) => row.completeness !== "complete-range" || Number(row.terminal) !== 1))
+  const relevantRows = rows.filter((row) => {
+    const expectedDescription =
+      row.direction === "outflow" ? "複委託扣" : "複委託入";
+    const expectedInfo = row.direction === "outflow" ? "淨額扣" : "淨額入";
+    const linkage = parseSettlementLinkage(row.payloadJson);
+    return (
+      row.description === expectedDescription &&
+      parseTransactionInfo(row.payloadJson) === expectedInfo &&
+      linkage?.key === expectedLinkageKey &&
+      linkage.contractVersion ===
+        YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION
+    );
+  });
+  if (relevantRows.length === 0) return "missing";
+  if (
+    relevantRows.some(
+      (row) => row.completeness !== "complete-range" || Number(row.terminal) !== 1,
+    )
+  )
     return "incomplete";
   return "complete";
+}
+
+function completeFundingAccounts(
+  db: DatabaseSync,
+  accountNumberValue: string,
+  currency: string,
+  settlementEffectiveOn: string,
+): Array<{ accountId: Uint8Array }> {
+  const accountNumber = accountNumberValue
+    .normalize("NFKC")
+    .replaceAll(/[-\s]/g, "");
+  if (!/^\d{6,20}$/.test(accountNumber)) return [];
+  return db
+    .prepare(
+      `SELECT DISTINCT a.account_id AS accountId
+         FROM financial_accounts a
+         JOIN capture_scopes s ON s.account_id=a.account_id
+        WHERE REPLACE(REPLACE(REPLACE(a.account_no,' ',''),'-',''),'　','')=?
+          AND a.account_type='depository'
+          AND a.currency=? AND s.scope_start<=? AND s.scope_end>=?
+          AND s.completeness='complete-range' AND s.terminal=1`,
+    )
+    .all(
+      accountNumber,
+      currency,
+      settlementEffectiveOn,
+      settlementEffectiveOn,
+    ) as Array<{ accountId: Uint8Array }>;
+}
+
+function relationSupportFingerprint(
+  db: DatabaseSync,
+  sourceRecordIds: readonly Uint8Array[],
+  transactionIds: readonly Uint8Array[],
+): string {
+  const directSourceRecordIds = [
+    ...new Map(
+      sourceRecordIds.map((sourceRecordId) => [
+        idHex(sourceRecordId),
+        sourceRecordId,
+      ]),
+    ).values(),
+  ];
+  const uniqueTransactionIds = [
+    ...new Map(
+      transactionIds.map((transactionId) => [idHex(transactionId), transactionId]),
+    ).values(),
+  ];
+  const assertionRows =
+    uniqueTransactionIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT provenance.source_record_id AS sourceRecordId,
+                    provenance.commit_id AS commitId
+               FROM assertion_provenance provenance
+               JOIN assertions assertion ON assertion.assertion_id=provenance.assertion_id
+              WHERE assertion.transaction_id IN (${uniqueTransactionIds
+                .map(() => "?")
+                .join(",")})
+              ORDER BY provenance.source_record_id,provenance.commit_id`,
+          )
+          .all(...uniqueTransactionIds) as Array<{
+          sourceRecordId: Uint8Array;
+          commitId: Uint8Array;
+        }>);
+  const allSourceRecordIds = [
+    ...new Map(
+      [
+        ...directSourceRecordIds,
+        ...assertionRows.map((row) => row.sourceRecordId),
+      ].map((sourceRecordId) => [idHex(sourceRecordId), sourceRecordId]),
+    ).values(),
+  ].sort((left, right) => idHex(left).localeCompare(idHex(right)));
+  const placeholders = allSourceRecordIds.map(() => "?").join(",");
+  const provenanceRows =
+    allSourceRecordIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT source_record_id AS sourceRecordId,capture_id AS captureId,
+                    commit_id AS commitId
+               FROM source_record_provenance
+              WHERE source_record_id IN (${placeholders})
+              ORDER BY source_record_id,capture_id,commit_id`,
+          )
+          .all(...allSourceRecordIds) as Array<{
+          sourceRecordId: Uint8Array;
+          captureId: Uint8Array;
+          commitId: Uint8Array;
+        }>);
+  if (allSourceRecordIds.length === 0 && uniqueTransactionIds.length === 0)
+    return digest("investment-funding-relation-support-v2");
+  return digest(
+    "investment-funding-relation-support-v2",
+    ...uniqueTransactionIds.map(idHex).sort(),
+    ...allSourceRecordIds.map(idHex),
+    ...provenanceRows.flatMap((row) => [
+      idHex(row.sourceRecordId),
+      idHex(row.captureId),
+      idHex(row.commitId),
+    ]),
+    ...assertionRows.flatMap((row) => [
+      idHex(row.sourceRecordId),
+      idHex(row.commitId),
+    ]),
+  );
+}
+
+function observeRelationWithSupport(
+  db: DatabaseSync,
+  relationId: Uint8Array,
+  reasonPrefix: string,
+  supportFingerprint: string,
+  eventWriter: RelationEventWriter,
+): boolean {
+  const reason = `${reasonPrefix}:${supportFingerprint}`;
+  const latest = db
+    .prepare(
+      `SELECT event_kind AS eventKind,reason
+         FROM investment_funding_relation_events
+        WHERE relation_id=?
+        ORDER BY recorded_at_utc_us DESC,rowid DESC LIMIT 1`,
+    )
+    .get(relationId) as { eventKind: string; reason: string } | undefined;
+  if (latest?.eventKind === "observed" && latest.reason === reason)
+    return false;
+  db.prepare(
+    `INSERT OR IGNORE INTO investment_funding_relation_events(
+       event_id,relation_id,event_kind,reason,commit_id,recorded_at_utc_us
+     ) VALUES(?,?,'observed',?,?,?)`,
+  ).run(
+    uuidV7(),
+    relationId,
+    reason,
+    eventWriter.ensureCommit(),
+    eventWriter.nextEventTime(),
+  );
+  return true;
 }
 
 type RelationEventWriter = {
@@ -446,7 +626,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
       evidence.kind === "source-linked-account"
         ? `${idHex(row.investmentAccountId)}\0${evidence.settlementGroupKey}`
         : evidence.kind === "source-settlement-contract"
-          ? `${idHex(row.investmentAccountId)}\0${row.cashCurrency}\0${addSettlementBusinessDays(row.effectiveOn, row.action) ?? "unsupported-calendar"}`
+          ? `${idHex(row.investmentAccountId)}\0${row.cashCurrency}\0${evidence.settlementMarket}\0${addSettlementBusinessDays(row.effectiveOn, row.action, evidence.settlementMarket) ?? "unsupported-calendar"}`
           : "";
     if (!key) continue;
     const group = groups.get(key) ?? [];
@@ -515,9 +695,20 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
       const first = group[0]!;
       const evidence = first.evidence;
       if (evidence.kind === "source-settlement-contract") {
+        if (
+          evidence.settlementMarket !==
+            YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY ||
+          evidence.settlementMarketContractVersion !==
+            YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION
+        ) {
+          noAdmission += 1;
+          reasons.add("unsupported-settlement-market");
+          continue;
+        }
         const settlementEffectiveOn = addSettlementBusinessDays(
           first.effectiveOn,
           first.action,
+          evidence.settlementMarket,
         );
         if (!settlementEffectiveOn) {
           noAdmission += 1;
@@ -528,6 +719,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
           "yuanta-foreign-settlement-group-v1",
           idHex(first.investmentAccountId),
           first.cashCurrency,
+          evidence.settlementMarket,
           settlementEffectiveOn,
         );
         const tradeIntervalStart = group.reduce(
@@ -556,8 +748,15 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
             row.evidence.linkageContractVersion !==
               evidence.linkageContractVersion ||
             row.evidence.sourceLinkageKey !== evidence.sourceLinkageKey ||
+            row.evidence.settlementMarket !== evidence.settlementMarket ||
+            row.evidence.settlementMarketContractVersion !==
+              evidence.settlementMarketContractVersion ||
             row.cashCurrency !== first.cashCurrency ||
-            addSettlementBusinessDays(row.effectiveOn, row.action) !==
+            addSettlementBusinessDays(
+              row.effectiveOn,
+              row.action,
+              row.evidence.settlementMarket,
+            ) !==
               settlementEffectiveOn,
         );
         if (inconsistent) {
@@ -582,6 +781,8 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
               store.db,
               settlementEffectiveOn,
               first.cashCurrency,
+              null,
+              evidence.sourceLinkageKey,
             ) === "complete"
           )
             withdrawCurrentRelations(
@@ -599,6 +800,8 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
           store.db,
           settlementEffectiveOn,
           first.cashCurrency,
+          direction,
+          evidence.sourceLinkageKey,
         );
         const candidateRows = fundingCandidates(
           store.db,
@@ -694,25 +897,19 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
               row.cashCurrency,
             );
         }
-        const latest = store.db
-          .prepare(
-            `SELECT event_kind AS eventKind FROM investment_funding_relation_events
-              WHERE relation_id=? ORDER BY recorded_at_utc_us DESC,rowid DESC LIMIT 1`,
-          )
-          .get(relationId) as { eventKind: string } | undefined;
-        if (latest?.eventKind !== "observed")
-          store.db
-            .prepare(
-              `INSERT OR IGNORE INTO investment_funding_relation_events(
-                 event_id,relation_id,event_kind,reason,commit_id,recorded_at_utc_us
-               ) VALUES(?,?,'observed','verified-yuanta-settlement-note',?,?)`,
-            )
-            .run(
-              uuidV7(),
-              relationId,
-              ensureResolutionCommit(),
-              eventWriter.nextEventTime(),
-            );
+        observeRelationWithSupport(
+          store.db,
+          relationId,
+          "verified-yuanta-settlement-note",
+          relationSupportFingerprint(store.db, [
+            ...group.map((row) => row.sourceRecordId),
+            candidate.sourceRecordId,
+          ], [
+            ...group.map((row) => row.transactionId),
+            candidate.transactionId,
+          ]),
+          eventWriter,
+        );
         withdrawCurrentRelations(
           store.db,
           first.investmentAccountId,
@@ -747,6 +944,12 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
         continue;
       }
 
+      const fundingAccounts = completeFundingAccounts(
+        store.db,
+        evidence.fundingAccountNumber,
+        first.cashCurrency,
+        evidence.settlementEffectiveOn,
+      );
       const targetScale = Math.max(...group.map((row) => row.cashScale));
       const signed = group.reduce((sum, row) => {
         const amount = scaledInteger(
@@ -759,26 +962,18 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
       if (signed === 0n) {
         noAdmission += 1;
         reasons.add("zero-net-settlement");
+        if (fundingAccounts.length > 0)
+          withdrawCurrentRelations(
+            store.db,
+            first.investmentAccountId,
+            evidence.settlementGroupKey,
+            eventWriter,
+            "complete-resolution:zero-net-settlement",
+          );
         continue;
       }
       const direction = signed > 0n ? "outflow" : "inflow";
       const expected = signed < 0n ? -signed : signed;
-      const fundingAccounts = store.db
-        .prepare(
-            `SELECT DISTINCT a.account_id AS accountId
-               FROM financial_accounts a
-               JOIN capture_scopes s ON s.account_id=a.account_id
-            WHERE REPLACE(REPLACE(REPLACE(a.account_no,' ',''),'-',''),'　','')=?
-              AND a.account_type='depository'
-              AND a.currency=? AND s.scope_start<=? AND s.scope_end>=?
-              AND s.completeness='complete-range' AND s.terminal=1`,
-        )
-        .all(
-          evidence.fundingAccountNumber,
-          first.cashCurrency,
-          evidence.settlementEffectiveOn,
-          evidence.settlementEffectiveOn,
-        ) as Array<{ accountId: Uint8Array }>;
       const candidates: Array<{
         accountId: Uint8Array;
         transactionId: Uint8Array;
@@ -917,27 +1112,19 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
         "stronger-current-resolution",
         relationId,
       );
-      const latest = store.db
-        .prepare(
-          `SELECT event_kind AS eventKind FROM investment_funding_relation_events
-            WHERE relation_id=? ORDER BY recorded_at_utc_us DESC,rowid DESC LIMIT 1`,
-        )
-        .get(relationId) as { eventKind: string } | undefined;
-      if (latest?.eventKind !== "observed") {
-        const commitId = ensureResolutionCommit();
-        store.db
-          .prepare(
-            `INSERT OR IGNORE INTO investment_funding_relation_events(
-               event_id,relation_id,event_kind,reason,commit_id,recorded_at_utc_us
-             ) VALUES(?,?,'observed','verified-settlement-account',?,?)`,
-          )
-          .run(
-            uuidV7(),
-            relationId,
-            ensureResolutionCommit(),
-            eventWriter.nextEventTime(),
-          );
-      }
+      observeRelationWithSupport(
+        store.db,
+        relationId,
+        "verified-settlement-account",
+        relationSupportFingerprint(store.db, [
+          ...group.map((row) => row.sourceRecordId),
+          candidate.sourceRecordId,
+        ], [
+          ...group.map((row) => row.transactionId),
+          candidate.transactionId,
+        ]),
+        eventWriter,
+      );
       resolved += 1;
     }
     store.db.exec("COMMIT");
