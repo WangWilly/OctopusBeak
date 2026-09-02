@@ -272,6 +272,52 @@ assert.equal(
   false,
 );
 
+// The provider can render a different non-empty note for the same transaction
+// when that transaction is observed through two overlapping query windows.
+// Notes remain evidence for repayment-relation rules, but they are not stable
+// enough to participate in the transaction occurrence identity.
+const noteDriftCaptureRaw = captureFor("ACCOUNT-TWD-001", "****0001 (012)", {
+  pages: firstCapture.pages.map((page) => ({
+    ...page,
+    rows: page.rows.map((row) => ({
+      ...row,
+      cells: [
+        row.cells[0],
+        row.cells[1],
+        row.cells[2],
+        row.cells[3],
+        row.cells[4],
+        row.cells[5],
+        "SYNTHETIC WINDOW-DEPENDENT NOTE",
+      ] as typeof row.cells,
+    })),
+  })),
+});
+const noteDriftCaptureAdmission =
+  admitFubonDomesticDepositCaptureEvidence(noteDriftCaptureRaw);
+assert.equal(noteDriftCaptureAdmission.status, "admissible");
+assert.ok(noteDriftCaptureAdmission.capture);
+const noteDriftFinancialAdmission = admitFubonDomesticDepositFinancialCapture({
+  capture: noteDriftCaptureAdmission.capture,
+  captureId: "fubon-human-attested-note-drift",
+  semantics: semanticsFor(noteDriftCaptureAdmission.capture),
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(noteDriftFinancialAdmission.status, "admitted");
+assert.ok(noteDriftFinancialAdmission.capture);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.collisionKey,
+  firstAdmission.capture.records[0]?.collisionKey,
+);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.contentHash,
+  firstAdmission.capture.records[0]?.contentHash,
+);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.occurrenceKey,
+  firstAdmission.capture.records[0]?.occurrenceKey,
+);
+
 // A workflow-supplied stable login identity is the connection fence shared by
 // deposit and loan products. It replaces the attestation-manifest key in the
 // persisted financial identity, while account and attestation epoch checks

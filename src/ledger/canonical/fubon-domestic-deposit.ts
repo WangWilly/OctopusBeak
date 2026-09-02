@@ -620,11 +620,11 @@ function hardSourceOnlyRowDiagnostics(
       const direction = outflow ? "outflow" : inflow ? "inflow" : null;
       if (!direction) continue;
       const contentHash = opaqueToken(
-        "fubon-observed-composite-content-v1",
-        ...cells.map(normalizedSourceCell),
+        "fubon-observed-composite-content-v2",
+        ...normalizedOccurrenceIdentityCells(cells),
       );
       const fence = opaqueToken(
-        "fubon-observed-composite-fence-v1",
+        "fubon-observed-composite-fence-v2",
         identity.subjectDigest,
         getFubonHumanAttestedV1Manifest().attestationId,
         getFubonHumanAttestedV1Manifest().evidenceVersion,
@@ -908,7 +908,7 @@ export const FUBON_DOMESTIC_DEPOSIT_EFFECTIVE_TIME_BASIS =
   "transaction-time" as const;
 export const FUBON_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
 export const FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION =
-  "fubon/domestic-deposit/observed-composite-v1" as const;
+  "fubon/domestic-deposit/observed-composite-v2" as const;
 export const FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS =
   "human-attested-requested-range-all-pages" as const;
 export const FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY =
@@ -1225,6 +1225,7 @@ export function deriveFubonDomesticDepositAccountIdentity(
       manifest.attestationId,
       manifest.evidenceVersion,
       manifest.status,
+      FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION,
     ),
     subjectDigest,
   };
@@ -1259,6 +1260,17 @@ function hasSharedAccountMarker(
 
 function normalizedSourceCell(value: string): string {
   return clean(value).replace(/\s+/g, " ");
+}
+
+function normalizedOccurrenceIdentityCells(
+  cells: readonly string[],
+): readonly string[] {
+  // The provider's note cell can change when the same transaction is returned
+  // through two overlapping query windows. It remains available to structural
+  // evidence hashing and workflow relation extraction, but is excluded from
+  // occurrence identity. The first six cells are the stable booked tuple:
+  // date, time, summary, outflow, inflow, and balance.
+  return cells.slice(0, 6).map(normalizedSourceCell);
 }
 
 function hasValidatedEvidence(
@@ -1511,11 +1523,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
     if (!time) diagnostics.push("source-time-invalid");
     if (!amount || !balanceAfter || !time || !direction) continue;
     const contentHash = opaqueToken(
-      "fubon-observed-composite-content-v1",
-      ...cells.map(normalizedSourceCell),
+      "fubon-observed-composite-content-v2",
+      ...normalizedOccurrenceIdentityCells(cells),
     );
     const fence = opaqueToken(
-      "fubon-observed-composite-fence-v1",
+      "fubon-observed-composite-fence-v2",
       identity.subjectDigest,
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
@@ -1528,7 +1540,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       String(balanceAfter.scale),
     );
     const occurrenceKey = opaqueToken(
-      "fubon-observed-composite-occurrence-v1",
+      "fubon-observed-composite-occurrence-v2",
       fence,
       contentHash,
     );
