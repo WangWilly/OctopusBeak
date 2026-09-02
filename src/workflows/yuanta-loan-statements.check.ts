@@ -15,12 +15,6 @@ import type {
 import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repayment-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
-import {
-  collectRepaymentRouteInventory,
-  type RepaymentRouteAnchorSnapshot,
-  type RepaymentRouteInventoryEvent,
-} from "./repayment-route-inventory.ts";
-import { YUANTA_FMENU_MENU_FIXTURE } from "./repayment-route-inventory.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -108,127 +102,7 @@ const loanSource = await readFile(
   "utf8",
 );
 assert.match(loanSource, /await openStatementPage\(page\)/);
-assert.match(loanSource, /emitRoutes\(/);
-assert.match(loanSource, /collectRoutes\(page, \{/);
-assert.ok(
-  loanSource.indexOf("await openStatementPage(page)") <
-    loanSource.indexOf("emitRoutes("),
-  "Yuanta route inventory must wait for the verified loan page",
-);
-assert.ok(
-  loanSource.indexOf("emitRoutes(") <
-    loanSource.indexOf("const accounts = await readAccounts("),
-  "Yuanta route inventory must run before loan form mutation/query",
-);
-
-function inventoryLocatorFor(
-  anchors: readonly RepaymentRouteAnchorSnapshot[],
-) {
-  return {
-    count: async () => anchors.length,
-    nth: (index: number) => ({
-      isVisible: async () => anchors[index]?.visible !== false,
-      textContent: async () => anchors[index]?.label ?? null,
-      getAttribute: async (name: string) => {
-        const anchor = anchors[index];
-        if (name === "href") return anchor?.href ?? null;
-        if (name === "onclick") return anchor?.onclick ?? null;
-        if (name === "data-action") return anchor?.action ?? null;
-        return null;
-      },
-    }),
-  };
-}
-
-function readyInventoryPage(): never {
-  const fmenu = {
-    name: () => "fmenu",
-    childFrames: () => [],
-    locator: (selector: string) => {
-      assert.equal(selector, "a");
-      return inventoryLocatorFor(YUANTA_FMENU_MENU_FIXTURE);
-    },
-  };
-  const main = {
-    name: () => "main",
-    childFrames: () => [],
-    locator: (selector: string) => {
-      assert.equal(selector, "a");
-      return inventoryLocatorFor([]);
-    },
-  };
-  return {
-    frames: () => [main, fmenu],
-    mainFrame: () => main,
-    locator: (selector: string) => {
-      assert.equal(selector, "a");
-      return inventoryLocatorFor([]);
-    },
-  } as never;
-}
-
-test("Yuanta loan emits one route inventory after the verified page is ready", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "yuanta-loan-route-inventory-"));
-  const eventOrder: string[] = [];
-  const inventories: RepaymentRouteInventoryEvent[] = [];
-  const stableConnectionScope = "YUANTA-USER-READY\u0000YUANTA-ACCOUNT-READY";
-  const stableConnectionKey = deriveSourceConnectionIdentityKey(
-    "yuanta",
-    stableConnectionScope,
-  );
-  const page = readyInventoryPage();
-
-  try {
-    await runYuantaLoanStatements(
-      page,
-      {
-        dateRange: "one_year",
-        customDateRange: {
-          startDate: "2026/01/01",
-          endDate: "2026/01/31",
-        },
-        loanAccountFilters: [],
-        replaceActiveSession: true,
-      },
-      {
-        canonicalLedgerDir: directory,
-        sourceConnectionScope: stableConnectionScope,
-        sourceConnectionKey: stableConnectionKey,
-        openLoanStatementPage: async () => {
-          eventOrder.push("ready");
-        },
-        collectRepaymentRouteInventory: async (receivedPage, options) => {
-          eventOrder.push("inventory");
-          return await collectRepaymentRouteInventory(receivedPage, options);
-        },
-        emitRepaymentRouteInventory: (inventory) => {
-          eventOrder.push("emit");
-          inventories.push(inventory);
-        },
-        readLoanAccountOptions: async () => {
-          eventOrder.push("accounts");
-          return [];
-        },
-        writeLoanStatementsFile: (async () => ({})) as never,
-      },
-    );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-
-  assert.deepEqual(eventOrder, ["ready", "inventory", "emit", "accounts"]);
-  assert.equal(inventories.length, 1);
-  assert.ok(
-    inventories[0]?.candidates.some(
-      (candidate) => candidate.label === "貸款繳款明細查詢",
-    ),
-  );
-  assert.ok(
-    inventories[0]?.candidates.some(
-      (candidate) => candidate.label === "自動扣繳服務",
-    ),
-  );
-});
+assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
 
 function loanOptionsPage(
   options: Array<{ value: string; label: string }>,

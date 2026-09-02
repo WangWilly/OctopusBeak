@@ -22,9 +22,7 @@ assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(source, /deriveFubonCanonicalHumanAttestation/);
 assert.match(source, /FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY/);
 assert.match(source, /panFingerprintKey/);
-assert.match(source, /collectRepaymentRouteInventory/);
-assert.match(source, /emitRepaymentRouteInventory/);
-assert.match(source, /FUBON_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION/);
+assert.doesNotMatch(source, /RepaymentRouteInventory/);
 assert.doesNotMatch(source, /fubon_card_identity_fingerprint_key/);
 assert.match(
   source,
@@ -34,16 +32,6 @@ assert.equal(source.match(/await signInFubon\(/g)?.length, 1);
 assert.ok(
   source.indexOf("await signInFubon(page, session, input.credentials)") <
     source.indexOf("const run = await runSelectedStatements(selectedIds, ["),
-);
-assert.ok(
-  source.indexOf("await signInFubon(page, session, input.credentials)") <
-    source.indexOf("collectRepaymentRouteInventory(page"),
-  "Fubon route inventory must run after authentication",
-);
-assert.ok(
-  source.indexOf("collectRepaymentRouteInventory(page") <
-    source.indexOf("const run = await runSelectedStatements(selectedIds, ["),
-  "Fubon route inventory must run before component navigation",
 );
 assert.match(
   source,

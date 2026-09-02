@@ -38,11 +38,6 @@ import {
 } from "../ledger/canonical/source-connection-identity.ts";
 import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
 import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
-import {
-  collectRepaymentRouteInventory,
-  emitRepaymentRouteInventory,
-  YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
-} from "./repayment-route-inventory.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 
@@ -181,10 +176,6 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
     store: ReturnType<typeof createCanonicalLoanStore>,
     input: YuantaLoanCaptureBuildInput,
   ) => ReturnType<typeof persistYuantaLoanCapture>;
-  /** Test seam; production uses the bounded DOM-only inventory collector. */
-  collectRepaymentRouteInventory: typeof collectRepaymentRouteInventory;
-  /** Test seam; production uses the versioned workflow-output emitter. */
-  emitRepaymentRouteInventory: typeof emitRepaymentRouteInventory;
 }>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
@@ -1278,27 +1269,13 @@ export async function runYuantaLoanStatements(
     canonicalSqlitePath(ledgerDir),
   );
   const persist = overrides.persistLoanCapture ?? persistYuantaLoanCapture;
-  const collectRoutes =
-    overrides.collectRepaymentRouteInventory ?? collectRepaymentRouteInventory;
-  const emitRoutes =
-    overrides.emitRepaymentRouteInventory ?? emitRepaymentRouteInventory;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
   const resolveRelations =
     overrides.resolveRelations ?? resolveLoanRepaymentRelations;
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
 
   try {
-    // The loan opener verifies the authenticated loan form before returning.
-    // Probe the now-stable page and its menu frames before any account or date
-    // control is mutated; the combined workflow therefore emits one event at
-    // the useful ready seam instead of an early shell snapshot.
     await openStatementPage(page);
-    emitRoutes(
-      await collectRoutes(page, {
-        provider: "yuanta",
-        contractVersion: YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION,
-      }),
-    );
     const accounts = await readAccounts(
       page,
       input.loanAccountFilters,

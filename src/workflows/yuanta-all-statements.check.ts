@@ -31,14 +31,8 @@ assert.match(source, /yuanta-all-component-page-ready[\s\S]*durationMs/);
 assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
 assert.match(source, /yuantaCanonicalHumanAttestationFromEnvironment/);
 assert.match(source, /canonicalHumanAttestation/);
-assert.doesNotMatch(
-  source,
-  /collectRepaymentRouteInventory|emitRepaymentRouteInventory|YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION/,
-  "Yuanta all-statements must not probe the menu before the loan page is ready",
-);
-assert.match(loanSource, /collectRepaymentRouteInventory/);
-assert.match(loanSource, /emitRepaymentRouteInventory/);
-assert.match(loanSource, /YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION/);
+assert.doesNotMatch(source, /RepaymentRouteInventory/);
+assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
