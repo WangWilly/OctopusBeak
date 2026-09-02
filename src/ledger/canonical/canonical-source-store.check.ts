@@ -1697,6 +1697,84 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
       legacy,
       admitCanonicalInvestmentCapture(fundCapture),
     );
+    const legacyMarketV1FundingEvidence = {
+      kind: "source-settlement-contract",
+      sourceRecordKey: tradeRecordKey,
+      sourceLinkageKey: token("v16-yuanta-legacy-linkage"),
+      linkageContractVersion:
+        YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+      settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+      settlementMarketContractVersion: "yuanta/foreign-settlement/market-v1",
+      settlementModel: "account-currency-date-net",
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+    } as const;
+    // This is a controlled historical fixture: v1 had no source MarketNo,
+    // so it cannot be constructed through today's stricter admission API.
+    const legacyFundingEvidenceJson = JSON.stringify(
+      legacyMarketV1FundingEvidence,
+    );
+    legacy.db
+      .prepare(
+        `UPDATE investment_transactions
+            SET funding_evidence_json=?
+          WHERE capture_id=(SELECT capture_id FROM source_captures WHERE capture_key=?)`,
+      )
+      .run(legacyFundingEvidenceJson, "legacy-yuanta-trade");
+    const legacySourceRows = legacy.db
+      .prepare(
+        `SELECT source_record_id AS sourceRecordId, payload_json AS payloadJson
+           FROM source_records
+          WHERE capture_id=(SELECT capture_id FROM source_captures WHERE capture_key=?)`,
+      )
+      .all("legacy-yuanta-trade") as Array<{
+      sourceRecordId: Uint8Array;
+      payloadJson: string;
+    }>;
+    let legacyTransactionPayloadCount = 0;
+    for (const row of legacySourceRows) {
+      const payload = JSON.parse(row.payloadJson) as {
+        kind?: string;
+        fundingEvidence?: unknown;
+      };
+      if (payload.kind !== "investment-transaction") continue;
+      payload.fundingEvidence = legacyMarketV1FundingEvidence;
+      legacy.db
+        .prepare(
+          "UPDATE source_records SET payload_json=? WHERE source_record_id=?",
+        )
+        .run(JSON.stringify(payload), row.sourceRecordId);
+      legacyTransactionPayloadCount += 1;
+    }
+    assert.equal(legacyTransactionPayloadCount, 1);
+    assert.deepEqual(
+      JSON.parse(
+        (
+          legacy.db
+            .prepare(
+              `SELECT funding_evidence_json AS fundingEvidenceJson
+                 FROM investment_transactions
+                WHERE capture_id=(SELECT capture_id FROM source_captures WHERE capture_key=?)`,
+            )
+            .get("legacy-yuanta-trade") as { fundingEvidenceJson: string }
+        ).fundingEvidenceJson,
+      ),
+      legacyMarketV1FundingEvidence,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        (
+          legacy.db
+            .prepare(
+              `SELECT payload_json AS payloadJson
+                 FROM source_records
+                WHERE capture_id=(SELECT capture_id FROM source_captures WHERE capture_key=?)
+                  AND json_extract(payload_json, '$.kind')='investment-transaction'`,
+            )
+            .get("legacy-yuanta-trade") as { payloadJson: string }
+        ).payloadJson,
+      ).fundingEvidence,
+      legacyMarketV1FundingEvidence,
+    );
     const countCaptures = (db: DatabaseSync, namespace: string, stream: string) =>
       Number(
         (

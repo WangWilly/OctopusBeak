@@ -316,22 +316,15 @@ function normalizeYuantaSourceMarketCode(
 }
 
 /**
- * Normalize only market labels explicitly supplied by the YuanTa report.
- * Currency, asset type, and security identifiers are deliberately excluded:
- * YuanTa's settlement schedule varies by market even when the currency is
- * the same.
+ * Normalize only the provider's explicit MarketNo code. Currency, asset type,
+ * security identifiers, and human-readable labels are deliberately excluded:
+ * YuanTa's settlement schedule varies by market even when the currency is the
+ * same, and the current canonical contract requires the raw source code.
  */
 export function normalizeYuantaSettlementMarket(
   value: string | number | null | undefined,
 ): YuantaSettlementMarket | undefined {
-  const normalized = cleanText(
-    value === null || value === undefined ? "" : String(value),
-  )
-    .normalize("NFKC")
-    .toLocaleUpperCase("en-US");
-  if (normalized === "US" || normalized === "美股")
-    return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
-  if (normalizeYuantaSourceMarketCode(normalized))
+  if (normalizeYuantaSourceMarketCode(value))
     return YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY;
   return undefined;
 }
@@ -342,8 +335,10 @@ export function buildYuantaTradeFundingEvidence(input: {
   currency: string;
   market?: string | number | null;
 }): InvestmentFundingEvidence {
-  const settlementMarket = normalizeYuantaSettlementMarket(input.market);
   const sourceMarketCode = normalizeYuantaSourceMarketCode(input.market);
+  if (!sourceMarketCode)
+    return { kind: "unresolved", sourceRecordKey: input.sourceRecordKey };
+  const settlementMarket = normalizeYuantaSettlementMarket(sourceMarketCode);
   if (!settlementMarket)
     return { kind: "unresolved", sourceRecordKey: input.sourceRecordKey };
 
@@ -358,7 +353,7 @@ export function buildYuantaTradeFundingEvidence(input: {
     settlementMarket,
     settlementMarketContractVersion:
       YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
-    ...(sourceMarketCode ? { sourceMarketCode } : {}),
+    sourceMarketCode,
     settlementModel: "account-currency-date-net",
     contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   };

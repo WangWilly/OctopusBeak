@@ -274,7 +274,7 @@ test("leaves YuanTa funding evidence unresolved for an unsupported market", () =
   );
 });
 
-test("creates settlement evidence only for an explicit US market label", () => {
+test("leaves legacy market labels unresolved without a source MarketNo", () => {
   const evidence = buildYuantaTradeFundingEvidence({
     sourceRecordKey: "SANITIZED-SOURCE-RECORD-US",
     stableLoginIdentity: "SANITIZED-YUANTA-LOGIN",
@@ -282,13 +282,11 @@ test("creates settlement evidence only for an explicit US market label", () => {
     market: "US",
   });
 
-  assert.equal(evidence.kind, "source-settlement-contract");
-  if (evidence.kind !== "source-settlement-contract") return;
-  assert.equal(evidence.settlementMarket, "us-equity");
-  assert.equal(
-    evidence.settlementMarketContractVersion,
-    "yuanta/foreign-settlement/market-v2",
-  );
+  assert.deepEqual(evidence, {
+    kind: "unresolved",
+    sourceRecordKey: "SANITIZED-SOURCE-RECORD-US",
+  });
+  assert.equal(normalizeYuantaSettlementMarket("美股"), undefined);
 });
 
 test("maps live OverseaTrade MarketNo codes into settlement evidence", () => {
@@ -345,6 +343,7 @@ test("maps live OverseaTrade MarketNo codes into settlement evidence", () => {
     assert.equal(evidence.kind, "source-settlement-contract");
     if (evidence.kind !== "source-settlement-contract") continue;
     assert.equal(evidence.settlementMarket, "us-equity");
+    assert.equal(evidence.sourceMarketCode, market);
   }
 });
 
