@@ -1,14 +1,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
-import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import {
+  withCanonicalSnapshot,
+  withCanonicalWriterQueue,
+} from "./canonical-runtime.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import type { InvestmentFundingEvidence } from "./investment-financial.ts";
 
 type LinkedFundingEvidence = Extract<
   InvestmentFundingEvidence,
   { kind: "source-linked-account" }
 >;
-type RelationResolutionStore = Pick<CanonicalSourceStore, "db" | "commitClock">;
+type RelationResolutionStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock" | "databasePath"
+>;
 
 type InvestmentRow = {
   transactionId: Uint8Array;
@@ -40,6 +47,42 @@ const idHex = (value: Uint8Array) => Buffer.from(value).toString("hex");
 
 const YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION =
   "yuanta/foreign-settlement/human-attested-v1";
+export const YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION =
+  "yuanta/foreign-settlement/linkage-v1" as const;
+export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_CONTRACT_VERSION =
+  "yuanta/foreign-settlement/calendar-v1" as const;
+export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START = "2026-01-01" as const;
+export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_END = "2026-12-31" as const;
+
+/**
+ * The fixed bank note pair is the provider's cross-product linkage evidence:
+ * it identifies a Yuanta foreign-currency row as a securities settlement,
+ * without pretending that the bank and brokerage identity epochs are equal.
+ * Keep the derivation versioned so a later provider contract cannot silently
+ * reinterpret old relation judgments.
+ */
+export function deriveYuantaForeignSettlementLinkageKey(
+  stableLoginIdentity: string,
+  currency: string,
+): `sha256:${string}` {
+  if (!stableLoginIdentity.trim())
+    throw new Error("Yuanta settlement linkage requires a stable login identity.");
+  const normalizedCurrency = currency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalizedCurrency))
+    throw new Error("Yuanta settlement linkage requires an ISO currency code.");
+  return deriveSourceConnectionIdentityKey(
+    "yuanta-foreign-settlement-linkage",
+    [
+      YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+      stableLoginIdentity,
+      normalizedCurrency,
+      "複委託扣",
+      "複委託入",
+      "淨額扣",
+      "淨額入",
+    ],
+  );
+}
 
 /** The public live contract observed for Yuanta overseas equity settlement.
  * The holiday set is deliberately versioned with the contract so a later
@@ -69,13 +112,20 @@ function isBusinessDay(dateValue: string): boolean {
 function addSettlementBusinessDays(
   effectiveOn: string,
   action: "buy" | "sell",
-): string {
+): string | null {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(effectiveOn) ||
+    effectiveOn < YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START ||
+    effectiveOn > YUANTA_FOREIGN_SETTLEMENT_CALENDAR_END
+  )
+    return null;
   const days = action === "buy" ? 1 : 2;
   const dateValue = new Date(`${effectiveOn}T00:00:00Z`);
   let counted = 0;
   while (counted < days) {
     dateValue.setUTCDate(dateValue.getUTCDate() + 1);
     const candidate = dateValue.toISOString().slice(0, 10);
+    if (candidate > YUANTA_FOREIGN_SETTLEMENT_CALENDAR_END) return null;
     if (isBusinessDay(candidate)) counted += 1;
   }
   return dateValue.toISOString().slice(0, 10);
@@ -110,6 +160,32 @@ type FundingCandidate = {
   scopeEnd: string;
 };
 
+type SettlementLinkagePayload = {
+  key: string;
+  contractVersion: string;
+};
+
+function parseSettlementLinkage(
+  payloadJson: string,
+): SettlementLinkagePayload | null {
+  try {
+    const payload = JSON.parse(payloadJson) as {
+      sourcePayload?: {
+        settlementLinkageKey?: unknown;
+        settlementLinkageContractVersion?: unknown;
+      };
+    };
+    const key = payload.sourcePayload?.settlementLinkageKey;
+    const contractVersion =
+      payload.sourcePayload?.settlementLinkageContractVersion;
+    if (typeof key !== "string" || typeof contractVersion !== "string")
+      return null;
+    return { key: key.trim(), contractVersion: contractVersion.trim() };
+  } catch {
+    return null;
+  }
+}
+
 function parseTransactionInfo(payloadJson: string): string {
   try {
     const payload = JSON.parse(payloadJson) as {
@@ -130,6 +206,7 @@ function fundingCandidates(
   direction: "inflow" | "outflow",
   expected: bigint,
   targetScale: number,
+  expectedLinkageKey: string,
 ): FundingCandidate[] {
   const rows = db
     .prepare(
@@ -182,12 +259,16 @@ function fundingCandidates(
   const expectedInfo = direction === "outflow" ? "淨額扣" : "淨額入";
   for (const row of rows) {
     const accountNumber = String(row.accountNumber ?? "").replaceAll(/[\s-]/g, "");
+    const linkage = parseSettlementLinkage(row.payloadJson);
     if (
       !/^\d{6,20}$/.test(accountNumber) ||
       row.description !== expectedDescription ||
       parseTransactionInfo(row.payloadJson) !== expectedInfo ||
+      linkage?.key !== expectedLinkageKey ||
+      linkage?.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
       row.completeness !== "complete-range" ||
       Number(row.terminal) !== 1 ||
+      row.scopeStart > settlementEffectiveOn ||
       row.scopeEnd < settlementEffectiveOn
     )
       continue;
@@ -215,28 +296,130 @@ function fundingCandidates(
 
 function hasCompleteInvestmentCoverage(
   db: DatabaseSync,
-  sourceRecordId: Uint8Array,
-  effectiveOn: string,
+  sourceRecordIds: readonly Uint8Array[],
+  intervalStart: string,
+  intervalEnd: string,
 ): boolean {
-  return Boolean(
-    db
-      .prepare(
-        `SELECT 1
-           FROM source_record_scopes record_scope
-           JOIN capture_scopes scope ON scope.scope_id=record_scope.scope_id
-          WHERE record_scope.source_record_id=?
-            AND scope.scope_start<=? AND scope.scope_end>=?
-            AND scope.completeness='complete-range' AND scope.terminal=1
-          LIMIT 1`,
-      )
-      .get(sourceRecordId, effectiveOn, effectiveOn),
-  );
+  if (sourceRecordIds.length === 0) return false;
+  const placeholders = sourceRecordIds.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT record_scope.source_record_id) AS covered
+         FROM source_record_scopes record_scope
+         JOIN capture_scopes scope ON scope.scope_id=record_scope.scope_id
+        WHERE record_scope.source_record_id IN (${placeholders})
+          AND scope.scope_start<=? AND scope.scope_end>=?
+          AND scope.completeness='complete-range' AND scope.terminal=1`,
+    )
+    .get(...sourceRecordIds, intervalStart, intervalEnd) as {
+    covered?: number;
+  };
+  return Number(row.covered ?? 0) === sourceRecordIds.length;
+}
+
+type FundingCoverageState = "complete" | "incomplete" | "missing";
+
+function fundingCoverageState(
+  db: DatabaseSync,
+  settlementEffectiveOn: string,
+  currency: string,
+): FundingCoverageState {
+  const rows = db
+    .prepare(
+      `SELECT scope.scope_start AS scopeStart,scope.scope_end AS scopeEnd,
+              scope.completeness,scope.terminal
+         FROM financial_accounts account
+         JOIN source_connections connection
+           ON connection.source_connection_id=account.source_connection_id
+         JOIN capture_scopes scope ON scope.account_id=account.account_id
+        WHERE connection.integration_namespace='yuanta'
+          AND account.stream='foreign-currency-deposit'
+          AND account.account_type='depository'
+          AND EXISTS (
+            SELECT 1
+              FROM financial_transactions transaction_row
+              JOIN current_transactions current_row
+                ON current_row.transaction_id=transaction_row.transaction_id
+              JOIN transaction_revisions revision
+                ON revision.revision_id=current_row.revision_id
+             WHERE transaction_row.account_id=account.account_id
+               AND revision.currency=?
+          )
+          AND scope.scope_start<=? AND scope.scope_end>=?`,
+    )
+    .all(currency, settlementEffectiveOn, settlementEffectiveOn) as Array<{
+    scopeStart: string;
+    scopeEnd: string;
+    completeness: string;
+    terminal: number;
+  }>;
+  if (rows.length === 0) return "missing";
+  if (rows.some((row) => row.completeness !== "complete-range" || Number(row.terminal) !== 1))
+    return "incomplete";
+  return "complete";
+}
+
+type RelationEventWriter = {
+  ensureCommit: () => Buffer;
+  nextEventTime: () => number;
+};
+
+function withdrawCurrentRelations(
+  db: DatabaseSync,
+  investmentAccountId: Uint8Array,
+  settlementGroupKey: string,
+  eventWriter: RelationEventWriter,
+  reason: string,
+  exceptRelationId?: Uint8Array,
+): number {
+  const rows = db
+    .prepare(
+      `SELECT relation.relation_id AS relationId
+         FROM investment_funding_relations relation
+         JOIN investment_funding_relation_events event
+           ON event.relation_id=relation.relation_id
+        WHERE relation.investment_account_id=?
+          AND relation.settlement_group_key=?
+          AND event.event_kind='observed'
+          AND ${currentStateSql("event")}`,
+    )
+    .all(investmentAccountId, settlementGroupKey) as Array<{
+    relationId: Uint8Array;
+  }>;
+  let withdrawn = 0;
+  for (const row of rows) {
+    if (
+      exceptRelationId &&
+      Buffer.from(row.relationId).equals(Buffer.from(exceptRelationId))
+    )
+      continue;
+    db.prepare(
+      `INSERT OR IGNORE INTO investment_funding_relation_events(
+         event_id,relation_id,event_kind,reason,commit_id,recorded_at_utc_us
+       ) VALUES(?,?,'withdrawn',?,?,?)`,
+    ).run(
+      uuidV7(),
+      row.relationId,
+      reason,
+      eventWriter.ensureCommit(),
+      eventWriter.nextEventTime(),
+    );
+    withdrawn += 1;
+  }
+  return withdrawn;
 }
 
 /** Amount is only a discriminator after the provider-specific settlement
  * contract supplies the grouping model; the bank capture supplies the actual
  * account, booking date, and fixed Institution-generated note. */
-export function resolveCanonicalInvestmentFundingRelations(
+function relationStorePath(store: RelationResolutionStore): string {
+  const databasePath = store.databasePath;
+  if (!databasePath)
+    throw new Error("Canonical investment relation resolver requires a database path.");
+  return databasePath;
+}
+
+function resolveCanonicalInvestmentFundingRelationsInQueue(
   store: RelationResolutionStore,
 ): { resolved: number; noAdmission: number; reasons: string[] } {
   const sourceRows = store.db
@@ -263,7 +446,7 @@ export function resolveCanonicalInvestmentFundingRelations(
       evidence.kind === "source-linked-account"
         ? `${idHex(row.investmentAccountId)}\0${evidence.settlementGroupKey}`
         : evidence.kind === "source-settlement-contract"
-          ? `${idHex(row.investmentAccountId)}\0${row.cashCurrency}\0${addSettlementBusinessDays(row.effectiveOn, row.action)}`
+          ? `${idHex(row.investmentAccountId)}\0${row.cashCurrency}\0${addSettlementBusinessDays(row.effectiveOn, row.action) ?? "unsupported-calendar"}`
           : "";
     if (!key) continue;
     const group = groups.get(key) ?? [];
@@ -276,6 +459,7 @@ export function resolveCanonicalInvestmentFundingRelations(
   const reasons = new Set<string>();
   let resolutionCommitId: Buffer | null = null;
   let resolutionCommitRecordedAt: number | null = null;
+  let resolutionEventOrdinal = 0;
   const ensureResolutionCommit = (): Buffer => {
     if (resolutionCommitId) return resolutionCommitId;
     const nextSequence =
@@ -316,6 +500,15 @@ export function resolveCanonicalInvestmentFundingRelations(
       );
     return resolutionCommitId;
   };
+  const eventWriter: RelationEventWriter = {
+    ensureCommit: ensureResolutionCommit,
+    nextEventTime: () => {
+      if (resolutionCommitRecordedAt === null)
+        throw new Error("Relation resolution event requires a resolution commit.");
+      resolutionEventOrdinal += 1;
+      return resolutionCommitRecordedAt + resolutionEventOrdinal;
+    },
+  };
   store.db.exec("BEGIN IMMEDIATE");
   try {
     for (const group of groups.values()) {
@@ -326,14 +519,28 @@ export function resolveCanonicalInvestmentFundingRelations(
           first.effectiveOn,
           first.action,
         );
+        if (!settlementEffectiveOn) {
+          noAdmission += 1;
+          reasons.add("unsupported-settlement-calendar");
+          continue;
+        }
+        const settlementGroupKey = digest(
+          "yuanta-foreign-settlement-group-v1",
+          idHex(first.investmentAccountId),
+          first.cashCurrency,
+          settlementEffectiveOn,
+        );
+        const tradeIntervalStart = group.reduce(
+          (earliest, row) =>
+            row.effectiveOn < earliest ? row.effectiveOn : earliest,
+          first.effectiveOn,
+        );
         if (
-          group.some(
-            (row) =>
-              !hasCompleteInvestmentCoverage(
-                store.db,
-                row.sourceRecordId,
-                row.effectiveOn,
-              ),
+          !hasCompleteInvestmentCoverage(
+            store.db,
+            group.map((row) => row.sourceRecordId),
+            tradeIntervalStart,
+            settlementEffectiveOn,
           )
         ) {
           noAdmission += 1;
@@ -346,6 +553,9 @@ export function resolveCanonicalInvestmentFundingRelations(
             row.evidence.settlementModel !== evidence.settlementModel ||
             row.evidence.contractVersion !==
               YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION ||
+            row.evidence.linkageContractVersion !==
+              evidence.linkageContractVersion ||
+            row.evidence.sourceLinkageKey !== evidence.sourceLinkageKey ||
             row.cashCurrency !== first.cashCurrency ||
             addSettlementBusinessDays(row.effectiveOn, row.action) !==
               settlementEffectiveOn,
@@ -367,10 +577,29 @@ export function resolveCanonicalInvestmentFundingRelations(
         if (signed === 0n) {
           noAdmission += 1;
           reasons.add("zero-net-settlement");
+          if (
+            fundingCoverageState(
+              store.db,
+              settlementEffectiveOn,
+              first.cashCurrency,
+            ) === "complete"
+          )
+            withdrawCurrentRelations(
+              store.db,
+              first.investmentAccountId,
+              settlementGroupKey,
+              eventWriter,
+              "complete-resolution:zero-net-settlement",
+            );
           continue;
         }
         const direction = signed > 0n ? "outflow" : "inflow";
         const expected = signed < 0n ? -signed : signed;
+        const fundingCoverage = fundingCoverageState(
+          store.db,
+          settlementEffectiveOn,
+          first.cashCurrency,
+        );
         const candidateRows = fundingCandidates(
           store.db,
           settlementEffectiveOn,
@@ -378,14 +607,23 @@ export function resolveCanonicalInvestmentFundingRelations(
           direction,
           expected,
           targetScale,
+          evidence.sourceLinkageKey,
         );
-        if (candidateRows.length !== 1) {
+        if (fundingCoverage !== "complete" || candidateRows.length !== 1) {
           noAdmission += 1;
-          reasons.add(
-            candidateRows.length === 0
+          const reason =
+            fundingCoverage !== "complete" || candidateRows.length === 0
               ? "no-complete-funding-candidate"
-              : "ambiguous-funding-candidate",
-          );
+              : "ambiguous-funding-candidate";
+          reasons.add(reason);
+          if (fundingCoverage === "complete")
+            withdrawCurrentRelations(
+              store.db,
+              first.investmentAccountId,
+              settlementGroupKey,
+              eventWriter,
+              `complete-resolution:${reason}`,
+            );
           continue;
         }
         const candidate = candidateRows[0]!;
@@ -424,12 +662,7 @@ export function resolveCanonicalInvestmentFundingRelations(
             .run(
               relationId,
               relationKey,
-              digest(
-                "yuanta-foreign-settlement-group-v1",
-                idHex(first.investmentAccountId),
-                first.cashCurrency,
-                settlementEffectiveOn,
-              ),
+              settlementGroupKey,
               first.investmentAccountId,
               candidate.accountId,
               candidate.transactionId,
@@ -478,8 +711,16 @@ export function resolveCanonicalInvestmentFundingRelations(
               uuidV7(),
               relationId,
               ensureResolutionCommit(),
-              resolutionCommitRecordedAt! + 1,
+              eventWriter.nextEventTime(),
             );
+        withdrawCurrentRelations(
+          store.db,
+          first.investmentAccountId,
+          settlementGroupKey,
+          eventWriter,
+          "stronger-current-resolution",
+          relationId,
+        );
         resolved += 1;
         continue;
       }
@@ -524,15 +765,16 @@ export function resolveCanonicalInvestmentFundingRelations(
       const expected = signed < 0n ? -signed : signed;
       const fundingAccounts = store.db
         .prepare(
-          `SELECT DISTINCT a.account_id AS accountId
-             FROM financial_accounts a
-             JOIN capture_scopes s ON s.account_id=a.account_id
-            WHERE a.account_no=? AND a.account_type='depository'
+            `SELECT DISTINCT a.account_id AS accountId
+               FROM financial_accounts a
+               JOIN capture_scopes s ON s.account_id=a.account_id
+            WHERE REPLACE(REPLACE(REPLACE(a.account_no,' ',''),'-',''),'　','')=?
+              AND a.account_type='depository'
               AND a.currency=? AND s.scope_start<=? AND s.scope_end>=?
               AND s.completeness='complete-range' AND s.terminal=1`,
         )
         .all(
-          evidence.fundingAccountKey,
+          evidence.fundingAccountNumber,
           first.cashCurrency,
           evidence.settlementEffectiveOn,
           evidence.settlementEffectiveOn,
@@ -582,11 +824,19 @@ export function resolveCanonicalInvestmentFundingRelations(
       }
       if (candidates.length !== 1) {
         noAdmission += 1;
-        reasons.add(
+        const reason =
           candidates.length === 0
             ? "no-complete-funding-candidate"
-            : "ambiguous-funding-candidate",
-        );
+            : "ambiguous-funding-candidate";
+        reasons.add(reason);
+        if (fundingAccounts.length > 0)
+          withdrawCurrentRelations(
+            store.db,
+            first.investmentAccountId,
+            evidence.settlementGroupKey,
+            eventWriter,
+            `complete-resolution:${reason}`,
+          );
         continue;
       }
 
@@ -659,30 +909,14 @@ export function resolveCanonicalInvestmentFundingRelations(
           );
       }
 
-      const priorRelations = store.db
-        .prepare(
-          `SELECT r.relation_id AS relationId
-             FROM investment_funding_relations r
-             JOIN investment_funding_relation_events e ON e.relation_id=r.relation_id
-            WHERE r.investment_account_id=? AND r.settlement_group_key=?
-              AND r.relation_id<>? AND e.event_kind='observed'
-              AND ${currentStateSql("e")}`,
-        )
-        .all(
-          first.investmentAccountId,
-          evidence.settlementGroupKey,
-          relationId,
-        ) as Array<{ relationId: Uint8Array }>;
-      for (const prior of priorRelations) {
-        const commitId = ensureResolutionCommit();
-        store.db
-          .prepare(
-            `INSERT OR IGNORE INTO investment_funding_relation_events(
-               event_id,relation_id,event_kind,reason,commit_id,recorded_at_utc_us
-             ) VALUES(?,?,'withdrawn','stronger-current-resolution',?,?)`,
-          )
-          .run(uuidV7(), prior.relationId, commitId, resolutionCommitRecordedAt! + 1);
-      }
+      withdrawCurrentRelations(
+        store.db,
+        first.investmentAccountId,
+        evidence.settlementGroupKey,
+        eventWriter,
+        "stronger-current-resolution",
+        relationId,
+      );
       const latest = store.db
         .prepare(
           `SELECT event_kind AS eventKind FROM investment_funding_relation_events
@@ -700,8 +934,8 @@ export function resolveCanonicalInvestmentFundingRelations(
           .run(
             uuidV7(),
             relationId,
-            commitId,
-            resolutionCommitRecordedAt! + 2,
+            ensureResolutionCommit(),
+            eventWriter.nextEventTime(),
           );
       }
       resolved += 1;
@@ -712,6 +946,14 @@ export function resolveCanonicalInvestmentFundingRelations(
     throw error;
   }
   return { resolved, noAdmission, reasons: [...reasons].sort() };
+}
+
+export async function resolveCanonicalInvestmentFundingRelations(
+  store: RelationResolutionStore,
+): Promise<{ resolved: number; noAdmission: number; reasons: string[] }> {
+  return withCanonicalWriterQueue(relationStorePath(store), () =>
+    resolveCanonicalInvestmentFundingRelationsInQueue(store),
+  );
 }
 
 export function queryCanonicalInvestmentFundingRelationsInSnapshot(

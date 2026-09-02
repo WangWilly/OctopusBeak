@@ -15,6 +15,7 @@ import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
   resolveCanonicalInvestmentFundingRelations,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "./investment-funding-relations.ts";
 import {
   admitCanonicalLoanCapture,
@@ -60,6 +61,7 @@ export type InvestmentFundingEvidence =
       kind: "source-settlement-contract";
       sourceRecordKey: string;
       sourceLinkageKey: string;
+      linkageContractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION;
       settlementModel: "account-currency-date-net";
       contractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION;
     };
@@ -409,11 +411,14 @@ export function admitCanonicalInvestmentCapture(
       token(funding.sourceLinkageKey, "Funding source linkage key");
       token(funding.settlementGroupKey, "Funding settlement group key");
       date(funding.settlementEffectiveOn, "Funding settlement effective time");
-      const accountNumber = funding.fundingAccountNumber.replaceAll(/[-\s]/g, "");
+      const accountNumber = funding.fundingAccountNumber
+        .normalize("NFKC")
+        .replaceAll(/[-\s]/g, "");
       if (!/^\d{6,20}$/.test(accountNumber))
         throw new CanonicalInvestmentAdmissionError(
           "Funding account evidence requires the complete source-reported account number.",
         );
+      funding.fundingAccountNumber = accountNumber;
       if (
         funding.contractVersion !== capture.contractVersion ||
         !["single-transaction", "account-currency-date-net"].includes(
@@ -431,6 +436,8 @@ export function admitCanonicalInvestmentCapture(
         );
       token(funding.sourceLinkageKey, "Funding source linkage key");
       if (
+        funding.linkageContractVersion !==
+          YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
         funding.settlementModel !== "account-currency-date-net" ||
         funding.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION
       )
@@ -1169,7 +1176,7 @@ export async function commitCanonicalInvestmentCaptureBatch(
   // Relation resolution is deliberately outside the source-capture commit.
   // A later bank capture can complete the same canonical history, so this is
   // an idempotent post-commit boundary rather than a workflow-run relation.
-  resolveCanonicalInvestmentFundingRelations(store);
+  await resolveCanonicalInvestmentFundingRelations(store);
   return results;
 }
 
@@ -1253,8 +1260,10 @@ function queryRows(
 }
 
 export {
+  deriveYuantaForeignSettlementLinkageKey,
   queryCanonicalInvestmentFundingRelations,
   resolveCanonicalInvestmentFundingRelations,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "./investment-funding-relations.ts";
 export function queryCanonicalInvestmentCurrent(
   store: CanonicalInvestmentStore,

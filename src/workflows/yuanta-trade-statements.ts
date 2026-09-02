@@ -21,7 +21,11 @@ import {
   buildYuantaInvestmentCapture,
   type YuantaCanonicalInvestmentRow,
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
-import { resolveCanonicalInvestmentFundingRelations } from "../ledger/canonical/investment-funding-relations.ts";
+import {
+  deriveYuantaForeignSettlementLinkageKey,
+  resolveCanonicalInvestmentFundingRelations,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+} from "../ledger/canonical/investment-funding-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
@@ -1361,10 +1365,12 @@ async function commitYuantaTradeCanonicalIfComplete(
         fundingEvidence: {
           kind: "source-settlement-contract" as const,
           sourceRecordKey: mapped.sourceRecordKey,
-          sourceLinkageKey: deriveSourceConnectionIdentityKey(
-            "yuanta-foreign-settlement-linkage",
-            [accountKey, cashEffect.currency],
+          sourceLinkageKey: deriveYuantaForeignSettlementLinkageKey(
+            credentials.yuanta_trade_user_id ?? "",
+            cashEffect.currency,
           ),
+          linkageContractVersion:
+            YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
           settlementModel: "account-currency-date-net" as const,
           contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
         },
@@ -1396,7 +1402,7 @@ async function commitYuantaTradeCanonicalIfComplete(
     // Run only after the source-capture transaction is durable.  The bank
     // workflow may have been collected earlier or may complete this relation
     // later; either order is safe because the resolver is idempotent.
-    resolveCanonicalInvestmentFundingRelations(store);
+    await resolveCanonicalInvestmentFundingRelations(store);
   } finally {
     store.close();
   }
