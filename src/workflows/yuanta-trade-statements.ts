@@ -9,6 +9,18 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
+import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCaptureBatch,
+  createCanonicalInvestmentStore,
+  type InvestmentValidatedCapture,
+} from "../ledger/canonical/investment-financial.ts";
+import {
+  buildYuantaInvestmentCapture,
+  type YuantaCanonicalInvestmentRow,
+} from "../ledger/canonical/yuanta-investment-adapters.ts";
+import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -85,6 +97,7 @@ const inputSchema = z.object({
   holdingTypes: z.array(holdingTypeSchema).default(holdingTypeSchema.options),
   tradeTypes: z.array(tradeTypeSchema).default(tradeTypeSchema.options),
   outputDir: z.string().default("downloads/yuanta-trade-statements"),
+  canonicalLedgerDir: z.string().default("data/ledger"),
 });
 
 const generatedTableFileSchema = z.object({
@@ -343,12 +356,16 @@ function rowsToCsv(rows: CsvRow[], headers: readonly string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-function periodLabel(dateRange: { startDate: string; endDate: string }): string {
+function periodLabel(dateRange: {
+  startDate: string;
+  endDate: string;
+}): string {
   return `${dateRange.startDate}~${dateRange.endDate}`;
 }
 
 function reportPeriod(page: ReportPage): string {
-  if (page.startDate && page.endDate) return `${page.startDate}~${page.endDate}`;
+  if (page.startDate && page.endDate)
+    return `${page.startDate}~${page.endDate}`;
   return page.startDate || page.endDate || "";
 }
 
@@ -359,7 +376,9 @@ function dateSortKey(value: string): string {
 }
 
 function compareTradeRowsByDateDesc(left: CsvRow, right: CsvRow): number {
-  return dateSortKey(right.trade_date).localeCompare(dateSortKey(left.trade_date));
+  return dateSortKey(right.trade_date).localeCompare(
+    dateSortKey(left.trade_date),
+  );
 }
 
 function getStringVar(html: string, name: string): string | null {
@@ -467,7 +486,11 @@ function normalizeRows(
       const normalized: Record<string, unknown> = {};
       for (const column of columns) {
         if (!(column.field in row)) continue;
-        const key = uniqueKey(column.title || column.field, normalized, column.field);
+        const key = uniqueKey(
+          column.title || column.field,
+          normalized,
+          column.field,
+        );
         normalized[key] = row[column.field];
       }
       return normalized;
@@ -518,9 +541,9 @@ function extractAssetSummaryRows(html: string): AssetSummaryRow[] {
     )?.[1];
     if (!assetType) continue;
 
-    const cells = [...rowMatch[2].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(
-      (cellMatch) => stripTags(cellMatch[1]),
-    );
+    const cells = [
+      ...rowMatch[2].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
+    ].map((cellMatch) => stripTags(cellMatch[1]));
     if (cells.length < 3) continue;
 
     rows.push({
@@ -534,7 +557,11 @@ function extractAssetSummaryRows(html: string): AssetSummaryRow[] {
   return rows;
 }
 
-function parseReportPage(html: string, url: string, reportType: string): ReportPage {
+function parseReportPage(
+  html: string,
+  url: string,
+  reportType: string,
+): ReportPage {
   return {
     reportType,
     url,
@@ -562,7 +589,9 @@ async function settleAfterNavigation(page: Page): Promise<void> {
 
 const YUANTA_SECURITY_COMPONENT_MESSAGE = "系統找不到安控元件";
 
-export async function isYuantaSecurityComponentMissing(page: Page): Promise<boolean> {
+export async function isYuantaSecurityComponentMissing(
+  page: Page,
+): Promise<boolean> {
   return page
     .getByText(YUANTA_SECURITY_COMPONENT_MESSAGE, { exact: false })
     .first()
@@ -641,7 +670,13 @@ async function completeCertificateIfPresent(
   const deadline = Date.now() + 60_000;
 
   while (Date.now() < deadline) {
-    if (await page.locator("#btnLogout, #checkDisclaimer").first().isVisible().catch(() => false)) {
+    if (
+      await page
+        .locator("#btnLogout, #checkDisclaimer")
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
       return;
     }
 
@@ -803,11 +838,13 @@ export function isCompleteHoldingCapture(
     if (!page || page.currentAssetType !== reportType) return false;
     let routeName = "";
     try {
-      routeName = new URL(page.url).pathname.split("/").filter(Boolean).at(-1) ?? "";
+      routeName =
+        new URL(page.url).pathname.split("/").filter(Boolean).at(-1) ?? "";
     } catch {
       return false;
     }
-    const hasParsedReportStructure = page.grids.length > 0 || page.summaryRows.length > 0;
+    const hasParsedReportStructure =
+      page.grids.length > 0 || page.summaryRows.length > 0;
     return routeName === reportType && hasParsedReportStructure;
   });
 }
@@ -929,7 +966,8 @@ function normalizeHoldingRows(
   const rows: CsvRow[] = [];
 
   for (const page of pages) {
-    const asOfDate = page.endDate || page.startDate || fallbackDateRange.endDate;
+    const asOfDate =
+      page.endDate || page.startDate || fallbackDateRange.endDate;
     const period = reportPeriod(page) || asOfDate;
 
     for (const grid of page.grids) {
@@ -969,7 +1007,12 @@ function normalizeHoldingRows(
             "票面餘額",
             "名目本金",
           ]),
-          market_date: rowValue(row, ["市價日期", "淨值日", "價格參考日", "交易日"]),
+          market_date: rowValue(row, [
+            "市價日期",
+            "淨值日",
+            "價格參考日",
+            "交易日",
+          ]),
           market_price: rowValue(row, ["參考市價", "參考價格", "參考淨值"]),
           market_value_original: rowValue(row, [
             "原幣現值",
@@ -984,7 +1027,11 @@ function normalizeHoldingRows(
             "約當台幣",
           ]),
           cost_price: rowValue(row, ["成本價格"]),
-          cost_amount: rowValue(row, ["買入成本", "投資成本", "期初投入 (約當台幣)"]),
+          cost_amount: rowValue(row, [
+            "買入成本",
+            "投資成本",
+            "期初投入 (約當台幣)",
+          ]),
           unrealized_pnl_original: rowValue(row, [
             "未實現損益 (原幣)",
             "未實現損益",
@@ -994,7 +1041,11 @@ function normalizeHoldingRows(
             "未實現損益 (台幣)",
             "損益",
           ]),
-          return_rate: rowValue(row, ["參考報酬率", "含息報酬率", "不含息報酬率"]),
+          return_rate: rowValue(row, [
+            "參考報酬率",
+            "含息報酬率",
+            "不含息報酬率",
+          ]),
           fx_rate: rowValue(row, ["參考匯率 (原幣)", "參考匯率"]),
           __period: period,
           __trade_type: page.currentTradeType ?? "",
@@ -1014,7 +1065,8 @@ function normalizeSummaryRows(
   const seen = new Set<string>();
 
   for (const page of pages) {
-    const asOfDate = page.endDate || page.startDate || fallbackDateRange.endDate;
+    const asOfDate =
+      page.endDate || page.startDate || fallbackDateRange.endDate;
     const period = reportPeriod(page) || asOfDate;
 
     for (const summaryRow of page.summaryRows) {
@@ -1051,7 +1103,9 @@ function metadataForRows(
     accounts: unique(rows.map((row) => row.account_number ?? "")),
     periods: unique(rows.map((row) => row.__period ?? "")),
     assetTypes: unique(rows.map((row) => row.asset_type ?? "")),
-    tradeTypes: unique(rows.map((row) => row.trade_type ?? row.__trade_type ?? "")),
+    tradeTypes: unique(
+      rows.map((row) => row.trade_type ?? row.__trade_type ?? ""),
+    ),
     subCategories: unique(rows.map((row) => row.sub_category ?? "")),
     generatedAt,
     workflow: "yuantaTradeStatements",
@@ -1146,6 +1200,137 @@ async function writeResultsFiles(
   return files;
 }
 
+function exactAmount(value: string): { coefficient: string; scale: number } {
+  const normalized = value.replaceAll(",", "").trim();
+  const match = /^-?(\d+)(?:\.(\d+))?$/.exec(normalized);
+  if (!match)
+    throw new Error(
+      "Yuanta Trade canonical amount is not an exact non-negative decimal.",
+    );
+  return {
+    coefficient: `${match[1]}${match[2] ?? ""}`.replace(/^0+(?=\d)/, ""),
+    scale: match[2]?.length ?? 0,
+  };
+}
+function sourceDate(value: string): string {
+  const normalized = value.trim().replaceAll("/", "-");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized))
+    throw new Error("Yuanta Trade canonical source date is missing.");
+  return normalized;
+}
+function explicitAction(value: string): "buy" | "sell" {
+  const normalized = value.trim().toLocaleLowerCase("en-US");
+  if (["buy", "買進", "買入"].includes(normalized)) return "buy";
+  if (["sell", "賣出"].includes(normalized)) return "sell";
+  throw new Error(
+    "Yuanta Trade canonical action is not an explicit buy/sell value.",
+  );
+}
+async function commitYuantaTradeCanonicalIfComplete(
+  input: WorkflowInput,
+  credentials: YuantaTradeCredentials,
+  holdingRows: CsvRow[],
+  tradeRows: CsvRow[],
+  complete: boolean,
+): Promise<void> {
+  if (!complete) {
+    console.warn("yuanta-trade-canonical-not-admitted", {
+      reason: "holding-capture-incomplete",
+    });
+    return;
+  }
+  const accountNumbers = [
+    ...new Set(
+      [...holdingRows, ...tradeRows]
+        .map((row) => row.account_number?.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const captures: InvestmentValidatedCapture[] = [];
+  for (const accountNumber of accountNumbers) {
+    const accountHoldings = holdingRows.filter(
+      (row) => row.account_number?.trim() === accountNumber,
+    );
+    const accountTrades = tradeRows.filter(
+      (row) => row.account_number?.trim() === accountNumber,
+    );
+    if (accountHoldings.length === 0 && accountTrades.length === 0) continue;
+    const observedAt = new Date().toISOString();
+    const effectiveDates = [
+      ...new Set(
+        accountHoldings.map((row) => sourceDate(row.as_of_date ?? "")),
+      ),
+    ];
+    if (effectiveDates.length !== 1)
+      throw new Error(
+        "Yuanta Trade canonical holdings require one source-proven as-of date.",
+      );
+    const mapRow = (row: CsvRow): YuantaCanonicalInvestmentRow => ({
+      sourceRecordKey: deriveSourceConnectionIdentityKey(
+        "yuanta-trade-record",
+        [
+          accountNumber!,
+          row.product_code ?? "",
+          row.as_of_date ?? row.trade_date ?? "",
+          row.quantity ?? "",
+          row.settlement_amount ?? row.market_value_twd ?? "",
+        ],
+      ),
+      producerSecurityId: row.product_code?.trim() ?? "",
+      securityName: row.product_name?.trim() || undefined,
+      ticker: row.product_code?.trim() || undefined,
+      currency: (row.currency || row.settlement_currency || "TWD").trim(),
+      effectiveOn: sourceDate(row.as_of_date || row.trade_date || ""),
+      quantity: row.quantity ? exactAmount(row.quantity) : undefined,
+      valuation: row.market_value_twd
+        ? { ...exactAmount(row.market_value_twd), currency: "TWD" }
+        : undefined,
+    });
+    const holdings = accountHoldings.map(mapRow);
+    const transactions = accountTrades.map((row) => ({
+      ...mapRow(row),
+      action: explicitAction(row.action ?? ""),
+      cashEffect: {
+        ...exactAmount(row.settlement_amount || row.gross_amount || ""),
+        currency: (row.settlement_currency || row.currency || "TWD").trim(),
+      },
+    }));
+    const sourceConnectionKey = deriveSourceConnectionIdentityKey(
+      "yuanta-trade",
+      credentials.yuanta_trade_user_id ?? "",
+    );
+    const accountKey = deriveSourceConnectionIdentityKey(
+      "yuanta-trade-account",
+      accountNumber!,
+    );
+    const capture = buildYuantaInvestmentCapture({
+      sourceId: "yuanta-trade",
+      captureId: `yuanta-trade-investment:${deriveSourceConnectionIdentityKey("yuanta-trade-capture", [sourceConnectionKey, accountKey, observedAt])}`,
+      sourceConnectionKey,
+      identityEpochKey: deriveSourceConnectionIdentityKey(
+        "yuanta-trade-epoch",
+        [sourceConnectionKey, accountNumber!],
+      ),
+      accountKey,
+      reportingCurrency: "TWD",
+      observedAt,
+      sourceEffectiveOn: effectiveDates[0]!,
+      holdings,
+      transactions,
+    });
+    captures.push(admitCanonicalInvestmentCapture(capture));
+  }
+  if (captures.length === 0) return;
+  const store = createCanonicalInvestmentStore(
+    canonicalSqlitePath(input.canonicalLedgerDir),
+  );
+  try {
+    await commitCanonicalInvestmentCaptureBatch(store, captures);
+  } finally {
+    store.close();
+  }
+}
+
 export default workflow("yuantaTradeStatements", {
   credentials: [
     "yuanta_trade_user_id",
@@ -1157,9 +1342,11 @@ export default workflow("yuantaTradeStatements", {
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
     const { page, session } = ctx;
-    const credentials = (input as typeof input & {
-      credentials: YuantaTradeCredentials;
-    }).credentials;
+    const credentials = (
+      input as typeof input & {
+        credentials: YuantaTradeCredentials;
+      }
+    ).credentials;
     let lastBankDialogMessage = "";
     console.log("automation-progress: 0");
 
@@ -1177,30 +1364,50 @@ export default workflow("yuantaTradeStatements", {
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage, session: authSession }, signInCredentials) => {
-        await fillTradeLoginForm(authPage, signInCredentials as YuantaTradeCredentials);
+      signIn: async (
+        { page: authPage, session: authSession },
+        signInCredentials,
+      ) => {
+        await fillTradeLoginForm(
+          authPage,
+          signInCredentials as YuantaTradeCredentials,
+        );
         const captchaCheckbox = yuantaTradeCaptchaCheckbox(authPage);
-        if (!(await captchaCheckbox.isVisible({ timeout: 10_000 }).catch(() => false))) {
-          throw new Error("YuanTa Trade CAPTCHA checkbox could not be resolved.");
+        if (
+          !(await captchaCheckbox
+            .isVisible({ timeout: 10_000 })
+            .catch(() => false))
+        ) {
+          throw new Error(
+            "YuanTa Trade CAPTCHA checkbox could not be resolved.",
+          );
         }
         await emitHumanAssistanceStage({
           stageId: "yuanta-trade-captcha-checkbox",
           title: "Confirm the YuanTa Trade CAPTCHA checkbox",
           challengeKind: "checkbox",
-          targets: [{
-            id: "captcha-checkbox",
-            label: "CAPTCHA checkbox",
-            semanticId: "yuanta-trade.login.captcha-checkbox",
-            modes: ["click", "press"],
-            locator: captchaCheckbox,
-          }],
-          contextRegions: [{
-            id: "captcha-challenge",
-            label: "CAPTCHA challenge instructions",
-            semanticId: "yuanta-trade.login.captcha-challenge",
-          }],
+          targets: [
+            {
+              id: "captcha-checkbox",
+              label: "CAPTCHA checkbox",
+              semanticId: "yuanta-trade.login.captcha-checkbox",
+              modes: ["click", "press"],
+              locator: captchaCheckbox,
+            },
+          ],
+          contextRegions: [
+            {
+              id: "captcha-challenge",
+              label: "CAPTCHA challenge instructions",
+              semanticId: "yuanta-trade.login.captcha-challenge",
+            },
+          ],
           completion: { mode: "independent", targetIds: ["captcha-checkbox"] },
-          focus: { targetId: "captcha-checkbox", contextRegionIds: ["captcha-challenge"], initialZoom: 1.15 },
+          focus: {
+            targetId: "captcha-checkbox",
+            contextRegionIds: ["captcha-challenge"],
+            initialZoom: 1.15,
+          },
         });
         console.log(
           "manual-auth-required: solve YuanTa CAPTCHA/challenge in the browser, then run `npx libretto resume --session " +
@@ -1213,29 +1420,42 @@ export default workflow("yuantaTradeStatements", {
         let challengeRetry = 0;
         while (true) {
           const challengeModal = yuantaTradeCaptchaModal(authPage);
-          const challengeVisible = await challengeModal.isVisible({ timeout: 3_000 }).catch(() => false);
+          const challengeVisible = await challengeModal
+            .isVisible({ timeout: 3_000 })
+            .catch(() => false);
           if (!challengeVisible) {
             await submitLoginIfReady(authPage);
             break;
           }
           if (challengeRetry >= maxChallengeRetries) {
-            throw new Error("YuanTa Trade verification challenge did not complete after the allowed retries.");
+            throw new Error(
+              "YuanTa Trade verification challenge did not complete after the allowed retries.",
+            );
           }
           const challengeImages = yuantaTradeCaptchaImages(challengeModal);
           const challengeImageCount = await challengeImages.count();
           if (challengeImageCount === 0) {
-            throw new Error("YuanTa Trade CAPTCHA challenge images could not be resolved.");
+            throw new Error(
+              "YuanTa Trade CAPTCHA challenge images could not be resolved.",
+            );
           }
           const challengeSubmit = yuantaTradeCaptchaSubmit(challengeModal);
-          const challengeSubmitVisible = await challengeSubmit.isVisible({ timeout: 3_000 }).catch(() => false);
-          const challengePrompt = (await challengeModal.innerText().catch(() => "")).trim();
-          const challengeTargets = Array.from({ length: challengeImageCount }, (_, index) => ({
-            id: `challenge-image-${index + 1}`,
-            label: `Verification challenge image ${index + 1}`,
-            semanticId: "yuanta-trade.login.challenge-control",
-            modes: ["click"] as const,
-            locator: challengeImages.nth(index),
-          }));
+          const challengeSubmitVisible = await challengeSubmit
+            .isVisible({ timeout: 3_000 })
+            .catch(() => false);
+          const challengePrompt = (
+            await challengeModal.innerText().catch(() => "")
+          ).trim();
+          const challengeTargets = Array.from(
+            { length: challengeImageCount },
+            (_, index) => ({
+              id: `challenge-image-${index + 1}`,
+              label: `Verification challenge image ${index + 1}`,
+              semanticId: "yuanta-trade.login.challenge-control",
+              modes: ["click"] as const,
+              locator: challengeImages.nth(index),
+            }),
+          );
           if (challengeSubmitVisible) {
             challengeTargets.push({
               id: "challenge-submit",
@@ -1257,14 +1477,20 @@ export default workflow("yuantaTradeStatements", {
             },
             prompt: challengePrompt || undefined,
             targets: challengeTargets,
-            contextRegions: [{
-              id: "challenge-modal",
-              label: "Verification modal and instructions",
-              semanticId: "yuanta-trade.login.challenge-modal",
-              locator: challengeModal,
-            }],
+            contextRegions: [
+              {
+                id: "challenge-modal",
+                label: "Verification modal and instructions",
+                semanticId: "yuanta-trade.login.challenge-modal",
+                locator: challengeModal,
+              },
+            ],
             completion: { mode: "independent", targetIds: challengeTargets.map((target) => target.id) },
-            focus: { targetId: challengeTargets[0]!.id, contextRegionIds: ["challenge-modal"], initialZoom: 1 },
+            focus: {
+              targetId: challengeTargets[0]!.id,
+              contextRegionIds: ["challenge-modal"],
+              initialZoom: 1,
+            },
           });
           await pause(authSession);
           challengeRetry += 1;
@@ -1335,16 +1561,25 @@ export default workflow("yuantaTradeStatements", {
 
     const tradeRows = normalizeTradeRows(trades, dateRange);
     const holdingRows = normalizeHoldingRows(holdings, dateRange);
-    const summaryRows = normalizeSummaryRows([...holdings, ...trades], dateRange);
-    const holdingCaptureComplete = input.includeHoldings && isCompleteHoldingCapture(
-      holdings,
-      input.holdingTypes,
+    const summaryRows = normalizeSummaryRows(
+      [...holdings, ...trades],
+      dateRange,
     );
+    const holdingCaptureComplete =
+      input.includeHoldings &&
+      isCompleteHoldingCapture(holdings, input.holdingTypes);
     if (input.includeHoldings && !holdingCaptureComplete) {
       console.warn(
         "Holding capture was incomplete; preserving the previous authoritative snapshot.",
       );
     }
+    await commitYuantaTradeCanonicalIfComplete(
+      input,
+      credentials,
+      holdingRows,
+      tradeRows,
+      holdingCaptureComplete,
+    );
     const files = await writeResultsFiles(input.outputDir, {
       holdings: holdingRows,
       holdingsCaptureComplete: holdingCaptureComplete,

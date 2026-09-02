@@ -14,6 +14,16 @@ import {
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
+import { readFile } from "node:fs/promises";
+
+const workflowSource = await readFile(
+  new URL("./yuanta-trade-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(workflowSource, /commitYuantaTradeCanonicalIfComplete/);
+assert.match(workflowSource, /buildYuantaInvestmentCapture/);
+assert.match(workflowSource, /commitCanonicalInvestmentCapture/);
+assert.match(workflowSource, /holding-capture-incomplete/);
 
 function fakePage(reminderVisible: boolean | Error) {
   let clicks = 0;
@@ -155,7 +165,10 @@ test("targets the visible YuanTa challenge modal and image tiles", () => {
     },
   } as unknown as Page;
 
-  assert.equal(YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR, "#modalYCaptchaV2, #captchaModal, .captcha-modal");
+  assert.equal(
+    YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
+    "#modalYCaptchaV2, #captchaModal, .captcha-modal",
+  );
   assert.equal(YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR, ".y-captcha-image:visible");
   const challengeModal = yuantaTradeCaptchaModal(page);
   yuantaTradeCaptchaImages(challengeModal);
@@ -179,28 +192,36 @@ const completeHoldingPage = {
   url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
   currentAssetType: "Stock",
   summaryRows: [],
-  grids: [{
-    gridId: "gridStock",
-    category: "Stock",
-    columns: [],
-    rows: [],
-  }],
+  grids: [
+    {
+      gridId: "gridStock",
+      category: "Stock",
+      columns: [],
+      rows: [],
+    },
+  ],
 };
 
 test("accepts a verified empty YuanTa holdings page as authoritative", () => {
-  assert.equal(isCompleteHoldingCapture([completeHoldingPage], ["Stock"]), true);
+  assert.equal(
+    isCompleteHoldingCapture([completeHoldingPage], ["Stock"]),
+    true,
+  );
 });
 
 test("rejects an empty YuanTa extraction without report structure", () => {
-  assert.equal(isCompleteHoldingCapture(
-    [{ ...completeHoldingPage, grids: [] }],
-    ["Stock"],
-  ), false);
+  assert.equal(
+    isCompleteHoldingCapture(
+      [{ ...completeHoldingPage, grids: [] }],
+      ["Stock"],
+    ),
+    false,
+  );
 });
 
 test("rejects a partial YuanTa holdings capture", () => {
-  assert.equal(isCompleteHoldingCapture(
-    [completeHoldingPage],
-    ["Stock", "Bond"],
-  ), false);
+  assert.equal(
+    isCompleteHoldingCapture([completeHoldingPage], ["Stock", "Bond"]),
+    false,
+  );
 });
