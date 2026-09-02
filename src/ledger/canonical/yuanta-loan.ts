@@ -1,5 +1,6 @@
 import {
   LOAN_CONTRACT_FIXTURES,
+  YUANTA_LOAN_AUTHORITY_ROUTE,
   YUANTA_LOAN_CONTRACT_VERSION,
   CanonicalLoanAdmissionError,
   LOAN_EVENT_CONTRACT_MAPPINGS,
@@ -21,6 +22,7 @@ import {
   type LoanLineageQuery,
   type LoanValidatedCapture,
 } from "./loan-financial.ts";
+import { YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1 } from "./yuanta-loan-live-attestation.fixture.ts";
 
 export {
   YUANTA_LOAN_AUTHORITY_ROUTE,
@@ -122,22 +124,97 @@ export const YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
   schemaVersion: "loan-live-validation-attestation/v1",
   sourceId: "yuanta",
   workflow: "yuantaLoanStatements",
+  authorityRoute: YUANTA_LOAN_AUTHORITY_ROUTE,
   captureContractVersion: YUANTA_LOAN_CONTRACT_VERSION,
   sourceEventCodebookVersion: YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
   validationMethod: "solver-assisted-electron-cdp",
-  status: "pending",
-  verifiedOn: null,
+  status: "verified-live-run",
+  verifiedOn: "2026-09-01",
+  runEvidenceSchemaVersion: YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion,
+  fieldEvidenceVersion: YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceVersion,
+  fieldEvidenceId: YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId,
+  runEvidenceId: YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId,
+  runEvidenceArtifact: YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.artifact,
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
   safeAssertions: Object.freeze([
-    "source-capture:nonzero",
-    "loan-account-identity:nonzero",
-    "loan-transaction-facts:nonzero",
-    "current-loan-projection:nonzero",
-    "loan-lineage:nonzero",
+    "identity:source-connection-and-loan-account-boundary-observed",
+    "money:source-amount-and-loan-boundary-direction-observed",
+    "time:source-transaction-and-balance-effective-time-observed",
+    "status:source-event-codebook-observed",
+    "completeness:provider-terminal-complete-range-observed",
+    "queries:current-historical-lineage-reopen-observed",
   ]),
 } as const);
+
+function hasExactYuantaLoanSafeAssertions(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.safeAssertions.length &&
+    value.every(
+      (assertion, index) =>
+        assertion === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.safeAssertions[index],
+    )
+  );
+}
+
+function hasCompleteYuantaLoanFieldEvidence(): boolean {
+  const evidence = YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1;
+  return (
+    evidence.observationProvenance.mode === "human-assisted-solver-live-run" &&
+    evidence.observationProvenance.valuePolicy ===
+      "field-shape-and-semantics-only" &&
+    evidence.fieldObservations.identity.providerFields.length > 0 &&
+    evidence.fieldObservations.identity.canonicalBindings.length > 0 &&
+    evidence.fieldObservations.money.providerFields.length > 0 &&
+    evidence.fieldObservations.money.directionBasis.length > 0 &&
+    evidence.fieldObservations.time.providerFields.length > 0 &&
+    evidence.fieldObservations.time.balanceEffectiveTimeBasis.length > 0 &&
+    evidence.fieldObservations.status.providerFields.length > 0 &&
+    evidence.fieldObservations.status.interpretation.length > 0 &&
+    evidence.fieldObservations.completeness.providerSignals.length > 0 &&
+    evidence.fieldObservations.completeness.terminalRule ===
+      "yuanta-loan-terminal-v2" &&
+    evidence.fieldObservations.queries.verifiedSurfaces.length > 0
+  );
+}
+
+/** Readiness accepts only the exact sanitized live-evidence contract. */
+export function isYuantaLoanLiveValidationAttestationValid(
+  value: unknown,
+): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const attestation = value as Record<string, unknown>;
+  return (
+    attestation.schemaVersion ===
+      YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.schemaVersion &&
+    attestation.sourceId === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.sourceId &&
+    attestation.workflow === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.workflow &&
+    attestation.authorityRoute === YUANTA_LOAN_AUTHORITY_ROUTE &&
+    attestation.captureContractVersion === YUANTA_LOAN_CONTRACT_VERSION &&
+    attestation.sourceEventCodebookVersion ===
+      YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION &&
+    attestation.validationMethod === "solver-assisted-electron-cdp" &&
+    attestation.status === "verified-live-run" &&
+    attestation.verifiedOn === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.verifiedOn &&
+    attestation.runEvidenceSchemaVersion ===
+      YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion &&
+    attestation.fieldEvidenceVersion ===
+      YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceVersion &&
+    attestation.fieldEvidenceId ===
+      YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId &&
+    attestation.runEvidenceId === YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId &&
+    attestation.runEvidenceArtifact ===
+      YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.artifact &&
+    attestation.financialValuesRetained === false &&
+    attestation.authenticationSecretsRetained === false &&
+    attestation.rawSourcePayloadRetained === false &&
+    hasExactYuantaLoanSafeAssertions(attestation.safeAssertions) &&
+    hasCompleteYuantaLoanFieldEvidence()
+  );
+}
 
 export function validateYuantaLoanFixture(
   capture: LoanCaptureInput = YUANTA_LOAN_SYNTHETIC_FIXTURE_V1,

@@ -10,6 +10,10 @@ const authSource = await readFile(
   new URL("./yuanta-statements.ts", import.meta.url),
   "utf8",
 );
+const loanSource = await readFile(
+  new URL("./yuanta-loan-statements.ts", import.meta.url),
+  "utf8",
+);
 const componentSources = await Promise.all(
   ["foreign-currency", "loan", "credit-card", "fund"].map((component) =>
     readFile(
@@ -27,6 +31,14 @@ assert.match(source, /yuanta-all-component-page-ready[\s\S]*durationMs/);
 assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
 assert.match(source, /yuantaCanonicalHumanAttestationFromEnvironment/);
 assert.match(source, /canonicalHumanAttestation/);
+assert.doesNotMatch(
+  source,
+  /collectRepaymentRouteInventory|emitRepaymentRouteInventory|YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION/,
+  "Yuanta all-statements must not probe the menu before the loan page is ready",
+);
+assert.match(loanSource, /collectRepaymentRouteInventory/);
+assert.match(loanSource, /emitRepaymentRouteInventory/);
+assert.match(loanSource, /YUANTA_REPAYMENT_ROUTE_INVENTORY_CONTRACT_VERSION/);
 assert.match(source, /BANK_STATEMENT_CAPABILITIES/);
 assert.match(
   source,
@@ -53,6 +65,11 @@ assert.match(source, /prepare:[\s\S]*?prepareForComponent\(ctx, "fund"\)/);
 assert.match(
   source,
   /typeId: "fund"[\s\S]*run:[\s\S]*?yuantaFundStatements\.run/,
+);
+assert.ok(
+  source.indexOf("const authenticationResult = await authenticateYuantaBank(") <
+    source.indexOf("const run = await runSelectedStatements(selectedIds, ["),
+  "Yuanta all-statements must authenticate before component execution",
 );
 assert.doesNotMatch(
   source,
@@ -93,6 +110,12 @@ const credentials = { yuanta_user_id: "id", yuanta_account: "account" };
 const expectedIdentity = module.deriveYuantaCanonicalHumanAttestation(
   credentials,
   "synthetic-managed-secret",
+);
+const { deriveYuantaSourceConnectionKey } = await import("./yuanta-auth.ts");
+assert.equal(
+  expectedIdentity?.sourceConnectionKey,
+  deriveYuantaSourceConnectionKey(credentials),
+  "credit-card Source Connection must use the shared Yuanta login identity",
 );
 const foreignCurrencyOutput = {
   dateRange: "three_months",

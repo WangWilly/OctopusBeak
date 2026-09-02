@@ -27,7 +27,7 @@ import {
 } from "./yuanta-credit-card-human-attestation.ts";
 
 const identity = {
-  sourceConnectionKey: "yuanta-connection-synthetic",
+  sourceConnectionKey: "sha256:yuanta-credit-card-caller-source-connection",
   identityEpochKey: "yuanta-credit-card-v1",
   humanAttestedAccountKey: "portfolio_synthetic_yuanta_account",
 } as const;
@@ -706,6 +706,18 @@ test("commit writes explicit settled summaries to the shared spine and extension
     assert.equal(committed.transactionCount, 10);
     assert.equal(committed.statementCount, 6);
     assert.equal(committed.relationCount, 0);
+    assert.deepEqual(
+      store.db
+        .prepare(
+          `SELECT source_connection_key
+             FROM source_connections
+            WHERE integration_namespace = 'yuanta'`,
+        )
+        .all()
+        .map((row) => (row as { source_connection_key?: string }).source_connection_key),
+      [identity.sourceConnectionKey],
+      "Yuanta credit-card captures must reuse the caller Source Connection key",
+    );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_accounts").get() as { n: number }).n),
       1,

@@ -1151,10 +1151,11 @@ function yuantaCanonicalSpineCapture(
     contractVersion: capture.contractVersion,
     identity: {
       integrationNamespace: "yuanta",
-      sourceConnectionKey: opaqueYuantaSpineToken(
-        "yuanta-credit-connection-v2",
-        capture.identity.sourceConnectionKey,
-      ),
+      // The caller already supplies the stable, product-independent Source
+      // Connection identity. Keep product-specific domain separation on the
+      // credit-card account/epoch fields below, but never fork the shared
+      // connection key at this persistence seam.
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
       identityEpochKey: opaqueYuantaSpineToken(
         "yuanta-credit-epoch-v2",
         capture.identity.identityEpochKey,

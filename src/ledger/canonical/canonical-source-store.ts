@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 9;
+export const CANONICAL_SCHEMA_VERSION = 13;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -4254,6 +4254,14 @@ function projectionRelevantCommitCount(db: DatabaseSync): number {
 }
 
 function sourceOnlyCommitCount(db: DatabaseSync): number {
+  const purgedCommitEvidence = tableExists(
+    db,
+    "canonical_contract_purge_commits",
+  )
+    ? `UNION ALL
+       SELECT 1 FROM canonical_contract_purge_commits purged
+        WHERE purged.commit_id = commit_row.commit_id`
+    : "";
   return Number(
     (
       db
@@ -4265,6 +4273,7 @@ function sourceOnlyCommitCount(db: DatabaseSync): number {
               WHERE capture.commit_id = commit_row.commit_id
                 AND capture.source_subject_id IS NOT NULL
                 AND capture.record_kind <> 'cathay-domestic-deposit'
+              ${purgedCommitEvidence}
             )`,
         )
         .get() as { count?: number }
@@ -6018,6 +6027,214 @@ CREATE TABLE IF NOT EXISTS current_loan_relations (
 );
 `;
 
+/**
+ * Relation evidence is additive to the v9 loan extension.  Keeping this in a
+ * separate migration means v9 captures remain readable while the resolver
+ * gains generic account evidence, append-only support, and a projection for
+ * collectively proven settlements.
+ */
+const SCHEMA_V10_LOAN_REPAYMENT_RELATIONS = `
+CREATE TABLE IF NOT EXISTS transaction_counterparty_account_evidence (
+  evidence_id BLOB PRIMARY KEY CHECK(length(evidence_id) = 16),
+  transaction_id BLOB REFERENCES financial_transactions(transaction_id),
+  account_id BLOB REFERENCES financial_accounts(account_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  source_value TEXT NOT NULL,
+  normalized_value TEXT NOT NULL,
+  value_digest TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('originator','beneficiary')),
+  purpose TEXT NOT NULL,
+  scope TEXT CHECK(scope IN ('loan_contract','shared_collection') OR scope IS NULL),
+  evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('transaction-counterparty-account','repayment-mandate')),
+  source_field TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  effective_start_date TEXT,
+  effective_end_date TEXT,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  CHECK((transaction_id IS NOT NULL) != (account_id IS NOT NULL)),
+  CHECK(effective_start_date IS NULL OR length(effective_start_date) = 10),
+  CHECK(effective_end_date IS NULL OR length(effective_end_date) = 10),
+  CHECK(effective_start_date IS NULL OR effective_end_date IS NULL OR effective_start_date <= effective_end_date),
+  UNIQUE(transaction_id, account_id, source_record_id, value_digest, role, purpose, scope, evidence_kind, contract_version)
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_account_evidence_transaction
+  ON transaction_counterparty_account_evidence(transaction_id, value_digest, purpose, evidence_kind);
+CREATE INDEX IF NOT EXISTS idx_counterparty_account_evidence_account
+  ON transaction_counterparty_account_evidence(account_id, value_digest, purpose, evidence_kind);
+CREATE INDEX IF NOT EXISTS idx_counterparty_account_evidence_scope
+  ON transaction_counterparty_account_evidence(source_connection_id, identity_epoch_id, value_digest, purpose);
+CREATE VIEW IF NOT EXISTS counterparty_account_evidence AS
+  SELECT * FROM transaction_counterparty_account_evidence;
+CREATE TABLE IF NOT EXISTS counterparty_account_evidence_support (
+  evidence_id BLOB NOT NULL REFERENCES transaction_counterparty_account_evidence(evidence_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(evidence_id, source_record_id, capture_id)
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_account_evidence_support_capture
+  ON counterparty_account_evidence_support(capture_id, source_record_id, evidence_id);
+
+/*
+ * A fixed Institution-generated note/code is a separate evidence kind from
+ * counterparty-account evidence.  It is attached to the source transaction
+ * that carried the note, keeps the exact source text for provenance, and
+ * records the versioned provider contract that made the text admissible.
+ * Resolver code may use this table only as the explicitly contracted
+ * account-evidence fallback; arbitrary transaction descriptions never enter.
+ */
+CREATE TABLE IF NOT EXISTS institution_repayment_note_evidence (
+  note_evidence_id BLOB PRIMARY KEY CHECK(length(note_evidence_id) = 16),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+  source_value TEXT NOT NULL,
+  normalized_value TEXT NOT NULL,
+  fixed_value TEXT NOT NULL,
+  evidence_version TEXT NOT NULL,
+  pattern_id TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  date_contract_version TEXT NOT NULL,
+  date_contract_json TEXT NOT NULL,
+  date_field TEXT NOT NULL CHECK(date_field = 'transaction-date'),
+  generated_by TEXT NOT NULL CHECK(generated_by = 'institution'),
+  live_verified INTEGER NOT NULL CHECK(live_verified = 1),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(transaction_id, source_record_id, normalized_value, pattern_id,
+         contract_version, date_contract_version)
+);
+CREATE INDEX IF NOT EXISTS idx_institution_repayment_note_evidence_transaction
+  ON institution_repayment_note_evidence(transaction_id, normalized_value,
+                                          contract_version, date_contract_version);
+CREATE INDEX IF NOT EXISTS idx_institution_repayment_note_evidence_scope
+  ON institution_repayment_note_evidence(source_connection_id, identity_epoch_id,
+                                          pattern_id, contract_version);
+CREATE TABLE IF NOT EXISTS institution_repayment_note_evidence_support (
+  note_evidence_id BLOB NOT NULL REFERENCES institution_repayment_note_evidence(note_evidence_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(note_evidence_id, source_record_id, capture_id)
+);
+CREATE INDEX IF NOT EXISTS idx_institution_repayment_note_evidence_support_capture
+  ON institution_repayment_note_evidence_support(capture_id, source_record_id,
+                                                   note_evidence_id);
+
+CREATE TABLE IF NOT EXISTS loan_repayment_resolution_runs (
+  resolution_id BLOB PRIMARY KEY CHECK(length(resolution_id) = 16),
+  resolution_key TEXT NOT NULL UNIQUE,
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  resolver_version TEXT NOT NULL,
+  coverage_state TEXT NOT NULL CHECK(coverage_state IN ('complete','incomplete')),
+  outcome TEXT NOT NULL CHECK(outcome IN ('changed','unchanged','no-admission')),
+  reason TEXT,
+  observed_at TEXT NOT NULL,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_repayment_resolution_runs_scope
+  ON loan_repayment_resolution_runs(source_connection_id, resolver_version, observed_at);
+
+CREATE TABLE IF NOT EXISTS loan_repayment_settlement_groups (
+  settlement_group_id BLOB PRIMARY KEY CHECK(length(settlement_group_id) = 16),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  group_key TEXT NOT NULL UNIQUE,
+  resolver_version TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_repayment_settlement_groups_scope
+  ON loan_repayment_settlement_groups(source_connection_id, group_key);
+CREATE TABLE IF NOT EXISTS loan_repayment_settlement_group_members (
+  settlement_group_id BLOB NOT NULL REFERENCES loan_repayment_settlement_groups(settlement_group_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  member_kind TEXT NOT NULL CHECK(member_kind IN ('deposit_outflow','loan_payment')),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(settlement_group_id, transaction_id, member_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_repayment_settlement_group_members_transaction
+  ON loan_repayment_settlement_group_members(transaction_id, settlement_group_id);
+
+CREATE TABLE IF NOT EXISTS loan_repayment_relation_events (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  resolution_id BLOB NOT NULL REFERENCES loan_repayment_resolution_runs(resolution_id),
+  relation_id BLOB REFERENCES transaction_relations(relation_id),
+  settlement_group_id BLOB REFERENCES loan_repayment_settlement_groups(settlement_group_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn')),
+  support_kind TEXT NOT NULL CHECK(support_kind IN ('explicit-source-linkage','verified-repayment-destination','fixed-institution-note')),
+  support_key TEXT NOT NULL,
+  supersedes_relation_id BLOB REFERENCES transaction_relations(relation_id),
+  supersedes_group_id BLOB REFERENCES loan_repayment_settlement_groups(settlement_group_id),
+  evidence_json TEXT NOT NULL,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  CHECK((relation_id IS NOT NULL) != (settlement_group_id IS NOT NULL)),
+  CHECK((event_kind = 'superseded' AND (supersedes_relation_id IS NOT NULL OR supersedes_group_id IS NOT NULL)) OR event_kind <> 'superseded'),
+  UNIQUE(resolution_id, relation_id, settlement_group_id, event_kind, support_key)
+);
+CREATE INDEX IF NOT EXISTS idx_loan_repayment_relation_events_relation
+  ON loan_repayment_relation_events(relation_id, commit_id, event_kind);
+CREATE INDEX IF NOT EXISTS idx_loan_repayment_relation_events_group
+  ON loan_repayment_relation_events(settlement_group_id, commit_id, event_kind);
+CREATE TABLE IF NOT EXISTS current_loan_repayment_settlement_groups (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  settlement_group_id BLOB NOT NULL REFERENCES loan_repayment_settlement_groups(settlement_group_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, settlement_group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_current_loan_repayment_settlement_groups_group
+  ON current_loan_repayment_settlement_groups(settlement_group_id, generation_id);
+`;
+
+function ensureLoanRelationEndpointEpochColumns(db: DatabaseSync): void {
+  if (!columnExists(db, "transaction_relations", "from_identity_epoch_id"))
+    db.exec(
+      "ALTER TABLE transaction_relations ADD COLUMN from_identity_epoch_id BLOB REFERENCES identity_epochs(identity_epoch_id)",
+    );
+  if (!columnExists(db, "transaction_relations", "to_identity_epoch_id"))
+    db.exec(
+      "ALTER TABLE transaction_relations ADD COLUMN to_identity_epoch_id BLOB REFERENCES identity_epochs(identity_epoch_id)",
+    );
+  db.exec(
+    `UPDATE transaction_relations
+       SET from_identity_epoch_id = COALESCE(from_identity_epoch_id, (SELECT identity_epoch_id FROM financial_accounts WHERE account_id = from_account_id)),
+           to_identity_epoch_id = COALESCE(to_identity_epoch_id, (SELECT identity_epoch_id FROM financial_accounts WHERE account_id = to_account_id))
+     WHERE from_identity_epoch_id IS NULL OR to_identity_epoch_id IS NULL`,
+  );
+}
+
+export function validateCanonicalLoanRepaymentRelationSchema(
+  db: DatabaseSync,
+): void {
+  for (const table of [
+    "transaction_counterparty_account_evidence",
+    "counterparty_account_evidence_support",
+    "institution_repayment_note_evidence",
+    "institution_repayment_note_evidence_support",
+    "loan_repayment_resolution_runs",
+    "loan_repayment_settlement_groups",
+    "loan_repayment_settlement_group_members",
+    "loan_repayment_relation_events",
+    "current_loan_repayment_settlement_groups",
+  ]) {
+    if (relationType(db, table) !== "table")
+      throw new Error(`Canonical schema v10 loan relation table ${table} is missing.`);
+  }
+  if (relationType(db, "counterparty_account_evidence") !== "view")
+    throw new Error("Canonical schema v10 counterparty evidence view is missing.");
+  if (!columnExists(db, "institution_repayment_note_evidence", "date_contract_json"))
+    throw new Error(
+      "Canonical schema v10 Institution repayment note date contract payload is missing.",
+    );
+  for (const column of ["from_identity_epoch_id", "to_identity_epoch_id"])
+    if (!columnExists(db, "transaction_relations", column))
+      throw new Error(`Canonical schema v10 relation column ${column} is missing.`);
+}
+
 export function validateCanonicalLoanExtensionSchema(db: DatabaseSync): void {
   for (const table of [
     "loan_account_identities", "loan_transaction_facts", "balance_observations",
@@ -6140,6 +6357,1037 @@ function migrateV8ToV9(db: DatabaseSync): void {
     throw error;
   }
 }
+
+/**
+ * v10 initially stored only the date contract version.  Keep that schema
+ * version for compatibility while adding the explicit, persisted payload
+ * needed to evaluate provider-specific signed date offsets.  Existing rows
+ * receive an intentionally unusable empty payload and therefore remain
+ * provenance-only until recopied under an explicit contract.
+ */
+function ensureInstitutionRepaymentNoteDateContractColumn(
+  db: DatabaseSync,
+): void {
+  // Let the schema validator report a missing v10 table with its canonical
+  // diagnostic. The helper is additive only when the relation table exists.
+  if (!tableExists(db, "institution_repayment_note_evidence")) return;
+  if (!columnExists(db, "institution_repayment_note_evidence", "date_contract_json"))
+    db.exec(
+      "ALTER TABLE institution_repayment_note_evidence ADD COLUMN date_contract_json TEXT NOT NULL DEFAULT '{}'",
+    );
+}
+
+function migrateV9ToV10(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
+    ensureLoanRelationEndpointEpochColumns(db);
+    db.exec(SCHEMA_V10_LOAN_REPAYMENT_RELATIONS);
+    ensureInstitutionRepaymentNoteDateContractColumn(db);
+    validateCanonicalLoanRepaymentRelationSchema(db);
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (10, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 10");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
+const SCHEMA_V11_CONTRACT_PURGE_AUDIT = `
+CREATE TABLE IF NOT EXISTS canonical_contract_purges (
+  purge_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12)),
+  reason TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+  deleted_table_counts_json TEXT NOT NULL,
+  closure_fingerprint TEXT NOT NULL,
+  applied_at_utc_us INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS canonical_contract_purge_commits (
+  purge_id TEXT NOT NULL REFERENCES canonical_contract_purges(purge_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(purge_id, commit_id)
+);
+`;
+
+const SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID =
+  "source-connection-identity/v1:fubon-yuanta:v11";
+const SOURCE_CONNECTION_IDENTITY_V1_PURGE_NAMESPACES = [
+  "fubon",
+  "yuanta",
+] as const;
+const SOURCE_CONNECTION_IDENTITY_V1_PURGE_STREAMS = [
+  "domestic-deposit",
+  "loan",
+  "credit-card",
+] as const;
+const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID =
+  "credit-card-source-connection/v1:fubon-yuanta:v12";
+const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES = [
+  "fubon",
+  "yuanta",
+] as const;
+const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS = ["credit-card"] as const;
+
+function validateCanonicalContractPurgeSchema(
+  db: DatabaseSync,
+  options: Readonly<{ requireCreditCardPurge?: boolean }> = {},
+): void {
+  if (relationType(db, "canonical_contract_purges") !== "table")
+    throw new Error("Canonical schema v11 Contract Purge audit table is missing.");
+  if (relationType(db, "canonical_contract_purge_commits") !== "table")
+    throw new Error(
+      "Canonical schema v11 Contract Purge commit audit table is missing.",
+    );
+  const migrationAudit = db
+    .prepare(
+      "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+    )
+    .get(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID) as
+    | {
+        schema_version?: number;
+        scope_json?: string;
+        deleted_table_counts_json?: string;
+        closure_fingerprint?: string;
+      }
+    | undefined;
+  if (
+    !migrationAudit ||
+    Number(migrationAudit.schema_version) !== 11 ||
+    typeof migrationAudit.scope_json !== "string" ||
+    typeof migrationAudit.deleted_table_counts_json !== "string" ||
+    !/^sha256:[A-Za-z0-9_-]+$/u.test(
+      String(migrationAudit.closure_fingerprint ?? ""),
+    )
+  )
+    throw new Error("Canonical schema v11 Contract Purge audit is incomplete.");
+
+  if (options.requireCreditCardPurge) {
+    const creditCardAudit = db
+      .prepare(
+        "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get(CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID) as
+      | {
+          schema_version?: number;
+          scope_json?: string;
+          deleted_table_counts_json?: string;
+          closure_fingerprint?: string;
+        }
+      | undefined;
+    if (
+      !creditCardAudit ||
+      Number(creditCardAudit.schema_version) !== 12 ||
+      typeof creditCardAudit.scope_json !== "string" ||
+      typeof creditCardAudit.deleted_table_counts_json !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]+$/u.test(
+        String(creditCardAudit.closure_fingerprint ?? ""),
+      )
+    )
+      throw new Error("Canonical schema v12 credit-card Contract Purge audit is incomplete.");
+  }
+}
+
+/**
+ * v11 created the purge audit with a v11-only CHECK constraint. Rebuild the
+ * two audit tables once so v12 can append its card-scope purge while retaining
+ * every prior v11 audit row and its commit lineage.
+ */
+function ensureCanonicalContractPurgeSchemaV12(db: DatabaseSync): void {
+  db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
+  const schema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
+
+  db.exec(`
+    ALTER TABLE canonical_contract_purge_commits
+      RENAME TO canonical_contract_purge_commits_v11;
+    ALTER TABLE canonical_contract_purges
+      RENAME TO canonical_contract_purges_v11;
+    CREATE TABLE canonical_contract_purges (
+      purge_id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12)),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    INSERT INTO canonical_contract_purges(
+      purge_id, schema_version, reason, scope_json, deleted_row_count,
+      deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+    )
+    SELECT purge_id, schema_version, reason, scope_json, deleted_row_count,
+           deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      FROM canonical_contract_purges_v11;
+    CREATE TABLE canonical_contract_purge_commits (
+      purge_id TEXT NOT NULL REFERENCES canonical_contract_purges(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    INSERT INTO canonical_contract_purge_commits(purge_id, commit_id)
+      SELECT purge_id, commit_id FROM canonical_contract_purge_commits_v11;
+    DROP TABLE canonical_contract_purge_commits_v11;
+    DROP TABLE canonical_contract_purges_v11;
+  `);
+}
+
+type SqliteForeignKey = {
+  id: number;
+  seq: number;
+  table: string;
+  from: string;
+  to: string;
+};
+
+function quotedSqlIdentifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value))
+    throw new Error(`Unsafe canonical schema identifier ${value}.`);
+  return `"${value}"`;
+}
+
+function canonicalTableNames(db: DatabaseSync): string[] {
+  return (
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .all() as Array<{ name: string }>
+  ).map(({ name }) => name);
+}
+
+function selectedRowIds(db: DatabaseSync, sql: string): Set<number> {
+  return new Set(
+    (db.prepare(sql).all() as Array<{ rowid: number }>).map(({ rowid }) =>
+      Number(rowid),
+    ),
+  );
+}
+
+function addSelectedRows(
+  targetRows: Map<string, Set<number>>,
+  table: string,
+  rows: Iterable<number>,
+): boolean {
+  const selected = targetRows.get(table) ?? new Set<number>();
+  const before = selected.size;
+  for (const rowid of rows) selected.add(rowid);
+  if (selected.size > 0) targetRows.set(table, selected);
+  return selected.size !== before;
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
+/**
+ * Calculate the ownership closure from exact provider/product roots by
+ * following only child-to-parent foreign keys. Parents in another source
+ * scope are never pulled into the closure; a relation that depends on a
+ * purged transaction is, correctly, part of the dependent closure itself.
+ */
+type CanonicalPurgeScope = Readonly<{
+  namespaces: readonly string[];
+  streams: readonly string[];
+  includeLoanResolverImplications?: boolean;
+  /**
+   * Shared identity/audit parents are deliberately retained for a product
+   * scope purge.  Their other children may belong to a different stream or
+   * provider and must not be pulled into this closure merely because they
+   * share a parent row.
+   */
+  stopAtTables?: readonly string[];
+}>;
+
+function legacySourceConnectionIdentityClosure(
+  db: DatabaseSync,
+  scope: CanonicalPurgeScope = {
+    namespaces: SOURCE_CONNECTION_IDENTITY_V1_PURGE_NAMESPACES,
+    streams: SOURCE_CONNECTION_IDENTITY_V1_PURGE_STREAMS,
+    includeLoanResolverImplications: true,
+    stopAtTables: [
+      "source_connections",
+      "identity_epochs",
+      "source_authority_routes",
+      "canonical_commits",
+      "projection_generations",
+    ],
+  },
+): Map<string, Set<number>> {
+  const targetRows = new Map<string, Set<number>>();
+  const namespaces = scope.namespaces.map((value) => `'${value}'`).join(", ");
+  const streams = scope.streams.map((value) => `'${value}'`).join(", ");
+  const exactScope = `connection.integration_namespace IN (${namespaces}) AND scoped.stream IN (${streams})`;
+
+  for (const table of ["source_captures", "financial_accounts", "source_subjects"]) {
+    if (!tableExists(db, table)) continue;
+    addSelectedRows(
+      targetRows,
+      table,
+      selectedRowIds(
+        db,
+        `SELECT scoped.rowid AS rowid
+           FROM ${quotedSqlIdentifier(table)} scoped
+           JOIN source_connections connection
+             ON connection.source_connection_id = scoped.source_connection_id
+          WHERE ${exactScope}`,
+      ),
+    );
+  }
+
+  // A route binding is scoped by the route's provider/product contract rather
+  // than by a Capture foreign key. Seed only bindings whose route itself is
+  // one of the affected provider streams; unrelated routes on the same
+  // Source Connection remain available.
+  if (
+    tableExists(db, "source_route_bindings") &&
+    tableExists(db, "source_authority_routes")
+  )
+    addSelectedRows(
+      targetRows,
+      "source_route_bindings",
+      selectedRowIds(
+        db,
+        `SELECT binding.rowid AS rowid
+           FROM source_route_bindings binding
+           JOIN source_connections connection
+             ON connection.source_connection_id = binding.source_connection_id
+           JOIN source_authority_routes route
+             ON route.authority_route = binding.authority_route
+          WHERE connection.integration_namespace IN (${namespaces})
+            AND route.integration_namespace = connection.integration_namespace
+            AND route.stream IN (${streams})`,
+      ),
+    );
+
+  // Resolver runs and settlement groups are owned by the affected connection,
+  // but do not point back to a capture/account root. Seed these loan-specific
+  // dependents only for connections that actually contain an affected scope.
+  for (const table of scope.includeLoanResolverImplications === false
+    ? []
+    : [
+        "loan_repayment_resolution_runs",
+        "loan_repayment_settlement_groups",
+      ]) {
+    if (!tableExists(db, table)) continue;
+    addSelectedRows(
+      targetRows,
+      table,
+      selectedRowIds(
+        db,
+        `SELECT owned.rowid AS rowid
+           FROM ${quotedSqlIdentifier(table)} owned
+           JOIN source_connections connection
+             ON connection.source_connection_id = owned.source_connection_id
+          WHERE connection.integration_namespace IN (${namespaces})
+            AND EXISTS (
+              SELECT 1 FROM source_captures scoped_capture
+               WHERE scoped_capture.source_connection_id = connection.source_connection_id
+                 AND scoped_capture.stream IN (${streams})
+              UNION ALL
+              SELECT 1 FROM financial_accounts scoped_account
+               WHERE scoped_account.source_connection_id = connection.source_connection_id
+                 AND scoped_account.stream IN (${streams})
+            )`,
+      ),
+    );
+  }
+
+  const tables = canonicalTableNames(db).filter(
+    (table) => table !== "canonical_contract_purges",
+  );
+  const foreignKeys = new Map<string, SqliteForeignKey[]>();
+  for (const table of tables) {
+    foreignKeys.set(
+      table,
+      db
+        .prepare(`PRAGMA foreign_key_list(${quotedSqlIdentifier(table)})`)
+        .all() as SqliteForeignKey[],
+    );
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const childTable of tables) {
+      const grouped = new Map<number, SqliteForeignKey[]>();
+      for (const foreignKey of foreignKeys.get(childTable) ?? []) {
+        const group = grouped.get(foreignKey.id) ?? [];
+        group.push(foreignKey);
+        grouped.set(foreignKey.id, group);
+      }
+      for (const group of grouped.values()) {
+        const parentTable = group[0]!.table;
+        if (scope.stopAtTables?.includes(parentTable)) continue;
+        const parentRows = [...(targetRows.get(parentTable) ?? [])];
+        if (parentRows.length === 0) continue;
+        for (let offset = 0; offset < parentRows.length; offset += 800) {
+          const batch = parentRows.slice(offset, offset + 800);
+          const join = group
+            .sort((left, right) => left.seq - right.seq)
+            .map(
+              ({ from, to }) =>
+                `child.${quotedSqlIdentifier(from)} IS parent.${quotedSqlIdentifier(to)}`,
+            )
+            .join(" AND ");
+          const rows = db
+            .prepare(
+              `SELECT child.rowid AS rowid
+                 FROM ${quotedSqlIdentifier(childTable)} child
+                 JOIN ${quotedSqlIdentifier(parentTable)} parent ON ${join}
+                WHERE parent.rowid IN (${placeholders(batch.length)})`,
+            )
+            .all(...batch) as Array<{ rowid: number }>;
+          if (
+            addSelectedRows(
+              targetRows,
+              childTable,
+              rows.map(({ rowid }) => Number(rowid)),
+            )
+          )
+            changed = true;
+        }
+      }
+    }
+  }
+  return targetRows;
+}
+
+function purgeLegacySourceConnectionIdentityScopes(db: DatabaseSync): void {
+  if (
+    db
+      .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+      .get(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID)
+  )
+    return;
+
+  const closure = legacySourceConnectionIdentityClosure(db);
+  const purgedCommitIds = new Map<string, Uint8Array>();
+  // Every canonical commit referenced by the ownership closure becomes part
+  // of the non-financial purge audit. This includes Capture, resolver,
+  // relation, and projection-support commits rather than assuming one commit
+  // column or one product writer shape.
+  for (const [table, selected] of closure) {
+    const commitColumns = new Set(
+      (
+        db
+          .prepare(`PRAGMA foreign_key_list(${quotedSqlIdentifier(table)})`)
+          .all() as SqliteForeignKey[]
+      )
+        .filter(({ table: parentTable }) => parentTable === "canonical_commits")
+        .map(({ from }) => from),
+    );
+    const rowids = [...selected];
+    for (const column of commitColumns) {
+      for (let offset = 0; offset < rowids.length; offset += 800) {
+        const batch = rowids.slice(offset, offset + 800);
+        const rows = db
+          .prepare(
+            `SELECT DISTINCT ${quotedSqlIdentifier(column)} AS commit_id
+               FROM ${quotedSqlIdentifier(table)}
+              WHERE rowid IN (${placeholders(batch.length)})
+                AND ${quotedSqlIdentifier(column)} IS NOT NULL`,
+          )
+          .all(...batch) as Array<{ commit_id: Uint8Array }>;
+        for (const { commit_id: commitId } of rows)
+          purgedCommitIds.set(Buffer.from(commitId).toString("hex"), commitId);
+      }
+    }
+  }
+  const tableCounts = Object.fromEntries(
+    [...closure.entries()]
+      .filter(([, rows]) => rows.size > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([table, rows]) => [table, rows.size]),
+  );
+  const fingerprint = createHash("sha256");
+  for (const [table, rows] of [...closure.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    for (const rowid of [...rows].sort((left, right) => left - right))
+      fingerprint.update(`${table}\u0000${rowid}\n`);
+  }
+
+  // Foreign keys are disabled by the surrounding migration transaction. The
+  // complete dependent closure is deleted first in logical terms; an explicit
+  // foreign_key_check below is the commit gate and aborts any missed edge.
+  for (const [table, rows] of closure) {
+    const rowids = [...rows];
+    for (let offset = 0; offset < rowids.length; offset += 800) {
+      const batch = rowids.slice(offset, offset + 800);
+      db.prepare(
+        `DELETE FROM ${quotedSqlIdentifier(table)} WHERE rowid IN (${placeholders(batch.length)})`,
+      ).run(...batch);
+    }
+  }
+  reconcileProjectionProvenanceAfterContractPurge(db);
+  const foreignKeyDefects = db.prepare("PRAGMA foreign_key_check").all();
+  if (foreignKeyDefects.length > 0)
+    throw new Error(
+      "Canonical Source Connection identity purge left a dangling foreign-key reference.",
+    );
+
+  const deletedRowCount = Object.values(tableCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  db.prepare(
+    `INSERT INTO canonical_contract_purges(
+       purge_id, schema_version, reason, scope_json, deleted_row_count,
+       deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+     ) VALUES (?, 11, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID,
+    "replace product-split or secret/device-dependent Source Connection identity; recollect under deterministic provider-login identity",
+    JSON.stringify({
+      integrationNamespaces: SOURCE_CONNECTION_IDENTITY_V1_PURGE_NAMESPACES,
+      streams: SOURCE_CONNECTION_IDENTITY_V1_PURGE_STREAMS,
+    }),
+    deletedRowCount,
+    JSON.stringify(tableCounts),
+    `sha256:${fingerprint.digest("base64url")}`,
+    currentUtcMicros(),
+  );
+  const insertPurgedCommit = db.prepare(
+    "INSERT INTO canonical_contract_purge_commits(purge_id, commit_id) VALUES (?, ?)",
+  );
+  for (const commitId of purgedCommitIds.values())
+    insertPurgedCommit.run(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID, commitId);
+}
+
+type CanonicalContractPurgeAudit = Readonly<{
+  purgeId: string;
+  schemaVersion: 12;
+  reason: string;
+  integrationNamespaces: readonly string[];
+  streams: readonly string[];
+}>;
+
+/**
+ * Delete one exact source-scope ownership closure and retain its immutable
+ * audit. The v12 credit-card cleanup deliberately shares the v11 closure
+ * rules without broadening the roots to a whole Source Connection.
+ */
+function purgeCanonicalClosureToAudit(
+  db: DatabaseSync,
+  closure: Map<string, Set<number>>,
+  audit: CanonicalContractPurgeAudit,
+): void {
+  const purgedCommitIds = new Map<string, Uint8Array>();
+  for (const [table, selected] of closure) {
+    const commitColumns = new Set(
+      (
+        db
+          .prepare(`PRAGMA foreign_key_list(${quotedSqlIdentifier(table)})`)
+          .all() as SqliteForeignKey[]
+      )
+        .filter(({ table: parentTable }) => parentTable === "canonical_commits")
+        .map(({ from }) => from),
+    );
+    const rowids = [...selected];
+    for (const column of commitColumns) {
+      for (let offset = 0; offset < rowids.length; offset += 800) {
+        const batch = rowids.slice(offset, offset + 800);
+        const rows = db
+          .prepare(
+            `SELECT DISTINCT ${quotedSqlIdentifier(column)} AS commit_id
+               FROM ${quotedSqlIdentifier(table)}
+              WHERE rowid IN (${placeholders(batch.length)})
+                AND ${quotedSqlIdentifier(column)} IS NOT NULL`,
+          )
+          .all(...batch) as Array<{ commit_id: Uint8Array }>;
+        for (const { commit_id: commitId } of rows)
+          purgedCommitIds.set(Buffer.from(commitId).toString("hex"), commitId);
+      }
+    }
+  }
+
+  const tableCounts = Object.fromEntries(
+    [...closure.entries()]
+      .filter(([, rows]) => rows.size > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([table, rows]) => [table, rows.size]),
+  );
+  const fingerprint = createHash("sha256");
+  for (const [table, rows] of [...closure.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    for (const rowid of [...rows].sort((left, right) => left - right))
+      fingerprint.update(`${table}\u0000${rowid}\n`);
+  }
+
+  for (const [table, rows] of closure) {
+    const rowids = [...rows];
+    for (let offset = 0; offset < rowids.length; offset += 800) {
+      const batch = rowids.slice(offset, offset + 800);
+      db.prepare(
+        `DELETE FROM ${quotedSqlIdentifier(table)} WHERE rowid IN (${placeholders(batch.length)})`,
+      ).run(...batch);
+    }
+  }
+  reconcileProjectionProvenanceAfterContractPurge(db);
+  if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+    throw new Error(
+      "Canonical credit-card source purge left a dangling foreign-key reference.",
+    );
+
+  const deletedRowCount = Object.values(tableCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  db.prepare(
+    `INSERT INTO canonical_contract_purges(
+       purge_id, schema_version, reason, scope_json, deleted_row_count,
+       deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    audit.purgeId,
+    audit.schemaVersion,
+    audit.reason,
+    JSON.stringify({
+      integrationNamespaces: audit.integrationNamespaces,
+      streams: audit.streams,
+    }),
+    deletedRowCount,
+    JSON.stringify(tableCounts),
+    `sha256:${fingerprint.digest("base64url")}`,
+    currentUtcMicros(),
+  );
+  const insertPurgedCommit = db.prepare(
+    "INSERT INTO canonical_contract_purge_commits(purge_id, commit_id) VALUES (?, ?)",
+  );
+  for (const commitId of purgedCommitIds.values())
+    insertPurgedCommit.run(audit.purgeId, commitId);
+}
+
+function purgeLegacyCreditCardSourceScopes(db: DatabaseSync): void {
+  if (
+    db
+      .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+      .get(CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID)
+  )
+    return;
+  purgeCanonicalClosureToAudit(
+    db,
+    legacySourceConnectionIdentityClosure(db, {
+      namespaces: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES,
+      streams: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS,
+      includeLoanResolverImplications: false,
+      stopAtTables: [
+        "source_connections",
+        "identity_epochs",
+        "source_authority_routes",
+        "canonical_commits",
+        "projection_generations",
+      ],
+    }),
+    {
+      purgeId: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID,
+      schemaVersion: 12,
+      reason:
+        "replace product-specific Fubon or Yuanta credit-card Source Connection identity; recollect under the shared caller identity",
+      integrationNamespaces: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES,
+      streams: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS,
+    },
+  );
+}
+
+/**
+ * Projection provenance is operational audit metadata, not financial source
+ * evidence. Remove routine knowledge events whose sole Capture was purged and
+ * mark a generation's phase chain as migration-origin when its phase commit no
+ * longer owns source evidence. Re-link and re-digest the immutable event chain
+ * atomically so preserved non-target projections remain valid.
+ */
+function reconcileProjectionProvenanceAfterContractPurge(db: DatabaseSync): void {
+  if (!tableExists(db, "projection_generation_provenance")) return;
+  const generations = db
+    .prepare("SELECT generation_id FROM projection_generations ORDER BY generation_id")
+    .all() as Array<{ generation_id: number }>;
+  const planned: Array<{
+    eventId: Buffer;
+    generationId: number;
+    eventKind: ProjectionGenerationEventKind;
+    eventSource: ProjectionGenerationEventSource;
+    commitId: Buffer;
+  }> = [];
+  for (const generation of generations) {
+    const generationId = Number(generation.generation_id);
+    const rows = db
+      .prepare(
+        `SELECT event_id, event_kind, event_source, commit_id
+           FROM projection_generation_provenance
+          WHERE generation_id = ? ORDER BY ordinal`,
+      )
+      .all(generationId) as Array<Record<string, unknown>>;
+    const phaseLostEvidence = rows.some(
+      (row) =>
+        row.event_kind !== "knowledge" &&
+        row.event_source === "routine" &&
+        !canonicalCommitHasEvidence(
+          db,
+          String(
+            (
+              db
+                .prepare("SELECT commit_kind FROM canonical_commits WHERE commit_id = ?")
+                .get(blob(row.commit_id)) as { commit_kind?: string } | undefined
+            )?.commit_kind ?? "",
+          ),
+          blob(row.commit_id),
+        ),
+    );
+    for (const row of rows) {
+      const eventKind = String(row.event_kind) as ProjectionGenerationEventKind;
+      const commitId = blob(row.commit_id);
+      const commitKind = String(
+        (
+          db
+            .prepare("SELECT commit_kind FROM canonical_commits WHERE commit_id = ?")
+            .get(commitId) as { commit_kind?: string } | undefined
+        )?.commit_kind ?? "",
+      );
+      if (
+        eventKind === "knowledge" &&
+        !canonicalCommitHasEvidence(db, commitKind, commitId)
+      )
+        continue;
+      planned.push({
+        eventId: blob(row.event_id),
+        generationId,
+        eventKind,
+        eventSource:
+          phaseLostEvidence && eventKind !== "knowledge"
+            ? "migration"
+            : (String(row.event_source) as ProjectionGenerationEventSource),
+        commitId,
+      });
+    }
+    const retained = planned.filter(
+      (event) => event.generationId === generationId,
+    );
+    if (retained.length > 0) {
+      const cutoff = Math.max(
+        ...retained.map((event) =>
+          Number(
+            (
+              db
+                .prepare(
+                  "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?",
+                )
+                .get(event.commitId) as { commit_sequence?: number }
+            ).commit_sequence,
+          ),
+        ),
+      );
+      db.prepare(
+        "UPDATE projection_generations SET build_cutoff_commit_sequence = ? WHERE generation_id = ?",
+      ).run(cutoff, generationId);
+    }
+  }
+  db.exec(
+    "DROP TRIGGER IF EXISTS projection_generation_events_no_update; DROP TRIGGER IF EXISTS projection_generation_events_no_delete; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; DELETE FROM projection_generation_provenance",
+  );
+  const insert = db.prepare(
+    `INSERT INTO projection_generation_provenance(
+       event_id, generation_id, ordinal, previous_event_id, event_kind,
+       event_source, commit_id, event_digest
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  let previousGeneration = -1;
+  let previousEvent: Buffer | null = null;
+  let ordinal = 0;
+  for (const event of planned) {
+    if (event.generationId !== previousGeneration) {
+      previousGeneration = event.generationId;
+      previousEvent = null;
+      ordinal = 0;
+    }
+    ordinal += 1;
+    insert.run(
+      event.eventId,
+      event.generationId,
+      ordinal,
+      previousEvent,
+      event.eventKind,
+      event.eventSource,
+      event.commitId,
+      projectionGenerationEventDigest({
+        generationId: event.generationId,
+        ordinal,
+        eventKind: event.eventKind,
+        eventSource: event.eventSource,
+        commitId: event.commitId,
+        previousEventId: previousEvent,
+      }),
+    );
+    previousEvent = event.eventId;
+  }
+  const active = db
+    .prepare(
+      "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1",
+    )
+    .get() as { generation_id?: number } | undefined;
+  if (active?.generation_id !== undefined) {
+    const latest = [...planned]
+      .reverse()
+      .find((event) => event.generationId === Number(active.generation_id));
+    if (latest)
+      db.prepare(
+        "UPDATE current_projection_state SET commit_id = ? WHERE generation = 1",
+      ).run(latest.commitId);
+  }
+  ensureProjectionGenerationProvenanceTriggers(db);
+}
+
+function migrateV10ToV11(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
+    validateCanonicalLoanExtensionSchema(db);
+    // v10 databases created before the date-contract payload was introduced
+    // have the relation table but not this additive column. Add it before the
+    // v10 relation validator inspects the complete contract.
+    ensureInstitutionRepaymentNoteDateContractColumn(db);
+    validateCanonicalLoanRepaymentRelationSchema(db);
+    db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
+    purgeLegacySourceConnectionIdentityScopes(db);
+    validateCanonicalContractPurgeSchema(db);
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (11, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 11");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
+function migrateV11ToV12(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureV6CompatibilitySchema(db);
+    validateCanonicalCompatibilityViews(db);
+    validateCanonicalLoanExtensionSchema(db);
+    validateCanonicalLoanRepaymentRelationSchema(db);
+    ensureCanonicalContractPurgeSchemaV12(db);
+    purgeLegacyCreditCardSourceScopes(db);
+    validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (12, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 12");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
+function validateCanonicalRelationResolutionCommitSchema(
+  db: DatabaseSync,
+): void {
+  const schema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_commits'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (!/commit_kind[\s\S]*relation_resolution/iu.test(String(schema?.sql ?? "")))
+    throw new Error(
+      "Canonical schema v13 relation-resolution commit kind is missing.",
+    );
+}
+
+function backfillLegacyLoanRelationResolutionCommitsV13(
+  db: DatabaseSync,
+): void {
+  const runs = db
+    .prepare(
+      `SELECT resolution_id FROM loan_repayment_resolution_runs
+        ORDER BY observed_at, resolution_id`,
+    )
+    .all() as Array<{ resolution_id?: Uint8Array }>;
+  let commitSequence = Number(
+    (
+      db
+        .prepare(
+          "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+        )
+        .get() as { value?: number }
+    ).value ?? 0,
+  );
+  let knowledgeTime = Math.max(
+    currentUtcMicros(),
+    Number(
+      (
+        db
+          .prepare(
+            "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
+          )
+          .get() as { value?: number }
+      ).value ?? -1,
+    ) + 1,
+  );
+  const updateRun = db.prepare(
+    "UPDATE loan_repayment_resolution_runs SET commit_id = ? WHERE resolution_id = ?",
+  );
+  const updateEvents = db.prepare(
+    "UPDATE loan_repayment_relation_events SET commit_id = ? WHERE resolution_id = ?",
+  );
+  for (const row of runs) {
+    if (!(row.resolution_id instanceof Uint8Array))
+      throw new Error("Canonical v13 legacy relation resolution ID is missing.");
+    const commitId = createHash("sha256")
+      .update("canonical/relation-resolution-migration/v13\u0000")
+      .update(row.resolution_id)
+      .digest()
+      .subarray(0, 16);
+    commitSequence += 1;
+    db.prepare(
+      `INSERT INTO canonical_commits(
+         commit_id, commit_sequence, recorded_at_utc_us, authority_route,
+         commit_kind
+       ) VALUES (?, ?, ?, 'canonical/loan-repayment-relation-resolution-v1',
+                 'relation_resolution')`,
+    ).run(commitId, commitSequence, knowledgeTime);
+    knowledgeTime += 1;
+    updateRun.run(commitId, row.resolution_id);
+    updateEvents.run(commitId, row.resolution_id);
+  }
+  db.exec(`
+    UPDATE transaction_relations
+       SET commit_id = (
+         SELECT run.commit_id
+           FROM loan_repayment_relation_events event
+           JOIN loan_repayment_resolution_runs run
+             ON run.resolution_id = event.resolution_id
+           JOIN canonical_commits resolution_commit
+             ON resolution_commit.commit_id = run.commit_id
+          WHERE event.relation_id = transaction_relations.relation_id
+            AND event.event_kind = 'observed'
+          ORDER BY resolution_commit.commit_sequence, event.event_id LIMIT 1
+       )
+     WHERE EXISTS (
+       SELECT 1 FROM loan_repayment_relation_events event
+        WHERE event.relation_id = transaction_relations.relation_id
+          AND event.event_kind = 'observed'
+     );
+    UPDATE transaction_relation_provenance
+       SET commit_id = (
+         SELECT relation.commit_id FROM transaction_relations relation
+          WHERE relation.relation_id = transaction_relation_provenance.relation_id
+       )
+     WHERE EXISTS (
+       SELECT 1 FROM transaction_relations relation
+        WHERE relation.relation_id = transaction_relation_provenance.relation_id
+     );
+    UPDATE current_loan_relations
+       SET projection_commit_id = (
+         SELECT relation.commit_id FROM transaction_relations relation
+          WHERE relation.relation_id = current_loan_relations.relation_id
+       );
+    UPDATE loan_repayment_settlement_groups
+       SET created_commit_id = (
+         SELECT run.commit_id
+           FROM loan_repayment_relation_events event
+           JOIN loan_repayment_resolution_runs run
+             ON run.resolution_id = event.resolution_id
+           JOIN canonical_commits resolution_commit
+             ON resolution_commit.commit_id = run.commit_id
+          WHERE event.settlement_group_id = loan_repayment_settlement_groups.settlement_group_id
+            AND event.event_kind = 'observed'
+          ORDER BY resolution_commit.commit_sequence, event.event_id LIMIT 1
+       )
+     WHERE EXISTS (
+       SELECT 1 FROM loan_repayment_relation_events event
+        WHERE event.settlement_group_id = loan_repayment_settlement_groups.settlement_group_id
+          AND event.event_kind = 'observed'
+     );
+    UPDATE loan_repayment_settlement_group_members
+       SET commit_id = (
+         SELECT group_row.created_commit_id
+           FROM loan_repayment_settlement_groups group_row
+          WHERE group_row.settlement_group_id = loan_repayment_settlement_group_members.settlement_group_id
+       );
+    UPDATE current_loan_repayment_settlement_groups
+       SET projection_commit_id = (
+         SELECT group_row.created_commit_id
+           FROM loan_repayment_settlement_groups group_row
+          WHERE group_row.settlement_group_id = current_loan_repayment_settlement_groups.settlement_group_id
+       );
+  `);
+}
+
+function migrateV12ToV13(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    validateCanonicalLoanRepaymentRelationSchema(db);
+    db.exec(`CREATE TABLE canonical_commits_v13 (
+      commit_id BLOB PRIMARY KEY CHECK(length(commit_id) = 16),
+      commit_sequence INTEGER NOT NULL UNIQUE,
+      recorded_at_utc_us INTEGER NOT NULL,
+      authority_route TEXT NOT NULL,
+      commit_kind TEXT NOT NULL CHECK(commit_kind IN (
+        'source_capture','derived_import','user_assertion',
+        'projection_rebuild','relation_resolution'
+      ))
+    )`);
+    db.exec("INSERT INTO canonical_commits_v13 SELECT * FROM canonical_commits");
+    db.exec(
+      "DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_update; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_update",
+    );
+    db.exec(
+      "DROP TABLE canonical_commits; ALTER TABLE canonical_commits_v13 RENAME TO canonical_commits",
+    );
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_canonical_commits_sequence ON canonical_commits(commit_sequence, commit_id)",
+    );
+    db.exec(SCHEMA_V7_APPEND);
+    ensureProjectionGenerationProvenanceTriggers(db);
+    backfillLegacyLoanRelationResolutionCommitsV13(db);
+    validateCanonicalRelationResolutionCommitSchema(db);
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v13 commit-kind migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (13, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 13");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
 function applySchemaMigration(
   db: DatabaseSync,
   options: CanonicalDatabaseOptions = {},
@@ -6165,6 +7413,10 @@ function applySchemaMigration(
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 2) {
@@ -6175,6 +7427,10 @@ function applySchemaMigration(
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 3) {
@@ -6184,6 +7440,10 @@ function applySchemaMigration(
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 4) {
@@ -6192,6 +7452,10 @@ function applySchemaMigration(
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 5) {
@@ -6199,12 +7463,20 @@ function applySchemaMigration(
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 6) {
     migrateV6ToV7(db, options.injectMigrationFailure);
     migrateV7ToV8(db, options.injectMigrationFailure, false, true);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 7) {
@@ -6231,11 +7503,41 @@ function applySchemaMigration(
     }
     migrateV7ToV8(db, options.injectMigrationFailure);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   }
   if (version === 8) {
     validateV8SourceEvidenceSchema(db);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
+    return;
+  }
+  if (version === 9) {
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
+    return;
+  }
+  if (version === 10) {
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
+    return;
+  }
+  if (version === 11) {
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
+    return;
+  }
+  if (version === 12) {
+    migrateV12ToV13(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
@@ -6261,7 +7563,17 @@ function applySchemaMigration(
       ensureForeignCurrencyConversionSchema(db);
       ensureV7ProjectionSchema(db);
       validateV8SourceEvidenceSchema(db);
+      // v10 databases may have been created before the note-evidence tables
+      // were introduced. Re-run the idempotent v10 DDL during reopen so those
+      // databases gain the additive tables without a destructive migration or
+      // a schema-version bump.
+      db.exec(SCHEMA_V10_LOAN_REPAYMENT_RELATIONS);
+      db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
+      ensureInstitutionRepaymentNoteDateContractColumn(db);
       validateCanonicalLoanExtensionSchema(db);
+      validateCanonicalLoanRepaymentRelationSchema(db);
+      validateCanonicalRelationResolutionCommitSchema(db);
+      validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -6286,6 +7598,10 @@ function applySchemaMigration(
     db.exec("PRAGMA foreign_keys = ON");
     migrateV7ToV8(db, options.injectMigrationFailure);
     migrateV8ToV9(db);
+    migrateV9ToV10(db);
+    migrateV10ToV11(db);
+    migrateV11ToV12(db);
+    migrateV12ToV13(db);
     return;
   } catch (error) {
     if (!freshV7Committed) db.exec("ROLLBACK");
@@ -6300,6 +7616,9 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
       "Canonical financial revision widening staging requires writable recovery before read-only access.",
     );
   validateCanonicalLoanExtensionSchema(db);
+  validateCanonicalLoanRepaymentRelationSchema(db);
+  validateCanonicalRelationResolutionCommitSchema(db);
+  validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
   const requiredTables = [
     "capture_scopes",
     "capture_scope_pages",
@@ -10147,6 +11466,9 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     validateV8SourceEvidenceSchema(db);
     validateCanonicalCompatibilityViews(db);
     validateCanonicalLoanExtensionSchema(db);
+    validateCanonicalLoanRepaymentRelationSchema(db);
+    validateCanonicalRelationResolutionCommitSchema(db);
+    validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
     return db;
   } catch (error) {
     db.close();
@@ -10187,6 +11509,9 @@ export function validateCanonicalSourceStore(
   validateV8SourceEvidenceSchema(store.db);
   validateCanonicalCompatibilityViews(store.db);
   validateCanonicalLoanExtensionSchema(store.db);
+  validateCanonicalLoanRepaymentRelationSchema(store.db);
+  validateCanonicalRelationResolutionCommitSchema(store.db);
+  validateCanonicalContractPurgeSchema(store.db);
   const integrity = String(
     (
       store.db.prepare("PRAGMA integrity_check").get() as {

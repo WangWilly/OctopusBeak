@@ -13,6 +13,7 @@ import {
   FUBON_LOAN_AUTHORITY_ROUTE,
   FUBON_LOAN_LEGACY_AUTHORITY_ROUTE,
   isCanonicalLoanSourceDateBeforeObservedAt,
+  LEGACY_UNATTRIBUTED_LOAN_RELATION_EVIDENCE_VERSION,
   queryCanonicalLoanCurrent,
   queryCanonicalLoanHistorical,
   queryCanonicalLoanLineage,
@@ -37,6 +38,7 @@ import {
   queryFubonLoanHistorical,
   queryFubonLoanLineage,
 } from "./fubon-loan.ts";
+import { FUBON_LOAN_LIVE_RUN_EVIDENCE_V1 } from "./fubon-loan-live-attestation.fixture.ts";
 import {
   buildYuantaLoanCapture,
   persistYuantaLoanCapture,
@@ -44,8 +46,10 @@ import {
   queryYuantaLoanHistorical,
   queryYuantaLoanLineage,
   YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+  isYuantaLoanLiveValidationAttestationValid,
   YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
 } from "./yuanta-loan.ts";
+import { YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1 } from "./yuanta-loan-live-attestation.fixture.ts";
 
 test("Fubon loan contract correction preserves immutable v1 occurrences", async () => {
   const opaque = (label: string): `sha256:${string}` =>
@@ -487,12 +491,29 @@ test("Fubon live attestation records only sanitized v2 proof", () => {
   assert.deepEqual(
     FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.safeAssertions,
     [
-      "source-capture:nonzero",
-      "loan-account-identity:nonzero",
-      "loan-transaction-facts:nonzero",
-      "current-loan-projection:nonzero",
-      "loan-lineage:nonzero",
+      "identity:source-connection-and-loan-account-boundary-observed",
+      "money:source-amount-and-loan-boundary-direction-observed",
+      "time:source-transaction-and-balance-effective-time-observed",
+      "status:source-event-codebook-observed",
+      "completeness:provider-terminal-complete-range-observed",
+      "queries:current-historical-lineage-reopen-observed",
     ],
+  );
+  assert.equal(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.fieldEvidenceVersion,
+    "loan-live-field-observation/v1",
+  );
+  assert.equal(
+    FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.fieldEvidenceId,
+    FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId,
+  );
+  assert.deepEqual(
+    Object.keys(FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldObservations),
+    ["identity", "money", "time", "status", "completeness", "queries"],
+  );
+  assert.equal(
+    FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldObservations.completeness.terminalRule,
+    "fubon-loan-terminal-v2",
   );
   assert.match(
     FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1.runEvidenceId,
@@ -520,6 +541,7 @@ test("Fubon live readiness rejects a status-only or stale attestation", () => {
     { sourceEventCodebookVersion: "fubon/loan-source-event-codebook/v0" },
     { verifiedOn: "2026-08-30" },
     { runEvidenceId: "sha256:stale" },
+    { fieldEvidenceId: "sha256:stale" },
     { runEvidenceArtifact: "sanitized:stale-artifact" },
     { financialValuesRetained: true },
     {
@@ -667,6 +689,58 @@ test("Yuanta source codebook maps the explicit temporary receipt to payment only
   );
 });
 
+test("Yuanta live readiness is bound to sanitized versioned run evidence", () => {
+  assert.equal(
+    isYuantaLoanLiveValidationAttestationValid(
+      YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+    ),
+    true,
+  );
+  assert.equal(
+    YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.verifiedOn,
+    "2026-09-01",
+  );
+  assert.match(
+    YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.runEvidenceId,
+    /^sha256:/,
+  );
+  assert.match(
+    YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.runEvidenceArtifact,
+    /yuanta-loan-live-attestation\.fixture\.ts/u,
+  );
+  assert.equal(
+    YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1.fieldEvidenceId,
+    YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId,
+  );
+  assert.deepEqual(
+    Object.keys(YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldObservations),
+    ["identity", "money", "time", "status", "completeness", "queries"],
+  );
+  assert.equal(
+    YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1.fieldObservations.completeness.terminalRule,
+    "yuanta-loan-terminal-v2",
+  );
+
+  for (const mutation of [
+    { status: "pending" },
+    { verifiedOn: "2026-08-31" },
+    { captureContractVersion: "loan/canonical/v0.yuanta" },
+    { runEvidenceId: "sha256:stale" },
+    { fieldEvidenceId: "sha256:stale" },
+    { financialValuesRetained: true },
+    { safeAssertions: ["source-capture:nonzero"] },
+  ]) {
+    assert.equal(
+      isYuantaLoanLiveValidationAttestationValid({
+        ...YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
+        ...mutation,
+      }),
+      false,
+      `mutation should invalidate attestation: ${Object.keys(mutation)[0]}`,
+    );
+  }
+});
+
 test("loan canonical writer preserves source-scoped accounts and exact facts", async () => {
   const store = createCanonicalLoanStore(":memory:");
   try {
@@ -716,7 +790,11 @@ test("loan canonical writer preserves source-scoped accounts and exact facts", a
     assert.equal(current.relations.length, 2);
     assert.equal(
       current.relations[0]?.evidence.kind,
-      "explicit-source-linkage",
+      "legacy-unattributed",
+    );
+    assert.equal(
+      current.relations[0]?.evidence.evidenceVersion,
+      LEGACY_UNATTRIBUTED_LOAN_RELATION_EVIDENCE_VERSION,
     );
     assert.notEqual(current.relations[0]?.fromTransactionId, null);
     assert.notEqual(current.relations[0]?.toTransactionId, null);
@@ -760,6 +838,42 @@ test("loan canonical writer preserves source-scoped accounts and exact facts", a
     assert.equal(lineage.transactions.length, 1);
     assert.equal(lineage.lineage.length, 1);
     assert.equal(lineage.lineage[0]?.payload.eventKind, "disbursement");
+  } finally {
+    store.close();
+  }
+});
+
+test("loan relation queries preserve unknown provenance for legacy rows without events", async () => {
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    const committed = await commitCanonicalLoanCapture(
+      store,
+      admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
+    );
+    // A v9 relation can predate the v10 lifecycle event table.  Remove only
+    // the synthetic event to model that legacy shape while retaining the
+    // relation projection and endpoint facts.
+    store.db.exec("DELETE FROM loan_repayment_relation_events");
+
+    const current = queryCanonicalLoanCurrent(store, { sourceId: "fubon" });
+    const historical = queryCanonicalLoanHistorical(store, {
+      sourceId: "fubon",
+      knowledgeAt: committed.commitSequence,
+      financialAt: "2026-01-31",
+    });
+    const lineage = queryCanonicalLoanLineage(store, {
+      sourceId: "fubon",
+      sourceRecordKey: LOAN_CONTRACT_FIXTURES.fubon.records[0]!.sourceRecordKey,
+    });
+
+    for (const result of [current, historical, lineage]) {
+      assert.equal(result.relations.length, 1);
+      assert.equal(result.relations[0]?.evidence.kind, "legacy-unattributed");
+      assert.equal(
+        result.relations[0]?.evidence.evidenceVersion,
+        LEGACY_UNATTRIBUTED_LOAN_RELATION_EVIDENCE_VERSION,
+      );
+    }
   } finally {
     store.close();
   }
@@ -1142,7 +1256,7 @@ test("loan admission binds balance value, kind, and effective time to retained s
   }
 });
 
-test("loan relation endpoints must share source connection and identity epoch", () => {
+test("loan relation endpoints share a source connection while retaining independent identity epochs", async () => {
   const fixture = structuredClone(LOAN_CONTRACT_FIXTURES.yuanta);
   assert.throws(
     () =>
@@ -1157,19 +1271,87 @@ test("loan relation endpoints must share source connection and identity epoch", 
       }),
     /source connection|source scope/i,
   );
-  assert.throws(
-    () =>
-      admitCanonicalLoanCapture({
-        ...fixture,
-        counterpartTransactions: fixture.counterpartTransactions.map(
-          (counterpart) => ({
-            ...counterpart,
-            identityEpochKey: "sha256:other-epoch",
-          }),
-        ),
+  const independentEpoch = `sha256:${"1".repeat(64)}`;
+  const admitted = admitCanonicalLoanCapture({
+    ...fixture,
+    counterpartTransactions: fixture.counterpartTransactions.map(
+      (counterpart) => ({
+        ...counterpart,
+        identityEpochKey: independentEpoch,
       }),
-    /identity epoch|source scope/i,
-  );
+    ),
+  });
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitted);
+    const relation = store.db
+      .prepare(
+        `SELECT from_epoch.epoch_key AS from_epoch_key,
+                to_epoch.epoch_key AS to_epoch_key
+           FROM transaction_relations relation
+           JOIN identity_epochs from_epoch
+             ON from_epoch.identity_epoch_id = relation.from_identity_epoch_id
+           JOIN identity_epochs to_epoch
+             ON to_epoch.identity_epoch_id = relation.to_identity_epoch_id`,
+      )
+      .get() as { from_epoch_key: string; to_epoch_key: string };
+    assert.deepEqual(
+      new Set([relation.from_epoch_key, relation.to_epoch_key]),
+      new Set([fixture.identity.identityEpochKey, independentEpoch]),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("historical relations require both endpoint financial dates at the cutoff", async () => {
+  for (const endpoint of ["from", "to"] as const) {
+    const store = createCanonicalLoanStore(":memory:");
+    try {
+      const committed = await commitCanonicalLoanCapture(
+        store,
+        admitCanonicalLoanCapture(
+          structuredClone(LOAN_CONTRACT_FIXTURES.fubon),
+        ),
+      );
+      const relation = store.db
+        .prepare(
+          `SELECT from_transaction_id, to_transaction_id
+             FROM transaction_relations`,
+        )
+        .get() as {
+        from_transaction_id: Uint8Array;
+        to_transaction_id: Uint8Array;
+      };
+      store.db
+        .prepare(
+          `UPDATE transaction_revisions SET effective_on = '2026-01-06'
+            WHERE transaction_id = ?`,
+        )
+        .run(
+          endpoint === "from"
+            ? relation.from_transaction_id
+            : relation.to_transaction_id,
+        );
+      assert.equal(
+        queryCanonicalLoanHistorical(store, {
+          knowledgeAt: committed.commitSequence,
+          financialAt: "2026-01-05",
+        }).relations.length,
+        0,
+        `${endpoint} endpoint after cutoff excludes relation`,
+      );
+      assert.equal(
+        queryCanonicalLoanHistorical(store, {
+          knowledgeAt: committed.commitSequence,
+          financialAt: "2026-01-06",
+        }).relations.length,
+        1,
+      );
+    } finally {
+      store.close();
+    }
+  }
 });
 
 test("empty linkage arrays cannot claim complete relation coverage", () => {

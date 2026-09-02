@@ -24,6 +24,8 @@ import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  deriveYuantaSourceConnectionKey,
+  yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
 
@@ -276,8 +278,9 @@ type TableFile = z.infer<typeof tableFileSchema>;
 
 /**
  * The workflow's Yuanta identity epoch is deliberately tied to the
- * human-attested credit-card contract.  Login values and the managed secret
- * are inputs to the derivation only; neither is returned by these helpers.
+ * human-attested credit-card contract. The stable login identity derives the
+ * shared Source Connection key; the managed secret is used only for the
+ * separate portfolio attestation. Neither is returned as raw input.
  */
 export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH =
   "yuanta-credit-card-human-attested-v2" as const;
@@ -302,14 +305,6 @@ export type YuantaCreditCardCanonicalCaptureInput = {
   unbilledRows: readonly YuantaCreditCardStatementRow[];
   statementSummaries?: readonly YuantaCreditCardStatementSummary[];
 };
-
-function normalizeYuantaLoginPart(value: string | undefined): string {
-  return (value ?? "")
-    .normalize("NFKC")
-    .trim()
-    .replace(/\s+/gu, " ")
-    .toUpperCase();
-}
 
 function hmacYuantaIdentity(secret: string, value: unknown): string {
   return createHmac("sha256", secret)
@@ -358,25 +353,22 @@ export function deriveYuantaProjectedInstrumentIdentity(
 }
 
 /**
- * Derive stable opaque Yuanta source and portfolio keys from the normalized
- * login scope.  The password is intentionally excluded so password rotation
- * does not create a new account identity.  Callers must supply the
- * device-owned managed secret explicitly; it is never included in the
- * returned identity or in any workflow output.
+ * Derive the product-independent Yuanta source key from the normalized login
+ * scope, plus the separate portfolio attestation key. The password is
+ * intentionally excluded so password rotation does not create a new source
+ * connection. The device-owned managed secret is used only for the portfolio
+ * attestation; it never participates in Source Connection derivation and is
+ * never included in returned identity or workflow output.
  */
 export function deriveYuantaCanonicalHumanAttestation(
   credentials: YuantaCredentials,
   managedSecret: string,
 ): YuantaCanonicalHumanAttestation | undefined {
   const secret = managedSecret.trim();
-  const userId = normalizeYuantaLoginPart(credentials.yuanta_user_id);
-  const account = normalizeYuantaLoginPart(credentials.yuanta_account);
-  if (!secret || !userId || !account) return undefined;
-
-  const sourceConnectionKey = `yuanta_connection_${hmacYuantaIdentity(
-    secret,
-    ["yuanta-credit-card-login-scope-v2", userId, account],
-  )}`;
+  const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);
+  if (!secret || !sourceConnectionKey) return undefined;
+  const normalizedScope = yuantaSourceConnectionScope(credentials);
+  const [userId, account] = normalizedScope.split("\u0000");
   const humanAttestedAccountKey = `portfolio_${hmacYuantaIdentity(secret, [
     "yuanta-credit-card-primary-cardholder-portfolio-v2",
     sourceConnectionKey,

@@ -125,17 +125,20 @@ export const FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1 = Object.freeze({
   status: "verified-live-run",
   verifiedOn: "2026-08-31",
   runEvidenceSchemaVersion: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion,
+  fieldEvidenceVersion: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceVersion,
+  fieldEvidenceId: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId,
   runEvidenceId: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId,
   runEvidenceArtifact: FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.artifact,
   financialValuesRetained: false,
   authenticationSecretsRetained: false,
   rawSourcePayloadRetained: false,
   safeAssertions: Object.freeze([
-    "source-capture:nonzero",
-    "loan-account-identity:nonzero",
-    "loan-transaction-facts:nonzero",
-    "current-loan-projection:nonzero",
-    "loan-lineage:nonzero",
+    "identity:source-connection-and-loan-account-boundary-observed",
+    "money:source-amount-and-loan-boundary-direction-observed",
+    "time:source-transaction-and-balance-effective-time-observed",
+    "status:source-event-codebook-observed",
+    "completeness:provider-terminal-complete-range-observed",
+    "queries:current-historical-lineage-reopen-observed",
   ]),
 } as const);
 
@@ -147,6 +150,27 @@ function hasExactFubonLoanSafeAssertions(value: unknown): boolean {
       (assertion, index) =>
         assertion === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.safeAssertions[index],
     )
+  );
+}
+
+function hasCompleteFubonLoanFieldEvidence(): boolean {
+  const evidence = FUBON_LOAN_LIVE_RUN_EVIDENCE_V1;
+  return (
+    evidence.observationProvenance.mode === "human-assisted-solver-live-run" &&
+    evidence.observationProvenance.valuePolicy ===
+      "field-shape-and-semantics-only" &&
+    evidence.fieldObservations.identity.providerFields.length > 0 &&
+    evidence.fieldObservations.identity.canonicalBindings.length > 0 &&
+    evidence.fieldObservations.money.providerFields.length > 0 &&
+    evidence.fieldObservations.money.directionBasis.length > 0 &&
+    evidence.fieldObservations.time.providerFields.length > 0 &&
+    evidence.fieldObservations.time.balanceEffectiveTimeBasis.length > 0 &&
+    evidence.fieldObservations.status.providerFields.length > 0 &&
+    evidence.fieldObservations.status.interpretation.length > 0 &&
+    evidence.fieldObservations.completeness.providerSignals.length > 0 &&
+    evidence.fieldObservations.completeness.terminalRule ===
+      "fubon-loan-terminal-v2" &&
+    evidence.fieldObservations.queries.verifiedSurfaces.length > 0
   );
 }
 
@@ -177,13 +201,18 @@ export function isFubonLoanLiveValidationAttestationValid(
     attestation.verifiedOn === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.verifiedOn &&
     attestation.runEvidenceSchemaVersion ===
       FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.schemaVersion &&
+    attestation.fieldEvidenceVersion ===
+      FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceVersion &&
+    attestation.fieldEvidenceId ===
+      FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.fieldEvidenceId &&
     attestation.runEvidenceId === FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.evidenceId &&
     attestation.runEvidenceArtifact ===
       FUBON_LOAN_LIVE_RUN_EVIDENCE_V1.artifact &&
     attestation.financialValuesRetained === false &&
     attestation.authenticationSecretsRetained === false &&
     attestation.rawSourcePayloadRetained === false &&
-    hasExactFubonLoanSafeAssertions(attestation.safeAssertions)
+    hasExactFubonLoanSafeAssertions(attestation.safeAssertions) &&
+    hasCompleteFubonLoanFieldEvidence()
   );
 }
 

@@ -20,4 +20,4 @@ export {
   CanonicalLoanConflictError,
 } from "./loan-financial.ts";
 export type * from "./loan-financial.ts";
-
+export * from "./loan-repayment-relations.ts";

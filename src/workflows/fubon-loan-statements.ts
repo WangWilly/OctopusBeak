@@ -10,12 +10,24 @@ import {
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import {
+  buildFubonLoanCapture,
   persistFubonLoanCapture,
   type FubonLoanCaptureBuildInput,
   type FubonLoanStatementRow,
 } from "../ledger/canonical/fubon-loan.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  persistCounterpartyAccountEvidence,
+  resolveLoanRepaymentRelations,
+  type ExplicitLoanTransactionLink,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
+import {
+  deriveFubonSourceConnectionKey,
+  fubonStableLoginScope,
+} from "./fubon-source-connection.ts";
 import {
   activateControlWithoutPointer,
   fillInputWithoutPointer,
@@ -150,8 +162,11 @@ export type FubonLoanStatementsRunDependencies = Partial<{
   canonicalLedgerDir: string;
   canonicalFinancialLedgerDir: string;
   sourceConnectionScope: string;
+  sourceConnectionKey: string;
+  explicitRelationLinks: readonly ExplicitLoanTransactionLink[];
   observedAt: () => string;
   createLoanStore: typeof createCanonicalLoanStore;
+  resolveLoanRepaymentRelations: typeof resolveLoanRepaymentRelations;
   persistLoanCapture: (
     store: ReturnType<typeof createCanonicalLoanStore>,
     input: FubonLoanCaptureBuildInput,
@@ -163,6 +178,31 @@ type LoanPeriod = FubonLoanStatementsOutput["period"];
 let lastTimestamp = 0;
 
 const FUBON_LOAN_MAX_PAGES = 10_000;
+export const FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION =
+  "fubon/loan-account-as-repayment-destination/v1" as const;
+
+function fullUnmaskedFubonLoanAccount(value: string): string | null {
+  const source = cleanText(value);
+  if (!source || /[*xX•]/u.test(source)) return null;
+  if (!/^\d[\d\s-]*\d$/u.test(source)) return null;
+  const normalized = source.replace(/[\s-]/gu, "");
+  return /^\d{10,16}$/u.test(normalized) ? normalized : null;
+}
+
+/**
+ * The live selector uses an opaque option value while its visible label owns
+ * the full 14-digit loan account followed by a parenthesized loan type. Keep
+ * identity on the opaque option value, but retain the exact visible account
+ * as repayment evidence when (and only when) that verified shape is present.
+ */
+export function extractFubonLoanAccountEvidence(
+  _optionValue: string,
+  optionLabel: string,
+): string | null {
+  const label = cleanText(optionLabel);
+  if (!label || /[*xX•]/u.test(label)) return null;
+  return label.match(/^(\d{14})\s*[（(][^()（）]+[）)]$/u)?.[1] ?? null;
+}
 
 export type FubonLoanPaginationSignal = {
   nextPage: string | null;
@@ -274,9 +314,9 @@ function extractBalancedHtmlElement(
   const tagName = openingTag.match(/^<([a-z][\w:-]*)\b/iu)?.[1];
   if (!tagName || /\/>$/u.test(openingTag)) return openingTag;
   const tokens = [
-    ...html.slice(openingStart).matchAll(
-      new RegExp("<\\/?" + tagName + "\\b[^>]*>", "giu"),
-    ),
+    ...html
+      .slice(openingStart)
+      .matchAll(new RegExp("<\\/?" + tagName + "\\b[^>]*>", "giu")),
   ];
   let depth = 0;
   for (const token of tokens) {
@@ -294,29 +334,141 @@ function extractBalancedHtmlElement(
   return html.slice(openingStart);
 }
 
-function fubonLoanResultMarkup(html: string): string {
-  const candidates: string[] = [];
-  for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu)) {
+function fubonLoanResultContext(html: string): {
+  markup: string;
+  gridPrefix: string;
+  rowCount: number;
+  pageSize: number | null;
+  currentPageFieldCount: number;
+  pageSizeControlPresent: boolean;
+  providerResultTable: boolean;
+} | null {
+  for (const match of html.matchAll(/<(?:table|tbody)\b[^>]*>/giu)) {
     const opening = match[0];
-    const tagName = match[1]?.toLowerCase();
-    if (!tagName || /^(?:input|meta|link|br|hr|img)$/u.test(tagName)) continue;
-    const marker = [
-      htmlAttribute(opening, "id"),
-      htmlAttribute(opening, "class"),
-      htmlAttribute(opening, "name"),
-    ].join(" ");
-    if (!/\bresultGrid\b/iu.test(marker)) continue;
-    candidates.push(
-      extractBalancedHtmlElement(html, match.index ?? 0, opening),
-    );
+    const tableId = htmlAttribute(opening, "id");
+    const table = extractBalancedHtmlElement(html, match.index ?? 0, opening);
+    const rows = [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu)];
+    const exactHeaderRowIndex = rows.findIndex((row) => {
+      const headers = [
+        ...(row[1] ?? "").matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/giu),
+      ].map((cell) => stripHtml(cell[1] ?? "").replace(/\s+/gu, ""));
+      return (
+        headers.length === loanHeaders.length &&
+        headers.every(
+          (header, index) =>
+            header === loanHeaders[index]?.replace(/\s+/gu, ""),
+        )
+      );
+    });
+    const providerResultTable =
+      hasHtmlClassToken(opening, "tb1") &&
+      hasHtmlClassToken(opening, "queryResult");
+    const providerHeaderRowIndex = providerResultTable
+      ? rows.findIndex(
+          (row) =>
+            [...(row[1] ?? "").matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/giu)]
+              .length === loanHeaders.length,
+        )
+      : -1;
+    const headerRowIndex =
+      exactHeaderRowIndex >= 0 ? exactHeaderRowIndex : providerHeaderRowIndex;
+    if (headerRowIndex < 0) continue;
+    const explicitGridPrefix =
+      tableId.match(/^(.*?)_DataGridBody(?:\b|_)/iu)?.[1] ?? "";
+    const currentPageFields = [...html.matchAll(/<(?:input|select)\b[^>]*>/giu)]
+      .flatMap((control) => [
+        htmlAttribute(control[0], "name"),
+        htmlAttribute(control[0], "id"),
+      ])
+      .filter((value) => /(?:\b|:|_)dataGridCurrentPage$/iu.test(value));
+    const inferredPageField = currentPageFields
+      .map((value) => ({
+        value,
+        prefix: value.replace(/(?::|_)dataGridCurrentPage$/iu, ""),
+      }))
+      .sort((left, right) => {
+        const shared = (value: string) => {
+          let index = 0;
+          while (index < value.length && value[index] === tableId[index])
+            index += 1;
+          return index;
+        };
+        return shared(right.prefix) - shared(left.prefix);
+      })[0];
+    const gridPrefix = explicitGridPrefix || inferredPageField?.prefix || "";
+    if (!gridPrefix) continue;
+    const fieldPattern = gridPrefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const pageSizeControl =
+      [
+        ...html.matchAll(/<input\b[^>]*>|<select\b[^>]*>[\s\S]*?<\/select>/giu),
+      ].find((control) => {
+        const opening =
+          control[0].match(/^<(?:input|select)\b[^>]*>/iu)?.[0] ?? "";
+        const idOrName = `${htmlAttribute(opening, "id")} ${htmlAttribute(opening, "name")}`;
+        return new RegExp(
+          `${fieldPattern}(?::|_)dataGridCurrentPageSize\\b`,
+          "u",
+        ).test(idOrName);
+      })?.[0] ?? "";
+    const pageSizeOpening =
+      pageSizeControl.match(/^<(?:input|select)\b[^>]*>/iu)?.[0] ?? "";
+    const selectedOption = [
+      ...pageSizeControl.matchAll(/<option\b[^>]*>/giu),
+    ].find((option) => hasHtmlBooleanAttribute(option[0], "selected"))?.[0];
+    const rawPageSize =
+      htmlAttribute(pageSizeOpening, "value") ||
+      (selectedOption ? htmlAttribute(selectedOption, "value") : "");
+    const pageSize = /^\d+$/u.test(rawPageSize) ? Number(rawPageSize) : null;
+    const formStart = html.lastIndexOf("<form", match.index ?? 0);
+    const formOpening =
+      formStart >= 0
+        ? html.slice(formStart).match(/^<form\b[^>]*>/iu)?.[0]
+        : undefined;
+    const markup = formOpening
+      ? extractBalancedHtmlElement(html, formStart, formOpening)
+      : html;
+    return {
+      markup,
+      gridPrefix,
+      rowCount: Math.max(0, rows.length - headerRowIndex - 1),
+      pageSize:
+        Number.isSafeInteger(pageSize) && pageSize! > 0 ? pageSize : null,
+      currentPageFieldCount: currentPageFields.length,
+      pageSizeControlPresent: pageSizeControl.length > 0,
+      providerResultTable,
+    };
   }
-  const withCurrentPage = candidates.filter((candidate) =>
-    /<(?:input|select)\b[^>]*(?:id|name)\s*=\s*["'][^"']*resultGrid:dataGridCurrentPage[^"']*["']/iu.test(
-      candidate,
-    ),
-  );
-  return (withCurrentPage.length > 0 ? withCurrentPage : candidates)
-    .sort((left, right) => left.length - right.length)[0] ?? "";
+  return null;
+}
+
+/**
+ * v2 is the live-verified terminal shape for the Fubon loan result page:
+ * the provider result table has real rows and a current-page field, but the
+ * provider omits page-size, pager, and next-page controls. This is deliberately
+ * narrower than treating every response without a next link as complete.
+ */
+const FUBON_LOAN_TERMINAL_RULE_VERSION = "fubon-loan-terminal-v2";
+
+function logFubonLoanPaginationObservation(observation: {
+  resultContext: boolean;
+  rowCount?: number;
+  pageSize?: number | null;
+  currentPageFieldCount?: number;
+  pageSizeControlPresent?: boolean;
+  providerResultTable?: boolean;
+  nextControlCount?: number;
+  activeNextControlCount?: number;
+  disabledNextControlCount?: number;
+  providerPager?: boolean;
+  explicitNoNext?: boolean;
+  nextPage?: number | null;
+  terminal?: boolean;
+  evidence?: FubonLoanPaginationSignal["evidence"];
+}): void {
+  console.log("fubon-loan-pagination-observation", {
+    ruleVersion: FUBON_LOAN_TERMINAL_RULE_VERSION,
+    ...observation,
+  });
 }
 
 /**
@@ -330,8 +482,9 @@ function fubonLoanResultMarkup(html: string): string {
 export function parseFubonLoanPaginationSignal(
   html: string,
 ): FubonLoanPaginationSignal {
-  const providerMarkup = fubonLoanResultMarkup(html);
-  if (!providerMarkup) {
+  const context = fubonLoanResultContext(html);
+  if (!context) {
+    logFubonLoanPaginationObservation({ resultContext: false });
     return {
       nextPage: null,
       pageFieldName: null,
@@ -339,9 +492,15 @@ export function parseFubonLoanPaginationSignal(
       evidence: null,
     };
   }
-  const links = [
-    ...providerMarkup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu),
-  ].map(
+  const fieldPattern = context.gridPrefix.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  );
+  const pageFieldPattern = new RegExp(
+    `^${fieldPattern}(?::|_)dataGridCurrentPage$`,
+    "u",
+  );
+  const links = [...context.markup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu)].map(
     (match) => {
       const markup = match[0];
       const opening = markup.match(/^<a\b[^>]*>/iu)?.[0] ?? "";
@@ -352,7 +511,9 @@ export function parseFubonLoanPaginationSignal(
       };
     },
   );
-  const nextLinks = links.filter((link) => /^(?:下一頁|下頁)$/u.test(link.text));
+  const nextLinks = links.filter((link) =>
+    /^(?:下一頁|下頁)$/u.test(link.text),
+  );
   const activeNext = nextLinks.find(
     (link) =>
       !isDisabledHtmlControl(link.opening) &&
@@ -362,7 +523,23 @@ export function parseFubonLoanPaginationSignal(
     const nextMatch = activeNext.onclick.match(
       /setDataGridCurrentPage\([^,]+,\s*(\d+),\s*["']([^"']+)["']/iu,
     );
-    if (nextMatch?.[1] && nextMatch[2]) {
+    if (nextMatch?.[1] && nextMatch[2] && pageFieldPattern.test(nextMatch[2])) {
+      logFubonLoanPaginationObservation({
+        resultContext: true,
+        rowCount: context.rowCount,
+        pageSize: context.pageSize,
+        currentPageFieldCount: context.currentPageFieldCount,
+        pageSizeControlPresent: context.pageSizeControlPresent,
+        providerResultTable: context.providerResultTable,
+        nextControlCount: nextLinks.length,
+        activeNextControlCount: 1,
+        disabledNextControlCount: nextLinks.filter((link) =>
+          isDisabledHtmlControl(link.opening),
+        ).length,
+        nextPage: Number(nextMatch[1]),
+        terminal: false,
+        evidence: "next-page",
+      });
       return {
         nextPage: nextMatch[1],
         pageFieldName: nextMatch[2],
@@ -370,6 +547,21 @@ export function parseFubonLoanPaginationSignal(
         evidence: "next-page",
       };
     }
+    logFubonLoanPaginationObservation({
+      resultContext: true,
+      rowCount: context.rowCount,
+      pageSize: context.pageSize,
+      currentPageFieldCount: context.currentPageFieldCount,
+      pageSizeControlPresent: context.pageSizeControlPresent,
+      providerResultTable: context.providerResultTable,
+      nextControlCount: nextLinks.length,
+      activeNextControlCount: 0,
+      disabledNextControlCount: nextLinks.filter((link) =>
+        isDisabledHtmlControl(link.opening),
+      ).length,
+      terminal: false,
+      evidence: null,
+    });
     return {
       nextPage: null,
       pageFieldName: null,
@@ -378,12 +570,20 @@ export function parseFubonLoanPaginationSignal(
     };
   }
 
-  const hasCurrentPageField =
-    /<(?:input|select)\b[^>]*(?:id|name)\s*=\s*["'][^"']*resultGrid:dataGridCurrentPage[^"']*["']/iu.test(
-      providerMarkup,
-    );
+  const hasCurrentPageField = [
+    ...context.markup.matchAll(/<(?:input|select)\b[^>]*>/giu),
+  ].some((control) =>
+    [htmlAttribute(control[0], "id"), htmlAttribute(control[0], "name")].some(
+      (value) => pageFieldPattern.test(value),
+    ),
+  );
+  // The live provider renders its current-page control outside the form that
+  // contains the result table. `fubonLoanResultContext` intentionally counts
+  // those controls from the complete response, but the scoped markup above is
+  // still the signal used by the generic/legacy terminal branches.
+  const hasGlobalCurrentPageField = context.currentPageFieldCount > 0;
   const hasProviderPager = [
-    ...providerMarkup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu),
+    ...context.markup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu),
   ].some((match) => {
     const tagName = match[1]?.toLowerCase();
     return (
@@ -395,23 +595,68 @@ export function parseFubonLoanPaginationSignal(
   });
   const hasExplicitNoNext =
     /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
-      providerMarkup,
+      context.markup,
     );
   const hasDisabledNext = nextLinks.some((link) =>
     isDisabledHtmlControl(link.opening),
   );
-  if (
+  const hasProviderStaticResultTerminal =
+    context.providerResultTable &&
+    hasGlobalCurrentPageField &&
+    context.rowCount > 0 &&
+    !context.pageSizeControlPresent &&
+    nextLinks.length === 0 &&
+    !hasProviderPager &&
+    !hasExplicitNoNext;
+  const hasLegacyTerminalEvidence =
     hasCurrentPageField &&
     (hasDisabledNext ||
       hasExplicitNoNext ||
-      (hasProviderPager && nextLinks.length === 0))
-  )
+      (hasProviderPager && nextLinks.length === 0) ||
+      (context.pageSize !== null && context.rowCount < context.pageSize));
+  if (hasLegacyTerminalEvidence || hasProviderStaticResultTerminal) {
+    logFubonLoanPaginationObservation({
+      resultContext: true,
+      rowCount: context.rowCount,
+      pageSize: context.pageSize,
+      currentPageFieldCount: context.currentPageFieldCount,
+      pageSizeControlPresent: context.pageSizeControlPresent,
+      providerResultTable: context.providerResultTable,
+      nextControlCount: nextLinks.length,
+      activeNextControlCount: 0,
+      disabledNextControlCount: nextLinks.filter((link) =>
+        isDisabledHtmlControl(link.opening),
+      ).length,
+      providerPager: hasProviderPager,
+      explicitNoNext: hasExplicitNoNext,
+      terminal: true,
+      evidence: "terminal-no-next",
+    });
     return {
       nextPage: null,
       pageFieldName: null,
       terminal: true,
       evidence: "terminal-no-next",
     };
+  }
+
+  logFubonLoanPaginationObservation({
+    resultContext: true,
+    rowCount: context.rowCount,
+    pageSize: context.pageSize,
+    currentPageFieldCount: context.currentPageFieldCount,
+    pageSizeControlPresent: context.pageSizeControlPresent,
+    providerResultTable: context.providerResultTable,
+    nextControlCount: nextLinks.length,
+    activeNextControlCount: 0,
+    disabledNextControlCount: nextLinks.filter((link) =>
+      isDisabledHtmlControl(link.opening),
+    ).length,
+    providerPager: hasProviderPager,
+    explicitNoNext: hasExplicitNoNext,
+    terminal: false,
+    evidence: null,
+  });
 
   return {
     nextPage: null,
@@ -922,7 +1167,11 @@ function canonicalLoanDateRange(input: FubonLoanStatementsInput): {
   }
 
   const today = new Date();
-  const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const endDate = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  );
   const startDate = addMonthsClamped(endDate, -Number(input.quickMonths));
   return {
     startDate: formatDate(startDate).replaceAll("/", "-"),
@@ -1080,16 +1329,19 @@ async function parseLoanStatementHtml(
       const headerRowIndex = tableRows.findIndex((row) =>
         headers.every((header, index) => clean(row[index]).includes(header)),
       );
-      const rows = tableRows.slice(headerRowIndex + 1).map((row) => {
-        const normalized = row.map((value) => clean(value));
-        if (normalized.every((value) => value.length === 0)) return [];
-        if (
-          normalized.length !== headers.length ||
-          !/^\d{4}\/\d{2}\/\d{2}$/.test(normalized[0] ?? "")
-        )
-          throw new Error("Unexpected Fubon loan result row.");
-        return [normalized];
-      }).flat();
+      const rows = tableRows
+        .slice(headerRowIndex + 1)
+        .map((row) => {
+          const normalized = row.map((value) => clean(value));
+          if (normalized.every((value) => value.length === 0)) return [];
+          if (
+            normalized.length !== headers.length ||
+            !/^\d{4}\/\d{2}\/\d{2}$/.test(normalized[0] ?? "")
+          )
+            throw new Error("Unexpected Fubon loan result row.");
+          return [normalized];
+        })
+        .flat();
       const metadataRows = Array.from(doc.querySelectorAll("table"))
         .map((table) =>
           Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
@@ -1205,7 +1457,9 @@ async function fetchFubonLoanStatementPages(
     pages.push(parsed);
     if (!parsed.pagination.nextPage) break;
     if (!parsed.pagination.pageFieldName)
-      throw new Error("Fubon loan pagination control is missing its page field.");
+      throw new Error(
+        "Fubon loan pagination control is missing its page field.",
+      );
     const requestKey = `${parsed.pagination.pageFieldName}\u0000${parsed.pagination.nextPage}`;
     if (requests.has(requestKey))
       throw new Error("Fubon loan pagination repeated a page request.");
@@ -1310,6 +1564,10 @@ export async function runFubonLoanStatements(
     );
   }
 
+  const {
+    sourceConnectionScope,
+    sourceConnectionKey: relationSourceConnectionKey,
+  } = requireSourceConnectionIdentity("fubon", "Fubon loan", overrides);
   const ledgerDir =
     overrides.canonicalFinancialLedgerDir ??
     overrides.canonicalLedgerDir ??
@@ -1318,9 +1576,9 @@ export async function runFubonLoanStatements(
     canonicalSqlitePath(ledgerDir),
   );
   const persist = overrides.persistLoanCapture ?? persistFubonLoanCapture;
-  const sourceConnectionScope =
-    overrides.sourceConnectionScope ?? "fubon-loan-workflow";
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
+  const resolveRelations =
+    overrides.resolveLoanRepaymentRelations ?? resolveLoanRepaymentRelations;
 
   try {
     let scope = await openLoanStatementsPage(page);
@@ -1390,12 +1648,15 @@ export async function runFubonLoanStatements(
           input,
         );
         const completeness = written.parsed.completeness;
-        if (!completeness || written.parsed.pages.length !== completeness.pageCount) {
+        if (
+          !completeness ||
+          written.parsed.pages.length !== completeness.pageCount
+        ) {
           throw new Error(
             "Fubon loan result lacks explicit complete terminal page evidence.",
           );
         }
-        await persist(store, {
+        const captureInput: FubonLoanCaptureBuildInput = {
           accountValue: written.parsed.sourceAccountValue,
           sourceConnectionScope,
           observedAt: observedAt(),
@@ -1411,9 +1672,10 @@ export async function runFubonLoanStatements(
             terminal: completeness.terminal,
           },
           pages: written.parsed.pages,
-          // The loan result has no source-linked deposit-side transaction.
-          // Keep this explicit: an empty linkage list is not complete
-          // relation evidence and must not be advertised as such.
+          // The provider exposes no source-linked deposit-side transaction in
+          // this statement response. An empty linkage list is deliberately
+          // not a relation assertion; the independent resolver below can use
+          // account or transaction evidence captured by another page.
           relationCoverage: "not-asserted",
           counterpartTransactions: [],
           relations: [],
@@ -1423,7 +1685,43 @@ export async function runFubonLoanStatements(
             transactionAmount: row[2] ?? "",
             balanceAfterTransaction: row[6] ?? "",
           })),
-        });
+        };
+        const capture = buildFubonLoanCapture(captureInput);
+        await persist(store, captureInput);
+        const repaymentAccount = extractFubonLoanAccountEvidence(
+          written.parsed.sourceAccountValue,
+          written.parsed.loanAccount,
+        );
+        const provenanceRecord = capture.records[0];
+        if (repaymentAccount && provenanceRecord) {
+          await persistCounterpartyAccountEvidence(store, {
+            captureId: capture.captureId,
+            sourceRecordKey: provenanceRecord.sourceRecordKey,
+            sourceConnectionKey: capture.identity.sourceConnectionKey,
+            identityEpochKey: capture.identity.identityEpochKey,
+            accountValue: repaymentAccount,
+            role: "beneficiary",
+            purpose: "loan_repayment",
+            scope: "loan_contract",
+            evidenceKind: "repayment-mandate",
+            sourceField: "loan-account-selector",
+            contractVersion: FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION,
+            effectiveStartDate: capture.scope.startDate,
+            effectiveEndDate: capture.scope.endDate,
+            accountKey: capture.identity.accountKey,
+          });
+        }
+        // Resolve only after the complete loan capture has committed. This
+        // keeps an incomplete/failed page from withdrawing prior relations,
+        // and lets a standalone loan capture resolve against an earlier
+        // standalone deposit capture in the same Source Connection.
+        await resolveLoanRelationsAfterCapture(store, resolveRelations, {
+            sourceConnectionKey: relationSourceConnectionKey,
+            integrationNamespace: "fubon",
+            observedAt: observedAt(),
+            failureEvent: "fubon-loan-relation-resolution-failed",
+            explicitLinks: overrides.explicitRelationLinks,
+          });
         downloads.push(written.download);
       }
     }
@@ -1475,7 +1773,14 @@ export default workflow("fubonLoanStatements", {
     return await runFubonLoanStatements(page, input, {
       canonicalLedgerDir: sourceLedgerDir,
       canonicalFinancialLedgerDir: financialLedgerDir,
-      sourceConnectionScope: `${values.userId}\u0000${values.account}`,
+      sourceConnectionScope: fubonStableLoginScope({
+        fubon_user_id: values.userId,
+        fubon_account: values.account,
+      })!,
+      sourceConnectionKey: deriveFubonSourceConnectionKey({
+        fubon_user_id: values.userId,
+        fubon_account: values.account,
+      })!,
     });
   },
 });

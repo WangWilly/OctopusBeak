@@ -32,6 +32,8 @@ import {
 
 const FUBON_CREDIT_CARD_CONTRACT_VERSION =
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion;
+const CALLER_SOURCE_CONNECTION_KEY =
+  "sha256:fubon-credit-card-caller-source-connection" as const;
 
 const completeness = {
   billedPeriods: ["period-1", "period-2", "period-3", "period-4", "period-5", "period-6"],
@@ -118,7 +120,7 @@ function capture(
   overrides: Partial<FubonCreditCardCaptureInput> = {},
 ): FubonCreditCardCaptureInput {
   const identity = overrides.identity ?? {
-    sourceConnectionKey: "connection-a",
+    sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
     identityEpochKey: "epoch-1",
     humanAttestedAccountKey: "portfolio-a",
   };
@@ -469,7 +471,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   assert.equal(
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: pan,
       },
@@ -477,7 +479,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
     ),
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: "4111111111111111",
       },
@@ -487,7 +489,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   assert.notEqual(
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: "4012888888881881",
       },
@@ -505,7 +507,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   );
 
   const panIdentity = {
-    sourceConnectionKey: "connection-a",
+    sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
     identityEpochKey: "epoch-1",
     fullPan: pan,
   };
@@ -1135,6 +1137,18 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     );
     assert.equal(first.transactionCount, 2);
     assert.equal(repeated.transactionCount, 2);
+    assert.deepEqual(
+      store.db
+        .prepare(
+          `SELECT source_connection_key
+             FROM source_connections
+            WHERE integration_namespace = 'fubon'`,
+        )
+        .all()
+        .map((row) => (row as { source_connection_key?: string }).source_connection_key),
+      [CALLER_SOURCE_CONNECTION_KEY],
+      "Fubon credit-card captures must reuse the caller Source Connection key",
+    );
 
     const secondAccount = await commitFubonCreditCardCapture(
       store,
@@ -1142,7 +1156,7 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
         capture({
           captureId: "capture-c",
           identity: {
-            sourceConnectionKey: "connection-a",
+            sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
             identityEpochKey: "epoch-1",
             humanAttestedAccountKey: "portfolio-b",
           },

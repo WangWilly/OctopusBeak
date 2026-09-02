@@ -9,6 +9,7 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
 } from "./yuanta-domestic-deposit.ts";
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "./yuanta-human-attestation.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./esun-credit-card-human-attestation.ts";
 import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
 import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
@@ -89,6 +90,13 @@ const evidence = {
   },
 };
 
+const yuantaWriterTestSourceConnectionScope =
+  "YUANTA-WRITER-TEST-USER\u0000YUANTA-WRITER-TEST-ACCOUNT";
+const yuantaWriterTestSourceConnectionKey = deriveSourceConnectionIdentityKey(
+  "yuanta",
+  yuantaWriterTestSourceConnectionScope,
+);
+
 const structural = admitYuantaDomesticDepositCaptureEvidence(evidence);
 assert.equal(structural.status, "admissible");
 assert.ok(structural.capture);
@@ -96,6 +104,8 @@ const admission = admitYuantaDomesticDepositFinancialCapture({
   capture: structural.capture,
   captureId: "yuanta-writer-route-positive",
   humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+  sourceConnectionScope: yuantaWriterTestSourceConnectionScope,
+  sourceConnectionKey: yuantaWriterTestSourceConnectionKey,
 });
 assert.equal(admission.status, "admitted");
 const admittedCapture = admission.capture;

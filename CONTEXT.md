@@ -74,6 +74,10 @@ The set of statement types chosen for an enabled credential source to collect.
 A sanitized version of the enabled product streams, Statement Selections, identity scope, query coverage, completeness semantics, and other non-secret Integration configuration that determines what one Source Capture means. A collection attempt records and revalidates this version before admission; authentication-secret rotation and purely presentational or scheduling changes do not create financial knowledge or change it.
 _Avoid_: Credential version, UI settings version, Capture contract version, secret fingerprint
 
+**Human-attestation contract**:
+A versioned Integration contract established through deliberate human review of live provider behavior and sanitized fixtures when the provider does not expose an explicit identifier or guarantee. It governs deterministic Workflow admission, omission, grouping, and candidate handling with declared non-provider provenance; it is not an end-user confirmation flow, a User Assertion, or a provider guarantee.
+_Avoid_: Human assistance, runtime approval prompt, user relation correction, provider-attested contract
+
 **Trusted financial overview**:
 A reviewable, traceable view that unifies a person's imported cash, deposits, liabilities, investments, foreign currency, crypto assets, income, spending, and statement activity across supported sources. Analysis must preserve the distinction between verified data, known gaps, and user-supplied assumptions.
 _Avoid_: Dashboard, portfolio view, financial summary
@@ -147,8 +151,12 @@ A physical or virtual primary or supplementary card associated with a financial 
 _Avoid_: Credit-card account, financial account
 
 **Source connection**:
-A persistent operational relationship through which a person authorizes or configures collection from a supported source and which namespaces the Financial Accounts it exposes. Accounts from different connections never share canonical identity; connection failure, replacement, disconnection, or deletion does not itself establish an account lifecycle fact, and authentication secrets remain outside the canonical model.
-_Avoid_: Financial account, automation task run, credential secret
+A persistent operational relationship through which a person authorizes or configures collection from one supported source, identified without authentication secrets and shared by every product stream collected under that same authorization. Its first-version identity is reproducible from the same provider login identity on a new device without migrated local state; password, OTP, solver, session, schedule, Statement Selection, and query-range changes preserve it, while a change to the provider login identity starts a new connection. It contains no task-run time, secret version, attestation version, or product type, and accounts from different connections never share canonical identity.
+_Avoid_: Financial account, automation task run, query period, product stream, credential secret
+
+**Source connection identity key**:
+A versioned, deterministic, Institution-domain-separated, memory-hard reference derived from contract-normalized stable provider login identifiers without authentication secrets, reproducible on a new device without migrated local state. Only the derived value enters the canonical model; the lack of a portable secret leaves an accepted first-version residual risk of offline guessing or cross-store correlation.
+_Avoid_: Random installation ID, password fingerprint, task-run ID, unversioned plain hash
 
 **Source sync state**:
 Opaque committed continuation and health state scoped to a source connection, product stream, and optional financial account when required by the provider. A cursor is operational state rather than financial evidence and advances in the same Canonical Financial Commit as the complete accepted Capture it covers; an integration whose source contract has no continuation state leaves it absent rather than inventing a collection-time watermark.
@@ -471,8 +479,52 @@ An optional, non-independent extension of a financial transaction belonging to a
 _Avoid_: Credit card transaction entity, statement line, financial transaction
 
 **Transaction relation**:
-An optional, provenance-bearing, immutable typed relationship between two non-identical Financial Transactions within one contract-provable Source Connection and Identity Epoch, initially typed as `pending_to_posted`, `refund_of`, `reversal_of`, `transfer_counterpart`, or `installment_of`. Its endpoints and type are created only from explicit source evidence or a validated uniquely deterministic integration contract and never change in place; withdrawal and restoration affect its Assertion support. Users cannot establish financial relations; unsupported optional relations are absent, and admitted relations never merge or delete transactions, impose a global one-to-one constraint, or invent amount allocations.
-_Avoid_: Transaction identity merge, user financial assertion, ambiguous match
+An optional, provenance-bearing, immutable typed relationship between two non-identical Financial Transactions within one contract-provable Source Connection, with each endpoint valid in its own Identity Epoch; the endpoint epochs need not be equal, and the relation never reconciles or merges their identities. Its endpoints and type are created only from explicit source evidence or a validated uniquely deterministic integration contract and never change in place; withdrawal and restoration affect its Assertion support. Users cannot establish financial relations; unsupported optional relations are absent, and admitted relations never merge or delete transactions, impose a global one-to-one constraint, or invent amount allocations.
+_Avoid_: Transaction identity merge, cross-epoch identity reconciliation, user financial assertion, ambiguous match
+
+**Transaction counterparty account evidence**:
+Source-backed evidence that a Financial Transaction names a payer, payee, collection, or other participant account distinct from its own Financial Account. Its transaction role is `originator` or `beneficiary`; an evidence-supported `loan_repayment` purpose is independent of its optional `loan_contract` or `shared_collection` scope. When the Institution supplies a complete account value, the local canonical evidence retains the exact source value, its contract-normalized value, a comparison digest, Institution code, roles, and lineage; a masked value does not establish exact account identity and remains a contract gap requiring an explicit decision before implementation continues.
+_Avoid_: Transfer-from field, transfer-to field, inferred full account, masked-account identity
+
+**Verified repayment destination**:
+A source-evidenced destination account or collection account that the Institution accepts for loan repayment. It may identify one loan or be shared by several loans, so it establishes repayment purpose but identifies a specific loan only when the source contract proves that narrower scope.
+_Avoid_: Assumed destination, always-loan-exclusive account, free-text account hint
+
+**Repayment mandate evidence**:
+Source-backed evidence that a funding Financial Account is authorized to pay one or more loans or Verified Repayment Destinations. The mandate establishes an account relationship rather than proving every outflow; an individual repayment requires a contract-supported Institution-generated note or transaction code, and a multi-loan mandate resolves to exact relations or a Loan Repayment Settlement Group from the complete history without arbitrary pairing.
+_Avoid_: Every-outflow repayment inference, transaction relation by current setting alone, user-entered purpose
+
+**Repayment mandate validity**:
+The source-evidenced interval during which Repayment Mandate Evidence may support repayment resolution. Source-provided effective and end dates define the interval; a current-state page without those dates proves validity only at its observation time and is never applied retroactively by itself. Repeated observations may establish only their observed continuity, while older transactions require their own contract-supported Institution-generated transaction note or code and the applicable date-and-amount contract.
+_Avoid_: Retroactive current-setting inference, unobserved continuous mandate, timeless mandate snapshot
+
+**Loan repayment settlement group**:
+A provenance-bearing relationship grouping one or more depository outflow Financial Transactions with one or more loan-payment Financial Transactions when verified repayment evidence establishes their collective settlement but cannot establish arbitrary one-to-one endpoint pairings. Principal, interest, and fee amounts attached to a loan transaction may participate in reconciliation but are never group members or relation endpoints. The group preserves known transaction membership and total without inventing allocation, ordering, or pairwise precision; an exact Transaction Relation is used when the source evidence can identify both transaction endpoints.
+_Avoid_: Amount-component endpoint, arbitrary pairwise match, transaction merge, inferred allocation
+
+**Loan repayment relation evidence**:
+The evidence hierarchy by which an Institution-provided transaction identifier, authorization identifier, or explicit cross-reference that binds both transaction endpoints admits an exact relation without requiring complete surrounding history. A Verified Repayment Destination establishes repayment purpose but does not by itself identify a transaction pair; it requires sufficient captured coverage to resolve exact endpoints or collective settlement membership. Only when no repayment destination is obtainable may a Human-attestation contract use the combination of date, amount, and a live-verified stable Institution-generated loan-note pattern. Date and amount alone produce neither a canonical relation nor a retained match candidate; a unique supported mapping admits an exact relation, while collectively established but pairwise-indistinguishable membership uses a Loan Repayment Settlement Group rather than an arbitrary pairing.
+_Avoid_: Date-and-amount candidate, user-authored note, generic cross-Institution keyword, arbitrary unique match
+
+**Loan repayment date contract**:
+The Institution- and page-specific mapping, verified from live behavior and sanitized fixtures, that declares which depository accounting or transaction date may be compared with which loan transaction or posting date and what settlement lag that source evidence supports. Complete retained history may be inspected to discover lag behavior, but no universal same-day or plus-or-minus-two-day window authorizes admission across Institutions.
+_Avoid_: Universal date window, collection-time proximity, unexplained nearest-date match
+
+**Loan repayment amount reconciliation**:
+The evidence-preserving comparison of depository outflows with loan-payment amounts or component totals after repayment-purpose account evidence has established eligible membership. Amount equality is not a prerequisite when stronger account or transaction linkage identifies the relationship; any difference remains unexplained unless source conversion, fee, or allocation evidence establishes its meaning, while the no-account fixed-note fallback requires its contract-defined exact same-currency amount rule.
+_Avoid_: Amount-only match, unexplained fee inference, invented allocation, silent FX assumption
+
+**Loan repayment relation resolution**:
+The repeatable canonical processing that runs after any relevant depository or loan Capture commits, evaluates the complete retained history of that Source Connection, and admits supported exact relations or Loan Repayment Settlement Groups without duplicating their endpoint Transactions. It is independent of an all-statements task-run boundary, so a later standalone Capture may complete relationships against earlier canonical history.
+_Avoid_: Same-run-only matching, duplicate counterpart transaction, task-run relation identity
+
+**Loan repayment relation lifecycle**:
+The append-only support history through which a later successful complete Relation Resolution may supersede a current Loan Repayment Settlement Group or exact Transaction Relation with a better-supported exact relation or group without rewriting or deleting the earlier judgment. Newly available bounded history may therefore change the current projection while preserving the prior result and provenance for audit. An unchanged result adds provenance rather than another relationship, while a failed resolution changes neither existing support nor the current projection.
+_Avoid_: In-place relation rewrite, historical judgment deletion, duplicate unchanged relation, failure withdrawal
+
+**Loan repayment relation completeness**:
+The bounded-completeness requirement that every Capture and Relation Resolution scope whose output relies on matching, uniqueness, or collective membership has contract-proven complete coverage for the Institution-visible interval: the available, requested, and actually completed ranges plus successful pagination are recorded without claiming lifetime history. An Institution-provided identifier or explicit cross-reference that directly binds both transaction endpoints may establish their exact relation without complete surrounding history; a repayment destination, note, date, or amount that still requires endpoint inference may not. Account-backed resolution searches all retained history without a fixed day window, but missing pages or incomplete required overlap prevent a uniqueness claim. A failed component, incomplete page range, missing transaction, or partial all-statements result never proves that a prior relationship is absent and changes no current relationship; withdrawal requires explicit source lifecycle evidence, endpoint withdrawal, Contract Purge, or stronger replacement evidence from a successful complete resolution.
+_Avoid_: Lifetime-completeness claim, missing-as-unrelated, partial-run withdrawal, failed-component empty result
 
 **Pending-to-posted transaction relation**:
 A directed `pending_to_posted` Transaction Relation from a separate pending Financial Transaction to its posted Financial Transaction when explicit source linkage or a validated, versioned source-specific contract establishes the pairing. Each transaction retains its identity and evidence, an unmatched pending transaction remains independent, and similarity alone establishes no relation, revision, merge, or reason to delete the pending transaction.
@@ -487,8 +539,8 @@ A `reversal_of` Transaction Relation from a separately booked compensating trans
 _Avoid_: Refund, cancellation, source withdrawal, fuzzy confirmed relation
 
 **Transfer-counterpart transaction relation**:
-A semantically symmetric `transfer_counterpart` Transaction Relation connecting the separate account-side Financial Transactions of one movement between Financial Accounts, never merging them or treating physical endpoint ordering as money direction. A pair involving a `credit / credit_card` account is interpreted as a credit-card payment from account types and transaction directions rather than a separate relation type; a source-reported payment with no observed other side remains a source fact.
-_Avoid_: Cross-account transaction merge, transfer deduplication, credit-card-payment relation type, inferred missing counterpart
+A semantically symmetric `transfer_counterpart` Transaction Relation connecting the separate account-side Financial Transactions of one movement between Financial Accounts, never merging them or treating physical endpoint ordering as money direction. A pair involving a `credit / credit_card` or `loan` account is interpreted as a credit-card or loan payment from account types, transaction directions, Transaction Kind, and source evidence rather than a product-specific exact-relation type; pairwise-indistinguishable loan repayment membership uses a Loan Repayment Settlement Group. A source-reported payment with no observed other side remains a source fact.
+_Avoid_: Cross-account transaction merge, transfer deduplication, credit-card-payment relation type, loan-payment exact-relation type, inferred missing counterpart
 
 **Installment transaction relation**:
 A directed `installment_of` Transaction Relation from a Financial Transaction representing an installment to an evidence-backed original Financial Transaction. A source-reported installment sequence or plan detail without an observed original transaction remains Credit Card Transaction Detail rather than causing OctopusBeak to invent the missing transaction or relation.

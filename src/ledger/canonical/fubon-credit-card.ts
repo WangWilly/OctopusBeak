@@ -1326,10 +1326,11 @@ function fubonCanonicalSpineCapture(
     contractVersion: capture.contractVersion,
     identity: {
       integrationNamespace: "fubon",
-      sourceConnectionKey: opaqueFubonSpineToken(
-        "fubon-credit-connection-v2",
-        capture.identity.sourceConnectionKey,
-      ),
+      // The caller already supplies the stable, product-independent Source
+      // Connection identity. Keep product-specific domain separation on the
+      // credit-card account/epoch fields below, but never fork the shared
+      // connection key at this persistence seam.
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
       identityEpochKey: opaqueFubonSpineToken(
         "fubon-credit-epoch-v2",
         capture.identity.identityEpochKey,

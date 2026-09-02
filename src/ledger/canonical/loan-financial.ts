@@ -13,6 +13,7 @@ import {
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
 export type LoanSourceId = "fubon" | "yuanta";
 
@@ -447,7 +448,36 @@ export type LoanBalanceObservation = LoanBalanceObservationInput & {
   observedAt: string;
 };
 
-export type LoanTransferRelation = LoanTransferRelationInput & {
+export type LoanTransferRelationSupportKind =
+  | "explicit-source-linkage"
+  | "verified-repayment-destination"
+  | "fixed-institution-note"
+  | "legacy-unattributed";
+
+/**
+ * Legacy v9 relations predate the append-only relation-event stream. Query
+ * output must keep that missing attribution explicit rather than guessing the
+ * capture-time relation kind.
+ */
+export const LEGACY_UNATTRIBUTED_LOAN_RELATION_EVIDENCE_VERSION =
+  "loan-relation/legacy-unattributed/v1" as const;
+
+/**
+ * Query output reports the support that actually admitted the relation.  The
+ * capture input remains intentionally restricted to explicit source linkage,
+ * while resolver-created relations surface their account or fixed-note
+ * support here instead of being mislabeled as explicit links.
+ */
+export type LoanTransferRelationEvidence = Readonly<{
+  kind: LoanTransferRelationSupportKind;
+  sourceRecordKey: string;
+  relationId: string;
+  contractVersion: string;
+  evidenceVersion: string;
+}>;
+
+export type LoanTransferRelation = Omit<LoanTransferRelationInput, "evidence"> & {
+  evidence: LoanTransferRelationEvidence;
   accountId: string;
   commitSequence: number;
   fromTransactionId: string | null;
@@ -547,9 +577,11 @@ export function canonicalLoanSourceIdentity(
     );
 
   const identityNamespaceVersion = sourceId === "fubon" ? "v2" : "v1";
-  const sourceConnectionKey = token(
+  // The source connection is a bank-login identity shared by all product
+  // streams.  Product/version names belong to the account/epoch contract and
+  // must not make deposit and loan captures look like different logins.
+  const sourceConnectionKey = deriveSourceConnectionIdentityKey(
     sourceId,
-    `loan-source-connection-${identityNamespaceVersion}`,
     connectionScope,
   );
   const identityEpochKey = token(
@@ -856,7 +888,6 @@ function validateRelation(
   accountKey: string,
   contractVersion: string,
   sourceConnectionKey: string,
-  identityEpochKey: string,
 ): void {
   requireOpaque(
     relation.fromSourceRecordKey,
@@ -902,11 +933,10 @@ function validateRelation(
   const counterpart = fromCounterpart ?? toCounterpart;
   if (
     !counterpart ||
-    counterpart.sourceConnectionKey !== sourceConnectionKey ||
-    counterpart.identityEpochKey !== identityEpochKey
+    counterpart.sourceConnectionKey !== sourceConnectionKey
   )
     throw new CanonicalLoanAdmissionError(
-      "Loan transfer relation endpoints must share one source connection and identity epoch source scope.",
+      "Loan transfer relation endpoints must share one source connection.",
     );
   if (
     relation.kind !== "transfer_counterpart" ||
@@ -1345,7 +1375,6 @@ function validateCapture(capture: LoanCaptureInput): void {
       identity.accountKey,
       contractVersion,
       identity.sourceConnectionKey,
-      identity.identityEpochKey,
     );
   const referencedCounterparts = new Set(
     capture.relations.flatMap((relation) =>
@@ -2130,6 +2159,8 @@ function refreshCurrentLoanBalanceProjection(
 type PersistedRelationEndpoint = {
   accountId: Uint8Array;
   transactionId: Uint8Array;
+  sourceConnectionId: Uint8Array;
+  identityEpochId: Uint8Array;
   accountKey: string;
   sourceRecordKey: string;
   direction: "inflow" | "outflow";
@@ -2146,16 +2177,16 @@ function canonicalRelationEndpoints(
 
 function canonicalRelationKey(
   sourceConnectionId: Uint8Array,
-  identityEpochId: Uint8Array,
   from: PersistedRelationEndpoint,
   to: PersistedRelationEndpoint,
 ): string {
   return [
-    "loan-relation-v9",
+    "loan-relation-v11",
     Buffer.from(sourceConnectionId).toString("hex"),
-    Buffer.from(identityEpochId).toString("hex"),
+    Buffer.from(from.identityEpochId).toString("hex"),
     Buffer.from(from.accountId).toString("hex"),
     Buffer.from(from.transactionId).toString("hex"),
+    Buffer.from(to.identityEpochId).toString("hex"),
     Buffer.from(to.accountId).toString("hex"),
     Buffer.from(to.transactionId).toString("hex"),
   ].join(":");
@@ -2294,8 +2325,33 @@ function persistLoanExtensions(
     );
   const transactionIds = new Map<
     string,
-    { accountId: Uint8Array; transactionId: Uint8Array }
+    {
+      accountId: Uint8Array;
+      transactionId: Uint8Array;
+      sourceConnectionId: Uint8Array;
+      identityEpochId: Uint8Array;
+    }
   >();
+  const persistedAccountScope = (accountId: Uint8Array) => {
+    const scope = db
+      .prepare(
+        `SELECT source_connection_id, identity_epoch_id
+           FROM loan_account_identities WHERE account_id = ?`,
+      )
+      .get(accountId) as Record<string, unknown> | undefined;
+    if (
+      !(scope?.source_connection_id instanceof Uint8Array) ||
+      !(scope.identity_epoch_id instanceof Uint8Array)
+    )
+      throw new CanonicalLoanConflictError(
+        "Loan relation endpoint source scope is missing.",
+      );
+    return {
+      sourceConnectionId: scope.source_connection_id,
+      identityEpochId: scope.identity_epoch_id,
+    };
+  };
+  const loanScope = persistedAccountScope(context.accountId);
   for (const record of capture.records)
     transactionIds.set(record.sourceRecordKey, {
       accountId: context.accountId,
@@ -2304,6 +2360,7 @@ function persistLoanExtensions(
         context.accountId,
         record.sourceRecordKey,
       ),
+      ...loanScope,
     });
   for (const counterpart of counterpartCaptures) {
     const counterpartContext = sourceCaptureContext(db, counterpart.captureId);
@@ -2314,6 +2371,7 @@ function persistLoanExtensions(
         counterpartContext.accountId,
         counterpart.sourceRecordKey,
       ),
+      ...persistedAccountScope(counterpartContext.accountId),
     });
   }
   for (const relation of capture.relations) {
@@ -2323,17 +2381,6 @@ function persistLoanExtensions(
       throw new CanonicalLoanConflictError(
         "Loan relation endpoints must be persisted transactions.",
       );
-    const scope = db
-      .prepare(
-        `SELECT source_connection_id, identity_epoch_id
-         FROM loan_account_identities WHERE account_id = ?`,
-      )
-      .get(context.accountId) as Record<string, unknown> | undefined;
-    if (
-      !(scope?.source_connection_id instanceof Uint8Array) ||
-      !(scope.identity_epoch_id instanceof Uint8Array)
-    )
-      throw new CanonicalLoanConflictError("Loan relation source scope is missing.");
     const [from, to] = canonicalRelationEndpoints(
       {
         ...fromTransaction,
@@ -2349,11 +2396,21 @@ function persistLoanExtensions(
       },
     );
     const relationKey = canonicalRelationKey(
-      scope.source_connection_id,
-      scope.identity_epoch_id,
+      loanScope.sourceConnectionId,
       from,
       to,
     );
+    if (
+      !Buffer.from(from.sourceConnectionId).equals(
+        Buffer.from(loanScope.sourceConnectionId),
+      ) ||
+      !Buffer.from(to.sourceConnectionId).equals(
+        Buffer.from(loanScope.sourceConnectionId),
+      )
+    )
+      throw new CanonicalLoanConflictError(
+        "Loan relation endpoints must share one persisted source connection.",
+      );
     const existing = db
       .prepare(
         `SELECT relation_id, from_account_id, to_account_id,
@@ -2386,16 +2443,19 @@ function persistLoanExtensions(
       db.prepare(
         `INSERT INTO transaction_relations(
           relation_id, account_id, source_connection_id, identity_epoch_id,
+          from_identity_epoch_id, to_identity_epoch_id,
           commit_id, relation_key, relation_kind,
           from_source_record_key, to_source_record_key, from_direction, to_direction,
           from_account_id, to_account_id, from_transaction_id, to_transaction_id,
           evidence_source_record_key, evidence_relation_id, evidence_contract_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         relationId,
         context.accountId,
-        scope.source_connection_id,
-        scope.identity_epoch_id,
+        loanScope.sourceConnectionId,
+        loanScope.identityEpochId,
+        from.identityEpochId,
+        to.identityEpochId,
         context.commitId,
         relationKey,
         relation.kind,
@@ -2493,7 +2553,13 @@ function latestCommitSequence(db: DatabaseSync): number {
 function currentProjectionSequence(db: DatabaseSync): number {
   const row = db
     .prepare(
-      `SELECT generation.build_cutoff_commit_sequence AS commit_sequence
+      `SELECT MAX(
+         generation.build_cutoff_commit_sequence,
+         COALESCE((
+           SELECT MAX(commit_sequence) FROM canonical_commits
+            WHERE commit_kind = 'relation_resolution'
+         ), 0)
+       ) AS commit_sequence
        FROM active_projection_generation active
        JOIN projection_generations generation
          ON generation.generation_id = active.generation_id
@@ -2971,25 +3037,23 @@ function relationRows(
     sourceId ?? null,
   ];
   if (financialAt) {
-    clauses.push(`COALESCE(
-      (SELECT MAX(from_revision.effective_on)
+    clauses.push(`(SELECT MAX(from_revision.effective_on)
        FROM financial_transactions from_transaction
        JOIN transaction_revisions from_revision
          ON from_revision.transaction_id = from_transaction.transaction_id
        JOIN canonical_commits from_commit
          ON from_commit.commit_id = from_revision.commit_id
        WHERE from_transaction.transaction_id = relation.from_transaction_id
-         AND from_commit.commit_sequence <= ?),
-      (SELECT MAX(to_revision.effective_on)
+         AND from_commit.commit_sequence <= ?) <= ?
+      AND (SELECT MAX(to_revision.effective_on)
        FROM financial_transactions to_transaction
        JOIN transaction_revisions to_revision
          ON to_revision.transaction_id = to_transaction.transaction_id
        JOIN canonical_commits to_commit
          ON to_commit.commit_id = to_revision.commit_id
        WHERE to_transaction.transaction_id = relation.to_transaction_id
-         AND to_commit.commit_sequence <= ?)
-    ) <= ?`);
-    params.push(knowledgeAt, knowledgeAt, financialAt);
+         AND to_commit.commit_sequence <= ?) <= ?`);
+    params.push(knowledgeAt, financialAt, knowledgeAt, financialAt);
   }
   const visibleRoute = canonicalLoanRoutePredicate("relation_capture", sourceId);
   clauses.push(`EXISTS (
@@ -3013,7 +3077,7 @@ function relationRows(
     : "";
   const rows = db
     .prepare(
-      `SELECT relation.relation_kind, relation.from_source_record_key,
+      `SELECT relation.relation_id, relation.relation_kind, relation.from_source_record_key,
               relation.to_source_record_key, relation.from_direction,
               relation.to_direction, relation.evidence_source_record_key,
               relation.evidence_relation_id, relation.evidence_contract_version,
@@ -3044,31 +3108,79 @@ function relationRows(
        ORDER BY connection.integration_namespace, commit_row.commit_sequence, relation.relation_key`,
     )
     .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    kind: "transfer_counterpart",
-    fromSourceRecordKey: String(row.from_source_record_key),
-    toSourceRecordKey: String(row.to_source_record_key),
-    fromAccountKey: String(row.from_account_key),
-    toAccountKey: String(row.to_account_key),
-    fromDirection: String(row.from_direction) as "inflow" | "outflow",
-    toDirection: String(row.to_direction) as "inflow" | "outflow",
-    evidence: {
-      kind: "explicit-source-linkage",
-      sourceRecordKey: String(row.evidence_source_record_key),
-      relationId: String(row.evidence_relation_id),
-      contractVersion: String(row.evidence_contract_version),
-    },
-    accountId: binaryId(row.account_id),
-    commitSequence: Number(row.commit_sequence),
-    fromTransactionId:
-      row.from_transaction_id instanceof Uint8Array
-        ? binaryId(row.from_transaction_id)
-        : null,
-    toTransactionId:
-      row.to_transaction_id instanceof Uint8Array
-        ? binaryId(row.to_transaction_id)
-        : null,
-  }));
+  const supportEvent = db.prepare(
+    `SELECT event.support_kind, event.evidence_json
+     FROM loan_repayment_relation_events event
+     JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+     WHERE event.relation_id = ?
+       AND event.event_kind = 'observed'
+       AND event_commit.commit_sequence <= ?
+     ORDER BY event_commit.commit_sequence DESC, event.event_id DESC
+     LIMIT 1`,
+  );
+  const superseded = db.prepare(
+    `SELECT 1
+     FROM loan_repayment_relation_events event
+     JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+     WHERE event.relation_id = ?
+       AND event.event_kind IN ('superseded', 'withdrawn')
+       AND event_commit.commit_sequence <= ?
+     LIMIT 1`,
+  );
+  return rows.flatMap((row) => {
+    const relationId = row.relation_id;
+    if (!(relationId instanceof Uint8Array))
+      throw new CanonicalLoanConflictError(
+        "Canonical loan relation ID is missing from the relation projection.",
+      );
+    // Current projection membership already excludes superseded relations;
+    // historical queries must apply the append-only lifecycle at their own
+    // knowledge cutoff as well.
+    if (!currentOnly && superseded.get(relationId, knowledgeAt)) return [];
+    const event = supportEvent.get(relationId, knowledgeAt) as
+      | { support_kind?: unknown; evidence_json?: unknown }
+      | undefined;
+    const eventEvidence = parseCompact(event?.evidence_json);
+    const supportKind: LoanTransferRelationSupportKind =
+      event?.support_kind === "verified-repayment-destination" ||
+      event?.support_kind === "fixed-institution-note" ||
+      event?.support_kind === "explicit-source-linkage"
+        ? event.support_kind
+        : "legacy-unattributed";
+    const evidenceVersion =
+      supportKind === "legacy-unattributed"
+        ? LEGACY_UNATTRIBUTED_LOAN_RELATION_EVIDENCE_VERSION
+        : typeof eventEvidence.evidenceVersion === "string" &&
+            eventEvidence.evidenceVersion.trim() !== ""
+          ? eventEvidence.evidenceVersion
+          : String(row.evidence_contract_version);
+    return [{
+      kind: "transfer_counterpart",
+      fromSourceRecordKey: String(row.from_source_record_key),
+      toSourceRecordKey: String(row.to_source_record_key),
+      fromAccountKey: String(row.from_account_key),
+      toAccountKey: String(row.to_account_key),
+      fromDirection: String(row.from_direction) as "inflow" | "outflow",
+      toDirection: String(row.to_direction) as "inflow" | "outflow",
+      evidence: {
+        kind: supportKind,
+        sourceRecordKey: String(row.evidence_source_record_key),
+        relationId: String(row.evidence_relation_id),
+        contractVersion: String(row.evidence_contract_version),
+        evidenceVersion,
+      },
+      accountId: binaryId(row.account_id),
+      commitSequence: Number(row.commit_sequence),
+      fromTransactionId:
+        row.from_transaction_id instanceof Uint8Array
+          ? binaryId(row.from_transaction_id)
+          : null,
+      toTransactionId:
+        row.to_transaction_id instanceof Uint8Array
+          ? binaryId(row.to_transaction_id)
+          : null,
+    } satisfies LoanTransferRelation];
+  });
 }
 
 function lineageRows(
@@ -3479,3 +3591,5 @@ export function advertisedLoanSourceIds(
     );
   return ids as LoanSourceId[];
 }
+
+export * from "./loan-repayment-relations.ts";
