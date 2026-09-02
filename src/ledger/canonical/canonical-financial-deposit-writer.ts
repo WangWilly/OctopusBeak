@@ -177,11 +177,17 @@ function validateDate(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
     throw new Error(`${label} must be YYYY-MM-DD.`);
   const parsed = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== value
+  )
     throw new Error(`${label} must be a valid calendar date.`);
 }
 
-function validateAmount(value: unknown, label: string): asserts value is FinancialDepositAmount {
+function validateAmount(
+  value: unknown,
+  label: string,
+): asserts value is FinancialDepositAmount {
   if (
     value === null ||
     typeof value !== "object" ||
@@ -192,10 +198,15 @@ function validateAmount(value: unknown, label: string): asserts value is Financi
     !Number.isSafeInteger(value.scale) ||
     Number(value.scale) < 0
   )
-    throw new Error(`${label} must be an exact non-negative coefficient/scale amount.`);
+    throw new Error(
+      `${label} must be an exact non-negative coefficient/scale amount.`,
+    );
 }
 
-function validateCurrency(value: unknown, label: string): asserts value is string {
+function validateCurrency(
+  value: unknown,
+  label: string,
+): asserts value is string {
   if (
     typeof value !== "string" ||
     !/^[A-Z]{3}$/.test(value) ||
@@ -216,27 +227,54 @@ function validateSourceTime(
     throw new Error("Financial record source time is invalid.");
   if (value.timeZone !== "Asia/Taipei")
     throw new Error("Financial record time zone must be Asia/Taipei.");
-  if (value.precision !== "date" && value.precision !== "minute" && value.precision !== "second")
+  if (
+    value.precision !== "date" &&
+    value.precision !== "minute" &&
+    value.precision !== "second"
+  )
     throw new Error("Financial record time precision is invalid.");
-  if (value.timeOrigin !== "source_reported" && value.timeOrigin !== "defaulted_local_midnight")
+  if (
+    value.timeOrigin !== "source_reported" &&
+    value.timeOrigin !== "defaulted_local_midnight"
+  )
     throw new Error("Financial record time origin is invalid.");
-  if (value.precision !== "date" && value.timeOrigin === "defaulted_local_midnight")
+  if (
+    value.precision !== "date" &&
+    value.timeOrigin === "defaulted_local_midnight"
+  )
     throw new Error("Only date precision may default to local midnight.");
-  if (value.precision === "date" && value.timeOrigin !== "defaulted_local_midnight")
-    throw new Error("Date precision must use the defaulted local midnight time origin.");
-  const expectedEpoch = Date.parse(`${value.localDate}T${value.localTime}+08:00`);
-  if (!Number.isSafeInteger(value.epochMilliseconds) || value.epochMilliseconds !== expectedEpoch)
-    throw new Error("Financial record source instant does not match its local time evidence.");
+  if (
+    value.precision === "date" &&
+    value.timeOrigin !== "defaulted_local_midnight"
+  )
+    throw new Error(
+      "Date precision must use the defaulted local midnight time origin.",
+    );
+  const expectedEpoch = Date.parse(
+    `${value.localDate}T${value.localTime}+08:00`,
+  );
+  if (
+    !Number.isSafeInteger(value.epochMilliseconds) ||
+    value.epochMilliseconds !== expectedEpoch
+  )
+    throw new Error(
+      "Financial record source instant does not match its local time evidence.",
+    );
   if (record.effectiveOn !== value.localDate)
-    throw new Error("Financial record effective date does not match source time.");
-  if (record.transactionDateTimeLocal !== `${value.localDate}T${value.localTime}`)
-    throw new Error("Financial record local timestamp does not match source time.");
+    throw new Error(
+      "Financial record effective date does not match source time.",
+    );
+  if (
+    record.transactionDateTimeLocal !== `${value.localDate}T${value.localTime}`
+  )
+    throw new Error(
+      "Financial record local timestamp does not match source time.",
+    );
 }
 
 function validateCapture(capture: CanonicalFinancialDepositCapture): void {
-  const isForeignCurrencyCapture = capture.authorityRoute.includes(
-    "/foreign-currency/",
-  );
+  const isForeignCurrencyCapture =
+    capture.authorityRoute.includes("/foreign-currency/");
   const isFubonCreditCardCapture =
     capture.authorityRoute === "fubon/credit-card/human-attested-v1" ||
     capture.authorityRoute === "fubon/credit-card/human-attested-v2";
@@ -268,7 +306,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   if (!capture.identity.accountType.trim())
     throw new Error("Financial account type is required.");
   if (capture.identity.currency === "MULTI")
-    throw new Error("Financial account currency cannot use the MULTI sentinel.");
+    throw new Error(
+      "Financial account currency cannot use the MULTI sentinel.",
+    );
   const routeRules: Record<
     string,
     {
@@ -294,6 +334,46 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       absenceAuthorityOnlyWhenEmpty?: boolean;
     }
   > = {
+    "yuanta-fund/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-fund/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "yuanta-fund/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-fund",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "yuanta-fund/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta-trade/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-trade/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "yuanta-trade/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-trade",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "yuanta-trade/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
     "cathay/domestic-deposit/v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "query-status-success-with-accounting-date",
@@ -731,7 +811,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       mismatches.push("completeness basis");
     if (
       routeRule.completenessRuleVersion !== undefined &&
-      capture.scope.completenessRuleVersion !== routeRule.completenessRuleVersion
+      capture.scope.completenessRuleVersion !==
+        routeRule.completenessRuleVersion
     )
       mismatches.push("completeness rule version");
     if (routeRule.absenceAuthority !== undefined) {
@@ -778,11 +859,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         `Financial capture does not match the ${capture.authorityRoute} route profile: ${mismatches.join(", ")}.`,
       );
   }
-  if (
-    isForeignCurrencyCapture &&
-    capture.identity.accountType !== "depository"
-  )
-    throw new Error("Foreign-currency deposit account type must be depository.");
+  if (isForeignCurrencyCapture && capture.identity.accountType !== "depository")
+    throw new Error(
+      "Foreign-currency deposit account type must be depository.",
+    );
   if (
     capture.scope.withdrawalPolicy !== undefined &&
     capture.scope.withdrawalPolicy !== "allow-inference" &&
@@ -798,7 +878,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     if (page.pageOrdinal < 0 || page.pageOrdinal >= capture.scope.pageCount)
       throw new Error("Capture page ordinal is invalid.");
     if (isForeignCurrencyCapture && page.pageOrdinal !== pageIndex)
-      throw new Error("Foreign capture page ordinals must be contiguous from zero.");
+      throw new Error(
+        "Foreign capture page ordinals must be contiguous from zero.",
+      );
     if (isHumanAttestedCreditCardCapture && page.pageOrdinal !== pageIndex)
       throw new Error(
         "Human-attested credit-card grid ordinals must be contiguous from zero.",
@@ -809,16 +891,22 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     if (page.terminal) {
       terminalPageCount += 1;
       if (isForeignCurrencyCapture && pageIndex !== capture.pages.length - 1)
-        throw new Error("Foreign capture cannot contain pages after its terminal page.");
+        throw new Error(
+          "Foreign capture cannot contain pages after its terminal page.",
+        );
     }
   }
   if (
     isForeignCurrencyCapture &&
     (terminalPageCount !== 1 || !capture.pages.at(-1)?.terminal)
   )
-    throw new Error("Foreign complete-range capture requires exactly one final terminal page.");
+    throw new Error(
+      "Foreign complete-range capture requires exactly one final terminal page.",
+    );
   if (isForeignCurrencyCapture && capturedRowCount !== capture.records.length)
-    throw new Error("Foreign capture page row count does not match admitted records.");
+    throw new Error(
+      "Foreign capture page row count does not match admitted records.",
+    );
   if (
     isFubonCreditCardCapture &&
     (capture.pages.length !== 7 ||
@@ -871,7 +959,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     } else {
       validateOpaque(record.providerKey, "Provider key");
       if (record.humanAttestedOccurrenceKey !== undefined)
-        throw new Error("Human-attested occurrence identity is only valid for its exact route.");
+        throw new Error(
+          "Human-attested occurrence identity is only valid for its exact route.",
+        );
     }
     validateOpaque(record.contentHash, "Content hash");
     if (occurrences.has(record.occurrenceKey))
@@ -891,13 +981,17 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       validateAmount(record.balanceAfter, "Financial balance amount");
     validateCurrency(record.currency, "Financial transaction currency");
     if (record.direction !== "inflow" && record.direction !== "outflow")
-      throw new Error("Financial transaction direction must be inflow or outflow.");
+      throw new Error(
+        "Financial transaction direction must be inflow or outflow.",
+      );
     if (isForeignCurrencyCapture) {
       const expectedContentHash = `sha256:${createHash("sha256")
         .update(record.compactJson)
         .digest("base64url")}`;
       if (record.contentHash !== expectedContentHash)
-        throw new Error("Foreign financial content hash does not match its compact source payload.");
+        throw new Error(
+          "Foreign financial content hash does not match its compact source payload.",
+        );
       let compact: Record<string, unknown>;
       try {
         compact = JSON.parse(record.compactJson) as Record<string, unknown>;
@@ -908,9 +1002,12 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         compact.direction !== record.direction ||
         compact.currency !== record.currency ||
         JSON.stringify(compact.amount) !== JSON.stringify(record.amount) ||
-        JSON.stringify(compact.balanceAfter) !== JSON.stringify(record.balanceAfter)
+        JSON.stringify(compact.balanceAfter) !==
+          JSON.stringify(record.balanceAfter)
       )
-        throw new Error("Foreign compact source payload does not match canonical financial facts.");
+        throw new Error(
+          "Foreign compact source payload does not match canonical financial facts.",
+        );
       validateSourceTime(record.sourceTime, record);
     }
     if (capture.semantics.requireBalance && record.balanceAfter === null)
@@ -922,15 +1019,25 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       if (conversion.originalAmount !== null)
         validateAmount(conversion.originalAmount, "Conversion original amount");
       if (conversion.originalCurrency !== null)
-        validateCurrency(conversion.originalCurrency, "Conversion original currency");
-      if ((conversion.originalAmount === null) !== (conversion.originalCurrency === null))
-        throw new Error("Conversion original amount and currency must be present together.");
+        validateCurrency(
+          conversion.originalCurrency,
+          "Conversion original currency",
+        );
+      if (
+        (conversion.originalAmount === null) !==
+        (conversion.originalCurrency === null)
+      )
+        throw new Error(
+          "Conversion original amount and currency must be present together.",
+        );
       if (conversion.feeAmount != null)
         validateAmount(conversion.feeAmount, "Conversion fee amount");
       if (conversion.feeCurrency != null)
         validateCurrency(conversion.feeCurrency, "Conversion fee currency");
       if ((conversion.feeAmount == null) !== (conversion.feeCurrency == null))
-        throw new Error("Conversion fee amount and currency must be present together.");
+        throw new Error(
+          "Conversion fee amount and currency must be present together.",
+        );
       for (const [label, candidate] of [
         ["source-reported", conversion.sourceReportedRate],
         ["implied", conversion.impliedRate],
@@ -938,7 +1045,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         if (!candidate) continue;
         validateAmount(candidate.amount, `${label} rate amount`);
         validateCurrency(candidate.baseCurrency, `${label} rate base currency`);
-        validateCurrency(candidate.quoteCurrency, `${label} rate quote currency`);
+        validateCurrency(
+          candidate.quoteCurrency,
+          `${label} rate quote currency`,
+        );
         if (candidate.observedOn != null)
           validateDate(candidate.observedOn, `${label} rate date`);
       }
@@ -949,8 +1059,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       )
         throw new Error("Conversion comparison is invalid.");
       if (
-        conversion.bookedAmount.coefficient !==
-          record.amount.coefficient ||
+        conversion.bookedAmount.coefficient !== record.amount.coefficient ||
         conversion.bookedAmount.scale !== record.amount.scale ||
         conversion.bookedCurrency !== record.currency
       )
@@ -1235,9 +1344,8 @@ function commitOnce(
       ) as
       | { account_id?: unknown; currency?: unknown; account_type?: unknown }
       | undefined;
-    const isForeignCurrencyRoute = capture.authorityRoute.includes(
-      "/foreign-currency/",
-    );
+    const isForeignCurrencyRoute =
+      capture.authorityRoute.includes("/foreign-currency/");
     if (
       existingAccount &&
       (existingAccount.account_type !== capture.identity.accountType ||
@@ -1413,12 +1521,13 @@ function commitOnce(
            ORDER BY revision.revision_number DESC LIMIT 1`,
         )
         .get(transactionId) as
-        {
-          revision_id?: unknown;
-          commit_id?: unknown;
-          revision_number?: unknown;
-          content_hash?: unknown;
-        } | undefined;
+        | {
+            revision_id?: unknown;
+            commit_id?: unknown;
+            revision_number?: unknown;
+            content_hash?: unknown;
+          }
+        | undefined;
       let revisionId: Uint8Array;
       let assertionId: Uint8Array;
       if (
@@ -1431,8 +1540,7 @@ function commitOnce(
               "SELECT assertion_id FROM assertions WHERE origin = 'source' AND revision_id = ?",
             )
             .get(existingRevision.revision_id as Uint8Array) as
-            | { assertion_id?: unknown }
-            | undefined;
+            { assertion_id?: unknown } | undefined;
           if (!priorAssertion)
             throw new Error("Canonical source assertion is missing.");
           insertLifecycle(db, {
@@ -1517,7 +1625,7 @@ function commitOnce(
               implied_rate_coefficient, implied_rate_scale, implied_rate_base_currency,
               implied_rate_quote_currency, implied_rate_date, comparison,
               fee_amount_coefficient, fee_amount_scale, fee_currency, evidence_origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             id(),
             transactionId,

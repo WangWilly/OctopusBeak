@@ -16,27 +16,44 @@ export type AdvertisedInvestmentReadinessEntry = {
   transactionSemantics: "required-buy-sell-fail-closed";
   marginDebt: "independent-loan-or-margin-loan-observation";
   fundingRelation: "typed-evidence-reserved-no-inference";
-  contractComplete: true;
+  contractComplete: boolean;
   liveValidation: "pending" | "complete";
   blockers: readonly "human-assisted-live-validation-pending"[];
 };
 
-const manifests: Record<InvestmentSourceId, Omit<AdvertisedInvestmentReadinessEntry, "advertisedName">> = {
+const manifests: Record<
+  InvestmentSourceId,
+  Omit<AdvertisedInvestmentReadinessEntry, "advertisedName">
+> = {
   "yuanta-fund": {
-    sourceId: "yuanta-fund", statementType: "fund", workflow: "yuantaFundStatements",
+    sourceId: "yuanta-fund",
+    statementType: "fund",
+    workflow: "yuantaFundStatements",
     authority: "yuanta-fund/investment/canonical-v1",
-    accountBoundary: "source-scoped-investment-account", securityIdentity: "producer-scoped-stable-key",
-    holdingMeasurement: "independent-effective-and-observation-time", transactionSemantics: "required-buy-sell-fail-closed",
-    marginDebt: "independent-loan-or-margin-loan-observation", fundingRelation: "typed-evidence-reserved-no-inference",
-    contractComplete: true, liveValidation: "pending", blockers: ["human-assisted-live-validation-pending"],
+    accountBoundary: "source-scoped-investment-account",
+    securityIdentity: "producer-scoped-stable-key",
+    holdingMeasurement: "independent-effective-and-observation-time",
+    transactionSemantics: "required-buy-sell-fail-closed",
+    marginDebt: "independent-loan-or-margin-loan-observation",
+    fundingRelation: "typed-evidence-reserved-no-inference",
+    contractComplete: false,
+    liveValidation: "pending",
+    blockers: ["human-assisted-live-validation-pending"],
   },
   "yuanta-trade": {
-    sourceId: "yuanta-trade", statementType: "brokerage", workflow: "yuantaTradeStatements",
+    sourceId: "yuanta-trade",
+    statementType: "brokerage",
+    workflow: "yuantaTradeStatements",
     authority: "yuanta-trade/investment/canonical-v1",
-    accountBoundary: "source-scoped-investment-account", securityIdentity: "producer-scoped-stable-key",
-    holdingMeasurement: "independent-effective-and-observation-time", transactionSemantics: "required-buy-sell-fail-closed",
-    marginDebt: "independent-loan-or-margin-loan-observation", fundingRelation: "typed-evidence-reserved-no-inference",
-    contractComplete: true, liveValidation: "pending", blockers: ["human-assisted-live-validation-pending"],
+    accountBoundary: "source-scoped-investment-account",
+    securityIdentity: "producer-scoped-stable-key",
+    holdingMeasurement: "independent-effective-and-observation-time",
+    transactionSemantics: "required-buy-sell-fail-closed",
+    marginDebt: "independent-loan-or-margin-loan-observation",
+    fundingRelation: "typed-evidence-reserved-no-inference",
+    contractComplete: false,
+    liveValidation: "pending",
+    blockers: ["human-assisted-live-validation-pending"],
   },
 };
 
@@ -44,16 +61,34 @@ function advertisedLabel(sourceId: InvestmentSourceId): string {
   const registryId = sourceId === "yuanta-fund" ? "yuanta" : "yuanta-trade";
   const statementType = sourceId === "yuanta-fund" ? "fund" : "brokerage";
   const group = BANK_STATEMENT_CAPABILITIES[registryId];
-  if (!group.statementTypes.some((entry) => entry.id === statementType)) throw new Error(`Investment source ${sourceId} is no longer advertised.`);
+  if (!group.statementTypes.some((entry) => entry.id === statementType))
+    throw new Error(`Investment source ${sourceId} is no longer advertised.`);
   return `${group.label} ${statementType}`;
 }
 
-export const ADVERTISED_INVESTMENT_READINESS: readonly AdvertisedInvestmentReadinessEntry[] = Object.freeze(
-  ADVERTISED_INVESTMENT_SOURCE_IDS.map((sourceId) => ({ ...manifests[sourceId], advertisedName: advertisedLabel(sourceId) })),
-);
+export const ADVERTISED_INVESTMENT_READINESS: readonly AdvertisedInvestmentReadinessEntry[] =
+  Object.freeze(
+    ADVERTISED_INVESTMENT_SOURCE_IDS.map((sourceId) => ({
+      ...manifests[sourceId],
+      advertisedName: advertisedLabel(sourceId),
+    })),
+  );
 
-export function evaluateAdvertisedInvestmentReadiness(entries = ADVERTISED_INVESTMENT_READINESS) {
-  const contractIncompleteSourceIds = entries.filter((entry) => !entry.contractComplete).map((entry) => entry.sourceId);
-  const pendingLiveValidationSourceIds = entries.filter((entry) => entry.liveValidation !== "complete").map((entry) => entry.sourceId);
-  return { status: pendingLiveValidationSourceIds.length ? "blocked" as const : "release-ready" as const, contractIncompleteSourceIds, pendingLiveValidationSourceIds, entries };
+export function evaluateAdvertisedInvestmentReadiness(
+  entries = ADVERTISED_INVESTMENT_READINESS,
+) {
+  const contractIncompleteSourceIds = entries
+    .filter((entry) => !entry.contractComplete)
+    .map((entry) => entry.sourceId);
+  const pendingLiveValidationSourceIds = entries
+    .filter((entry) => entry.liveValidation !== "complete")
+    .map((entry) => entry.sourceId);
+  return {
+    status: pendingLiveValidationSourceIds.length
+      ? ("blocked" as const)
+      : ("release-ready" as const),
+    contractIncompleteSourceIds,
+    pendingLiveValidationSourceIds,
+    entries,
+  };
 }

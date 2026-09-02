@@ -1049,8 +1049,7 @@ function sourceAssertionsSqlAlias(
   relation: string,
 ): string {
   const relationPattern = sourceAssertionsSqlIdentifierPattern(relation);
-  const identifierPattern =
-    `(?:"([^"]+)"|\\[([^\\]]+)\\]|([A-Za-z_][A-Za-z0-9_$]*))`;
+  const identifierPattern = `(?:"([^"]+)"|\\[([^\\]]+)\\]|([A-Za-z_][A-Za-z0-9_$]*))`;
   const match = sql.match(
     new RegExp(
       `\\b${keyword}\\s+(?:"${relationPattern}"|\\[${relationPattern}\\]|${relationPattern})(?:\\s+(?:AS\\s+)?${identifierPattern})?`,
@@ -1108,12 +1107,11 @@ function sourceAssertionsViewSqlHasSourceSemantics(sql: string): boolean {
     "assertions",
     "assertion_id",
   );
-  const provenanceSourceRecordId =
-    sourceAssertionsSqlQualifiedColumnPattern(
-      provenanceAlias,
-      "assertion_provenance",
-      "source_record_id",
-    );
+  const provenanceSourceRecordId = sourceAssertionsSqlQualifiedColumnPattern(
+    provenanceAlias,
+    "assertion_provenance",
+    "source_record_id",
+  );
   const provenanceAssertionLink = new RegExp(
     `(?:${provenanceAssertionId}\\s*=\\s*${assertionId}|${assertionId}\\s*=\\s*${provenanceAssertionId})`,
     "i",
@@ -1133,10 +1131,9 @@ function sourceAssertionsViewSqlHasSourceSemantics(sql: string): boolean {
     ).test(normalized) &&
     new RegExp(`${sourceOrigin}\\s*=\\s*'source'`, "i").test(normalized) &&
     provenanceAssertionLink.test(normalized) &&
-    new RegExp(
-      `${provenanceSourceRecordId}\\s+IS\\s+NOT\\s+NULL`,
-      "i",
-    ).test(normalized)
+    new RegExp(`${provenanceSourceRecordId}\\s+IS\\s+NOT\\s+NULL`, "i").test(
+      normalized,
+    )
   );
 }
 
@@ -1149,9 +1146,7 @@ function sourceAssertionsViewMatchesContract(db: DatabaseSync): boolean {
       SOURCE_ASSERTIONS_COMPATIBILITY_COLUMNS.join(",")
     )
       return false;
-    if (
-      !sourceAssertionsViewSqlHasSourceSemantics(sourceAssertionsViewSql(db))
-    )
+    if (!sourceAssertionsViewSqlHasSourceSemantics(sourceAssertionsViewSql(db)))
       return false;
     const actualCount = Number(
       (
@@ -1162,7 +1157,11 @@ function sourceAssertionsViewMatchesContract(db: DatabaseSync): boolean {
     );
     const expectedCount = Number(
       (
-        db.prepare(`SELECT COUNT(*) AS count FROM (${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT})`).get() as {
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM (${SOURCE_ASSERTIONS_COMPATIBILITY_SELECT})`,
+          )
+          .get() as {
           count?: number;
         }
       ).count ?? 0,
@@ -1237,7 +1236,8 @@ function legacySourceAssertionsTableMatchesContract(db: DatabaseSync): boolean {
       .all() as Array<{ integrity_check?: unknown }>;
     if (
       integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok") ||
-      db.prepare("PRAGMA foreign_key_check(source_assertions)").all().length !== 0
+      db.prepare("PRAGMA foreign_key_check(source_assertions)").all().length !==
+        0
     )
       return false;
     const invalidCount = Number(
@@ -2040,12 +2040,16 @@ function ensureV6SharedAssertionSpine(db: DatabaseSync): void {
   let sourceAssertionHasExpectedAuthority =
     sourceAssertionRelation === "view" &&
     sourceAssertionsViewMatchesContract(db);
-  if (sourceAssertionRelation === "view" && !sourceAssertionHasExpectedAuthority) {
+  if (
+    sourceAssertionRelation === "view" &&
+    !sourceAssertionHasExpectedAuthority
+  ) {
     // A compatibility view is derived state. Rebuild it before reading any
     // rows so a token-compatible but semantically broad view cannot promote
     // derived assertions or assertions without source provenance.
     rebuildCanonicalSourceAssertionsView(db);
-    sourceAssertionHasExpectedAuthority = sourceAssertionsViewMatchesContract(db);
+    sourceAssertionHasExpectedAuthority =
+      sourceAssertionsViewMatchesContract(db);
   }
   const sourceAssertionTableIsValid =
     sourceAssertionRelation === "table" &&
@@ -2821,6 +2825,7 @@ function validateCanonicalAuthorityRoutes(
           OR (capture.stream = 'credit-card' AND registered.stream = 'credit-card')
           OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
           OR (capture.stream = 'loan' AND registered.stream = 'loan')
+          OR (capture.stream = 'investment' AND registered.stream = 'investment')
           OR (capture.stream = 'domestic-deposit' AND registered.stream = 'domestic-deposit')
         )
         AND source_assertion.producer_id = capture.authority_route
@@ -2904,6 +2909,20 @@ function validateCanonicalAuthorityRoutes(
             AND registered.stream = 'credit-card'
             AND registered.integration_namespace = 'yuanta'
             AND registered.contract_version = 'yuanta/credit-card/human-attested-v2')
+          OR
+          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
+            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1'
+            AND capture.stream = 'investment'
+            AND registered.stream = 'investment'
+            AND registered.integration_namespace = 'yuanta-fund'
+            AND registered.contract_version = 'yuanta-fund/investment/canonical-v1')
+          OR
+          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
+            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1'
+            AND capture.stream = 'investment'
+            AND registered.stream = 'investment'
+            AND registered.integration_namespace = 'yuanta-trade'
+            AND registered.contract_version = 'yuanta-trade/investment/canonical-v1')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
@@ -3872,6 +3891,7 @@ function validateSelectedAssertionProvenance(
           OR capture.stream = 'credit-card'
           OR capture.stream = 'foreign-currency-deposit'
           OR capture.stream = 'loan'
+          OR capture.stream = 'investment'
           OR capture.stream = 'domestic-deposit'
         )
         AND (
@@ -3920,6 +3940,14 @@ function validateSelectedAssertionProvenance(
           (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
             AND capture.stream = 'credit-card'
             AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2')
+          OR
+          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
+            AND capture.stream = 'investment'
+            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1')
+          OR
+          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
+            AND capture.stream = 'investment'
+            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
@@ -5023,6 +5051,7 @@ function isCanonicalFinancialRevisionSchema(sql: string): boolean {
     /posting_rule_version LIKE 'fubon\/loan\/%'/.test(sql) &&
     /posting_rule_version LIKE 'yuanta\/loan\/%'/.test(sql) &&
     /posting_rule_version LIKE 'esun\/credit-card\/%'/.test(sql) &&
+    /posting_rule_version LIKE '%\/investment\/%'/.test(sql) &&
     /esun\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v1/.test(sql) &&
     /yuanta\/credit-card\/human-attested-v2/.test(sql) &&
@@ -5061,7 +5090,9 @@ function financialRevisionSchemaSql(
   return String(
     (
       db
-        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
         .get(table) as { sql?: unknown } | undefined
     )?.sql ?? "",
   );
@@ -5090,7 +5121,9 @@ function assertFinancialRevisionTableIntegrity(
     );
   if (
     requireCanonicalSchema &&
-    (!isCanonicalFinancialRevisionSchema(financialRevisionSchemaSql(db, table)) ||
+    (!isCanonicalFinancialRevisionSchema(
+      financialRevisionSchemaSql(db, table),
+    ) ||
       financialRevisionColumnNames(db, table).join(",") !==
         CANONICAL_FINANCIAL_REVISION_COLUMNS.join(","))
   )
@@ -5100,9 +5133,7 @@ function assertFinancialRevisionTableIntegrity(
   const integrityRows = db
     .prepare(`PRAGMA integrity_check(${table})`)
     .all() as Array<{ integrity_check?: unknown }>;
-  if (
-    integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok")
-  )
+  if (integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok"))
     throw new Error(
       `Canonical financial revision ${label} table failed integrity validation.`,
     );
@@ -5118,9 +5149,9 @@ function financialRevisionRowCount(
 ): number {
   return Number(
     (
-      db
-        .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
-        .get() as { count?: number }
+      db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+        count?: number;
+      }
     ).count ?? 0,
   );
 }
@@ -5271,15 +5302,15 @@ function ensureCanonicalFinancialRevisionSchema(db: DatabaseSync): void {
       posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
       posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
       posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%'),
+      posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%' OR posting_rule_version LIKE '%/investment/%'),
       description TEXT, economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
       administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%'),
+      semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%' OR semantic_rule_version LIKE '%/investment/%'),
       effective_on TEXT NOT NULL, transaction_date_time_local TEXT NOT NULL, time_zone TEXT NOT NULL,
       time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
       time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
       effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported')),
-      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%'),
+      effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%' OR effective_time_rule_version LIKE '%/investment/%'),
       utc_instant_utc_us INTEGER NOT NULL, UNIQUE(transaction_id, revision_number)
     );
     INSERT INTO transaction_revisions_widened(
@@ -6222,25 +6253,42 @@ export function validateCanonicalLoanRepaymentRelationSchema(
     "current_loan_repayment_settlement_groups",
   ]) {
     if (relationType(db, table) !== "table")
-      throw new Error(`Canonical schema v10 loan relation table ${table} is missing.`);
+      throw new Error(
+        `Canonical schema v10 loan relation table ${table} is missing.`,
+      );
   }
   if (relationType(db, "counterparty_account_evidence") !== "view")
-    throw new Error("Canonical schema v10 counterparty evidence view is missing.");
-  if (!columnExists(db, "institution_repayment_note_evidence", "date_contract_json"))
+    throw new Error(
+      "Canonical schema v10 counterparty evidence view is missing.",
+    );
+  if (
+    !columnExists(
+      db,
+      "institution_repayment_note_evidence",
+      "date_contract_json",
+    )
+  )
     throw new Error(
       "Canonical schema v10 Institution repayment note date contract payload is missing.",
     );
   for (const column of ["from_identity_epoch_id", "to_identity_epoch_id"])
     if (!columnExists(db, "transaction_relations", column))
-      throw new Error(`Canonical schema v10 relation column ${column} is missing.`);
+      throw new Error(
+        `Canonical schema v10 relation column ${column} is missing.`,
+      );
 }
 
 export function validateCanonicalLoanExtensionSchema(db: DatabaseSync): void {
   for (const table of [
-    "loan_account_identities", "loan_transaction_facts", "balance_observations",
-    "balance_observation_revisions", "transaction_relations",
-    "transaction_relation_provenance", "current_loan_accounts",
-    "current_loan_balance_observations", "current_loan_relations",
+    "loan_account_identities",
+    "loan_transaction_facts",
+    "balance_observations",
+    "balance_observation_revisions",
+    "transaction_relations",
+    "transaction_relation_provenance",
+    "current_loan_accounts",
+    "current_loan_balance_observations",
+    "current_loan_relations",
   ])
     if (relationType(db, table) !== "table")
       throw new Error(`Canonical schema v9 loan table ${table} is missing.`);
@@ -6260,19 +6308,26 @@ function normalizeLoanRelationsV9(db: DatabaseSync): void {
     to_source_record_key: string;
     to_direction: string;
   };
-  const rows = db.prepare("SELECT * FROM transaction_relations").all() as RelationRow[];
+  const rows = db
+    .prepare("SELECT * FROM transaction_relations")
+    .all() as RelationRow[];
   const groups = new Map<
     string,
     Array<{ row: RelationRow; from: "from" | "to" }>
   >();
   for (const row of rows) {
-    const fromKey = Buffer.concat([row.from_account_id, row.from_transaction_id]);
+    const fromKey = Buffer.concat([
+      row.from_account_id,
+      row.from_transaction_id,
+    ]);
     const toKey = Buffer.concat([row.to_account_id, row.to_transaction_id]);
     const from = Buffer.compare(fromKey, toKey) <= 0 ? "from" : "to";
-    const firstAccount = from === "from" ? row.from_account_id : row.to_account_id;
+    const firstAccount =
+      from === "from" ? row.from_account_id : row.to_account_id;
     const firstTransaction =
       from === "from" ? row.from_transaction_id : row.to_transaction_id;
-    const secondAccount = from === "from" ? row.to_account_id : row.from_account_id;
+    const secondAccount =
+      from === "from" ? row.to_account_id : row.from_account_id;
     const secondTransaction =
       from === "from" ? row.to_transaction_id : row.from_transaction_id;
     const key = [
@@ -6302,12 +6357,12 @@ function normalizeLoanRelationsV9(db: DatabaseSync): void {
                 evidence_contract_version
          FROM transaction_relation_provenance WHERE relation_id = ?`,
       ).run(keeper.row.relation_id, duplicate.row.relation_id);
-      db.prepare("DELETE FROM transaction_relation_provenance WHERE relation_id = ?").run(
-        duplicate.row.relation_id,
-      );
-      db.prepare("DELETE FROM current_loan_relations WHERE relation_id = ?").run(
-        duplicate.row.relation_id,
-      );
+      db.prepare(
+        "DELETE FROM transaction_relation_provenance WHERE relation_id = ?",
+      ).run(duplicate.row.relation_id);
+      db.prepare(
+        "DELETE FROM current_loan_relations WHERE relation_id = ?",
+      ).run(duplicate.row.relation_id);
       db.prepare("DELETE FROM transaction_relations WHERE relation_id = ?").run(
         duplicate.row.relation_id,
       );
@@ -6371,7 +6426,13 @@ function ensureInstitutionRepaymentNoteDateContractColumn(
   // Let the schema validator report a missing v10 table with its canonical
   // diagnostic. The helper is additive only when the relation table exists.
   if (!tableExists(db, "institution_repayment_note_evidence")) return;
-  if (!columnExists(db, "institution_repayment_note_evidence", "date_contract_json"))
+  if (
+    !columnExists(
+      db,
+      "institution_repayment_note_evidence",
+      "date_contract_json",
+    )
+  )
     db.exec(
       "ALTER TABLE institution_repayment_note_evidence ADD COLUMN date_contract_json TEXT NOT NULL DEFAULT '{}'",
     );
@@ -6439,9 +6500,7 @@ const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS = ["credit-card"] as const;
 const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID =
   "fubon-domestic-deposit/observed-composite-v1:v14";
 const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES = ["fubon"] as const;
-const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS = [
-  "domestic-deposit",
-] as const;
+const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS = ["domestic-deposit"] as const;
 
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
@@ -6451,7 +6510,9 @@ function validateCanonicalContractPurgeSchema(
   }> = {},
 ): void {
   if (relationType(db, "canonical_contract_purges") !== "table")
-    throw new Error("Canonical schema v11 Contract Purge audit table is missing.");
+    throw new Error(
+      "Canonical schema v11 Contract Purge audit table is missing.",
+    );
   if (relationType(db, "canonical_contract_purge_commits") !== "table")
     throw new Error(
       "Canonical schema v11 Contract Purge commit audit table is missing.",
@@ -6501,7 +6562,9 @@ function validateCanonicalContractPurgeSchema(
         String(creditCardAudit.closure_fingerprint ?? ""),
       )
     )
-      throw new Error("Canonical schema v12 credit-card Contract Purge audit is incomplete.");
+      throw new Error(
+        "Canonical schema v12 credit-card Contract Purge audit is incomplete.",
+      );
   }
   if (options.requireFubonDepositOccurrencePurge) {
     const depositAudit = db
@@ -6677,7 +6740,11 @@ function legacySourceConnectionIdentityClosure(
   const streams = scope.streams.map((value) => `'${value}'`).join(", ");
   const exactScope = `connection.integration_namespace IN (${namespaces}) AND scoped.stream IN (${streams})`;
 
-  for (const table of ["source_captures", "financial_accounts", "source_subjects"]) {
+  for (const table of [
+    "source_captures",
+    "financial_accounts",
+    "source_subjects",
+  ]) {
     if (!tableExists(db, table)) continue;
     addSelectedRows(
       targetRows,
@@ -6723,10 +6790,7 @@ function legacySourceConnectionIdentityClosure(
   // dependents only for connections that actually contain an affected scope.
   for (const table of scope.includeLoanResolverImplications === false
     ? []
-    : [
-        "loan_repayment_resolution_runs",
-        "loan_repayment_settlement_groups",
-      ]) {
+    : ["loan_repayment_resolution_runs", "loan_repayment_settlement_groups"]) {
     if (!tableExists(db, table)) continue;
     addSelectedRows(
       targetRows,
@@ -7089,10 +7153,14 @@ function purgeFubonDepositOccurrenceV1Scope(db: DatabaseSync): void {
  * longer owns source evidence. Re-link and re-digest the immutable event chain
  * atomically so preserved non-target projections remain valid.
  */
-function reconcileProjectionProvenanceAfterContractPurge(db: DatabaseSync): void {
+function reconcileProjectionProvenanceAfterContractPurge(
+  db: DatabaseSync,
+): void {
   if (!tableExists(db, "projection_generation_provenance")) return;
   const generations = db
-    .prepare("SELECT generation_id FROM projection_generations ORDER BY generation_id")
+    .prepare(
+      "SELECT generation_id FROM projection_generations ORDER BY generation_id",
+    )
     .all() as Array<{ generation_id: number }>;
   const planned: Array<{
     eventId: Buffer;
@@ -7119,8 +7187,11 @@ function reconcileProjectionProvenanceAfterContractPurge(db: DatabaseSync): void
           String(
             (
               db
-                .prepare("SELECT commit_kind FROM canonical_commits WHERE commit_id = ?")
-                .get(blob(row.commit_id)) as { commit_kind?: string } | undefined
+                .prepare(
+                  "SELECT commit_kind FROM canonical_commits WHERE commit_id = ?",
+                )
+                .get(blob(row.commit_id)) as
+                { commit_kind?: string } | undefined
             )?.commit_kind ?? "",
           ),
           blob(row.commit_id),
@@ -7132,7 +7203,9 @@ function reconcileProjectionProvenanceAfterContractPurge(db: DatabaseSync): void
       const commitKind = String(
         (
           db
-            .prepare("SELECT commit_kind FROM canonical_commits WHERE commit_id = ?")
+            .prepare(
+              "SELECT commit_kind FROM canonical_commits WHERE commit_id = ?",
+            )
             .get(commitId) as { commit_kind?: string } | undefined
         )?.commit_kind ?? "",
       );
@@ -7289,7 +7362,9 @@ function validateCanonicalRelationResolutionCommitSchema(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_commits'",
     )
     .get() as { sql?: string } | undefined;
-  if (!/commit_kind[\s\S]*relation_resolution/iu.test(String(schema?.sql ?? "")))
+  if (
+    !/commit_kind[\s\S]*relation_resolution/iu.test(String(schema?.sql ?? ""))
+  )
     throw new Error(
       "Canonical schema v13 relation-resolution commit kind is missing.",
     );
@@ -7333,7 +7408,9 @@ function backfillLegacyLoanRelationResolutionCommitsV13(
   );
   for (const row of runs) {
     if (!(row.resolution_id instanceof Uint8Array))
-      throw new Error("Canonical v13 legacy relation resolution ID is missing.");
+      throw new Error(
+        "Canonical v13 legacy relation resolution ID is missing.",
+      );
     const commitId = createHash("sha256")
       .update("canonical/relation-resolution-migration/v13\u0000")
       .update(row.resolution_id)
@@ -7430,7 +7507,9 @@ function migrateV12ToV13(db: DatabaseSync): void {
         'projection_rebuild','relation_resolution'
       ))
     )`);
-    db.exec("INSERT INTO canonical_commits_v13 SELECT * FROM canonical_commits");
+    db.exec(
+      "INSERT INTO canonical_commits_v13 SELECT * FROM canonical_commits",
+    );
     db.exec(
       "DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_switch_update; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_insert; DROP TRIGGER IF EXISTS trg_active_projection_generation_commit_update",
     );
@@ -7531,24 +7610,19 @@ function migrateV13ToV14(db: DatabaseSync): void {
 
 export const SCHEMA_V15_INVESTMENTS = `
 CREATE TABLE IF NOT EXISTS investment_captures (
-  capture_id TEXT PRIMARY KEY,
+  capture_id BLOB PRIMARY KEY REFERENCES source_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   source_id TEXT NOT NULL,
-  source_connection_key TEXT NOT NULL,
-  identity_epoch_key TEXT NOT NULL,
-  authority_route TEXT NOT NULL,
-  contract_version TEXT NOT NULL,
-  observed_at TEXT NOT NULL,
-  effective_on TEXT NOT NULL,
-  commit_sequence INTEGER NOT NULL,
-  recorded_at_utc_us INTEGER NOT NULL
+  contract_version TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS investment_accounts (
-  account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16),
+  account_id BLOB PRIMARY KEY REFERENCES financial_accounts(account_id),
+  source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+  identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
   source_id TEXT NOT NULL,
-  source_connection_key TEXT NOT NULL,
   account_key TEXT NOT NULL,
   account_type TEXT NOT NULL CHECK(account_type = 'investment'),
-  UNIQUE(source_id, source_connection_key, account_key)
+  UNIQUE(source_id, source_connection_id, identity_epoch_id, account_key)
 );
 CREATE TABLE IF NOT EXISTS investment_securities (
   security_id BLOB PRIMARY KEY CHECK(length(security_id) = 16),
@@ -7562,12 +7636,15 @@ CREATE TABLE IF NOT EXISTS investment_securities (
 );
 CREATE TABLE IF NOT EXISTS investment_holding_observations (
   observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
-  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
   security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   measurement_key TEXT NOT NULL,
-  correction_of_measurement_key TEXT,
-  source_record_key TEXT NOT NULL,
+  correction_of_observation_id BLOB REFERENCES investment_holding_observations(observation_id),
+  revision_number INTEGER NOT NULL CHECK(revision_number >= 1),
+  is_current INTEGER NOT NULL CHECK(is_current IN (0, 1)),
   quantity_coefficient TEXT,
   quantity_scale INTEGER,
   valuation_coefficient TEXT,
@@ -7576,16 +7653,15 @@ CREATE TABLE IF NOT EXISTS investment_holding_observations (
   effective_on TEXT NOT NULL,
   observed_at TEXT NOT NULL,
   lineage_json TEXT NOT NULL,
-  CHECK(quantity_coefficient IS NOT NULL OR valuation_coefficient IS NOT NULL),
-  UNIQUE(capture_id, measurement_key)
+  CHECK(quantity_coefficient IS NOT NULL OR valuation_coefficient IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS investment_transactions (
-  transaction_id BLOB PRIMARY KEY CHECK(length(transaction_id) = 16),
-  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  transaction_id BLOB PRIMARY KEY REFERENCES financial_transactions(transaction_id),
+  capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
   security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
-  transaction_key TEXT NOT NULL,
-  source_record_key TEXT NOT NULL,
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   action TEXT NOT NULL CHECK(action IN ('buy','sell')),
   quantity_coefficient TEXT NOT NULL,
   quantity_scale INTEGER NOT NULL,
@@ -7593,27 +7669,38 @@ CREATE TABLE IF NOT EXISTS investment_transactions (
   cash_scale INTEGER NOT NULL,
   cash_currency TEXT NOT NULL,
   effective_on TEXT NOT NULL,
-  funding_evidence_json TEXT NOT NULL,
-  UNIQUE(capture_id, transaction_key)
+  funding_evidence_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS investment_margin_balance_observations (
   observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
-  capture_id TEXT NOT NULL REFERENCES investment_captures(capture_id),
+  capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   account_id BLOB NOT NULL REFERENCES investment_accounts(account_id),
-  source_record_key TEXT NOT NULL,
+  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
   balance_kind TEXT NOT NULL CHECK(balance_kind = 'margin_loan'),
   coefficient TEXT NOT NULL,
   scale INTEGER NOT NULL,
   currency TEXT NOT NULL,
   effective_on TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_investment_holdings_account_time ON investment_holding_observations(account_id, effective_on, observed_at);
+CREATE INDEX IF NOT EXISTS idx_investment_holdings_current ON investment_holding_observations(account_id, security_id, is_current, observed_at);
+CREATE INDEX IF NOT EXISTS idx_investment_holdings_account_time ON investment_holding_observations(account_id, is_current, effective_on, observed_at);
 CREATE INDEX IF NOT EXISTS idx_investment_transactions_account_time ON investment_transactions(account_id, effective_on);
 `;
 
-export function validateCanonicalInvestmentExtensionSchema(db: DatabaseSync): void {
-  for (const name of ["investment_captures", "investment_accounts", "investment_securities", "investment_holding_observations", "investment_transactions", "investment_margin_balance_observations"])
-    if (!tableExists(db, name)) throw new Error(`Canonical investment table ${name} is missing.`);
+export function validateCanonicalInvestmentExtensionSchema(
+  db: DatabaseSync,
+): void {
+  for (const name of [
+    "investment_captures",
+    "investment_accounts",
+    "investment_securities",
+    "investment_holding_observations",
+    "investment_transactions",
+    "investment_margin_balance_observations",
+  ])
+    if (!tableExists(db, name))
+      throw new Error(`Canonical investment table ${name} is missing.`);
 }
 
 function migrateV14ToV15(db: DatabaseSync): void {
@@ -7621,7 +7708,9 @@ function migrateV14ToV15(db: DatabaseSync): void {
   try {
     db.exec(SCHEMA_V15_INVESTMENTS);
     validateCanonicalInvestmentExtensionSchema(db);
-    db.prepare("INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (15, ?)").run(currentUtcMicros());
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (15, ?)",
+    ).run(currentUtcMicros());
     db.exec("PRAGMA user_version = 15");
     db.exec("COMMIT");
   } catch (error) {
@@ -8495,7 +8584,8 @@ export type CanonicalTransaction = {
   currency: "TWD";
   direction: "inflow" | "outflow";
   postingStatus: "posted";
-  postingOrigin: "provider_booked_history" | "human_attested_history" | "human-attested";
+  postingOrigin:
+    "provider_booked_history" | "human_attested_history" | "human-attested";
   postingBasis: string;
   postingRuleVersion: string;
   assertionSupportState: CanonicalAssertionSupportState;
@@ -11040,11 +11130,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     if (
       profile.postingRuleVersion.includes("/credit-card/") &&
       (!creditCardQueryRoutes?.has(profile.postingRuleVersion) ||
-        ![
-          "fubon",
-          "esun",
-          "yuanta",
-        ].includes(profile.integrationNamespace))
+        !["fubon", "esun", "yuanta"].includes(profile.integrationNamespace))
     )
       throw new Error(
         "Credit-card financial query profile is unknown or mixed.",
@@ -11082,12 +11168,11 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
-        const accountEligibility =
-          yuantaV1CurrentSupersession
-            ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("account")})`
-            : yuantaV2CurrentRead
-              ? `AND ${yuantaV2CompleteCaptureForConnectionSql("account")}`
-              : "";
+        const accountEligibility = yuantaV1CurrentSupersession
+          ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("account")})`
+          : yuantaV2CurrentRead
+            ? `AND ${yuantaV2CompleteCaptureForConnectionSql("account")}`
+            : "";
         const accounts = (
           db
             .prepare(
@@ -11108,15 +11193,16 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                  ${accountEligibility}
                ORDER BY account.account_no`,
             )
-            .all(
-              this.profile.integrationNamespace,
-              currentRoute,
-            ) as Record<string, unknown>[]
+            .all(this.profile.integrationNamespace, currentRoute) as Record<
+            string,
+            unknown
+          >[]
         ).map((row) => ({
           id: idToString(row.id),
           accountNo: String(row.accountNo),
           currency: String(row.currency),
-          accountType: row.accountType as CathayCanonicalCurrentQueryResult["accounts"][number]["accountType"],
+          accountType:
+            row.accountType as CathayCanonicalCurrentQueryResult["accounts"][number]["accountType"],
         }));
         if (projectionRelevantCommitCount(db) === 0) {
           return {
@@ -11139,11 +11225,13 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         JOIN financial_transactions t ON t.transaction_id = current_row.transaction_id JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.revision_id = current_row.revision_id
         WHERE r.posting_rule_version = ?
-          ${yuantaV1CurrentSupersession
-            ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("a")})`
-            : yuantaV2CurrentRead
-              ? `AND ${yuantaV2CompleteCaptureForRevisionSql("r")}`
-              : ""}
+          ${
+            yuantaV1CurrentSupersession
+              ? `AND NOT (${yuantaV2CompleteCaptureForConnectionSql("a")})`
+              : yuantaV2CurrentRead
+                ? `AND ${yuantaV2CompleteCaptureForRevisionSql("r")}`
+                : ""
+          }
         ORDER BY a.account_no, t.source_sequence`,
           )
           .all(currentRoute) as Record<string, unknown>[];

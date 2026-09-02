@@ -31,6 +31,9 @@ assert.match(source, /const fundProgress = \(\) =>/);
 assert.match(source, /selectedFunds = fundPositions/);
 assert.doesNotMatch(source, /selectedFunds = fundPositions\.filter/);
 assert.match(source, /runFundMenuAction\(/);
+assert.match(source, /evaluateYuantaFundCanonicalAdmission/);
+assert.match(source, /source-effective-time-not-validated/);
+assert.match(source, /yuanta-fund-canonical-not-admitted/);
 assert.match(
   source,
   /automation-progress: \$\{[\s\S]*75 \+[\s\S]*Math\.min\(\s*24,/,

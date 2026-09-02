@@ -1553,6 +1553,28 @@ async function captureTables(
   }
 }
 
+/** The current fund portfolio table has valuation and units but no contract-
+ * established as-of field. Keep source files, but never substitute run time
+ * and never partially admit them into canonical investment tables. */
+export function evaluateYuantaFundCanonicalAdmission(
+  tables: readonly ParsedTable[],
+) {
+  const hasInvestmentRows = tables.some(
+    (table) =>
+      table.rows.length > 0 &&
+      ["portfolio-summary", "investment-detail"].includes(table.tableLabel),
+  );
+  return hasInvestmentRows
+    ? {
+        status: "not-admitted" as const,
+        reason: "source-effective-time-not-validated" as const,
+      }
+    : {
+        status: "not-admitted" as const,
+        reason: "no-investment-holding-evidence" as const,
+      };
+}
+
 export default workflow("yuantaFundStatements", {
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
@@ -1681,6 +1703,9 @@ export default workflow("yuantaFundStatements", {
         );
       }
 
+      const canonicalAdmission =
+        evaluateYuantaFundCanonicalAdmission(parsedTables);
+      console.warn("yuanta-fund-canonical-not-admitted", canonicalAdmission);
       const files = await writeOutputTableFiles(nextTimestamp, parsedTables);
 
       return {

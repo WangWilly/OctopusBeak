@@ -313,12 +313,7 @@ function seedYuantaCardExtensionSentinel(
        instrument_id, integration_namespace, account_id, capture_id,
        source_record_id
      ) VALUES (?, 'yuanta', ?, ?, ?)`,
-  ).run(
-    instrumentId,
-    scope.accountId,
-    scope.captureId,
-    scope.sourceRecordId,
-  );
+  ).run(instrumentId, scope.accountId, scope.captureId, scope.sourceRecordId);
   db.prepare(
     `INSERT INTO canonical_credit_card_transaction_details(
        integration_namespace, account_id, transaction_id, revision_id,
@@ -499,8 +494,11 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
     try {
       assert.equal(
         Number(
-          (migrated.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            migrated.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         CANONICAL_SOURCE_SCHEMA_VERSION,
       );
@@ -515,7 +513,9 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
         Number(
           (
             migrated
-              .prepare("SELECT COUNT(*) AS count FROM canonical_contract_purges")
+              .prepare(
+                "SELECT COUNT(*) AS count FROM canonical_contract_purges",
+              )
               .get() as { count?: number }
           ).count ?? 0,
         ),
@@ -536,8 +536,11 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
     try {
       assert.equal(
         Number(
-          (reopened.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            reopened.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         CANONICAL_SOURCE_SCHEMA_VERSION,
       );
@@ -581,8 +584,11 @@ test("v10 to v11 rolls back the additive payload when a later schema check fails
     try {
       assert.equal(
         Number(
-          (afterFailure.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            afterFailure.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         10,
       );
@@ -604,8 +610,11 @@ test("v10 to v11 rolls back the additive payload when a later schema check fails
       );
       assert.equal(
         Number(
-          (afterFailure.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number })
-            .foreign_keys,
+          (
+            afterFailure.prepare("PRAGMA foreign_keys").get() as {
+              foreign_keys?: number;
+            }
+          ).foreign_keys,
         ),
         1,
       );
@@ -943,7 +952,9 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
       assert.equal(
         Number(
           (
-            migrated.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+            migrated.db
+              .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+              .get() as {
               count?: number;
             }
           ).count ?? 0,
@@ -953,7 +964,10 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
       );
     }
     assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
-    assert.deepEqual(namespaceFinancialSnapshot(migrated.db, "cathay"), cathayBefore);
+    assert.deepEqual(
+      namespaceFinancialSnapshot(migrated.db, "cathay"),
+      cathayBefore,
+    );
     assert.deepEqual(
       migrated.db
         .prepare("SELECT * FROM local_credentials_sentinel")
@@ -1138,16 +1152,8 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
 
     // Include provider extension rows as well as the shared canonical rows so
     // the migration proves the exact dependent closure, not just its roots.
-    seedFubonCardExtensionSentinel(
-      legacy.db,
-      "v12-legacy-fubon-card",
-      41,
-    );
-    seedYuantaCardExtensionSentinel(
-      legacy.db,
-      "v12-legacy-yuanta-card",
-      42,
-    );
+    seedFubonCardExtensionSentinel(legacy.db, "v12-legacy-fubon-card", 41);
+    seedYuantaCardExtensionSentinel(legacy.db, "v12-legacy-yuanta-card", 42);
     const connectionCount = Number(
       (
         legacy.db
@@ -1230,8 +1236,11 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
     try {
       assert.equal(
         Number(
-          (migrated.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            migrated.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         CANONICAL_SOURCE_SCHEMA_VERSION,
       );
@@ -1262,9 +1271,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
               ORDER BY capture_key`,
           )
           .all(...preservedCaptureKeys),
-        preservedBefore.filter(
-          (row) => row.integration_namespace === "yuanta",
-        ),
+        preservedBefore.filter((row) => row.integration_namespace === "yuanta"),
       );
       assert.equal(
         Number(
@@ -1292,9 +1299,13 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
       ])
         assert.equal(
           Number(
-            (migrated.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
-              count?: number;
-            }).count ?? 0,
+            (
+              migrated
+                .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+                .get() as {
+                count?: number;
+              }
+            ).count ?? 0,
           ),
           0,
           `${table} card closure is removed`,
@@ -1390,8 +1401,11 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
     try {
       assert.equal(
         Number(
-          (reopened.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            reopened.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         CANONICAL_SOURCE_SCHEMA_VERSION,
       );
@@ -1436,11 +1450,7 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
         fubonCreditCardFinancialCapture("v2", "v12-rollback-fubon-card"),
       ),
     );
-    seedFubonCardExtensionSentinel(
-      legacy.db,
-      "v12-rollback-fubon-card",
-      51,
-    );
+    seedFubonCardExtensionSentinel(legacy.db, "v12-rollback-fubon-card", 51);
     legacy.close();
 
     const historical = new DatabaseSync(path);
@@ -1466,8 +1476,11 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
     try {
       assert.equal(
         Number(
-          (afterFailure.prepare("PRAGMA user_version").get() as { user_version?: number })
-            .user_version,
+          (
+            afterFailure.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version,
         ),
         11,
       );
@@ -1488,7 +1501,9 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
         Number(
           (
             afterFailure
-              .prepare("SELECT COUNT(*) AS count FROM fubon_credit_instrument_details")
+              .prepare(
+                "SELECT COUNT(*) AS count FROM fubon_credit_instrument_details",
+              )
               .get() as { count?: number }
           ).count ?? 0,
         ),
@@ -1509,8 +1524,11 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
       );
       assert.equal(
         Number(
-          (afterFailure.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number })
-            .foreign_keys,
+          (
+            afterFailure.prepare("PRAGMA foreign_keys").get() as {
+              foreign_keys?: number;
+            }
+          ).foreign_keys,
         ),
         1,
       );
@@ -2071,10 +2089,7 @@ try {
     migratedRevisionSchema,
     /CHECK\(posting_rule_version IN .*synthetic-%/,
   );
-  assert.match(
-    migratedRevisionSchema,
-    /esun\/credit-card\/human-attested-v1/,
-  );
+  assert.match(migratedRevisionSchema, /esun\/credit-card\/human-attested-v1/);
   assert.match(
     migratedRevisionSchema,
     /yuanta\/credit-card\/human-attested-v1/,
@@ -2156,11 +2171,11 @@ try {
       "CHECK(posting_basis = 'query-status-success-with-accounting-date')",
     )
     .replace(
-      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%' OR posting_rule_version LIKE '%/investment/%')",
       "CHECK(posting_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
-      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%' OR semantic_rule_version LIKE '%/investment/%')",
       "CHECK(semantic_rule_version = 'cathay/domestic-deposit/v1')",
     )
     .replace(
@@ -2168,7 +2183,7 @@ try {
       "CHECK(effective_time_basis = 'accounting')",
     )
     .replace(
-      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%')",
+      "CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%' OR effective_time_rule_version LIKE '%/investment/%')",
       "CHECK(effective_time_rule_version = 'cathay/domestic-deposit/v1')",
     );
   assert.notEqual(closedRevisionSchema, currentRevisionSchema);
@@ -2234,14 +2249,8 @@ try {
     widenedRevisionSchema,
     /CHECK\(posting_rule_version IN .*synthetic-%/,
   );
-  assert.match(
-    widenedRevisionSchema,
-    /esun\/credit-card\/human-attested-v1/,
-  );
-  assert.match(
-    widenedRevisionSchema,
-    /yuanta\/credit-card\/human-attested-v1/,
-  );
+  assert.match(widenedRevisionSchema, /esun\/credit-card\/human-attested-v1/);
+  assert.match(widenedRevisionSchema, /yuanta\/credit-card\/human-attested-v1/);
   assert.match(
     widenedRevisionSchema,
     /yuanta\/domestic-deposit\/human-attested-v1/,
@@ -2421,8 +2430,11 @@ test("v9 reopen recovers an interrupted financial revision widening", async () =
     );
     assert.equal(
       Number(
-        (legacy.prepare("PRAGMA user_version").get() as { user_version?: number })
-          .user_version,
+        (
+          legacy.prepare("PRAGMA user_version").get() as {
+            user_version?: number;
+          }
+        ).user_version,
       ),
       CANONICAL_SOURCE_SCHEMA_VERSION,
     );
@@ -2584,7 +2596,9 @@ test("v9 reopen rejects divergent financial revision widening staging", async ()
     const stagingCountBefore = Number(
       (
         legacy
-          .prepare("SELECT COUNT(*) AS count FROM transaction_revisions_widened")
+          .prepare(
+            "SELECT COUNT(*) AS count FROM transaction_revisions_widened",
+          )
           .get() as { count?: number }
       ).count ?? 0,
     );
@@ -2609,7 +2623,9 @@ test("v9 reopen rejects divergent financial revision widening staging", async ()
       Number(
         (
           rejected
-            .prepare("SELECT COUNT(*) AS count FROM transaction_revisions_widened")
+            .prepare(
+              "SELECT COUNT(*) AS count FROM transaction_revisions_widened",
+            )
             .get() as { count?: number }
         ).count ?? 0,
       ),
@@ -2743,7 +2759,9 @@ test("source assertion compatibility views enforce origin and provenance semanti
       assert.equal(
         Number(
           (
-            legacy.prepare("SELECT COUNT(*) AS count FROM assertions").get() as {
+            legacy
+              .prepare("SELECT COUNT(*) AS count FROM assertions")
+              .get() as {
               count?: number;
             }
           ).count ?? 0,
@@ -2791,7 +2809,9 @@ test("source assertion compatibility views enforce origin and provenance semanti
       assert.equal(
         Number(
           (
-            migrated.db.prepare("SELECT COUNT(*) AS count FROM assertions").get() as {
+            migrated.db
+              .prepare("SELECT COUNT(*) AS count FROM assertions")
+              .get() as {
               count?: number;
             }
           ).count ?? 0,
@@ -3292,7 +3312,9 @@ test("Yuanta v2 wins the current view without deleting v1 history", async () => 
     join(tmpdir(), "canonical-source-yuanta-query-v2-precedence-"),
   );
   try {
-    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const store = createCanonicalSourceStore(
+      join(directory, "canonical.sqlite"),
+    );
     const v1Commit = await commitCanonicalFinancialDepositCapture(
       store,
       admitCanonicalFinancialDepositCapture(
@@ -3307,9 +3329,13 @@ test("Yuanta v2 wins the current view without deleting v1 history", async () => 
     );
     assert.equal(
       Number(
-        (store.db.prepare(
-          "SELECT COUNT(*) AS value FROM financial_transactions WHERE account_id IN (SELECT account_id FROM financial_accounts WHERE stream = 'credit-card')",
-        ).get() as { value?: number }).value,
+        (
+          store.db
+            .prepare(
+              "SELECT COUNT(*) AS value FROM financial_transactions WHERE account_id IN (SELECT account_id FROM financial_accounts WHERE stream = 'credit-card')",
+            )
+            .get() as { value?: number }
+        ).value,
       ),
       62,
     );
@@ -3376,7 +3402,9 @@ test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", asyn
     join(tmpdir(), "canonical-source-yuanta-query-v2-invalid-"),
   );
   try {
-    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const store = createCanonicalSourceStore(
+      join(directory, "canonical.sqlite"),
+    );
     await commitCanonicalFinancialDepositCapture(
       store,
       admitCanonicalFinancialDepositCapture(
@@ -3389,14 +3417,16 @@ test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", asyn
         yuantaCreditCardFinancialCapture("v2", "yuanta-invalid-v2"),
       ),
     );
-    store.db.prepare(
-      `UPDATE capture_scopes
+    store.db
+      .prepare(
+        `UPDATE capture_scopes
        SET terminal = 0
        WHERE capture_id = (
          SELECT capture_id FROM source_captures
          WHERE capture_key = ?
        )`,
-    ).run("yuanta-invalid-v2");
+      )
+      .run("yuanta-invalid-v2");
     store.close();
 
     const v1Query = createCanonicalFinancialQuery(directory, {
