@@ -2924,20 +2924,6 @@ function validateCanonicalAuthorityRoutes(
             AND registered.integration_namespace = 'yuanta-trade'
             AND registered.contract_version = 'yuanta-trade/investment/canonical-v1')
           OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-fund'
-            AND registered.contract_version = 'yuanta-fund/investment/margin-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-trade'
-            AND registered.contract_version = 'yuanta-trade/investment/margin-canonical-v1')
-          OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
             AND registered.integration_namespace = 'linebank'
@@ -3962,14 +3948,6 @@ function validateSelectedAssertionProvenance(
           (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
             AND capture.stream = 'investment'
             AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-canonical-v1')
           OR
           (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
             AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
@@ -6506,11 +6484,15 @@ const SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID =
 const SOURCE_CONNECTION_IDENTITY_V1_PURGE_NAMESPACES = [
   "fubon",
   "yuanta",
+  "yuanta-fund",
+  "yuanta-trade",
 ] as const;
 const SOURCE_CONNECTION_IDENTITY_V1_PURGE_STREAMS = [
   "domestic-deposit",
   "loan",
   "credit-card",
+  "investment",
+  "investment-margin",
 ] as const;
 const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID =
   "credit-card-source-connection/v1:fubon-yuanta:v12";

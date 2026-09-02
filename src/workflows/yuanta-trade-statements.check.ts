@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Page } from "playwright";
 import {
   dismissPasswordChangeReminderIfPresent,
+  assertYuantaTradeCanonicalOccurrenceIdentities,
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
@@ -231,7 +232,7 @@ test("rejects a partial YuanTa holdings capture", () => {
   );
 });
 
-test("canonical occurrence identity never merges identical source rows", () => {
+test("canonical occurrence identity is order invariant and rejects indistinguishable duplicates", () => {
   const row = {
     trade_date: "2026-08-30",
     product_code: "SANITIZED",
@@ -251,7 +252,7 @@ test("canonical occurrence identity never merges identical source rows", () => {
     row,
     1,
   );
-  assert.notEqual(first, second);
+  assert.equal(first, second);
   assert.notEqual(
     first,
     yuantaTradeCanonicalOccurrenceIdentity(
@@ -262,7 +263,7 @@ test("canonical occurrence identity never merges identical source rows", () => {
     ),
   );
   const referenced = { ...row, source_transaction_reference: "REF-001" };
-  assert.notEqual(
+  assert.equal(
     yuantaTradeCanonicalOccurrenceIdentity(
       "SANITIZED-ACCOUNT",
       "transaction",
@@ -274,6 +275,31 @@ test("canonical occurrence identity never merges identical source rows", () => {
       "transaction",
       referenced,
       99,
+    ),
+  );
+  assert.throws(
+    () =>
+      assertYuantaTradeCanonicalOccurrenceIdentities(
+        "SANITIZED-ACCOUNT",
+        "transaction",
+        [row, { ...row }],
+      ),
+    /indistinguishable duplicate rows/,
+  );
+  assert.deepEqual(
+    new Set(
+      assertYuantaTradeCanonicalOccurrenceIdentities(
+        "SANITIZED-ACCOUNT",
+        "transaction",
+        [row, { ...row, quantity: "2000" }],
+      ),
+    ),
+    new Set(
+      assertYuantaTradeCanonicalOccurrenceIdentities(
+        "SANITIZED-ACCOUNT",
+        "transaction",
+        [{ ...row, quantity: "2000" }, row],
+      ),
     ),
   );
 });

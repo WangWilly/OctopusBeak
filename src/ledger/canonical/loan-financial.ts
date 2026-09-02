@@ -476,7 +476,10 @@ export type LoanTransferRelationEvidence = Readonly<{
   evidenceVersion: string;
 }>;
 
-export type LoanTransferRelation = Omit<LoanTransferRelationInput, "evidence"> & {
+export type LoanTransferRelation = Omit<
+  LoanTransferRelationInput,
+  "evidence"
+> & {
   evidence: LoanTransferRelationEvidence;
   accountId: string;
   commitSequence: number;
@@ -931,10 +934,7 @@ function validateRelation(
       "Loan relation target direction is not evidenced.",
     );
   const counterpart = fromCounterpart ?? toCounterpart;
-  if (
-    !counterpart ||
-    counterpart.sourceConnectionKey !== sourceConnectionKey
-  )
+  if (!counterpart || counterpart.sourceConnectionKey !== sourceConnectionKey)
     throw new CanonicalLoanAdmissionError(
       "Loan transfer relation endpoints must share one source connection.",
     );
@@ -1321,8 +1321,10 @@ function validateCapture(capture: LoanCaptureInput): void {
         "source-reported-balance-effective-time" ||
       observation.effectiveTimeEvidence.sourceRecordKey !== sourceRecordKey ||
       observation.effectiveTimeEvidence.sourceField !== "statement-as-of" ||
-      (observation.effectiveTimeEvidence.sourceFieldRole !== "transaction-date" &&
-        observation.effectiveTimeEvidence.sourceFieldRole !== "accounting-date") ||
+      (observation.effectiveTimeEvidence.sourceFieldRole !==
+        "transaction-date" &&
+        observation.effectiveTimeEvidence.sourceFieldRole !==
+          "accounting-date") ||
       observation.effectiveTimeEvidence.value !== observation.effectiveAt ||
       observation.effectiveTimeEvidence.precision !== "date" ||
       observation.effectiveTimeEvidence.timeOrigin !== "source_reported" ||
@@ -1576,6 +1578,21 @@ function canonicalLoanSpineCapture(
     })),
     records,
   });
+}
+
+export function canonicalLoanCaptureSpines(
+  capture: LoanValidatedCapture,
+): readonly CanonicalFinancialDepositValidatedCapture[] {
+  if (!hasValidatedBrand(capture))
+    throw new CanonicalLoanConflictError(
+      "Loan capture did not cross the runtime-validated admission seam.",
+    );
+  return [
+    ...capture.counterpartTransactions.map((counterpart) =>
+      canonicalLoanCounterpartCapture(capture, counterpart),
+    ),
+    canonicalLoanSpineCapture(capture),
+  ];
 }
 
 function canonicalLoanCounterpartCapture(
@@ -2148,12 +2165,7 @@ function refreshCurrentLoanBalanceProjection(
          AND ${visibleRoute.sql}
      ) ranked
      WHERE ranked.rank = 1`,
-  ).run(
-    generationId,
-    projectionCommitId,
-    accountId,
-    ...visibleRoute.params,
-  );
+  ).run(generationId, projectionCommitId, accountId, ...visibleRoute.params);
 }
 
 type PersistedRelationEndpoint = {
@@ -2509,6 +2521,17 @@ function persistLoanExtensions(
   }
 }
 
+export function persistCanonicalLoanCaptureExtensions(
+  db: DatabaseSync,
+  capture: LoanValidatedCapture,
+): void {
+  if (!hasValidatedBrand(capture))
+    throw new CanonicalLoanConflictError(
+      "Loan capture did not cross the runtime-validated admission seam.",
+    );
+  persistLoanExtensions(db, capture, capture.counterpartTransactions);
+}
+
 export async function commitCanonicalLoanCapture(
   store: LoanFinancialStore | CanonicalSourceStore,
   capture: LoanValidatedCapture,
@@ -2518,15 +2541,10 @@ export async function commitCanonicalLoanCapture(
       "Loan capture did not cross the runtime-validated admission seam.",
     );
   validateCapture(capture);
-  const counterpartCaptures = capture.counterpartTransactions.map(
-    (counterpart) => canonicalLoanCounterpartCapture(capture, counterpart),
-  );
-  const loanSpineCapture = canonicalLoanSpineCapture(capture);
   const result = await commitCanonicalFinancialDepositCaptureBatch(
     asWriterStore(store),
-    [...counterpartCaptures, loanSpineCapture],
-    () =>
-      persistLoanExtensions(store.db, capture, capture.counterpartTransactions),
+    canonicalLoanCaptureSpines(capture),
+    () => persistCanonicalLoanCaptureExtensions(store.db, capture),
   );
   const committed = result.at(-1)!;
   return {
@@ -2682,7 +2700,10 @@ function accountRows(
          ON current_account.generation_id = active.generation_id
        AND current_account.account_id = account.account_id`
     : "";
-  const visibleRoute = canonicalLoanRoutePredicate("authority_capture", sourceId);
+  const visibleRoute = canonicalLoanRoutePredicate(
+    "authority_capture",
+    sourceId,
+  );
   const rows = db
     .prepare(
       `SELECT account.account_id, loan_identity.account_no, account.account_type,
@@ -2723,9 +2744,7 @@ function accountRows(
       sourceId ?? null,
       sourceId ?? null,
       ...visibleRoute.params,
-    ) as Array<
-    Record<string, unknown>
-  >;
+    ) as Array<Record<string, unknown>>;
   return rows.map(accountFromRow);
 }
 
@@ -3055,7 +3074,10 @@ function relationRows(
          AND to_commit.commit_sequence <= ?) <= ?`);
     params.push(knowledgeAt, financialAt, knowledgeAt, financialAt);
   }
-  const visibleRoute = canonicalLoanRoutePredicate("relation_capture", sourceId);
+  const visibleRoute = canonicalLoanRoutePredicate(
+    "relation_capture",
+    sourceId,
+  );
   clauses.push(`EXISTS (
     SELECT 1
     FROM transaction_revisions route_revision
@@ -3138,8 +3160,7 @@ function relationRows(
     // knowledge cutoff as well.
     if (!currentOnly && superseded.get(relationId, knowledgeAt)) return [];
     const event = supportEvent.get(relationId, knowledgeAt) as
-      | { support_kind?: unknown; evidence_json?: unknown }
-      | undefined;
+      { support_kind?: unknown; evidence_json?: unknown } | undefined;
     const eventEvidence = parseCompact(event?.evidence_json);
     const supportKind: LoanTransferRelationSupportKind =
       event?.support_kind === "verified-repayment-destination" ||
@@ -3154,32 +3175,34 @@ function relationRows(
             eventEvidence.evidenceVersion.trim() !== ""
           ? eventEvidence.evidenceVersion
           : String(row.evidence_contract_version);
-    return [{
-      kind: "transfer_counterpart",
-      fromSourceRecordKey: String(row.from_source_record_key),
-      toSourceRecordKey: String(row.to_source_record_key),
-      fromAccountKey: String(row.from_account_key),
-      toAccountKey: String(row.to_account_key),
-      fromDirection: String(row.from_direction) as "inflow" | "outflow",
-      toDirection: String(row.to_direction) as "inflow" | "outflow",
-      evidence: {
-        kind: supportKind,
-        sourceRecordKey: String(row.evidence_source_record_key),
-        relationId: String(row.evidence_relation_id),
-        contractVersion: String(row.evidence_contract_version),
-        evidenceVersion,
-      },
-      accountId: binaryId(row.account_id),
-      commitSequence: Number(row.commit_sequence),
-      fromTransactionId:
-        row.from_transaction_id instanceof Uint8Array
-          ? binaryId(row.from_transaction_id)
-          : null,
-      toTransactionId:
-        row.to_transaction_id instanceof Uint8Array
-          ? binaryId(row.to_transaction_id)
-          : null,
-    } satisfies LoanTransferRelation];
+    return [
+      {
+        kind: "transfer_counterpart",
+        fromSourceRecordKey: String(row.from_source_record_key),
+        toSourceRecordKey: String(row.to_source_record_key),
+        fromAccountKey: String(row.from_account_key),
+        toAccountKey: String(row.to_account_key),
+        fromDirection: String(row.from_direction) as "inflow" | "outflow",
+        toDirection: String(row.to_direction) as "inflow" | "outflow",
+        evidence: {
+          kind: supportKind,
+          sourceRecordKey: String(row.evidence_source_record_key),
+          relationId: String(row.evidence_relation_id),
+          contractVersion: String(row.evidence_contract_version),
+          evidenceVersion,
+        },
+        accountId: binaryId(row.account_id),
+        commitSequence: Number(row.commit_sequence),
+        fromTransactionId:
+          row.from_transaction_id instanceof Uint8Array
+            ? binaryId(row.from_transaction_id)
+            : null,
+        toTransactionId:
+          row.to_transaction_id instanceof Uint8Array
+            ? binaryId(row.to_transaction_id)
+            : null,
+      } satisfies LoanTransferRelation,
+    ];
   });
 }
 

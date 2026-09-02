@@ -11,6 +11,12 @@ import {
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import {
+  admitCanonicalLoanCapture,
+  canonicalLoanCaptureSpines,
+  persistCanonicalLoanCaptureExtensions,
+  type LoanValidatedCapture,
+} from "./loan-financial.ts";
 
 export const INVESTMENT_CANONICAL_CONTRACT_VERSION =
   "investment/canonical/v1" as const;
@@ -65,6 +71,8 @@ export type InvestmentCaptureInput = {
     correction?: {
       ofMeasurementKey: string;
       stableCorrectionKey: string;
+      sourceRecordKey: string;
+      targetSourceRecordKey: string;
       proofKind: "source-stable-correction-key";
       contractVersion: string;
       priorEffectiveOn: string;
@@ -98,15 +106,16 @@ export type InvestmentCaptureInput = {
     | {
         kind: "independent-account";
         accountKey: string;
-        accountType: "loan" | "credit";
+        accountType: "loan";
         amount: InvestmentMoney;
         effectiveOn: string;
         sourceRecordKey: string;
         identityEvidence: {
           kind: "producer-margin-account-id";
           producerAccountId: string;
-          contractVersion: string;
+          contractVersion: "loan/canonical/v1.yuanta";
         };
+        sourceEventCode: "LOAN-DISBURSEMENT";
       };
 };
 export type InvestmentValidatedCapture = InvestmentCaptureInput & {
@@ -195,6 +204,22 @@ function stableJson(value: unknown): string {
 function digest(...parts: string[]): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(parts.join("\0")).digest("base64url")}`;
 }
+export function deriveInvestmentHoldingCorrectionProofKey(input: {
+  contractVersion: string;
+  sourceRecordKey: string;
+  targetSourceRecordKey: string;
+  measurementSubjectKey: string;
+  effectiveOn: string;
+}): `sha256:${string}` {
+  return digest(
+    "investment-holding-correction",
+    input.contractVersion,
+    input.sourceRecordKey,
+    input.targetSourceRecordKey,
+    input.measurementSubjectKey,
+    input.effectiveOn,
+  );
+}
 function uuidV7(): Buffer {
   const bytes = randomBytes(16);
   const now = BigInt(Date.now());
@@ -215,6 +240,18 @@ function freeze<T>(value: T): T {
 export function admitCanonicalInvestmentCapture(
   capture: InvestmentCaptureInput,
 ): InvestmentValidatedCapture {
+  rfc3339(capture.observedAt, "Observation time");
+  const observationInstant = Date.parse(capture.observedAt);
+  capture = structuredClone(capture);
+  capture.observedAt = new Date(observationInstant).toISOString();
+  for (const holding of capture.holdings) {
+    rfc3339(holding.observedAt, "Holding observation time");
+    if (Date.parse(holding.observedAt) !== observationInstant)
+      throw new CanonicalInvestmentAdmissionError(
+        "Holding observation instant must match the capture.",
+      );
+    holding.observedAt = capture.observedAt;
+  }
   required(capture.captureId, "Capture ID");
   if (
     !(ADVERTISED_INVESTMENT_SOURCE_IDS as readonly string[]).includes(
@@ -226,7 +263,6 @@ export function admitCanonicalInvestmentCapture(
     );
   required(capture.authorityRoute, "Authority route");
   required(capture.contractVersion, "Contract version");
-  rfc3339(capture.observedAt, "Observation time");
   token(capture.identity.sourceConnectionKey, "Source connection key");
   token(capture.identity.identityEpochKey, "Identity epoch key");
   token(capture.identity.accountKey, "Account key");
@@ -289,6 +325,11 @@ export function admitCanonicalInvestmentCapture(
     if (holding.correction) {
       token(holding.correction.ofMeasurementKey, "Holding correction target");
       token(holding.correction.stableCorrectionKey, "Holding correction proof");
+      token(holding.correction.sourceRecordKey, "Correction source record key");
+      token(
+        holding.correction.targetSourceRecordKey,
+        "Correction target source record key",
+      );
       date(
         holding.correction.priorEffectiveOn,
         "Prior holding effective identity",
@@ -296,7 +337,16 @@ export function admitCanonicalInvestmentCapture(
       if (
         holding.correction.proofKind !== "source-stable-correction-key" ||
         holding.correction.contractVersion !== capture.contractVersion ||
-        holding.correction.priorEffectiveOn !== holding.effectiveOn
+        holding.correction.priorEffectiveOn !== holding.effectiveOn ||
+        holding.correction.sourceRecordKey !== holding.sourceRecordKey ||
+        holding.correction.stableCorrectionKey !==
+          deriveInvestmentHoldingCorrectionProofKey({
+            contractVersion: capture.contractVersion,
+            sourceRecordKey: holding.sourceRecordKey,
+            targetSourceRecordKey: holding.correction.targetSourceRecordKey,
+            measurementSubjectKey: holding.measurementSubjectKey,
+            effectiveOn: holding.effectiveOn,
+          })
       )
         throw new CanonicalInvestmentAdmissionError(
           "Holding correction requires contract-versioned stable proof for the same effective identity.",
@@ -332,7 +382,8 @@ export function admitCanonicalInvestmentCapture(
       capture.margin.identityEvidence?.kind !== "producer-margin-account-id" ||
       !capture.margin.identityEvidence.producerAccountId.trim() ||
       capture.margin.identityEvidence.contractVersion !==
-        capture.contractVersion
+        "loan/canonical/v1.yuanta" ||
+      capture.margin.sourceEventCode !== "LOAN-DISBURSEMENT"
     )
       throw new CanonicalInvestmentAdmissionError(
         "Independent margin borrowing requires contract-proven loan/credit account identity.",
@@ -372,7 +423,7 @@ function spineRecord(
       timeZone: "Asia/Taipei",
       epochMilliseconds: Date.parse(`${record.effectiveOn}T00:00:00+08:00`),
       precision: "date",
-      timeOrigin: "source_reported",
+      timeOrigin: "defaulted_local_midnight",
     },
     effectiveOn: record.effectiveOn,
     transactionDateTimeLocal: `${record.effectiveOn}T00:00:00`,
@@ -380,6 +431,16 @@ function spineRecord(
   } as const;
 }
 function canonicalSpine(capture: InvestmentValidatedCapture) {
+  const effectiveDates = [
+    capture.scope.effectiveOn,
+    ...capture.holdings.map(({ effectiveOn }) => effectiveOn),
+    ...capture.transactions.map(({ effectiveOn }) => effectiveOn),
+    ...(capture.margin?.kind === "embedded"
+      ? [capture.margin.effectiveOn]
+      : []),
+  ].sort();
+  const scopeStart = effectiveDates[0]!;
+  const scopeEnd = effectiveDates.at(-1)!;
   const records = [
     ...capture.holdings.map((holding, index) =>
       spineRecord(
@@ -439,8 +500,8 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
     },
     observedAt: capture.observedAt,
     scope: {
-      startDate: capture.scope.effectiveOn,
-      endDate: capture.scope.effectiveOn,
+      startDate: scopeStart,
+      endDate: scopeEnd,
       scopeKind: "bounded-range",
       completeness: "complete-range",
       completenessBasis: "source-reported-complete-investment-snapshot",
@@ -485,7 +546,8 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
         ),
         preflightFingerprint: digest("investment-capture", capture.captureId),
         metadataJson: stableJson({
-          effectiveOn: capture.scope.effectiveOn,
+          startDate: scopeStart,
+          endDate: scopeEnd,
           rowCount: records.length,
         }),
       },
@@ -495,76 +557,63 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
   return admitCanonicalFinancialDepositCapture(financial);
 }
 
-function canonicalMarginSpine(
+function canonicalMarginLoanCapture(
   capture: InvestmentValidatedCapture,
-): ReturnType<typeof admitCanonicalFinancialDepositCapture> | null {
+): LoanValidatedCapture | null {
   if (capture.margin?.kind !== "independent-account") return null;
   const margin = capture.margin;
-  const contractVersion = `${capture.sourceId}/investment/margin-canonical-v1`;
-  const record = spineRecord(
-    capture,
-    margin,
-    { ...margin, recordKind: "independent-margin-borrowing" },
-    margin.amount,
-    "outflow",
-    0,
-  );
-  return admitCanonicalFinancialDepositCapture({
+  const contractVersion = "loan/canonical/v1.yuanta" as const;
+  const balanceEvidence = {
+    kind: "source-reported-balance" as const,
+    balanceKind: "loan_outstanding" as const,
+    balanceField: "balance-after-transaction" as const,
+    balance: margin.amount,
+    effectiveAtField: "transaction-date" as const,
+    effectiveAt: margin.effectiveOn,
+    effectiveAtPrecision: "date" as const,
+    effectiveAtTimeOrigin: "source_reported" as const,
+    storageAnchor: "effective-at-date-only" as const,
+    contractVersion,
+  };
+  return admitCanonicalLoanCapture({
     captureId: `${capture.captureId}:margin`,
-    authorityRoute: contractVersion,
+    sourceId: "yuanta",
+    authorityRoute: "yuanta/loan/canonical-v1",
     contractVersion,
     identity: {
-      integrationNamespace: capture.sourceId,
       sourceConnectionKey: capture.identity.sourceConnectionKey,
       identityEpochKey: capture.identity.identityEpochKey,
-      stream: "investment-margin",
-      recordKind: "investment-margin-borrowing",
+      stream: "loan",
+      recordKind: "yuanta-loan-transaction",
       subjectDigest: digest(
-        capture.sourceId,
+        "yuanta-margin-loan",
         capture.identity.sourceConnectionKey,
         capture.identity.identityEpochKey,
         margin.accountKey,
       ),
-      accountNo: margin.accountKey,
-      accountType: margin.accountType,
-      currency: margin.amount.currency,
+      accountKey: margin.accountKey,
+      accountNo: digest(
+        "yuanta-margin-account-number",
+        margin.identityEvidence.producerAccountId,
+      ),
+      accountType: "loan",
+      currency: "TWD",
     },
     observedAt: capture.observedAt,
     scope: {
       startDate: margin.effectiveOn,
       endDate: margin.effectiveOn,
-      scopeKind: "bounded-range",
       completeness: "complete-range",
-      completenessBasis: "source-reported-independent-margin-balance",
+      completenessBasis: "source-declared-terminal-range",
       completenessRuleVersion: contractVersion,
-      absenceAuthority: null,
-      contractFingerprint: digest(
-        "investment-margin-contract",
-        contractVersion,
-      ),
-      preflightFingerprint: digest(
-        "investment-margin-capture",
-        capture.captureId,
-      ),
       pageCount: 1,
-      withdrawalPolicy: "never-infer",
+      terminal: true,
     },
     semantics: {
-      postingStatus: "posted",
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      postingRuleVersion: contractVersion,
-      economicStatus: "normal",
-      administrativeState: "active",
-      semanticRuleVersion: contractVersion,
+      status: "posted",
       effectiveTimeBasis: "source-reported",
       effectiveTimeRuleVersion: contractVersion,
       timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      timeOrigin: "source_reported",
-      requireBalance: false,
-      providerGuaranteed: false,
-      occurrenceProviderGuaranteed: false,
     },
     pages: [
       {
@@ -572,20 +621,65 @@ function canonicalMarginSpine(
         responseCode: "200",
         terminal: true,
         rowCount: 1,
-        responseDigest: digest("investment-margin-page", capture.captureId),
-        proofKind: "source-reported-independent-margin-account",
-        contractFingerprint: digest(
-          "investment-margin-contract",
-          contractVersion,
-        ),
-        preflightFingerprint: digest(
-          "investment-margin-capture",
-          capture.captureId,
-        ),
-        metadataJson: stableJson({ effectiveOn: margin.effectiveOn }),
+        proofKind: "source-declared-terminal-range",
       },
     ],
-    records: [record],
+    records: [
+      {
+        sourceRecordKey: margin.sourceRecordKey,
+        occurrenceIndex: 1,
+        effectiveOn: margin.effectiveOn,
+        sourceTime: {
+          localTime: "00:00:00",
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        postingStatus: "posted",
+        eventKind: "disbursement",
+        eventEvidence: {
+          kind: "source-coded-loan-event",
+          sourceRecordKey: margin.sourceRecordKey,
+          sourceCode: margin.sourceEventCode,
+          contractVersion,
+        },
+        direction: "outflow",
+        amount: margin.amount,
+        currency: "TWD",
+        balanceSourceEvidence: [balanceEvidence],
+      },
+    ],
+    counterpartTransactions: [],
+    balanceObservations: [
+      {
+        observationKey: digest(
+          "yuanta-margin-balance",
+          margin.sourceRecordKey,
+          margin.effectiveOn,
+        ),
+        sourceRecordKey: margin.sourceRecordKey,
+        balanceKind: "loan_outstanding",
+        balance: margin.amount,
+        currency: "TWD",
+        effectiveAt: margin.effectiveOn,
+        effectiveAtPrecision: "date",
+        effectiveAtTimeOrigin: "source_reported",
+        effectiveTimeBasis: "source-reported",
+        effectiveTimeRuleVersion: contractVersion,
+        effectiveTimeEvidence: {
+          kind: "source-reported-balance-effective-time",
+          sourceRecordKey: margin.sourceRecordKey,
+          sourceField: "statement-as-of",
+          sourceFieldRole: "transaction-date",
+          value: margin.effectiveOn,
+          precision: "date",
+          timeOrigin: "source_reported",
+          storageAnchor: "effective-at-date-only",
+          contractVersion,
+        },
+      },
+    ],
+    relations: [],
+    relationCoverage: "not-asserted",
   });
 }
 export function createCanonicalInvestmentStore(
@@ -682,12 +776,18 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
           securityId: Uint8Array;
           effectiveOn: string;
           lineageJson: string;
+          sourceRecordKey: string;
         }
       | undefined;
     if (holding.correction) {
       const candidates = db
         .prepare(
-          "SELECT observation_id AS observationId,revision_number AS revisionNumber,security_id AS securityId,effective_on AS effectiveOn,lineage_json AS lineageJson FROM investment_holding_observations WHERE account_id=? AND measurement_key=? AND is_current=1",
+          `SELECT h.observation_id AS observationId,h.revision_number AS revisionNumber,
+                  h.security_id AS securityId,h.effective_on AS effectiveOn,
+                  h.lineage_json AS lineageJson,r.occurrence_key AS sourceRecordKey
+             FROM investment_holding_observations h
+             JOIN source_records r ON r.source_record_id=h.source_record_id
+            WHERE h.account_id=? AND h.measurement_key=? AND h.is_current=1`,
         )
         .all(spine.accountId, holding.correction.ofMeasurementKey) as Array<
         NonNullable<typeof prior>
@@ -712,6 +812,7 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       if (
         !sameSecurity ||
         prior.effectiveOn !== holding.correction!.priorEffectiveOn ||
+        prior.sourceRecordKey !== holding.correction!.targetSourceRecordKey ||
         priorLineage.measurementSubjectKey !== holding.measurementSubjectKey
       )
         throw new CanonicalInvestmentAdmissionError(
@@ -864,16 +965,19 @@ export async function commitCanonicalInvestmentCaptureBatch(
       throw new CanonicalInvestmentAdmissionError(
         "Investment capture must be admitted before commit.",
       );
+  const marginLoans = captures
+    .map(canonicalMarginLoanCapture)
+    .filter((capture): capture is LoanValidatedCapture => capture !== null);
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
-    captures.flatMap((capture) => {
-      const margin = canonicalMarginSpine(capture);
-      return margin
-        ? [canonicalSpine(capture), margin]
-        : [canonicalSpine(capture)];
-    }),
+    [
+      ...captures.map(canonicalSpine),
+      ...marginLoans.flatMap(canonicalLoanCaptureSpines),
+    ],
     (db) => {
       for (const capture of captures) extensionRows(db, capture);
+      for (const marginLoan of marginLoans)
+        persistCanonicalLoanCaptureExtensions(db, marginLoan);
     },
   );
 }
