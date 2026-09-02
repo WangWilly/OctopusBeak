@@ -519,7 +519,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        2,
+        3,
       );
       assert.deepEqual(migrated.prepare("PRAGMA foreign_key_check").all(), []);
       validateCanonicalSourceStore({
@@ -1080,7 +1080,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
   }
 });
 
-test("v11 to v12 purges only Fubon/Yuanta credit-card closure and preserves shared siblings", async () => {
+test("migration purges legacy card scopes and only the v1 Fubon deposit occurrence scope", async () => {
   const directory = await mkdtemp(
     join(tmpdir(), "canonical-source-v12-credit-card-purge-"),
   );
@@ -1183,9 +1183,13 @@ test("v11 to v12 purges only Fubon/Yuanta credit-card closure and preserves shar
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
+      DELETE FROM canonical_contract_purge_commits
+       WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'credit-card-source-connection/v1:fubon-yuanta:v12';
-      DELETE FROM schema_migrations WHERE version = 12;
+      DELETE FROM canonical_contract_purges
+       WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14';
+      DELETE FROM schema_migrations WHERE version >= 12;
       ALTER TABLE canonical_contract_purge_commits
         RENAME TO canonical_contract_purge_commits_v12;
       ALTER TABLE canonical_contract_purges
@@ -1258,7 +1262,9 @@ test("v11 to v12 purges only Fubon/Yuanta credit-card closure and preserves shar
               ORDER BY capture_key`,
           )
           .all(...preservedCaptureKeys),
-        preservedBefore,
+        preservedBefore.filter(
+          (row) => row.integration_namespace === "yuanta",
+        ),
       );
       assert.equal(
         Number(
@@ -1324,6 +1330,26 @@ test("v11 to v12 purges only Fubon/Yuanta credit-card closure and preserves shar
       assert.ok(Number(audit.deleted_row_count) > 0);
       const deletedCounts = JSON.parse(String(audit.deleted_table_counts_json));
       assert.ok(Number(deletedCounts.fubon_credit_instrument_details) > 0);
+      const fubonDepositAudit = migrated
+        .prepare(
+          `SELECT schema_version, scope_json, closure_fingerprint
+             FROM canonical_contract_purges
+            WHERE purge_id = 'fubon-domestic-deposit/observed-composite-v1:v14'`,
+        )
+        .get() as {
+        schema_version?: number;
+        scope_json?: string;
+        closure_fingerprint?: string;
+      };
+      assert.equal(fubonDepositAudit.schema_version, 14);
+      assert.deepEqual(JSON.parse(String(fubonDepositAudit.scope_json)), {
+        integrationNamespaces: ["fubon"],
+        streams: ["domestic-deposit"],
+      });
+      assert.match(
+        String(fubonDepositAudit.closure_fingerprint),
+        /^sha256:[A-Za-z0-9_-]+$/u,
+      );
       assert.ok(Number(deletedCounts.canonical_credit_card_instruments) > 0);
       assert.deepEqual(JSON.parse(String(audit.scope_json)), {
         integrationNamespaces: ["fubon", "yuanta"],

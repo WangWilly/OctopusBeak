@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 13;
+export const CANONICAL_SCHEMA_VERSION = 14;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -6403,7 +6403,7 @@ function migrateV9ToV10(db: DatabaseSync): void {
 const SCHEMA_V11_CONTRACT_PURGE_AUDIT = `
 CREATE TABLE IF NOT EXISTS canonical_contract_purges (
   purge_id TEXT PRIMARY KEY,
-  schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12)),
+  schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14)),
   reason TEXT NOT NULL,
   scope_json TEXT NOT NULL,
   deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
@@ -6436,10 +6436,19 @@ const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES = [
   "yuanta",
 ] as const;
 const CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS = ["credit-card"] as const;
+const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID =
+  "fubon-domestic-deposit/observed-composite-v1:v14";
+const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES = ["fubon"] as const;
+const FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS = [
+  "domestic-deposit",
+] as const;
 
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
-  options: Readonly<{ requireCreditCardPurge?: boolean }> = {},
+  options: Readonly<{
+    requireCreditCardPurge?: boolean;
+    requireFubonDepositOccurrencePurge?: boolean;
+  }> = {},
 ): void {
   if (relationType(db, "canonical_contract_purges") !== "table")
     throw new Error("Canonical schema v11 Contract Purge audit table is missing.");
@@ -6494,6 +6503,32 @@ function validateCanonicalContractPurgeSchema(
     )
       throw new Error("Canonical schema v12 credit-card Contract Purge audit is incomplete.");
   }
+  if (options.requireFubonDepositOccurrencePurge) {
+    const depositAudit = db
+      .prepare(
+        "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get(FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID) as
+      | {
+          schema_version?: number;
+          scope_json?: string;
+          deleted_table_counts_json?: string;
+          closure_fingerprint?: string;
+        }
+      | undefined;
+    if (
+      !depositAudit ||
+      Number(depositAudit.schema_version) !== 14 ||
+      typeof depositAudit.scope_json !== "string" ||
+      typeof depositAudit.deleted_table_counts_json !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]+$/u.test(
+        String(depositAudit.closure_fingerprint ?? ""),
+      )
+    )
+      throw new Error(
+        "Canonical schema v14 Fubon deposit occurrence Contract Purge audit is incomplete.",
+      );
+  }
 }
 
 /**
@@ -6508,6 +6543,12 @@ function ensureCanonicalContractPurgeSchemaV12(db: DatabaseSync): void {
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
     )
     .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
   if (
     /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*\)\s*\)/iu.test(
       String(schema?.sql ?? ""),
@@ -6874,7 +6915,7 @@ function purgeLegacySourceConnectionIdentityScopes(db: DatabaseSync): void {
 
 type CanonicalContractPurgeAudit = Readonly<{
   purgeId: string;
-  schemaVersion: 12;
+  schemaVersion: 12 | 14;
   reason: string;
   integrationNamespaces: readonly string[];
   streams: readonly string[];
@@ -6945,7 +6986,7 @@ function purgeCanonicalClosureToAudit(
   reconcileProjectionProvenanceAfterContractPurge(db);
   if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
     throw new Error(
-      "Canonical credit-card source purge left a dangling foreign-key reference.",
+      "Canonical scoped source purge left a dangling foreign-key reference.",
     );
 
   const deletedRowCount = Object.values(tableCounts).reduce(
@@ -7005,6 +7046,38 @@ function purgeLegacyCreditCardSourceScopes(db: DatabaseSync): void {
         "replace product-specific Fubon or Yuanta credit-card Source Connection identity; recollect under the shared caller identity",
       integrationNamespaces: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES,
       streams: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_STREAMS,
+    },
+  );
+}
+
+function purgeFubonDepositOccurrenceV1Scope(db: DatabaseSync): void {
+  if (
+    db
+      .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+      .get(FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID)
+  )
+    return;
+  purgeCanonicalClosureToAudit(
+    db,
+    legacySourceConnectionIdentityClosure(db, {
+      namespaces: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES,
+      streams: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS,
+      includeLoanResolverImplications: true,
+      stopAtTables: [
+        "source_connections",
+        "identity_epochs",
+        "source_authority_routes",
+        "canonical_commits",
+        "projection_generations",
+      ],
+    }),
+    {
+      purgeId: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID,
+      schemaVersion: 14,
+      reason:
+        "replace Fubon deposit occurrence identity that treated provider-window-dependent notes as stable; recollect under observed-composite-v2",
+      integrationNamespaces: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_NAMESPACES,
+      streams: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_STREAMS,
     },
   );
 }
@@ -7386,6 +7459,73 @@ function migrateV12ToV13(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
+  migrateV13ToV14(db);
+}
+
+function widenCanonicalContractPurgeAuditForV14(db: DatabaseSync): void {
+  const schema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canonical_contract_purges'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (
+    /CHECK\s*\(\s*schema_version\s+IN\s*\(\s*11\s*,\s*12\s*,\s*14\s*\)\s*\)/iu.test(
+      String(schema?.sql ?? ""),
+    )
+  )
+    return;
+  db.exec(`
+    CREATE TABLE canonical_contract_purges_v14 (
+      purge_id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (11, 12, 14)),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    INSERT INTO canonical_contract_purges_v14
+      SELECT * FROM canonical_contract_purges;
+    CREATE TABLE canonical_contract_purge_commits_v14 (
+      purge_id TEXT NOT NULL REFERENCES canonical_contract_purges_v14(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    INSERT INTO canonical_contract_purge_commits_v14
+      SELECT * FROM canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purge_commits;
+    DROP TABLE canonical_contract_purges;
+    ALTER TABLE canonical_contract_purges_v14 RENAME TO canonical_contract_purges;
+    ALTER TABLE canonical_contract_purge_commits_v14 RENAME TO canonical_contract_purge_commits;
+  `);
+}
+
+function migrateV13ToV14(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    widenCanonicalContractPurgeAuditForV14(db);
+    purgeFubonDepositOccurrenceV1Scope(db);
+    validateCanonicalContractPurgeSchema(db, {
+      requireCreditCardPurge: true,
+      requireFubonDepositOccurrencePurge: true,
+    });
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v14 Fubon deposit occurrence migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (14, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 14");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
 }
 
 function applySchemaMigration(
@@ -7540,6 +7680,10 @@ function applySchemaMigration(
     migrateV12ToV13(db);
     return;
   }
+  if (version === 13) {
+    migrateV13ToV14(db);
+    return;
+  }
   if (version === CANONICAL_SCHEMA_VERSION) {
     if (!tableExists(db, "schema_migrations"))
       throw new Error("Canonical SQLite schema version metadata is missing.");
@@ -7573,7 +7717,10 @@ function applySchemaMigration(
       validateCanonicalLoanExtensionSchema(db);
       validateCanonicalLoanRepaymentRelationSchema(db);
       validateCanonicalRelationResolutionCommitSchema(db);
-      validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
+      validateCanonicalContractPurgeSchema(db, {
+        requireCreditCardPurge: true,
+        requireFubonDepositOccurrencePurge: true,
+      });
       db.exec("PRAGMA foreign_keys = ON");
       db.exec("COMMIT");
     } catch (error) {
@@ -7618,7 +7765,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   validateCanonicalLoanExtensionSchema(db);
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
-  validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
+  validateCanonicalContractPurgeSchema(db, {
+    requireCreditCardPurge: true,
+    requireFubonDepositOccurrencePurge: true,
+  });
   const requiredTables = [
     "capture_scopes",
     "capture_scope_pages",
@@ -11468,7 +11618,10 @@ function openCanonicalDatabasePath(path: string): DatabaseSync {
     validateCanonicalLoanExtensionSchema(db);
     validateCanonicalLoanRepaymentRelationSchema(db);
     validateCanonicalRelationResolutionCommitSchema(db);
-    validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
+    validateCanonicalContractPurgeSchema(db, {
+      requireCreditCardPurge: true,
+      requireFubonDepositOccurrencePurge: true,
+    });
     return db;
   } catch (error) {
     db.close();
@@ -11511,7 +11664,10 @@ export function validateCanonicalSourceStore(
   validateCanonicalLoanExtensionSchema(store.db);
   validateCanonicalLoanRepaymentRelationSchema(store.db);
   validateCanonicalRelationResolutionCommitSchema(store.db);
-  validateCanonicalContractPurgeSchema(store.db);
+  validateCanonicalContractPurgeSchema(store.db, {
+    requireCreditCardPurge: true,
+    requireFubonDepositOccurrencePurge: true,
+  });
   const integrity = String(
     (
       store.db.prepare("PRAGMA integrity_check").get() as {
