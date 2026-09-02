@@ -186,6 +186,7 @@ const tradeTransactionHeaders = [
   "product_name",
   "currency",
   "action",
+  "source_transaction_reference",
   "quantity",
   "price",
   "gross_amount",
@@ -890,6 +891,13 @@ function normalizeTradeRows(
             "投資幣別",
           ]),
           action: rowValue(row, ["交易類別"]),
+          source_transaction_reference: rowValue(row, [
+            "交易序號",
+            "委託書號",
+            "成交序號",
+            "交割序號",
+            "參考號碼",
+          ]),
           quantity: rowValue(row, [
             "面額/股數",
             "股數",
@@ -961,13 +969,12 @@ function normalizeTradeRows(
 
 function normalizeHoldingRows(
   pages: ReportPage[],
-  fallbackDateRange: { startDate: string; endDate: string },
+  _fallbackDateRange: { startDate: string; endDate: string },
 ): CsvRow[] {
   const rows: CsvRow[] = [];
 
   for (const page of pages) {
-    const asOfDate =
-      page.endDate || page.startDate || fallbackDateRange.endDate;
+    const asOfDate = page.endDate || page.startDate || "";
     const period = reportPeriod(page) || asOfDate;
 
     for (const grid of page.grids) {
@@ -1226,6 +1233,25 @@ function explicitAction(value: string): "buy" | "sell" {
     "Yuanta Trade canonical action is not an explicit buy/sell value.",
   );
 }
+export function yuantaTradeCanonicalOccurrenceIdentity(
+  accountNumber: string,
+  rowKind: "holding" | "transaction",
+  row: CsvRow,
+  occurrenceOrdinal: number,
+): string {
+  const stableSourceIdentity = row.source_transaction_reference?.trim();
+  return deriveSourceConnectionIdentityKey("yuanta-trade-record", [
+    accountNumber,
+    rowKind,
+    row.product_code ?? "",
+    row.as_of_date ?? row.trade_date ?? "",
+    row.action ?? "",
+    row.quantity ?? "",
+    row.settlement_amount ?? row.market_value_twd ?? "",
+    stableSourceIdentity || "no-source-reference",
+    `complete-order:${occurrenceOrdinal}`,
+  ]);
+}
 async function commitYuantaTradeCanonicalIfComplete(
   input: WorkflowInput,
   credentials: YuantaTradeCredentials,
@@ -1265,16 +1291,16 @@ async function commitYuantaTradeCanonicalIfComplete(
       throw new Error(
         "Yuanta Trade canonical holdings require one source-proven as-of date.",
       );
-    const mapRow = (row: CsvRow): YuantaCanonicalInvestmentRow => ({
-      sourceRecordKey: deriveSourceConnectionIdentityKey(
-        "yuanta-trade-record",
-        [
-          accountNumber!,
-          row.product_code ?? "",
-          row.as_of_date ?? row.trade_date ?? "",
-          row.quantity ?? "",
-          row.settlement_amount ?? row.market_value_twd ?? "",
-        ],
+    const mapRow = (
+      row: CsvRow,
+      rowKind: "holding" | "transaction",
+      occurrenceOrdinal: number,
+    ): YuantaCanonicalInvestmentRow => ({
+      sourceRecordKey: yuantaTradeCanonicalOccurrenceIdentity(
+        accountNumber!,
+        rowKind,
+        row,
+        occurrenceOrdinal,
       ),
       producerSecurityId: row.product_code?.trim() ?? "",
       securityName: row.product_name?.trim() || undefined,
@@ -1286,9 +1312,11 @@ async function commitYuantaTradeCanonicalIfComplete(
         ? { ...exactAmount(row.market_value_twd), currency: "TWD" }
         : undefined,
     });
-    const holdings = accountHoldings.map(mapRow);
-    const transactions = accountTrades.map((row) => ({
-      ...mapRow(row),
+    const holdings = accountHoldings.map((row, index) =>
+      mapRow(row, "holding", index),
+    );
+    const transactions = accountTrades.map((row, index) => ({
+      ...mapRow(row, "transaction", index),
       action: explicitAction(row.action ?? ""),
       cashEffect: {
         ...exactAmount(row.settlement_amount || row.gross_amount || ""),

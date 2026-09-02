@@ -10,6 +10,7 @@ import {
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
   yuantaTradeCaptchaSubmit,
+  yuantaTradeCanonicalOccurrenceIdentity,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
@@ -24,6 +25,10 @@ assert.match(workflowSource, /commitYuantaTradeCanonicalIfComplete/);
 assert.match(workflowSource, /buildYuantaInvestmentCapture/);
 assert.match(workflowSource, /commitCanonicalInvestmentCapture/);
 assert.match(workflowSource, /holding-capture-incomplete/);
+assert.match(
+  workflowSource,
+  /function normalizeHoldingRows[\s\S]*?const asOfDate = page\.endDate \|\| page\.startDate \|\| "";/,
+);
 
 function fakePage(reminderVisible: boolean | Error) {
   let clicks = 0;
@@ -223,5 +228,52 @@ test("rejects a partial YuanTa holdings capture", () => {
   assert.equal(
     isCompleteHoldingCapture([completeHoldingPage], ["Stock", "Bond"]),
     false,
+  );
+});
+
+test("canonical occurrence identity never merges identical source rows", () => {
+  const row = {
+    trade_date: "2026-08-30",
+    product_code: "SANITIZED",
+    action: "買進",
+    quantity: "1000",
+    settlement_amount: "500000",
+  };
+  const first = yuantaTradeCanonicalOccurrenceIdentity(
+    "SANITIZED-ACCOUNT",
+    "transaction",
+    row,
+    0,
+  );
+  const second = yuantaTradeCanonicalOccurrenceIdentity(
+    "SANITIZED-ACCOUNT",
+    "transaction",
+    row,
+    1,
+  );
+  assert.notEqual(first, second);
+  assert.notEqual(
+    first,
+    yuantaTradeCanonicalOccurrenceIdentity(
+      "SANITIZED-ACCOUNT",
+      "transaction",
+      { ...row, action: "賣出" },
+      0,
+    ),
+  );
+  const referenced = { ...row, source_transaction_reference: "REF-001" };
+  assert.notEqual(
+    yuantaTradeCanonicalOccurrenceIdentity(
+      "SANITIZED-ACCOUNT",
+      "transaction",
+      referenced,
+      0,
+    ),
+    yuantaTradeCanonicalOccurrenceIdentity(
+      "SANITIZED-ACCOUNT",
+      "transaction",
+      referenced,
+      99,
+    ),
   );
 });
