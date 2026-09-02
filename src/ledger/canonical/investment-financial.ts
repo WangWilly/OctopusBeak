@@ -8,9 +8,14 @@ import {
 import {
   createCanonicalSourceStore,
   validateCanonicalInvestmentExtensionSchema,
+  validateCanonicalInvestmentFundingRelationSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import {
+  queryCanonicalInvestmentFundingRelationsInSnapshot,
+  resolveCanonicalInvestmentFundingRelations,
+} from "./investment-funding-relations.ts";
 import {
   admitCanonicalLoanCapture,
   canonicalLoanCaptureSpines,
@@ -20,6 +25,15 @@ import {
 
 export const INVESTMENT_CANONICAL_CONTRACT_VERSION =
   "investment/canonical/v1" as const;
+/**
+ * Live YuanTa overseas-trade rows do not expose the funding account or the
+ * bank booking date.  This contract therefore records only that the trade is
+ * eligible for the bank-side, fixed-note settlement resolver.  The resolver
+ * obtains the full account and effective date from the independently captured
+ * foreign-currency statement.
+ */
+export const YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION =
+  "yuanta/foreign-settlement/human-attested-v1" as const;
 export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade";
 export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
   "yuanta-fund",
@@ -33,8 +47,21 @@ export type InvestmentFundingEvidence =
       kind: "source-linked-account";
       sourceRecordKey: string;
       fundingAccountKey: string;
+      fundingAccountNumber: string;
       sourceLinkageKey: string;
+      settlementGroupKey: string;
+      settlementEffectiveOn: string;
+      settlementModel:
+        | "single-transaction"
+        | "account-currency-date-net";
       contractVersion: string;
+    }
+  | {
+      kind: "source-settlement-contract";
+      sourceRecordKey: string;
+      sourceLinkageKey: string;
+      settlementModel: "account-currency-date-net";
+      contractVersion: typeof YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION;
     };
 export type HoldingEffectiveTimeEvidence = {
   kind: "source-reported-as-of";
@@ -372,6 +399,45 @@ export function admitCanonicalInvestmentCapture(
     amount(transaction.quantity, "Transaction quantity");
     amount(transaction.cashEffect, "Transaction cash effect");
     date(transaction.effectiveOn, "Transaction effective time");
+    const funding = transaction.fundingEvidence;
+    if (funding.sourceRecordKey !== transaction.sourceRecordKey)
+      throw new CanonicalInvestmentAdmissionError(
+        "Investment funding evidence must belong to its transaction source record.",
+      );
+    if (funding.kind === "source-linked-account") {
+      token(funding.fundingAccountKey, "Funding account key");
+      token(funding.sourceLinkageKey, "Funding source linkage key");
+      token(funding.settlementGroupKey, "Funding settlement group key");
+      date(funding.settlementEffectiveOn, "Funding settlement effective time");
+      const accountNumber = funding.fundingAccountNumber.replaceAll(/[-\s]/g, "");
+      if (!/^\d{6,20}$/.test(accountNumber))
+        throw new CanonicalInvestmentAdmissionError(
+          "Funding account evidence requires the complete source-reported account number.",
+        );
+      if (
+        funding.contractVersion !== capture.contractVersion ||
+        !["single-transaction", "account-currency-date-net"].includes(
+          funding.settlementModel,
+        )
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Funding account evidence is outside the capture contract.",
+        );
+    }
+    if (funding.kind === "source-settlement-contract") {
+      if (capture.sourceId !== "yuanta-trade")
+        throw new CanonicalInvestmentAdmissionError(
+          "Source-settlement contract is only supported for Yuanta trade captures.",
+        );
+      token(funding.sourceLinkageKey, "Funding source linkage key");
+      if (
+        funding.settlementModel !== "account-currency-date-net" ||
+        funding.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Funding settlement contract is outside the live-verified contract.",
+        );
+    }
   }
   if (capture.margin?.kind === "embedded") {
     amount(capture.margin.amount, "Margin debt");
@@ -796,6 +862,7 @@ export function createCanonicalInvestmentStore(
 ): CanonicalInvestmentStore {
   const store = createCanonicalSourceStore(path);
   validateCanonicalInvestmentExtensionSchema(store.db);
+  validateCanonicalInvestmentFundingRelationSchema(store.db);
   return store;
 }
 function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
@@ -1086,7 +1153,7 @@ export async function commitCanonicalInvestmentCaptureBatch(
         ReturnType<typeof canonicalMarginCreditSpine>
       > => capture !== null,
     );
-  return commitCanonicalFinancialDepositCaptureBatch(
+  const results = await commitCanonicalFinancialDepositCaptureBatch(
     store,
     [
       ...captures.map(canonicalSpine),
@@ -1099,6 +1166,11 @@ export async function commitCanonicalInvestmentCaptureBatch(
         persistCanonicalLoanCaptureExtensions(db, marginLoan);
     },
   );
+  // Relation resolution is deliberately outside the source-capture commit.
+  // A later bank capture can complete the same canonical history, so this is
+  // an idempotent post-commit boundary rather than a workflow-run relation.
+  resolveCanonicalInvestmentFundingRelations(store);
+  return results;
 }
 
 function queryRows(
@@ -1172,10 +1244,18 @@ function queryRows(
       transactions,
       marginBalances,
       independentMarginAccounts,
-      relations: [] as never[],
+      relations: queryCanonicalInvestmentFundingRelationsInSnapshot(
+        store,
+        sourceConnectionKey,
+      ),
     };
   });
 }
+
+export {
+  queryCanonicalInvestmentFundingRelations,
+  resolveCanonicalInvestmentFundingRelations,
+} from "./investment-funding-relations.ts";
 export function queryCanonicalInvestmentCurrent(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,

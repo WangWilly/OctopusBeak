@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -28,6 +28,16 @@ const {
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
+
+const foreignWorkflowSource = await readFile(
+  new URL("./yuanta-foreign-currency-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(foreignWorkflowSource, /resolveCanonicalInvestmentFundingRelations/);
+assert.match(
+  foreignWorkflowSource,
+  /await commitForeignCurrencyDepositCaptureBatch\([\s\S]*?resolveCanonicalInvestmentFundingRelations\(financialStore\)/,
+);
 
 const fixedForeignDateRange = {
   startDate: "2026-08-14",

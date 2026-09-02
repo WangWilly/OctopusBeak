@@ -21,6 +21,7 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { resolveCanonicalInvestmentFundingRelations } from "../ledger/canonical/investment-funding-relations.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -906,7 +907,9 @@ export async function commitYuantaForeignCurrencyCapture(
   store: ForeignCurrencyDepositCommitStore,
   input: ForeignCurrencyDepositCaptureInput,
 ) {
-  return commitForeignCurrencyDepositCaptureBatch(store, [input]);
+  const results = await commitForeignCurrencyDepositCaptureBatch(store, [input]);
+  resolveCanonicalInvestmentFundingRelations(store);
+  return results;
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
@@ -1007,6 +1010,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
           );
         });
         await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
+        resolveCanonicalInvestmentFundingRelations(financialStore);
       } finally {
         financialStore.close();
       }

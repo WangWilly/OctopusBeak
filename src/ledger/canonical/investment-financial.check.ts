@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositRecord,
+} from "./canonical-financial-deposit-writer.ts";
+import { admitForeignCurrencyDepositCapture } from "./foreign-currency-deposit.ts";
 import {
   admitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCapture,
@@ -12,11 +19,17 @@ import {
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
   queryCanonicalInvestmentLineage,
+  resolveCanonicalInvestmentFundingRelations,
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
 
-const token = (letter: string) => `sha256:${letter.repeat(64)}`;
+const token = (label: string) =>
+  `sha256:${createHash("sha256").update(label).digest("base64url")}`;
+
+const SYNTHETIC_SOURCE_LINKED_ACCOUNT = "9001" + "0020" + "0300" + "4005";
+const SYNTHETIC_YUANTA_SETTLEMENT_ACCOUNT = "9001" + "0020" + "0300" + "4006";
+const SYNTHETIC_YUANTA_NO_NOTE_ACCOUNT = "9001" + "0020" + "0300" + "4007";
 
 function fixture(
   captureId = "yuanta-trade-sanitized-1",
@@ -91,6 +104,183 @@ function fixture(
       sourceRecordKey: token("h"),
     },
   };
+}
+
+function fundingEvidence(
+  sourceRecordKey = token("f"),
+  settlementGroupKey = token("l"),
+) {
+  return {
+    kind: "source-linked-account" as const,
+    sourceRecordKey,
+    fundingAccountKey: token("p"),
+    fundingAccountNumber: SYNTHETIC_SOURCE_LINKED_ACCOUNT,
+    sourceLinkageKey: token("k"),
+    settlementGroupKey,
+    settlementEffectiveOn: "2026-08-31",
+    settlementModel: "single-transaction" as const,
+    contractVersion: "yuanta-trade/investment/canonical-v1",
+  };
+}
+
+function depositCapture(
+  label: string,
+  amounts: readonly string[] = ["500000"],
+) {
+  const records: CanonicalFinancialDepositRecord[] = amounts.map(
+    (coefficient, index) => ({
+      occurrenceKey: token(`${label}:occurrence:${index}`),
+      collisionKey: token(`${label}:collision:${index}`),
+      providerKey: token(`${label}:provider:${index}`),
+      contentHash: token(`${label}:content:${index}`),
+      sequenceLexeme: String(index),
+      compactJson: JSON.stringify({ label, index }),
+      amount: { coefficient, scale: 0 },
+      balanceAfter: { coefficient: "1000000", scale: 0 },
+      currency: "TWD",
+      direction: "outflow",
+      sourceTime: {
+        localDate: "2026-08-31",
+        localTime: `09:00:${String(index).padStart(2, "0")}`,
+        timeZone: "Asia/Taipei",
+        epochMilliseconds: Date.parse(
+          `2026-08-31T09:00:${String(index).padStart(2, "0")}+08:00`,
+        ),
+        precision: "second",
+        timeOrigin: "source_reported",
+      },
+      effectiveOn: "2026-08-31",
+      transactionDateTimeLocal: `2026-08-31T09:00:${String(index).padStart(2, "0")}`,
+      description: "SANITIZED BROKER SETTLEMENT",
+    }),
+  );
+  const route = "fubon/domestic-deposit/human-attested-v1";
+  return admitCanonicalFinancialDepositCapture({
+    captureId: token(`${label}:capture`),
+    authorityRoute: route,
+    contractVersion: route,
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: token("x"),
+      identityEpochKey: token("y"),
+      stream: "domestic-deposit",
+      recordKind: "fubon-domestic-deposit",
+      subjectDigest: token(`${label}:subject`),
+      accountNo: token("p"),
+      accountType: "depository",
+      currency: "TWD",
+    },
+    observedAt: "2026-09-01T00:00:00.000Z",
+    scope: {
+      startDate: "2026-08-01",
+      endDate: "2026-09-01",
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis: "source-terminal-statement-range",
+      completenessRuleVersion: route,
+      absenceAuthority: null,
+      contractFingerprint: token(`${label}:contract`),
+      preflightFingerprint: token(`${label}:preflight`),
+      pageCount: 1,
+      withdrawalPolicy: "never-infer",
+    },
+    semantics: {
+      postingStatus: "posted",
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: route,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: route,
+      effectiveTimeBasis: "transaction-time",
+      effectiveTimeRuleVersion: route,
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      timeOrigin: "source_reported",
+      requireBalance: true,
+      providerGuaranteed: false,
+      occurrenceProviderGuaranteed: false,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: records.length,
+        responseDigest: token(`${label}:page`),
+        proofKind: "source-terminal-statement-range",
+        contractFingerprint: token(`${label}:contract`),
+        preflightFingerprint: token(`${label}:preflight`),
+        metadataJson: "{}",
+      },
+    ],
+    records,
+  });
+}
+
+function yuantaForeignSettlementCapture(
+  label: string,
+  effectiveOn: string,
+  amount: string,
+  direction: "inflow" | "outflow",
+  options: { accountNo?: string; fixedNote?: boolean } = {},
+) {
+  return yuantaForeignSettlementCaptureRows(label, [
+    { effectiveOn, amount, direction },
+  ], options);
+}
+
+function yuantaForeignSettlementCaptureRows(
+  label: string,
+  rows: ReadonlyArray<{
+    effectiveOn: string;
+    amount: string;
+    direction: "inflow" | "outflow";
+  }>,
+  options: { accountNo?: string; fixedNote?: boolean } = {},
+) {
+  const accountNo = options.accountNo ?? SYNTHETIC_YUANTA_SETTLEMENT_ACCOUNT;
+  const fixedNote = options.fixedNote ?? true;
+  return admitForeignCurrencyDepositCapture({
+    source: "yuanta",
+    accountNo,
+    sourceConnectionKey: token("yuanta-bank-connection"),
+    identityEpochKey: token("yuanta-bank-epoch"),
+    observedAt: "2026-08-31T12:00:00.000Z",
+    startDate: "2026-08-01",
+    endDate: "2026-09-01",
+    completeness: "complete-range",
+    captureCurrencyScope: { kind: "currency", currency: "USD" },
+    captureOccurrenceId: `yuanta-foreign-settlement-${label}`,
+    accountType: "depository",
+    records: rows.map(({ effectiveOn, amount, direction }, index) => ({
+        sourceKey: `${label}:${index}:${effectiveOn}:${amount}`,
+        amount,
+        direction,
+        currencyEvidence: { kind: "row" as const, currency: "USD" },
+        balanceAfter: "10000.00",
+        sourceTime: {
+          localDate: effectiveOn,
+          localTime: "09:00:00",
+          precision: "second",
+          timeOrigin: "source_reported",
+        },
+        description: fixedNote
+          ? direction === "outflow"
+            ? "複委託扣"
+            : "複委託入"
+          : direction === "outflow"
+            ? "股票買入"
+            : "股票賣出",
+        sourcePayload: {
+          transactionInfo: fixedNote
+            ? direction === "outflow"
+              ? "淨額扣"
+              : "淨額入"
+            : "行動互轉",
+        },
+      })),
+  });
 }
 
 test("investment capture is atomic, restart-safe, and preserves independent measurements", async () => {
@@ -516,4 +706,485 @@ test("a multi-account investment batch has one atomic visibility boundary", asyn
     0,
   );
   store.close();
+});
+
+test("verified settlement account evidence resolves a single investment funding relation", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("verified-settlement");
+  input.transactions[0] = {
+    ...input.transactions[0]!,
+    fundingEvidence: fundingEvidence(),
+  };
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    depositCapture("verified-settlement"),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(store), {
+    resolved: 1,
+    noAdmission: 0,
+    reasons: [],
+  });
+  assert.equal(
+    resolveCanonicalInvestmentFundingRelations(store).resolved,
+    1,
+    "resolution is idempotent",
+  );
+  const relation = queryCanonicalInvestmentCurrent(store, token("a"))
+    .relations[0] as Record<string, unknown>;
+  assert.equal(relation.settlementModel, "single-transaction");
+  assert.equal(relation.investmentTransactionCount, 1);
+  assert.equal(relation.coefficient, "500000");
+  assert.equal(relation.direction, "outflow");
+  store.close();
+});
+
+test("net settlement relates several trades to one bank debit", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("net-settlement");
+  input.transactions = [
+    {
+      ...input.transactions[0]!,
+      sourceRecordKey: token("net-buy-a"),
+      transactionKey: token("net-transaction-a"),
+      cashEffect: { coefficient: "400000", scale: 0, currency: "TWD" },
+      fundingEvidence: {
+        ...fundingEvidence(token("net-buy-a"), token("net-group")),
+        settlementModel: "account-currency-date-net",
+      },
+    },
+    {
+      ...input.transactions[0]!,
+      sourceRecordKey: token("net-buy-b"),
+      transactionKey: token("net-transaction-b"),
+      cashEffect: { coefficient: "100000", scale: 0, currency: "TWD" },
+      fundingEvidence: {
+        ...fundingEvidence(token("net-buy-b"), token("net-group")),
+        settlementModel: "account-currency-date-net",
+      },
+    },
+    {
+      ...input.transactions[0]!,
+      sourceRecordKey: token("net-sell"),
+      transactionKey: token("net-transaction-c"),
+      action: "sell",
+      cashEffect: { coefficient: "50000", scale: 0, currency: "TWD" },
+      fundingEvidence: {
+        ...fundingEvidence(token("net-sell"), token("net-group")),
+        settlementModel: "account-currency-date-net",
+      },
+    },
+  ];
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    depositCapture("net-settlement", ["450000"]),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+  assert.equal(resolveCanonicalInvestmentFundingRelations(store).resolved, 1);
+  const relation = queryCanonicalInvestmentCurrent(store, token("a"))
+    .relations[0] as Record<string, unknown>;
+  assert.equal(relation.settlementModel, "account-currency-date-net");
+  assert.equal(relation.investmentTransactionCount, 3);
+  assert.equal(relation.coefficient, "450000");
+  store.close();
+});
+
+test("Yuanta brokerage settlement uses the bank's fixed note and actual settlement date", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-live-single-settlement");
+  input.transactions[0] = {
+    ...input.transactions[0]!,
+    action: "buy",
+    cashEffect: { coefficient: "460352", scale: 2, currency: "USD" },
+    effectiveOn: "2026-08-13",
+    fundingEvidence: {
+      kind: "source-settlement-contract",
+      sourceRecordKey: input.transactions[0]!.sourceRecordKey,
+      sourceLinkageKey: token("yuanta-live-settlement-linkage"),
+      settlementModel: "account-currency-date-net",
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+    } as never,
+  };
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "single-buy",
+      "2026-08-14",
+      "4603.52",
+      "outflow",
+    ),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.equal(resolveCanonicalInvestmentFundingRelations(store).resolved, 1);
+  const relation = queryCanonicalInvestmentCurrent(store, token("a"))
+    .relations[0] as Record<string, unknown>;
+  assert.equal(relation.settlementEffectiveOn, "2026-08-14");
+  assert.equal(relation.currency, "USD");
+  assert.equal(relation.coefficient, "460352");
+  assert.deepEqual(
+    {
+      ...(store.db
+        .prepare(
+          `SELECT commit_kind AS commitKind
+             FROM canonical_commits
+            WHERE commit_id=(SELECT created_commit_id
+                               FROM investment_funding_relations
+                              WHERE relation_key=?)`,
+        )
+        .get(String(relation.relationKey)) as object),
+    },
+    { commitKind: "relation_resolution" },
+  );
+  store.close();
+});
+
+test("Yuanta overseas buys and sells share one cross-day net settlement group", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-live-net-settlement");
+  const base = input.transactions[0]!;
+  const row = (
+    sourceRecordKey: string,
+    transactionKey: string,
+    action: "buy" | "sell",
+    effectiveOn: string,
+    coefficient: string,
+  ) => ({
+    ...base,
+    sourceRecordKey: token(sourceRecordKey),
+    transactionKey: token(transactionKey),
+    action,
+    cashEffect: { coefficient, scale: 2, currency: "USD" },
+    effectiveOn,
+    fundingEvidence: {
+      kind: "source-settlement-contract" as const,
+      sourceRecordKey: token(sourceRecordKey),
+      sourceLinkageKey: token("yuanta-live-net-settlement-linkage"),
+      settlementModel: "account-currency-date-net" as const,
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1" as const,
+    },
+  });
+  input.transactions = [
+    row("yuanta-net-sell", "yuanta-net-sell-transaction", "sell", "2026-08-14", "1142352"),
+    row("yuanta-net-buy-a", "yuanta-net-buy-a-transaction", "buy", "2026-08-17", "310647"),
+    row("yuanta-net-buy-b", "yuanta-net-buy-b-transaction", "buy", "2026-08-17", "514893"),
+    row("yuanta-net-buy-c", "yuanta-net-buy-c-transaction", "buy", "2026-08-17", "304174"),
+  ];
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "yuanta-live-net-settlement",
+      "2026-08-18",
+      "126.38",
+      "inflow",
+    ),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.equal(resolveCanonicalInvestmentFundingRelations(store).resolved, 1);
+  const relation = queryCanonicalInvestmentCurrent(store, token("a"))
+    .relations[0] as Record<string, unknown>;
+  assert.equal(relation.settlementEffectiveOn, "2026-08-18");
+  assert.equal(relation.settlementModel, "account-currency-date-net");
+  assert.equal(relation.investmentTransactionCount, 4);
+  assert.equal(relation.coefficient, "12638");
+  assert.equal(relation.direction, "inflow");
+  store.close();
+});
+
+test("a same-amount Yuanta bank row without the fixed settlement note is excluded", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-live-second-account");
+  input.transactions[0] = {
+    ...input.transactions[0]!,
+    cashEffect: { coefficient: "460352", scale: 2, currency: "USD" },
+    effectiveOn: "2026-08-13",
+    fundingEvidence: {
+      kind: "source-settlement-contract",
+      sourceRecordKey: input.transactions[0]!.sourceRecordKey,
+      sourceLinkageKey: token("yuanta-live-second-account-linkage"),
+      settlementModel: "account-currency-date-net",
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+    } as never,
+  };
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "second-account-same-amount",
+      "2026-08-14",
+      "4603.52",
+      "outflow",
+      { accountNo: SYNTHETIC_YUANTA_NO_NOTE_ACCOUNT, fixedNote: false },
+    ),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(store), {
+    resolved: 0,
+    noAdmission: 1,
+    reasons: ["no-complete-funding-candidate"],
+  });
+  assert.equal(queryCanonicalInvestmentCurrent(store, token("a")).relations.length, 0);
+  store.close();
+});
+
+test("Yuanta settlement resolution refuses a bank scope that is not terminal-complete", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-live-incomplete-settlement");
+  input.transactions[0] = {
+    ...input.transactions[0]!,
+    cashEffect: { coefficient: "460352", scale: 2, currency: "USD" },
+    effectiveOn: "2026-08-13",
+    fundingEvidence: {
+      kind: "source-settlement-contract",
+      sourceRecordKey: input.transactions[0]!.sourceRecordKey,
+      sourceLinkageKey: token("yuanta-live-incomplete-linkage"),
+      settlementModel: "account-currency-date-net",
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+    } as never,
+  };
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "incomplete-settlement",
+      "2026-08-14",
+      "4603.52",
+      "outflow",
+    ),
+  );
+  store.db.prepare("UPDATE capture_scopes SET terminal=0").run();
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(store), {
+    resolved: 0,
+    noAdmission: 1,
+    reasons: ["no-complete-funding-candidate"],
+  });
+  store.close();
+});
+
+test("two fixed-note bank rows with the same amount remain ambiguous", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  const input = fixture("yuanta-live-ambiguous-settlement");
+  input.transactions[0] = {
+    ...input.transactions[0]!,
+    cashEffect: { coefficient: "460352", scale: 2, currency: "USD" },
+    effectiveOn: "2026-08-13",
+    fundingEvidence: {
+      kind: "source-settlement-contract",
+      sourceRecordKey: input.transactions[0]!.sourceRecordKey,
+      sourceLinkageKey: token("yuanta-live-ambiguous-linkage"),
+      settlementModel: "account-currency-date-net",
+      contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+    } as never,
+  };
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "ambiguous-settlement-a",
+      "2026-08-14",
+      "4603.52",
+      "outflow",
+    ),
+  );
+  await commitCanonicalFinancialDepositCapture(
+    store,
+    yuantaForeignSettlementCapture(
+      "ambiguous-settlement-b",
+      "2026-08-14",
+      "4603.52",
+      "outflow",
+    ),
+  );
+  await commitCanonicalInvestmentCapture(
+    store,
+    admitCanonicalInvestmentCapture(input),
+  );
+
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(store), {
+    resolved: 0,
+    noAdmission: 1,
+    reasons: ["ambiguous-funding-candidate"],
+  });
+  assert.equal(queryCanonicalInvestmentCurrent(store, token("a")).relations.length, 0);
+  store.close();
+});
+
+test("amount coincidence, ambiguous debits, and incomplete coverage do not admit relations", async () => {
+  const coincidence = createCanonicalInvestmentStore(":memory:");
+  await commitCanonicalFinancialDepositCapture(
+    coincidence,
+    depositCapture("amount-only"),
+  );
+  await commitCanonicalInvestmentCapture(
+    coincidence,
+    admitCanonicalInvestmentCapture(fixture("amount-only")),
+  );
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(coincidence), {
+    resolved: 0,
+    noAdmission: 0,
+    reasons: [],
+  });
+  coincidence.close();
+
+  const ambiguous = createCanonicalInvestmentStore(":memory:");
+  const ambiguousInput = fixture("ambiguous-settlement");
+  ambiguousInput.transactions[0] = {
+    ...ambiguousInput.transactions[0]!,
+    fundingEvidence: fundingEvidence(),
+  };
+  await commitCanonicalFinancialDepositCapture(
+    ambiguous,
+    depositCapture("ambiguous-settlement", ["500000", "500000"]),
+  );
+  await commitCanonicalInvestmentCapture(
+    ambiguous,
+    admitCanonicalInvestmentCapture(ambiguousInput),
+  );
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(ambiguous), {
+    resolved: 0,
+    noAdmission: 1,
+    reasons: ["ambiguous-funding-candidate"],
+  });
+  ambiguous.close();
+
+  const incomplete = createCanonicalInvestmentStore(":memory:");
+  const incompleteInput = fixture("incomplete-settlement");
+  incompleteInput.transactions[0] = {
+    ...incompleteInput.transactions[0]!,
+    fundingEvidence: fundingEvidence(),
+  };
+  await commitCanonicalFinancialDepositCapture(
+    incomplete,
+    depositCapture("incomplete-settlement"),
+  );
+  incomplete.db.prepare("UPDATE capture_scopes SET terminal=0").run();
+  await commitCanonicalInvestmentCapture(
+    incomplete,
+    admitCanonicalInvestmentCapture(incompleteInput),
+  );
+  assert.deepEqual(resolveCanonicalInvestmentFundingRelations(incomplete), {
+    resolved: 0,
+    noAdmission: 1,
+    reasons: ["no-complete-funding-candidate"],
+  });
+  incomplete.close();
+});
+
+test("linked funding evidence requires a complete account and capture contract", () => {
+  const masked = fixture("masked-funding-account");
+  masked.transactions[0] = {
+    ...masked.transactions[0]!,
+    fundingEvidence: {
+      ...fundingEvidence(),
+      fundingAccountNumber: "******1100",
+    },
+  };
+  assert.throws(
+    () => admitCanonicalInvestmentCapture(masked),
+    /complete source-reported account number/,
+  );
+  const wrongContract = fixture("wrong-funding-contract");
+  wrongContract.transactions[0] = {
+    ...wrongContract.transactions[0]!,
+    fundingEvidence: {
+      ...fundingEvidence(),
+      contractVersion: "unverified-contract",
+    },
+  };
+  assert.throws(
+    () => admitCanonicalInvestmentCapture(wrongContract),
+    /outside the capture contract/,
+  );
+});
+
+test("Yuanta settlement evidence is not accepted from the fund source", () => {
+  const fundCapture = fixture("fund-settlement-contract");
+  fundCapture.sourceId = "yuanta-fund";
+  fundCapture.authorityRoute = "yuanta-fund/investment/canonical-v1";
+  fundCapture.contractVersion = "yuanta-fund/investment/canonical-v1";
+  fundCapture.securities[0]!.securityKey = "yuanta-fund:TWSE:2330";
+  fundCapture.securities[0]!.identityEvidence.contractVersion =
+    fundCapture.contractVersion;
+  fundCapture.holdings[0]!.securityKey = "yuanta-fund:TWSE:2330";
+  fundCapture.holdings[0]!.effectiveTimeEvidence.contractVersion =
+    fundCapture.contractVersion;
+  fundCapture.holdings[0]!.lineage.contractVersion = fundCapture.contractVersion;
+  fundCapture.transactions[0]!.securityKey = "yuanta-fund:TWSE:2330";
+  fundCapture.transactions[0]!.fundingEvidence = {
+    kind: "source-settlement-contract",
+    sourceRecordKey: fundCapture.transactions[0]!.sourceRecordKey,
+    sourceLinkageKey: token("fund-settlement-linkage"),
+    settlementModel: "account-currency-date-net",
+    contractVersion: "yuanta/foreign-settlement/human-attested-v1",
+  };
+  assert.throws(
+    () => admitCanonicalInvestmentCapture(fundCapture),
+    /only supported for Yuanta trade captures/,
+  );
+});
+
+test("a v15 database migrates and reopens with investment funding relations", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v16-"));
+  const path = join(dir, "canonical.sqlite");
+  try {
+    const initial = createCanonicalInvestmentStore(path);
+    initial.db.exec(`
+      DROP TABLE investment_funding_relation_events;
+      DROP TABLE investment_funding_relation_members;
+      DROP TABLE investment_funding_relations;
+      DELETE FROM schema_migrations WHERE version=16;
+      PRAGMA user_version=15;
+    `);
+    initial.close();
+
+    const migrated = createCanonicalInvestmentStore(path);
+    assert.equal(
+      Number(
+        (
+          migrated.db.prepare("PRAGMA user_version").get() as {
+            user_version: number;
+          }
+        ).user_version,
+      ),
+      16,
+    );
+    assert.deepEqual(
+      migrated.db
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type='table' AND name LIKE 'investment_funding_relation%'
+            ORDER BY name`,
+        )
+        .all()
+        .map((row) => ({ ...row })),
+      [
+        { name: "investment_funding_relation_events" },
+        { name: "investment_funding_relation_members" },
+        { name: "investment_funding_relations" },
+      ],
+    );
+    migrated.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
