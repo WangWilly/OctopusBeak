@@ -8,6 +8,7 @@ import {
   commitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-relations.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -177,9 +178,16 @@ const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-observation-1",
+  undefined,
+  "synthetic-yuanta-login",
 );
 assert.equal(yuantaForeignCapture.accountType, "depository");
 assert.equal(yuantaForeignCapture.records[0]!.currencyEvidence.currency, "USD");
+assert.equal(
+  (yuantaForeignCapture.records[0]!.sourcePayload as Record<string, unknown>)
+    .settlementLinkageKey,
+  deriveYuantaForeignSettlementLinkageKey("synthetic-yuanta-login", "USD"),
+);
 assert.equal(
   yuantaForeignCapture.records[0]!.sourceReportedRate?.rate,
   "31.5",

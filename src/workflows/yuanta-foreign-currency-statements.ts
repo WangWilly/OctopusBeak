@@ -21,7 +21,11 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
-import { resolveCanonicalInvestmentFundingRelations } from "../ledger/canonical/investment-funding-relations.ts";
+import {
+  deriveYuantaForeignSettlementLinkageKey,
+  resolveCanonicalInvestmentFundingRelations,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+} from "../ledger/canonical/investment-funding-relations.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -810,6 +814,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
   observedAt = new Date().toISOString(),
   captureOccurrenceId = "",
   zeroResultAuthority?: "provider-explicit-no-data",
+  settlementLoginIdentity = "",
 ): ForeignCurrencyDepositCaptureInput {
   if (
     rows.length === 0 &&
@@ -896,6 +901,14 @@ export function buildYuantaForeignCurrencyCaptureInput(
             "$1-$2-$3",
           ),
           transactionInfo: values[9] ?? "",
+          settlementLinkageKey: settlementLoginIdentity.trim()
+            ? deriveYuantaForeignSettlementLinkageKey(
+                settlementLoginIdentity,
+                rowCurrency,
+              )
+            : "",
+          settlementLinkageContractVersion:
+            YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
           reportedRate: normalizedReportedRate,
         },
       };
@@ -908,7 +921,7 @@ export async function commitYuantaForeignCurrencyCapture(
   input: ForeignCurrencyDepositCaptureInput,
 ) {
   const results = await commitForeignCurrencyDepositCaptureBatch(store, [input]);
-  resolveCanonicalInvestmentFundingRelations(store);
+  await resolveCanonicalInvestmentFundingRelations(store);
   return results;
 }
 
@@ -1007,10 +1020,11 @@ export default workflow("yuantaForeignCurrencyStatements", {
             new Date().toISOString(),
             captureOccurrenceId,
             zeroResultAuthority,
+            credentials.yuanta_user_id ?? "",
           );
         });
         await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
-        resolveCanonicalInvestmentFundingRelations(financialStore);
+        await resolveCanonicalInvestmentFundingRelations(financialStore);
       } finally {
         financialStore.close();
       }
