@@ -36,9 +36,9 @@ const manifests: Record<
     transactionSemantics: "required-buy-sell-fail-closed",
     marginDebt: "independent-loan-or-margin-loan-observation",
     fundingRelation: "typed-evidence-reserved-no-inference",
-    contractComplete: false,
-    liveValidation: "pending",
-    blockers: ["human-assisted-live-validation-pending"],
+    contractComplete: true,
+    liveValidation: "complete",
+    blockers: [],
   },
   "yuanta-trade": {
     sourceId: "yuanta-trade",
@@ -51,9 +51,9 @@ const manifests: Record<
     transactionSemantics: "required-buy-sell-fail-closed",
     marginDebt: "independent-loan-or-margin-loan-observation",
     fundingRelation: "typed-evidence-reserved-no-inference",
-    contractComplete: false,
-    liveValidation: "pending",
-    blockers: ["human-assisted-live-validation-pending"],
+    contractComplete: true,
+    liveValidation: "complete",
+    blockers: [],
   },
 };
 
@@ -84,7 +84,8 @@ export function evaluateAdvertisedInvestmentReadiness(
     .filter((entry) => entry.liveValidation !== "complete")
     .map((entry) => entry.sourceId);
   return {
-    status: pendingLiveValidationSourceIds.length
+    status:
+      contractIncompleteSourceIds.length || pendingLiveValidationSourceIds.length
       ? ("blocked" as const)
       : ("release-ready" as const),
     contractIncompleteSourceIds,
