@@ -45,8 +45,11 @@ import {
   queryYuantaLoanCurrent,
   queryYuantaLoanHistorical,
   queryYuantaLoanLineage,
+  YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
   YUANTA_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
   isYuantaLoanLiveValidationAttestationValid,
+  YUANTA_LOAN_SOURCE_OCCURRENCE_AMBIGUITY_DIAGNOSTIC_VERSION,
+  YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
   YUANTA_LOAN_SOURCE_EVENT_CODEBOOK_VERSION,
 } from "./yuanta-loan.ts";
 import { YUANTA_LOAN_LIVE_RUN_EVIDENCE_V1 } from "./yuanta-loan-live-attestation.fixture.ts";
@@ -606,6 +609,18 @@ test("Yuanta adapter preserves explicit event mapping and exact source evidence"
   assert.equal(capture.records[0]?.effectiveOn, "2026-01-06");
   assert.deepEqual(capture.records[0]?.amount, { coefficient: "1250000", scale: 2 });
   assert.equal(capture.records[0]?.eventEvidence.contractVersion, capture.contractVersion);
+  assert.equal(
+    capture.records[0]?.sourceOccurrenceIdentityRuleVersion,
+    YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+  );
+  assert.equal(
+    LOAN_CONTRACT_FIXTURES.yuanta.records[0]?.sourceOccurrenceIdentityRuleVersion,
+    undefined,
+  );
+  assert.equal(
+    YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+    "yuanta/loan-source-occurrence/v1",
+  );
 
   const store = createCanonicalLoanStore(":memory:");
   try {
@@ -630,6 +645,384 @@ test("Yuanta adapter preserves explicit event mapping and exact source evidence"
   } finally {
     store.close();
   }
+});
+
+function yuantaOccurrenceInput(
+  rows: readonly {
+    transactionDate: string;
+    postingDate: string;
+    paymentItem: string;
+    transactionAmount: string;
+    balanceAfterTransaction: string;
+  }[],
+  observedAt = "2026-02-01T00:00:00.000Z",
+) {
+  return {
+    accountValue: "yuanta-occurrence-regression-account",
+    sourceConnectionScope: "yuanta-occurrence-regression-connection",
+    observedAt,
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    scope: {
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      completeness: "complete-range" as const,
+      completenessBasis: "source-declared-terminal-range" as const,
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      pageCount: 1,
+      terminal: true as const,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200" as const,
+        terminal: true as const,
+        rowCount: rows.length,
+        proofKind: "source-declared-terminal-range" as const,
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
+    rows,
+  };
+}
+
+test("Yuanta occurrence identity survives reordered rows without a source collision", async () => {
+  const rowA = {
+    transactionDate: "2026/01/05",
+    postingDate: "2026/01/06",
+    paymentItem: "LOAN-DISBURSEMENT",
+    transactionAmount: "100000.00",
+    balanceAfterTransaction: "100000.00",
+  };
+  const rowB = {
+    transactionDate: "2026/01/31",
+    postingDate: "2026/01/31",
+    paymentItem: "LOAN-PAYMENT",
+    transactionAmount: "12500.00",
+    balanceAfterTransaction: "87500.00",
+  };
+  const first = buildYuantaLoanCapture(
+    yuantaOccurrenceInput([rowA, rowB]),
+  );
+  const reordered = buildYuantaLoanCapture(
+    yuantaOccurrenceInput(
+      [
+        {
+          ...rowB,
+          transactionAmount: "12,500.0",
+          balanceAfterTransaction: "87,500.0",
+        },
+        rowA,
+      ],
+      "2026-02-02T00:00:00.000Z",
+    ),
+  );
+
+  assert.equal(first.records[0]?.sourceRecordKey, reordered.records[1]?.sourceRecordKey);
+  assert.equal(first.records[1]?.sourceRecordKey, reordered.records[0]?.sourceRecordKey);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(first));
+    await assert.doesNotReject(() =>
+      commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(reordered)),
+    );
+    const records = store.db
+      .prepare(
+        `SELECT occurrence_key AS occurrenceKey, collision_key AS collisionKey,
+                provider_key AS providerKey
+         FROM source_records
+         WHERE occurrence_key IS NOT NULL
+         ORDER BY occurrence_key`,
+      )
+      .all() as Array<{
+      occurrenceKey?: string;
+      collisionKey?: string;
+      providerKey?: string;
+    }>;
+    assert.equal(records.length, 4);
+    assert.equal(new Set(records.map((record) => record.occurrenceKey)).size, 2);
+    assert.equal(new Set(records.map((record) => record.collisionKey)).size, 2);
+    assert.equal(new Set(records.map((record) => record.providerKey)).size, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta occurrence identity survives a sliding overlap without a source collision", async () => {
+  const rowA = {
+    transactionDate: "2026/01/05",
+    postingDate: "2026/01/06",
+    paymentItem: "LOAN-DISBURSEMENT",
+    transactionAmount: "100000.00",
+    balanceAfterTransaction: "100000.00",
+  };
+  const rowB = {
+    transactionDate: "2026/01/15",
+    postingDate: "2026/01/15",
+    paymentItem: "LOAN-PAYMENT",
+    transactionAmount: "12500.00",
+    balanceAfterTransaction: "87500.00",
+  };
+  const rowC = {
+    transactionDate: "2026/01/31",
+    postingDate: "2026/01/31",
+    paymentItem: "LOAN-FEE",
+    transactionAmount: "100.00",
+    balanceAfterTransaction: "87400.00",
+  };
+  const first = buildYuantaLoanCapture(
+    yuantaOccurrenceInput([rowA, rowB]),
+  );
+  const sliding = buildYuantaLoanCapture(
+    yuantaOccurrenceInput([rowB, rowC], "2026-02-02T00:00:00.000Z"),
+  );
+  assert.equal(first.records[1]?.sourceRecordKey, sliding.records[0]?.sourceRecordKey);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(first));
+    await assert.doesNotReject(() =>
+      commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(sliding)),
+    );
+    assert.equal(queryYuantaLoanCurrent(store).transactions.length, 3);
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta same-day payment-item variants receive distinct source identities", async () => {
+  const capture = buildYuantaLoanCapture(
+    yuantaOccurrenceInput([
+      {
+        transactionDate: "2026/01/15",
+        postingDate: "2026/01/15",
+        paymentItem: "LOAN-PAYMENT",
+        transactionAmount: "12500.00",
+        balanceAfterTransaction: "87500.00",
+      },
+      {
+        transactionDate: "2026/01/15",
+        postingDate: "2026/01/15",
+        paymentItem: "暫收款",
+        transactionAmount: "100.00",
+        balanceAfterTransaction: "87400.00",
+      },
+    ]),
+  );
+  assert.notEqual(
+    capture.records[0]?.sourceRecordKey,
+    capture.records[1]?.sourceRecordKey,
+  );
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await assert.doesNotReject(() =>
+      commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(capture)),
+    );
+    assert.equal(queryYuantaLoanCurrent(store).transactions.length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta indistinguishable duplicate semantic rows fail closed", () => {
+  const row = {
+    transactionDate: "2026/01/15",
+    postingDate: "2026/01/15",
+    paymentItem: "LOAN-PAYMENT",
+    transactionAmount: "12500.00",
+    balanceAfterTransaction: "87500.00",
+  };
+  assert.throws(
+    () => buildYuantaLoanCapture(yuantaOccurrenceInput([row, row])),
+    /ambiguous/u,
+  );
+});
+
+test("Yuanta semantic occurrence correction cannot overwrite prior source evidence", async () => {
+  const input = yuantaOccurrenceInput([
+    {
+      transactionDate: "2026/01/15",
+      postingDate: "2026/01/15",
+      paymentItem: "LOAN-PAYMENT",
+      transactionAmount: "12500.00",
+      balanceAfterTransaction: "87500.00",
+    },
+  ]);
+  const original = buildYuantaLoanCapture(input);
+  const corrected = buildYuantaLoanCapture({
+    ...input,
+    observedAt: "2026-02-02T00:00:00.000Z",
+    rows: [
+      {
+        transactionDate: "2026/01/15",
+        postingDate: "2026/01/15",
+        paymentItem: "LOAN-PAYMENT",
+        transactionAmount: "13000.00",
+        balanceAfterTransaction: "87000.00",
+      },
+    ],
+  });
+  assert.equal(
+    original.records[0]?.sourceRecordKey,
+    corrected.records[0]?.sourceRecordKey,
+  );
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(original));
+    await assert.rejects(
+      () =>
+        commitCanonicalLoanCapture(
+          store,
+          admitCanonicalLoanCapture(corrected),
+        ),
+      /Source occurrence content overwrite is forbidden/u,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("Yuanta rows with one indistinguishable anchor fail closed as ambiguous", () => {
+  assert.throws(
+    () =>
+      buildYuantaLoanCapture(
+        yuantaOccurrenceInput([
+          {
+            transactionDate: "2026/01/15",
+            postingDate: "2026/01/15",
+            paymentItem: "LOAN-PAYMENT",
+            transactionAmount: "12500.00",
+            balanceAfterTransaction: "87500.00",
+          },
+          {
+            transactionDate: "2026/01/15",
+            postingDate: "2026/01/15",
+            paymentItem: "LOAN-PAYMENT",
+            transactionAmount: "13000.00",
+            balanceAfterTransaction: "87000.00",
+          },
+        ]),
+      ),
+    /ambiguous/u,
+  );
+});
+
+test("Yuanta ambiguity diagnostics are bounded and sanitized", () => {
+  const sensitiveAccount = "yuanta-sensitive-account-7890";
+  const sensitiveDate = "2026/01/15";
+  const sensitivePaymentItem = "LOAN-PAYMENT";
+  const sensitiveAmount = "12,500.00";
+  const sensitiveBalance = "87,500.00";
+  const sensitiveCorrectedAmount = "13,000.00";
+  const sensitiveCorrectedBalance = "87,000.00";
+  const rows = Array.from({ length: 20 }, (_, index) => ({
+    transactionDate: sensitiveDate,
+    postingDate: sensitiveDate,
+    paymentItem: sensitivePaymentItem,
+    transactionAmount: index === 1 ? sensitiveCorrectedAmount : sensitiveAmount,
+    balanceAfterTransaction:
+      index === 1 ? sensitiveCorrectedBalance : sensitiveBalance,
+  }));
+  const output: unknown[][] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args);
+  try {
+    assert.throws(
+      () =>
+        buildYuantaLoanCapture({
+          ...yuantaOccurrenceInput(rows),
+          accountValue: sensitiveAccount,
+        }),
+      /ambiguous/u,
+    );
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(output.length, 1);
+  assert.equal(output[0]?.length, 1);
+  const emitted = String(output[0]?.[0]);
+  assert.equal(emitted.includes("[Array]"), false);
+  assert.equal(emitted.includes("[Object]"), false);
+  const envelope = JSON.parse(emitted) as {
+    event: string;
+    diagnostic: {
+      diagnosticVersion: string;
+      identityRuleVersion: string;
+      duplicateGroupCount: number;
+      reportedGroupCount: number;
+      groupsTruncated: boolean;
+      sourceHeaderAliasPresence: readonly {
+        aliasId: string;
+        present: boolean;
+      }[];
+      groups: readonly {
+        multiplicity: number;
+        rowOrdinalPositions: readonly number[];
+        rowOrdinalPositionBuckets: readonly string[];
+        omittedMemberCount: number;
+        stableAnchorHashes: Readonly<Record<string, string>>;
+        changedFieldKinds: readonly string[];
+        sourceRowFieldPresence: readonly unknown[];
+      }[];
+    };
+  };
+  assert.equal(envelope.event, "yuanta-loan-source-occurrence-ambiguity");
+  const diagnostic = envelope.diagnostic;
+  assert.equal(
+    diagnostic.diagnosticVersion,
+    YUANTA_LOAN_SOURCE_OCCURRENCE_AMBIGUITY_DIAGNOSTIC_VERSION,
+  );
+  assert.equal(
+    diagnostic.identityRuleVersion,
+    YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+  );
+  assert.equal(diagnostic.duplicateGroupCount, 1);
+  assert.equal(diagnostic.reportedGroupCount, 1);
+  assert.equal(diagnostic.groupsTruncated, false);
+  assert.equal(diagnostic.groups.length, 1);
+  assert.equal(diagnostic.groups[0]?.multiplicity, 20);
+  assert.equal(diagnostic.groups[0]?.rowOrdinalPositions.length, 16);
+  assert.deepEqual(diagnostic.groups[0]?.rowOrdinalPositions.slice(0, 2), [1, 2]);
+  assert.deepEqual(diagnostic.groups[0]?.rowOrdinalPositionBuckets, ["1-10", "11-20"]);
+  assert.equal(diagnostic.groups[0]?.omittedMemberCount, 4);
+  assert.deepEqual(diagnostic.groups[0]?.changedFieldKinds, [
+    "transaction-amount",
+    "balance-after-transaction",
+  ]);
+  assert.ok(
+    Object.values(diagnostic.groups[0]?.stableAnchorHashes ?? {}).every((value) =>
+      /^sha256:[A-Za-z0-9_-]+$/u.test(value),
+    ),
+  );
+  assert.equal(
+    diagnostic.sourceHeaderAliasPresence.find(
+      (header) => header.aliasId === "provider-transaction-id",
+    )?.present,
+    false,
+  );
+  assert.equal(
+    diagnostic.sourceHeaderAliasPresence.find(
+      (header) => header.aliasId === "overpayment",
+    )?.present,
+    true,
+  );
+
+  const serialized = JSON.stringify(diagnostic);
+  for (const sensitive of [
+    sensitiveAccount,
+    sensitiveDate,
+    sensitivePaymentItem,
+    sensitiveAmount,
+    sensitiveBalance,
+    sensitiveCorrectedAmount,
+    sensitiveCorrectedBalance,
+  ])
+    assert.equal(serialized.includes(sensitive), false, sensitive);
 });
 
 test("Yuanta source codebook maps the explicit temporary receipt to payment only", () => {
