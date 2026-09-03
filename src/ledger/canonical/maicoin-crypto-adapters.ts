@@ -4,6 +4,7 @@ import {
   type ExactDecimal,
 } from "./canonical-source-store.ts";
 import type {
+  HoldingEffectiveTimeEvidence,
   InvestmentCaptureInput,
   InvestmentExactAmount,
   InvestmentMoney,
@@ -18,8 +19,27 @@ export const MAICOIN_INVESTMENT_AUTHORITY_ROUTE =
 export const MAICOIN_ACCOUNT_SUBTYPE = "crypto_exchange" as const;
 export const MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD =
   "http-date" as const;
+export const MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE = "http-date" as const;
 
 export type MaicoinWalletType = "spot" | "m";
+
+/**
+ * A provider Date is parsed at the HTTP boundary and passed through the
+ * workflow as typed evidence. Keeping both the source value and its
+ * normalized instant prevents a later adapter from parsing an ISO value as a
+ * raw HTTP header again.
+ */
+export type MaicoinProviderDate = {
+  sourceField: typeof MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD;
+  sourceValueType: typeof MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE;
+  sourceValue: string;
+  effectiveAt: string;
+};
+
+type MaicoinHoldingEffectiveTimeEvidence = HoldingEffectiveTimeEvidence & {
+  sourceValueType: typeof MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE;
+  sourceValue: string;
+};
 
 /**
  * MAX returns decimal fields as JSON strings.  Numbers are deliberately not
@@ -44,7 +64,7 @@ export type MaicoinAccountRecord = {
  */
 export type MaicoinWalletAccountBatch = {
   walletType: MaicoinWalletType;
-  providerDate: string;
+  providerDate: MaicoinProviderDate;
   accounts: MaicoinAccountRecord[];
 };
 
@@ -121,7 +141,7 @@ export function deriveMaicoinAccountKey(
   );
 }
 
-export function parseMaicoinProviderDate(value: unknown): string {
+export function parseMaicoinProviderDate(value: unknown): MaicoinProviderDate {
   const header = typeof value === "string" ? value.trim() : "";
   if (header === "")
     throw new MaicoinCryptoAdapterError(
@@ -135,7 +155,38 @@ export function parseMaicoinProviderDate(value: unknown): string {
     throw new MaicoinCryptoAdapterError(
       "MAX response HTTP Date header is invalid; local capture time cannot substitute for it.",
     );
-  return new Date(parsed).toISOString();
+  return {
+    sourceField: MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD,
+    sourceValueType: MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE,
+    sourceValue: header,
+    effectiveAt: new Date(parsed).toISOString(),
+  };
+}
+
+function requireMaicoinProviderDate(value: unknown): MaicoinProviderDate {
+  if (!value || typeof value !== "object")
+    throw new MaicoinCryptoAdapterError(
+      "MAX response is missing the required HTTP Date header; local capture time cannot substitute for it.",
+    );
+  const evidence = value as Partial<MaicoinProviderDate>;
+  const effectiveAtTimestamp = typeof evidence.effectiveAt === "string"
+    ? Date.parse(evidence.effectiveAt)
+    : Number.NaN;
+  if (
+    evidence.sourceField !== MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD ||
+    evidence.sourceValueType !== MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE ||
+    typeof evidence.sourceValue !== "string" ||
+    evidence.sourceValue.trim() === "" ||
+    typeof evidence.effectiveAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(evidence.effectiveAt) ||
+    !Number.isFinite(effectiveAtTimestamp) ||
+    new Date(effectiveAtTimestamp).toISOString() !== evidence.effectiveAt ||
+    new Date(evidence.effectiveAt).toUTCString() !== evidence.sourceValue.trim()
+  )
+    throw new MaicoinCryptoAdapterError(
+      "MAX response HTTP Date header is invalid; local capture time cannot substitute for it.",
+    );
+  return evidence as MaicoinProviderDate;
 }
 
 function taipeiDate(providerDate: string): string {
@@ -234,13 +285,13 @@ function captureForBatch(
   batch: MaicoinWalletAccountBatch,
   batchIndex: number,
 ): InvestmentCaptureInput {
-  const providerDate = parseMaicoinProviderDate(batch.providerDate);
+  const providerDate = requireMaicoinProviderDate(batch.providerDate);
   const subAccount = normalizeSubAccount(input.subAccount);
   const providerEmail = normalizeEmail(input.providerEmail);
   const sourceConnectionKey = deriveMaicoinSourceConnectionKey(providerEmail, subAccount);
   const identityEpochKey = deriveMaicoinIdentityEpochKey(providerEmail, subAccount);
   const accountKey = deriveMaicoinAccountKey(providerEmail, subAccount, batch.walletType);
-  const effectiveOn = taipeiDate(providerDate);
+  const effectiveOn = taipeiDate(providerDate.effectiveAt);
   const normalized = batch.accounts.map(normalizeAccount);
   const securities = normalized.map((account) => ({
     securityKey: `maicoin:${account.currencyCode}`,
@@ -255,7 +306,20 @@ function captureForBatch(
     },
   }));
   const holdings = normalized.map((account, index) => {
-    const sourceRecordKey = recordKey(batch.walletType, providerDate, account.currencyCode);
+    const sourceRecordKey = recordKey(
+      batch.walletType,
+      providerDate.effectiveAt,
+      account.currencyCode,
+    );
+    const effectiveTimeEvidence: MaicoinHoldingEffectiveTimeEvidence = {
+      kind: "source-reported-as-of",
+      sourceRecordKey,
+      sourceField: MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD,
+      value: effectiveOn,
+      sourceValueType: providerDate.sourceValueType,
+      sourceValue: providerDate.sourceValue,
+      contractVersion: MAICOIN_INVESTMENT_CONTRACT_VERSION,
+    };
     return {
       measurementKey: sourceRecordKey,
       measurementSubjectKey: digest(
@@ -270,14 +334,8 @@ function captureForBatch(
       ...(account.valuation ? { valuation: account.valuation } : {}),
       ...(account.cost ? { cost: account.cost } : {}),
       effectiveOn,
-      observedAt: providerDate,
-      effectiveTimeEvidence: {
-        kind: "source-reported-as-of" as const,
-        sourceRecordKey,
-        sourceField: MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD,
-        value: effectiveOn,
-        contractVersion: MAICOIN_INVESTMENT_CONTRACT_VERSION,
-      },
+      observedAt: providerDate.effectiveAt,
+      effectiveTimeEvidence,
       lineage: {
         page: 0,
         row: index,
@@ -295,7 +353,7 @@ function captureForBatch(
     sourceId: "maicoin",
     authorityRoute: MAICOIN_INVESTMENT_AUTHORITY_ROUTE,
     contractVersion: MAICOIN_INVESTMENT_CONTRACT_VERSION,
-    observedAt: providerDate,
+    observedAt: providerDate.effectiveAt,
     identity: {
       sourceConnectionKey,
       identityEpochKey,
