@@ -7,8 +7,8 @@ import {
 export type AdvertisedInvestmentReadinessEntry = {
   sourceId: InvestmentSourceId;
   advertisedName: string;
-  statementType: "fund" | "brokerage";
-  workflow: "yuantaFundStatements" | "yuantaTradeStatements";
+  statementType: "fund" | "brokerage" | "crypto";
+  workflow: "yuantaFundStatements" | "yuantaTradeStatements" | "syncMaicoin";
   authority: string;
   accountBoundary: "source-scoped-investment-account";
   securityIdentity: "producer-scoped-stable-key";
@@ -55,9 +55,25 @@ const manifests: Record<
     liveValidation: "complete",
     blockers: [],
   },
+  maicoin: {
+    sourceId: "maicoin",
+    statementType: "crypto",
+    workflow: "syncMaicoin",
+    authority: "maicoin/investment/canonical-v1",
+    accountBoundary: "source-scoped-investment-account",
+    securityIdentity: "producer-scoped-stable-key",
+    holdingMeasurement: "independent-effective-and-observation-time",
+    transactionSemantics: "required-buy-sell-fail-closed",
+    marginDebt: "independent-loan-or-margin-loan-observation",
+    fundingRelation: "typed-evidence-reserved-no-inference",
+    contractComplete: true,
+    liveValidation: "complete",
+    blockers: [],
+  },
 };
 
 function advertisedLabel(sourceId: InvestmentSourceId): string {
+  if (sourceId === "maicoin") return "MaiCoin crypto";
   const registryId = sourceId === "yuanta-fund" ? "yuanta" : "yuanta-trade";
   const statementType = sourceId === "yuanta-fund" ? "fund" : "brokerage";
   const group = BANK_STATEMENT_CAPABILITIES[registryId];

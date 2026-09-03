@@ -330,12 +330,16 @@ _Avoid_: Verified boolean, importer name
 A balance measurement associated with a financial account and typed according to its actual meaning, such as ledger balance, available balance, credit limit, or amount due. It requires provenance plus contract-established effective, observation, and recording times so it can support historical valuation. A source-reported transaction `balance_after` may support a derived post-transaction ledger observation only when the contract establishes its effective ledger point or ordering; it is never presented as a real-time provider balance, and incomplete transaction history never synthesizes an account balance.
 _Avoid_: Current account field, transaction amount, assumed live balance
 
+**Current-state provider snapshot**:
+A Balance or Holding Observation returned by a provider endpoint whose verified response semantics describe an instantaneous account state at the provider's response time. That provider-origin time may establish the observation's financial effective time, but this meaning does not extend to historical statements, delayed settlement data, or an endpoint without verified current-state semantics.
+_Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
+
 **Measurement history**:
 The append-only sequence of Balance or Holding Observations created for distinct source-side measurement evidence with a contract-established effective time. Reprocessing the same Source Capture does not create another observation, while a measurement whose effective time cannot be established fails integration admission rather than entering history.
 _Avoid_: Mutable current measurement, inferred effective date, transaction history
 
 **Measurement effective time**:
-The required financial time at which an integration's verified source contract says a Balance or Holding Observation applies, preserving the precision and time-zone semantics the contract can support. If the contract cannot determine it, the attempted Source Capture is cancelled; collection, recording, file, and import times never substitute for it.
+The required financial time at which an integration's verified source contract says a Balance or Holding Observation applies, preserving the precision and time-zone semantics the contract can support. A Current-state provider snapshot may use its provider-origin response time for this purpose; if that evidence is missing or invalid, or the endpoint is not verified as instantaneous, the attempted Source Capture is cancelled. Collection, recording, file, and import times never substitute for it.
 _Avoid_: Observation time, recording time, parser guess
 
 **Canonical temporal requirement**:

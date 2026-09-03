@@ -60,7 +60,7 @@ All admitted lineage records mandatory `recorded_at`. Fact types declare financi
 - Account lifecycle facts require contract-defined `effective_at` because they affect synchronization and historical financial scope.
 - Pure names, labels, categories, tags, and notes have no financial effective time and use `recorded_at` only.
 
-Observation, collection, file, import, and recording times never substitute for required effective time. Backfilled source data keeps its historical financial effective time and the current admission time, so financial-time and knowledge-time queries do not pretend the system knew the fact earlier.
+One narrow exception applies to an instantaneous/current-state balance API whose response semantics have been verified: the provider-origin HTTP `Date` may establish that response snapshot's financial effective time. The integration must retain the source-reported evidence type, provenance, and value; an absent or invalid provider `Date` fails closed. This exception does not apply to historical statements, delayed-settlement data, or endpoints without verified current-state semantics. Local collection, file, import, and recording times never substitute for required effective time. Backfilled source data keeps its historical financial effective time and the current admission time, so financial-time and knowledge-time queries do not pretend the system knew the fact earlier.
 
 ## Consequences
 

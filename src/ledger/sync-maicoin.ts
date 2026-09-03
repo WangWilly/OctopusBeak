@@ -3,11 +3,26 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_LEDGER_DIR,
   openLedgerDatabase,
   type LedgerDatabase,
 } from "./db/client.ts";
+import { canonicalSqlitePath } from "./canonical/canonical-source-store.ts";
+import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCaptureBatch,
+  createCanonicalInvestmentStore,
+  type InvestmentValidatedCapture,
+} from "./canonical/investment-financial.ts";
+import {
+  buildMaicoinInvestmentCaptures,
+  parseMaicoinProviderDate,
+  type MaicoinAccountRecord,
+  type MaicoinInvestmentCaptureBuildInput,
+  type MaicoinWalletAccountBatch,
+} from "./canonical/maicoin-crypto-adapters.ts";
 
 const API_BASE_URL = "https://max-api.maicoin.com";
 const DEFAULT_STATEMENT_LIMIT = 1000;
@@ -28,20 +43,30 @@ type CliParams = {
   help: boolean;
 };
 
-type Credentials = {
+export type MaxCredentials = {
   accessKey: string;
   secretKey: string;
   subAccount: string;
+  /** Optional explicit fallback when the provider info response has no email. */
+  providerEmail?: string;
 };
 
-type Account = {
-  currency: string;
-  balance: string;
-  locked: string;
-  staked?: string | null;
-  principal?: string | null;
-  interest?: string | null;
+type Account = MaicoinAccountRecord & {
   [key: string]: unknown;
+};
+
+type Credentials = MaxCredentials;
+
+type MaxInfo = {
+  email?: unknown;
+  provider_email?: unknown;
+  user_email?: unknown;
+  m_wallet_enabled?: boolean;
+};
+
+type MaxResponse<T> = {
+  data: T;
+  providerDate: string | null;
 };
 
 type Market = {
@@ -85,7 +110,7 @@ type StatementSpec = Omit<StatementBatch, "rows">;
 type StatementValueMap = Map<string, number | null>;
 type KLine = [number, number | string, number | string, number | string, number | string, number | string];
 
-class MaxClient {
+export class MaxClient {
   #lastNonce = 0;
   private readonly credentials: Credentials;
 
@@ -101,7 +126,10 @@ class MaxClient {
     });
   }
 
-  async privateGet<T>(path: string, params: QueryParams = {}): Promise<T> {
+  private async privateGetResponse<T>(
+    path: string,
+    params: QueryParams = {},
+  ): Promise<MaxResponse<T>> {
     return fetchWithRetry(() => {
       const signedParams = { nonce: this.nextNonce(), ...params };
       const { payload, signature } = signPayload(
@@ -111,7 +139,7 @@ class MaxClient {
       );
       const url = new URL(path, API_BASE_URL);
       appendQuery(url, signedParams);
-      return fetchJson<T>(url, {
+      return fetchJsonWithMetadata<T>(url, {
         headers: {
           "Content-Type": "application/json",
           "X-MAX-ACCESSKEY": this.credentials.accessKey,
@@ -121,6 +149,23 @@ class MaxClient {
         },
       });
     });
+  }
+
+  async privateGet<T>(path: string, params: QueryParams = {}): Promise<T> {
+    return (await this.privateGetResponse<T>(path, params)).data;
+  }
+
+  /**
+   * Return the provider response metadata along with a private response.  MAX
+   * account endpoints do not include an as-of value in the JSON body; the
+   * HTTP Date header is therefore the only provider-reported observation time
+   * available to the canonical investment adapter.
+   */
+  async privateGetWithMetadata<T>(
+    path: string,
+    params: QueryParams = {},
+  ): Promise<MaxResponse<T>> {
+    return this.privateGetResponse<T>(path, params);
   }
 
   private nextNonce() {
@@ -214,7 +259,45 @@ function credentialsFromEnv(subAccount: string): Credentials {
   if (!accessKey || !secretKey) {
     throw new Error("Set MAX_ACCESS_KEY and MAX_SECRET_KEY before running sync-maicoin.");
   }
-  return { accessKey, secretKey, subAccount };
+  const providerEmail = process.env.MAX_PROVIDER_EMAIL?.trim() || undefined;
+  return { accessKey, secretKey, subAccount, providerEmail };
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  return values.find(
+    (value): value is string => typeof value === "string" && value.trim() !== "",
+  )?.trim();
+}
+
+/**
+ * Resolve the stable account boundary from the provider's authenticated
+ * identity response.  Access keys identify credentials, not the owner, and
+ * must never be used as an account identity fallback.
+ */
+export function resolveMaicoinProviderEmail(
+  info: unknown,
+  configuredProviderEmail?: string,
+): string {
+  const response = info && typeof info === "object"
+    ? info as Record<string, unknown>
+    : {};
+  const providerEmail = firstNonEmptyString(
+    response.email,
+    response.provider_email,
+    response.user_email,
+    (response.user && typeof response.user === "object"
+      ? (response.user as Record<string, unknown>).email
+      : undefined),
+  );
+  const configured = firstNonEmptyString(configuredProviderEmail);
+  if (providerEmail && configured && providerEmail.toLocaleLowerCase("en-US") !== configured.toLocaleLowerCase("en-US"))
+    throw new Error(
+      "MAX provider email disagrees with the configured account identity; refusing to merge source connections.",
+    );
+  if (providerEmail ?? configured) return providerEmail ?? configured!;
+  throw new Error(
+    "MAX provider email is required to establish the canonical account boundary; refusing to use the API key as identity.",
+  );
 }
 
 function appendQuery(url: URL, params: QueryParams) {
@@ -224,7 +307,10 @@ function appendQuery(url: URL, params: QueryParams) {
   }
 }
 
-async function fetchJson<T>(url: URL, init: RequestInit = {}): Promise<T> {
+async function fetchJsonWithMetadata<T>(
+  url: URL,
+  init: RequestInit = {},
+): Promise<MaxResponse<T>> {
   const response = await fetch(url, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -238,7 +324,11 @@ async function fetchJson<T>(url: URL, init: RequestInit = {}): Promise<T> {
     throw error;
   }
   const data = body ? JSON.parse(body) : null;
-  return data as T;
+  return { data: data as T, providerDate: response.headers.get("date") };
+}
+
+async function fetchJson<T>(url: URL, init: RequestInit = {}): Promise<T> {
+  return (await fetchJsonWithMetadata<T>(url, init)).data;
 }
 
 async function fetchWithRetry<T>(
@@ -311,16 +401,6 @@ function statementExternalId(row: Record<string, unknown>) {
 
 function statementIdFor(batch: StatementSpec, row: Record<string, unknown>) {
   return hashId(batch.endpoint, batch.walletType ?? "", batch.rowType, statementExternalId(row));
-}
-
-function accountHasValue(account: Account) {
-  return (
-    amount(account.balance) !== 0 ||
-    amount(account.locked) !== 0 ||
-    amount(account.staked) !== 0 ||
-    amount(account.principal) !== 0 ||
-    amount(account.interest) !== 0
-  );
 }
 
 function totalQuantity(account: Account) {
@@ -502,18 +582,40 @@ function marketUnits(market: string | null) {
   return null;
 }
 
-async function fetchWalletTypes(client: MaxClient, requested: WalletType[]) {
-  if (!requested.includes("m")) return requested;
-  const info = await client.privateGet<{ m_wallet_enabled?: boolean }>("/api/v3/info");
-  if (info.m_wallet_enabled === false) return requested.filter((walletType) => walletType !== "m");
-  return requested;
+export async function fetchWalletTypes(
+  client: MaxClient,
+  requested: WalletType[],
+  configuredProviderEmail?: string,
+) {
+  const info = await client.privateGet<MaxInfo>("/api/v3/info");
+  const walletTypes = info.m_wallet_enabled === false
+    ? requested.filter((walletType) => walletType !== "m")
+    : requested;
+  return {
+    walletTypes,
+    providerEmail: resolveMaicoinProviderEmail(info, configuredProviderEmail),
+  };
 }
 
-async function fetchAccounts(client: MaxClient, walletTypes: WalletType[]) {
-  const batches: Array<{ walletType: WalletType; accounts: Account[] }> = [];
+export async function fetchAccounts(
+  client: MaxClient,
+  walletTypes: WalletType[],
+): Promise<MaicoinWalletAccountBatch[]> {
+  const batches: MaicoinWalletAccountBatch[] = [];
   for (const walletType of walletTypes) {
-    const accounts = await client.privateGet<Account[]>(`/api/v3/wallet/${walletType}/accounts`);
-    batches.push({ walletType, accounts: accounts.filter(accountHasValue) });
+    const response = await client.privateGetWithMetadata<Account[]>(
+      `/api/v3/wallet/${walletType}/accounts`,
+    );
+    const providerDate = parseMaicoinProviderDate(response.providerDate);
+    if (!Array.isArray(response.data))
+      throw new Error(`MAX ${walletType} wallet accounts response is not an array.`);
+    // Keep zero-valued rows: a complete provider snapshot includes the fact
+    // that the account exists even when its current holding is zero.
+    batches.push({
+      walletType,
+      providerDate,
+      accounts: response.data,
+    });
   }
   return batches;
 }
@@ -774,7 +876,28 @@ async function writeStatementJson(filePath: string, statement: StatementBatch[])
   return outputPath;
 }
 
-async function syncMaicoin(params: CliParams) {
+/**
+ * Admit every wallet scope before opening the canonical store, then commit
+ * them through the batch seam.  This keeps missing provider evidence and
+ * malformed rows from leaving a partial canonical capture behind; a conflict
+ * in one wallet also rolls back the complete batch.
+ */
+export async function commitMaicoinCanonicalInvestmentCaptures(
+  databasePath: string,
+  input: MaicoinInvestmentCaptureBuildInput,
+) {
+  const captures = buildMaicoinInvestmentCaptures(input).map(
+    (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
+  );
+  const store = createCanonicalInvestmentStore(databasePath);
+  try {
+    return await commitCanonicalInvestmentCaptureBatch(store, captures);
+  } finally {
+    store.close();
+  }
+}
+
+export async function syncMaicoin(params: CliParams) {
   console.log("automation-progress: 0");
   const credentials = credentialsFromEnv(params.subAccount);
   const client = new MaxClient(credentials);
@@ -784,7 +907,12 @@ async function syncMaicoin(params: CliParams) {
   insertSyncRun(db, params, syncRunId, startedAt);
 
   try {
-    const walletTypes = await fetchWalletTypes(client, params.walletTypes);
+    const walletSelection = await fetchWalletTypes(
+      client,
+      params.walletTypes,
+      credentials.providerEmail,
+    );
+    const walletTypes = walletSelection.walletTypes;
     const accountBatches = await fetchAccounts(client, walletTypes);
     const accounts = accountBatches.flatMap((batch) => batch.accounts);
     console.log("automation-progress: 25");
@@ -802,6 +930,16 @@ async function syncMaicoin(params: CliParams) {
       : null;
     console.log("automation-progress: 80");
 
+    const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
+      canonicalSqlitePath(params.ledgerDir),
+      {
+        captureId: syncRunId,
+        providerEmail: walletSelection.providerEmail,
+        subAccount: credentials.subAccount,
+        accountBatches,
+      },
+    );
+
     db.exec("BEGIN");
     try {
       insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
@@ -818,6 +956,7 @@ async function syncMaicoin(params: CliParams) {
       ledgerDir: params.ledgerDir,
       capturedAt,
       walletTypes,
+      canonicalInvestmentCaptures: canonicalResults.length,
       accountSnapshots: snapshots.length,
       statementMode: "full",
       statementRows: statement.reduce((sum, batch) => sum + batch.rows.length, 0),
@@ -913,7 +1052,9 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

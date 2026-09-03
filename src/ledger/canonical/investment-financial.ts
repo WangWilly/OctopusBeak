@@ -4,6 +4,7 @@ import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositCapture,
+  type CanonicalFinancialNonTransactionRecord,
 } from "./canonical-financial-deposit-writer.ts";
 import {
   createCanonicalSourceStore,
@@ -39,13 +40,24 @@ export const INVESTMENT_CANONICAL_CONTRACT_VERSION =
  */
 export const YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION =
   "yuanta/foreign-settlement/human-attested-v1" as const;
-export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade";
+export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade" | "maicoin";
 export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
   "yuanta-fund",
   "yuanta-trade",
+  "maicoin",
 ] as const;
 export type InvestmentExactAmount = { coefficient: string; scale: number };
 export type InvestmentMoney = InvestmentExactAmount & { currency: string };
+export type InvestmentSecurityType =
+  | "equity"
+  | "ETF"
+  | "mutual_fund"
+  | "fixed_income"
+  | "derivative"
+  | "cash"
+  | "cryptocurrency"
+  | "loan"
+  | "other";
 /** A provider-reported investment event, never an inference from amounts. */
 export type InvestmentTransactionAction =
   | "buy"
@@ -102,6 +114,7 @@ export type InvestmentCaptureInput = {
     identityEpochKey: string;
     accountKey: string;
     accountType: "investment";
+    accountSubtype?: "crypto_exchange" | "non_custodial_wallet";
     reportingCurrency: string;
   };
   scope: { effectiveOn: string; complete: true };
@@ -111,6 +124,7 @@ export type InvestmentCaptureInput = {
     name?: string;
     ticker?: string;
     currency: string;
+    securityType?: InvestmentSecurityType;
     identityEvidence: { kind: "producer-security-id"; contractVersion: string };
   }>;
   holdings: Array<{
@@ -129,6 +143,7 @@ export type InvestmentCaptureInput = {
     securityKey: string;
     quantity?: InvestmentExactAmount;
     valuation?: InvestmentMoney;
+    cost?: InvestmentMoney;
     effectiveOn: string;
     observedAt: string;
     effectiveTimeEvidence: HoldingEffectiveTimeEvidence;
@@ -315,10 +330,35 @@ export function admitCanonicalInvestmentCapture(
   token(capture.identity.identityEpochKey, "Identity epoch key");
   token(capture.identity.accountKey, "Account key");
   required(capture.identity.reportingCurrency, "Reporting currency");
+  if (
+    capture.identity.accountSubtype !== undefined &&
+    capture.identity.accountSubtype !== "crypto_exchange" &&
+    capture.identity.accountSubtype !== "non_custodial_wallet"
+  )
+    throw new CanonicalInvestmentAdmissionError(
+      "Investment account subtype is unsupported.",
+    );
   const effectiveOn = date(capture.scope.effectiveOn, "Scope effective time");
   const securityKeys = new Set<string>();
   for (const security of capture.securities) {
     required(security.producerSecurityId, "Producer security ID");
+    if (
+      security.securityType !== undefined &&
+      ![
+        "equity",
+        "ETF",
+        "mutual_fund",
+        "fixed_income",
+        "derivative",
+        "cash",
+        "cryptocurrency",
+        "loan",
+        "other",
+      ].includes(security.securityType)
+    )
+      throw new CanonicalInvestmentAdmissionError(
+        "Security type is unsupported.",
+      );
     if (
       security.identityEvidence?.kind !== "producer-security-id" ||
       security.identityEvidence.contractVersion !== capture.contractVersion ||
@@ -351,6 +391,7 @@ export function admitCanonicalInvestmentCapture(
       );
     if (holding.quantity) amount(holding.quantity, "Holding quantity");
     if (holding.valuation) amount(holding.valuation, "Holding valuation");
+    if (holding.cost) amount(holding.cost, "Holding cost");
     if (
       holding.effectiveOn !== effectiveOn ||
       holding.observedAt !== capture.observedAt ||
@@ -515,12 +556,10 @@ export function admitCanonicalInvestmentCapture(
   return capture as InvestmentValidatedCapture;
 }
 
-function spineRecord(
+function sourceRecordEnvelope(
   capture: InvestmentCaptureInput,
-  record: { sourceRecordKey: string; effectiveOn: string },
+  record: { sourceRecordKey: string },
   compact: Record<string, unknown>,
-  money: InvestmentMoney,
-  direction: "inflow" | "outflow",
   index: number,
 ) {
   return {
@@ -534,6 +573,32 @@ function spineRecord(
     contentHash: digest(stableJson(compact)),
     sequenceLexeme: String(index),
     compactJson: stableJson(compact),
+    description: null,
+  };
+}
+
+function holdingSourceRecord(
+  capture: InvestmentCaptureInput,
+  holding: InvestmentCaptureInput["holdings"][number],
+  compact: Record<string, unknown>,
+  index: number,
+): CanonicalFinancialNonTransactionRecord {
+  return {
+    ...sourceRecordEnvelope(capture, holding, compact, index),
+    recordType: "holding-observation",
+  };
+}
+
+function spineRecord(
+  capture: InvestmentCaptureInput,
+  record: { sourceRecordKey: string; effectiveOn: string },
+  compact: Record<string, unknown>,
+  money: InvestmentMoney,
+  direction: "inflow" | "outflow",
+  index: number,
+) {
+  return {
+    ...sourceRecordEnvelope(capture, record, compact, index),
     amount: { coefficient: money.coefficient, scale: money.scale },
     balanceAfter: null,
     currency: money.currency,
@@ -562,26 +627,21 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
   ].sort();
   const scopeStart = effectiveDates[0]!;
   const scopeEnd = effectiveDates.at(-1)!;
-  const records = [
-    ...capture.holdings.map((holding, index) =>
-      spineRecord(
-        capture,
-        holding,
-        (() => {
-          const { measurementKey, observedAt, lineage, ...sourceFact } = holding;
-          // These are capture-local projection coordinates.  A Source Record
-          // describes provider evidence, so recollection must not change its
-          // content merely because this Capture has a new timestamp or row.
-          return { kind: "holding-measurement", ...sourceFact };
-        })(),
-        holding.valuation ?? {
-          ...holding.quantity!,
-          currency: capture.identity.reportingCurrency,
-        },
-        "inflow",
-        index,
-      ),
+  const nonTransactionRecords = capture.holdings.map((holding, index) =>
+    holdingSourceRecord(
+      capture,
+      holding,
+      (() => {
+        const { measurementKey, observedAt, lineage, ...sourceFact } = holding;
+        // These are capture-local projection coordinates.  A Source Record
+        // describes provider evidence, so recollection must not change its
+        // content merely because this Capture has a new timestamp or row.
+        return { kind: "holding-measurement", ...sourceFact };
+      })(),
+      index,
     ),
+  );
+  const records = [
     ...capture.transactions.map((transaction, index) =>
       spineRecord(
         capture,
@@ -614,6 +674,7 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
         ]
       : []),
   ];
+  const sourceRecordCount = nonTransactionRecords.length + records.length;
   const financial: CanonicalFinancialDepositCapture = {
     captureId: capture.captureId,
     authorityRoute: capture.authorityRoute,
@@ -673,7 +734,7 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
         pageOrdinal: 0,
         responseCode: "200",
         terminal: true,
-        rowCount: records.length,
+        rowCount: sourceRecordCount,
         responseDigest: digest("investment-page", capture.captureId),
         proofKind: "source-declared-terminal-grid",
         contractFingerprint: digest(
@@ -684,11 +745,13 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
         metadataJson: stableJson({
           startDate: scopeStart,
           endDate: scopeEnd,
-          rowCount: records.length,
+          rowCount: sourceRecordCount,
+          observedAt: capture.observedAt,
         }),
       },
     ],
     records,
+    nonTransactionRecords,
   };
   return admitCanonicalFinancialDepositCapture(financial);
 }
@@ -952,19 +1015,20 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
     capture.contractVersion,
   );
   db.prepare(
-    "INSERT INTO investment_accounts(account_id,source_connection_id,identity_epoch_id,source_id,account_key,account_type) VALUES(?,?,?,?,?,'investment') ON CONFLICT(account_id) DO NOTHING",
+    "INSERT INTO investment_accounts(account_id,source_connection_id,identity_epoch_id,source_id,account_key,account_type,account_subtype) VALUES(?,?,?,?,?,'investment',?) ON CONFLICT(account_id) DO NOTHING",
   ).run(
     spine.accountId,
     spine.connectionId,
     spine.epochId,
     capture.sourceId,
     capture.identity.accountKey,
+    capture.identity.accountSubtype ?? null,
   );
   const securities = new Map<string, Uint8Array>();
   for (const security of capture.securities) {
     const prior = db
       .prepare(
-        "SELECT security_id AS securityId,producer_security_id AS producerSecurityId,name,ticker,currency FROM investment_securities WHERE source_id=? AND security_key=?",
+        "SELECT security_id AS securityId,producer_security_id AS producerSecurityId,name,ticker,currency,security_type AS securityType FROM investment_securities WHERE source_id=? AND security_key=?",
       )
       .get(capture.sourceId, security.securityKey) as
       Record<string, unknown> | undefined;
@@ -973,14 +1037,15 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       (prior.producerSecurityId !== security.producerSecurityId ||
         prior.name !== (security.name ?? null) ||
         prior.ticker !== (security.ticker ?? null) ||
-        prior.currency !== security.currency)
+        prior.currency !== security.currency ||
+        prior.securityType !== (security.securityType ?? "other"))
     )
       throw new CanonicalInvestmentAdmissionError(
         "Immutable Security evidence changed; a versioned Security revision contract is required.",
       );
     const securityId = prior ? (prior.securityId as Uint8Array) : uuidV7();
     if (!prior)
-      db.prepare("INSERT INTO investment_securities VALUES(?,?,?,?,?,?,?)").run(
+      db.prepare("INSERT INTO investment_securities(security_id,source_id,security_key,producer_security_id,name,ticker,currency,security_type) VALUES(?,?,?,?,?,?,?,?)").run(
         securityId,
         capture.sourceId,
         security.securityKey,
@@ -988,6 +1053,7 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
         security.name ?? null,
         security.ticker ?? null,
         security.currency,
+        security.securityType ?? "other",
       );
     securities.set(security.securityKey, securityId);
   }
@@ -1063,7 +1129,13 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
         "UPDATE investment_holding_observations SET is_current=0 WHERE observation_id=?",
       ).run(prior.observationId);
     db.prepare(
-      "INSERT INTO investment_holding_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      `INSERT INTO investment_holding_observations(
+        observation_id,capture_id,commit_id,account_id,security_id,source_record_id,
+        measurement_key,correction_of_observation_id,revision_number,is_current,
+        quantity_coefficient,quantity_scale,valuation_coefficient,valuation_scale,
+        valuation_currency,cost_coefficient,cost_scale,cost_currency,effective_on,
+        observed_at,lineage_json
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       uuidV7(),
       spine.captureId,
@@ -1080,6 +1152,9 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       holding.valuation?.coefficient ?? null,
       holding.valuation?.scale ?? null,
       holding.valuation?.currency ?? null,
+      holding.cost?.coefficient ?? null,
+      holding.cost?.scale ?? null,
+      holding.cost?.currency ?? null,
       holding.effectiveOn,
       holding.observedAt,
       stableJson({
@@ -1245,12 +1320,12 @@ function queryRows(
   return withCanonicalSnapshot(store.db, () => {
     const accounts = store.db
       .prepare(
-        `SELECT a.source_id AS sourceId,a.account_key AS accountKey FROM investment_accounts a JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY a.source_id,a.account_key`,
+        `SELECT a.source_id AS sourceId,a.account_key AS accountKey,a.account_subtype AS accountSubtype FROM investment_accounts a JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY a.source_id,a.account_key`,
       )
       .all(sourceConnectionKey);
     const securities = store.db
       .prepare(
-        `SELECT DISTINCT s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency
+        `SELECT DISTINCT s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency,s.security_type AS securityType
            FROM investment_securities s
           WHERE EXISTS (
             SELECT 1 FROM investment_holding_observations h
@@ -1267,7 +1342,7 @@ function queryRows(
       .all(sourceConnectionKey, sourceConnectionKey);
     const holdings = store.db
       .prepare(
-        `SELECT * FROM (SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,h.quantity_coefficient AS quantityCoefficient,h.valuation_coefficient AS valuationCoefficient,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson,ROW_NUMBER() OVER (PARTITION BY h.account_id,h.security_id ORDER BY h.observed_at DESC,h.rowid DESC) AS selectionRank FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? AND h.is_current=1) ${currentOnly ? "WHERE selectionRank=1" : ""} ORDER BY effectiveOn,observedAt,revisionNumber`,
+        `SELECT * FROM (SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,s.security_key AS securityKey,h.quantity_coefficient AS quantityCoefficient,h.quantity_scale AS quantityScale,h.valuation_coefficient AS valuationCoefficient,h.valuation_scale AS valuationScale,h.valuation_currency AS valuationCurrency,h.cost_coefficient AS costCoefficient,h.cost_scale AS costScale,h.cost_currency AS costCurrency,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson,ROW_NUMBER() OVER (PARTITION BY h.account_id,h.security_id ORDER BY h.observed_at DESC,h.rowid DESC) AS selectionRank FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id JOIN investment_securities s ON s.security_id=h.security_id WHERE c.source_connection_key=? AND h.is_current=1) ${currentOnly ? "WHERE selectionRank=1" : ""} ORDER BY effectiveOn,observedAt,revisionNumber,securityKey`,
       )
       .all(sourceConnectionKey);
     const transactions = (
@@ -1337,7 +1412,7 @@ export function queryCanonicalInvestmentHistorical(
   const holdings = withCanonicalSnapshot(store.db, () =>
     store.db
       .prepare(
-        `SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,h.quantity_coefficient AS quantityCoefficient,h.valuation_coefficient AS valuationCoefficient,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY h.effective_on,h.observed_at,h.revision_number`,
+        `SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,s.security_key AS securityKey,h.quantity_coefficient AS quantityCoefficient,h.quantity_scale AS quantityScale,h.valuation_coefficient AS valuationCoefficient,h.valuation_scale AS valuationScale,h.valuation_currency AS valuationCurrency,h.cost_coefficient AS costCoefficient,h.cost_scale AS costScale,h.cost_currency AS costCurrency,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id JOIN investment_securities s ON s.security_id=h.security_id WHERE c.source_connection_key=? ORDER BY h.effective_on,h.observed_at,h.revision_number,s.security_key`,
       )
       .all(sourceConnectionKey),
   );

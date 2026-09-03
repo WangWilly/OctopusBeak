@@ -1819,7 +1819,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
        WHERE purge_id = 'yuanta-trade-investment/market-evidence-v2:v17';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
-      DELETE FROM schema_migrations WHERE version = 19;
+      DELETE FROM schema_migrations WHERE version > 16;
       DELETE FROM schema_migrations WHERE version = 17;
       ALTER TABLE canonical_contract_purge_commits
         RENAME TO canonical_contract_purge_commits_v16;
@@ -1857,7 +1857,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
         (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
           .user_version,
       ),
-      19,
+      20,
     );
     assert.equal(countCaptures(migrated.db, "yuanta-trade", "investment"), 0);
     assert.equal(
@@ -2025,7 +2025,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
     const v18 = new DatabaseSync(path);
     v18.exec(`
       PRAGMA foreign_keys = OFF;
-      DELETE FROM schema_migrations WHERE version = 19;
+      DELETE FROM schema_migrations WHERE version > 18;
       PRAGMA user_version = 18;
       PRAGMA foreign_keys = ON;
     `);
@@ -3979,5 +3979,105 @@ test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", asyn
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a v19 investment schema gains crypto account, security, and cost fields", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v20-"));
+  const path = join(dir, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE investment_accounts DROP COLUMN account_subtype;
+      ALTER TABLE investment_securities DROP COLUMN security_type;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_coefficient;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_scale;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_currency;
+      DELETE FROM schema_migrations WHERE version = 20;
+      PRAGMA user_version = 19;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    try {
+      assert.equal(
+        Number(
+          (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        20,
+      );
+      const columns = (table: string) =>
+        migrated.db
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .map((row) => String((row as { name?: unknown }).name));
+      assert.ok(columns("investment_accounts").includes("account_subtype"));
+      assert.ok(columns("investment_securities").includes("security_type"));
+      assert.ok(columns("investment_holding_observations").includes("cost_coefficient"));
+      assert.ok(columns("investment_holding_observations").includes("cost_scale"));
+      assert.ok(columns("investment_holding_observations").includes("cost_currency"));
+      assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a genuine v15 investment schema migrates through v20 before crypto validation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v15-to-v20-"));
+  const path = join(dir, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE investment_accounts DROP COLUMN account_subtype;
+      ALTER TABLE investment_securities DROP COLUMN security_type;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_coefficient;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_scale;
+      ALTER TABLE investment_holding_observations DROP COLUMN cost_currency;
+      DELETE FROM schema_migrations WHERE version > 15;
+      PRAGMA user_version = 15;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    try {
+      assert.equal(
+        Number(
+          (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
+            .user_version,
+        ),
+        20,
+      );
+      assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
+      for (const [table, columns] of [
+        ["investment_accounts", ["account_subtype"]],
+        ["investment_securities", ["security_type"]],
+        [
+          "investment_holding_observations",
+          ["cost_coefficient", "cost_scale", "cost_currency"],
+        ],
+      ] as const) {
+        const actual = migrated.db
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .map((row) => String((row as { name?: unknown }).name));
+        for (const column of columns) assert.ok(actual.includes(column));
+      }
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

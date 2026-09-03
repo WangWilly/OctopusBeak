@@ -43,7 +43,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-export const CANONICAL_SCHEMA_VERSION = 19;
+export const CANONICAL_SCHEMA_VERSION = 20;
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
@@ -7864,6 +7864,7 @@ CREATE TABLE IF NOT EXISTS investment_accounts (
   source_id TEXT NOT NULL,
   account_key TEXT NOT NULL,
   account_type TEXT NOT NULL CHECK(account_type = 'investment'),
+  account_subtype TEXT CHECK(account_subtype IS NULL OR account_subtype IN ('crypto_exchange','non_custodial_wallet')),
   UNIQUE(source_id, source_connection_id, identity_epoch_id, account_key)
 );
 CREATE TABLE IF NOT EXISTS investment_securities (
@@ -7874,6 +7875,7 @@ CREATE TABLE IF NOT EXISTS investment_securities (
   name TEXT,
   ticker TEXT,
   currency TEXT NOT NULL,
+  security_type TEXT NOT NULL CHECK(security_type IN ('equity','ETF','mutual_fund','fixed_income','derivative','cash','cryptocurrency','loan','other')),
   UNIQUE(source_id, security_key)
 );
 CREATE TABLE IF NOT EXISTS investment_holding_observations (
@@ -7892,6 +7894,9 @@ CREATE TABLE IF NOT EXISTS investment_holding_observations (
   valuation_coefficient TEXT,
   valuation_scale INTEGER,
   valuation_currency TEXT,
+  cost_coefficient TEXT,
+  cost_scale INTEGER,
+  cost_currency TEXT,
   effective_on TEXT NOT NULL,
   observed_at TEXT NOT NULL,
   lineage_json TEXT NOT NULL,
@@ -7932,6 +7937,7 @@ CREATE INDEX IF NOT EXISTS idx_investment_transactions_account_time ON investmen
 
 export function validateCanonicalInvestmentExtensionSchema(
   db: DatabaseSync,
+  options: { requireCryptoFields?: boolean } = {},
 ): void {
   for (const name of [
     "investment_captures",
@@ -7943,13 +7949,33 @@ export function validateCanonicalInvestmentExtensionSchema(
   ])
     if (!tableExists(db, name))
       throw new Error(`Canonical investment table ${name} is missing.`);
+  if (options.requireCryptoFields === false) return;
+  const columns = (table: string): Set<string> =>
+    new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>)
+        .map((column) => column.name)
+        .filter((name): name is string => typeof name === "string"),
+    );
+  for (const [table, required] of [
+    ["investment_accounts", ["account_subtype"]],
+    ["investment_securities", ["security_type"]],
+    [
+      "investment_holding_observations",
+      ["cost_coefficient", "cost_scale", "cost_currency"],
+    ],
+  ] as const) {
+    const actual = columns(table);
+    for (const column of required)
+      if (!actual.has(column))
+        throw new Error(`Canonical investment column ${table}.${column} is missing.`);
+  }
 }
 
 function migrateV14ToV15(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA_V15_INVESTMENTS);
-    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     db.prepare(
       "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (15, ?)",
     ).run(currentUtcMicros());
@@ -8023,7 +8049,7 @@ export function validateCanonicalInvestmentFundingRelationSchema(
 function migrateV15ToV16(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
-    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     db.exec(SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS);
     validateCanonicalInvestmentFundingRelationSchema(db);
     db.prepare(
@@ -8044,7 +8070,7 @@ function migrateV16ToV17(db: DatabaseSync): void {
   try {
     ensureV6CompatibilitySchema(db);
     validateCanonicalCompatibilityViews(db);
-    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     validateCanonicalInvestmentFundingRelationSchema(db);
     widenCanonicalContractPurgeAuditForV17(db);
     purgeYuantaTradeInvestmentV2Scope(db);
@@ -8083,7 +8109,7 @@ function migrateV17ToV18(db: DatabaseSync): void {
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN IMMEDIATE");
   try {
-    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     validateCanonicalInvestmentFundingRelationSchema(db);
     db.exec(`
       ALTER TABLE investment_transactions RENAME TO investment_transactions_v17;
@@ -8150,7 +8176,7 @@ function migrateV18ToV19(db: DatabaseSync): void {
   try {
     ensureV6CompatibilitySchema(db);
     validateCanonicalCompatibilityViews(db);
-    validateCanonicalInvestmentExtensionSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     validateCanonicalInvestmentFundingRelationSchema(db);
     widenCanonicalContractPurgeAuditForV19(db);
     const hasYuantaTradeInvestmentV3Purge = purgeYuantaTradeInvestmentV3Scope(db);
@@ -8168,6 +8194,54 @@ function migrateV18ToV19(db: DatabaseSync): void {
       "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (19, ?)",
     ).run(currentUtcMicros());
     db.exec("PRAGMA user_version = 19");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+  migrateV19ToV20(db);
+}
+
+function ensureCryptoInvestmentSchema(db: DatabaseSync): void {
+  const hasColumn = (table: string, column: string): boolean =>
+    (
+      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
+    ).some((entry) => entry.name === column);
+  if (!hasColumn("investment_accounts", "account_subtype"))
+    db.exec(
+      "ALTER TABLE investment_accounts ADD COLUMN account_subtype TEXT CHECK(account_subtype IS NULL OR account_subtype IN ('crypto_exchange','non_custodial_wallet'))",
+    );
+  if (!hasColumn("investment_securities", "security_type"))
+    db.exec(
+      "ALTER TABLE investment_securities ADD COLUMN security_type TEXT NOT NULL DEFAULT 'other' CHECK(security_type IN ('equity','ETF','mutual_fund','fixed_income','derivative','cash','cryptocurrency','loan','other'))",
+    );
+  for (const [column, definition] of [
+    ["cost_coefficient", "TEXT"],
+    ["cost_scale", "INTEGER CHECK(cost_scale IS NULL OR cost_scale >= 0)"],
+    ["cost_currency", "TEXT"],
+  ] as const)
+    if (!hasColumn("investment_holding_observations", column))
+      db.exec(
+        `ALTER TABLE investment_holding_observations ADD COLUMN ${column} ${definition}`,
+      );
+}
+
+function migrateV19ToV20(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureCryptoInvestmentSchema(db);
+    validateCanonicalInvestmentExtensionSchema(db);
+    if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
+      throw new Error(
+        "Canonical schema v20 crypto investment migration left dangling references.",
+      );
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (20, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 20");
     db.exec("COMMIT");
     db.exec("PRAGMA foreign_keys = ON");
   } catch (error) {
@@ -8351,6 +8425,10 @@ function applySchemaMigration(
   }
   if (version === 18) {
     migrateV18ToV19(db);
+    return;
+  }
+  if (version === 19) {
+    migrateV19ToV20(db);
     return;
   }
   if (version === CANONICAL_SCHEMA_VERSION) {
