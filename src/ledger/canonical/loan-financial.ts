@@ -31,6 +31,18 @@ export const FUBON_LOAN_LEGACY_CONTRACT_VERSION =
 export const FUBON_LOAN_CONTRACT_VERSION = "loan/canonical/v2.fubon" as const;
 export const YUANTA_LOAN_CONTRACT_VERSION =
   `${LOAN_CANONICAL_CONTRACT_VERSION}.yuanta` as const;
+/**
+ * Yuanta's loan statement has no provider transaction identifier in the
+ * retained result-row contract.  This versioned rule therefore identifies a
+ * source occurrence from normalized account/date/source-event/payment-item
+ * fields, never its rendered row position or mutable amount/balance.  The v1
+ * rule remains addressable through the old source record tokens already
+ * committed to canonical storage.
+ */
+export const YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION =
+  "yuanta/loan-source-occurrence/v2" as const;
+export const YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION =
+  "yuanta/loan-source-occurrence/v1" as const;
 
 export const FUBON_LOAN_LEGACY_AUTHORITY_ROUTE =
   "fubon/loan/canonical-v1" as const;
@@ -136,6 +148,12 @@ export type LoanBalanceSourceEvidence = {
 
 export type LoanTransactionInput = {
   sourceRecordKey: string;
+  /**
+   * Optional for compatibility with v1 captures.  Yuanta v2 records set this
+   * explicitly so ordinal changes are treated as local evidence rather than
+   * immutable transaction facts.
+   */
+  sourceOccurrenceIdentityRuleVersion?: string;
   occurrenceIndex: number;
   effectiveOn: string;
   sourceTime: {
@@ -339,6 +357,7 @@ export function parseCanonicalLoanCompletenessEvidence(
  */
 export type CanonicalLoanStatementRow = {
   sourceRecordKey: string;
+  sourceOccurrenceIdentityRuleVersion?: string;
   occurrenceIndex: number;
   effectiveOn: string;
   sourceTime: LoanTransactionInput["sourceTime"];
@@ -678,6 +697,12 @@ export function createCanonicalLoanCapture(
   const contractVersion = expectedContract(input.sourceId);
   const records = input.rows.map((row) => ({
     sourceRecordKey: row.sourceRecordKey,
+    ...(row.sourceOccurrenceIdentityRuleVersion === undefined
+      ? {}
+      : {
+          sourceOccurrenceIdentityRuleVersion:
+            row.sourceOccurrenceIdentityRuleVersion,
+        }),
     occurrenceIndex: row.occurrenceIndex,
     effectiveOn: row.effectiveOn,
     sourceTime: row.sourceTime,
@@ -1069,6 +1094,7 @@ function validateCapture(capture: LoanCaptureInput): void {
 
   const records = new Map<string, LoanTransactionInput>();
   const collisions = new Set<string>();
+  let yuantaOccurrenceIdentityRuleVersion: string | undefined;
   for (const record of capture.records) {
     const sourceRecordKey = requireOpaque(
       record.sourceRecordKey,
@@ -1076,6 +1102,32 @@ function validateCapture(capture: LoanCaptureInput): void {
     );
     if (records.has(sourceRecordKey))
       throw new CanonicalLoanConflictError("Duplicate loan source record key.");
+    if (capture.sourceId === "yuanta") {
+      const occurrenceIdentityRuleVersion =
+        record.sourceOccurrenceIdentityRuleVersion ??
+        YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION;
+      if (
+        occurrenceIdentityRuleVersion !==
+          YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION &&
+        occurrenceIdentityRuleVersion !==
+          YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION
+      )
+        throw new CanonicalLoanAdmissionError(
+          "Yuanta loan source occurrence identity rule is unsupported.",
+        );
+      if (
+        yuantaOccurrenceIdentityRuleVersion !== undefined &&
+        yuantaOccurrenceIdentityRuleVersion !== occurrenceIdentityRuleVersion
+      )
+        throw new CanonicalLoanConflictError(
+          "Yuanta loan source occurrence identity rule is mixed.",
+        );
+      yuantaOccurrenceIdentityRuleVersion = occurrenceIdentityRuleVersion;
+    } else if (record.sourceOccurrenceIdentityRuleVersion !== undefined) {
+      throw new CanonicalLoanAdmissionError(
+        "Loan source occurrence identity rule is unsupported for this source.",
+      );
+    }
     if (
       !Number.isSafeInteger(record.occurrenceIndex) ||
       record.occurrenceIndex < 1
@@ -1423,30 +1475,76 @@ function opaqueText(value: string): string {
   return value;
 }
 
-function compactRecord(record: LoanTransactionInput): Record<string, unknown> {
+function normalizedExactAmount(value: LoanExactAmount): LoanExactAmount {
+  if (value.coefficient === "0") return { coefficient: "0", scale: 0 };
+  let coefficient = value.coefficient;
+  let scale = value.scale;
+  while (scale > 0 && coefficient.endsWith("0")) {
+    coefficient = coefficient.slice(0, -1);
+    scale -= 1;
+  }
+  return { coefficient, scale };
+}
+
+function compactRecord(
+  record: LoanTransactionInput,
+  includeOccurrenceIndex = true,
+  normalizeAmounts = false,
+): Record<string, unknown> {
+  const balanceSourceEvidence = record.balanceSourceEvidence?.map((evidence) =>
+    normalizeAmounts
+      ? { ...evidence, balance: normalizedExactAmount(evidence.balance) }
+      : evidence,
+  );
   return {
     sourceRecordKey: opaqueText(record.sourceRecordKey),
-    occurrenceIndex: record.occurrenceIndex,
+    ...(record.sourceOccurrenceIdentityRuleVersion === undefined
+      ? {}
+      : {
+          sourceOccurrenceIdentityRuleVersion:
+            record.sourceOccurrenceIdentityRuleVersion,
+        }),
+    ...(includeOccurrenceIndex ? { occurrenceIndex: record.occurrenceIndex } : {}),
     effectiveOn: record.effectiveOn,
     sourceTime: record.sourceTime,
     postingStatus: record.postingStatus,
     eventKind: record.eventKind,
     eventEvidence: record.eventEvidence,
     direction: record.direction,
-    amount: record.amount,
+    amount: normalizeAmounts
+      ? normalizedExactAmount(record.amount)
+      : record.amount,
     currency: record.currency,
     ...(record.description === undefined
       ? {}
       : { description: record.description }),
-    ...(record.principal === undefined ? {} : { principal: record.principal }),
-    ...(record.interest === undefined ? {} : { interest: record.interest }),
-    ...(record.fee === undefined ? {} : { fee: record.fee }),
+    ...(record.principal === undefined
+      ? {}
+      : {
+          principal: normalizeAmounts
+            ? normalizedExactAmount(record.principal)
+            : record.principal,
+        }),
+    ...(record.interest === undefined
+      ? {}
+      : {
+          interest: normalizeAmounts
+            ? normalizedExactAmount(record.interest)
+            : record.interest,
+        }),
+    ...(record.fee === undefined
+      ? {}
+      : {
+          fee: normalizeAmounts
+            ? normalizedExactAmount(record.fee)
+            : record.fee,
+        }),
     ...(record.componentEvidence === undefined
       ? {}
       : { componentEvidence: record.componentEvidence }),
-    ...(record.balanceSourceEvidence === undefined
+    ...(balanceSourceEvidence === undefined
       ? {}
-      : { balanceSourceEvidence: record.balanceSourceEvidence }),
+      : { balanceSourceEvidence }),
   };
 }
 
@@ -1464,7 +1562,14 @@ function canonicalLoanSpineCapture(
   capture: LoanValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
   const records = capture.records.map((record) => {
-    const compact = compactRecord(record);
+    const semanticOccurrence =
+      record.sourceOccurrenceIdentityRuleVersion ===
+      YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION;
+    const compact = compactRecord(
+      record,
+      !semanticOccurrence,
+      semanticOccurrence,
+    );
     const sourceTime = {
       localDate: record.effectiveOn,
       localTime: record.sourceTime.localTime,
@@ -1485,16 +1590,31 @@ function canonicalLoanSpineCapture(
     };
     return {
       occurrenceKey: record.sourceRecordKey,
-      collisionKey: token(
-        capture.sourceId,
-        capture.identity.accountKey,
-        String(record.occurrenceIndex),
-      ),
-      providerKey: token(
-        capture.sourceId,
-        record.eventEvidence.sourceCode,
-        String(record.occurrenceIndex),
-      ),
+      collisionKey: semanticOccurrence
+        ? token(
+            capture.sourceId,
+            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+            "collision",
+            capture.identity.accountKey,
+            record.sourceRecordKey,
+          )
+        : token(
+            capture.sourceId,
+            capture.identity.accountKey,
+            String(record.occurrenceIndex),
+          ),
+      providerKey: semanticOccurrence
+        ? token(
+            capture.sourceId,
+            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+            "provider",
+            record.sourceRecordKey,
+          )
+        : token(
+            capture.sourceId,
+            record.eventEvidence.sourceCode,
+            String(record.occurrenceIndex),
+          ),
       contentHash: compactHash(compact),
       sequenceLexeme: String(record.occurrenceIndex),
       compactJson: JSON.stringify(compact),
@@ -2029,11 +2149,22 @@ function persistLoanTransactionFacts(
         record.componentEvidence?.contractVersion ?? null,
     };
     if (existing) {
-      for (const [key, value] of Object.entries(expected))
+      for (const [key, value] of Object.entries(expected)) {
+        // Yuanta v2 uses a semantic source occurrence identity.  The ordinal
+        // is still retained as local evidence for the first observation, but
+        // a reordered/sliding result range must not turn that evidence into a
+        // typed-fact overwrite conflict.
+        if (
+          key === "occurrence_index" &&
+          record.sourceOccurrenceIdentityRuleVersion ===
+            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION
+        )
+          continue;
         if (existing[key] !== value)
           throw new CanonicalLoanConflictError(
             "Typed loan transaction facts cannot be overwritten.",
           );
+      }
       continue;
     }
     db.prepare(
