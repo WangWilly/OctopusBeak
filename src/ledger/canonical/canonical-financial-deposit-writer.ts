@@ -72,6 +72,28 @@ export type CanonicalFinancialDepositRecord = {
   conversionEvidence?: CanonicalFinancialDepositConversionEvidence | null;
 };
 
+/** Source evidence that is not a monetary transaction. The first supported
+ * kind is an investment holding observation; it must never enter the generic
+ * financial transaction tables. */
+export type CanonicalFinancialNonTransactionRecord = {
+  recordType: "holding-observation";
+  occurrenceKey: string;
+  collisionKey: string;
+  providerKey: string;
+  contentHash: string;
+  sequenceLexeme: string;
+  compactJson: string;
+  description?: string | null;
+};
+
+function isNonTransactionRecord(
+  record:
+    | CanonicalFinancialDepositRecord
+    | CanonicalFinancialNonTransactionRecord,
+): record is CanonicalFinancialNonTransactionRecord {
+  return "recordType" in record && record.recordType === "holding-observation";
+}
+
 export type CanonicalFinancialDepositCapture = {
   captureId: string;
   authorityRoute: string;
@@ -123,6 +145,7 @@ export type CanonicalFinancialDepositCapture = {
   };
   pages: readonly CanonicalFinancialDepositPage[];
   records: readonly CanonicalFinancialDepositRecord[];
+  nonTransactionRecords?: readonly CanonicalFinancialNonTransactionRecord[];
 };
 
 // Admission is intentionally held out-of-band. A copied object, even one
@@ -372,6 +395,26 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       recordKind: "investment-source-record",
       accountType: "investment",
       contractVersion: "yuanta-trade/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "maicoin/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "maicoin/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "maicoin/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "maicoin",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "maicoin/investment/canonical-v1",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta-fund/investment/margin-credit-canonical-v1": {
@@ -976,6 +1019,21 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     throw new Error(
       "Yuanta credit-card capture requires seven terminal grids with matching row counts.",
     );
+  const nonTransactionRecords = capture.nonTransactionRecords ?? [];
+  if (nonTransactionRecords.length > 0) {
+    if (capture.identity.stream !== "investment")
+      throw new Error(
+        "Non-transaction source records are only supported for investment captures.",
+      );
+    if (capture.scope.withdrawalPolicy !== "never-infer")
+      throw new Error(
+        "Non-transaction source records require a never-infer capture scope.",
+      );
+    if (isForeignCurrencyCapture || isHumanAttestedCreditCardCapture)
+      throw new Error(
+        "Non-transaction source records are not supported by this financial route.",
+      );
+  }
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
@@ -1107,8 +1165,28 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       )
         throw new Error(
           "Conversion evidence booked amount must match the canonical transaction.",
-        );
+      );
     }
+  }
+  for (const record of nonTransactionRecords) {
+    if (record.recordType !== "holding-observation")
+      throw new Error("Non-transaction source record kind is unsupported.");
+    validateOpaque(record.occurrenceKey, "Occurrence key");
+    validateOpaque(record.collisionKey, "Collision key");
+    validateOpaque(record.providerKey, "Provider key");
+    validateOpaque(record.contentHash, "Content hash");
+    if (occurrences.has(record.occurrenceKey))
+      throw new CanonicalFinancialDepositConflictError(
+        "Duplicate source occurrence in one capture.",
+      );
+    if (collisions.has(record.collisionKey))
+      throw new CanonicalFinancialDepositConflictError(
+        "Duplicate source collision identity in one capture.",
+      );
+    occurrences.add(record.occurrenceKey);
+    collisions.add(record.collisionKey);
+    validateText(record.sequenceLexeme, "Financial source sequence");
+    validateText(record.compactJson, "Financial compact source payload");
   }
 }
 
@@ -1125,8 +1203,11 @@ export function admitCanonicalFinancialDepositCapture(
     Object.freeze(record.sourceTime);
     Object.freeze(record);
   }
+  for (const record of capture.nonTransactionRecords ?? []) Object.freeze(record);
   Object.freeze(capture.pages);
   Object.freeze(capture.records);
+  if (capture.nonTransactionRecords)
+    Object.freeze(capture.nonTransactionRecords);
   Object.freeze(capture.identity);
   Object.freeze(capture.scope);
   Object.freeze(capture.semantics);
@@ -1355,7 +1436,11 @@ function commitOnce(
         commitId,
       );
 
-    for (const record of capture.records) {
+    const sourceRecords = [
+      ...capture.records,
+      ...(capture.nonTransactionRecords ?? []),
+    ];
+    for (const record of sourceRecords) {
       const collisions = db
         .prepare(
           `SELECT occurrence_key FROM source_records
@@ -1522,8 +1607,8 @@ function commitOnce(
       );
 
     const seen = new Set<string>();
-    for (const record of capture.records) {
-      seen.add(record.occurrenceKey);
+    for (const record of sourceRecords) {
+      if (!isNonTransactionRecord(record)) seen.add(record.occurrenceKey);
       const sourceRecordId = id();
       db.prepare(
         `INSERT INTO source_records(
@@ -1563,6 +1648,8 @@ function commitOnce(
       db.prepare(
         "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
       ).run(sourceRecordId, captureId, commitId);
+
+      if (isNonTransactionRecord(record)) continue;
 
       const existingTransaction = db
         .prepare(

@@ -2014,7 +2014,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
        WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
       DELETE FROM canonical_contract_purges
        WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
-      DELETE FROM schema_migrations WHERE version=19;
+      DELETE FROM schema_migrations WHERE version>15;
       DROP TABLE investment_funding_relation_events;
       DROP TABLE investment_funding_relation_members;
       DROP TABLE investment_funding_relations;
@@ -2032,7 +2032,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
           }
         ).user_version,
       ),
-      19,
+      20,
     );
     assert.deepEqual(
       migrated.db
