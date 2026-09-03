@@ -14,12 +14,15 @@ import {
   deriveMaicoinAccountKey,
   deriveMaicoinSourceConnectionKey,
   MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD,
+  MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE,
   parseMaicoinProviderDate,
   type MaicoinInvestmentCaptureBuildInput,
+  type MaicoinProviderDate,
 } from "./maicoin-crypto-adapters.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
-const providerDate = "Wed, 02 Sep 2026 04:05:06 GMT";
+const providerDateHeader = "Wed, 02 Sep 2026 04:05:06 GMT";
+const providerDate = parseMaicoinProviderDate(providerDateHeader);
 
 function input(
   overrides: Partial<MaicoinInvestmentCaptureBuildInput> = {},
@@ -66,6 +69,10 @@ test("MAX provider Date is required and retained as the holding observation time
     () => parseMaicoinProviderDate("1"),
     /HTTP Date header.*invalid/i,
   );
+  assert.throws(
+    () => parseMaicoinProviderDate(`${providerDateHeader}, ${providerDateHeader}`),
+    /HTTP Date header.*invalid/i,
+  );
   const capture = buildMaicoinInvestmentCapture(input());
   assert.equal(capture.observedAt, "2026-09-02T04:05:06.000Z");
   assert.equal(capture.holdings[0]?.observedAt, capture.observedAt);
@@ -78,6 +85,16 @@ test("MAX provider Date is required and retained as the holding observation time
     capture.holdings[0]?.effectiveTimeEvidence.value,
     "2026-09-02",
   );
+  assert.equal(
+    (capture.holdings[0]?.effectiveTimeEvidence as Record<string, unknown>)
+      .sourceValueType,
+    MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE,
+  );
+  assert.equal(
+    (capture.holdings[0]?.effectiveTimeEvidence as Record<string, unknown>)
+      .sourceValue,
+    providerDateHeader,
+  );
   const localCapturedAt = "2099-01-01T00:00:00.000Z";
   assert.notEqual(capture.observedAt, localCapturedAt);
   assert.throws(
@@ -87,7 +104,7 @@ test("MAX provider Date is required and retained as the holding observation time
           accountBatches: [
             {
               walletType: "spot",
-              providerDate: undefined as unknown as string,
+              providerDate: undefined as unknown as MaicoinProviderDate,
               accounts: [],
             },
           ],
@@ -263,6 +280,15 @@ test("holding-only crypto captures do not become generic financial transactions"
   assert.equal(holding.costCurrency, null);
   assert.equal(holding.effectiveOn, "2026-09-02");
   assert.equal(holding.observedAt, "2026-09-02T04:05:06.000Z");
+  assert.equal(typeof holding.lineageJson, "string");
+  const lineage = JSON.parse(holding.lineageJson as string) as {
+    effectiveTimeEvidence?: Record<string, unknown>;
+  };
+  assert.equal(
+    lineage.effectiveTimeEvidence?.sourceValueType,
+    MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE,
+  );
+  assert.equal(lineage.effectiveTimeEvidence?.sourceValue, providerDateHeader);
   store.close();
 });
 

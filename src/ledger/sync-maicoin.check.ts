@@ -12,7 +12,9 @@ import {
 } from "./sync-maicoin.ts";
 import {
   deriveMaicoinSourceConnectionKey,
+  buildMaicoinInvestmentCapture,
   parseMaicoinProviderDate,
+  type MaicoinProviderDate,
 } from "./canonical/maicoin-crypto-adapters.ts";
 import {
   createCanonicalInvestmentStore,
@@ -24,9 +26,10 @@ const credentials: MaxCredentials = {
   secretKey: "secret-key",
   subAccount: "main",
 };
-const providerDate = "Wed, 02 Sep 2026 04:05:06 GMT";
+const providerDateHeader = "Wed, 02 Sep 2026 04:05:06 GMT";
+const providerDate = parseMaicoinProviderDate(providerDateHeader);
 
-function maxResponse(body: unknown, date: string | null = providerDate) {
+function maxResponse(body: unknown, date: string | null = providerDateHeader) {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: date === null ? {} : { Date: date },
@@ -43,23 +46,38 @@ test("MAX account adapter retains provider HTTP Date and does not drop zero bala
       ])) as typeof fetch;
     const client = new MaxClient(credentials);
     const batches = await fetchAccounts(client, ["spot"]);
-    assert.equal(batches[0]?.providerDate, parseMaicoinProviderDate(providerDate));
+    assert.deepEqual(batches[0]?.providerDate, providerDate);
     assert.equal(batches[0]?.accounts.length, 2);
     assert.equal(batches[0]?.accounts[0]?.balance, "0");
+
+    // Exercise the production handoff. `fetchAccounts` parses the HTTP Date
+    // before handing typed evidence to the canonical adapter, so the adapter
+    // must not parse that already-normalized value as a raw header again.
+    assert.doesNotThrow(() =>
+      buildMaicoinInvestmentCapture({
+        captureId: "sync-run-1",
+        providerEmail: "owner@example.test",
+        subAccount: "main",
+        accountBatches: batches,
+      }),
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("MAX canonical sync rejects a missing provider Date before creating canonical evidence", async () => {
+test("MAX canonical sync rejects missing, malformed, or duplicate provider Date before creating canonical evidence", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = (async () => maxResponse([], null)) as typeof fetch;
-    const client = new MaxClient(credentials);
-    await assert.rejects(
-      () => fetchAccounts(client, ["spot"]),
-      /missing.*required.*HTTP Date header/i,
-    );
+    for (const [date, message] of [
+      [null, /missing.*required.*HTTP Date header/i],
+      ["not-a-date", /HTTP Date header.*invalid/i],
+      [`${providerDateHeader}, ${providerDateHeader}`, /HTTP Date header.*invalid/i],
+    ] as const) {
+      globalThis.fetch = (async () => maxResponse([], date)) as typeof fetch;
+      const client = new MaxClient(credentials);
+      await assert.rejects(() => fetchAccounts(client, ["spot"]), message);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -89,7 +107,9 @@ test("MAX canonical handoff rejects missing or invalid provider Date without par
               },
               {
                 walletType: "m",
-                providerDate: invalidDate as unknown as string,
+                providerDate: invalidDate === undefined
+                  ? undefined as unknown as MaicoinProviderDate
+                  : { ...providerDate, sourceValue: invalidDate },
                 accounts: [
                   { currency: "ETH", balance: "2", locked: "0" },
                 ],
