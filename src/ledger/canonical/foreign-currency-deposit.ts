@@ -15,6 +15,8 @@ import {
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 
 export const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
@@ -951,10 +953,6 @@ function queryRows(
     orderBy?: "financial" | "lineage";
   },
 ): ForeignCurrencyTransaction[] {
-  const currentJoin = options.includeCurrent
-    ? `JOIN current_transactions current_row ON current_row.transaction_id = transaction_row.transaction_id
-         AND current_row.revision_id = revision.revision_id`
-    : "";
   const rows = db
     .prepare(
       `SELECT
@@ -1011,7 +1009,6 @@ function queryRows(
        FROM financial_transactions transaction_row
        JOIN financial_accounts account_row ON account_row.account_id = transaction_row.account_id
        JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
-       ${currentJoin}
        JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
        JOIN source_captures source_capture ON source_capture.capture_id = revision.capture_id
        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
@@ -1026,9 +1023,39 @@ function queryRows(
       FOREIGN_CURRENCY_DEPOSIT_STREAM,
       ...params,
     ) as Array<Record<string, unknown>>;
-  return rows.map((row) =>
-    enrichTransaction(db, row, mapTransaction(row), options.knowledgeAt),
-  );
+  const accountIds = [
+    ...new Set(
+      rows
+        .filter((row) => row.account_id instanceof Uint8Array)
+        .map((row) => Buffer.from(row.account_id as Uint8Array).toString("hex")),
+    ),
+  ];
+  const currentIds = options.includeCurrent
+    ? accountIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          createCanonicalProjectionRuntime(db)
+            .read({
+              kind: "current",
+              families: ["transactions"],
+              scope: { accountIds },
+            })
+            .families.transactions.map(
+              (row) => `${row.transactionId}:${row.revisionId}`,
+            ),
+        )
+    : null;
+  return rows
+    .filter(
+      (row) =>
+        currentIds === null ||
+        currentIds.has(
+          `${Buffer.from(row.transaction_id as Uint8Array).toString("hex")}:${Buffer.from(row.revision_id as Uint8Array).toString("hex")}`,
+        ),
+    )
+    .map((row) =>
+      enrichTransaction(db, row, mapTransaction(row), options.knowledgeAt),
+    );
 }
 
 export function queryForeignCurrencyDepositCurrent(
@@ -1045,9 +1072,11 @@ export function queryForeignCurrencyDepositCurrent(
     predicates.push("revision.currency = ?");
     params.push(currency(options.currency, "Query currency"));
   }
-  const transactions = queryRows(store.db, predicates.join(" AND "), params, {
-    includeCurrent: true,
-  });
+  const transactions = withCanonicalSnapshot(store.db, () =>
+    queryRows(store.db, predicates.join(" AND "), params, {
+      includeCurrent: true,
+    }),
+  );
   return {
     status: "canonical-live",
     transactions,

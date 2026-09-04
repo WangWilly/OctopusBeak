@@ -5,6 +5,7 @@ import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
 } from "./canonical-runtime.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import type {
   InvestmentFundingEvidence,
@@ -169,16 +170,6 @@ function scaledInteger(
   return BigInt(coefficient) * 10n ** BigInt(targetScale - scale);
 }
 
-function currentStateSql(alias: string): string {
-  return `NOT EXISTS (
-    SELECT 1 FROM investment_funding_relation_events newer
-     WHERE newer.relation_id=${alias}.relation_id
-       AND (newer.recorded_at_utc_us > ${alias}.recorded_at_utc_us
-         OR (newer.recorded_at_utc_us = ${alias}.recorded_at_utc_us
-           AND newer.rowid > ${alias}.rowid))
-  )`;
-}
-
 type FundingCandidate = {
   accountId: Uint8Array;
   transactionId: Uint8Array;
@@ -231,6 +222,7 @@ function parseTransactionInfo(payloadJson: string): string {
 
 function fundingCandidates(
   db: DatabaseSync,
+  currentTransactions: ReadonlySet<string>,
   settlementEffectiveOn: string,
   currency: string,
   direction: "inflow" | "outflow",
@@ -242,7 +234,7 @@ function fundingCandidates(
     .prepare(
       `SELECT t.transaction_id AS transactionId,
               a.account_id AS accountId,a.account_no AS accountNumber,
-              r.source_record_id AS sourceRecordId,
+              r.revision_id AS revisionId,r.source_record_id AS sourceRecordId,
               r.amount_coefficient AS coefficient,r.amount_scale AS scale,
               r.description,p.payload_json AS payloadJson,
               scope.scope_start AS scopeStart,scope.scope_end AS scopeEnd,
@@ -251,10 +243,8 @@ function fundingCandidates(
          JOIN financial_accounts a ON a.account_id=t.account_id
          JOIN source_connections connection
            ON connection.source_connection_id=a.source_connection_id
-         JOIN current_transactions current_row
-           ON current_row.transaction_id=t.transaction_id
          JOIN transaction_revisions r
-           ON r.revision_id=current_row.revision_id
+           ON r.transaction_id=t.transaction_id
          JOIN source_records p
            ON p.source_record_id=r.source_record_id
          JOIN source_record_scopes record_scope
@@ -275,6 +265,7 @@ function fundingCandidates(
     accountId: Uint8Array;
     accountNumber: string;
     sourceRecordId: Uint8Array;
+    revisionId: Uint8Array;
     coefficient: string;
     scale: number;
     description: string;
@@ -288,6 +279,12 @@ function fundingCandidates(
   const expectedDescription = direction === "outflow" ? "複委託扣" : "複委託入";
   const expectedInfo = direction === "outflow" ? "淨額扣" : "淨額入";
   for (const row of rows) {
+    if (
+      !currentTransactions.has(
+        `${idHex(row.transactionId)}:${idHex(row.revisionId)}`,
+      )
+    )
+      continue;
     const accountNumber = String(row.accountNumber ?? "").replaceAll(/[\s-]/g, "");
     const linkage = parseSettlementLinkage(row.payloadJson);
     if (
@@ -351,6 +348,7 @@ type FundingCoverageState = "complete" | "incomplete" | "missing";
 
 function fundingCoverageState(
   db: DatabaseSync,
+  currentTransactions: ReadonlySet<string>,
   settlementEffectiveOn: string,
   currency: string,
   direction: "inflow" | "outflow" | null,
@@ -360,6 +358,8 @@ function fundingCoverageState(
     .prepare(
       `SELECT scope.scope_start AS scopeStart,scope.scope_end AS scopeEnd,
               scope.completeness,scope.terminal,
+              transaction_row.transaction_id AS transactionId,
+              revision.revision_id AS revisionId,
               revision.direction,revision.description,
               source_record.payload_json AS payloadJson
          FROM financial_accounts account
@@ -367,10 +367,8 @@ function fundingCoverageState(
            ON connection.source_connection_id=account.source_connection_id
          JOIN financial_transactions transaction_row
            ON transaction_row.account_id=account.account_id
-         JOIN current_transactions current_row
-           ON current_row.transaction_id=transaction_row.transaction_id
          JOIN transaction_revisions revision
-           ON revision.revision_id=current_row.revision_id
+           ON revision.transaction_id=transaction_row.transaction_id
          JOIN source_records source_record
            ON source_record.source_record_id=revision.source_record_id
          JOIN source_record_scopes record_scope
@@ -397,11 +395,19 @@ function fundingCoverageState(
     scopeEnd: string;
     completeness: string;
     terminal: number;
+    transactionId: Uint8Array;
+    revisionId: Uint8Array;
     direction: "inflow" | "outflow";
     description: string | null;
     payloadJson: string;
   }>;
   const relevantRows = rows.filter((row) => {
+    if (
+      !currentTransactions.has(
+        `${idHex(row.transactionId)}:${idHex(row.revisionId)}`,
+      )
+    )
+      return false;
     const expectedDescription =
       row.direction === "outflow" ? "複委託扣" : "複委託入";
     const expectedInfo = row.direction === "outflow" ? "淨額扣" : "淨額入";
@@ -576,25 +582,22 @@ function withdrawCurrentRelations(
   reason: string,
   exceptRelationId?: Uint8Array,
 ): number {
-  const rows = db
-    .prepare(
-      `SELECT relation.relation_id AS relationId
-         FROM investment_funding_relations relation
-         JOIN investment_funding_relation_events event
-           ON event.relation_id=relation.relation_id
-        WHERE relation.investment_account_id=?
-          AND relation.settlement_group_key=?
-          AND event.event_kind='observed'
-          AND ${currentStateSql("event")}`,
-    )
-    .all(investmentAccountId, settlementGroupKey) as Array<{
-    relationId: Uint8Array;
-  }>;
+  const rows = createCanonicalProjectionRuntime(db)
+    .read({
+      kind: "current",
+      families: ["investment-funding-relations"],
+      scope: { accountIds: [idHex(investmentAccountId)] },
+    })
+    .families["investment-funding-relations"].filter(
+      (relation) =>
+        relation.investmentAccountId === idHex(investmentAccountId) &&
+        relation.settlementGroupKey === settlementGroupKey,
+    );
   let withdrawn = 0;
   for (const row of rows) {
     if (
       exceptRelationId &&
-      Buffer.from(row.relationId).equals(Buffer.from(exceptRelationId))
+      Buffer.from(row.relationId, "hex").equals(Buffer.from(exceptRelationId))
     )
       continue;
     db.prepare(
@@ -603,7 +606,7 @@ function withdrawCurrentRelations(
        ) VALUES(?,?,'withdrawn',?,?,?)`,
     ).run(
       uuidV7(),
-      row.relationId,
+      Buffer.from(row.relationId, "hex"),
       reason,
       eventWriter.ensureCommit(),
       eventWriter.nextEventTime(),
@@ -716,6 +719,41 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
   };
   store.db.exec("BEGIN IMMEDIATE");
   try {
+    const settlementDates = [...groups.values()].flatMap((group) => {
+      const first = group[0];
+      if (!first) return [];
+      if (first.evidence.kind === "source-linked-account")
+        return [first.evidence.settlementEffectiveOn];
+      if (first.evidence.kind === "source-settlement-contract") {
+        const settlementDate = addSettlementBusinessDays(
+          first.effectiveOn,
+          first.action,
+          first.evidence.settlementMarket,
+        );
+        return settlementDate ? [settlementDate] : [];
+      }
+      return [];
+    });
+    const currentTransactionsByDate = new Map<string, Set<string>>();
+    if (settlementDates.length > 0) {
+      const sortedDates = settlementDates.toSorted();
+      const transactionSnapshot = createCanonicalProjectionRuntime(store.db).read({
+        kind: "current",
+        families: ["transactions"],
+        scope: {
+          startDate: sortedDates[0]!,
+          endDate: sortedDates.at(-1)!,
+        },
+      });
+      for (const transaction of transactionSnapshot.families.transactions) {
+        const keys =
+          currentTransactionsByDate.get(transaction.effectiveOn) ?? new Set<string>();
+        keys.add(`${transaction.transactionId}:${transaction.revisionId}`);
+        currentTransactionsByDate.set(transaction.effectiveOn, keys);
+      }
+    }
+    const currentTransactionsOn = (effectiveOn: string): ReadonlySet<string> =>
+      currentTransactionsByDate.get(effectiveOn) ?? new Set<string>();
     for (const group of groups.values()) {
       const first = group[0]!;
       const evidence = first.evidence;
@@ -804,6 +842,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
           if (
             fundingCoverageState(
               store.db,
+              currentTransactionsOn(settlementEffectiveOn),
               settlementEffectiveOn,
               first.cashCurrency,
               null,
@@ -823,6 +862,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
         const expected = signed < 0n ? -signed : signed;
         const fundingCoverage = fundingCoverageState(
           store.db,
+          currentTransactionsOn(settlementEffectiveOn),
           settlementEffectiveOn,
           first.cashCurrency,
           direction,
@@ -830,6 +870,7 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
         );
         const candidateRows = fundingCandidates(
           store.db,
+          currentTransactionsOn(settlementEffectiveOn),
           settlementEffectiveOn,
           first.cashCurrency,
           direction,
@@ -1006,14 +1047,17 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
         coefficient: string;
         scale: number;
       }> = [];
+      const currentTransactions = currentTransactionsOn(
+        evidence.settlementEffectiveOn,
+      );
       for (const account of fundingAccounts) {
         const rows = store.db
           .prepare(
-            `SELECT t.transaction_id AS transactionId,r.source_record_id AS sourceRecordId,
+            `SELECT t.transaction_id AS transactionId,r.revision_id AS revisionId,
+                    r.source_record_id AS sourceRecordId,
                     r.amount_coefficient AS coefficient,r.amount_scale AS scale
                FROM financial_transactions t
-               JOIN current_transactions c ON c.transaction_id=t.transaction_id
-               JOIN transaction_revisions r ON r.revision_id=c.revision_id
+               JOIN transaction_revisions r ON r.transaction_id=t.transaction_id
               WHERE t.account_id=? AND r.effective_on=? AND r.direction=?
                 AND r.currency=? AND r.posting_status='posted'
                 AND r.economic_status='normal' AND r.administrative_state='active'`,
@@ -1025,11 +1069,18 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
             first.cashCurrency,
           ) as Array<{
           transactionId: Uint8Array;
+          revisionId: Uint8Array;
           sourceRecordId: Uint8Array;
           coefficient: string;
           scale: number;
         }>;
         for (const row of rows) {
+          if (
+            !currentTransactions.has(
+              `${idHex(row.transactionId)}:${idHex(row.revisionId)}`,
+            )
+          )
+            continue;
           const comparisonScale = Math.max(targetScale, row.scale);
           if (
             scaledInteger(row.coefficient, row.scale, comparisonScale) ===
@@ -1152,6 +1203,11 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
       );
       resolved += 1;
     }
+    if (resolutionCommitId)
+      createCanonicalProjectionRuntime(store.db).applyCommit({
+        commitId: resolutionCommitId,
+        kind: "relation_resolution",
+      });
     store.db.exec("COMMIT");
   } catch (error) {
     store.db.exec("ROLLBACK");
@@ -1174,23 +1230,41 @@ export function queryCanonicalInvestmentFundingRelationsInSnapshot(
   sourceConnectionKey: string,
 ) {
   assertValidatedCanonicalDatabase(store.db);
-  return store.db
-      .prepare(
-        `SELECT r.relation_key AS relationKey,r.settlement_group_key AS settlementGroupKey,
-                r.settlement_effective_on AS settlementEffectiveOn,
-                r.settlement_model AS settlementModel,r.coefficient,r.scale,
-                r.currency,r.direction,r.source_linkage_key AS sourceLinkageKey,
-                COUNT(m.investment_transaction_id) AS investmentTransactionCount
-           FROM investment_funding_relations r
-           JOIN investment_accounts a ON a.account_id=r.investment_account_id
-           JOIN source_connections c ON c.source_connection_id=a.source_connection_id
-           JOIN investment_funding_relation_members m ON m.relation_id=r.relation_id
-           JOIN investment_funding_relation_events e ON e.relation_id=r.relation_id
-          WHERE c.source_connection_key=? AND e.event_kind='observed'
-            AND ${currentStateSql("e")}
-          GROUP BY r.relation_id ORDER BY r.settlement_effective_on,r.relation_key`,
-      )
-      .all(sourceConnectionKey);
+  return createCanonicalProjectionRuntime(store.db)
+    .read({
+      kind: "current",
+      families: ["investment-funding-relations"],
+      scope: { sourceConnectionKey },
+    })
+    .families["investment-funding-relations"].map(investmentFundingRelationView);
+}
+
+function investmentFundingRelationView(
+  relation: Readonly<{
+    relationKey: string;
+    settlementGroupKey: string;
+    settlementEffectiveOn: string;
+    settlementModel: string;
+    coefficient: string;
+    scale: number;
+    currency: string;
+    direction: string;
+    sourceLinkageKey: string;
+    investmentTransactionCount: number;
+  }>,
+) {
+  return {
+    relationKey: relation.relationKey,
+    settlementGroupKey: relation.settlementGroupKey,
+    settlementEffectiveOn: relation.settlementEffectiveOn,
+    settlementModel: relation.settlementModel,
+    coefficient: relation.coefficient,
+    scale: relation.scale,
+    currency: relation.currency,
+    direction: relation.direction,
+    sourceLinkageKey: relation.sourceLinkageKey,
+    investmentTransactionCount: relation.investmentTransactionCount,
+  };
 }
 
 export function queryCanonicalInvestmentFundingRelations(

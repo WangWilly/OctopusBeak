@@ -377,7 +377,12 @@ test("MAX holdings preserve exact valuation and cost through current, historical
     },
   );
   assert.equal(
-    queryCanonicalInvestmentHistorical(store, connectionKey).holdings.length,
+    queryCanonicalInvestmentHistorical(store, connectionKey, {
+      financialAt: "9999-12-31",
+      knowledgeAt: Number(
+        (store.db.prepare("SELECT COALESCE(MAX(commit_sequence),0) AS value FROM canonical_commits").get() as { value?: number }).value ?? 0,
+      ),
+    }).holdings.length,
     2,
   );
   assert.equal(

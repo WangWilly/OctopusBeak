@@ -30,9 +30,20 @@ import {
 } from "./investment-financial.ts";
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
 import { queryCanonicalSourceCurrent } from "./canonical-source-store.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
+const latestCutoff = (store: { db: DatabaseSync }) => ({
+  financialAt: "9999-12-31",
+  knowledgeAt: Number(
+    (
+      store.db
+        .prepare("SELECT COALESCE(MAX(commit_sequence),0) AS value FROM canonical_commits")
+        .get() as { value?: number }
+    ).value ?? 0,
+  ),
+});
 
 const SYNTHETIC_SOURCE_LINKED_ACCOUNT = "9001" + "0020" + "0300" + "4005";
 const SYNTHETIC_YUANTA_SETTLEMENT_ACCOUNT = "9001" + "0020" + "0300" + "4006";
@@ -347,7 +358,7 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
     assert.equal(current.securities.length, 1);
     assert.equal(current.holdings.length, 1);
     assert.equal(
-      queryCanonicalInvestmentHistorical(store, token("a")).holdings.length,
+      queryCanonicalInvestmentHistorical(store, token("a"), latestCutoff(store)).holdings.length,
       2,
     );
     assert.equal(current.transactions[0]?.action, "buy");
@@ -569,9 +580,16 @@ test("a contract-proven correction revises current selection and preserves histo
     queryCanonicalInvestmentCurrent(store, token("a")).holdings.length,
     1,
   );
-  assert.equal(
-    queryCanonicalInvestmentHistorical(store, token("a")).holdings.length,
-    2,
+  const historical = queryCanonicalInvestmentHistorical(
+    store,
+    token("a"),
+    latestCutoff(store),
+  );
+  assert.equal(historical.holdings.length, 2);
+  assert.deepEqual(
+    historical.holdings.map(({ isCurrent }) => isCurrent).sort(),
+    [0, 1],
+    "Historical preserves the persisted correction-selection flag",
   );
   assert.equal(
     queryCanonicalInvestmentLineage(store, token("a"), token("d")).holdings
@@ -863,6 +881,50 @@ test("verified settlement account evidence resolves a single investment funding 
   assert.equal(relation.investmentTransactionCount, 1);
   assert.equal(relation.coefficient, "500000");
   assert.equal(relation.direction, "outflow");
+  const relationSnapshot = createCanonicalProjectionRuntime(store.db).read({
+    kind: "current",
+    families: ["investment-funding-relations"],
+    scope: { sourceConnectionKey: token("a") },
+  });
+  assert.equal(relationSnapshot.knowledgePoint, latestCutoff(store).knowledgeAt);
+  assert.deepEqual(
+    relationSnapshot.families["investment-funding-relations"].map(
+      ({ settlementModel, investmentTransactionCount }) => ({
+        settlementModel,
+        investmentTransactionCount,
+      }),
+    ),
+    [{ settlementModel: "single-transaction", investmentTransactionCount: 1 }],
+    "relation_resolution is applied and read through the Runtime at one Knowledge Point",
+  );
+  assert.equal(
+    createCanonicalProjectionRuntime(store.db).read({
+      kind: "current",
+      families: ["investment-funding-relations"],
+      scope: {
+        sourceConnectionKey: token("a"),
+        startDate: "2020-01-01",
+        endDate: "2020-12-31",
+      },
+    }).families["investment-funding-relations"].length,
+    0,
+    "funding relations obey the same explicit event-date scope",
+  );
+  const relationCutoff = latestCutoff(store);
+  assert.equal(
+    queryCanonicalInvestmentHistorical(store, token("a"), relationCutoff)
+      .relations.length,
+    1,
+    "Historical investment relations use the Runtime Knowledge Point",
+  );
+  assert.equal(
+    queryCanonicalInvestmentHistorical(store, token("a"), {
+      ...relationCutoff,
+      financialAt: "2026-08-29",
+    }).relations.length,
+    0,
+    "Historical investment relations obey the financial cutoff",
+  );
   store.close();
 });
 
