@@ -4,6 +4,9 @@ import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
 } from "./canonical-runtime.ts";
+import {
+  createCanonicalProjectionRuntime,
+} from "./canonical-projection-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 
 /** Resolver rules are versioned because provider note/date contracts may
@@ -2019,20 +2022,6 @@ function endpointSet(plan: Plan): Set<string> {
   return new Set(plan.members.map((member) => hex(member.transactionId)));
 }
 
-function currentGeneration(db: DatabaseSync): number {
-  const row = db
-    .prepare(
-      `SELECT generation.generation_id
-       FROM active_projection_generation active
-       JOIN projection_generations generation ON generation.generation_id = active.generation_id
-       WHERE active.singleton_id = 1 AND generation.status = 'active'`,
-    )
-    .get() as { generation_id?: unknown } | undefined;
-  if (!row || !Number.isSafeInteger(Number(row.generation_id)))
-    throw new Error("Canonical active projection generation is missing.");
-  return Number(row.generation_id);
-}
-
 function ensureLoanAccountIdentity(db: DatabaseSync, transaction: TransactionContext, commitId: BlobId): void {
   // The v9 compatibility table intentionally only models loan and domestic
   // deposit identities. Generic repayment relations may involve another
@@ -2111,7 +2100,6 @@ function persistExact(
   plan: Extract<Plan, { kind: "exact" }>,
   resolutionId: BlobId,
   commitId: BlobId,
-  generationId: number,
 ): { relationId: BlobId; inserted: boolean } {
   const [from, to] = canonicalEndpoints(plan.from, plan.to);
   ensureLoanAccountIdentity(db, from, commitId);
@@ -2197,12 +2185,6 @@ function persistExact(
     plan.evidenceRelationId,
     plan.evidenceContractVersion,
   );
-  db.prepare(
-    `INSERT INTO current_loan_relations(
-      generation_id, relation_id, projection_commit_id, relation_commit_id
-    ) VALUES (?, ?, ?, ?)
-    ON CONFLICT(generation_id, relation_id) DO UPDATE SET projection_commit_id = excluded.projection_commit_id`,
-  ).run(generationId, relationId, commitId, commitId);
   return { relationId, inserted };
 }
 
@@ -2211,7 +2193,6 @@ function persistGroup(
   plan: Extract<Plan, { kind: "group" }>,
   resolutionId: BlobId,
   commitId: BlobId,
-  generationId: number,
 ): { groupId: BlobId; inserted: boolean } {
   const sorted = [...plan.members].sort((left, right) =>
     hex(left.transactionId).localeCompare(hex(right.transactionId)),
@@ -2252,18 +2233,18 @@ function persistGroup(
       commitId,
     );
   }
-  db.prepare(
-    `INSERT INTO current_loan_repayment_settlement_groups(
-      generation_id, settlement_group_id, projection_commit_id
-    ) VALUES (?, ?, ?)
-    ON CONFLICT(generation_id, settlement_group_id) DO UPDATE SET projection_commit_id = excluded.projection_commit_id`,
-  ).run(generationId, groupId, commitId);
   return { groupId, inserted };
 }
 
 function supersedeOverlappingCurrent(
   db: DatabaseSync,
   plan: Plan,
+  currentRelations: readonly {
+    relationId: string;
+    fromTransactionId: string;
+    toTransactionId: string;
+  }[],
+  currentGroups: readonly { settlementGroupId: string }[],
   resolutionId: BlobId,
   commitId: BlobId,
   replacementRelationId: BlobId | null,
@@ -2271,7 +2252,6 @@ function supersedeOverlappingCurrent(
 ): number {
   const members = endpointSet(plan);
   let count = 0;
-  const generationId = currentGeneration(db);
 
   // A relation is an assertion about one ordered pair of endpoints.  Only an
   // assertion about that same pair can replace it; sharing one endpoint is
@@ -2280,21 +2260,12 @@ function supersedeOverlappingCurrent(
   // relation ID for the same pair, so this branch is mostly a guard for
   // legacy rows whose relation ID was not reused.
   if (plan.kind === "exact") {
-    const currentRelations = db
-      .prepare(
-        `SELECT current.relation_id, relation.from_transaction_id, relation.to_transaction_id
-         FROM current_loan_relations current
-         JOIN transaction_relations relation ON relation.relation_id = current.relation_id
-         WHERE current.generation_id = ?`,
-      )
-      .all(generationId) as Array<Record<string, unknown>>;
     for (const current of currentRelations) {
-      const from = current.from_transaction_id instanceof Uint8Array ? hex(current.from_transaction_id) : "";
-      const to = current.to_transaction_id instanceof Uint8Array ? hex(current.to_transaction_id) : "";
+      const from = current.fromTransactionId;
+      const to = current.toTransactionId;
       if (!members.has(from) || !members.has(to)) continue;
-      const currentRelationId = blob(current.relation_id, "Current relation ID");
+      const currentRelationId = Buffer.from(current.relationId, "hex");
       if (replacementRelationId && Buffer.from(currentRelationId).equals(Buffer.from(replacementRelationId))) continue;
-      db.prepare("DELETE FROM current_loan_relations WHERE generation_id = ? AND relation_id = ?").run(generationId, currentRelationId);
       db.prepare(
         `INSERT OR IGNORE INTO loan_repayment_relation_events(
           event_id, resolution_id, relation_id, settlement_group_id, event_kind,
@@ -2311,15 +2282,8 @@ function supersedeOverlappingCurrent(
   // it must remain current.  The only safe group replacement here is an
   // exact plan whose two endpoints are the complete group membership (a
   // legacy/synthetic two-member group); larger groups stay current.
-  const currentGroups = db
-    .prepare(
-      `SELECT current.settlement_group_id
-       FROM current_loan_repayment_settlement_groups current
-       WHERE current.generation_id = ?`,
-    )
-    .all(generationId) as Array<Record<string, unknown>>;
   for (const current of currentGroups) {
-    const groupId = current.settlement_group_id as Uint8Array;
+    const groupId = Buffer.from(current.settlementGroupId, "hex");
     if (plan.kind !== "exact") continue;
     if (replacementGroupId && Buffer.from(groupId).equals(Buffer.from(replacementGroupId))) continue;
     const currentMembers = db
@@ -2335,7 +2299,6 @@ function supersedeOverlappingCurrent(
       [...currentMemberKeys].some((member) => !members.has(member))
     )
       continue;
-    db.prepare("DELETE FROM current_loan_repayment_settlement_groups WHERE generation_id = ? AND settlement_group_id = ?").run(generationId, groupId);
     db.prepare(
       `INSERT OR IGNORE INTO loan_repayment_relation_events(
         event_id, resolution_id, relation_id, settlement_group_id, event_kind,
@@ -2351,6 +2314,7 @@ function supersedeOverlappingCurrent(
 function withdrawStaleVerifiedAccountGroups(
   db: DatabaseSync,
   sourceConnectionId: BlobId,
+  currentGroups: readonly { settlementGroupId: string }[],
   plans: readonly Plan[],
   desiredGroupIds: readonly BlobId[],
   resolutionId: BlobId,
@@ -2365,29 +2329,32 @@ function withdrawStaleVerifiedAccountGroups(
   }
   if (planByDigest.size === 0) return 0;
   const desired = new Set(desiredGroupIds.map(hex));
-  const generationId = currentGeneration(db);
+  if (currentGroups.length === 0) return 0;
+  const currentGroupIds = currentGroups.map((projected) =>
+    Buffer.from(projected.settlementGroupId, "hex"),
+  );
   const current = db
     .prepare(
-      `SELECT current.settlement_group_id, event.evidence_json
-       FROM current_loan_repayment_settlement_groups current
-       JOIN loan_repayment_settlement_groups group_row
-         ON group_row.settlement_group_id = current.settlement_group_id
-       JOIN loan_repayment_relation_events event
-         ON event.settlement_group_id = current.settlement_group_id
-        AND event.event_kind = 'observed'
-       JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
-       WHERE current.generation_id = ?
-         AND group_row.source_connection_id = ?
-         AND event.support_kind = 'verified-repayment-destination'
-         AND NOT EXISTS (
-           SELECT 1 FROM loan_repayment_relation_events newer
-           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
-           WHERE newer.settlement_group_id = event.settlement_group_id
-             AND newer.event_kind = 'observed'
-             AND newer_commit.commit_sequence > event_commit.commit_sequence
-         )`,
+      `SELECT group_row.settlement_group_id, event.evidence_json
+         FROM loan_repayment_settlement_groups group_row
+         JOIN loan_repayment_relation_events event
+           ON event.settlement_group_id = group_row.settlement_group_id
+          AND event.event_kind = 'observed'
+         JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+        WHERE group_row.settlement_group_id IN (${currentGroupIds.map(() => "?").join(",")})
+          AND group_row.source_connection_id = ?
+          AND event.support_kind = 'verified-repayment-destination'
+          AND NOT EXISTS (
+            SELECT 1 FROM loan_repayment_relation_events newer
+            JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+            WHERE newer.settlement_group_id = event.settlement_group_id
+              AND newer.event_kind = 'observed'
+              AND newer_commit.commit_sequence > event_commit.commit_sequence
+          )`,
     )
-    .all(generationId, sourceConnectionId) as Array<Record<string, unknown>>;
+    .all(...currentGroupIds, sourceConnectionId) as Array<
+    Record<string, unknown>
+  >;
   let withdrawn = 0;
   for (const row of current) {
     const groupId = blob(row.settlement_group_id, "Current settlement group ID");
@@ -2405,10 +2372,6 @@ function withdrawStaleVerifiedAccountGroups(
     if (!accountDigest) continue;
     const replacementPlan = planByDigest.get(accountDigest);
     if (!replacementPlan) continue;
-    db.prepare(
-      `DELETE FROM current_loan_repayment_settlement_groups
-       WHERE generation_id = ? AND settlement_group_id = ?`,
-    ).run(generationId, groupId);
     db.prepare(
       `INSERT OR IGNORE INTO loan_repayment_relation_events(
         event_id, resolution_id, relation_id, settlement_group_id, event_kind,
@@ -2682,6 +2645,13 @@ function resolveOnce(
         .map((row) => idString(row.settlement_group_id, "Settlement group ID")),
     };
   }
+  const currentProjection = createCanonicalProjectionRuntime(store.db).read({
+    kind: "current",
+    families: ["loan-relations", "loan-settlement-groups"],
+    scope: { sourceConnectionKey: request.sourceConnectionKey },
+  });
+  const currentRelations = currentProjection.families["loan-relations"];
+  const currentGroups = currentProjection.families["loan-settlement-groups"];
   const commitId = createResolutionCommit(store);
   const resolutionId = createCanonicalOpaqueId();
   store.db
@@ -2692,13 +2662,12 @@ function resolveOnce(
       ) VALUES (?, ?, ?, ?, 'complete', 'changed', NULL, ?, ?)`,
     )
     .run(resolutionId, resolutionKey, connection.id, LOAN_REPAYMENT_RELATION_RESOLVER_VERSION, observedAt, commitId);
-  const generationId = currentGeneration(store.db);
   const exactRelationIds: BlobId[] = [];
   const settlementGroupIds: BlobId[] = [];
   let changed = false;
   for (const plan of plans) {
     if (plan.kind === "exact") {
-      const persisted = persistExact(store.db, plan, resolutionId, commitId, generationId);
+      const persisted = persistExact(store.db, plan, resolutionId, commitId);
       exactRelationIds.push(persisted.relationId);
       changed ||= persisted.inserted;
       store.db.prepare(
@@ -2711,6 +2680,8 @@ function resolveOnce(
       const superseded = supersedeOverlappingCurrent(
         store.db,
         plan,
+        currentRelations,
+        currentGroups,
         resolutionId,
         commitId,
         persisted.relationId,
@@ -2718,7 +2689,7 @@ function resolveOnce(
       );
       changed ||= superseded > 0;
     } else {
-      const persisted = persistGroup(store.db, plan, resolutionId, commitId, generationId);
+      const persisted = persistGroup(store.db, plan, resolutionId, commitId);
       settlementGroupIds.push(persisted.groupId);
       changed ||= persisted.inserted;
       store.db.prepare(
@@ -2731,6 +2702,8 @@ function resolveOnce(
       const superseded = supersedeOverlappingCurrent(
         store.db,
         plan,
+        currentRelations,
+        currentGroups,
         resolutionId,
         commitId,
         null,
@@ -2743,6 +2716,7 @@ function resolveOnce(
     const withdrawn = withdrawStaleVerifiedAccountGroups(
       store.db,
       connection.id,
+      currentGroups,
       plans,
       settlementGroupIds,
       resolutionId,
@@ -2752,6 +2726,10 @@ function resolveOnce(
   }
   if (!changed)
     store.db.prepare("UPDATE loan_repayment_resolution_runs SET outcome = 'unchanged' WHERE resolution_id = ?").run(resolutionId);
+  createCanonicalProjectionRuntime(store.db).applyCommit({
+    commitId,
+    kind: "relation_resolution",
+  });
   return {
     status: "canonical-live",
     outcome: changed ? "changed" : "unchanged",
@@ -2791,6 +2769,34 @@ export function queryCurrentLoanRepaymentRelations(
   requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   return withCanonicalSnapshot(store.db, () => {
+    const accountIds = (
+      store.db
+        .prepare(
+          `SELECT DISTINCT lower(hex(relation.account_id)) AS account_id
+             FROM transaction_relations relation
+             JOIN source_connections connection
+               ON connection.source_connection_id = relation.source_connection_id
+            WHERE (? IS NULL OR connection.source_connection_key = ?)
+              AND (? IS NULL OR connection.integration_namespace = ?)`,
+        )
+        .all(
+          options.sourceConnectionKey ?? null,
+          options.sourceConnectionKey ?? null,
+          options.integrationNamespace ?? null,
+          options.integrationNamespace ?? null,
+        ) as Array<{ account_id: string }>
+    ).map((row) => row.account_id);
+    const currentIds = new Set(
+      createCanonicalProjectionRuntime(store.db)
+        .read({
+          kind: "current",
+          families: ["loan-relations"],
+          scope: options.sourceConnectionKey
+            ? { sourceConnectionKey: options.sourceConnectionKey }
+            : { accountIds },
+        })
+        .families["loan-relations"].map((row) => row.relationId),
+    );
     const rows = store.db
       .prepare(
         `SELECT relation.relation_id, relation.relation_kind,
@@ -2803,18 +2809,14 @@ export function queryCurrentLoanRepaymentRelations(
                 connection.source_connection_key,
                 from_epoch.epoch_key AS from_epoch_key,
                 to_epoch.epoch_key AS to_epoch_key
-         FROM current_loan_relations current
-         JOIN active_projection_generation active ON active.singleton_id = 1
-         JOIN transaction_relations relation
-           ON relation.relation_id = current.relation_id
+         FROM transaction_relations relation
          JOIN source_connections connection
            ON connection.source_connection_id = relation.source_connection_id
          LEFT JOIN identity_epochs from_epoch
            ON from_epoch.identity_epoch_id = relation.from_identity_epoch_id
          LEFT JOIN identity_epochs to_epoch
            ON to_epoch.identity_epoch_id = relation.to_identity_epoch_id
-         WHERE current.generation_id = active.generation_id
-           AND (? IS NULL OR connection.source_connection_key = ?)
+         WHERE (? IS NULL OR connection.source_connection_key = ?)
            AND (? IS NULL OR connection.integration_namespace = ?)
          ORDER BY relation.relation_key`,
       )
@@ -2824,7 +2826,9 @@ export function queryCurrentLoanRepaymentRelations(
         options.integrationNamespace ?? null,
         options.integrationNamespace ?? null,
       ) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
+    return rows.filter((row) =>
+      currentIds.has(Buffer.from(row.relation_id as Uint8Array).toString("hex")),
+    ).map((row) => ({
       relationId: idString(row.relation_id, "Relation ID"),
       relationKind: "transfer_counterpart",
       fromTransactionId: idString(row.from_transaction_id, "From transaction ID"),
@@ -2852,22 +2856,50 @@ export function queryCurrentLoanRepaymentSettlementGroups(
   requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   return withCanonicalSnapshot(store.db, () => {
+    const accountIds = (
+      store.db
+        .prepare(
+          `SELECT DISTINCT lower(hex(transaction_row.account_id)) AS account_id
+             FROM loan_repayment_settlement_groups group_row
+             JOIN source_connections connection
+               ON connection.source_connection_id = group_row.source_connection_id
+             JOIN loan_repayment_settlement_group_members member
+               ON member.settlement_group_id = group_row.settlement_group_id
+             JOIN financial_transactions transaction_row
+               ON transaction_row.transaction_id = member.transaction_id
+            WHERE (? IS NULL OR connection.source_connection_key = ?)
+              AND (? IS NULL OR connection.integration_namespace = ?)`,
+        )
+        .all(
+          options.sourceConnectionKey ?? null,
+          options.sourceConnectionKey ?? null,
+          options.integrationNamespace ?? null,
+          options.integrationNamespace ?? null,
+        ) as Array<{ account_id: string }>
+    ).map((row) => row.account_id);
+    const currentIds = new Set(
+      createCanonicalProjectionRuntime(store.db)
+        .read({
+          kind: "current",
+          families: ["loan-settlement-groups"],
+          scope: options.sourceConnectionKey
+            ? { sourceConnectionKey: options.sourceConnectionKey }
+            : { accountIds },
+        })
+        .families["loan-settlement-groups"].map((row) => row.settlementGroupId),
+    );
     const rows = store.db
       .prepare(
         `SELECT group_row.settlement_group_id, group_row.group_key,
                 connection.source_connection_key,
                 member.transaction_id, member.member_kind, record.occurrence_key
-         FROM current_loan_repayment_settlement_groups current
-         JOIN active_projection_generation active ON active.singleton_id = 1
-         JOIN loan_repayment_settlement_groups group_row
-           ON group_row.settlement_group_id = current.settlement_group_id
+         FROM loan_repayment_settlement_groups group_row
          JOIN source_connections connection
            ON connection.source_connection_id = group_row.source_connection_id
          JOIN loan_repayment_settlement_group_members member
            ON member.settlement_group_id = group_row.settlement_group_id
          JOIN source_records record ON record.source_record_id = member.source_record_id
-         WHERE current.generation_id = active.generation_id
-           AND (? IS NULL OR connection.source_connection_key = ?)
+         WHERE (? IS NULL OR connection.source_connection_key = ?)
            AND (? IS NULL OR connection.integration_namespace = ?)
          ORDER BY group_row.group_key, member.transaction_id`,
       )
@@ -2879,6 +2911,12 @@ export function queryCurrentLoanRepaymentSettlementGroups(
       ) as Array<Record<string, unknown>>;
     const groups = new Map<string, LoanRepaymentSettlementGroupView>();
     for (const row of rows) {
+      if (
+        !currentIds.has(
+          Buffer.from(row.settlement_group_id as Uint8Array).toString("hex"),
+        )
+      )
+        continue;
       const groupId = idString(row.settlement_group_id, "Settlement group ID");
       const prior = groups.get(groupId);
       const member = {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   createCanonicalSourceStore,
@@ -547,6 +548,7 @@ test("replayed source observations retain transaction-scoped account evidence", 
 test("resolver admits direct exact transfer counterpart across independent captures and is idempotent", async () => {
   const sourceConnectionKey = token("exact-connection");
   const pair = await commitPair(sourceConnectionKey, token("exact-deposit-epoch"), "exact");
+  let storeClosed = false;
   try {
     const depositRecord = pair.deposit.records[0]!;
     const loanRecord = pair.loan.records[0]!;
@@ -657,9 +659,74 @@ test("resolver admits direct exact transfer counterpart across independent captu
       (pair.store.db.prepare("SELECT COUNT(*) AS count FROM loan_repayment_relation_events").get() as { count?: number }).count,
       1,
     );
+    const latest = pair.store.db
+      .prepare(
+        "SELECT MAX(commit_sequence) AS sequence, MAX(recorded_at_utc_us) AS recordedAt FROM canonical_commits",
+      )
+      .get() as { sequence: number; recordedAt: number };
+    const withdrawnCommitId = createHash("sha256")
+      .update("exact-relation-withdrawn-commit")
+      .digest()
+      .subarray(0, 16);
+    const withdrawnEventId = createHash("sha256")
+      .update("exact-relation-withdrawn-event")
+      .digest()
+      .subarray(0, 16);
+    const relationIdBytes = Buffer.from(
+      first.exactRelationIds[0]!.replaceAll("-", ""),
+      "hex",
+    );
+    const resolutionIdBytes = Buffer.from(
+      first.resolutionId.replaceAll("-", ""),
+      "hex",
+    );
+    pair.store.db.exec("BEGIN IMMEDIATE");
+    pair.store.db
+      .prepare(
+        `INSERT INTO canonical_commits(
+           commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
+         ) VALUES (?, ?, ?, 'synthetic/relation-withdrawal', 'relation_resolution')`,
+      )
+      .run(withdrawnCommitId, latest.sequence + 1, latest.recordedAt + 1);
+    pair.store.db
+      .prepare(
+        `INSERT INTO loan_repayment_relation_events(
+           event_id, resolution_id, relation_id, settlement_group_id, event_kind,
+           support_kind, support_key, supersedes_relation_id, supersedes_group_id,
+           evidence_json, commit_id
+         ) VALUES (?, ?, ?, NULL, 'withdrawn', 'explicit-source-linkage',
+                   'synthetic-withdrawal', NULL, NULL, '{}', ?)`,
+      )
+      .run(
+        withdrawnEventId,
+        resolutionIdBytes,
+        relationIdBytes,
+        withdrawnCommitId,
+      );
+    createCanonicalProjectionRuntime(pair.store.db).applyCommit({
+      commitId: withdrawnCommitId,
+      kind: "relation_resolution",
+    });
+    pair.store.db.exec("COMMIT");
+    assert.equal(queryCurrentLoanRepaymentRelations(pair.store).length, 0);
+
+    const databasePath = pair.store.databasePath;
+    pair.store.close();
+    storeClosed = true;
+    const runtime = createCanonicalProjectionRuntime(databasePath);
+    await runtime.rebuild();
+    assert.equal(
+      runtime.read({
+        kind: "current",
+        families: ["loan-relations"],
+        scope: { sourceConnectionKey },
+      }).families["loan-relations"].length,
+      0,
+      "a shadow rebuild must not reactivate a withdrawn relation",
+    );
   } finally {
     const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
-    pair.store.close();
+    if (!storeClosed) pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -892,6 +959,7 @@ test("resolver audits no-admission, is idempotent, and fails closed on incomplet
 test("resolver retains an ambiguous settlement group and never uses amount components as endpoints", async () => {
   const sourceConnectionKey = token("group-connection");
   const pair = await commitPair(sourceConnectionKey, token("group-deposit-epoch"), "group", 2);
+  let storeClosed = false;
   try {
     const accountValue = "99887766";
     for (const record of pair.deposit.records)
@@ -934,9 +1002,23 @@ test("resolver retains an ambiguous settlement group and never uses amount compo
       (pair.store.db.prepare("SELECT COUNT(*) AS count FROM loan_transaction_facts").get() as { count?: number }).count,
       2,
     );
+    const databasePath = pair.store.databasePath;
+    pair.store.close();
+    storeClosed = true;
+    const runtime = createCanonicalProjectionRuntime(databasePath);
+    await runtime.rebuild();
+    assert.equal(
+      runtime.read({
+        kind: "current",
+        families: ["loan-settlement-groups"],
+        scope: { sourceConnectionKey },
+      }).families["loan-settlement-groups"].length,
+      1,
+      "a shadow rebuild preserves current settlement groups across the switch",
+    );
   } finally {
     const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
-    pair.store.close();
+    if (!storeClosed) pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1372,6 +1454,44 @@ test("an exact assertion replaces a current two-member group when it is the same
       )
       .run(blobForTest("observed-event"), seedResolutionId, groupId, commit.commit_id);
 
+    const projectionRuntime = createCanonicalProjectionRuntime(pair.store.db);
+    const seedKnowledgePoint = Number(
+      (
+        pair.store.db
+          .prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?")
+          .get(commit.commit_id) as { commit_sequence: number }
+      ).commit_sequence,
+    );
+    assert.equal(
+      projectionRuntime.read({
+        kind: "historical",
+        families: ["loan-settlement-groups"],
+        scope: { sourceConnectionKey },
+        cutoff: {
+          financialAt: "2026-12-31",
+          knowledgeAt: seedKnowledgePoint,
+        },
+      }).families["loan-settlement-groups"].length,
+      1,
+    );
+    assert.equal(
+      projectionRuntime.read({
+        kind: "historical",
+        families: ["loan-settlement-groups"],
+        scope: {
+          sourceConnectionKey,
+          startDate: "2020-01-01",
+          endDate: "2020-12-31",
+        },
+        cutoff: {
+          financialAt: "2026-12-31",
+          knowledgeAt: seedKnowledgePoint,
+        },
+      }).families["loan-settlement-groups"].length,
+      0,
+      "settlement-group membership obeys the same explicit date scope",
+    );
+
     const exact = await resolveLoanRepaymentRelations(pair.store, {
       sourceConnectionKey,
       integrationNamespace: "fubon",
@@ -1390,6 +1510,41 @@ test("an exact assertion replaces a current two-member group when it is the same
     assert.equal(exact.exactRelationIds.length, 1);
     assert.equal(queryCurrentLoanRepaymentSettlementGroups(pair.store).length, 0);
     assert.equal(queryCurrentLoanRepaymentRelations(pair.store).length, 1);
+    const replacementKnowledgePoint = Number(
+      (
+        pair.store.db
+          .prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits")
+          .get() as { value: number }
+      ).value,
+    );
+    const replacedSnapshot = projectionRuntime.read({
+      kind: "historical",
+      families: ["loan-relations", "loan-settlement-groups"],
+      scope: { sourceConnectionKey },
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: replacementKnowledgePoint,
+      },
+    });
+    assert.equal(replacedSnapshot.families["loan-settlement-groups"].length, 0);
+    assert.equal(replacedSnapshot.families["loan-relations"].length, 1);
+    assert.equal(
+      projectionRuntime.read({
+        kind: "historical",
+        families: ["loan-relations"],
+        scope: {
+          sourceConnectionKey,
+          startDate: "2020-01-01",
+          endDate: "2020-12-31",
+        },
+        cutoff: {
+          financialAt: "2026-12-31",
+          knowledgeAt: replacementKnowledgePoint,
+        },
+      }).families["loan-relations"].length,
+      0,
+      "relation endpoints obey the same explicit date scope",
+    );
     const superseded = pair.store.db
       .prepare(
         `SELECT supersedes_relation_id

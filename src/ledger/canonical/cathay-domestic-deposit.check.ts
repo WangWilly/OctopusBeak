@@ -16,13 +16,18 @@ import {
   commitCathayDerivedImportRun,
   runCathayDerivedImportRun,
   commitCathayUserAssertion,
-  rebuildCathayCanonicalProjection,
   canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
   parseExactDecimalLexeme,
   type CathayStagedCapturePage,
 } from "./cathay-domestic-deposit.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+
+const rebuildCathayCanonicalProjection = (
+  ledgerDir: string,
+  options = {},
+) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 import { createCathayCanonicalFinancialQuery as createBoundaryCanonicalQuery } from "../../lib/shared-ledger/server/financial-query.ts";
 
 const syncPage = (
@@ -1434,6 +1439,37 @@ try {
     historicalWithdrawn.transactions[0]?.assertionSupportState,
     "withdrawn",
   );
+  const projectionRuntime = createCanonicalProjectionRuntime(
+    canonicalSqlitePath(lifecycleDir),
+  );
+  const projectionScope = {
+    sourceConnectionKey: "synthetic-sync-connection",
+  } as const;
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: withdrawn.commitSequence,
+      },
+    }).families.transactions.length,
+    0,
+    "Runtime historical facts exclude assertions withdrawn at the Knowledge Point",
+  );
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: first.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
+  );
   const restored = await commitCathayDomesticDepositSync(lifecycleDir, {
     ...syncInput(),
     observedAt: "2026-08-19T00:00:00+08:00",
@@ -1487,6 +1523,18 @@ try {
       })
     ).transactions[0]?.assertionSupportState,
     "supported",
+  );
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: restored.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
   );
   const restoredLineage = await withdrawnQuery.lineage({
     kind: "lineage",
@@ -1556,6 +1604,19 @@ try {
   } finally {
     changedDb.close();
   }
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: changed.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
+    "Runtime selects the replacement fact and excludes its superseded assertion",
+  );
 } finally {
   await rm(lifecycleDir, { recursive: true, force: true });
 }

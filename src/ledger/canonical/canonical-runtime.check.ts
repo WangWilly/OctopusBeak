@@ -14,9 +14,14 @@ import {
   commitCathayUserAssertion,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
-  rebuildCathayCanonicalProjection,
 } from "./cathay-domestic-deposit.ts";
 import { CanonicalBusyRetryExhaustedError } from "./canonical-runtime.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+
+const rebuildCathayCanonicalProjection = (
+  ledgerDir: string,
+  options = {},
+) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 
 const ledgerDir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-runtime-"));
 try {

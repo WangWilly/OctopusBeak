@@ -14,6 +14,7 @@ import {
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
   resolveCanonicalInvestmentFundingRelations,
@@ -1317,19 +1318,44 @@ export async function commitCanonicalInvestmentCaptureBatch(
 function queryRows(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,
-  currentOnly: boolean,
+  projectionRequest:
+    | "current"
+    | Readonly<{ financialAt: string; knowledgeAt: number }>
+    | null,
 ) {
   assertValidatedCanonicalDatabase(store.db);
   token(sourceConnectionKey, "Source connection key");
   return withCanonicalSnapshot(store.db, () => {
-    const accounts = store.db
+    const projection = projectionRequest
+      ? createCanonicalProjectionRuntime(store.db).read({
+          kind: projectionRequest === "current" ? "current" : "historical",
+          families: [
+            "investment-accounts",
+            "investment-holdings",
+            "investment-transactions",
+            "investment-margin-balances",
+            "investment-funding-relations",
+          ],
+          scope: { sourceConnectionKey },
+          ...(projectionRequest === "current"
+            ? {}
+            : { cutoff: projectionRequest }),
+        })
+      : null;
+    const accounts = projection
+      ? projection.families["investment-accounts"]!.map((row) => ({
+          sourceId: row.sourceId,
+          accountKey: row.accountKey,
+          accountSubtype: row.accountSubtype,
+        }))
+      : store.db
+          .prepare(
+            `SELECT a.source_id AS sourceId,a.account_key AS accountKey,a.account_subtype AS accountSubtype FROM investment_accounts a JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY a.source_id,a.account_key`,
+          )
+          .all(sourceConnectionKey);
+    const securityRows = store.db
       .prepare(
-        `SELECT a.source_id AS sourceId,a.account_key AS accountKey,a.account_subtype AS accountSubtype FROM investment_accounts a JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY a.source_id,a.account_key`,
-      )
-      .all(sourceConnectionKey);
-    const securities = store.db
-      .prepare(
-        `SELECT DISTINCT s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency,s.security_type AS securityType
+        `SELECT DISTINCT hex(s.security_id) AS runtimeSecurityId,s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency,s.security_type AS securityType
            FROM investment_securities s
           WHERE EXISTS (
             SELECT 1 FROM investment_holding_observations h
@@ -1343,42 +1369,98 @@ function queryRows(
             WHERE t.security_id=s.security_id AND c.source_connection_key=?
           ) ORDER BY s.security_key`,
       )
-      .all(sourceConnectionKey, sourceConnectionKey);
-    const holdings = store.db
-      .prepare(
-        `SELECT * FROM (SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,s.security_key AS securityKey,h.quantity_coefficient AS quantityCoefficient,h.quantity_scale AS quantityScale,h.valuation_coefficient AS valuationCoefficient,h.valuation_scale AS valuationScale,h.valuation_currency AS valuationCurrency,h.cost_coefficient AS costCoefficient,h.cost_scale AS costScale,h.cost_currency AS costCurrency,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson,ROW_NUMBER() OVER (PARTITION BY h.account_id,h.security_id ORDER BY h.observed_at DESC,h.rowid DESC) AS selectionRank FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id JOIN investment_securities s ON s.security_id=h.security_id WHERE c.source_connection_key=? AND h.is_current=1) ${currentOnly ? "WHERE selectionRank=1" : ""} ORDER BY effectiveOn,observedAt,revisionNumber,securityKey`,
-      )
-      .all(sourceConnectionKey);
-    const transactions = (
-      store.db
-        .prepare(
-          `SELECT t.action,t.effective_on AS effectiveOn,t.funding_evidence_json AS fundingEvidenceJson FROM investment_transactions t JOIN investment_accounts a ON a.account_id=t.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY t.effective_on`,
-        )
-        .all(sourceConnectionKey) as Array<{
+      .all(sourceConnectionKey, sourceConnectionKey) as Array<
+        Record<string, unknown> & { runtimeSecurityId: string }
+      >;
+    const selectedSecurityIds = projection
+      ? new Set([
+          ...projection.families["investment-holdings"].map(
+            (row) => row.securityId,
+          ),
+          ...projection.families["investment-transactions"].map(
+            (row) => row.securityId,
+          ),
+        ])
+      : null;
+    const securities = securityRows.flatMap(
+      ({ runtimeSecurityId, ...security }) =>
+        selectedSecurityIds === null ||
+        selectedSecurityIds.has(runtimeSecurityId.toLowerCase())
+          ? [security]
+          : [],
+    );
+    const holdings = projection
+      ? projection.families["investment-holdings"]!.map((row) => ({
+          measurementKey: row.measurementKey,
+          revisionNumber: row.revisionNumber,
+          isCurrent: row.isCurrent ? 1 : 0,
+          securityKey: row.securityKey,
+          quantityCoefficient: row.quantityCoefficient,
+          quantityScale: row.quantityScale,
+          valuationCoefficient: row.valuationCoefficient,
+          valuationScale: row.valuationScale,
+          valuationCurrency: row.valuationCurrency,
+          costCoefficient: row.costCoefficient,
+          costScale: row.costScale,
+          costCurrency: row.costCurrency,
+          effectiveOn: row.effectiveOn,
+          observedAt: row.observedAt,
+          lineageJson: row.lineageJson,
+        }))
+      : store.db
+          .prepare(
+            `SELECT * FROM (SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,s.security_key AS securityKey,h.quantity_coefficient AS quantityCoefficient,h.quantity_scale AS quantityScale,h.valuation_coefficient AS valuationCoefficient,h.valuation_scale AS valuationScale,h.valuation_currency AS valuationCurrency,h.cost_coefficient AS costCoefficient,h.cost_scale AS costScale,h.cost_currency AS costCurrency,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson,ROW_NUMBER() OVER (PARTITION BY h.account_id,h.security_id ORDER BY h.observed_at DESC,h.rowid DESC) AS selectionRank FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id JOIN investment_securities s ON s.security_id=h.security_id WHERE c.source_connection_key=?) ORDER BY effectiveOn,observedAt,revisionNumber,securityKey`,
+          )
+          .all(sourceConnectionKey);
+    const transactionRows = projection
+      ? projection.families["investment-transactions"]!.map((row) => ({
+          action: row.action as InvestmentTransactionAction,
+          effectiveOn: row.effectiveOn,
+          fundingEvidenceJson: row.fundingEvidenceJson,
+        }))
+      : (store.db
+          .prepare(
+            `SELECT t.action,t.effective_on AS effectiveOn,t.funding_evidence_json AS fundingEvidenceJson FROM investment_transactions t JOIN investment_accounts a ON a.account_id=t.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY t.effective_on`,
+          )
+          .all(sourceConnectionKey) as Array<{
         action: InvestmentTransactionAction;
         effectiveOn: string;
         fundingEvidenceJson: string;
-      }>
-    ).map(({ fundingEvidenceJson, ...row }) => ({
+      }>);
+    const transactions = transactionRows.map(({ fundingEvidenceJson, ...row }) => ({
       ...row,
       fundingEvidence: JSON.parse(
         fundingEvidenceJson,
       ) as InvestmentFundingEvidence,
     }));
-    const marginBalances = store.db
-      .prepare(
-        `SELECT m.balance_kind AS balanceKind,m.coefficient,m.scale,m.currency,m.effective_on AS effectiveOn FROM investment_margin_balance_observations m JOIN investment_accounts a ON a.account_id=m.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY m.effective_on`,
-      )
-      .all(sourceConnectionKey);
+    const marginBalances = projection
+      ? projection.families["investment-margin-balances"]!.map((row) => ({
+          balanceKind: row.balanceKind,
+          coefficient: row.coefficient,
+          scale: row.scale,
+          currency: row.currency,
+          effectiveOn: row.effectiveOn,
+        }))
+      : store.db
+          .prepare(
+            `SELECT m.balance_kind AS balanceKind,m.coefficient,m.scale,m.currency,m.effective_on AS effectiveOn FROM investment_margin_balance_observations m JOIN investment_accounts a ON a.account_id=m.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY m.effective_on`,
+          )
+          .all(sourceConnectionKey);
     const independentMarginAccounts = store.db
       .prepare(
         `SELECT a.account_type AS accountType,a.currency
            FROM financial_accounts a
            JOIN source_connections c ON c.source_connection_id=a.source_connection_id
+           JOIN canonical_commits account_commit ON account_commit.commit_id=a.created_commit_id
           WHERE c.source_connection_key=? AND a.stream='investment-margin'
+            AND (? IS NULL OR account_commit.commit_sequence <= ?)
           ORDER BY a.account_type,a.currency`,
       )
-      .all(sourceConnectionKey);
+      .all(
+        sourceConnectionKey,
+        projection?.knowledgePoint ?? null,
+        projection?.knowledgePoint ?? null,
+      );
     return {
       accounts,
       securities,
@@ -1386,10 +1468,26 @@ function queryRows(
       transactions,
       marginBalances,
       independentMarginAccounts,
-      relations: queryCanonicalInvestmentFundingRelationsInSnapshot(
-        store,
-        sourceConnectionKey,
-      ),
+      relations: projection
+        ? projection.families["investment-funding-relations"].map(
+            (relation) => ({
+              relationKey: relation.relationKey,
+              settlementGroupKey: relation.settlementGroupKey,
+              settlementEffectiveOn: relation.settlementEffectiveOn,
+              settlementModel: relation.settlementModel,
+              coefficient: relation.coefficient,
+              scale: relation.scale,
+              currency: relation.currency,
+              direction: relation.direction,
+              sourceLinkageKey: relation.sourceLinkageKey,
+              investmentTransactionCount:
+                relation.investmentTransactionCount,
+            }),
+          )
+        : queryCanonicalInvestmentFundingRelationsInSnapshot(
+            store,
+            sourceConnectionKey,
+          ),
     };
   });
 }
@@ -1406,31 +1504,21 @@ export function queryCanonicalInvestmentCurrent(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,
 ) {
-  return queryRows(store, sourceConnectionKey, true);
+  return queryRows(store, sourceConnectionKey, "current");
 }
 export function queryCanonicalInvestmentHistorical(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,
+  cutoff: Readonly<{ financialAt: string; knowledgeAt: number }>,
 ) {
-  const current = queryRows(store, sourceConnectionKey, false);
-  const holdings = withCanonicalSnapshot(store.db, () =>
-    store.db
-      .prepare(
-        `SELECT h.measurement_key AS measurementKey,h.revision_number AS revisionNumber,h.is_current AS isCurrent,s.security_key AS securityKey,h.quantity_coefficient AS quantityCoefficient,h.quantity_scale AS quantityScale,h.valuation_coefficient AS valuationCoefficient,h.valuation_scale AS valuationScale,h.valuation_currency AS valuationCurrency,h.cost_coefficient AS costCoefficient,h.cost_scale AS costScale,h.cost_currency AS costCurrency,h.effective_on AS effectiveOn,h.observed_at AS observedAt,h.lineage_json AS lineageJson FROM investment_holding_observations h JOIN investment_accounts a ON a.account_id=h.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id JOIN investment_securities s ON s.security_id=h.security_id WHERE c.source_connection_key=? ORDER BY h.effective_on,h.observed_at,h.revision_number,s.security_key`,
-      )
-      .all(sourceConnectionKey),
-  );
-  return { ...current, holdings };
+  return queryRows(store, sourceConnectionKey, cutoff);
 }
 export function queryCanonicalInvestmentLineage(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,
   measurementKey: string,
 ) {
-  const historical = queryCanonicalInvestmentHistorical(
-    store,
-    sourceConnectionKey,
-  );
+  const historical = queryRows(store, sourceConnectionKey, null);
   return {
     ...historical,
     holdings: historical.holdings.filter(

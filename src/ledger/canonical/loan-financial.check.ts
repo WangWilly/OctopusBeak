@@ -25,10 +25,16 @@ import {
 } from "./canonical-financial-deposit-writer.ts";
 import {
   CANONICAL_SQLITE_FILE,
+  canonicalSqlitePath,
   createCanonicalSourceStore,
-  rebuildCanonicalProjection,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+
+const rebuildCanonicalProjection = (
+  ledgerDir: string,
+  options = {},
+) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 import {
   buildFubonLoanCapture,
   FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
@@ -1411,16 +1417,13 @@ test("loan historical queries require both cutoffs", () => {
   }
 });
 
-test("loan query uses the versioned canonical schema without runtime DDL", () => {
+test("loan query treats a fresh ledger as an empty projection without runtime DDL", () => {
   const sourceStore = createCanonicalSourceStore(":memory:");
   try {
     const schemaBefore = sourceStore.db
       .prepare("SELECT name, sql FROM sqlite_master ORDER BY name")
       .all();
-    assert.throws(
-      () => queryCanonicalLoanCurrent(sourceStore),
-      /current projection cutoff is missing/i,
-    );
+    assert.deepEqual(queryCanonicalLoanCurrent(sourceStore).accounts, []);
     assert.deepEqual(
       sourceStore.db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all(),
       schemaBefore,
@@ -1510,6 +1513,7 @@ test("loan balance corrections require explicit correction evidence and preserve
     const changed = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
     changed.captureId = "sha256:fubon-balance-correction-capture";
     changed.observedAt = "2026-02-03T02:00:00.000Z";
+    changed.scope.endDate = "2026-02-03";
     changed.counterpartTransactions = changed.counterpartTransactions.map(
       (counterpart) => ({
         ...counterpart,
@@ -1519,11 +1523,13 @@ test("loan balance corrections require explicit correction evidence and preserve
     changed.balanceObservations = changed.balanceObservations.map(
       (observation) => ({
         ...observation,
+        effectiveAt: "2026-02-03",
         sourceRecordKey: "sha256:fubon-balance-correction-record",
         balance: { coefficient: "87000", scale: 2 },
         effectiveTimeEvidence: {
           ...observation.effectiveTimeEvidence,
           sourceRecordKey: "sha256:fubon-balance-correction-record",
+          value: "2026-02-03",
         },
       }),
     );
@@ -1541,6 +1547,7 @@ test("loan balance corrections require explicit correction evidence and preserve
               (evidence) => ({
                 ...evidence,
                 balance: { coefficient: "87000", scale: 2 },
+                effectiveAt: "2026-02-03",
                 correctionOfObservationKey:
                   changed.balanceObservations[0]!.observationKey,
               }),
@@ -1563,7 +1570,10 @@ test("loan balance corrections require explicit correction evidence and preserve
         },
       }),
     );
-    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(changed));
+    const corrected = await commitCanonicalLoanCapture(
+      store,
+      admitCanonicalLoanCapture(changed),
+    );
     assert.deepEqual(
       queryCanonicalLoanCurrent(store, {
         sourceId: "fubon",
@@ -1605,6 +1615,19 @@ test("loan balance corrections require explicit correction evidence and preserve
         ).count ?? 0,
       ),
       2,
+    );
+    assert.deepEqual(
+      queryCanonicalLoanHistorical(store, {
+        sourceId: "fubon",
+        knowledgeAt: corrected.commitSequence,
+        financialAt: "2026-01-31",
+      }).balanceObservations.find(
+        (observation) =>
+          observation.observationKey ===
+          changed.balanceObservations[0]!.observationKey,
+      )?.balance,
+      { coefficient: "87500", scale: 2 },
+      "a later-effective correction cannot hide the balance visible at the financial cutoff",
     );
     assert.equal(
       Number(
@@ -1744,6 +1767,79 @@ test("historical relations require both endpoint financial dates at the cutoff",
           financialAt: "2026-01-06",
         }).relations.length,
         1,
+      );
+      store.db
+        .prepare(
+          `UPDATE transaction_revisions SET effective_on = '2026-01-05'
+            WHERE transaction_id = ?`,
+        )
+        .run(
+          endpoint === "from"
+            ? relation.from_transaction_id
+            : relation.to_transaction_id,
+        );
+      store.db.exec(
+        `INSERT INTO canonical_commits(
+           commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
+         ) SELECT randomblob(16), MAX(commit_sequence) + 1, 2000000,
+                  'synthetic/loan-cutoff-test', 'source_capture'
+             FROM canonical_commits`,
+      );
+      const laterCommit = store.db
+        .prepare(
+          "SELECT commit_id, commit_sequence FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1",
+        )
+        .get() as { commit_id: Uint8Array; commit_sequence: number };
+      store.db
+        .prepare(
+          `INSERT INTO transaction_revisions(
+             revision_id, transaction_id, source_record_id, capture_id, commit_id,
+             revision_number, amount_coefficient, amount_scale, currency, direction,
+             posting_status, posting_origin, posting_basis, posting_rule_version,
+             description, economic_status, administrative_state, semantic_rule_version,
+             effective_on, transaction_date_time_local, time_zone, time_precision,
+             time_origin, effective_time_basis, effective_time_rule_version,
+             utc_instant_utc_us
+           ) SELECT randomblob(16), transaction_id, source_record_id, capture_id, ?,
+                    revision_number + 1, amount_coefficient, amount_scale, currency, direction,
+                    posting_status, posting_origin, posting_basis, posting_rule_version,
+                    description, economic_status, administrative_state, semantic_rule_version,
+                    '2026-01-07', '2026-01-07T00:00:00', time_zone, time_precision,
+                    time_origin, effective_time_basis, effective_time_rule_version,
+                    utc_instant_utc_us + 1000000
+               FROM transaction_revisions
+              WHERE transaction_id = ?
+              ORDER BY revision_number DESC LIMIT 1`,
+        )
+        .run(
+          laterCommit.commit_id,
+          endpoint === "from"
+            ? relation.from_transaction_id
+            : relation.to_transaction_id,
+        );
+      assert.equal(
+        createCanonicalProjectionRuntime(store.db).read({
+          kind: "historical",
+          families: ["loan-relations"],
+          scope: {
+            sourceConnectionKey:
+              LOAN_CONTRACT_FIXTURES.fubon.identity.sourceConnectionKey,
+          },
+          cutoff: {
+            knowledgeAt: laterCommit.commit_sequence,
+            financialAt: "2026-01-05",
+          },
+        }).families["loan-relations"].length,
+        1,
+        `${endpoint} Runtime relation remains visible through a later-effective endpoint revision`,
+      );
+      assert.equal(
+        queryCanonicalLoanHistorical(store, {
+          knowledgeAt: laterCommit.commit_sequence,
+          financialAt: "2026-01-05",
+        }).relations.length,
+        1,
+        `${endpoint} later-effective revision must not hide the cutoff-visible endpoint`,
       );
     } finally {
       store.close();

@@ -12,6 +12,9 @@ import {
   validateCanonicalLoanExtensionSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import {
+  createCanonicalProjectionRuntime,
+} from "./canonical-projection-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
@@ -2196,108 +2199,6 @@ function persistLoanTransactionFacts(
   }
 }
 
-function activeLoanProjectionGeneration(db: DatabaseSync): number {
-  const row = db
-    .prepare(
-      `SELECT generation.generation_id
-       FROM active_projection_generation active
-       JOIN projection_generations generation
-         ON generation.generation_id = active.generation_id
-       WHERE active.singleton_id = 1 AND generation.status = 'active'`,
-    )
-    .get() as { generation_id?: unknown } | undefined;
-  if (!row || !Number.isSafeInteger(Number(row.generation_id)))
-    throw new CanonicalLoanConflictError(
-      "Active canonical projection generation is missing.",
-    );
-  return Number(row.generation_id);
-}
-
-function projectLoanAccount(
-  db: DatabaseSync,
-  generationId: number,
-  context: { accountId: Uint8Array; commitId: Uint8Array },
-): void {
-  const created = db
-    .prepare(
-      "SELECT created_commit_id FROM financial_accounts WHERE account_id = ?",
-    )
-    .get(context.accountId) as { created_commit_id?: unknown } | undefined;
-  if (!(created?.created_commit_id instanceof Uint8Array))
-    throw new CanonicalLoanConflictError(
-      "Loan account creation lineage is missing.",
-    );
-  db.prepare(
-    `INSERT INTO current_loan_accounts(
-       generation_id, account_id, projection_commit_id, created_commit_id
-     ) VALUES (?, ?, ?, ?)
-     ON CONFLICT(generation_id, account_id) DO UPDATE SET
-       projection_commit_id = excluded.projection_commit_id`,
-  ).run(
-    generationId,
-    context.accountId,
-    context.commitId,
-    created.created_commit_id,
-  );
-}
-
-/** Recompute the loan balance selection from the same immutable ordering used
- * by projection rebuild.  Effective source date is primary; knowledge commit,
- * source ordinal, and opaque source identity are deterministic tie-breakers. */
-function refreshCurrentLoanBalanceProjection(
-  db: DatabaseSync,
-  generationId: number,
-  accountId: Uint8Array,
-  projectionCommitId: Uint8Array,
-): void {
-  const visibleRoute = canonicalLoanRoutePredicate("balance_capture");
-  db.prepare(
-    `DELETE FROM current_loan_balance_observations
-     WHERE generation_id = ? AND account_id = ?`,
-  ).run(generationId, accountId);
-  db.prepare(
-    `INSERT INTO current_loan_balance_observations(
-       generation_id, account_id, balance_kind, observation_id, revision_id,
-       projection_commit_id, revision_commit_id
-     )
-     SELECT ?, ranked.account_id, ranked.balance_kind, ranked.observation_id,
-            ranked.revision_id, ?, ranked.commit_id
-     FROM (
-       SELECT observation.account_id, observation.balance_kind,
-              observation.observation_id, revision.revision_id, revision.commit_id,
-              ROW_NUMBER() OVER (
-                PARTITION BY observation.account_id, observation.balance_kind
-                ORDER BY revision.effective_at DESC,
-                         revision_commit.commit_sequence DESC,
-                         COALESCE(balance_fact.occurrence_index, -1) DESC,
-                         balance_record.occurrence_key DESC,
-                         observation.observation_key DESC,
-                         hex(revision.revision_id) DESC
-              ) AS rank
-       FROM balance_observations observation
-       JOIN balance_observation_revisions revision
-         ON revision.observation_id = observation.observation_id
-       JOIN canonical_commits revision_commit
-         ON revision_commit.commit_id = revision.commit_id
-       JOIN source_records balance_record
-         ON balance_record.source_record_id = revision.source_record_id
-       JOIN source_captures balance_capture
-         ON balance_capture.capture_id = revision.capture_id
-       LEFT JOIN loan_transaction_facts balance_fact
-         ON balance_fact.revision_id = (
-           SELECT transaction_revision.revision_id
-           FROM transaction_revisions transaction_revision
-           WHERE transaction_revision.source_record_id = revision.source_record_id
-           ORDER BY transaction_revision.revision_number DESC
-           LIMIT 1
-         )
-       WHERE observation.account_id = ?
-         AND ${visibleRoute.sql}
-     ) ranked
-     WHERE ranked.rank = 1`,
-  ).run(generationId, projectionCommitId, accountId, ...visibleRoute.params);
-}
-
 type PersistedRelationEndpoint = {
   accountId: Uint8Array;
   transactionId: Uint8Array;
@@ -2341,7 +2242,6 @@ function persistLoanExtensions(
 ): void {
   validateCanonicalLoanExtensionSchema(db);
   const context = sourceCaptureContext(db, capture.captureId);
-  const generationId = activeLoanProjectionGeneration(db);
   persistLoanAccountIdentity(db, context, {
     sourceConnectionKey: capture.identity.sourceConnectionKey,
     identityEpochKey: capture.identity.identityEpochKey,
@@ -2350,7 +2250,6 @@ function persistLoanExtensions(
     accountType: "loan",
     stream: "loan",
   });
-  projectLoanAccount(db, generationId, context);
   for (const counterpart of counterpartCaptures) {
     const counterpartContext = sourceCaptureContext(db, counterpart.captureId);
     persistLoanAccountIdentity(db, counterpartContext, {
@@ -2458,13 +2357,6 @@ function persistLoanExtensions(
       capture.observedAt,
     );
   }
-  if (capture.balanceObservations.length > 0)
-    refreshCurrentLoanBalanceProjection(
-      db,
-      generationId,
-      context.accountId,
-      context.commitId,
-    );
   const transactionIds = new Map<
     string,
     {
@@ -2641,13 +2533,6 @@ function persistLoanExtensions(
       relation.evidence.relationId,
       relation.evidence.contractVersion,
     );
-    db.prepare(
-      `INSERT INTO current_loan_relations(
-         generation_id, relation_id, projection_commit_id, relation_commit_id
-       ) VALUES (?, ?, ?, ?)
-       ON CONFLICT(generation_id, relation_id) DO UPDATE SET
-         projection_commit_id = excluded.projection_commit_id`,
-    ).run(generationId, relationId, context.commitId, context.commitId);
   }
 }
 
@@ -2661,6 +2546,11 @@ export function persistCanonicalLoanCaptureExtensions(
       "Loan capture did not cross the runtime-validated admission seam.",
     );
   persistLoanExtensions(db, capture, capture.counterpartTransactions);
+  const context = sourceCaptureContext(db, capture.captureId);
+  createCanonicalProjectionRuntime(db).applyCommit({
+    commitId: context.commitId,
+    kind: "source_capture",
+  });
 }
 
 export async function commitCanonicalLoanCapture(
@@ -2698,29 +2588,6 @@ function latestCommitSequence(db: DatabaseSync): number {
       }
     ).value ?? 0,
   );
-}
-
-function currentProjectionSequence(db: DatabaseSync): number {
-  const row = db
-    .prepare(
-      `SELECT MAX(
-         generation.build_cutoff_commit_sequence,
-         COALESCE((
-           SELECT MAX(commit_sequence) FROM canonical_commits
-            WHERE commit_kind = 'relation_resolution'
-         ), 0)
-       ) AS commit_sequence
-       FROM active_projection_generation active
-       JOIN projection_generations generation
-         ON generation.generation_id = active.generation_id
-       WHERE active.singleton_id = 1 AND generation.status = 'active'`,
-    )
-    .get() as { commit_sequence?: unknown } | undefined;
-  if (!row || !Number.isSafeInteger(Number(row.commit_sequence)))
-    throw new CanonicalLoanConflictError(
-      "Canonical loan current projection cutoff is missing.",
-    );
-  return Number(row.commit_sequence);
 }
 
 function parseCompact(value: unknown): Record<string, unknown> {
@@ -2822,16 +2689,9 @@ function canonicalLoanRoutePredicate(
 function accountRows(
   db: DatabaseSync,
   knowledgeAt: number,
+  currentIds: ReadonlySet<string>,
   sourceId?: LoanSourceId,
-  currentOnly = false,
 ): LoanAccount[] {
-  const currentJoin = currentOnly
-    ? `JOIN active_projection_generation active
-         ON active.singleton_id = 1
-       JOIN current_loan_accounts current_account
-         ON current_account.generation_id = active.generation_id
-       AND current_account.account_id = account.account_id`
-    : "";
   const visibleRoute = canonicalLoanRoutePredicate(
     "authority_capture",
     sourceId,
@@ -2856,7 +2716,6 @@ function accountRows(
          ON loan_identity.account_id = account.account_id
         AND loan_identity.account_type = 'loan'
         AND loan_identity.stream = 'loan'
-       ${currentJoin}
        WHERE account_commit.commit_sequence <= ?
          AND account.account_type = 'loan'
          AND account.stream = 'loan'
@@ -2877,7 +2736,12 @@ function accountRows(
       sourceId ?? null,
       ...visibleRoute.params,
     ) as Array<Record<string, unknown>>;
-  return rows.map(accountFromRow);
+  return rows
+    .filter(
+      (row) =>
+        currentIds.has(Buffer.from(row.account_id as Uint8Array).toString("hex")),
+    )
+    .map(accountFromRow);
 }
 
 function loanSourceReportedTimeBasis(value: unknown): "source-reported" {
@@ -2891,9 +2755,9 @@ function transactionRows(
   db: DatabaseSync,
   knowledgeAt: number,
   financialAt: string | null,
+  currentIds: ReadonlySet<string>,
   sourceId?: LoanSourceId,
   sourceRecordKey?: string,
-  currentOnly = false,
 ): LoanTransaction[] {
   const clauses = [
     "revision_commit.commit_sequence <= ?",
@@ -2917,23 +2781,9 @@ function transactionRows(
   const visibleRoute = canonicalLoanRoutePredicate("source_capture", sourceId);
   clauses.push(visibleRoute.sql);
   params.push(...visibleRoute.params);
-  const currentJoin = currentOnly
-    ? `JOIN active_projection_generation active
-         ON active.singleton_id = 1
-       JOIN projection_generation_transactions current_row
-         ON current_row.generation_id = active.generation_id
-        AND current_row.transaction_id = transaction_row.transaction_id
-        AND current_row.revision_id = revision.revision_id
-       JOIN projection_generations projection_generation
-         ON projection_generation.generation_id = active.generation_id`
-    : "";
-  if (currentOnly)
-    clauses.push(
-      "revision_commit.commit_sequence <= projection_generation.build_cutoff_commit_sequence",
-    );
   const rows = db
     .prepare(
-      `SELECT transaction_row.transaction_id, account.account_id,
+      `SELECT transaction_row.transaction_id, revision.revision_id, account.account_id,
               loan_identity.account_no,
               connection.integration_namespace, connection.source_connection_key,
               epoch.epoch_key, subject.record_kind, subject.subject_digest,
@@ -2966,20 +2816,19 @@ function transactionRows(
        JOIN source_records source_record ON source_record.source_record_id = revision.source_record_id
        JOIN source_captures source_capture ON source_capture.capture_id = source_record.capture_id
        JOIN loan_transaction_facts loan_fact ON loan_fact.revision_id = revision.revision_id
-       ${currentJoin}
        WHERE ${clauses.join(" AND ")}
-         AND NOT EXISTS (
-           SELECT 1 FROM transaction_revisions newer
-           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
-           WHERE newer.transaction_id = revision.transaction_id
-             AND newer_commit.commit_sequence <= ?
-             AND newer_commit.commit_sequence > revision_commit.commit_sequence
-         )
        ORDER BY connection.integration_namespace, account.account_no,
                 revision.effective_on, transaction_row.source_sequence`,
     )
-    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
-  return rows.map((row) => {
+    .all(...params) as Array<Record<string, unknown>>;
+  return rows
+    .filter(
+      (row) =>
+        currentIds.has(
+          `${Buffer.from(row.transaction_id as Uint8Array).toString("hex")}:${Buffer.from(row.revision_id as Uint8Array).toString("hex")}`,
+        ),
+    )
+    .map((row) => {
     const account = accountFromRow(row);
     const localValue = String(row.transaction_date_time_local);
     const localTime = localValue.slice(11, 19);
@@ -3016,7 +2865,7 @@ function transactionRows(
       fee: amountFromColumns(row.fee_coefficient, row.fee_scale),
       knowledgeCommitSequence: Number(row.commit_sequence),
     };
-  });
+    });
 }
 
 function balanceSourceFieldRole(
@@ -3045,8 +2894,8 @@ function balanceRows(
   db: DatabaseSync,
   knowledgeAt: number,
   financialAt: string | null,
+  currentIds: ReadonlySet<string>,
   sourceId?: LoanSourceId,
-  currentOnly = false,
 ): LoanBalanceObservation[] {
   const clauses = [
     "commit_row.commit_sequence <= ?",
@@ -3065,17 +2914,10 @@ function balanceRows(
   const visibleRoute = canonicalLoanRoutePredicate("capture", sourceId);
   clauses.push(visibleRoute.sql);
   params.push(...visibleRoute.params);
-  const currentJoin = currentOnly
-    ? `JOIN active_projection_generation active
-         ON active.singleton_id = 1
-       JOIN current_loan_balance_observations current_balance
-         ON current_balance.generation_id = active.generation_id
-        AND current_balance.observation_id = observation.observation_id
-        AND current_balance.revision_id = revision.revision_id`
-    : "";
   const rows = db
     .prepare(
-      `SELECT observation.observation_key, observation.balance_kind,
+      `SELECT observation.observation_id, revision.revision_id,
+              observation.observation_key, observation.balance_kind,
               revision.balance_coefficient,
               revision.balance_scale, revision.currency, revision.effective_at,
               revision.effective_time_basis, revision.effective_time_rule_version,
@@ -3108,19 +2950,18 @@ function balanceRows(
         AND loan_identity.stream = 'loan'
        JOIN source_captures capture ON capture.capture_id = revision.capture_id
        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
-       ${currentJoin}
        WHERE ${clauses.join(" AND ")}
-         AND NOT EXISTS (
-           SELECT 1 FROM balance_observation_revisions newer
-           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
-           WHERE newer.observation_id = observation.observation_id
-             AND newer_commit.commit_sequence <= ?
-             AND newer_commit.commit_sequence > commit_row.commit_sequence
-         )
        ORDER BY connection.integration_namespace, account.account_no, revision.effective_at`,
     )
-    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
-  return rows.map((row) => {
+    .all(...params) as Array<Record<string, unknown>>;
+  return rows
+    .filter(
+      (row) =>
+        currentIds.has(
+          `${Buffer.from(row.observation_id as Uint8Array).toString("hex")}:${Buffer.from(row.revision_id as Uint8Array).toString("hex")}`,
+        ),
+    )
+    .map((row) => {
     const account = accountFromRow(row);
     const sourceFieldRole = balanceSourceFieldRole(row.source_payload_json);
     return {
@@ -3168,15 +3009,15 @@ function balanceRows(
       commitSequence: Number(row.commit_sequence),
       observedAt: String(row.observed_at),
     };
-  });
+    });
 }
 
 function relationRows(
   db: DatabaseSync,
   knowledgeAt: number,
-  financialAt: string | null,
+  _financialAt: string | null,
+  currentIds: ReadonlySet<string>,
   sourceId?: LoanSourceId,
-  currentOnly = false,
 ): LoanTransferRelation[] {
   const clauses = [
     "commit_row.commit_sequence <= ?",
@@ -3187,25 +3028,6 @@ function relationRows(
     sourceId ?? null,
     sourceId ?? null,
   ];
-  if (financialAt) {
-    clauses.push(`(SELECT MAX(from_revision.effective_on)
-       FROM financial_transactions from_transaction
-       JOIN transaction_revisions from_revision
-         ON from_revision.transaction_id = from_transaction.transaction_id
-       JOIN canonical_commits from_commit
-         ON from_commit.commit_id = from_revision.commit_id
-       WHERE from_transaction.transaction_id = relation.from_transaction_id
-         AND from_commit.commit_sequence <= ?) <= ?
-      AND (SELECT MAX(to_revision.effective_on)
-       FROM financial_transactions to_transaction
-       JOIN transaction_revisions to_revision
-         ON to_revision.transaction_id = to_transaction.transaction_id
-       JOIN canonical_commits to_commit
-         ON to_commit.commit_id = to_revision.commit_id
-       WHERE to_transaction.transaction_id = relation.to_transaction_id
-         AND to_commit.commit_sequence <= ?) <= ?`);
-    params.push(knowledgeAt, financialAt, knowledgeAt, financialAt);
-  }
   const visibleRoute = canonicalLoanRoutePredicate(
     "relation_capture",
     sourceId,
@@ -3222,13 +3044,6 @@ function relationRows(
       AND ${visibleRoute.sql}
   )`);
   params.push(...visibleRoute.params);
-  const currentJoin = currentOnly
-    ? `JOIN active_projection_generation active
-         ON active.singleton_id = 1
-       JOIN current_loan_relations current_relation
-         ON current_relation.generation_id = active.generation_id
-        AND current_relation.relation_id = relation.relation_id`
-    : "";
   const rows = db
     .prepare(
       `SELECT relation.relation_id, relation.relation_kind, relation.from_source_record_key,
@@ -3249,19 +3064,10 @@ function relationRows(
        JOIN loan_account_identities to_identity
          ON to_identity.account_id = relation.to_account_id
        JOIN canonical_commits commit_row ON commit_row.commit_id = relation.commit_id
-       ${currentJoin}
        WHERE ${clauses.join(" AND ")}
-         AND NOT EXISTS (
-           SELECT 1 FROM transaction_relations newer
-           JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
-           WHERE newer.account_id = relation.account_id
-             AND newer.relation_key = relation.relation_key
-             AND newer_commit.commit_sequence <= ?
-             AND newer_commit.commit_sequence > commit_row.commit_sequence
-         )
        ORDER BY connection.integration_namespace, commit_row.commit_sequence, relation.relation_key`,
     )
-    .all(...params, knowledgeAt) as Array<Record<string, unknown>>;
+    .all(...params) as Array<Record<string, unknown>>;
   const supportEvent = db.prepare(
     `SELECT event.support_kind, event.evidence_json
      FROM loan_repayment_relation_events event
@@ -3272,25 +3078,16 @@ function relationRows(
      ORDER BY event_commit.commit_sequence DESC, event.event_id DESC
      LIMIT 1`,
   );
-  const superseded = db.prepare(
-    `SELECT 1
-     FROM loan_repayment_relation_events event
-     JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
-     WHERE event.relation_id = ?
-       AND event.event_kind IN ('superseded', 'withdrawn')
-       AND event_commit.commit_sequence <= ?
-     LIMIT 1`,
-  );
   return rows.flatMap((row) => {
     const relationId = row.relation_id;
     if (!(relationId instanceof Uint8Array))
       throw new CanonicalLoanConflictError(
         "Canonical loan relation ID is missing from the relation projection.",
       );
-    // Current projection membership already excludes superseded relations;
-    // historical queries must apply the append-only lifecycle at their own
-    // knowledge cutoff as well.
-    if (!currentOnly && superseded.get(relationId, knowledgeAt)) return [];
+    if (
+      !currentIds.has(Buffer.from(relationId).toString("hex"))
+    )
+      return [];
     const event = supportEvent.get(relationId, knowledgeAt) as
       { support_kind?: unknown; evidence_json?: unknown } | undefined;
     const eventEvidence = parseCompact(event?.evidence_json);
@@ -3404,9 +3201,40 @@ function queryLoan(
       "Canonical loan query requires an initialized loan schema.",
     );
   return withCanonicalSnapshot(store.db, () => {
-    const knowledgeAt = request.currentOnly
-      ? currentProjectionSequence(store.db)
-      : request.knowledgeAt;
+    const projectionAccountIds = (
+      store.db
+        .prepare(
+          `SELECT hex(identity.account_id) AS account_id
+             FROM loan_account_identities identity
+             JOIN financial_accounts account ON account.account_id = identity.account_id
+             JOIN source_connections connection
+               ON connection.source_connection_id = account.source_connection_id
+            WHERE (? IS NULL OR connection.integration_namespace = ?)
+            ORDER BY identity.account_id`,
+        )
+        .all(request.sourceId ?? null, request.sourceId ?? null) as Array<{
+        account_id: string;
+      }>
+    ).map((row) => row.account_id.toLowerCase());
+    const projection = createCanonicalProjectionRuntime(store.db).read({
+      kind: request.currentOnly ? "current" : "historical",
+      families: [
+        "transactions",
+        "loan-accounts",
+        "loan-balances",
+        "loan-relations",
+      ],
+      scope: { accountIds: projectionAccountIds },
+      ...(request.currentOnly
+        ? {}
+        : {
+            cutoff: {
+              financialAt: request.financialAt!,
+              knowledgeAt: request.knowledgeAt,
+            },
+          }),
+    });
+    const knowledgeAt = projection.knowledgePoint;
     if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0)
       throw new CanonicalLoanConflictError(
         "Canonical loan query knowledge cutoff is invalid.",
@@ -3418,30 +3246,42 @@ function queryLoan(
     const accounts = accountRows(
       store.db,
       knowledgeAt,
+      new Set(
+        projection.families["loan-accounts"].map((row) => row.accountId),
+      ),
       request.sourceId,
-      request.currentOnly,
     );
     const transactions = transactionRows(
       store.db,
       knowledgeAt,
       request.financialAt,
+      new Set(
+        projection.families.transactions.map(
+          (row) => `${row.transactionId}:${row.revisionId}`,
+        ),
+      ),
       request.sourceId,
       request.sourceRecordKey,
-      request.currentOnly,
     );
     const balanceObservations = balanceRows(
       store.db,
       knowledgeAt,
       request.financialAt,
+      new Set(
+        projection.families["loan-balances"].map(
+          (row) => `${row.observationId}:${row.revisionId}`,
+        ),
+      ),
       request.sourceId,
-      request.currentOnly,
     );
     const relations = relationRows(
       store.db,
       knowledgeAt,
       request.financialAt,
+      new Set(
+        projection.families["loan-relations"].map((row) => row.relationId),
+      ),
       request.sourceId,
-      request.currentOnly,
     );
     const lineage = request.sourceRecordKey
       ? lineageRows(

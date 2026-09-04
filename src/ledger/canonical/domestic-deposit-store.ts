@@ -12,7 +12,6 @@ import {
   queryCanonicalSourceLineage,
   type CanonicalSourceObservation,
 } from "./canonical-source-store.ts";
-import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
 import type { LineBankHumanAttestedV13Capture } from "./linebank-domestic-deposit.ts";
 import {
   admitCanonicalFinancialDepositCapture,

@@ -296,6 +296,14 @@ test("the exact retired Fubon v18 store restores only its omitted purge bridges"
       return;
     }
     const before = new DatabaseSync(path, { readOnly: true });
+    const fixtureVersion = Number(
+      before.prepare("PRAGMA user_version").get()?.user_version,
+    );
+    if (fixtureVersion !== 18) {
+      before.close();
+      t.skip("real retired v18 canonical fixture has already been upgraded");
+      return;
+    }
     const commitDigestBefore = createHash("sha256")
       .update(
         JSON.stringify(
@@ -1525,7 +1533,12 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
       0,
     );
     assert.equal(
-      queryCanonicalInvestmentHistorical(migrated, investmentConnectionKey)
+      queryCanonicalInvestmentHistorical(migrated, investmentConnectionKey, {
+        financialAt: "9999-12-31",
+        knowledgeAt: Number(
+          (migrated.db.prepare("SELECT COALESCE(MAX(commit_sequence),0) AS value FROM canonical_commits").get() as { value?: number }).value ?? 0,
+        ),
+      })
         .holdings.length,
       0,
     );

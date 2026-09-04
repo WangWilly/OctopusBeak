@@ -1,7 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
-import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
+import {
+  createCanonicalProjectionRuntime,
+} from "./canonical-projection-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 
@@ -1845,17 +1847,6 @@ function commitOnce(
           commitId,
           kind: "observed",
         });
-        db.prepare(
-          `INSERT INTO current_transactions(
-            transaction_id, revision_id, commit_id, projection_commit_id,
-            revision_commit_id
-          ) VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(transaction_id) DO UPDATE SET
-            revision_id = excluded.revision_id,
-            commit_id = excluded.commit_id,
-            projection_commit_id = excluded.projection_commit_id,
-            revision_commit_id = excluded.revision_commit_id`,
-        ).run(transactionId, revisionId, commitId, commitId, commitId);
       } else {
         revisionId = existingRevision.revision_id as Uint8Array;
         const assertion = db
@@ -1875,23 +1866,6 @@ function commitOnce(
             commitId,
             kind: "restored",
           });
-          db.prepare(
-            `INSERT INTO current_transactions(
-              transaction_id, revision_id, commit_id, projection_commit_id,
-              revision_commit_id
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(transaction_id) DO UPDATE SET
-              revision_id = excluded.revision_id,
-              commit_id = excluded.commit_id,
-              projection_commit_id = excluded.projection_commit_id,
-              revision_commit_id = excluded.revision_commit_id`,
-          ).run(
-            transactionId,
-            revisionId,
-            commitId,
-            commitId,
-            existingRevision.commit_id as Uint8Array,
-          );
         }
       }
       db.prepare(
@@ -1908,9 +1882,9 @@ function commitOnce(
          JOIN financial_transactions transaction_row
            ON transaction_row.transaction_id = assertion.transaction_id
          JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-         JOIN current_transactions current_row
-           ON current_row.transaction_id = transaction_row.transaction_id
-          AND current_row.revision_id = revision.revision_id
+         JOIN assertions current_assertion
+           ON current_assertion.revision_id = revision.revision_id
+          AND current_assertion.origin = 'source'
          JOIN assertion_provenance provenance
            ON provenance.assertion_id = assertion.assertion_id
          JOIN source_record_scopes record_scope
@@ -1928,7 +1902,16 @@ function commitOnce(
            AND prior_scope.completeness_rule_version = ?
            AND prior_scope.contract_fingerprint = ?
            AND prior_scope.preflight_fingerprint = ?
-           AND prior_capture.authority_route = ?`,
+           AND prior_capture.authority_route = ?
+           AND COALESCE((
+             SELECT lifecycle.event_kind
+             FROM assertion_transitions lifecycle
+             JOIN canonical_commits lifecycle_commit
+               ON lifecycle_commit.commit_id = lifecycle.commit_id
+             WHERE lifecycle.assertion_id = current_assertion.assertion_id
+             ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
+             LIMIT 1
+           ), 'observed') <> 'withdrawn'`,
         )
         .all(
           accountId,
@@ -1959,9 +1942,6 @@ function commitOnce(
           commitId,
           kind: "withdrawn",
         });
-        db.prepare(
-          "DELETE FROM current_transactions WHERE transaction_id = ? AND revision_id = ?",
-        ).run(row.transaction_id as Uint8Array, row.revision_id as Uint8Array);
       }
     }
 
@@ -1983,11 +1963,10 @@ function commitOnce(
       captureId,
       commitId,
     );
-    syncCanonicalProjectionFromCompatibility(db, commitId);
-    db.prepare(
-      `INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)
-       ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id`,
-    ).run(commitId);
+    createCanonicalProjectionRuntime(db).applyCommit({
+      commitId,
+      kind: "source_capture",
+    });
     const provenanceCount =
       capture.records.length === 0
         ? 0

@@ -10,6 +10,7 @@ import {
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isFubonCreditCardHumanAttestedAccountKey,
@@ -1653,12 +1654,23 @@ function persistFubonCanonicalExtensions(
       string,
       { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array }
     >();
+    const currentTransactions = new Set(
+      createCanonicalProjectionRuntime(db)
+        .read({
+          kind: "current",
+          families: ["transactions"],
+          scope: { accountIds: [Buffer.from(scope.account_id).toString("hex")] },
+        })
+        .families.transactions.map(
+          (projected) => `${projected.transactionId}:${projected.revisionId}`,
+        ),
+    );
     for (const transaction of capture.transactions) {
       const row = db.prepare(
         `SELECT financial_transaction.transaction_id, current_row.revision_id,
                 source_record.source_record_id
          FROM financial_transactions financial_transaction
-         JOIN current_transactions current_row
+         JOIN transaction_revisions current_row
            ON current_row.transaction_id = financial_transaction.transaction_id
          JOIN source_records source_record
            ON source_record.capture_id = ? AND source_record.occurrence_key = ?
@@ -1674,6 +1686,12 @@ function persistFubonCanonicalExtensions(
         | undefined;
       if (!row?.transaction_id || !row.revision_id || !row.source_record_id)
         throw new Error("Fubon shared canonical transaction is missing.");
+      if (
+        !currentTransactions.has(
+          `${Buffer.from(row.transaction_id).toString("hex")}:${Buffer.from(row.revision_id).toString("hex")}`,
+        )
+      )
+        throw new Error("Fubon shared canonical transaction is not current.");
       sharedTransactions.set(transaction.sourceRecordKey, {
         transactionId: row.transaction_id,
         revisionId: row.revision_id,
