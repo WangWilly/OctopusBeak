@@ -18,8 +18,8 @@ import {
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { admitCanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  admitCanonicalSourceEvidence,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   commitCanonicalSourceEvidence,

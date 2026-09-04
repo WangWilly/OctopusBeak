@@ -2,12 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
   admitCanonicalSourceEvidence,
+  type CanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
-  type CanonicalSourceEvidence,
   type CanonicalSourceObservation,
 } from "./canonical-source-store.ts";
 import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";

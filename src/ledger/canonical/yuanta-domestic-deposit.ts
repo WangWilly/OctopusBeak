@@ -14,9 +14,11 @@ import {
 } from "./canonical-financial-deposit-writer.ts";
 import {
   admitCanonicalSourceEvidence,
+  type CanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   commitCanonicalSourceEvidence,
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {

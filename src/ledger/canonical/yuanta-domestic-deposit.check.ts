@@ -40,6 +40,8 @@ import {
 } from "./yuanta-human-attestation.ts";
 import {
   admitCanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
