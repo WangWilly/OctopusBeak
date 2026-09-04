@@ -63,7 +63,8 @@ import {
 } from "./yuanta-credit-card-human-attestation.ts";
 
 test("production schema registry declares every published version transition", () => {
-  const steps = createCanonicalSchemaLifecyclePlan().migrations.transitions;
+  const plan = createCanonicalSchemaLifecyclePlan();
+  const steps = plan.migrations.transitions;
   assert.deepEqual(
     steps.map(({ id, fromVersion, toVersion }) => ({ id, fromVersion, toVersion })),
     [
@@ -79,6 +80,41 @@ test("production schema registry declares every published version transition", (
   for (let index = 1; index < steps.length; index += 1)
     assert.equal(steps[index - 1]!.toVersion, steps[index]!.fromVersion);
   assert.ok(Object.isFrozen(steps));
+  assert.equal(
+    createHash("sha256")
+      .update(JSON.stringify(steps))
+      .digest("hex"),
+    "7722e07e06668adb6574ce78cb07ee2de254b0ceef58d43152b0756d3bc3291d",
+    "published migration ids and version ordering are immutable during the architecture refactor",
+  );
+  assert.deepEqual(
+    (plan.currentVersionMigrations ?? []).map(({ id }) => id),
+    [
+      "canonical/capture-scope-schema/v1",
+      "canonical/financial-revision-schema/v1",
+      "canonical/time-observation-schema/v1",
+      "canonical/account-currency-schema/v1",
+      "canonical/fubon-credit-card-extension-compatibility/v1",
+    ],
+  );
+  assert.deepEqual(
+    (plan.repairs ?? []).map(({ id }) => id),
+    [
+      "canonical/foreign-currency-conversion-schema/v1",
+      "canonical/credit-card-extension/v1",
+      "canonical/fubon-credit-card-extension/v1",
+      "canonical/attestation/cathay-events/v1",
+      "canonical/attestation/ctbc-events/v1",
+      "canonical/attestation/esun-credit-card-events/v1",
+      "canonical/attestation/fubon-credit-card-events/v1",
+      "canonical/attestation/fubon-events/v1",
+      "canonical/attestation/hncb-events/v1",
+      "canonical/attestation/post-events/v1",
+      "canonical/attestation/sinopac-events/v1",
+      "canonical/attestation/yuanta-credit-card-events/v1",
+      "canonical/attestation/yuanta-events/v1",
+    ],
+  );
 });
 
 test("a current schema retries a contract data transition whose durable audit is absent", async () => {
