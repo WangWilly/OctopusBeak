@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 type PostOpaqueToken = `sha256:${string}`;
 
@@ -136,6 +140,10 @@ export function isPostHumanAttestedV1Active(): boolean {
 }
 
 export function ensurePostHumanAttestationEvents(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/post-events/v1");
+    return;
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS post_attestation_events (
     event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
     attestation_id TEXT NOT NULL,

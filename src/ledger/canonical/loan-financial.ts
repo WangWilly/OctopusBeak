@@ -12,6 +12,7 @@ import {
   validateCanonicalLoanExtensionSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
@@ -1885,16 +1886,14 @@ export function createCanonicalLoanStore(
   };
 }
 
-function asWriterStore(store: LoanFinancialStore | CanonicalSourceStore): {
-  db: DatabaseSync;
-  databasePath: string;
-  commitClock: () => number;
-} {
-  return {
-    db: store.db,
-    databasePath: store.databasePath,
-    commitClock: store.commitClock,
-  };
+function asWriterStore(
+  store: LoanFinancialStore | CanonicalSourceStore,
+): CanonicalSourceStore {
+  // LoanFinancialStore is a domain facade around the same lifecycle-created
+  // source store.  Pass that branded object through instead of rebuilding a
+  // structural `{ db, databasePath, commitClock }` wrapper that could bypass
+  // the writer's runtime gate.
+  return "sourceStore" in store ? store.sourceStore : store;
 }
 
 function binaryId(value: unknown): string {
@@ -2656,6 +2655,7 @@ export function persistCanonicalLoanCaptureExtensions(
   db: DatabaseSync,
   capture: LoanValidatedCapture,
 ): void {
+  assertValidatedCanonicalDatabase(db);
   if (!hasValidatedBrand(capture))
     throw new CanonicalLoanConflictError(
       "Loan capture did not cross the runtime-validated admission seam.",
@@ -2667,6 +2667,7 @@ export async function commitCanonicalLoanCapture(
   store: LoanFinancialStore | CanonicalSourceStore,
   capture: LoanValidatedCapture,
 ): Promise<LoanFinancialCommitResult> {
+  assertValidatedCanonicalDatabase(store.db);
   if (!hasValidatedBrand(capture))
     throw new CanonicalLoanConflictError(
       "Loan capture did not cross the runtime-validated admission seam.",
@@ -3397,6 +3398,7 @@ function queryLoan(
     currentOnly?: boolean;
   },
 ): LoanQueryResult {
+  assertValidatedCanonicalDatabase(store.db);
   if (!hasLoanExtensionSchema(store.db))
     throw new CanonicalLoanConflictError(
       "Canonical loan query requires an initialized loan schema.",

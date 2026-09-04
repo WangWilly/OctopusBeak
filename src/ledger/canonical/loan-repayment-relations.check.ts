@@ -1970,3 +1970,27 @@ test("fixed-note fallback refuses wrong currency, invalid authoring, incomplete 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("loan relation production entries reject a raw DatabaseSync adapter", async () => {
+  const raw = new DatabaseSync(":memory:");
+  const forged = {
+    db: raw,
+    databasePath: ":memory:",
+    commitClock: () => Date.now() * 1_000,
+  };
+  try {
+    await assert.rejects(
+      () =>
+        resolveLoanRepaymentRelations(forged, {
+          sourceConnectionKey: token("raw-relation-connection"),
+        }),
+      /canonical database capability|lifecycle/i,
+    );
+    assert.throws(
+      () => queryCurrentLoanRepaymentRelations(forged),
+      /canonical database capability|lifecycle/i,
+    );
+  } finally {
+    raw.close();
+  }
+});

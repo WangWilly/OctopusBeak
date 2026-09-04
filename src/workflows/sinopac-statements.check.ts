@@ -417,7 +417,7 @@ try {
       },
     );
     assert.equal(foreignOnlyResult.status, "financial-admitted");
-    const foreignOnlyStore = createCanonicalSourceStore(
+    let foreignOnlyStore = createCanonicalSourceStore(
       join(foreignOnlyFinancialDir, "canonical.sqlite"),
     );
     try {
@@ -458,6 +458,7 @@ try {
         firstForeignPayload.sourceKey,
         "002:USD:2026-08-02T09:10:-100:900",
       );
+      foreignOnlyStore.close();
       const repeatedForeignResult = await runSinopacStatements(
         {} as never,
         {
@@ -501,6 +502,9 @@ try {
         },
       );
       assert.equal(repeatedForeignResult.status, "financial-admitted");
+      foreignOnlyStore = createCanonicalSourceStore(
+        join(foreignOnlyFinancialDir, "canonical.sqlite"),
+      );
       assert.equal(
         Number(
           (

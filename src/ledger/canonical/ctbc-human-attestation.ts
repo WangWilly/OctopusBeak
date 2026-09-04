@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 type CtbcOpaqueToken = `sha256:${string}`;
 
@@ -138,6 +142,10 @@ export function isCtbcHumanAttestedV1Active(): boolean {
 }
 
 export function ensureCtbcHumanAttestationEvents(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/ctbc-events/v1");
+    return;
+  }
   db.exec(
     "CREATE TABLE IF NOT EXISTS ctbc_attestation_events (" +
       "event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), " +

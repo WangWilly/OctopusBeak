@@ -13,6 +13,7 @@ import {
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
   resolveCanonicalInvestmentFundingRelations,
@@ -1260,6 +1261,7 @@ export async function commitCanonicalInvestmentCapture(
   store: CanonicalInvestmentStore,
   capture: InvestmentValidatedCapture,
 ) {
+  assertValidatedCanonicalDatabase(store.db);
   if (!VALIDATED.has(capture))
     throw new CanonicalInvestmentAdmissionError(
       "Investment capture must be admitted before commit.",
@@ -1274,6 +1276,7 @@ export async function commitCanonicalInvestmentCaptureBatch(
   store: CanonicalInvestmentStore,
   captures: readonly InvestmentValidatedCapture[],
 ) {
+  assertValidatedCanonicalDatabase(store.db);
   for (const capture of captures)
     if (!VALIDATED.has(capture))
       throw new CanonicalInvestmentAdmissionError(
@@ -1316,6 +1319,7 @@ function queryRows(
   sourceConnectionKey: string,
   currentOnly: boolean,
 ) {
+  assertValidatedCanonicalDatabase(store.db);
   token(sourceConnectionKey, "Source connection key");
   return withCanonicalSnapshot(store.db, () => {
     const accounts = store.db

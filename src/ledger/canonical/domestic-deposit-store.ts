@@ -1047,11 +1047,7 @@ export async function commitCanonicalLineBankFinancialCapture(
 ): Promise<LineBankFinancialCommitResult> {
   ensureOpen(store);
   return commitCanonicalFinancialDepositCapture(
-    {
-      db: store.db,
-      databasePath: store.databasePath,
-      commitClock: () => store.sourceStore.commitClock(),
-    },
+    store.sourceStore,
     normalizeLineBankFinancialCapture(capture),
   );
 }
@@ -1063,11 +1059,7 @@ export async function commitCanonicalLineBankFinancialCaptureBatch(
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
   ensureOpen(store);
   return commitCanonicalFinancialDepositCaptureBatch(
-    {
-      db: store.db,
-      databasePath: store.databasePath,
-      commitClock: () => store.sourceStore.commitClock(),
-    },
+    store.sourceStore,
     captures.map(normalizeLineBankFinancialCapture),
   );
 }

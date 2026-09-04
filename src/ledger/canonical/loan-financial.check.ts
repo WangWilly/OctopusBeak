@@ -1372,10 +1372,12 @@ test("current loan balance selection is deterministic across input order and reb
     await persistFubonLoanCapture(first, makeInput([older, newer]));
     const firstCurrent = queryFubonLoanCurrent(first).balanceObservations;
     assert.deepEqual(firstCurrent.map((balance) => balance.effectiveAt), ["2026-02-28"]);
-    await rebuildCanonicalProjection(firstDir);
-    const firstAfterRebuild = queryFubonLoanCurrent(first).balanceObservations;
-    assert.deepEqual(firstAfterRebuild.map((balance) => balance.effectiveAt), ["2026-02-28"]);
     first.close();
+    await rebuildCanonicalProjection(firstDir);
+    const firstReopened = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    const firstAfterRebuild = queryFubonLoanCurrent(firstReopened).balanceObservations;
+    assert.deepEqual(firstAfterRebuild.map((balance) => balance.effectiveAt), ["2026-02-28"]);
+    firstReopened.close();
 
     const second = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
     await persistFubonLoanCapture(second, makeInput([newer, older]));
@@ -1383,12 +1385,14 @@ test("current loan balance selection is deterministic across input order and reb
       queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
       ["2026-02-28"],
     );
+    second.close();
     await rebuildCanonicalProjection(secondDir);
+    const secondReopened = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
     assert.deepEqual(
-      queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
+      queryFubonLoanCurrent(secondReopened).balanceObservations.map((balance) => balance.effectiveAt),
       ["2026-02-28"],
     );
-    second.close();
+    secondReopened.close();
   } finally {
     await rm(firstDir, { recursive: true, force: true });
     await rm(secondDir, { recursive: true, force: true });

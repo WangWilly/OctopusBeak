@@ -4,7 +4,7 @@ import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
 } from "./canonical-runtime.ts";
-import type { CanonicalSourceStore } from "./canonical-source-store.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 
 /** Resolver rules are versioned because provider note/date contracts may
  * change without changing the meaning of already admitted relations. */
@@ -229,11 +229,18 @@ export type LoanRepaymentSettlementGroupView = Readonly<{
   }>[];
 }>;
 
+/** Relation resolution is a canonical production write/read seam. The
+ * structural adapter remains source-compatible with loan/investment facades,
+ * while its database capability is checked at runtime before any SQL runs. */
 type RelationStore = Readonly<{
   db: DatabaseSync;
   databasePath?: string;
   commitClock?: () => number;
 }>;
+
+function requireValidatedRelationStore(store: RelationStore): void {
+  assertValidatedCanonicalDatabase(store.db);
+}
 
 type BlobId = Uint8Array;
 
@@ -1059,6 +1066,7 @@ export async function persistCounterpartyAccountEvidence(
   store: RelationStore,
   input: TransactionCounterpartyAccountEvidenceInput,
 ): Promise<PersistedCounterpartyAccountEvidence> {
+  requireValidatedRelationStore(store);
   return withCanonicalWriterQueue(asPath(store), () => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
@@ -1080,6 +1088,7 @@ export function queryCounterpartyAccountEvidence(
   store: RelationStore,
   options: { transactionId?: string; accountId?: string } = {},
 ): PersistedCounterpartyAccountEvidence[] {
+  requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   const rows = store.db
     .prepare(
@@ -1284,6 +1293,7 @@ export async function persistInstitutionGeneratedRepaymentNoteEvidence(
   store: RelationStore,
   input: InstitutionGeneratedRepaymentNoteEvidenceInput,
 ): Promise<PersistedInstitutionGeneratedRepaymentNoteEvidence> {
+  requireValidatedRelationStore(store);
   return withCanonicalWriterQueue(asPath(store), () => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
@@ -1305,6 +1315,7 @@ export function queryInstitutionGeneratedRepaymentNoteEvidence(
   store: RelationStore,
   options: { transactionId?: string; sourceConnectionKey?: string } = {},
 ): PersistedInstitutionGeneratedRepaymentNoteEvidence[] {
+  requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   const rows = store.db
     .prepare(
@@ -2755,6 +2766,7 @@ export async function resolveLoanRepaymentRelations(
   store: RelationStore,
   request: LoanRepaymentRelationResolutionRequest,
 ): Promise<LoanRepaymentRelationResolutionResult> {
+  requireValidatedRelationStore(store);
   return withCanonicalWriterQueue(asPath(store), () => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
@@ -2776,6 +2788,7 @@ export function queryCurrentLoanRepaymentRelations(
   store: RelationStore,
   options: { sourceConnectionKey?: string; integrationNamespace?: string } = {},
 ): LoanRepaymentRelationView[] {
+  requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   return withCanonicalSnapshot(store.db, () => {
     const rows = store.db
@@ -2836,6 +2849,7 @@ export function queryCurrentLoanRepaymentSettlementGroups(
   store: RelationStore,
   options: { sourceConnectionKey?: string; integrationNamespace?: string } = {},
 ): LoanRepaymentSettlementGroupView[] {
+  requireValidatedRelationStore(store);
   ensureEvidenceSchema(store.db);
   return withCanonicalSnapshot(store.db, () => {
     const rows = store.db

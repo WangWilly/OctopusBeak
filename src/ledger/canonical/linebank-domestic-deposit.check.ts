@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { LineBankTransactionSourceEnvelope } from "../../workflows/linebank-statements.ts";
 import {
@@ -2200,7 +2201,8 @@ const zeroV13 = validateLineBankHumanAttestedV13Capture({
 assert.equal(zeroV13.status, "admissible");
 assert.equal(zeroV13.capture?.records.length, 0);
 
-const v13Store = createDomesticDepositStore(":memory:");
+const v13Directory = await mkdtemp(join(tmpdir(), "linebank-v13-main-"));
+const v13Store = createDomesticDepositStore(join(v13Directory, "canonical.sqlite"));
 await assert.rejects(
   () =>
     commitCanonicalLineBankFinancialCapture(v13Store, {
@@ -2522,14 +2524,18 @@ assert.equal(lateFailure.status, "admissible");
 const commitsBeforeLateFailure = v13Store.db
   .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
   .get()?.count;
-v13Store.db.exec(`CREATE TRIGGER inject_v13_late_failure
+const lateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+lateFailureSchemaDb.exec(`CREATE TRIGGER inject_v13_late_failure
   BEFORE UPDATE ON source_sync_states
   BEGIN SELECT RAISE(ABORT, 'injected late v13 failure'); END`);
+lateFailureSchemaDb.close();
 await assert.rejects(
   () => commitCanonicalLineBankFinancialCapture(v13Store, lateFailure.capture!),
   /injected late v13 failure/i,
 );
-v13Store.db.exec("DROP TRIGGER inject_v13_late_failure");
+const cleanupLateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+cleanupLateFailureSchemaDb.exec("DROP TRIGGER inject_v13_late_failure");
+cleanupLateFailureSchemaDb.close();
 assert.equal(
   v13Store.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
     ?.count,
@@ -2737,3 +2743,4 @@ try {
   await rm(mixedV13Directory, { recursive: true, force: true });
 }
 v13Store.close();
+await rm(v13Directory, { recursive: true, force: true });

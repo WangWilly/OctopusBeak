@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 /**
  * The observed-human boundary for Cathay's domestic-deposit projection.
@@ -197,6 +201,10 @@ function tableColumns(db: DatabaseSync): Set<string> {
 
 /** Append-only durable event chain kept separate from canonical source rows. */
 export function ensureCathayHumanAttestationEvents(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/cathay-events/v1");
+    return;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS cathay_attestation_events (
       event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
