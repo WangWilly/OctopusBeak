@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   admitCanonicalFinancialDepositCapture,
@@ -20,6 +21,7 @@ import {
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
   queryCanonicalInvestmentLineage,
+  queryCanonicalInvestmentFundingRelations,
   resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
@@ -2009,7 +2011,9 @@ test("a v15 database migrates and reopens with investment funding relations", as
   const path = join(dir, "canonical.sqlite");
   try {
     const initial = createCanonicalInvestmentStore(path);
-    initial.db.exec(`
+    initial.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
       DELETE FROM canonical_contract_purges
@@ -2021,7 +2025,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
       DELETE FROM schema_migrations WHERE version=16;
       PRAGMA user_version=15;
     `);
-    initial.close();
+    legacy.close();
 
     const migrated = createCanonicalInvestmentStore(path);
     assert.equal(
@@ -2052,5 +2056,26 @@ test("a v15 database migrates and reopens with investment funding relations", as
     migrated.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("investment funding relation production entries reject a raw DatabaseSync adapter", async () => {
+  const raw = new DatabaseSync(":memory:");
+  const forged = {
+    db: raw,
+    databasePath: ":memory:",
+    commitClock: () => Date.now() * 1_000,
+  };
+  try {
+    await assert.rejects(
+      () => resolveCanonicalInvestmentFundingRelations(forged),
+      /canonical database capability|lifecycle/i,
+    );
+    assert.throws(
+      () => queryCanonicalInvestmentFundingRelations(forged, token("raw-investment-connection")),
+      /canonical database capability|lifecycle/i,
+    );
+  } finally {
+    raw.close();
   }
 });

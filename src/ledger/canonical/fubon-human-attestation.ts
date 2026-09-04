@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 /**
  * The user-confirmed boundary for the first Fubon financial projection.
@@ -165,6 +169,10 @@ function tableColumns(db: DatabaseSync): Set<string> {
 
 /** Durable append-only event spine in the shared schema namespace. */
 export function ensureFubonHumanAttestationEvents(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/fubon-events/v1");
+    return;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS fubon_attestation_events (
       event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),

@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 type HncbOpaqueToken = `sha256:${string}`;
 
@@ -153,6 +157,10 @@ function tableColumns(db: DatabaseSync): Set<string> {
 }
 
 export function ensureHncbHumanAttestationEvents(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/hncb-events/v1");
+    return;
+  }
   db.exec(
     "CREATE TABLE IF NOT EXISTS hncb_attestation_events (" +
       "event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16), " +

@@ -1,5 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  assertValidatedCanonicalDatabase,
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 export type CanonicalCreditCardAmount = {
   coefficient: string;
@@ -116,6 +121,15 @@ function rejectRawPan(value: unknown, path = "capture", seen = new Set<object>()
 }
 
 export function ensureCanonicalCreditCardSchema(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    try {
+      validateCanonicalCreditCardSchema(db);
+    } catch {
+      runCanonicalSchemaRepair(db, "canonical/credit-card-extension/v1");
+      validateCanonicalCreditCardSchema(db);
+    }
+    return;
+  }
   db.exec(`
 CREATE TABLE IF NOT EXISTS canonical_credit_card_account_identities (
   integration_namespace TEXT NOT NULL,
@@ -225,6 +239,122 @@ CREATE TABLE IF NOT EXISTS canonical_credit_card_relations (
          to_transaction_id, capture_id, evidence_source_record_id)
 );
   `);
+}
+
+/** Structural assertion used after the lifecycle has admitted a store.
+ * It deliberately has no CREATE/ALTER side effects. */
+export function validateCanonicalCreditCardSchema(db: DatabaseSync): void {
+  const requiredColumns: Record<string, readonly string[]> = {
+    canonical_credit_card_account_identities: [
+      "integration_namespace",
+      "account_id",
+      "opaque_identity_key",
+      "identity_method",
+      "created_capture_id",
+    ],
+    canonical_credit_card_instruments: [
+      "instrument_id",
+      "integration_namespace",
+      "account_id",
+      "instrument_key",
+      "card_mask",
+      "role",
+      "lifecycle",
+    ],
+    canonical_credit_card_instrument_evidence: [
+      "instrument_id",
+      "integration_namespace",
+      "account_id",
+      "capture_id",
+      "source_record_id",
+    ],
+    canonical_credit_card_transaction_details: [
+      "integration_namespace",
+      "account_id",
+      "transaction_id",
+      "revision_id",
+      "source_record_id",
+      "capture_id",
+      "instrument_id",
+      "billing_status",
+      "statement_key",
+    ],
+    canonical_credit_card_transaction_lifecycle: [
+      "lifecycle_event_id",
+      "integration_namespace",
+      "account_id",
+      "transaction_id",
+      "revision_id",
+      "source_record_id",
+      "capture_id",
+      "instrument_id",
+      "billing_status",
+      "statement_key",
+    ],
+    canonical_credit_card_statements: [
+      "statement_id",
+      "integration_namespace",
+      "account_id",
+      "statement_key",
+    ],
+    canonical_credit_card_statement_revisions: [
+      "statement_revision_id",
+      "statement_id",
+      "revision_key",
+      "revision_number",
+      "created_capture_id",
+      "cycle_start",
+      "cycle_end",
+      "issue_date",
+      "due_date",
+      "currency",
+      "balance_coefficient",
+      "balance_scale",
+      "minimum_coefficient",
+      "minimum_scale",
+      "evidence_source_record_key",
+    ],
+    canonical_credit_card_statement_memberships: [
+      "statement_revision_id",
+      "transaction_id",
+      "transaction_revision_id",
+      "source_record_id",
+    ],
+    canonical_credit_card_statement_summary_evidence: [
+      "statement_revision_id",
+      "integration_namespace",
+      "account_id",
+      "capture_id",
+      "evidence_key",
+      "evidence_source_record_id",
+    ],
+    canonical_credit_card_relations: [
+      "relation_id",
+      "integration_namespace",
+      "account_id",
+      "relation_kind",
+      "from_transaction_id",
+      "to_transaction_id",
+      "capture_id",
+      "evidence_source_record_id",
+    ],
+  };
+  for (const [table, columns] of Object.entries(requiredColumns)) {
+    if (
+      !db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table)
+    )
+      throw new Error(`Canonical credit-card table ${table} is missing.`);
+    const actual = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    for (const column of columns)
+      if (!actual.has(column))
+        throw new Error(`Canonical credit-card column ${table}.${column} is missing.`);
+  }
 }
 
 function captureScope(
@@ -578,13 +708,15 @@ function persistCapture(
  * A savepoint makes this safe both as a writer callback and as a standalone
  * extension step: any validation/constraint failure removes all extension rows.
  */
-export function persistCanonicalCreditCardExtensions(
+function persistCanonicalCreditCardExtensionsInTransaction(
   db: DatabaseSync,
   captures: readonly CanonicalCreditCardPersistenceCapture[],
+  ensureSchema: boolean,
 ): void {
   db.exec("SAVEPOINT canonical_credit_card_extensions");
   try {
-    ensureCanonicalCreditCardSchema(db);
+    if (ensureSchema) ensureCanonicalCreditCardSchema(db);
+    else validateCanonicalCreditCardSchema(db);
     for (const capture of captures) persistCapture(db, capture);
     db.exec("RELEASE SAVEPOINT canonical_credit_card_extensions");
   } catch (error) {
@@ -592,4 +724,25 @@ export function persistCanonicalCreditCardExtensions(
     db.exec("RELEASE SAVEPOINT canonical_credit_card_extensions");
     throw error;
   }
+}
+
+/** Persist provider-neutral credit-card rows through a lifecycle-validated
+ * production capability. Schema creation/repair remains the lifecycle's
+ * responsibility; this entry cannot be called with a raw DatabaseSync. */
+export function persistCanonicalCreditCardExtensions(
+  db: DatabaseSync,
+  captures: readonly CanonicalCreditCardPersistenceCapture[],
+): void {
+  assertValidatedCanonicalDatabase(db);
+  persistCanonicalCreditCardExtensionsInTransaction(db, captures, false);
+}
+
+/** Explicit raw adapter for isolated schema/persistence tests and migration
+ * fixtures. Production writers must use persistCanonicalCreditCardExtensions.
+ */
+export function persistCanonicalCreditCardExtensionsForIsolatedSetup(
+  db: DatabaseSync,
+  captures: readonly CanonicalCreditCardPersistenceCapture[],
+): void {
+  persistCanonicalCreditCardExtensionsInTransaction(db, captures, true);
 }

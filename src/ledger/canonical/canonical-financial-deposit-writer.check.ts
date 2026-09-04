@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import {
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
@@ -114,6 +115,24 @@ assert.equal(
   admittedCapture.authorityRoute,
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
 );
+
+const rawWriterDb = new DatabaseSync(":memory:");
+try {
+  await assert.rejects(
+    () =>
+      commitCanonicalFinancialDepositCapture(
+        {
+          db: rawWriterDb,
+          databasePath: ":memory:",
+          commitClock: () => Date.now() * 1_000,
+        },
+        admittedCapture,
+      ),
+    /canonical database capability|lifecycle/i,
+  );
+} finally {
+  rawWriterDb.close();
+}
 
 // The credit-card worker uses the shared writer as its final admission seam.
 // Keep this route-level probe here so a new Fubon contract cannot compile in

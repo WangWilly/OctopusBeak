@@ -341,8 +341,8 @@ for (const responseShape of [
 
 const directory = await mkdtemp(join(tmpdir(), "ctbc-canonical-check-"));
 try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
-  const writer = {
+  let store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  let writer = {
     db: store.db,
     databasePath: store.databasePath,
     commitClock: () => store.commitClock(),
@@ -364,6 +364,7 @@ try {
       buildCtbcDomesticDepositReadinessFromLedger(store.db).capability,
       "canonical-human-attested",
     );
+    store.close();
     const financialQuery = createCanonicalFinancialQuery(directory, {
       integrationNamespace: "ctbc",
       postingRuleVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -388,6 +389,12 @@ try {
       },
     });
     assert.equal(financialLineage.entries.length, 1);
+    store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    writer = {
+      db: store.db,
+      databasePath: store.databasePath,
+      commitClock: () => store.commitClock(),
+    };
     const current = queryCanonicalSourceCurrent(store);
     assert.equal(current.records.length, 2);
     const historical = queryCanonicalSourceHistorical(store, {

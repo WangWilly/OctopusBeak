@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -394,9 +395,13 @@ test("one portfolio account persists multiple card instruments with display-safe
 });
 
 test("instrument mask column is added idempotently to a legacy extension table", () => {
-  const store = createCanonicalSourceStore(":memory:");
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-instrument-"));
+  const databasePath = join(directory, "canonical.sqlite");
+  const initial = createCanonicalSourceStore(databasePath);
+  initial.close();
+  const legacy = new DatabaseSync(databasePath);
   try {
-    store.db.exec(`
+    legacy.exec(`
       DROP TABLE IF EXISTS fubon_credit_instrument_details;
       CREATE TABLE fubon_credit_instrument_details (
         instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
@@ -407,6 +412,11 @@ test("instrument mask column is added idempotently to a legacy extension table",
         UNIQUE(account_id, instrument_key)
       );
     `);
+  } finally {
+    legacy.close();
+  }
+  const store = createCanonicalSourceStore(databasePath);
+  try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
     const columns = store.db.prepare(
@@ -1301,9 +1311,13 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
 });
 
 test("idempotently migrates legacy statement evidence lineage without losing rows", async () => {
-  const store = createCanonicalSourceStore(":memory:");
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-summary-"));
+  const databasePath = join(directory, "canonical.sqlite");
+  const initial = createCanonicalSourceStore(databasePath);
+  initial.close();
+  const legacy = new DatabaseSync(databasePath);
   try {
-    store.db.exec(`
+    legacy.exec(`
 CREATE TABLE fubon_credit_statement_summary_evidence (
   statement_revision_id BLOB NOT NULL,
   account_id BLOB NOT NULL,
@@ -1322,7 +1336,12 @@ BEGIN
   SELECT RAISE(ABORT, 'stale legacy summary evidence trigger');
 END;
     `);
+  } finally {
+    legacy.close();
+  }
 
+  const store = createCanonicalSourceStore(databasePath);
+  try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
     const columns = store.db.prepare(

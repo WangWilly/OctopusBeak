@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import {
   admitCanonicalSourceEvidence,
   commitCanonicalSourceEvidence,
@@ -352,7 +353,8 @@ try {
     join(atomicBatchDirectory, "canonical.sqlite"),
   );
   try {
-    store.db.exec(`
+    const triggerDb = new DatabaseSync(store.databasePath);
+    triggerDb.exec(`
       CREATE TRIGGER reject_second_sinopac_capture
       BEFORE INSERT ON source_captures
       WHEN NEW.capture_key = 'sinopac-atomic-batch-1'
@@ -360,6 +362,7 @@ try {
         SELECT RAISE(ABORT, 'injected later capture failure');
       END;
     `);
+    triggerDb.close();
     await assert.rejects(
       () =>
         commitSinopacStatementSourceEvidenceBatch(

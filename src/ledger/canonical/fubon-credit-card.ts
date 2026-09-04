@@ -2,6 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
+import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
@@ -1008,6 +1012,15 @@ export type FubonCreditCardWriterStore = Pick<
 };
 
 export function ensureFubonCreditCardSchema(db: DatabaseSync): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    try {
+      validateFubonCreditCardSchema(db);
+    } catch {
+      runCanonicalSchemaRepair(db, "canonical/fubon-credit-card-extension/v1");
+      validateFubonCreditCardSchema(db);
+    }
+    return;
+  }
   db.exec(`
 CREATE TABLE IF NOT EXISTS fubon_credit_instrument_details (
   instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
@@ -1180,6 +1193,112 @@ BEGIN
   SELECT RAISE(ABORT, 'Fubon statement summary evidence crosses capture or account scope');
 END;
   `);
+}
+
+/** Assert the provider extension is already present; lifecycle-opened
+ * databases must never create or alter physical objects from a writer. */
+export function validateFubonCreditCardSchema(db: DatabaseSync): void {
+  const requiredColumns: Record<string, readonly string[]> = {
+    fubon_credit_instrument_details: [
+      "instrument_id",
+      "account_id",
+      "instrument_key",
+      "card_mask",
+      "role",
+      "lifecycle",
+    ],
+    fubon_credit_account_identity_details: [
+      "account_id",
+      "identity_method",
+      "pan_fingerprint",
+      "pan_last4",
+      "pan_fingerprint_key_version",
+    ],
+    fubon_credit_instrument_role_evidence: [
+      "instrument_id",
+      "account_id",
+      "capture_id",
+      "source_record_id",
+    ],
+    fubon_credit_transaction_details: [
+      "transaction_id",
+      "revision_id",
+      "source_record_id",
+      "capture_id",
+      "instrument_id",
+      "billing_status",
+      "statement_key",
+    ],
+    fubon_credit_statement_details: [
+      "statement_id",
+      "account_id",
+      "statement_key",
+    ],
+    fubon_credit_statement_revision_details: [
+      "statement_revision_id",
+      "statement_id",
+      "capture_id",
+      "revision_key",
+      "revision_number",
+      "cycle_start",
+      "cycle_end",
+      "issue_date",
+      "due_date",
+      "currency",
+      "balance_coefficient",
+      "balance_scale",
+      "minimum_coefficient",
+      "minimum_scale",
+      "evidence_source_record_key",
+    ],
+    fubon_credit_statement_membership_details: [
+      "statement_revision_id",
+      "transaction_id",
+      "transaction_revision_id",
+      "source_record_id",
+    ],
+    fubon_credit_statement_summary_evidence: [
+      "statement_revision_id",
+      "account_id",
+      "capture_id",
+      "evidence_key",
+      "evidence_source_record_id",
+    ],
+    fubon_credit_relation_details: [
+      "relation_id",
+      "account_id",
+      "relation_kind",
+      "from_transaction_id",
+      "to_transaction_id",
+      "evidence_source_record_key",
+    ],
+  };
+  for (const [table, columns] of Object.entries(requiredColumns)) {
+    if (
+      !db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table)
+    )
+      throw new Error(`Fubon credit-card table ${table} is missing.`);
+    const actual = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    for (const column of columns)
+      if (!actual.has(column))
+        throw new Error(`Fubon credit-card column ${table}.${column} is missing.`);
+  }
+  for (const trigger of [
+    "fubon_credit_role_evidence_scope_guard",
+    "fubon_credit_summary_evidence_scope_guard",
+  ])
+    if (
+      !db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get(trigger)
+    )
+      throw new Error(`Fubon credit-card trigger ${trigger} is missing.`);
 }
 
 function canonicalId(): Buffer {

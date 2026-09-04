@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { CanonicalSourceStore } from "./canonical-source-store.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
@@ -14,10 +14,14 @@ type LinkedFundingEvidence = Extract<
   InvestmentFundingEvidence,
   { kind: "source-linked-account" }
 >;
-type RelationResolutionStore = Pick<
-  CanonicalSourceStore,
-  "db" | "commitClock" | "databasePath"
->;
+/** Funding relation resolution is a canonical read/write seam.  Its adapters
+ * may be a domain facade, but the carried database must be a lifecycle
+ * capability; a raw DatabaseSync is never accepted. */
+type RelationResolutionStore = Readonly<{
+  readonly db: DatabaseSync;
+  readonly databasePath: string;
+  readonly commitClock: () => number;
+}>;
 
 type InvestmentRow = {
   transactionId: Uint8Array;
@@ -1159,15 +1163,17 @@ function resolveCanonicalInvestmentFundingRelationsInQueue(
 export async function resolveCanonicalInvestmentFundingRelations(
   store: RelationResolutionStore,
 ): Promise<{ resolved: number; noAdmission: number; reasons: string[] }> {
+  assertValidatedCanonicalDatabase(store.db);
   return withCanonicalWriterQueue(relationStorePath(store), () =>
     resolveCanonicalInvestmentFundingRelationsInQueue(store),
   );
 }
 
 export function queryCanonicalInvestmentFundingRelationsInSnapshot(
-  store: CanonicalSourceStore,
+  store: RelationResolutionStore,
   sourceConnectionKey: string,
 ) {
+  assertValidatedCanonicalDatabase(store.db);
   return store.db
       .prepare(
         `SELECT r.relation_key AS relationKey,r.settlement_group_key AS settlementGroupKey,
@@ -1188,9 +1194,10 @@ export function queryCanonicalInvestmentFundingRelationsInSnapshot(
 }
 
 export function queryCanonicalInvestmentFundingRelations(
-  store: CanonicalSourceStore,
+  store: RelationResolutionStore,
   sourceConnectionKey: string,
 ) {
+  assertValidatedCanonicalDatabase(store.db);
   return withCanonicalSnapshot(store.db, () =>
     queryCanonicalInvestmentFundingRelationsInSnapshot(
       store,

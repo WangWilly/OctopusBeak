@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
 import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 
 export type FinancialDepositAmount = {
@@ -163,6 +164,18 @@ export type CanonicalFinancialDepositWriterStore = {
   readonly databasePath: string;
   readonly commitClock: () => number;
 };
+
+/**
+ * The writer type is kept narrow for adapter compatibility, but the runtime
+ * seam is deliberately stricter than its structural TypeScript shape.  A
+ * provider must pass the lifecycle-created CanonicalSourceStore; wrapping its
+ * database in a look-alike object is not a production adapter.
+ */
+function requireValidatedFinancialWriterStore(
+  store: CanonicalFinancialDepositWriterStore,
+): void {
+  assertValidatedCanonicalDatabase(store.db);
+}
 
 export type CanonicalFinancialDepositCommitResult = {
   status: "canonical-live";
@@ -2022,6 +2035,7 @@ export async function commitCanonicalFinancialDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
 ): Promise<CanonicalFinancialDepositCommitResult> {
+  requireValidatedFinancialWriterStore(store);
   return withCanonicalWriterQueue(store.databasePath, () =>
     commitOnce(store, capture),
   );
@@ -2037,6 +2051,7 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
     results: readonly CanonicalFinancialDepositCommitResult[],
   ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
+  requireValidatedFinancialWriterStore(store);
   if (captures.length === 0)
     throw new Error("Financial deposit capture batch cannot be empty.");
   return withCanonicalWriterQueue(store.databasePath, () => {

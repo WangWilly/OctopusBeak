@@ -1,14 +1,28 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  configureCanonicalRuntime,
-  verifyCanonicalRuntime,
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
+import {
+  CanonicalSchemaLifecycle,
+  createCanonicalSchemaMigrationRegistry,
+  assertValidatedCanonicalDatabase,
+  isValidatedCanonicalDatabase,
+  type CanonicalSchemaRepair,
+  type CanonicalSchemaLifecyclePlan,
+} from "./canonical-schema-lifecycle.ts";
+import {
+  ensureCanonicalCreditCardSchema,
+  validateCanonicalCreditCardSchema,
+} from "./canonical-credit-card-persistence.ts";
+import {
+  ensureFubonCreditCardSchema,
+  validateFubonCreditCardSchema,
+} from "./fubon-credit-card.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-deposit-authorities.ts";
 
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
@@ -2398,6 +2412,17 @@ function migrateV4ToV5(
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN IMMEDIATE");
   try {
+    // Provider extension guards are lifecycle-owned.  A current-version
+    // database can already contain them even when a test or recovery path
+    // intentionally replays this older source-table migration.  The table
+    // replacement below temporarily removes source_record_scopes, so SQLite
+    // must not try to revalidate those guards against the missing table.
+    // The lifecycle's provider-extension repair recreates them after the
+    // complete migration chain has restored the canonical source tables.
+    db.exec(`
+      DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
+      DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
+    `);
     db.exec(`CREATE TEMP TABLE source_record_scope_migration AS
       WITH source_record_accounts AS (
         SELECT sr.source_record_id, sr.capture_id, sr.commit_id, sr.sequence_lexeme, sr.description, sr.payload_json, account_row.account_id
@@ -4233,7 +4258,7 @@ function canonicalCommitHasEvidence(
 ): boolean {
   if (commitKind === "source_capture") {
     const sourceOnlyAware = columnExists(db, "source_captures", "record_kind");
-    return Boolean(
+    const liveEvidence = Boolean(
       db
         .prepare(
           sourceOnlyAware
@@ -4249,6 +4274,28 @@ function canonicalCommitHasEvidence(
             : "SELECT 1 FROM source_captures WHERE commit_id = ? LIMIT 1",
         )
         .get(commitId),
+    );
+    if (liveEvidence) return true;
+    // A versioned contract transition may remove the source ownership
+    // closure while preserving its commit as immutable projection history.
+    // The purge audit is then the retained canonical evidence for that
+    // historical routine event; do not rewrite the guarded event chain.
+    return (
+      relationType(db, "canonical_contract_purge_commits") === "table" &&
+      Boolean(
+        db
+          .prepare(
+            `SELECT 1
+               FROM canonical_contract_purge_commits purge
+              WHERE purge.commit_id = ?
+                AND EXISTS (
+                  SELECT 1 FROM projection_generation_provenance event
+                   WHERE event.commit_id = purge.commit_id
+                )
+              LIMIT 1`,
+          )
+          .get(commitId),
+      )
     );
   }
   if (commitKind === "derived_import")
@@ -4285,6 +4332,82 @@ function canonicalCommitHasEvidence(
     );
   }
   return false;
+}
+
+function reconcileProjectionCutoffsAfterContractDataTransition(
+  db: DatabaseSync,
+): void {
+  if (relationType(db, "projection_generations") !== "table") return;
+  const generations = db
+    .prepare(
+      `SELECT generation_id, status, switched_commit_id
+         FROM projection_generations
+        WHERE switched_commit_id IS NOT NULL
+        ORDER BY generation_id`,
+    )
+    .all() as Array<{
+      generation_id: number;
+      status: string;
+      switched_commit_id: Uint8Array;
+    }>;
+  const commits = db
+    .prepare(
+      "SELECT commit_id, commit_sequence, commit_kind FROM canonical_commits ORDER BY commit_sequence",
+    )
+    .all() as Array<Record<string, unknown>>;
+  for (const generation of generations) {
+    const switchedSequence = Number(
+      (
+        db
+          .prepare(
+            "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?",
+          )
+          .get(generation.switched_commit_id) as
+          | { commit_sequence?: number }
+          | undefined
+      )?.commit_sequence ?? -1,
+    );
+    const retirementSequence =
+      generation.status === "retired"
+        ? Number(
+            (
+              db
+                .prepare(
+                  `SELECT MIN(commit_row.commit_sequence) AS sequence
+                     FROM projection_generations later
+                     JOIN canonical_commits commit_row
+                       ON commit_row.commit_id = later.created_commit_id
+                    WHERE later.generation_id > ?`,
+                )
+                .get(generation.generation_id) as
+                | { sequence?: number }
+                | undefined
+            )?.sequence ?? -1,
+          )
+        : Number.POSITIVE_INFINITY;
+    const latestEvidence = commits
+      .filter((commit) => {
+        const sequence = Number(commit.commit_sequence);
+        return (
+          sequence >= switchedSequence &&
+          sequence < retirementSequence &&
+          canonicalCommitHasEvidence(
+            db,
+            String(commit.commit_kind),
+            blob(commit.commit_id),
+          )
+        );
+      })
+      .at(-1);
+    if (!latestEvidence) continue;
+    db.prepare(
+      "UPDATE projection_generations SET build_cutoff_commit_sequence = ? WHERE generation_id = ?",
+    ).run(Number(latestEvidence.commit_sequence), generation.generation_id);
+    if (generation.status === "active")
+      db.prepare(
+        "UPDATE current_projection_state SET commit_id = ? WHERE generation = 1",
+      ).run(blob(latestEvidence.commit_id));
+  }
 }
 
 function projectionRelevantCommitCount(db: DatabaseSync): number {
@@ -5105,6 +5228,17 @@ function isCanonicalFinancialRevisionSchema(sql: string): boolean {
   );
 }
 
+function isCanonicalTimeObservationSchema(sql: string): boolean {
+  return (
+    /time_precision TEXT NOT NULL CHECK\(time_precision IN \('date','minute','second'\)\)/.test(
+      sql,
+    ) &&
+    /time_origin TEXT NOT NULL CHECK\(time_origin IN \('source_reported','defaulted_local_midnight'\)\)/.test(
+      sql,
+    )
+  );
+}
+
 function financialRevisionSchemaSql(
   db: DatabaseSync,
   table: "transaction_revisions" | "transaction_revisions_widened",
@@ -5129,6 +5263,296 @@ function financialRevisionColumnNames(
       name?: unknown;
     }>
   ).map((column) => String(column.name ?? ""));
+}
+
+function canonicalTableColumns(
+  db: DatabaseSync,
+  table: string,
+): Array<{ name?: unknown; notnull?: unknown }> {
+  return db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name?: unknown;
+    notnull?: unknown;
+  }>;
+}
+
+function requireCanonicalTable(
+  db: DatabaseSync,
+  table: string,
+  columns: readonly string[],
+): void {
+  if (relationType(db, table) !== "table")
+    throw new Error(`Canonical lifecycle table ${table} is missing.`);
+  const actual = new Set(
+    canonicalTableColumns(db, table).map((column) => String(column.name ?? "")),
+  );
+  for (const column of columns)
+    if (!actual.has(column))
+      throw new Error(`Canonical lifecycle column ${table}.${column} is missing.`);
+}
+
+function validateCanonicalFinancialRevisionLifecycleSchema(
+  db: DatabaseSync,
+): void {
+  requireCanonicalTable(db, "transaction_revisions", CANONICAL_FINANCIAL_REVISION_COLUMNS);
+  if (
+    !isCanonicalFinancialRevisionSchema(
+      financialRevisionSchemaSql(db, "transaction_revisions"),
+    ) ||
+    financialRevisionColumnNames(db, "transaction_revisions").join(",") !==
+      CANONICAL_FINANCIAL_REVISION_COLUMNS.join(",")
+  )
+    throw new Error(
+      "Canonical financial revision table is not compatible with the current schema.",
+    );
+  if (relationType(db, "transaction_revisions_widened") !== null)
+    throw new Error(
+      "Canonical financial revision widening staging remains after lifecycle validation.",
+    );
+}
+
+function validateCanonicalTimeObservationLifecycleSchema(
+  db: DatabaseSync,
+): void {
+  requireCanonicalTable(db, "transaction_time_observations", [
+    "observation_id",
+    "transaction_id",
+    "revision_id",
+    "source_record_id",
+    "commit_id",
+    "role",
+    "local_value",
+    "time_zone",
+    "time_precision",
+    "time_origin",
+    "utc_instant_utc_us",
+  ]);
+  const sql = String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_time_observations'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (!isCanonicalTimeObservationSchema(sql))
+    throw new Error(
+      "Canonical transaction time observation table is not compatible with the current schema.",
+    );
+}
+
+function validateFinancialAccountCurrencyLifecycleSchema(
+  db: DatabaseSync,
+): void {
+  requireCanonicalTable(db, "financial_accounts", [
+    "account_id",
+    "source_connection_id",
+    "identity_epoch_id",
+    "stream",
+    "account_no",
+    "account_type",
+    "currency",
+    "created_commit_id",
+  ]);
+  const currency = canonicalTableColumns(db, "financial_accounts").find(
+    (column) => String(column.name ?? "") === "currency",
+  );
+  if (Number(currency?.notnull ?? 1) !== 0)
+    throw new Error(
+      "Canonical financial account currency column must be nullable.",
+    );
+}
+
+function validateForeignCurrencyConversionLifecycleSchema(
+  db: DatabaseSync,
+): void {
+  requireCanonicalTable(db, "transaction_conversion_evidence", [
+    "conversion_id",
+    "transaction_id",
+    "revision_id",
+    "source_record_id",
+    "capture_id",
+    "commit_id",
+    "original_amount_coefficient",
+    "original_amount_scale",
+    "original_currency",
+    "booked_amount_coefficient",
+    "booked_amount_scale",
+    "booked_currency",
+    "source_reported_rate_coefficient",
+    "source_reported_rate_scale",
+    "source_reported_rate_base_currency",
+    "source_reported_rate_quote_currency",
+    "source_reported_rate_date",
+    "implied_rate_coefficient",
+    "implied_rate_scale",
+    "implied_rate_base_currency",
+    "implied_rate_quote_currency",
+    "implied_rate_date",
+    "comparison",
+    "fee_amount_coefficient",
+    "fee_amount_scale",
+    "fee_currency",
+    "evidence_origin",
+  ]);
+  for (const index of [
+    "idx_transaction_conversion_evidence_transaction",
+    "idx_transaction_conversion_evidence_source_record",
+  ]) {
+    if (
+      !db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get(index)
+    )
+      throw new Error(`Canonical conversion evidence index ${index} is missing.`);
+  }
+}
+
+function isCanonicalCaptureScopeSchema(sql: string): boolean {
+  return /absence_authority TEXT CHECK\(absence_authority IN \('comparable-complete-range', 'provider-explicit-no-data'\)\)/.test(
+    sql,
+  );
+}
+
+function canonicalCaptureScopeSchemaSql(db: DatabaseSync): string {
+  return String(
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'capture_scopes'",
+        )
+        .get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+}
+
+function validateCanonicalCaptureScopeLifecycleSchema(
+  db: DatabaseSync,
+): void {
+  requireCanonicalTable(db, "capture_scopes", [
+    "scope_id",
+    "capture_id",
+    "source_connection_id",
+    "identity_epoch_id",
+    "account_id",
+    "source_subject_id",
+    "account_no",
+    "stream",
+    "scope_start",
+    "scope_end",
+    "scope_kind",
+    "completeness",
+    "completeness_basis",
+    "completeness_rule_version",
+    "absence_authority",
+    "contract_fingerprint",
+    "preflight_fingerprint",
+    "page_count",
+    "terminal",
+    "commit_id",
+  ]);
+  if (!isCanonicalCaptureScopeSchema(canonicalCaptureScopeSchemaSql(db)))
+    throw new Error(
+      "Canonical capture scope table is not compatible with the current schema.",
+    );
+}
+
+function hasCanonicalCreditCardSchema(db: DatabaseSync): boolean {
+  try {
+    validateCanonicalCreditCardSchema(db);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasCanonicalCreditCardExtension(db: DatabaseSync): boolean {
+  return [
+    "canonical_credit_card_account_identities",
+    "canonical_credit_card_instruments",
+    "canonical_credit_card_instrument_evidence",
+    "canonical_credit_card_transaction_details",
+    "canonical_credit_card_transaction_lifecycle",
+    "canonical_credit_card_statements",
+    "canonical_credit_card_statement_revisions",
+    "canonical_credit_card_statement_memberships",
+    "canonical_credit_card_statement_summary_evidence",
+    "canonical_credit_card_relations",
+  ].some((table) => relationType(db, table) !== null);
+}
+
+function hasFubonCreditCardSchema(db: DatabaseSync): boolean {
+  try {
+    validateFubonCreditCardSchema(db);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasFubonCreditCardExtension(db: DatabaseSync): boolean {
+  return [
+    "fubon_credit_instrument_details",
+    "fubon_credit_account_identity_details",
+    "fubon_credit_instrument_role_evidence",
+    "fubon_credit_transaction_details",
+    "fubon_credit_statement_details",
+    "fubon_credit_statement_revision_details",
+    "fubon_credit_statement_membership_details",
+    "fubon_credit_statement_summary_evidence",
+    "fubon_credit_relation_details",
+  ].some((table) => relationType(db, table) !== null);
+}
+
+function validateCanonicalSchemaMigrationMetadata(db: DatabaseSync): void {
+  requireCanonicalTable(db, "schema_migrations", [
+    "version",
+    "applied_at_utc_us",
+  ]);
+  const userVersion = Number(
+    (db.prepare("PRAGMA user_version").get() as { user_version?: unknown })
+      .user_version ?? -1,
+  );
+  if (userVersion !== CANONICAL_SCHEMA_VERSION)
+    throw new Error(
+      "Canonical SQLite schema migration metadata does not match user_version.",
+    );
+  const versions = (
+    db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{
+      version?: unknown;
+    }>
+  ).map((row) => Number(row.version));
+  if (
+    versions.length === 0 ||
+    versions.some(
+      (version) =>
+        !Number.isSafeInteger(version) ||
+        version < 1 ||
+        version > CANONICAL_SCHEMA_VERSION,
+    )
+  )
+    throw new Error(
+      "Canonical SQLite schema migration metadata contains an unsupported version.",
+    );
+  // Fresh v6 databases intentionally begin their ledger at v7. Databases
+  // upgraded from the older versioned lineage contain the complete 1..20
+  // chain. Both starts are published compatibility baselines; every later
+  // row must still be present exactly once through the current version.
+  const first = versions[0];
+  if (first !== 1 && first !== 7)
+    throw new Error(
+      "Canonical SQLite schema migration metadata has an unknown baseline.",
+    );
+  const expectedLength = CANONICAL_SCHEMA_VERSION - first + 1;
+  if (versions.length !== expectedLength || new Set(versions).size !== versions.length)
+    throw new Error(
+      "Canonical SQLite schema migration metadata is incomplete or duplicated.",
+    );
+  for (let expected = first; expected <= CANONICAL_SCHEMA_VERSION; expected += 1)
+    if (versions[expected - first] !== expected)
+      throw new Error(
+        "Canonical SQLite schema migration metadata is incomplete or non-contiguous.",
+      );
 }
 
 function assertFinancialRevisionTableIntegrity(
@@ -5588,6 +6012,13 @@ function ensureCanonicalCaptureScopeSchema(db: DatabaseSync): void {
   );
   if (widenedCreateSql === widenedSql)
     throw new Error(`Capture scope table SQL did not rename: ${sql}`);
+  // Provider extension scope guards reference capture_scopes. They are
+  // recreated by the lifecycle's provider-extension repair after this table
+  // rebuild; remove them for the duration of the table replacement.
+  db.exec(`
+    DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
+    DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
+  `);
   db.exec(widenedCreateSql);
   db.exec("INSERT INTO capture_scopes_widened SELECT * FROM capture_scopes");
   db.exec("DROP TABLE capture_scopes");
@@ -5838,6 +6269,14 @@ function applyV8SourceEvidenceSchema(
   if (injectMigrationFailure === "v7-v8-after-source-copy") {
     throw new Error("Injected v7-v8 migration failure after source copy.");
   }
+  // Provider extension guards are lifecycle-owned, but older stores may have
+  // been opened once by a writer before this migration. Their triggers refer
+  // to the pre-v8 source tables, so remove those guards before the atomic
+  // table replacement; the post-migration extension repair recreates them.
+  db.exec(`
+    DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
+    DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
+  `);
   db.exec(`
     DROP TABLE source_record_scopes;
     DROP TABLE capture_scope_pages;
@@ -6539,6 +6978,7 @@ const YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS = ["investment"] as const;
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
   options: Readonly<{
+    requireSourceConnectionIdentityPurge?: boolean;
     requireCreditCardPurge?: boolean;
     requireFubonDepositOccurrencePurge?: boolean;
     requireYuantaTradeInvestmentPurge?: boolean;
@@ -6553,28 +6993,32 @@ function validateCanonicalContractPurgeSchema(
     throw new Error(
       "Canonical schema v11 Contract Purge commit audit table is missing.",
     );
-  const migrationAudit = db
-    .prepare(
-      "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+  if (options.requireSourceConnectionIdentityPurge) {
+    const migrationAudit = db
+      .prepare(
+        "SELECT schema_version, scope_json, deleted_table_counts_json, closure_fingerprint FROM canonical_contract_purges WHERE purge_id = ?",
+      )
+      .get(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID) as
+      | {
+          schema_version?: number;
+          scope_json?: string;
+          deleted_table_counts_json?: string;
+          closure_fingerprint?: string;
+        }
+      | undefined;
+    if (
+      !migrationAudit ||
+      Number(migrationAudit.schema_version) !== 11 ||
+      typeof migrationAudit.scope_json !== "string" ||
+      typeof migrationAudit.deleted_table_counts_json !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]+$/u.test(
+        String(migrationAudit.closure_fingerprint ?? ""),
+      )
     )
-    .get(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID) as
-    | {
-        schema_version?: number;
-        scope_json?: string;
-        deleted_table_counts_json?: string;
-        closure_fingerprint?: string;
-      }
-    | undefined;
-  if (
-    !migrationAudit ||
-    Number(migrationAudit.schema_version) !== 11 ||
-    typeof migrationAudit.scope_json !== "string" ||
-    typeof migrationAudit.deleted_table_counts_json !== "string" ||
-    !/^sha256:[A-Za-z0-9_-]+$/u.test(
-      String(migrationAudit.closure_fingerprint ?? ""),
-    )
-  )
-    throw new Error("Canonical schema v11 Contract Purge audit is incomplete.");
+      throw new Error(
+        "Canonical schema v11 Contract Purge audit is incomplete.",
+      );
+  }
 
   if (options.requireCreditCardPurge) {
     const creditCardAudit = db
@@ -7034,7 +7478,9 @@ function purgeLegacySourceConnectionIdentityScopes(db: DatabaseSync): void {
       ).run(...batch);
     }
   }
-  reconcileProjectionProvenanceAfterContractPurge(db);
+  // Projection-generation provenance is immutable operational audit. The
+  // data transition removes the selected financial/source ownership closure
+  // but deliberately does not drop its guard triggers or rewrite history.
   const foreignKeyDefects = db.prepare("PRAGMA foreign_key_check").all();
   if (foreignKeyDefects.length > 0)
     throw new Error(
@@ -7139,7 +7585,8 @@ function purgeCanonicalClosureToAudit(
       ).run(...batch);
     }
   }
-  reconcileProjectionProvenanceAfterContractPurge(db);
+  // Keep projection-generation provenance immutable; its commits remain
+  // retained audit roots even when the selected source closure is removed.
   if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
     throw new Error(
       "Canonical scoped source purge left a dangling foreign-key reference.",
@@ -7289,7 +7736,6 @@ function purgeYuantaTradeInvestmentV3Scope(db: DatabaseSync): boolean {
       "projection_generations",
     ],
   });
-  if (![...closure.values()].some((rows) => rows.size > 0)) return false;
   purgeCanonicalClosureToAudit(
     db,
     closure,
@@ -7312,154 +7758,6 @@ function purgeYuantaTradeInvestmentV3Scope(db: DatabaseSync): boolean {
  * longer owns source evidence. Re-link and re-digest the immutable event chain
  * atomically so preserved non-target projections remain valid.
  */
-function reconcileProjectionProvenanceAfterContractPurge(
-  db: DatabaseSync,
-): void {
-  if (!tableExists(db, "projection_generation_provenance")) return;
-  const generations = db
-    .prepare(
-      "SELECT generation_id FROM projection_generations ORDER BY generation_id",
-    )
-    .all() as Array<{ generation_id: number }>;
-  const planned: Array<{
-    eventId: Buffer;
-    generationId: number;
-    eventKind: ProjectionGenerationEventKind;
-    eventSource: ProjectionGenerationEventSource;
-    commitId: Buffer;
-  }> = [];
-  for (const generation of generations) {
-    const generationId = Number(generation.generation_id);
-    const rows = db
-      .prepare(
-        `SELECT event_id, event_kind, event_source, commit_id
-           FROM projection_generation_provenance
-          WHERE generation_id = ? ORDER BY ordinal`,
-      )
-      .all(generationId) as Array<Record<string, unknown>>;
-    const phaseLostEvidence = rows.some(
-      (row) =>
-        row.event_kind !== "knowledge" &&
-        row.event_source === "routine" &&
-        !canonicalCommitHasEvidence(
-          db,
-          String(
-            (
-              db
-                .prepare(
-                  "SELECT commit_kind FROM canonical_commits WHERE commit_id = ?",
-                )
-                .get(blob(row.commit_id)) as
-                { commit_kind?: string } | undefined
-            )?.commit_kind ?? "",
-          ),
-          blob(row.commit_id),
-        ),
-    );
-    for (const row of rows) {
-      const eventKind = String(row.event_kind) as ProjectionGenerationEventKind;
-      const commitId = blob(row.commit_id);
-      const commitKind = String(
-        (
-          db
-            .prepare(
-              "SELECT commit_kind FROM canonical_commits WHERE commit_id = ?",
-            )
-            .get(commitId) as { commit_kind?: string } | undefined
-        )?.commit_kind ?? "",
-      );
-      if (
-        eventKind === "knowledge" &&
-        !canonicalCommitHasEvidence(db, commitKind, commitId)
-      )
-        continue;
-      planned.push({
-        eventId: blob(row.event_id),
-        generationId,
-        eventKind,
-        eventSource:
-          phaseLostEvidence && eventKind !== "knowledge"
-            ? "migration"
-            : (String(row.event_source) as ProjectionGenerationEventSource),
-        commitId,
-      });
-    }
-    const retained = planned.filter(
-      (event) => event.generationId === generationId,
-    );
-    if (retained.length > 0) {
-      const cutoff = Math.max(
-        ...retained.map((event) =>
-          Number(
-            (
-              db
-                .prepare(
-                  "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?",
-                )
-                .get(event.commitId) as { commit_sequence?: number }
-            ).commit_sequence,
-          ),
-        ),
-      );
-      db.prepare(
-        "UPDATE projection_generations SET build_cutoff_commit_sequence = ? WHERE generation_id = ?",
-      ).run(cutoff, generationId);
-    }
-  }
-  db.exec(
-    "DROP TRIGGER IF EXISTS projection_generation_events_no_update; DROP TRIGGER IF EXISTS projection_generation_events_no_delete; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_update; DROP TRIGGER IF EXISTS trg_projection_generation_provenance_no_delete; DELETE FROM projection_generation_provenance",
-  );
-  const insert = db.prepare(
-    `INSERT INTO projection_generation_provenance(
-       event_id, generation_id, ordinal, previous_event_id, event_kind,
-       event_source, commit_id, event_digest
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  let previousGeneration = -1;
-  let previousEvent: Buffer | null = null;
-  let ordinal = 0;
-  for (const event of planned) {
-    if (event.generationId !== previousGeneration) {
-      previousGeneration = event.generationId;
-      previousEvent = null;
-      ordinal = 0;
-    }
-    ordinal += 1;
-    insert.run(
-      event.eventId,
-      event.generationId,
-      ordinal,
-      previousEvent,
-      event.eventKind,
-      event.eventSource,
-      event.commitId,
-      projectionGenerationEventDigest({
-        generationId: event.generationId,
-        ordinal,
-        eventKind: event.eventKind,
-        eventSource: event.eventSource,
-        commitId: event.commitId,
-        previousEventId: previousEvent,
-      }),
-    );
-    previousEvent = event.eventId;
-  }
-  const active = db
-    .prepare(
-      "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1",
-    )
-    .get() as { generation_id?: number } | undefined;
-  if (active?.generation_id !== undefined) {
-    const latest = [...planned]
-      .reverse()
-      .find((event) => event.generationId === Number(active.generation_id));
-    if (latest)
-      db.prepare(
-        "UPDATE current_projection_state SET commit_id = ? WHERE generation = 1",
-      ).run(latest.commitId);
-  }
-  ensureProjectionGenerationProvenanceTriggers(db);
-}
 
 function migrateV10ToV11(db: DatabaseSync): void {
   db.exec("PRAGMA foreign_keys = OFF");
@@ -7474,7 +7772,6 @@ function migrateV10ToV11(db: DatabaseSync): void {
     ensureInstitutionRepaymentNoteDateContractColumn(db);
     validateCanonicalLoanRepaymentRelationSchema(db);
     db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
-    purgeLegacySourceConnectionIdentityScopes(db);
     validateCanonicalContractPurgeSchema(db);
     db.prepare(
       "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (11, ?)",
@@ -7498,8 +7795,7 @@ function migrateV11ToV12(db: DatabaseSync): void {
     validateCanonicalLoanExtensionSchema(db);
     validateCanonicalLoanRepaymentRelationSchema(db);
     ensureCanonicalContractPurgeSchemaV12(db);
-    purgeLegacyCreditCardSourceScopes(db);
-    validateCanonicalContractPurgeSchema(db, { requireCreditCardPurge: true });
+    validateCanonicalContractPurgeSchema(db);
     db.prepare(
       "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (12, ?)",
     ).run(currentUtcMicros());
@@ -7697,7 +7993,6 @@ function migrateV12ToV13(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
-  migrateV13ToV14(db);
 }
 
 function widenCanonicalContractPurgeAuditForV14(db: DatabaseSync): void {
@@ -7750,11 +8045,7 @@ function migrateV13ToV14(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     widenCanonicalContractPurgeAuditForV14(db);
-    purgeFubonDepositOccurrenceV1Scope(db);
-    validateCanonicalContractPurgeSchema(db, {
-      requireCreditCardPurge: true,
-      requireFubonDepositOccurrencePurge: true,
-    });
+    validateCanonicalContractPurgeSchema(db);
     if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
       throw new Error(
         "Canonical schema v14 Fubon deposit occurrence migration left dangling references.",
@@ -7770,7 +8061,6 @@ function migrateV13ToV14(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
-  migrateV14ToV15(db);
 }
 
 function widenCanonicalContractPurgeAuditForV17(db: DatabaseSync): void {
@@ -7985,7 +8275,6 @@ function migrateV14ToV15(db: DatabaseSync): void {
     db.exec("ROLLBACK");
     throw error;
   }
-  migrateV15ToV16(db);
 }
 
 export const SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS = `
@@ -8061,7 +8350,6 @@ function migrateV15ToV16(db: DatabaseSync): void {
     db.exec("ROLLBACK");
     throw error;
   }
-  migrateV16ToV17(db);
 }
 
 function migrateV16ToV17(db: DatabaseSync): void {
@@ -8073,12 +8361,7 @@ function migrateV16ToV17(db: DatabaseSync): void {
     validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     validateCanonicalInvestmentFundingRelationSchema(db);
     widenCanonicalContractPurgeAuditForV17(db);
-    purgeYuantaTradeInvestmentV2Scope(db);
-    validateCanonicalContractPurgeSchema(db, {
-      requireCreditCardPurge: true,
-      requireFubonDepositOccurrencePurge: true,
-      requireYuantaTradeInvestmentPurge: true,
-    });
+    validateCanonicalContractPurgeSchema(db);
     if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
       throw new Error(
         "Canonical schema v17 Yuanta trade investment migration left dangling references.",
@@ -8094,7 +8377,6 @@ function migrateV16ToV17(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
-  migrateV17ToV18(db);
 }
 
 /**
@@ -8167,7 +8449,6 @@ function migrateV17ToV18(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
-  migrateV18ToV19(db);
 }
 
 function migrateV18ToV19(db: DatabaseSync): void {
@@ -8179,13 +8460,7 @@ function migrateV18ToV19(db: DatabaseSync): void {
     validateCanonicalInvestmentExtensionSchema(db, { requireCryptoFields: false });
     validateCanonicalInvestmentFundingRelationSchema(db);
     widenCanonicalContractPurgeAuditForV19(db);
-    const hasYuantaTradeInvestmentV3Purge = purgeYuantaTradeInvestmentV3Scope(db);
-    validateCanonicalContractPurgeSchema(db, {
-      requireCreditCardPurge: true,
-      requireFubonDepositOccurrencePurge: true,
-      requireYuantaTradeInvestmentPurge: true,
-      requireYuantaTradeInvestmentV3Purge: hasYuantaTradeInvestmentV3Purge,
-    });
+    validateCanonicalContractPurgeSchema(db);
     if (db.prepare("PRAGMA foreign_key_check").all().length > 0)
       throw new Error(
         "Canonical schema v19 Yuanta trade source-content migration left dangling references.",
@@ -8201,7 +8476,6 @@ function migrateV18ToV19(db: DatabaseSync): void {
     db.exec("PRAGMA foreign_keys = ON");
     throw error;
   }
-  migrateV19ToV20(db);
 }
 
 function ensureCryptoInvestmentSchema(db: DatabaseSync): void {
@@ -8251,264 +8525,1001 @@ function migrateV19ToV20(db: DatabaseSync): void {
   }
 }
 
-function applySchemaMigration(
+
+/**
+ * The source-store module still contains the historical migration bodies,
+ * but the lifecycle owns when they may run and what may follow them. Keeping
+ * this plan at one seam prevents a writer from quietly creating a physical
+ * table after a store has been validated.
+ */
+type CanonicalAttestationColumn = {
+  readonly name: string;
+  readonly definition: string;
+};
+
+function ensureCanonicalAttestationTable(
   db: DatabaseSync,
-  options: CanonicalDatabaseOptions = {},
+  table: string,
+  createSql: string,
+  columns: readonly CanonicalAttestationColumn[],
+  indexes: readonly string[],
 ): void {
-  const row = db.prepare("PRAGMA user_version").get() as {
-    user_version?: number;
-  };
-  const version = Number(row.user_version ?? 0);
-  if (version > CANONICAL_SCHEMA_VERSION)
-    throw new Error(
-      `Canonical SQLite schema ${version} is newer than supported ${CANONICAL_SCHEMA_VERSION}.`,
-    );
-  if (version === 0 && tableExists(db, "canonical_commits"))
-    throw new Error(
-      "Unversioned canonical SQLite schema is not compatible; refusing ad-hoc migration.",
-    );
-  if (version === 1) {
-    migrateV1ToV2(db);
-    migrateV2ToV3(db);
-    migrateV3ToV4(db);
-    migrateV4ToV5(db, options.injectMigrationFailure);
-    migrateV5ToV6(db, options.injectMigrationFailure);
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 2) {
-    migrateV2ToV3(db);
-    migrateV3ToV4(db);
-    migrateV4ToV5(db, options.injectMigrationFailure);
-    migrateV5ToV6(db, options.injectMigrationFailure);
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 3) {
-    migrateV3ToV4(db);
-    migrateV4ToV5(db, options.injectMigrationFailure);
-    migrateV5ToV6(db, options.injectMigrationFailure);
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 4) {
-    migrateV4ToV5(db, options.injectMigrationFailure);
-    migrateV5ToV6(db, options.injectMigrationFailure);
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 5) {
-    migrateV5ToV6(db, options.injectMigrationFailure);
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 6) {
-    migrateV6ToV7(db, options.injectMigrationFailure);
-    migrateV7ToV8(db, options.injectMigrationFailure, false, true);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 7) {
-    // This preflight deliberately precedes every compatibility rebuild. An
-    // orphan Source Record is evidence loss, not a projection repair case.
-    validateV7SourceRecordScopeCoverage(db);
-    db.exec("PRAGMA foreign_keys = OFF");
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      ensureV6CompatibilitySchema(db);
-      ensureV6ProjectionOriginConstraints(db);
-      ensureCanonicalCaptureScopeSchema(db);
-      ensureFinancialAccountCurrencySchema(db);
-      ensureCanonicalFinancialRevisionSchema(db);
-      ensureCanonicalTimeObservationSchema(db);
-      ensureForeignCurrencyConversionSchema(db);
-      ensureV7ProjectionSchema(db);
-      db.exec("COMMIT");
-      db.exec("PRAGMA foreign_keys = ON");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      db.exec("PRAGMA foreign_keys = ON");
-      throw error;
-    }
-    migrateV7ToV8(db, options.injectMigrationFailure);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 8) {
-    validateV8SourceEvidenceSchema(db);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 9) {
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 10) {
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 11) {
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 12) {
-    migrateV12ToV13(db);
-    return;
-  }
-  if (version === 13) {
-    migrateV13ToV14(db);
-    return;
-  }
-  if (version === 14) {
-    migrateV14ToV15(db);
-    return;
-  }
-  if (version === 15) {
-    migrateV15ToV16(db);
-    return;
-  }
-  if (version === 16) {
-    migrateV16ToV17(db);
-    return;
-  }
-  if (version === 17) {
-    migrateV17ToV18(db);
-    return;
-  }
-  if (version === 18) {
-    migrateV18ToV19(db);
-    return;
-  }
-  if (version === 19) {
-    migrateV19ToV20(db);
-    return;
-  }
-  if (version === CANONICAL_SCHEMA_VERSION) {
-    if (!tableExists(db, "schema_migrations"))
-      throw new Error("Canonical SQLite schema version metadata is missing.");
-    const migration = db
-      .prepare("SELECT 1 FROM schema_migrations WHERE version = ?")
-      .get(CANONICAL_SCHEMA_VERSION);
-    if (!migration)
-      throw new Error(
-        "Canonical SQLite schema migration metadata is incomplete.",
-      );
-    db.exec("PRAGMA foreign_keys = OFF");
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      ensureV6CompatibilitySchema(db);
-      validateCanonicalCompatibilityViews(db);
-      ensureV6ProjectionOriginConstraints(db);
-      ensureCanonicalCaptureScopeSchema(db);
-      ensureFinancialAccountCurrencySchema(db);
-      ensureCanonicalFinancialRevisionSchema(db);
-      ensureCanonicalTimeObservationSchema(db);
-      ensureForeignCurrencyConversionSchema(db);
-      ensureV7ProjectionSchema(db);
-      validateV8SourceEvidenceSchema(db);
-      // v10 databases may have been created before the note-evidence tables
-      // were introduced. Re-run the idempotent v10 DDL during reopen so those
-      // databases gain the additive tables without a destructive migration or
-      // a schema-version bump.
-      db.exec(SCHEMA_V10_LOAN_REPAYMENT_RELATIONS);
-      db.exec(SCHEMA_V11_CONTRACT_PURGE_AUDIT);
-      ensureInstitutionRepaymentNoteDateContractColumn(db);
-      validateCanonicalLoanExtensionSchema(db);
-      validateCanonicalInvestmentExtensionSchema(db);
-      validateCanonicalInvestmentFundingRelationSchema(db);
-      validateCanonicalLoanRepaymentRelationSchema(db);
-      validateCanonicalRelationResolutionCommitSchema(db);
-      validateCanonicalContractPurgeSchema(db, {
-        requireCreditCardPurge: true,
-        requireFubonDepositOccurrencePurge: true,
-        requireYuantaTradeInvestmentPurge: true,
-      });
-      db.exec("PRAGMA foreign_keys = ON");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      db.exec("PRAGMA foreign_keys = ON");
-      throw error;
-    }
-    return;
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  db.exec("BEGIN IMMEDIATE");
-  let freshV7Committed = false;
-  try {
-    db.exec(SCHEMA_V6);
-    ensureV6SharedAssertionSpine(db);
-    rebuildCurrentTransactionFieldsForSharedAssertions(db);
-    convertV6CompatibilityTables(db);
-    ensureV6ProjectionOriginConstraints(db);
-    migrateV6ToV7(db, options.injectMigrationFailure, true);
-    db.exec("COMMIT");
-    freshV7Committed = true;
-    db.exec("PRAGMA foreign_keys = ON");
-    migrateV7ToV8(db, options.injectMigrationFailure);
-    migrateV8ToV9(db);
-    migrateV9ToV10(db);
-    migrateV10ToV11(db);
-    migrateV11ToV12(db);
-    migrateV12ToV13(db);
-    return;
-  } catch (error) {
-    if (!freshV7Committed) db.exec("ROLLBACK");
-    db.exec("PRAGMA foreign_keys = ON");
-    throw error;
-  }
+  db.exec(createSql);
+  const existing = new Set(
+    (
+      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>
+    ).map((column) => String(column.name ?? "")),
+  );
+  for (const column of columns)
+    if (!existing.has(column.name))
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column.name} ${column.definition}`);
+  for (const index of indexes) db.exec(index);
 }
 
-function validateReadOnlyDatabase(db: DatabaseSync): void {
-  if (relationType(db, "transaction_revisions_widened") !== null)
+function canonicalAttestationRepair(
+  id: string,
+  table: string,
+  columns: readonly string[],
+  allowedSchemaObjects: readonly string[],
+  apply: (db: DatabaseSync) => void,
+): CanonicalSchemaRepair {
+  const additiveColumns = columns.filter((column) =>
+    new Set(["evidence_version", "manifest_status", "event_sequence"]).has(
+      column,
+    ),
+  );
+  return {
+    id,
+    version: CANONICAL_SCHEMA_VERSION,
+    allowOnDemand: true,
+    allowedSchemaObjects,
+    ...(additiveColumns.length > 0
+      ? {
+          allowedProviderAttestationColumnAdditions: [
+            { table, columns: additiveColumns },
+          ],
+        }
+      : {}),
+    precondition(db, context) {
+      if (relationType(db, table) !== "table")
+        return context.explicitRequest === true;
+      const actual = new Set(
+        (
+          db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+            name?: unknown;
+          }>
+        ).map((column) => String(column.name ?? "")),
+      );
+      return (
+        columns.some((column) => !actual.has(column)) ||
+        allowedSchemaObjects.some(
+          (object) =>
+            !db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(object),
+        )
+      );
+    },
+    apply,
+    validate(db) {
+      if (relationType(db, table) !== "table")
+        throw new Error(`Canonical attestation table ${table} is missing.`);
+      const actual = new Set(
+        (
+          db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>
+        ).map((column) => String(column.name ?? "")),
+      );
+      for (const column of columns)
+        if (!actual.has(column))
+          throw new Error(`Canonical attestation column ${table}.${column} is missing.`);
+    },
+  };
+}
+
+function canonicalAttestationSchemaRepairs(): readonly CanonicalSchemaRepair[] {
+  return [
+    canonicalAttestationRepair(
+      "canonical/attestation/cathay-events/v1",
+      "cathay_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["cathay_attestation_events", "idx_cathay_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "cathay_attestation_events",
+          `CREATE TABLE IF NOT EXISTS cathay_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_cathay_attestation_events_latest ON cathay_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/ctbc-events/v1",
+      "ctbc_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["ctbc_attestation_events"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "ctbc_attestation_events",
+          `CREATE TABLE IF NOT EXISTS ctbc_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT NOT NULL CHECK(manifest_status IN ('active','revoked')),
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            UNIQUE(attestation_id, event_sequence)
+          )`,
+          [],
+          [],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/esun-credit-card-events/v1",
+      "esun_credit_card_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      [
+        "esun_credit_card_attestation_events",
+        "idx_esun_credit_card_attestation_latest",
+      ],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "esun_credit_card_attestation_events",
+          `CREATE TABLE IF NOT EXISTS esun_credit_card_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked','restored')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_sequence)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_esun_credit_card_attestation_latest ON esun_credit_card_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/fubon-credit-card-events/v1",
+      "fubon_credit_card_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      [
+        "fubon_credit_card_attestation_events",
+        "idx_fubon_credit_card_attestation_latest",
+      ],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "fubon_credit_card_attestation_events",
+          `CREATE TABLE IF NOT EXISTS fubon_credit_card_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked','restored')),
+            manifest_status TEXT NOT NULL CHECK(manifest_status IN ('active','revoked')),
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            UNIQUE(attestation_id, event_sequence)
+          )`,
+          [{ name: "manifest_status", definition: "TEXT" }],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_fubon_credit_card_attestation_latest ON fubon_credit_card_attestation_events(attestation_id, event_sequence)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/fubon-events/v1",
+      "fubon_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["fubon_attestation_events", "idx_fubon_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "fubon_attestation_events",
+          `CREATE TABLE IF NOT EXISTS fubon_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_fubon_attestation_events_latest ON fubon_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/hncb-events/v1",
+      "hncb_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["hncb_attestation_events", "idx_hncb_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "hncb_attestation_events",
+          `CREATE TABLE IF NOT EXISTS hncb_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_hncb_attestation_events_latest ON hncb_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/post-events/v1",
+      "post_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["post_attestation_events", "idx_post_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "post_attestation_events",
+          `CREATE TABLE IF NOT EXISTS post_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT NOT NULL CHECK(manifest_status IN ('active','revoked')),
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_post_attestation_events_latest ON post_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/sinopac-events/v1",
+      "sinopac_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["sinopac_attestation_events", "idx_sinopac_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "sinopac_attestation_events",
+          `CREATE TABLE IF NOT EXISTS sinopac_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_sinopac_attestation_events_latest ON sinopac_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/yuanta-credit-card-events/v1",
+      "yuanta_credit_card_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      [
+        "yuanta_credit_card_attestation_events",
+        "idx_yuanta_credit_card_attestation_latest",
+      ],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "yuanta_credit_card_attestation_events",
+          `CREATE TABLE IF NOT EXISTS yuanta_credit_card_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked','restored')),
+            manifest_status TEXT NOT NULL CHECK(manifest_status IN ('active','revoked')),
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            UNIQUE(attestation_id, event_sequence)
+          )`,
+          [],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_yuanta_credit_card_attestation_latest ON yuanta_credit_card_attestation_events(attestation_id, event_sequence)",
+          ],
+        ),
+    ),
+    canonicalAttestationRepair(
+      "canonical/attestation/yuanta-events/v1",
+      "yuanta_attestation_events",
+      [
+        "event_id",
+        "attestation_id",
+        "evidence_version",
+        "event_kind",
+        "manifest_status",
+        "event_at",
+        "reason",
+        "manifest_fingerprint",
+        "event_sequence",
+      ],
+      ["yuanta_attestation_events", "idx_yuanta_attestation_events_latest"],
+      (db) =>
+        ensureCanonicalAttestationTable(
+          db,
+          "yuanta_attestation_events",
+          `CREATE TABLE IF NOT EXISTS yuanta_attestation_events (
+            event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+            attestation_id TEXT NOT NULL,
+            evidence_version TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked')),
+            manifest_status TEXT,
+            event_at TEXT NOT NULL,
+            reason TEXT,
+            manifest_fingerprint TEXT NOT NULL,
+            event_sequence INTEGER,
+            UNIQUE(attestation_id, event_kind, event_at)
+          )`,
+          [
+            { name: "evidence_version", definition: "TEXT" },
+            { name: "manifest_status", definition: "TEXT" },
+            { name: "event_sequence", definition: "INTEGER" },
+          ],
+          [
+            "CREATE INDEX IF NOT EXISTS idx_yuanta_attestation_events_latest ON yuanta_attestation_events(attestation_id, event_sequence, event_at, event_id)",
+          ],
+        ),
+    ),
+  ];
+}
+
+export function createCanonicalSchemaLifecyclePlan(
+  options: CanonicalDatabaseOptions = {},
+): CanonicalSchemaLifecyclePlan {
+  const freshBootstrapMarker = "canonical_fresh_v7_bootstrap";
+  const advanceFreshBootstrap = (db: DatabaseSync, version: number): boolean => {
+    if (!tableExists(db, freshBootstrapMarker)) return false;
+    db.prepare(
+      "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)",
+    ).run(version, currentUtcMicros());
+    db.exec(`PRAGMA user_version = ${version}`);
+    if (version === 7) db.exec(`DROP TABLE ${freshBootstrapMarker}`);
+    return true;
+  };
+  const migrationRegistry = createCanonicalSchemaMigrationRegistry(
+    CANONICAL_SCHEMA_VERSION,
+    [
+    {
+      id: "canonical/fresh-v1-baseline/v1",
+      fromVersion: 0,
+      toVersion: 1,
+      apply(db) {
+        if (tableExists(db, "canonical_commits"))
+          throw new Error(
+            "Unversioned canonical SQLite schema is not compatible; refusing ad-hoc migration.",
+          );
+        // Fresh databases historically bootstrapped the complete v7 physical
+        // shape before applying v8+. Keep that physical bootstrap intact, but
+        // publish it through adjacent registry transitions so every durable
+        // version boundary remains explicit and auditable.
+        db.exec(SCHEMA_V6);
+        ensureV6SharedAssertionSpine(db);
+        rebuildCurrentTransactionFieldsForSharedAssertions(db);
+        convertV6CompatibilityTables(db);
+        ensureV6ProjectionOriginConstraints(db);
+        migrateV6ToV7(db, options.injectMigrationFailure, true);
+        db.exec("DELETE FROM schema_migrations");
+        db.exec(`CREATE TABLE ${freshBootstrapMarker}(fresh INTEGER NOT NULL CHECK(fresh = 1))`);
+        db.prepare(
+          "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (1, ?)",
+        ).run(currentUtcMicros());
+        db.exec("PRAGMA user_version = 1");
+      },
+    },
+    {
+      id: "canonical/v1-v2/v1",
+      fromVersion: 1,
+      toVersion: 2,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 2)) migrateV1ToV2(db);
+      },
+    },
+    {
+      id: "canonical/v2-v3/v1",
+      fromVersion: 2,
+      toVersion: 3,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 3)) migrateV2ToV3(db);
+      },
+    },
+    {
+      id: "canonical/v3-v4/v1",
+      fromVersion: 3,
+      toVersion: 4,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 4)) migrateV3ToV4(db);
+      },
+    },
+    {
+      id: "canonical/v4-v5/v1",
+      fromVersion: 4,
+      toVersion: 5,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 5))
+          migrateV4ToV5(db, options.injectMigrationFailure);
+      },
+    },
+    {
+      id: "canonical/v5-v6/v1",
+      fromVersion: 5,
+      toVersion: 6,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 6))
+          migrateV5ToV6(db, options.injectMigrationFailure);
+      },
+    },
+    {
+      id: "canonical/v6-v7/v1",
+      fromVersion: 6,
+      toVersion: 7,
+      apply(db) {
+        if (!advanceFreshBootstrap(db, 7))
+          migrateV6ToV7(db, options.injectMigrationFailure);
+      },
+    },
+    {
+      id: "canonical/v7-v8/v1",
+      fromVersion: 7,
+      toVersion: 8,
+      apply(db) {
+        // These compatibility objects were part of the historical v7→v8
+        // boundary. They remain in that transition, but now execute inside
+        // the lifecycle's one outer transaction.
+        validateV7SourceRecordScopeCoverage(db);
+        ensureV6CompatibilitySchema(db);
+        ensureV6ProjectionOriginConstraints(db);
+        ensureFinancialAccountCurrencySchema(db);
+        ensureCanonicalFinancialRevisionSchema(db);
+        ensureCanonicalTimeObservationSchema(db);
+        ensureForeignCurrencyConversionSchema(db);
+        ensureV7ProjectionSchema(db);
+        migrateV7ToV8(db, options.injectMigrationFailure, true, true);
+      },
+    },
+    {
+      id: "canonical/v8-v9/v1",
+      fromVersion: 8,
+      toVersion: 9,
+      apply(db) {
+        migrateV8ToV9(db);
+      },
+    },
+    {
+      id: "canonical/v9-v10/v1",
+      fromVersion: 9,
+      toVersion: 10,
+      apply(db) {
+        migrateV9ToV10(db);
+      },
+    },
+    {
+      id: "canonical/v10-v11/v1",
+      fromVersion: 10,
+      toVersion: 11,
+      apply(db) {
+        migrateV10ToV11(db);
+      },
+    },
+    {
+      id: "canonical/v11-v12/v1",
+      fromVersion: 11,
+      toVersion: 12,
+      apply(db) {
+        migrateV11ToV12(db);
+      },
+    },
+    {
+      id: "canonical/v12-v13/v1",
+      fromVersion: 12,
+      toVersion: 13,
+      apply(db) {
+        migrateV12ToV13(db);
+      },
+    },
+    {
+      id: "canonical/v13-v14/v1",
+      fromVersion: 13,
+      toVersion: 14,
+      apply(db) {
+        migrateV13ToV14(db);
+      },
+    },
+    {
+      id: "canonical/v14-v15/v1",
+      fromVersion: 14,
+      toVersion: 15,
+      apply(db) {
+        migrateV14ToV15(db);
+      },
+    },
+    {
+      id: "canonical/v15-v16/v1",
+      fromVersion: 15,
+      toVersion: 16,
+      apply(db) {
+        migrateV15ToV16(db);
+      },
+    },
+    {
+      id: "canonical/v16-v17/v1",
+      fromVersion: 16,
+      toVersion: 17,
+      apply(db) {
+        migrateV16ToV17(db);
+      },
+    },
+    {
+      id: "canonical/v17-v18/v1",
+      fromVersion: 17,
+      toVersion: 18,
+      apply(db) {
+        migrateV17ToV18(db);
+      },
+    },
+    {
+      id: "canonical/v18-v19/v1",
+      fromVersion: 18,
+      toVersion: 19,
+      apply(db) {
+        migrateV18ToV19(db);
+      },
+    },
+    {
+      id: "canonical/v19-v20/v1",
+      fromVersion: 19,
+      toVersion: 20,
+      apply(db) {
+        migrateV19ToV20(db);
+      },
+    },
+    ],
+  );
+  return {
+    currentVersion: CANONICAL_SCHEMA_VERSION,
+    migrations: migrationRegistry,
+    currentVersionMigrations: [
+      {
+        id: "canonical/capture-scope-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "capture_scopes_widened",
+          "capture_scopes",
+          "idx_capture_scopes_account_time",
+          "idx_capture_scopes_scope_capture",
+          "idx_capture_scopes_scope_account",
+          "fubon_credit_role_evidence_scope_guard",
+          "fubon_credit_summary_evidence_scope_guard",
+        ],
+        allowedDataCopyObjects: ["capture_scopes_widened"],
+        applies: (db, context) =>
+          context.fromVersion < CANONICAL_SCHEMA_VERSION ||
+          (relationType(db, "capture_scopes") === "table" &&
+            !isCanonicalCaptureScopeSchema(canonicalCaptureScopeSchemaSql(db))),
+        apply(db) {
+          ensureCanonicalCaptureScopeSchema(db);
+        },
+        validate(db) {
+          validateCanonicalCaptureScopeLifecycleSchema(db);
+        },
+      },
+      {
+        id: "canonical/financial-revision-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "transaction_revisions_widened",
+          "transaction_revisions",
+          "source_assertions",
+          "idx_transaction_revisions_financial_time",
+          "idx_transaction_revisions_knowledge_time",
+          "idx_transaction_revisions_lineage",
+        ],
+        allowedDataCopyObjects: ["transaction_revisions_widened"],
+        applies: (db, context) =>
+          context.fromVersion < CANONICAL_SCHEMA_VERSION ||
+          relationType(db, "transaction_revisions_widened") === "table" ||
+          (relationType(db, "transaction_revisions") === "table" &&
+            !isCanonicalFinancialRevisionSchema(
+              financialRevisionSchemaSql(db, "transaction_revisions"),
+            )),
+        apply(db) {
+          ensureCanonicalFinancialRevisionSchema(db);
+        },
+        validate(db) {
+          validateCanonicalFinancialRevisionLifecycleSchema(db);
+        },
+      },
+      {
+        id: "canonical/time-observation-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "transaction_time_observations_widened",
+          "transaction_time_observations",
+        ],
+        allowedDataCopyObjects: ["transaction_time_observations_widened"],
+        applies: (db, context) =>
+          context.fromVersion < CANONICAL_SCHEMA_VERSION ||
+          (relationType(db, "transaction_time_observations") === "table" &&
+            !isCanonicalTimeObservationSchema(
+              String(
+                (
+                  db
+                    .prepare(
+                      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transaction_time_observations'",
+                    )
+                    .get() as { sql?: unknown } | undefined
+                )?.sql ?? "",
+              ),
+            )),
+        apply(db) {
+          ensureCanonicalTimeObservationSchema(db);
+        },
+        validate(db) {
+          validateCanonicalTimeObservationLifecycleSchema(db);
+        },
+      },
+      {
+        id: "canonical/account-currency-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "financial_accounts_widened",
+          "financial_accounts",
+        ],
+        allowedDataCopyObjects: ["financial_accounts_widened"],
+        applies: (db, context) =>
+          context.fromVersion < CANONICAL_SCHEMA_VERSION ||
+          (relationType(db, "financial_accounts") === "table" &&
+            Number(
+              canonicalTableColumns(db, "financial_accounts").find(
+                (column) => String(column.name ?? "") === "currency",
+              )?.notnull ?? 1,
+            ) !== 0),
+        apply(db) {
+          ensureFinancialAccountCurrencySchema(db);
+        },
+        validate(db) {
+          validateFinancialAccountCurrencyLifecycleSchema(db);
+        },
+      },
+      {
+        id: "canonical/fubon-credit-card-extension-compatibility/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "fubon_credit_instrument_details",
+          "fubon_credit_account_identity_details",
+          "fubon_credit_instrument_role_evidence",
+          "fubon_credit_transaction_details",
+          "fubon_credit_statement_details",
+          "fubon_credit_statement_revision_details",
+          "fubon_credit_statement_membership_details",
+          "fubon_credit_statement_summary_evidence",
+          "fubon_credit_relation_details",
+          "fubon_credit_role_evidence_scope_guard",
+          "fubon_credit_summary_evidence_scope_guard",
+        ],
+        applies: (db) =>
+          hasFubonCreditCardExtension(db) && !hasFubonCreditCardSchema(db),
+        apply(db) {
+          ensureFubonCreditCardSchema(db);
+        },
+        validate(db) {
+          validateFubonCreditCardSchema(db);
+        },
+      },
+    ],
+    repairs: [
+      {
+        id: "canonical/foreign-currency-conversion-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "transaction_conversion_evidence",
+          "idx_transaction_conversion_evidence_transaction",
+          "idx_transaction_conversion_evidence_source_record",
+        ],
+        runOnCurrentVersion: true,
+        precondition: (db) =>
+          relationType(db, "transaction_conversion_evidence") !== "table",
+        apply(db) {
+          ensureForeignCurrencyConversionSchema(db);
+        },
+        validate(db) {
+          validateForeignCurrencyConversionLifecycleSchema(db);
+        },
+      },
+      {
+        id: "canonical/credit-card-extension/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "canonical_credit_card_account_identities",
+          "canonical_credit_card_instruments",
+          "canonical_credit_card_instrument_evidence",
+          "canonical_credit_card_transaction_details",
+          "canonical_credit_card_transaction_lifecycle",
+          "canonical_credit_card_statements",
+          "canonical_credit_card_statement_revisions",
+          "canonical_credit_card_statement_memberships",
+          "canonical_credit_card_statement_summary_evidence",
+          "canonical_credit_card_relations",
+        ],
+        allowOnDemand: true,
+        runOnCurrentVersion: true,
+        precondition: (db, context) =>
+          !hasCanonicalCreditCardSchema(db) &&
+          (context.explicitRequest === true || hasCanonicalCreditCardExtension(db)),
+        apply(db) {
+          ensureCanonicalCreditCardSchema(db);
+        },
+        validate(db) {
+          validateCanonicalCreditCardSchema(db);
+        },
+      },
+      {
+        id: "canonical/fubon-credit-card-extension/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "fubon_credit_instrument_details",
+          "fubon_credit_account_identity_details",
+          "fubon_credit_instrument_role_evidence",
+          "fubon_credit_transaction_details",
+          "fubon_credit_statement_details",
+          "fubon_credit_statement_revision_details",
+          "fubon_credit_statement_membership_details",
+          "fubon_credit_statement_summary_evidence",
+          "fubon_credit_relation_details",
+          "fubon_credit_role_evidence_scope_guard",
+          "fubon_credit_summary_evidence_scope_guard",
+        ],
+        allowedExistingTriggerTargets: [
+          "fubon_credit_instrument_role_evidence",
+          "fubon_credit_statement_summary_evidence",
+        ],
+        allowOnDemand: true,
+        runOnCurrentVersion: true,
+        precondition: (db, context) =>
+          !hasFubonCreditCardSchema(db) &&
+          (context.explicitRequest === true || hasFubonCreditCardExtension(db)),
+        apply(db) {
+          ensureFubonCreditCardSchema(db);
+        },
+        validate(db) {
+          validateFubonCreditCardSchema(db);
+        },
+      },
+      ...canonicalAttestationSchemaRepairs(),
+    ],
+    validateBeforeRepairs(db) {
+      validateCanonicalSchemaMigrationMetadata(db);
+      validateReadOnlyDatabase(db, {
+        allowFinancialRevisionStaging: true,
+        allowFinancialRevisionSchemaRepair: true,
+      });
+      validateV8SourceEvidenceSchema(db);
+      // A crashed financial-revision rebuild may have dropped the source
+      // compatibility view immediately before creating its replacement. The
+      // declared financial-revision repair recreates that view; all other
+      // compatibility relations still have to pass the preflight.
+      if (
+        !(
+          relationType(db, "transaction_revisions_widened") === "table" &&
+          relationType(db, "source_assertions") === null
+        )
+      )
+        validateCanonicalCompatibilityViews(db);
+      // These tables are the non-additive canonical spine. Existing
+      // current-version stores may still need a declared compatibility repair
+      // for the additive conversion/provider extensions below.
+      requireCanonicalTable(db, "financial_accounts", [
+        "account_id",
+        "source_connection_id",
+        "identity_epoch_id",
+        "stream",
+        "account_no",
+        "account_type",
+        "currency",
+        "created_commit_id",
+      ]);
+      requireCanonicalTable(db, "transaction_revisions", [
+        ...CANONICAL_FINANCIAL_REVISION_COLUMNS,
+      ]);
+      requireCanonicalTable(db, "transaction_time_observations", [
+        "observation_id",
+        "transaction_id",
+        "revision_id",
+        "source_record_id",
+        "commit_id",
+        "role",
+        "local_value",
+        "time_zone",
+        "time_precision",
+        "time_origin",
+        "utc_instant_utc_us",
+      ]);
+    },
+    validate(db) {
+      validateCanonicalSchemaMigrationMetadata(db);
+      validateReadOnlyDatabase(db);
+      validateV8SourceEvidenceSchema(db);
+      validateCanonicalCompatibilityViews(db);
+      validateCanonicalCaptureScopeLifecycleSchema(db);
+      validateFinancialAccountCurrencyLifecycleSchema(db);
+      validateCanonicalFinancialRevisionLifecycleSchema(db);
+      validateCanonicalTimeObservationLifecycleSchema(db);
+      validateForeignCurrencyConversionLifecycleSchema(db);
+      if (hasCanonicalCreditCardExtension(db))
+        validateCanonicalCreditCardSchema(db);
+      if (hasFubonCreditCardExtension(db))
+        validateFubonCreditCardSchema(db);
+    },
+  };
+}
+
+function validateReadOnlyDatabase(
+  db: DatabaseSync,
+  options: {
+    allowFinancialRevisionStaging?: boolean;
+    allowFinancialRevisionSchemaRepair?: boolean;
+  } = {},
+): void {
+  if (
+    relationType(db, "transaction_revisions_widened") !== null &&
+    options.allowFinancialRevisionStaging !== true
+  )
     throw new Error(
       "Canonical financial revision widening staging requires writable recovery before read-only access.",
     );
@@ -8517,11 +9528,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   validateCanonicalInvestmentFundingRelationSchema(db);
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
-  validateCanonicalContractPurgeSchema(db, {
-    requireCreditCardPurge: true,
-    requireFubonDepositOccurrencePurge: true,
-    requireYuantaTradeInvestmentPurge: true,
-  });
+  // The lifecycle validates the physical audit schema only. Whether a
+  // versioned financial/source cleanup has been applied is a data-transition
+  // concern checked after a validated handle exists.
+  validateCanonicalContractPurgeSchema(db);
   const requiredTables = [
     "capture_scopes",
     "capture_scope_pages",
@@ -8552,7 +9562,14 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     "projection_generation_transaction_fields",
   ];
   for (const table of requiredTables) {
-    if (!relationType(db, table))
+    if (
+      !relationType(db, table) &&
+      !(
+        options.allowFinancialRevisionStaging === true &&
+        table === "source_assertions" &&
+        relationType(db, "transaction_revisions_widened") === "table"
+      )
+    )
       throw new Error(`Canonical schema v7 table ${table} is missing.`);
   }
   for (const table of [
@@ -8565,7 +9582,15 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     "derived_assertion_provenance",
     "user_assertion_provenance",
   ]) {
-    if (relationType(db, table) !== "view")
+    if (
+      relationType(db, table) !== "view" &&
+      !(
+        options.allowFinancialRevisionStaging === true &&
+        table === "source_assertions" &&
+        relationType(db, "transaction_revisions_widened") === "table" &&
+        relationType(db, "source_assertions") === null
+      )
+    )
       throw new Error(
         `Canonical schema v7 compatibility relation ${table} is not a read-only view.`,
       );
@@ -8788,6 +9813,12 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     ],
   };
   for (const [table, columns] of Object.entries(requiredColumns)) {
+    const stagingSourceAssertionsGap =
+      options.allowFinancialRevisionStaging === true &&
+      table === "source_assertions" &&
+      relationType(db, "transaction_revisions_widened") === "table" &&
+      relationType(db, "source_assertions") === null;
+    if (stagingSourceAssertionsGap) continue;
     const actual = new Set(
       (
         db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
@@ -8907,6 +9938,12 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
   };
   for (const [view, authority] of Object.entries(compatibilityAuthority)) {
     if (view === "source_assertions") {
+      if (
+        options.allowFinancialRevisionStaging === true &&
+        relationType(db, "transaction_revisions_widened") === "table" &&
+        relationType(db, "source_assertions") === null
+      )
+        continue;
       if (!sourceAssertionsViewMatchesContract(db))
         throw new Error(
           "Canonical schema v7 Source compatibility view does not preserve source origin and provenance semantics.",
@@ -8952,7 +9989,10 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     (db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown })
       .journal_mode ?? "",
   ).toLowerCase();
-  if (journalMode !== "wal")
+  // SQLite's `:memory:` databases cannot use WAL and report the connection
+  // local `memory` journal instead.  They are supported as isolated test
+  // adapters; persisted canonical databases must still use WAL.
+  if (journalMode !== "wal" && journalMode !== "memory")
     throw new Error(
       "Canonical SQLite WAL journal is not available for read-only access.",
     );
@@ -8963,7 +10003,13 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
       }
     ).integrity_check ?? "",
   );
-  if (integrity !== "ok")
+  const knownFinancialRevisionSchemaRepair =
+    options.allowFinancialRevisionSchemaRepair === true &&
+    relationType(db, "transaction_revisions") === "table" &&
+    !isCanonicalFinancialRevisionSchema(
+      financialRevisionSchemaSql(db, "transaction_revisions"),
+    );
+  if (integrity !== "ok" && !knownFinancialRevisionSchemaRepair)
     throw new Error(`Canonical SQLite integrity check failed: ${integrity}`);
   const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
   if (foreignKeys.length > 0)
@@ -9077,52 +10123,91 @@ function validateReadOnlyDatabase(db: DatabaseSync): void {
     );
 }
 
+/**
+ * Apply the published source-contract cleanups as canonical data work, after
+ * the physical schema lifecycle has returned a validated capability.
+ *
+ * These transitions intentionally remain idempotent and atomic, but they are
+ * no longer migration callbacks: deleting source/financial rows is a domain
+ * operation and therefore must not be authorized by the schema lifecycle.
+ */
+const REQUIRED_CANONICAL_CONTRACT_PURGES = Object.freeze([
+  { id: SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID, apply: purgeLegacySourceConnectionIdentityScopes },
+  { id: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID, apply: purgeLegacyCreditCardSourceScopes },
+  { id: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID, apply: purgeFubonDepositOccurrenceV1Scope },
+  { id: YUANTA_TRADE_INVESTMENT_V2_PURGE_ID, apply: purgeYuantaTradeInvestmentV2Scope },
+  { id: YUANTA_TRADE_INVESTMENT_V3_PURGE_ID, apply: purgeYuantaTradeInvestmentV3Scope },
+]);
+
+const REQUIRED_CANONICAL_CONTRACT_PURGE_VALIDATION = Object.freeze({
+  requireSourceConnectionIdentityPurge: true,
+  requireCreditCardPurge: true,
+  requireFubonDepositOccurrencePurge: true,
+  requireYuantaTradeInvestmentPurge: true,
+  requireYuantaTradeInvestmentV3Purge: true,
+});
+
+function validateRequiredCanonicalContractPurges(db: DatabaseSync): void {
+  for (const transition of REQUIRED_CANONICAL_CONTRACT_PURGES)
+    if (
+      !db
+        .prepare("SELECT 1 FROM canonical_contract_purges WHERE purge_id = ?")
+        .get(transition.id)
+    )
+      throw new Error(
+        `Canonical Contract Purge audit is missing: ${transition.id}.`,
+      );
+  validateCanonicalContractPurgeSchema(
+    db,
+    REQUIRED_CANONICAL_CONTRACT_PURGE_VALIDATION,
+  );
+}
+
+function applyCanonicalContractDataTransitions(
+  db: DatabaseSync,
+  _openedFromVersion: number,
+): void {
+  assertValidatedCanonicalDatabase(db);
+  // Completion is evidenced by the durable purge audit, not by the schema
+  // version observed during this particular open. A process may crash after
+  // the schema commit but before this data transaction commits; every reopen
+  // therefore retries any audit that is still absent.
+  for (const transition of REQUIRED_CANONICAL_CONTRACT_PURGES)
+    transition.apply(db);
+  reconcileProjectionCutoffsAfterContractDataTransition(db);
+  validateRequiredCanonicalContractPurges(db);
+}
+
 export function openCanonicalDatabase(
   ledgerDir: string,
   options: CanonicalDatabaseOptions = {},
 ): DatabaseSync {
   const path = canonicalSqlitePath(ledgerDir);
-  if (options.readOnly && !existsSync(path))
-    throw new Error(`Missing canonical SQLite: ${path}`);
-  if (!options.readOnly) mkdirSync(ledgerDir, { recursive: true });
-  const db = new DatabaseSync(path, options.readOnly ? { readOnly: true } : {});
-  try {
-    configureCanonicalRuntime(db, {
+  const validated = CanonicalSchemaLifecycle.open(
+    path,
+    createCanonicalSchemaLifecyclePlan(options),
+    {
       readOnly: options.readOnly,
       busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000,
-    });
-    if (!options.readOnly) {
-      applySchemaMigration(db, options);
-      // Fresh v0 databases reach v9 through the historical migration path,
-      // which predates the additive foreign-currency precision/rule allowlist.
-      // Apply the same widening pass used by existing v8 ledgers before any
-      // foreign capture can be admitted.
-      ensureCanonicalFinancialRevisionSchema(db);
-      ensureCanonicalTimeObservationSchema(db);
-      ensureFinancialAccountCurrencySchema(db);
-      // The conversion-evidence relation is additive and intentionally does
-      // not bump the canonical schema version; old domestic ledgers remain
-      // readable while newly admitted foreign captures get durable evidence.
-      ensureForeignCurrencyConversionSchema(db);
-      configureCanonicalRuntime(db, {
-        busyTimeoutMs: options.runtime?.busyTimeoutMs ?? 30_000,
-      });
-      verifyCanonicalRuntime(db);
-      validateCanonicalCompatibilityViews(db);
+      maxAttempts: options.runtime?.maxAttempts,
+      initialBackoffMs: options.runtime?.initialBackoffMs,
+      maxBackoffMs: options.runtime?.maxBackoffMs,
+    },
+  );
+  try {
+    if (options.readOnly) {
+      validateRequiredCanonicalContractPurges(validated.db);
     } else {
-      const row = db.prepare("PRAGMA user_version").get() as {
-        user_version?: number;
-      };
-      if (Number(row.user_version ?? 0) !== CANONICAL_SCHEMA_VERSION)
-        throw new Error(
-          "Canonical SQLite schema is missing or unsupported for read-only access.",
-        );
-      validateReadOnlyDatabase(db);
-      verifyCanonicalRuntime(db, { readOnly: true });
+      validated.runDataTransition((db) =>
+        applyCanonicalContractDataTransitions(
+          db,
+          validated.openedFromVersion,
+        ),
+      );
     }
-    return db;
+    return validated.db;
   } catch (error) {
-    db.close();
+    validated.close();
     throw error;
   }
 }
@@ -10786,6 +11871,7 @@ export function syncCanonicalProjectionFromCompatibility(
   db: DatabaseSync,
   projectionCommitId: Uint8Array,
 ): void {
+  assertValidatedCanonicalDatabase(db);
   syncActiveProjectionFromCompatibility(db, blob(projectionCommitId));
 }
 
@@ -12084,6 +13170,10 @@ export const CANONICAL_SOURCE_SCHEMA_VERSION = CANONICAL_SCHEMA_VERSION;
 const CANONICAL_SOURCE_RUNTIME_BRAND = Symbol(
   "canonical-source-runtime-validated-v8",
 );
+const CANONICAL_SOURCE_STORE_BRAND = Symbol(
+  "canonical-source-store-lifecycle-validated-v1",
+);
+const CANONICAL_SOURCE_STORE_OBJECTS = new WeakSet<object>();
 const OPAQUE_SOURCE_TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
 const SOURCE_DATE = /^\d{8}$/;
 const FORBIDDEN_SOURCE_KEY =
@@ -12131,11 +13221,50 @@ export type CanonicalValidatedSourceEvidence = CanonicalSourceEvidence & {
   readonly __runtimeValidatedSourceEvidence: "canonical-source-v8";
 };
 export type CanonicalSourceStore = {
+  readonly [CANONICAL_SOURCE_STORE_BRAND]: true;
   readonly db: DatabaseSync;
   readonly databasePath: string;
   readonly commitClock: () => number;
   close(): void;
 };
+
+function requireValidatedCanonicalSourceStore(
+  value: unknown,
+): asserts value is CanonicalSourceStore {
+  if (
+    (typeof value !== "object" || value === null) ||
+    !(value as Partial<CanonicalSourceStore>)[CANONICAL_SOURCE_STORE_BRAND] ||
+    !CANONICAL_SOURCE_STORE_OBJECTS.has(value) ||
+    !isValidatedCanonicalDatabase((value as Partial<CanonicalSourceStore>).db)
+  )
+    throw new Error(
+      "Canonical source store must be lifecycle-created and validated.",
+    );
+}
+
+/**
+ * Runtime gate shared by canonical writers that accept a source-store-shaped
+ * value.  The public type alone is intentionally not sufficient: a caller
+ * can manufacture an object with the same enumerable fields, but cannot add
+ * the private WeakSet membership assigned by createCanonicalSourceStore.
+ */
+export function isValidatedCanonicalSourceStore(
+  value: unknown,
+): value is CanonicalSourceStore {
+  try {
+    requireValidatedCanonicalSourceStore(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Assert the production source-store seam before a canonical writer starts. */
+export function assertValidatedCanonicalSourceStore(
+  value: unknown,
+): asserts value is CanonicalSourceStore {
+  requireValidatedCanonicalSourceStore(value);
+}
 export type CanonicalSourceIdentityFence = {
   integrationNamespace: string;
   sourceConnectionKey: string;
@@ -12355,30 +13484,21 @@ export function admitCanonicalSourceEvidence(
 }
 
 function openCanonicalDatabasePath(path: string): DatabaseSync {
-  const db = new DatabaseSync(path);
+  const validated = CanonicalSchemaLifecycle.open(
+    path,
+    createCanonicalSchemaLifecyclePlan(),
+    { busyTimeoutMs: 30_000 },
+  );
   try {
-    configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
-    applySchemaMigration(db);
-    ensureCanonicalFinancialRevisionSchema(db);
-    ensureCanonicalTimeObservationSchema(db);
-    ensureFinancialAccountCurrencySchema(db);
-    ensureForeignCurrencyConversionSchema(db);
-    configureCanonicalRuntime(db, { busyTimeoutMs: 30_000 });
-    if (path !== ":memory:") verifyCanonicalRuntime(db);
-    validateV8SourceEvidenceSchema(db);
-    validateCanonicalCompatibilityViews(db);
-    validateCanonicalLoanExtensionSchema(db);
-    validateCanonicalInvestmentExtensionSchema(db);
-    validateCanonicalLoanRepaymentRelationSchema(db);
-    validateCanonicalRelationResolutionCommitSchema(db);
-    validateCanonicalContractPurgeSchema(db, {
-      requireCreditCardPurge: true,
-      requireFubonDepositOccurrencePurge: true,
-      requireYuantaTradeInvestmentPurge: true,
-    });
-    return db;
+    validated.runDataTransition((db) =>
+      applyCanonicalContractDataTransitions(
+        db,
+        validated.openedFromVersion,
+      ),
+    );
+    return validated.db;
   } catch (error) {
-    db.close();
+    validated.close();
     throw error;
   }
 }
@@ -12392,21 +13512,30 @@ export function createCanonicalSourceStore(
   const db = openCanonicalDatabasePath(path);
   const commitClock = options.commitClock ?? currentUtcMicros;
   let closed = false;
-  return {
+  const store: CanonicalSourceStore = {
+    [CANONICAL_SOURCE_STORE_BRAND]: true,
     db,
     databasePath: path,
     commitClock,
     close() {
       if (!closed) {
-        db.close();
-        closed = true;
+        try {
+          db.close();
+        } finally {
+          closed = true;
+          CANONICAL_SOURCE_STORE_OBJECTS.delete(store);
+        }
       }
     },
   };
+  Object.freeze(store);
+  CANONICAL_SOURCE_STORE_OBJECTS.add(store);
+  return store;
 }
 export function validateCanonicalSourceStore(
   store: CanonicalSourceStore,
 ): void {
+  requireValidatedCanonicalSourceStore(store);
   const version = Number(
     (store.db.prepare("PRAGMA user_version").get() as { user_version?: number })
       .user_version ?? 0,
@@ -12419,11 +13548,7 @@ export function validateCanonicalSourceStore(
   validateCanonicalInvestmentExtensionSchema(store.db);
   validateCanonicalLoanRepaymentRelationSchema(store.db);
   validateCanonicalRelationResolutionCommitSchema(store.db);
-  validateCanonicalContractPurgeSchema(store.db, {
-    requireCreditCardPurge: true,
-    requireFubonDepositOccurrencePurge: true,
-    requireYuantaTradeInvestmentPurge: true,
-  });
+  validateRequiredCanonicalContractPurges(store.db);
   const integrity = String(
     (
       store.db.prepare("PRAGMA integrity_check").get() as {
@@ -12791,6 +13916,7 @@ export function commitCanonicalSourceEvidence(
   store: CanonicalSourceStore,
   evidence: CanonicalValidatedSourceEvidence,
 ): Promise<CanonicalSourceCommitResult> {
+  requireValidatedCanonicalSourceStore(store);
   return withCanonicalWriterQueue(store.databasePath, () =>
     commitCanonicalSourceEvidenceOnce(store, evidence),
   );
@@ -12803,6 +13929,7 @@ export function commitCanonicalSourceEvidenceBatch(
   store: CanonicalSourceStore,
   evidences: readonly CanonicalValidatedSourceEvidence[],
 ): Promise<CanonicalSourceCommitResult[]> {
+  requireValidatedCanonicalSourceStore(store);
   if (evidences.length === 0)
     throw new Error("Canonical source evidence batch cannot be empty.");
   return withCanonicalWriterQueue(store.databasePath, () => {
@@ -12946,6 +14073,7 @@ function canonicalSourceQueryBase(
 export function queryCanonicalSourceCurrent(
   store: CanonicalSourceStore,
 ): CanonicalSourceCurrentQuery {
+  requireValidatedCanonicalSourceStore(store);
   return withCanonicalSnapshot(store.db, () => ({
     kind: "current",
     ...canonicalSourceQueryBase(store),
@@ -12955,6 +14083,7 @@ export function queryCanonicalSourceHistorical(
   store: CanonicalSourceStore,
   request: { knowledgeAt?: number; effectiveAt?: string } = {},
 ): CanonicalSourceHistoricalQuery {
+  requireValidatedCanonicalSourceStore(store);
   if (request.effectiveAt !== undefined)
     throw new Error("Financial/effective-time source query is unsupported.");
   return withCanonicalSnapshot(store.db, () => {
@@ -12986,6 +14115,7 @@ export function queryCanonicalSourceLineage(
   store: CanonicalSourceStore,
   request: CanonicalSourceLineageRequest,
 ): CanonicalSourceLineageQuery {
+  requireValidatedCanonicalSourceStore(store);
   const lineage: CanonicalSourceLineageRequest = {
     integrationNamespace: requireSourceText(
       request.integrationNamespace,
