@@ -5008,7 +5008,10 @@ function rejectStrayProjectionGenerations(db: DatabaseSync): void {
  * This is intentionally a row-level gate: SQLite FKs can prove that a pointer
  * names a row, but cannot prove that the row is the sole active generation or
  * that all knowledge-state commits agree. */
-function validateActiveProjectionBoundary(db: DatabaseSync): number {
+function validateActiveProjectionBoundary(
+  db: DatabaseSync,
+  options: { allowKnownRetiredFubonV18BridgeGap?: boolean } = {},
+): number {
   const commitCount = Number(
     (
       db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as {
@@ -5023,7 +5026,13 @@ function validateActiveProjectionBoundary(db: DatabaseSync): number {
   const projectionRelevantCommits = projectionRelevantCommitCount(db);
   const unexpectedFinancialRows = nonEmptyFinancialProjectionTables(db);
   if (projectionRelevantCommits === 0) {
-    if (sourceOnlyCommitCount(db) !== commitCount)
+    if (
+      sourceOnlyCommitCount(db) !== commitCount &&
+      !(
+        options.allowKnownRetiredFubonV18BridgeGap === true &&
+        isExactRetiredFubonV18BridgeState(db)
+      )
+    )
       throw new Error(
         "Canonical source-only store contains a commit without durable source provenance evidence.",
       );
@@ -6986,6 +6995,238 @@ const YUANTA_TRADE_INVESTMENT_V3_PURGE_ID =
   "yuanta-trade-investment/source-occurrence-content-v3:v19";
 const YUANTA_TRADE_INVESTMENT_V3_PURGE_NAMESPACES = ["yuanta-trade"] as const;
 const YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS = ["investment"] as const;
+
+const RETIRED_FUBON_V18_COMMIT_FINGERPRINT =
+  "sha256:xtfHsf19a3fRiBwnnMBExh__84CGy_uB-YYg6JIpOO8";
+const RETIRED_FUBON_V18_IDENTITY_FINGERPRINT =
+  "sha256:3DV_wKjstIx_mccTUv_98FtfrIO4FofujO5wsdK8x8g";
+
+/** Pure policy seam: it accepts observations, never a replacement expected
+ * fingerprint, so callers and tests cannot widen the production allowlist. */
+export function isKnownRetiredFubonV18Fingerprint(
+  commitFingerprint: string,
+  identityFingerprint: string,
+): boolean {
+  return (
+    commitFingerprint === RETIRED_FUBON_V18_COMMIT_FINGERPRINT &&
+    identityFingerprint === RETIRED_FUBON_V18_IDENTITY_FINGERPRINT
+  );
+}
+
+export function isRetiredFubonV18RecoveryEligible(options: {
+  schemaVersion: number;
+  readOnly: boolean;
+  exactKnownState: boolean;
+}): boolean {
+  return (
+    options.schemaVersion === CANONICAL_SCHEMA_VERSION &&
+    options.readOnly === false &&
+    options.exactKnownState
+  );
+}
+
+function retiredFubonV18CommitFingerprint(db: DatabaseSync): string {
+  const fingerprint = createHash("sha256");
+  const rows = db
+    .prepare(
+      `SELECT commit_id, commit_sequence, recorded_at_utc_us,
+              authority_route, commit_kind
+         FROM canonical_commits ORDER BY commit_sequence`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    fingerprint.update(blob(row.commit_id));
+    fingerprint.update(
+      `\u0000${Number(row.commit_sequence)}\u0000${Number(row.recorded_at_utc_us)}\u0000${String(row.authority_route)}\u0000${String(row.commit_kind)}\n`,
+    );
+  }
+  return `sha256:${fingerprint.digest("base64url")}`;
+}
+
+function retiredFubonV18IdentityFingerprint(db: DatabaseSync): string {
+  const fingerprint = createHash("sha256");
+  for (const table of [
+    "source_connections",
+    "identity_epochs",
+    "source_authority_routes",
+  ]) {
+    fingerprint.update(`${table}\n`);
+    const rows = db.prepare(`SELECT * FROM ${table}`).all() as Array<
+      Record<string, unknown>
+    >;
+    for (const row of rows)
+      for (const key of Object.keys(row).sort()) {
+        fingerprint.update(`${key}\u0000`);
+        const value = row[key];
+        fingerprint.update(
+          value instanceof Uint8Array ? Buffer.from(value) : String(value),
+        );
+        fingerprint.update("\n");
+      }
+  }
+  return `sha256:${fingerprint.digest("base64url")}`;
+}
+
+/**
+ * One released v11 purge deleted 552 Fubon captures but retained no
+ * commit-to-purge bridge rows for commit sequences 2..552. Later v14 cleanup
+ * correctly retained sequences 1, 553, and 554. The commits are immutable
+ * audit roots, so the only admissible recovery is to restore the omitted v11
+ * bridge rows. Never reconstruct source evidence or financial facts.
+ */
+function isExactRetiredFubonV18BridgeState(db: DatabaseSync): boolean {
+  const commitCount = Number(
+    (db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as {
+      count?: number;
+    }).count ?? 0,
+  );
+  const bridgeCount = Number(
+    (
+      db
+        .prepare("SELECT COUNT(*) AS count FROM canonical_contract_purge_commits")
+        .get() as { count?: number }
+    ).count ?? 0,
+  );
+  if (commitCount !== 554 || bridgeCount !== 3) return false;
+
+  const scalarCount = (sql: string, ...values: string[]): number =>
+    Number(
+      (db.prepare(sql).get(...values) as { count?: number } | undefined)?.count ??
+        0,
+    );
+  const v14BridgeSequences = (
+    db
+      .prepare(
+        `SELECT commit_row.commit_sequence AS sequence
+           FROM canonical_contract_purge_commits bridge
+           JOIN canonical_commits commit_row
+             ON commit_row.commit_id = bridge.commit_id
+          WHERE bridge.purge_id = ?
+          ORDER BY commit_row.commit_sequence`,
+      )
+      .all(FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID) as Array<{ sequence?: number }>
+  ).map(({ sequence }) => Number(sequence));
+  const otherBridgeCount = scalarCount(
+    "SELECT COUNT(*) AS count FROM canonical_contract_purge_commits WHERE purge_id <> ?",
+    FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID,
+  );
+  const audits = db
+    .prepare(
+      `SELECT purge_id, schema_version, deleted_row_count,
+              deleted_table_counts_json, scope_json, closure_fingerprint
+         FROM canonical_contract_purges
+        ORDER BY schema_version, purge_id`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const expectedAudits = [
+    {
+      purge_id: SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID,
+      schema_version: 11,
+      deleted_row_count: 2738,
+      deleted_table_counts_json:
+        '{"capture_scope_pages":552,"capture_scopes":552,"source_captures":552,"source_record_provenance":360,"source_record_scopes":360,"source_records":360,"source_subjects":2}',
+      scope_json:
+        '{"integrationNamespaces":["fubon","yuanta"],"streams":["domestic-deposit","loan","credit-card"]}',
+      closure_fingerprint:
+        "sha256:SvIOUIbQfNeK3aiCShS7Ud0-VircMq3_DqqN_stPLv4",
+    },
+    {
+      purge_id: CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID,
+      schema_version: 12,
+      deleted_row_count: 0,
+      deleted_table_counts_json: "{}",
+      scope_json:
+        '{"integrationNamespaces":["fubon","yuanta"],"streams":["credit-card"]}',
+      closure_fingerprint:
+        "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+    },
+    {
+      purge_id: FUBON_DEPOSIT_OCCURRENCE_V1_PURGE_ID,
+      schema_version: 14,
+      deleted_row_count: 12,
+      deleted_table_counts_json:
+        '{"capture_scope_pages":2,"capture_scopes":2,"source_captures":2,"source_record_provenance":1,"source_record_scopes":1,"source_records":1,"source_route_bindings":1,"source_subjects":2}',
+      scope_json:
+        '{"integrationNamespaces":["fubon"],"streams":["domestic-deposit"]}',
+      closure_fingerprint:
+        "sha256:XjDlPT6fZDphLkGjSZ4cp2yDBRSDrn2zxR0ak4ouHmo",
+    },
+    {
+      purge_id: YUANTA_TRADE_INVESTMENT_V2_PURGE_ID,
+      schema_version: 17,
+      deleted_row_count: 0,
+      deleted_table_counts_json: "{}",
+      scope_json:
+        '{"integrationNamespaces":["yuanta-trade"],"streams":["investment"]}',
+      closure_fingerprint:
+        "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+    },
+  ];
+  const nonEmptyTables = (
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .all() as Array<{ name?: string }>
+  ).filter(({ name }) =>
+    name
+      ? scalarCount(`SELECT COUNT(*) AS count FROM ${quotedSqlIdentifier(name)}`) >
+        0
+      : false,
+  );
+  const allowedNonEmptyTables = new Set([
+    "canonical_commits",
+    "canonical_contract_purge_commits",
+    "canonical_contract_purges",
+    "identity_epochs",
+    "schema_migrations",
+    "source_authority_routes",
+    "source_connections",
+  ]);
+  return (
+    isKnownRetiredFubonV18Fingerprint(
+      retiredFubonV18CommitFingerprint(db),
+      retiredFubonV18IdentityFingerprint(db),
+    ) &&
+    JSON.stringify(v14BridgeSequences) === JSON.stringify([1, 553, 554]) &&
+    otherBridgeCount === 0 &&
+    JSON.stringify(audits) === JSON.stringify(expectedAudits) &&
+    nonEmptyTables.every(({ name }) =>
+      name ? allowedNonEmptyTables.has(name) : false,
+    )
+  );
+}
+
+function retiredFubonV18RecoveryEligible(
+  db: DatabaseSync,
+  readOnly: boolean,
+): boolean {
+  return isRetiredFubonV18RecoveryEligible({
+    schemaVersion: Number(
+      (db.prepare("PRAGMA user_version").get() as { user_version?: number })
+        .user_version,
+    ),
+    readOnly,
+    exactKnownState: isExactRetiredFubonV18BridgeState(db),
+  });
+}
+
+function bridgeRetiredFubonV18SourceCommits(db: DatabaseSync): void {
+  if (!isExactRetiredFubonV18BridgeState(db)) return;
+
+  const result = db
+    .prepare(
+      `INSERT INTO canonical_contract_purge_commits(purge_id, commit_id)
+       SELECT ?, commit_id FROM canonical_commits
+        WHERE commit_sequence BETWEEN 2 AND 552
+        ORDER BY commit_sequence`,
+    )
+    .run(SOURCE_CONNECTION_IDENTITY_V1_PURGE_ID);
+  if (Number(result.changes) !== 551)
+    throw new Error(
+      "Canonical v18 retired Fubon source-commit audit bridge count is invalid.",
+    );
+}
 
 function validateCanonicalContractPurgeSchema(
   db: DatabaseSync,
@@ -9460,6 +9701,10 @@ export function createCanonicalSchemaLifecyclePlan(
       validateReadOnlyDatabase(db, {
         allowFinancialRevisionStaging: true,
         allowFinancialRevisionSchemaRepair: true,
+        allowKnownRetiredFubonV18BridgeGap: retiredFubonV18RecoveryEligible(
+          db,
+          options.readOnly === true,
+        ),
       });
       validateV8SourceEvidenceSchema(db);
       // A crashed financial-revision rebuild may have dropped the source
@@ -9504,19 +9749,17 @@ export function createCanonicalSchemaLifecyclePlan(
       ]);
     },
     validate(db) {
-      validateCanonicalSchemaMigrationMetadata(db);
-      validateReadOnlyDatabase(db);
-      validateV8SourceEvidenceSchema(db);
-      validateCanonicalCompatibilityViews(db);
-      validateCanonicalCaptureScopeLifecycleSchema(db);
-      validateFinancialAccountCurrencyLifecycleSchema(db);
-      validateCanonicalFinancialRevisionLifecycleSchema(db);
-      validateCanonicalTimeObservationLifecycleSchema(db);
-      validateForeignCurrencyConversionLifecycleSchema(db);
-      if (hasCanonicalCreditCardExtension(db))
-        validateCanonicalCreditCardSchema(db);
-      if (hasFubonCreditCardExtension(db))
-        validateFubonCreditCardSchema(db);
+      validateCanonicalDatabaseAfterLifecycle(db, {
+        // A process may stop after the schema transaction reaches v20 but
+        // before the independent domain transition restores the audit bridge.
+        // Re-evaluate the complete immutable fingerprint on every writable
+        // open so that exact pending state remains retryable; read-only and
+        // every near-match continue to fail closed.
+        allowKnownRetiredFubonV18BridgeGap: retiredFubonV18RecoveryEligible(
+          db,
+          options.readOnly === true,
+        ),
+      });
     },
   };
 }
@@ -9526,6 +9769,7 @@ function validateReadOnlyDatabase(
   options: {
     allowFinancialRevisionStaging?: boolean;
     allowFinancialRevisionSchemaRepair?: boolean;
+    allowKnownRetiredFubonV18BridgeGap?: boolean;
   } = {},
 ): void {
   if (
@@ -10075,7 +10319,10 @@ function validateReadOnlyDatabase(
   if (projectionRows !== currentCount)
     throw new Error("Canonical current projection authority is inconsistent.");
   rejectStrayProjectionGenerations(db);
-  const validatedActiveGenerationId = validateActiveProjectionBoundary(db);
+  const validatedActiveGenerationId = validateActiveProjectionBoundary(db, {
+    allowKnownRetiredFubonV18BridgeGap:
+      options.allowKnownRetiredFubonV18BridgeGap,
+  });
   if (validatedActiveGenerationId === 0) return;
   const activePointer = db
     .prepare(
@@ -10175,6 +10422,24 @@ function validateRequiredCanonicalContractPurges(db: DatabaseSync): void {
   );
 }
 
+function validateCanonicalDatabaseAfterLifecycle(
+  db: DatabaseSync,
+  options: { allowKnownRetiredFubonV18BridgeGap?: boolean } = {},
+): void {
+  validateCanonicalSchemaMigrationMetadata(db);
+  validateReadOnlyDatabase(db, options);
+  validateV8SourceEvidenceSchema(db);
+  validateCanonicalCompatibilityViews(db);
+  validateCanonicalCaptureScopeLifecycleSchema(db);
+  validateFinancialAccountCurrencyLifecycleSchema(db);
+  validateCanonicalFinancialRevisionLifecycleSchema(db);
+  validateCanonicalTimeObservationLifecycleSchema(db);
+  validateForeignCurrencyConversionLifecycleSchema(db);
+  if (hasCanonicalCreditCardExtension(db))
+    validateCanonicalCreditCardSchema(db);
+  if (hasFubonCreditCardExtension(db)) validateFubonCreditCardSchema(db);
+}
+
 function applyCanonicalContractDataTransitions(
   db: DatabaseSync,
   _openedFromVersion: number,
@@ -10184,10 +10449,12 @@ function applyCanonicalContractDataTransitions(
   // version observed during this particular open. A process may crash after
   // the schema commit but before this data transaction commits; every reopen
   // therefore retries any audit that is still absent.
+  bridgeRetiredFubonV18SourceCommits(db);
   for (const transition of REQUIRED_CANONICAL_CONTRACT_PURGES)
     transition.apply(db);
   reconcileProjectionCutoffsAfterContractDataTransition(db);
   validateRequiredCanonicalContractPurges(db);
+  validateCanonicalDatabaseAfterLifecycle(db);
 }
 
 export function openCanonicalDatabase(

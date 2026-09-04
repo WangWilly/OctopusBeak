@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -19,6 +19,8 @@ import {
   createCanonicalSourceStore,
   createCathayCanonicalFinancialQuery,
   createCanonicalSchemaLifecyclePlan,
+  isKnownRetiredFubonV18Fingerprint,
+  isRetiredFubonV18RecoveryEligible,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
@@ -32,6 +34,7 @@ import {
   type CanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
 import { ensureCanonicalCreditCardSchema } from "./canonical-credit-card-persistence.ts";
+import { CanonicalSchemaLifecycle } from "./canonical-schema-lifecycle.ts";
 import { ensureFubonCreditCardSchema } from "./fubon-credit-card.ts";
 import {
   LOAN_CONTRACT_FIXTURES,
@@ -63,6 +66,125 @@ import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
 } from "./yuanta-credit-card-human-attestation.ts";
+
+function markSyntheticFixtureAsSchemaV20(path: string): void {
+  const db = new DatabaseSync(path);
+  db.exec(`
+    INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us)
+      VALUES (19, 19), (20, 20);
+    PRAGMA user_version = 20;
+  `);
+  db.close();
+}
+
+async function seedRetiredFubonV18BridgeFixture(
+  mutate?: (db: DatabaseSync) => void,
+): Promise<{ directory: string; path: string }> {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-retired-fubon-v18-"));
+  const path = join(directory, "canonical.sqlite");
+  const current = createCanonicalSourceStore(path);
+  current.close();
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM source_authority_routes;
+      DELETE FROM identity_epochs;
+      DELETE FROM source_connections;
+      DELETE FROM canonical_commits;
+    `);
+    const commitId = (sequence: number): Buffer => {
+      const id = Buffer.alloc(16);
+      id.writeUInt32BE(sequence, 12);
+      return id;
+    };
+    const insertCommit = db.prepare(
+      `INSERT INTO canonical_commits(
+         commit_id, commit_sequence, recorded_at_utc_us,
+         authority_route, commit_kind
+       ) VALUES (?, ?, ?, 'fubon/domestic-deposit/capture-evidence-v2', 'source_capture')`,
+    );
+    for (let sequence = 1; sequence <= 554; sequence += 1)
+      insertCommit.run(commitId(sequence), sequence, sequence);
+    const connectionId = Buffer.alloc(16, 0xa1);
+    const epochId = Buffer.alloc(16, 0xb2);
+    db.prepare(
+      `INSERT INTO source_connections(
+         source_connection_id, integration_namespace, source_connection_key,
+         created_commit_id
+       ) VALUES (?, 'fubon', 'sha256:test-connection', ?)`,
+    ).run(connectionId, commitId(1));
+    db.prepare(
+      `INSERT INTO identity_epochs(
+         identity_epoch_id, source_connection_id, epoch_key, created_commit_id
+       ) VALUES (?, ?, 'sha256:test-epoch', ?)`,
+    ).run(epochId, connectionId, commitId(1));
+    db.prepare(
+      `INSERT INTO source_authority_routes(
+         authority_route, integration_namespace, stream, contract_version,
+         created_commit_id
+       ) VALUES (
+         'fubon/domestic-deposit/capture-evidence-v2', 'fubon',
+         'domestic-deposit', 'capture-evidence-v2', ?
+       )`,
+    ).run(commitId(1));
+    const insertAudit = db.prepare(
+      `INSERT INTO canonical_contract_purges(
+         purge_id, schema_version, reason, scope_json, deleted_row_count,
+         deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+       ) VALUES (?, ?, 'legacy fixture', ?, ?, ?, ?, 1)`,
+    );
+    insertAudit.run(
+      "source-connection-identity/v1:fubon-yuanta:v11",
+      11,
+      '{"integrationNamespaces":["fubon","yuanta"],"streams":["domestic-deposit","loan","credit-card"]}',
+      2738,
+      '{"capture_scope_pages":552,"capture_scopes":552,"source_captures":552,"source_record_provenance":360,"source_record_scopes":360,"source_records":360,"source_subjects":2}',
+      "sha256:SvIOUIbQfNeK3aiCShS7Ud0-VircMq3_DqqN_stPLv4",
+    );
+    insertAudit.run(
+      "credit-card-source-connection/v1:fubon-yuanta:v12",
+      12,
+      '{"integrationNamespaces":["fubon","yuanta"],"streams":["credit-card"]}',
+      0,
+      "{}",
+      "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+    );
+    insertAudit.run(
+      "fubon-domestic-deposit/observed-composite-v1:v14",
+      14,
+      '{"integrationNamespaces":["fubon"],"streams":["domestic-deposit"]}',
+      12,
+      '{"capture_scope_pages":2,"capture_scopes":2,"source_captures":2,"source_record_provenance":1,"source_record_scopes":1,"source_records":1,"source_route_bindings":1,"source_subjects":2}',
+      "sha256:XjDlPT6fZDphLkGjSZ4cp2yDBRSDrn2zxR0ak4ouHmo",
+    );
+    insertAudit.run(
+      "yuanta-trade-investment/market-evidence-v2:v17",
+      17,
+      '{"integrationNamespaces":["yuanta-trade"],"streams":["investment"]}',
+      0,
+      "{}",
+      "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+    );
+    const insertBridge = db.prepare(
+      `INSERT INTO canonical_contract_purge_commits(purge_id, commit_id)
+       VALUES ('fubon-domestic-deposit/observed-composite-v1:v14', ?)`,
+    );
+    for (const sequence of [1, 553, 554]) insertBridge.run(commitId(sequence));
+    db.exec("DELETE FROM schema_migrations WHERE version > 18; PRAGMA user_version = 18");
+    mutate?.(db);
+    db.exec("COMMIT; PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK; PRAGMA foreign_keys = ON");
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+  db.close();
+  return { directory, path };
+}
 
 test("production schema registry declares every published version transition", () => {
   const plan = createCanonicalSchemaLifecyclePlan();
@@ -117,6 +239,268 @@ test("production schema registry declares every published version transition", (
       "canonical/attestation/yuanta-events/v1",
     ],
   );
+});
+
+test("retired Fubon recovery policy accepts only exact writable pending-v20 state", () => {
+  const exact = isKnownRetiredFubonV18Fingerprint(
+    "sha256:xtfHsf19a3fRiBwnnMBExh__84CGy_uB-YYg6JIpOO8",
+    "sha256:3DV_wKjstIx_mccTUv_98FtfrIO4FofujO5wsdK8x8g",
+  );
+  assert.equal(exact, true, "the immutable production fingerprints are exact");
+  assert.equal(
+    isRetiredFubonV18RecoveryEligible({
+      schemaVersion: 20,
+      readOnly: false,
+      exactKnownState: exact,
+    }),
+    true,
+    "an exact pending v20 writable reopen remains recoverable",
+  );
+  assert.equal(
+    isRetiredFubonV18RecoveryEligible({
+      schemaVersion: 20,
+      readOnly: true,
+      exactKnownState: exact,
+    }),
+    false,
+    "the same exact pending v20 state is rejected read-only",
+  );
+  assert.equal(
+    isKnownRetiredFubonV18Fingerprint(
+      "sha256:xtfHsf19a3fRiBwnnMBExh__84CGy_uB-YYg6JIpOOA",
+      "sha256:3DV_wKjstIx_mccTUv_98FtfrIO4FofujO5wsdK8x8g",
+    ),
+    false,
+    "a one-character commit-fingerprint near-match is rejected",
+  );
+  assert.equal(
+    isRetiredFubonV18RecoveryEligible({
+      schemaVersion: 20,
+      readOnly: false,
+      exactKnownState: false,
+    }),
+    false,
+    "a pending v20 near-match cannot enter recovery",
+  );
+});
+
+test("the exact retired Fubon v18 store restores only its omitted purge bridges", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-retired-fubon-v18-real-"));
+  const path = join(directory, "canonical.sqlite");
+  try {
+    try {
+      await copyFile(join(process.cwd(), "data", "ledger", "canonical.sqlite"), path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      t.skip("real retired v18 canonical fixture is unavailable");
+      return;
+    }
+    const before = new DatabaseSync(path, { readOnly: true });
+    const commitDigestBefore = createHash("sha256")
+      .update(
+        JSON.stringify(
+          before
+            .prepare(
+              `SELECT commit_sequence, hex(commit_id) AS commit_id,
+                      recorded_at_utc_us, authority_route, commit_kind
+                 FROM canonical_commits ORDER BY commit_sequence`,
+            )
+            .all(),
+        ),
+      )
+      .digest("hex");
+    before.close();
+
+    // Simulate a process stopping after the lifecycle commits v20 but before
+    // the source-store's independent domain data transition begins.
+    const schemaOnly = CanonicalSchemaLifecycle.open(
+      path,
+      createCanonicalSchemaLifecyclePlan(),
+      { busyTimeoutMs: 30_000 },
+    );
+    assert.equal(schemaOnly.openedFromVersion, 18);
+    schemaOnly.close();
+    const pending = new DatabaseSync(path, { readOnly: true });
+    assert.equal(
+      Number(pending.prepare("PRAGMA user_version").get()?.user_version),
+      20,
+    );
+    assert.equal(
+      Number(
+        pending
+          .prepare("SELECT COUNT(*) AS count FROM canonical_contract_purge_commits")
+          .get()?.count,
+      ),
+      3,
+    );
+    pending.close();
+    assert.throws(
+      () => openCanonicalDatabase(directory, { readOnly: true }),
+      /durable source provenance evidence/i,
+      "the exact pending v20 store remains fail-closed for read-only access",
+    );
+
+    // The next ordinary writable open must re-recognize the exact pending
+    // state at v20 and finish the bridge instead of becoming unrecoverable.
+    const repaired = openCanonicalDatabase(directory);
+    assert.equal(
+      Number(repaired.prepare("PRAGMA user_version").get()?.user_version),
+      20,
+    );
+    assert.deepEqual(
+      repaired
+        .prepare(
+          `SELECT purge.purge_id, COUNT(*) AS count,
+                  MIN(commit_row.commit_sequence) AS minimum,
+                  MAX(commit_row.commit_sequence) AS maximum
+             FROM canonical_contract_purge_commits purge
+             JOIN canonical_commits commit_row
+               ON commit_row.commit_id = purge.commit_id
+            GROUP BY purge.purge_id ORDER BY purge.purge_id`,
+        )
+        .all()
+        .map((row) => ({ ...row })),
+      [
+        {
+          purge_id: "fubon-domestic-deposit/observed-composite-v1:v14",
+          count: 3,
+          minimum: 1,
+          maximum: 554,
+        },
+        {
+          purge_id: "source-connection-identity/v1:fubon-yuanta:v11",
+          count: 551,
+          minimum: 2,
+          maximum: 552,
+        },
+      ],
+    );
+    const commitDigestAfter = createHash("sha256")
+      .update(
+        JSON.stringify(
+          repaired
+            .prepare(
+              `SELECT commit_sequence, hex(commit_id) AS commit_id,
+                      recorded_at_utc_us, authority_route, commit_kind
+                 FROM canonical_commits ORDER BY commit_sequence`,
+            )
+            .all(),
+        ),
+      )
+      .digest("hex");
+    assert.equal(commitDigestAfter, commitDigestBefore);
+    for (const table of [
+      "source_captures",
+      "source_records",
+      "financial_accounts",
+      "financial_transactions",
+      "transaction_revisions",
+      "projection_generations",
+      "projection_generation_provenance",
+    ])
+      assert.equal(
+        Number(
+          repaired.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count,
+        ),
+        0,
+      );
+    repaired.close();
+
+    const second = openCanonicalDatabase(directory);
+    assert.equal(
+      Number(
+        second
+          .prepare(
+            `SELECT COUNT(*) AS count
+               FROM canonical_contract_purge_commits
+              WHERE purge_id = 'source-connection-identity/v1:fubon-yuanta:v11'`,
+          )
+          .get()?.count,
+      ),
+      551,
+    );
+    second.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the retired Fubon v18 bridge rejects every near-match and read-only open", async (t) => {
+  const cases: Array<readonly [string, (db: DatabaseSync) => void]> = [
+    [
+      "authority route",
+      (db) =>
+        db.prepare("UPDATE canonical_commits SET authority_route = 'altered' WHERE commit_sequence = 2").run(),
+    ],
+    [
+      "commit count",
+      (db) => db.prepare("DELETE FROM canonical_commits WHERE commit_sequence = 552").run(),
+    ],
+    [
+      "purge audit",
+      (db) =>
+        db
+          .prepare(
+            `UPDATE canonical_contract_purges SET deleted_row_count = 2737
+              WHERE purge_id = 'source-connection-identity/v1:fubon-yuanta:v11'`,
+          )
+          .run(),
+    ],
+    [
+      "live source data",
+      (db) =>
+        db
+          .prepare(
+            `INSERT INTO source_subjects(
+               source_subject_id, source_connection_id, identity_epoch_id,
+               stream, record_kind, subject_digest, created_commit_id
+             ) SELECT zeroblob(16), source_connection_id,
+                      (SELECT identity_epoch_id FROM identity_epochs LIMIT 1),
+                      'domestic-deposit', 'deposit-transaction',
+                      'sha256:unexpected-live-subject', created_commit_id
+                 FROM source_connections LIMIT 1`,
+          )
+          .run(),
+    ],
+  ];
+  for (const [name, mutate] of cases)
+    await t.test(name, async () => {
+      const { directory } = await seedRetiredFubonV18BridgeFixture(mutate);
+      try {
+        assert.throws(
+          () => openCanonicalDatabase(directory),
+          /fingerprint is not recognized|durable source provenance evidence/i,
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+
+  await t.test("read-only", async () => {
+    const { directory } = await seedRetiredFubonV18BridgeFixture();
+    try {
+      markSyntheticFixtureAsSchemaV20(join(directory, "canonical.sqlite"));
+      assert.throws(
+        () => openCanonicalDatabase(directory, { readOnly: true }),
+        /durable source provenance evidence/i,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("writable pending-v20 near-match", async () => {
+    const { directory } = await seedRetiredFubonV18BridgeFixture();
+    try {
+      markSyntheticFixtureAsSchemaV20(join(directory, "canonical.sqlite"));
+      assert.throws(
+        () => openCanonicalDatabase(directory),
+        /durable source provenance evidence/i,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 test("a current schema retries a contract data transition whose durable audit is absent", async () => {
