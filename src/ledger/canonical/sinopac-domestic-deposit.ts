@@ -6,10 +6,12 @@ import {
 import { createHash } from "node:crypto";
 import {
   admitCanonicalSourceEvidence,
+  type CanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   commitCanonicalSourceEvidenceBatch,
   commitCanonicalSourceEvidence,
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {

@@ -24,6 +24,18 @@ import {
   validateFubonCreditCardSchema,
 } from "./fubon-credit-card.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-deposit-authorities.ts";
+import {
+  CANONICAL_SOURCE_ADMISSION,
+  CANONICAL_SOURCE_STAGE,
+  CanonicalSourceConflictError,
+  isAdmittedCanonicalSourceEvidence,
+  requireCanonicalSourceText,
+  requireCanonicalSourceToken,
+  stableCanonicalSourceJson,
+  validateCanonicalSourceEvidence,
+  type CanonicalSourceRecord,
+  type CanonicalValidatedSourceEvidence,
+} from "./canonical-source-evidence.ts";
 
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
@@ -12780,11 +12792,11 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       );
     this.ledgerDir = ledgerDir;
     this.profile = {
-      integrationNamespace: requireSourceText(
+      integrationNamespace: requireCanonicalSourceText(
         profile.integrationNamespace,
         "Canonical financial integration namespace",
       ),
-      postingRuleVersion: requireSourceText(
+      postingRuleVersion: requireCanonicalSourceText(
         profile.postingRuleVersion,
         "Canonical financial posting rule version",
       ),
@@ -13163,63 +13175,11 @@ export function createCanonicalFinancialQuery(
   return new CathayCanonicalFinancialQueryAdapter(ledgerDir, profile);
 }
 
-/** Generic, source-only evidence seam shared by integration adapters. */
-export const CANONICAL_SOURCE_STAGE = "durable-source-evidence" as const;
-export const CANONICAL_SOURCE_ADMISSION = "blocked" as const;
 export const CANONICAL_SOURCE_SCHEMA_VERSION = CANONICAL_SCHEMA_VERSION;
-const CANONICAL_SOURCE_RUNTIME_BRAND = Symbol(
-  "canonical-source-runtime-validated-v8",
-);
 const CANONICAL_SOURCE_STORE_BRAND = Symbol(
   "canonical-source-store-lifecycle-validated-v1",
 );
 const CANONICAL_SOURCE_STORE_OBJECTS = new WeakSet<object>();
-const OPAQUE_SOURCE_TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
-const SOURCE_DATE = /^\d{8}$/;
-const FORBIDDEN_SOURCE_KEY =
-  /raw|header|cookie|password|secret|credential|token/i;
-
-export type CanonicalSourcePage = {
-  pageOrdinal: number;
-  responseCode: "200";
-  rowCount: number;
-  terminal: boolean;
-  metadata: Record<string, unknown>;
-};
-export type CanonicalSourceRecord = {
-  occurrenceKey: string;
-  collisionKey?: string;
-  providerKey: string;
-  contentHash: string;
-  compact: Record<string, unknown>;
-};
-export type CanonicalSourceAbsenceAuthority =
-  "comparable-complete-range" | "provider-explicit-no-data";
-export type CanonicalSourceEvidence = {
-  captureId: string;
-  integrationNamespace: string;
-  sourceConnectionKey: string;
-  identityEpoch: string;
-  stream: string;
-  recordKind: string;
-  routeKey: string;
-  contractVersion: string;
-  subjectDigest: string;
-  observedAt: string;
-  scope: {
-    startDate: string;
-    endDate: string;
-    kind: "bounded-range" | "point-in-time";
-    completeness: "complete-range" | "single-page";
-    ruleVersion: string;
-    absenceAuthority?: CanonicalSourceAbsenceAuthority;
-  };
-  pages: CanonicalSourcePage[];
-  records: CanonicalSourceRecord[];
-};
-export type CanonicalValidatedSourceEvidence = CanonicalSourceEvidence & {
-  readonly __runtimeValidatedSourceEvidence: "canonical-source-v8";
-};
 export type CanonicalSourceStore = {
   readonly [CANONICAL_SOURCE_STORE_BRAND]: true;
   readonly db: DatabaseSync;
@@ -13313,176 +13273,6 @@ export type CanonicalSourceCommitResult = {
   observationCount: number;
   provenanceCount: number;
 };
-export class CanonicalSourceConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CanonicalSourceConflictError";
-  }
-}
-
-function requireSourceText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim() === "")
-    throw new Error(`${label} is required.`);
-  return value.trim();
-}
-function requireSourceToken(value: unknown, label: string): string {
-  const token = requireSourceText(value, label);
-  if (!OPAQUE_SOURCE_TOKEN.test(token))
-    throw new Error(`${label} must be an opaque token.`);
-  return token;
-}
-function requireSourceDate(value: unknown, label: string): string {
-  const text = requireSourceText(value, label);
-  if (!SOURCE_DATE.test(text)) throw new Error(`${label} must be YYYYMMDD.`);
-  const date = new Date(
-    Date.UTC(
-      Number(text.slice(0, 4)),
-      Number(text.slice(4, 6)) - 1,
-      Number(text.slice(6, 8)),
-    ),
-  );
-  if (
-    date.getUTCFullYear() !== Number(text.slice(0, 4)) ||
-    date.getUTCMonth() !== Number(text.slice(4, 6)) - 1 ||
-    date.getUTCDate() !== Number(text.slice(6, 8))
-  ) {
-    throw new Error(`${label} must be a calendar date.`);
-  }
-  return text;
-}
-function assertCompactSourceValue(value: unknown, path: string): void {
-  if (value === null || typeof value === "boolean" || typeof value === "string")
-    return;
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value))
-      throw new Error(`${path} contains a non-exact number.`);
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) =>
-      assertCompactSourceValue(entry, `${path}[${index}]`),
-    );
-    return;
-  }
-  if (typeof value === "object") {
-    for (const [key, entry] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      if (FORBIDDEN_SOURCE_KEY.test(key))
-        throw new Error(`${path}.${key} is not compact source evidence.`);
-      assertCompactSourceValue(entry, `${path}.${key}`);
-    }
-    return;
-  }
-  throw new Error(`${path} contains an unsupported value.`);
-}
-function stableSourceJson(value: Record<string, unknown>): string {
-  const canonicalize = (entry: unknown): unknown =>
-    Array.isArray(entry)
-      ? entry.map(canonicalize)
-      : entry !== null && typeof entry === "object"
-        ? Object.fromEntries(
-            Object.entries(entry as Record<string, unknown>)
-              .sort(([left], [right]) => left.localeCompare(right))
-              .map(([key, nested]) => [key, canonicalize(nested)]),
-          )
-        : entry;
-  return JSON.stringify(canonicalize(value));
-}
-function validateCanonicalSourceEvidence(
-  evidence: CanonicalSourceEvidence,
-): void {
-  requireSourceText(evidence.captureId, "Capture ID");
-  requireSourceText(evidence.integrationNamespace, "Integration namespace");
-  requireSourceToken(evidence.sourceConnectionKey, "Source connection key");
-  requireSourceToken(evidence.identityEpoch, "Identity epoch");
-  requireSourceText(evidence.stream, "Stream");
-  requireSourceText(evidence.recordKind, "Record kind");
-  requireSourceText(evidence.routeKey, "Authority route");
-  requireSourceText(evidence.contractVersion, "Contract version");
-  requireSourceToken(evidence.subjectDigest, "Subject digest");
-  if (!Number.isFinite(Date.parse(evidence.observedAt)))
-    throw new Error("Observed at must be RFC3339.");
-  const start = requireSourceDate(evidence.scope.startDate, "Scope start");
-  const end = requireSourceDate(evidence.scope.endDate, "Scope end");
-  if (start > end) throw new Error("Scope start must not be after scope end.");
-  if (
-    evidence.scope.kind !== "bounded-range" &&
-    evidence.scope.kind !== "point-in-time"
-  )
-    throw new Error("Source scope kind is unsupported.");
-  if (
-    evidence.scope.absenceAuthority !== undefined &&
-    evidence.scope.absenceAuthority !== "comparable-complete-range" &&
-    evidence.scope.absenceAuthority !== "provider-explicit-no-data"
-  )
-    throw new Error("Source absence authority is unsupported.");
-  requireSourceText(evidence.scope.ruleVersion, "Completeness rule version");
-  if (!Array.isArray(evidence.pages) || evidence.pages.length === 0)
-    throw new Error("At least one source page is required.");
-  let rowCount = 0;
-  evidence.pages.forEach((page, index) => {
-    if (
-      page.pageOrdinal !== index ||
-      page.responseCode !== "200" ||
-      page.terminal !== (index === evidence.pages.length - 1)
-    ) {
-      throw new Error(
-        "Source page sequence/status/terminal marker is inconsistent.",
-      );
-    }
-    if (!Number.isSafeInteger(page.rowCount) || page.rowCount < 0)
-      throw new Error("Source page row count is invalid.");
-    assertCompactSourceValue(page.metadata, `page[${index}].metadata`);
-    rowCount += page.rowCount;
-  });
-  if (!Array.isArray(evidence.records) || rowCount !== evidence.records.length)
-    throw new Error("Source page counts do not match compact records.");
-  const occurrences = new Set<string>();
-  evidence.records.forEach((record, index) => {
-    requireSourceToken(record.occurrenceKey, `Record ${index} occurrence key`);
-    if (record.collisionKey !== undefined)
-      requireSourceToken(record.collisionKey, `Record ${index} collision key`);
-    requireSourceToken(record.providerKey, `Record ${index} provider key`);
-    requireSourceToken(record.contentHash, `Record ${index} content hash`);
-    if (occurrences.has(record.occurrenceKey))
-      throw new CanonicalSourceConflictError(
-        "Duplicate occurrence in one capture.",
-      );
-    occurrences.add(record.occurrenceKey);
-    if (
-      !record.compact ||
-      typeof record.compact !== "object" ||
-      Array.isArray(record.compact)
-    )
-      throw new Error(`Record ${index} compact payload must be an object.`);
-    assertCompactSourceValue(record.compact, `record[${index}].compact`);
-  });
-}
-function hasCanonicalSourceBrand(
-  evidence: CanonicalSourceEvidence,
-): evidence is CanonicalValidatedSourceEvidence {
-  return (
-    (
-      evidence as CanonicalSourceEvidence & {
-        [CANONICAL_SOURCE_RUNTIME_BRAND]?: true;
-      }
-    )[CANONICAL_SOURCE_RUNTIME_BRAND] === true
-  );
-}
-export function admitCanonicalSourceEvidence(
-  evidence: CanonicalSourceEvidence,
-): CanonicalValidatedSourceEvidence {
-  validateCanonicalSourceEvidence(evidence);
-  Object.defineProperty(evidence, CANONICAL_SOURCE_RUNTIME_BRAND, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  return evidence as CanonicalValidatedSourceEvidence;
-}
-
 function openCanonicalDatabasePath(path: string): DatabaseSync {
   const validated = CanonicalSchemaLifecycle.open(
     path,
@@ -13507,7 +13297,10 @@ export function createCanonicalSourceStore(
   databasePath: string,
   options: CanonicalSourceStoreOptions = {},
 ): CanonicalSourceStore {
-  const path = requireSourceText(databasePath, "Canonical SQLite path");
+  const path = requireCanonicalSourceText(
+    databasePath,
+    "Canonical SQLite path",
+  );
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = openCanonicalDatabasePath(path);
   const commitClock = options.commitClock ?? currentUtcMicros;
@@ -13603,7 +13396,7 @@ function commitCanonicalSourceEvidenceOnce(
   evidence: CanonicalValidatedSourceEvidence,
   transactionBoundary = true,
 ): CanonicalSourceCommitResult {
-  if (!hasCanonicalSourceBrand(evidence))
+  if (!isAdmittedCanonicalSourceEvidence(evidence))
     throw new CanonicalSourceConflictError(
       "Source evidence is not runtime-validated.",
     );
@@ -13672,7 +13465,7 @@ function commitCanonicalSourceEvidenceOnce(
         if (
           String(row.provider_key) !== record.providerKey ||
           String(row.content_hash) !== record.contentHash ||
-          String(row.payload_json) !== stableSourceJson(record.compact)
+          String(row.payload_json) !== stableCanonicalSourceJson(record.compact)
         ) {
           throw new CanonicalSourceConflictError(
             "Source occurrence conflict; overwrite is forbidden.",
@@ -13833,7 +13626,7 @@ function commitCanonicalSourceEvidenceOnce(
       commitId,
     );
     for (const page of evidence.pages) {
-      const metadata = stableSourceJson(page.metadata);
+      const metadata = stableCanonicalSourceJson(page.metadata);
       const digest = createHash("sha256").update(metadata).digest("hex");
       db.prepare(
         `INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, response_code, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, metadata_json, commit_id)
@@ -13867,7 +13660,7 @@ function commitCanonicalSourceEvidenceOnce(
         record.contentHash,
         record.occurrenceKey,
         record.collisionKey ?? null,
-        stableSourceJson(record.compact),
+        stableCanonicalSourceJson(record.compact),
       );
       db.prepare(
         "INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, source_subject_id, sequence_lexeme, occurrence_key, commit_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
@@ -14117,19 +13910,28 @@ export function queryCanonicalSourceLineage(
 ): CanonicalSourceLineageQuery {
   requireValidatedCanonicalSourceStore(store);
   const lineage: CanonicalSourceLineageRequest = {
-    integrationNamespace: requireSourceText(
+    integrationNamespace: requireCanonicalSourceText(
       request.integrationNamespace,
       "Integration namespace",
     ),
-    sourceConnectionKey: requireSourceToken(
+    sourceConnectionKey: requireCanonicalSourceToken(
       request.sourceConnectionKey,
       "Source connection key",
     ),
-    identityEpoch: requireSourceToken(request.identityEpoch, "Identity epoch"),
-    stream: requireSourceText(request.stream, "Source stream"),
-    recordKind: requireSourceText(request.recordKind, "Source record kind"),
-    subjectDigest: requireSourceToken(request.subjectDigest, "Subject digest"),
-    occurrenceKey: requireSourceToken(request.occurrenceKey, "Occurrence key"),
+    identityEpoch: requireCanonicalSourceToken(
+      request.identityEpoch,
+      "Identity epoch",
+    ),
+    stream: requireCanonicalSourceText(request.stream, "Source stream"),
+    recordKind: requireCanonicalSourceText(request.recordKind, "Source record kind"),
+    subjectDigest: requireCanonicalSourceToken(
+      request.subjectDigest,
+      "Subject digest",
+    ),
+    occurrenceKey: requireCanonicalSourceToken(
+      request.occurrenceKey,
+      "Occurrence key",
+    ),
   };
   return withCanonicalSnapshot(store.db, () => {
     const observations = canonicalSourceObservationRows(

@@ -6,9 +6,13 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
+  admitCanonicalSourceEvidence,
+  type CanonicalSourceEvidence,
+  type CanonicalValidatedSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
-  admitCanonicalSourceEvidence,
   commitCathayDomesticDeposit,
   commitCanonicalSourceEvidence,
   createCanonicalFinancialQuery,
@@ -20,9 +24,7 @@ import {
   queryCanonicalSourceLineage,
   openCanonicalDatabase,
   validateCanonicalSourceStore,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
-  type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-store.ts";
 import {
   admitCanonicalFinancialDepositCapture,

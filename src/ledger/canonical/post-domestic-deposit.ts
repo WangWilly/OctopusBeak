@@ -6,10 +6,12 @@ import {
 } from "./advertised-domestic-deposit-preflight.ts";
 import {
   admitCanonicalSourceEvidence,
+  type CanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
+import {
   commitCanonicalSourceEvidence,
   commitCanonicalSourceEvidenceBatch,
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
