@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import {
   configureCanonicalRuntime,
   verifyCanonicalRuntime,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
+import {
+  acquireCanonicalCrossProcessLifecycleLease,
+  acquireCanonicalLifecycleOwner,
+} from "./canonical-schema-lifecycle-lock.ts";
 
 /**
  * A migration is deliberately described by its version transition rather
@@ -121,9 +125,6 @@ const MIGRATION_REGISTRY_STEPS = new WeakMap<
 >();
 const MIGRATION_REGISTRY_TARGETS = new WeakMap<object, number>();
 const CONSTRUCTION_TOKEN = Symbol("canonical-schema-lifecycle-construction");
-const lifecycleOwners = new Map<string, symbol>();
-const LIFECYCLE_LEASE_DEFAULT_TIMEOUT_MS = 250;
-const LIFECYCLE_LEASE_MAX_TIMEOUT_MS = 1_000;
 
 type SqliteObjectSnapshot = {
   readonly type: string;
@@ -148,92 +149,6 @@ function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-function lifecycleOwnerKey(databasePath: string): string | null {
-  if (databasePath === ":memory:") return null;
-  const absolute = resolve(databasePath);
-  try {
-    return realpathSync.native(absolute);
-  } catch {
-    // A first open creates the database after this check. Canonicalize the
-    // existing parent as well so `/var` versus `/private/var` (and equivalent
-    // symlinked data roots) cannot create two owners for the same future file.
-    try {
-      return resolve(realpathSync.native(dirname(absolute)), basename(absolute));
-    } catch {
-      return absolute;
-    }
-  }
-}
-
-function acquireLifecycleOwner(databasePath: string): () => void {
-  const key = lifecycleOwnerKey(databasePath);
-  if (key === null) return () => {};
-  if (lifecycleOwners.has(key))
-    throw new Error(`Canonical schema path already has a live lifecycle owner: ${key}`);
-  const owner = Symbol(key);
-  lifecycleOwners.set(key, owner);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    if (lifecycleOwners.get(key) === owner) lifecycleOwners.delete(key);
-  };
-}
-
-/**
- * Hold a crash-recoverable ownership lease in a sidecar SQLite database.
- *
- * The in-process map above gives a deterministic fast failure for duplicate
- * opens in this process.  It cannot coordinate two Node processes, however:
- * each process has its own module state.  A separate SQLite connection holds
- * `BEGIN IMMEDIATE` for the lifetime of the validated handle.  SQLite releases
- * that OS lock when the owning process exits, so a crash does not strand a
- * logical lease and there is no PID lockfile whose stale contents need to be
- * guessed or garbage-collected.  The sidecar file is only SQLite's durable
- * lock container; it is never opened as a canonical schema or data store.
- */
-function acquireCrossProcessLifecycleLease(
-  databasePath: string,
-  requestedTimeoutMs: number | undefined,
-): () => void {
-  const key = lifecycleOwnerKey(databasePath);
-  if (key === null) return () => {};
-  const timeoutMs = Math.min(
-    LIFECYCLE_LEASE_MAX_TIMEOUT_MS,
-    Math.max(
-      1,
-      Number.isSafeInteger(requestedTimeoutMs) && requestedTimeoutMs !== undefined
-        ? requestedTimeoutMs
-        : LIFECYCLE_LEASE_DEFAULT_TIMEOUT_MS,
-    ),
-  );
-  const leasePath = `${key}.lifecycle-lease.sqlite`;
-  let leaseDb: DatabaseSync | undefined;
-  try {
-    leaseDb = new DatabaseSync(leasePath);
-    leaseDb.exec(`PRAGMA busy_timeout = ${timeoutMs}; BEGIN IMMEDIATE`);
-  } catch (error) {
-    try {
-      leaseDb?.close();
-    } catch {
-      /* Preserve the bounded ownership error below. */
-    }
-    throw new Error(
-      `Canonical schema path has a live cross-process lifecycle owner: ${key}`,
-      { cause: error },
-    );
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    try {
-      leaseDb!.exec("ROLLBACK");
-    } finally {
-      leaseDb!.close();
-    }
-  };
-}
 
 function schemaVersion(db: DatabaseSync): number {
   const row = db.prepare("PRAGMA user_version").get() as {
@@ -2659,7 +2574,7 @@ export function openCanonicalSchemaLifecycle(
   if (!options.readOnly && databasePath !== ":memory:")
     mkdirSync(dirname(databasePath), { recursive: true });
   const lifecyclePlan = freezeLifecyclePlan(plan);
-  const releaseProcessOwner = acquireLifecycleOwner(databasePath);
+  const releaseProcessOwner = acquireCanonicalLifecycleOwner(databasePath);
   let releaseCrossProcessLease: () => void = () => {};
   const releaseOwner = (): void => {
     try {
@@ -2670,7 +2585,7 @@ export function openCanonicalSchemaLifecycle(
   };
   let db: DatabaseSync;
   try {
-    releaseCrossProcessLease = acquireCrossProcessLifecycleLease(
+    releaseCrossProcessLease = acquireCanonicalCrossProcessLifecycleLease(
       databasePath,
       options.busyTimeoutMs,
     );
