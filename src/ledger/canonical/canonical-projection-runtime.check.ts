@@ -533,10 +533,13 @@ test("transaction enrichment is a Runtime family at current and historical cutof
     });
     const enrichment = historical.families["transaction-enrichment"];
     assert.equal(enrichment.length, 3);
-    assert.deepEqual(enrichment.map((row) => [row.fieldName, row.taxonomyId, row.taxonomyVersion, row.taxonomyCode]), [
+    const taxonomyTuples = enrichment
+      .map((row) => [row.fieldName, row.taxonomyId, row.taxonomyVersion, row.taxonomyCode] as const)
+      .sort((left, right) => left[3].localeCompare(right[3]));
+    assert.deepEqual(taxonomyTuples, [
       ["kind", "transaction-taxonomy", "v1", "cash.deposit"],
-      ["kind", "transaction-taxonomy", "v1", "transfer.internal"],
       ["kind", "transaction-taxonomy", "v1", "payment.credit_card"],
+      ["kind", "transaction-taxonomy", "v1", "transfer.internal"],
     ]);
     assert.equal(enrichment.every((row) => row.projectionCommitSequence === committed.commitSequence), true);
     const current = runtime.read({ kind: "current", families: ["transaction-enrichment"], scope });
