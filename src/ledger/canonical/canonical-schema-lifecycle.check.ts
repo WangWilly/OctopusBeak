@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   createCanonicalSchemaMigrationRegistry,
   openCanonicalSchemaLifecycle,
+  runCanonicalSchemaRepair,
   ValidatedCanonicalStore,
   type CanonicalSchemaMigration,
   type CanonicalSchemaMigrationRegistry,
@@ -979,7 +980,7 @@ test("two writers contend on one lifecycle lock and validated store owns close",
   }
 });
 
-test("one lifecycle owner is held per resolved path and released by close", async () => {
+test("validated lifecycle handles share one resolved path after schema open", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-owner-"));
   const path = join(directory, "canonical.sqlite");
   const otherPath = join(directory, "other.sqlite");
@@ -995,10 +996,9 @@ test("one lifecycle owner is held per resolved path and released by close", asyn
       },
     ]);
     const first = openCanonicalSchemaLifecycle(path, lifecyclePlan);
-    assert.throws(
-      () => openCanonicalSchemaLifecycle(path, lifecyclePlan),
-      /live lifecycle owner/i,
-    );
+    const second = openCanonicalSchemaLifecycle(path, lifecyclePlan);
+    assert.equal(Number(second.db.prepare("PRAGMA user_version").get()?.user_version), 2);
+    second.close();
     const other = openCanonicalSchemaLifecycle(otherPath, lifecyclePlan);
     other.close();
     first.close();
@@ -1009,7 +1009,7 @@ test("one lifecycle owner is held per resolved path and released by close", asyn
   }
 });
 
-test("lifecycle ownership is coordinated across processes and is released on crash", async () => {
+test("validated lifecycle handles share one path across processes and release on crash", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-cross-process-"));
   const path = join(directory, "canonical.sqlite");
   const moduleUrl = new URL("./canonical-schema-lifecycle.ts", import.meta.url).href;
@@ -1051,8 +1051,8 @@ test("lifecycle ownership is coordinated across processes and is released on cra
         ],
         { encoding: "utf8", timeout: 2_000 },
       );
-      assert.equal(blocked.status, 23);
-      assert.match(`${blocked.stdout}\n${blocked.stderr}`, /live cross-process lifecycle owner|locked|busy/i);
+      assert.equal(blocked.status, 0, `${blocked.stdout}\n${blocked.stderr}`);
+      assert.match(blocked.stdout, /OPENED/);
     } finally {
       parent.close();
     }
@@ -1107,6 +1107,256 @@ test("lifecycle ownership is coordinated across processes and is released on cra
     );
     assert.equal(recovered.status, 0, `${recovered.stdout}\n${recovered.stderr}`);
     assert.match(recovered.stdout, /OPENED/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("shared lifecycle handles permit cross-process data writes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-shared-write-"));
+  const path = join(directory, "canonical.sqlite");
+  const moduleUrl = new URL("./canonical-schema-lifecycle.ts", import.meta.url).href;
+  const lifecyclePlan = {
+    currentVersion: 1,
+    migrations: createCanonicalSchemaMigrationRegistry(1, [
+      {
+        id: "test/shared-write-v1",
+        fromVersion: 0,
+        toVersion: 1,
+        apply(db) {
+          db.exec(
+            "CREATE TABLE runtime_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version = 1",
+          );
+        },
+      },
+    ]),
+    validate() {},
+  } satisfies CanonicalSchemaLifecyclePlan;
+  const childScript = `
+import { openCanonicalSchemaLifecycle, createCanonicalSchemaMigrationRegistry } from ${JSON.stringify(moduleUrl)};
+const path = process.argv[1];
+const plan = { currentVersion: 1, migrations: createCanonicalSchemaMigrationRegistry(1, [{ id: "test/shared-write-v1", fromVersion: 0, toVersion: 1, apply(db) { db.exec("CREATE TABLE runtime_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version = 1"); } }]), validate() {} };
+try {
+  const handle = openCanonicalSchemaLifecycle(path, plan);
+  handle.db.exec("BEGIN IMMEDIATE");
+  handle.db.prepare("INSERT INTO runtime_rows(id, value) VALUES (?, ?)").run(2, "child");
+  handle.db.exec("COMMIT");
+  console.log("READY");
+  setInterval(() => {}, 1000);
+} catch (error) {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exit(23);
+}
+`;
+  try {
+    const parent = openCanonicalSchemaLifecycle(path, lifecyclePlan);
+    const child = spawn(process.execPath, [
+      "--no-warnings",
+      "--experimental-strip-types",
+      "--input-type=module",
+      "-e",
+      childScript,
+      path,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let output = "";
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error(`shared writer child did not start: ${output}`));
+        }, 2_000);
+        child.stdout.on("data", (chunk: Buffer) => {
+          output += chunk.toString();
+          if (output.includes("READY")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          output += chunk.toString();
+        });
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("exit", (code) => {
+          if (code !== null && code !== 0) {
+            clearTimeout(timer);
+            reject(new Error(`shared writer child exited ${code}: ${output}`));
+          }
+        });
+      });
+      parent.db.exec("BEGIN IMMEDIATE");
+      parent.db.prepare("INSERT INTO runtime_rows(id, value) VALUES (?, ?)").run(1, "parent");
+      parent.db.exec("COMMIT");
+      assert.equal(
+        parent.db.prepare("SELECT COUNT(*) AS count FROM runtime_rows").get()?.count,
+        2,
+      );
+    } finally {
+      parent.close();
+      child.kill("SIGKILL");
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null) resolve();
+        else child.once("exit", () => resolve());
+      });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a live runtime handle blocks a later cross-process schema transition", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-transition-"));
+  const path = join(directory, "canonical.sqlite");
+  const moduleUrl = new URL("./canonical-schema-lifecycle.ts", import.meta.url).href;
+  const currentPlan = {
+    currentVersion: 0,
+    migrations: completeRegistry(0),
+    validate() {},
+  } satisfies CanonicalSchemaLifecyclePlan;
+  const upgradePlan = {
+    currentVersion: 1,
+    migrations: createCanonicalSchemaMigrationRegistry(1, [
+      {
+        id: "test/transition-v1",
+        fromVersion: 0,
+        toVersion: 1,
+        apply(db) {
+          db.exec("PRAGMA user_version = 1");
+        },
+      },
+    ]),
+    validate() {},
+  } satisfies CanonicalSchemaLifecyclePlan;
+  try {
+    const active = openCanonicalSchemaLifecycle(path, currentPlan);
+    try {
+      const blocked = spawnSync(
+        process.execPath,
+        [
+          "--no-warnings",
+          "--experimental-strip-types",
+          "--input-type=module",
+          "-e",
+          `import { openCanonicalSchemaLifecycle, createCanonicalSchemaMigrationRegistry } from ${JSON.stringify(moduleUrl)};
+const path = process.argv[1];
+const plan = { currentVersion: 1, migrations: createCanonicalSchemaMigrationRegistry(1, [{ id: "test/transition-v1", fromVersion: 0, toVersion: 1, apply(db) { db.exec("PRAGMA user_version = 1"); } }]), validate() {} };
+try { const handle = openCanonicalSchemaLifecycle(path, plan, { busyTimeoutMs: 25 }); handle.close(); console.log("UPGRADED"); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exit(23); }`,
+          path,
+        ],
+        { encoding: "utf8", timeout: 2_000 },
+      );
+      assert.equal(blocked.status, 23);
+      assert.match(
+        `${blocked.stdout}\n${blocked.stderr}`,
+        /live .*schema transition|live cross-process lifecycle owner|locked|busy/i,
+      );
+    } finally {
+      active.close();
+    }
+
+    const upgraded = openCanonicalSchemaLifecycle(path, upgradePlan);
+    assert.equal(Number(upgraded.db.prepare("PRAGMA user_version").get()?.user_version), 1);
+    upgraded.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed runtime repair lease upgrade restores the validated handle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-repair-lock-"));
+  const path = join(directory, "canonical.sqlite");
+  const leasePath = `${path}.lifecycle-lease.sqlite`;
+  const lifecyclePlan = {
+    currentVersion: 0,
+    migrations: completeRegistry(0),
+    repairs: [
+      {
+        id: "test/on-demand-repair",
+        version: 0,
+        allowedSchemaObjects: ["repair_extension"],
+        allowOnDemand: true,
+        precondition() {
+          return true;
+        },
+        apply(db: DatabaseSync) {
+          db.exec("CREATE TABLE repair_extension(id INTEGER PRIMARY KEY AUTOINCREMENT)");
+        },
+        validate() {},
+      },
+    ],
+    validate() {},
+  } satisfies CanonicalSchemaLifecyclePlan;
+  try {
+    const store = openCanonicalSchemaLifecycle(path, lifecyclePlan);
+    const blocker = new DatabaseSync(leasePath);
+    blocker.exec("PRAGMA busy_timeout = 25; BEGIN");
+    blocker.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
+    try {
+      assert.throws(
+        () => runCanonicalSchemaRepair(store.db, "test/on-demand-repair"),
+        /live cross-process lifecycle owner|locked|busy/i,
+      );
+      assert.equal(
+        Number(store.db.prepare("PRAGMA user_version").get()?.user_version),
+        0,
+        "a rejected upgrade must restore the handle's shared lease",
+      );
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+      runCanonicalSchemaRepair(store.db, "test/on-demand-repair");
+      assert.ok(
+        store.db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repair_extension'",
+          )
+          .get(),
+      );
+      store.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a completed on-demand repair stays shared when another handle is active", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-lifecycle-repair-noop-"));
+  const path = join(directory, "canonical.sqlite");
+  const lifecyclePlan = {
+    currentVersion: 0,
+    migrations: completeRegistry(0),
+    repairs: [
+      {
+        id: "test/already-complete-repair",
+        version: 0,
+        allowedSchemaObjects: ["repair_extension"],
+        allowOnDemand: true,
+        precondition() {
+          return false;
+        },
+        apply() {
+          throw new Error("an already-complete repair must not run");
+        },
+        validate() {},
+      },
+    ],
+    validate() {},
+  } satisfies CanonicalSchemaLifecyclePlan;
+  try {
+    const first = openCanonicalSchemaLifecycle(path, lifecyclePlan);
+    const second = openCanonicalSchemaLifecycle(path, lifecyclePlan);
+    try {
+      runCanonicalSchemaRepair(first.db, "test/already-complete-repair");
+      assert.equal(
+        Number(second.db.prepare("PRAGMA user_version").get()?.user_version),
+        0,
+      );
+    } finally {
+      second.close();
+      first.close();
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

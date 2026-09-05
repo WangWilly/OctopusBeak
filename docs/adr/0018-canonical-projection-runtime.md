@@ -34,6 +34,24 @@ provenance, active-generation switching, Knowledge Point selection, and eager
 projection snapshot reads. Financial, loan, investment, and relation callers
 must not select a generation or write generation rows directly.
 
+The public Runtime factory remains in
+`canonical-projection-runtime.ts`; the live rebuild and compatibility
+synchronization implementations are private to
+`canonical-projection-implementation.ts`. `canonical-source-store.ts` keeps
+its published compatibility exports and source query adapters, including the
+historical field assembly used by those adapters, but it no longer contains
+the live rebuild or synchronization implementation and it owns its generic
+writer queue locally. The Runtime implementation has no dependency on the
+source-store composition module.
+
+The lifecycle implementation may still mention projection relations for
+historical migrations, migration backfills, and non-mutating structural
+validation. Those operations preserve the published v1–v20 physical schema
+and are governed by [ADR 0017](./0017-canonical-schema-lifecycle.md); they are
+not a second live projection authority. The post-open Contract Purge remains
+the owner of its data transition and cutoff repair, composed with lifecycle
+open by `canonical-database.ts`.
+
 The Runtime has three conceptual entry points: apply one Canonical Financial
 Commit, read one projection snapshot, and rebuild the materialized projection.
 Their TypeScript shapes may evolve without revisiting this decision.

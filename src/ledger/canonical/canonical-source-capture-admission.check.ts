@@ -146,6 +146,67 @@ test("Canonical Source Capture Admission rejects capture overwrite and occurrenc
   }
 });
 
+test("Canonical Source Capture Admission compares the same compact financial content independent of property order", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-order-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const admission = createCanonicalSourceCaptureAdmission(store);
+    const first = request("capture-order-1");
+    first.records = [{
+      ...first.records[0]!,
+      compact: {
+        currency: "TWD",
+        amount: { coefficient: "100", scale: 0 },
+      },
+      compactJson: JSON.stringify({
+        currency: "TWD",
+        amount: { coefficient: "100", scale: 0 },
+      }),
+    }];
+    const second = request("capture-order-2");
+    second.records = [{
+      ...second.records[0]!,
+      compact: {
+        amount: { coefficient: "100", scale: 0 },
+        currency: "TWD",
+      },
+      compactJson: JSON.stringify({
+        amount: { coefficient: "100", scale: 0 },
+        currency: "TWD",
+      }),
+    }];
+    await admission.admit(first);
+    await admission.admit(second);
+    const current = queryCanonicalSourceCurrent(store);
+    assert.equal(current.records.length, 1);
+    assert.equal(current.observations.length, 2);
+    assert.equal(current.provenanceCount, 2);
+    await assert.rejects(
+      admission.admit({
+        ...request("capture-order-financial-change"),
+        records: [{
+          ...request("capture-order-financial-change").records[0]!,
+          compact: {
+            amount: { coefficient: "101", scale: 0 },
+            currency: "TWD",
+          },
+          compactJson: JSON.stringify({
+            amount: { coefficient: "101", scale: 0 },
+            currency: "TWD",
+          }),
+        }],
+      }),
+      (error: unknown) =>
+        error instanceof CanonicalSourceCaptureAdmissionError &&
+        error.reason === "occurrence-conflict",
+    );
+    assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Canonical Source Capture Admission retains one assertion observation and adds provenance on exact recurrence", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-recurrence-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));

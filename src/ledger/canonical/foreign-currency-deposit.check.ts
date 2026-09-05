@@ -134,6 +134,60 @@ assert.notEqual(
   correctedDirection.records[0]!.contentHash,
   usd.records[0]!.contentHash,
 );
+
+// Yuanta's settlement linkage is derived from the login identity supplied by
+// the current workflow. It may be absent in an older Capture and present in a
+// later one while the source transaction itself remains unchanged.
+const yuantaSettlementPayload = {
+  identityAuthority: "human-attested",
+  identityContract: "foreign-currency/yuanta/human-attested-v2",
+  accountingDate: "2026-08-02",
+  transactionInfo: "transaction",
+  reportedRate: "31.50",
+};
+const yuantaLinkageRecord = {
+  sourceKey: "YUANTA-ROW-USD-LINKAGE",
+  sequence: "1",
+  amount: "315.00",
+  direction: "inflow" as const,
+  currencyEvidence: { kind: "row" as const, currency: "TWD" },
+  balanceAfter: "1315.00",
+  sourceTime: { localDate: "2026-08-02" },
+  originalAmount: { amount: "10", currency: "USD" },
+  sourceReportedRate: {
+    rate: "31.50",
+    baseCurrency: "USD",
+    quoteCurrency: "TWD",
+    observedOn: "2026-08-02",
+  },
+  description: "foreign deposit",
+};
+const yuantaWithoutSettlementLinkage = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "yuanta",
+  captureOccurrenceId: "capture-observation-133-linkage-before",
+  records: [
+    {
+      ...yuantaLinkageRecord,
+      sourcePayload: yuantaSettlementPayload,
+    },
+  ],
+});
+const yuantaWithSettlementLinkage = createForeignCurrencyDepositCapture({
+  ...base,
+  source: "yuanta",
+  captureOccurrenceId: "capture-observation-133-linkage-after",
+  records: [
+    {
+      ...yuantaLinkageRecord,
+      sourcePayload: {
+        ...yuantaSettlementPayload,
+        settlementLinkageKey: "sha256:yuanta-settlement-linkage",
+        settlementLinkageContractVersion: "yuanta/foreign-settlement/linkage-v1",
+      },
+    },
+  ],
+});
 const conflicted = createForeignCurrencyDepositCapture({
   ...base,
   source: "cathay",
@@ -358,6 +412,56 @@ try {
   revisionStore.close();
 } finally {
   await rm(revisionDirectory, { recursive: true, force: true });
+}
+
+const linkageDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-linkage-133-"));
+try {
+  const linkageStore = createCanonicalSourceStore(
+    join(linkageDirectory, "canonical.sqlite"),
+  );
+  try {
+    await commitForeignCurrencyDepositCapture(
+      linkageStore,
+      admitForeignCurrencyDepositCapture(yuantaWithoutSettlementLinkage),
+    );
+    const linkedCommit = await commitForeignCurrencyDepositCapture(
+      linkageStore,
+      admitForeignCurrencyDepositCapture(yuantaWithSettlementLinkage),
+    );
+    assert.equal(linkedCommit.transactionCount, 1);
+    assert.equal(
+      Number(
+        (
+          linkageStore.db
+            .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+    assert.equal(
+      Number(
+        (
+          linkageStore.db
+            .prepare("SELECT COUNT(*) AS count FROM transaction_revisions")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      2,
+    );
+    const current = queryForeignCurrencyDepositCurrent(linkageStore, {
+      accountNo: base.accountNo,
+    });
+    assert.equal(current.transactions.length, 1);
+    assert.match(
+      current.transactions[0]!.sourceRecord?.payloadJson ?? "",
+      /settlementLinkageKey/,
+    );
+  } finally {
+    linkageStore.close();
+  }
+} finally {
+  await rm(linkageDirectory, { recursive: true, force: true });
 }
 
 const atomicDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-atomic-133-"));

@@ -1,6 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
+import ts from "typescript";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = join(repositoryRoot, "src", "ledger", "canonical");
@@ -29,6 +30,15 @@ const INTERNAL_OWNERS = new Set([
 const SOURCE_PERSISTENCE_OWNER =
   "src/ledger/canonical/canonical-source-capture-admission.ts";
 
+const SCHEMA_IMPLEMENTATION_OWNER =
+  "src/ledger/canonical/canonical-schema-implementation.ts";
+
+const SCHEMA_MIGRATION_FUNCTIONS = new Set([
+  "applyV8SourceEvidenceSchema",
+  "migrateV3ToV4",
+  "migrateV4ToV5",
+]);
+
 const OWNED_SOURCE_TABLES = [
   "source_connections",
   "identity_epochs",
@@ -49,9 +59,42 @@ function enclosingFunctionName(source, offset) {
   return matches.at(-1)?.[1] ?? null;
 }
 
+function schemaMigrationFunctionAtOffset(source, offset) {
+  const sourceFile = ts.createSourceFile(
+    "canonical-source-admission-authority.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const containing = [];
+  function visit(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      offset >= node.getStart(sourceFile) &&
+      offset < node.getEnd()
+    )
+      containing.push({
+        name: node.name.getText(sourceFile),
+        size: node.getEnd() - node.getStart(sourceFile),
+      });
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return containing.sort((left, right) => left.size - right.size)[0]?.name;
+}
+
 function isCanonicalMigrationDml(path, source, offset) {
-  if (path !== "src/ledger/canonical/canonical-source-store.ts") return false;
   const functionName = enclosingFunctionName(source, offset);
+  if (path === SCHEMA_IMPLEMENTATION_OWNER)
+    return SCHEMA_MIGRATION_FUNCTIONS.has(
+      schemaMigrationFunctionAtOffset(source, offset) ?? "",
+    );
+  if (path !== "src/ledger/canonical/canonical-source-store.ts") return false;
+  // Preserve the legacy source-store migration allowance for the published
+  // source-store compatibility surface. The extracted schema owner above is
+  // intentionally closed to these three existing migration contexts.
   return /^(?:migrate|applyV8|widen|ensureV6|convertV6|backfill|bridgeRetired|purge)/.test(
     functionName ?? "",
   );

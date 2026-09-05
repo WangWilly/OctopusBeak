@@ -35,7 +35,14 @@ import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 
-type BrowserScope = Page | Frame;
+export type FubonBrowserScope = Page | Frame;
+type BrowserScope = FubonBrowserScope;
+
+export type FubonStatementPeriodProbe = {
+  periodOffset: number;
+  status: "available" | "no-record" | "temporarily-unavailable";
+  scope: FubonBrowserScope;
+};
 
 type FubonCredentials = {
   fubon_user_id?: string;
@@ -209,6 +216,13 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function isFubonCreditCardStatementUnavailableText(
+  value: string | null | undefined,
+): boolean {
+  const normalized = cleanText(value).replace(/\s+/gu, "");
+  return /目前帳單產製中[,，]?暫時無法查詢/u.test(normalized);
 }
 
 function isFubonCreditCardNoRecordText(
@@ -585,6 +599,7 @@ async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
       "Fubon credit-card statement records are not available for this account.",
     );
   }
+  if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
   await statementDetailsTable(scope).waitFor({
     state: "attached",
     timeout: 60_000,
@@ -601,11 +616,33 @@ async function findStatementDetailsScope(
     for (const scope of [page, ...page.frames()]) {
       if (await hasAttachedLocator(statementDetailsTable(scope))) return scope;
       if (await hasFubonCreditCardNoRecord(scope)) return scope;
+      if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
     }
     await page.waitForTimeout(500);
   }
 
   throw new Error("Could not find credit card statement result in any frame.");
+}
+
+/**
+ * Yield each period scope only while it is the live response for that period.
+ * Consumers must finish reading the yielded scope before the next iteration,
+ * because the bank reuses/replaces the transaction frame on tab changes.
+ */
+export async function* iterateFubonStatementPeriodProbes(
+  page: Page,
+  periodOffsets: readonly number[],
+): AsyncGenerator<FubonStatementPeriodProbe> {
+  for (const periodOffset of periodOffsets) {
+    await selectStatementPeriod(page, periodOffset);
+    const scope = await findStatementDetailsScope(page);
+    const status = (await hasFubonCreditCardStatementUnavailable(scope))
+      ? "temporarily-unavailable"
+      : (await hasFubonCreditCardNoRecord(scope))
+        ? "no-record"
+        : "available";
+    yield { periodOffset, status, scope };
+  }
 }
 
 async function openUnbilledDetailsPage(page: Page): Promise<BrowserScope> {
@@ -632,6 +669,16 @@ async function hasFubonCreditCardNoRecord(
     .textContent({ timeout: 500 })
     .catch(() => "");
   return isFubonCreditCardNoRecordText(bodyText);
+}
+
+async function hasFubonCreditCardStatementUnavailable(
+  scope: BrowserScope,
+): Promise<boolean> {
+  const bodyText = await scope
+    .locator("body")
+    .textContent({ timeout: 500 })
+    .catch(() => "");
+  return isFubonCreditCardStatementUnavailableText(bodyText);
 }
 
 async function findUnbilledDetailsScope(
@@ -2095,8 +2142,18 @@ export async function runFubonCreditCardStatements(
   const paymentStatuses: PaymentStatus[] = [];
   const summaries: IssuerStatementSummary[] = [];
   const gridStates: GridState[] = [];
-  for (const periodOffset of input.periodOffsets) {
-    const scope = await selectStatementPeriod(page, periodOffset);
+  const unavailablePeriodOffsets: number[] = [];
+  for await (const probe of iterateFubonStatementPeriodProbes(
+    page,
+    input.periodOffsets,
+  )) {
+    const { periodOffset, scope, status } = probe;
+    if (status === "temporarily-unavailable") {
+      unavailablePeriodOffsets.push(periodOffset);
+      continue;
+    }
+    if (status === "no-record") continue;
+
     const periodLabel = await readStatementPeriodLabel(scope);
     statementPeriods.push(periodLabel);
     const statementResult = await readStatementRows(
@@ -2132,7 +2189,10 @@ export async function runFubonCreditCardStatements(
   ];
   const isFullCapture =
     input.periodOffsets.length === periodTabs.length &&
+    statementPeriods.length === periodTabs.length &&
+    gridStates.length === periodTabs.length + 1 &&
     periodTabs.every((period) => input.periodOffsets.includes(period.offset)) &&
+    unavailablePeriodOffsets.length === 0 &&
     input.statementCardLabels.length === 0 &&
     input.unbilledCardNumbers.length === 0 &&
     gridStates.every(
@@ -2161,23 +2221,26 @@ export async function runFubonCreditCardStatements(
           bank: "fubon",
           reason: "scope_or_grid_not_proven_complete",
           periodOffsets: input.periodOffsets,
+          unavailablePeriodOffsets,
           grids: gridStates,
         },
       };
 
-  const canonicalCaptures = buildFubonCanonicalCreditCardCaptures({
-    captureId: capture.snapshotMode === "full" ? capture.captureId : randomUUID(),
-    observedAt:
-      capture.snapshotMode === "full" ? capture.capturedAt : new Date().toISOString(),
-    statementRows: sortedStatementRows,
-    unbilledRows: sortedUnbilledRows,
-    summaries,
-    gridStates,
-    input,
-    ...(overrides.panFingerprintKey
-      ? { panFingerprintKey: overrides.panFingerprintKey }
-      : {}),
-  });
+  const canonicalCaptures =
+    capture.snapshotMode === "full"
+      ? buildFubonCanonicalCreditCardCaptures({
+          captureId: capture.captureId,
+          observedAt: capture.capturedAt,
+          statementRows: sortedStatementRows,
+          unbilledRows: sortedUnbilledRows,
+          summaries,
+          gridStates,
+          input,
+          ...(overrides.panFingerprintKey
+            ? { panFingerprintKey: overrides.panFingerprintKey }
+            : {}),
+        })
+      : [];
   let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
   if (overrides.canonicalFinancialLedgerDir && canonicalCaptures.length > 0) {
     const store = createCanonicalSourceStore(
@@ -2209,6 +2272,12 @@ export async function runFubonCreditCardStatements(
     capture,
     cardKeys,
   );
+
+  if (unavailablePeriodOffsets.length > 0) {
+    throw new Error(
+      `Fubon credit-card statement details are temporarily unavailable for period offsets ${unavailablePeriodOffsets.join(", ")} while the current bill is being generated; available downloads were saved, retry after billing completes.`,
+    );
+  }
 
   return {
     periodOffsets: input.periodOffsets,

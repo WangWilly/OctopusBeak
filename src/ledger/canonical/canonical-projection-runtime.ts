@@ -1,14 +1,18 @@
 import type { DatabaseSync } from "node:sqlite";
 import { basename, dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { CANONICAL_SQLITE_FILE } from "./canonical-schema-implementation.ts";
 import {
-  CANONICAL_SQLITE_FILE,
   openCanonicalDatabase,
+} from "./canonical-database.ts";
+import {
   canonicalProjectionRuntimeRebuildInternal,
   canonicalProjectionRuntimeSyncInternal,
-  type CanonicalProjectionRebuildOptions,
-  type CanonicalProjectionRebuildResult,
-} from "./canonical-source-store.ts";
+} from "./canonical-projection-implementation.ts";
+import type {
+  CanonicalProjectionRebuildOptions,
+  CanonicalProjectionRebuildResult,
+} from "./canonical-projection-contract.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 
 type ProjectionSqlInput =

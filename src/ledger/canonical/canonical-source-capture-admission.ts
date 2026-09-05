@@ -768,6 +768,72 @@ function sourceIdFor(...parts: string[]): Buffer {
     .subarray(0, 16);
 }
 
+/**
+ * Source occurrence identity deliberately excludes transport position. A
+ * provider may return the same row in a different page, range, or row
+ * position when the requested window changes. Those coordinates remain in
+ * each immutable Capture's evidence, but they are not source content for the
+ * occurrence admission check.
+ */
+const SOURCE_OCCURRENCE_TRANSPORT_FIELDS: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  "fubon-domestic-deposit": Object.freeze(["pageOrdinal", "rowOrdinal"]),
+  "ctbc-domestic-deposit": Object.freeze(["rangeOrdinal", "rowOrdinal"]),
+  "yuanta-domestic-deposit": Object.freeze(["pageOrdinal", "rowOrdinal"]),
+});
+
+function mutableSourceObject(
+  value: unknown,
+): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Return the source-content view used only to compare repeated occurrences.
+ * The persisted payload is never rewritten, so every Capture still retains
+ * the exact compact evidence it admitted. This narrow normalization only
+ * removes fields whose owning adapter excludes them from occurrence identity
+ * and canonicalizes JSON object property order.
+ */
+function sourceRecordComparisonPayload(
+  recordKind: string,
+  payloadJson: string,
+): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadJson);
+  } catch {
+    return null;
+  }
+  const payload = mutableSourceObject(parsed);
+  if (!payload) return null;
+
+  for (const field of SOURCE_OCCURRENCE_TRANSPORT_FIELDS[recordKind] ?? [])
+    delete payload[field];
+
+  // The v13 adapter stopped writing this capture-local provenance field. Keep
+  // recaptures compatible with immutable rows admitted before that change.
+  if (recordKind === "linebank-domestic-deposit-financial-v13") {
+    const provenance = mutableSourceObject(payload.provenance);
+    if (provenance) delete provenance.captureId;
+  }
+
+  // Yuanta's settlement linkage is derived from the current login identity.
+  // It enriches relation provenance after a recapture, but does not change the
+  // source transaction identified by sourceKey or any booked financial fact.
+  if (recordKind === "yuanta-foreign-currency-deposit") {
+    const sourcePayload = mutableSourceObject(payload.sourcePayload);
+    if (sourcePayload) {
+      delete sourcePayload.settlementLinkageKey;
+      delete sourcePayload.settlementLinkageContractVersion;
+    }
+  }
+  return payload;
+}
+
 function sourceRecordContentMatches(
   recordKind: string,
   row: Record<string, unknown>,
@@ -776,20 +842,34 @@ function sourceRecordContentMatches(
   if (String(row.provider_key) !== record.providerKey) return false;
   const payloadJson =
     record.compactJson ?? stableCanonicalSourceJson(record.compact);
-  if (!recordKind.endsWith("-credit-card-statement-summary"))
+  const prior = sourceRecordComparisonPayload(
+    recordKind,
+    String(row.payload_json),
+  );
+  const next = sourceRecordComparisonPayload(recordKind, payloadJson);
+  if (!prior || !next) {
+    if (recordKind.endsWith("-credit-card-statement-summary")) return false;
     return (
       String(row.content_hash) === record.contentHash &&
       String(row.payload_json) === payloadJson
     );
-  try {
-    const prior = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
-    const next = JSON.parse(payloadJson) as Record<string, unknown>;
+  }
+
+  if (recordKind.endsWith("-credit-card-statement-summary")) {
     delete prior.revisionKey;
     delete next.revisionKey;
     return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
-  } catch {
-    return false;
   }
+
+  // Financial content hashes are part of the immutable source contract. Only
+  // Yuanta's explicitly derived settlement-linkage enrichment may change the
+  // hash while preserving the normalized source transaction content.
+  if (
+    String(row.content_hash) !== record.contentHash &&
+    recordKind !== "yuanta-foreign-currency-deposit"
+  )
+    return false;
+  return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
 }
 
 function nextSourceKnowledgeTime(store: CanonicalSourceStore): number {
