@@ -121,6 +121,20 @@ function addSharedCapture(
         revisionId, transactionId, sourceRecordId,
       );
   });
+  const suffix = captureKey.slice(captureKey.lastIndexOf("-") + 1);
+  const statementRecordId = blob(55 + ordinal);
+  db.prepare(`INSERT INTO source_records VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+  )`).run(
+    statementRecordId, captureId, blob(4), blob(5),
+    "esun-credit-card-statement-summary", `statement-summary:statement-1`,
+    "human-attested:no-provider-key", `sha256:summary-${suffix}`,
+    `summary-${suffix}`, `summary-${suffix}`, null, "{}",
+  );
+  db.prepare("INSERT INTO source_record_scopes VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+    statementRecordId, blob(20 + ordinal), captureId, blob(2), blob(4),
+    `statement-summary:statement-1`, `summary-${suffix}`, blob(5),
+  );
 }
 
 function capture(
@@ -324,7 +338,7 @@ test("immutable revision reuse fails and rolls the callback savepoint back", () 
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
   assert.equal(
     (db.prepare("SELECT COUNT(*) AS n FROM source_records WHERE occurrence_key = 'summary-b'").get() as { n: number }).n,
-    0,
+    1,
   );
   assert.equal(
     (db.prepare("SELECT balance_coefficient AS value FROM canonical_credit_card_statement_revisions").get() as { value: string }).value,

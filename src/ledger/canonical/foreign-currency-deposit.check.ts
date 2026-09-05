@@ -336,22 +336,25 @@ try {
     join(revisionDirectory, "canonical.sqlite"),
   );
   await commitForeignCurrencyDepositCapture(revisionStore, admittedUsd);
-  await commitForeignCurrencyDepositCapture(
-    revisionStore,
-    admitForeignCurrencyDepositCapture(correctedDirection),
+  await assert.rejects(
+    () =>
+      commitForeignCurrencyDepositCapture(
+        revisionStore,
+        admitForeignCurrencyDepositCapture(correctedDirection),
+      ),
+    /occurrence content overwrite|occurrence conflict/i,
   );
   const current = queryForeignCurrencyDepositCurrent(revisionStore, {
     accountNo: base.accountNo,
   });
   assert.equal(current.transactions.length, 1);
-  assert.equal(current.transactions[0]!.direction, "outflow");
+  assert.equal(current.transactions[0]!.direction, "inflow");
   const lineage = queryForeignCurrencyDepositLineage(revisionStore, {
     occurrenceKey: admittedUsd.records[0]!.occurrenceKey,
   });
-  assert.deepEqual(
-    lineage.transactions.map((transaction) => transaction.direction),
-    ["inflow", "outflow"],
-  );
+  assert.deepEqual(lineage.transactions.map((transaction) => transaction.direction), [
+    "inflow",
+  ]);
   revisionStore.close();
 } finally {
   await rm(revisionDirectory, { recursive: true, force: true });

@@ -1,11 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
-  admitCanonicalSourceEvidence,
-  type CanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
@@ -754,6 +753,10 @@ function domesticRecordFromObservation(
   const compact = observation.compact as unknown as DomesticDepositSourceRecord;
   return {
     ...cloneRecord(compact),
+    provenance: {
+      ...compact.provenance,
+      captureId: observation.captureId,
+    },
     recordId: observation.recordId,
     captureId: observation.captureId,
     commitSequence: observation.commitSequence,
@@ -835,10 +838,13 @@ export async function commitCanonicalDomesticDeposit(
       ),
     ),
   );
-  const committed = await commitCanonicalSourceEvidence(
-    store.sourceStore,
-    admitCanonicalSourceEvidence(domesticCaptureEvidence(capture)),
-  );
+  const evidence = domesticCaptureEvidence(capture);
+  const admitted = await createCanonicalSourceCaptureAdmission(store.sourceStore)
+    .admit(evidence);
+  const committed = {
+    commitSequence: admitted.knowledgePoint,
+    provenanceCount: evidence.records.length,
+  };
   const repeatRecordCount = capture.records.filter((record) =>
     before.has(domesticRecordIdentity(record)),
   ).length;
@@ -923,7 +929,6 @@ function v13CompactRecord(
     cancellation: "N",
     cancellationFlags: record.cancellationFlags,
     provenance: {
-      captureId: capture.captureId,
       matchingRuleVersion: "occurrence-v1",
     },
   });

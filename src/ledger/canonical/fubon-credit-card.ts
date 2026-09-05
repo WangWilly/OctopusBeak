@@ -1440,6 +1440,32 @@ function fubonCanonicalSpineCapture(
     authority: capture.authorityRoute,
     periods: capture.scope.completeness.billedPeriods,
   });
+  const nonTransactionRecords = capture.statements.map((statement) => {
+    const compactJson = JSON.stringify({
+      statementKey: statement.statementKey,
+      cycleStart: statement.cycleStart,
+      cycleEnd: statement.cycleEnd,
+      issueDate: statement.issueDate,
+      dueDate: statement.dueDate,
+      currency: statement.currency,
+      balance: statement.balance,
+      minimumPayment: statement.minimumPayment,
+    });
+    return {
+      recordType: "statement-evidence" as const,
+      recordKind: "fubon-credit-card-statement-summary",
+      occurrenceKey: statement.evidence.sourceRecordKey,
+      collisionKey: statement.evidence.sourceRecordKey,
+      providerKey: "human-attested:no-provider-key",
+      contentHash: opaqueFubonSpineToken(
+        "fubon-credit-statement-summary-v2",
+        compactJson,
+      ),
+      sequenceLexeme: `statement-summary:${statement.statementKey}`,
+      compactJson,
+      description: null,
+    };
+  });
   return admitCanonicalFinancialDepositCapture({
     captureId: capture.captureId,
     authorityRoute: capture.authorityRoute,
@@ -1512,6 +1538,7 @@ function fubonCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    nonTransactionRecords,
   });
 }
 
@@ -1599,55 +1626,9 @@ function persistFubonCanonicalExtensions(
       ).get(scope.capture_id, statement.evidence.sourceRecordKey) as
         | { source_record_id?: Uint8Array }
         | undefined;
-      const sourceRecordId = existingRecord?.source_record_id ?? canonicalId();
-      if (!existingRecord) {
-        const payload = JSON.stringify({
-          statementKey: statement.statementKey,
-          revisionKey: statement.revisionKey,
-          cycleStart: statement.cycleStart,
-          cycleEnd: statement.cycleEnd,
-          issueDate: statement.issueDate,
-          dueDate: statement.dueDate,
-          currency: statement.currency,
-          balance: statement.balance,
-          minimumPayment: statement.minimumPayment,
-        });
-        db.prepare(
-          `INSERT INTO source_records(
-            source_record_id, capture_id, source_subject_id, commit_id,
-            record_kind, sequence_lexeme, provider_key, content_hash,
-            occurrence_key, collision_key, description, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          sourceRecordId,
-          scope.capture_id,
-          scope.source_subject_id,
-          scope.commit_id,
-          "fubon-credit-card-statement-summary",
-          `statement-summary:${statement.statementKey}`,
-          "human-attested:no-provider-key",
-          opaqueFubonSpineToken("fubon-credit-statement-summary-v2", payload),
-          statement.evidence.sourceRecordKey,
-          statement.evidence.sourceRecordKey,
-          null,
-          payload,
-        );
-        db.prepare(
-          `INSERT INTO source_record_scopes(
-            source_record_id, scope_id, capture_id, account_id,
-            source_subject_id, sequence_lexeme, occurrence_key, commit_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          sourceRecordId,
-          scope.scope_id,
-          scope.capture_id,
-          scope.account_id,
-          scope.source_subject_id,
-          `statement-summary:${statement.statementKey}`,
-          statement.evidence.sourceRecordKey,
-          scope.commit_id,
-        );
-      }
+      if (!existingRecord?.source_record_id)
+        throw new Error("Fubon statement source evidence is missing from admission.");
+      const sourceRecordId = existingRecord.source_record_id;
       statementEvidenceSourceRecord.set(statement.evidence.sourceRecordKey, sourceRecordId);
     }
     const sharedTransactions = new Map<
