@@ -1,0 +1,34 @@
+{
+  "packageId": "transaction-taxonomy",
+  "version": "v1",
+  "semanticHash": "sha256:reZa5PYuggNRuOqhWmBAunpn15zuo6qU63zYf1ZafVw",
+  "kinds": [
+    "purchase", "transfer", "transfer.internal", "transfer.external",
+    "transfer.investment_contribution", "transfer.investment_withdrawal", "transfer.security_position",
+    "payment", "payment.bill", "payment.credit_card", "payment.loan",
+    "cash", "cash.deposit", "cash.withdrawal",
+    "income", "income.employment", "income.employment.salary", "income.employment.bonus",
+    "income.business", "income.pension", "income.government_benefit", "income.rental",
+    "income.reward", "income.dividend", "income.investment_distribution",
+    "fee", "fee.bank", "fee.card", "fee.loan", "fee.investment",
+    "interest", "interest.earned", "interest.charged",
+    "tax", "tax.payment", "tax.refund", "tax.withholding",
+    "refund", "reversal", "adjustment", "loan", "loan.disbursement",
+    "investment", "investment.trade", "investment.trade.buy", "investment.trade.sell",
+    "investment.trade.sell_short", "investment.trade.buy_to_cover", "investment.trade.reinvestment",
+    "investment.corporate_action", "investment.corporate_action.split", "investment.corporate_action.merger",
+    "investment.corporate_action.spin_off", "investment.corporate_action.exercise",
+    "investment.corporate_action.assignment", "investment.corporate_action.expiration"
+  ],
+  "categories": [
+    "food_and_groceries", "dining", "alcohol_and_tobacco", "clothing_and_footwear",
+    "housing_and_utilities", "household_goods_and_services", "healthcare", "transportation",
+    "travel", "information_and_communication", "recreation_sports_and_culture", "education",
+    "personal_and_family_care", "insurance", "taxes_and_government", "gifts_and_donations",
+    "work_and_business"
+  ],
+  "counterpartyRoles": [
+    "merchant", "marketplace", "payment_platform", "financial_institution",
+    "income_source", "government", "person"
+  ]
+}

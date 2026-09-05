@@ -3576,3 +3576,9 @@ export function queryCanonicalSourceLineage(
     };
   });
 }
+
+// The typed taxonomy/enrichment writer and query are shared by every provider;
+// retain this module as the stable canonical import surface.
+export * from "./transaction-taxonomy.ts";
+export * from "./canonical-enrichment.ts";
+export * from "./cathay-automatic-enrichment.ts";

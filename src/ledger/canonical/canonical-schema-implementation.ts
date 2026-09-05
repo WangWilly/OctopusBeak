@@ -26,6 +26,11 @@ import {
   requireCanonicalSourceToken,
   type CanonicalSourceRecord,
 } from "./canonical-source-evidence.ts";
+import {
+  ensureCanonicalTaxonomySchema,
+  seedCanonicalTaxonomy,
+  validateCanonicalTaxonomySchema,
+} from "./transaction-taxonomy.ts";
 
 /** Keep the physical amount contract identical to the published schema. */
 const MAX_CANONICAL_SCALE = 9007199254740991n;
@@ -216,7 +221,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 20;
+export const CANONICAL_SCHEMA_VERSION = 21;
 
 type CanonicalId = Buffer;
 
@@ -3610,14 +3615,25 @@ function canonicalCommitHasEvidence(
       )
     );
   }
-  if (commitKind === "derived_import")
+  if (commitKind === "derived_import") {
+    if (!tableExists(db, "enrichment_runs"))
+      return Boolean(
+        db
+          .prepare(
+            "SELECT 1 FROM derived_import_runs WHERE commit_id = ? LIMIT 1",
+          )
+          .get(commitId),
+      );
     return Boolean(
       db
         .prepare(
-          "SELECT 1 FROM derived_import_runs WHERE commit_id = ? LIMIT 1",
+          `SELECT 1 FROM derived_import_runs WHERE commit_id = ?
+           UNION ALL
+           SELECT 1 FROM enrichment_runs WHERE commit_id = ? LIMIT 1`,
         )
-        .get(commitId),
+        .get(commitId, commitId),
     );
+  }
   if (commitKind === "user_assertion") {
     if (
       db
@@ -4799,7 +4815,7 @@ function validateCanonicalSchemaMigrationMetadata(db: DatabaseSync): void {
       "Canonical SQLite schema migration metadata contains an unsupported version.",
     );
   // Fresh v6 databases intentionally begin their ledger at v7. Databases
-  // upgraded from the older versioned lineage contain the complete 1..20
+  // upgraded from the older versioned lineage contain the complete 1..21
   // chain. Both starts are published compatibility baselines; every later
   // row must still be present exactly once through the current version.
   const first = versions[0];
@@ -6236,7 +6252,11 @@ export function isRetiredFubonV18RecoveryEligible(options: {
   exactKnownState: boolean;
 }): boolean {
   return (
-    options.schemaVersion === CANONICAL_SCHEMA_VERSION &&
+    // This bridge is specifically the crash window after the retired v18
+    // store has reached v20 but before its independent purge transition.
+    // The current v21 taxonomy migration must not make that old recovery
+    // predicate unreachable.
+    options.schemaVersion === 20 &&
     options.readOnly === false &&
     options.exactKnownState
   );
@@ -7388,6 +7408,324 @@ function migrateV19ToV20(db: DatabaseSync): void {
   }
 }
 
+/**
+ * The v21 taxonomy writer reuses the shared assertion spine.  Older stores
+ * have the original v6 CHECKs and no enrichment-run association, so widen the
+ * two nullable association columns and replace only the integrity triggers.
+ * Existing Source/Derived/User rows remain byte-for-byte intact.
+ */
+function ensureV21AssertionSpine(db: DatabaseSync): void {
+  const relationIsTyped = (table: string, marker: string): boolean =>
+    String(
+      (
+        db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+          )
+          .get(table) as { sql?: unknown } | undefined
+      )?.sql ?? "",
+    ).includes(marker);
+  if (
+    relationIsTyped("assertions", "counterparty_display") &&
+    relationIsTyped("assertion_transitions", "enrichment_run_id") &&
+    relationIsTyped("assertion_provenance", "enrichment_run_id")
+  ) {
+    db.exec(`
+DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_insert;
+DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_update;
+DROP TRIGGER IF EXISTS trg_assertion_provenance_integrity_insert;
+DROP TRIGGER IF EXISTS trg_assertion_provenance_integrity_update;
+`);
+  } else {
+    for (const view of [
+      "source_assertions",
+      "derived_assertions",
+      "user_assertions",
+      "assertion_lifecycle_events",
+      "derived_assertion_lifecycle_events",
+      "user_assertion_lifecycle_events",
+      "derived_assertion_provenance",
+      "user_assertion_provenance",
+    ])
+      if (relationType(db, view) === "view") db.exec(`DROP VIEW ${view}`);
+    for (const index of [
+      "idx_assertions_lineage",
+      "idx_assertion_transitions_knowledge",
+      "idx_assertion_transitions_transaction",
+      "idx_assertion_provenance_authority",
+      "idx_assertion_provenance_record",
+    ]) db.exec(`DROP INDEX IF EXISTS ${index}`);
+    db.exec(`
+ALTER TABLE assertion_provenance RENAME TO assertion_provenance_v20;
+ALTER TABLE assertion_transitions RENAME TO assertion_transitions_v20;
+ALTER TABLE assertions RENAME TO assertions_v20;
+CREATE TABLE assertions (
+  assertion_id BLOB PRIMARY KEY CHECK(length(assertion_id) = 16),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('transaction_revision','display_name','note','kind','category','counterparty_role','counterparty_display')),
+  target_kind TEXT NOT NULL CHECK(target_kind = 'transaction'),
+  origin TEXT NOT NULL CHECK(origin IN ('source','derived','user')),
+  producer_id TEXT NOT NULL,
+  rule_lineage TEXT NOT NULL,
+  revision_id BLOB REFERENCES transaction_revisions(revision_id),
+  value_text TEXT,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  CHECK((origin = 'source' AND field_name = 'transaction_revision' AND revision_id IS NOT NULL AND value_text IS NULL)
+    OR (origin IN ('source','derived','user') AND field_name IN ('kind','category','counterparty_role','counterparty_display') AND revision_id IS NULL AND value_text IS NOT NULL)
+    OR (origin IN ('derived','user') AND field_name IN ('display_name','note') AND revision_id IS NULL AND value_text IS NOT NULL))
+);
+CREATE TABLE assertion_transitions (
+  event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('transaction_revision','display_name','note','kind','category','counterparty_role','counterparty_display')),
+  capture_id BLOB,
+  scope_id BLOB,
+  run_id BLOB REFERENCES derived_import_runs(run_id),
+  enrichment_run_id BLOB REFERENCES enrichment_runs(run_id),
+  coordinate_id BLOB REFERENCES derived_scope_coordinates(coordinate_id),
+  user_id TEXT,
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','restored'))
+);
+CREATE TABLE assertion_provenance (
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  source_record_id BLOB REFERENCES source_records(source_record_id),
+  run_id BLOB REFERENCES derived_import_runs(run_id),
+  enrichment_run_id BLOB REFERENCES enrichment_runs(run_id),
+  coordinate_id BLOB REFERENCES derived_scope_coordinates(coordinate_id),
+  commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
+);
+INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+  SELECT assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id FROM assertions_v20;
+INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, enrichment_run_id, coordinate_id, user_id, commit_id, event_kind)
+  SELECT event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, NULL, coordinate_id, user_id, commit_id, event_kind FROM assertion_transitions_v20;
+INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
+  SELECT assertion_id, source_record_id, run_id, NULL, coordinate_id, commit_id FROM assertion_provenance_v20;
+ALTER TABLE current_transaction_fields RENAME TO current_transaction_fields_v20;
+ALTER TABLE projection_generation_transaction_fields RENAME TO projection_generation_transaction_fields_v20;
+CREATE TABLE current_transaction_fields (
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  value_text TEXT NOT NULL,
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  derived_assertion_id BLOB REFERENCES assertions(assertion_id),
+  user_assertion_id BLOB REFERENCES assertions(assertion_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(transaction_id, field_name),
+  CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
+    OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
+);
+INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+  SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM current_transaction_fields_v20;
+CREATE TABLE projection_generation_transaction_fields (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  field_name TEXT NOT NULL CHECK(field_name IN ('display_name','note')),
+  value_text TEXT NOT NULL,
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  derived_assertion_id BLOB REFERENCES assertions(assertion_id),
+  user_assertion_id BLOB REFERENCES assertions(assertion_id),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, transaction_id, field_name),
+  CHECK((origin = 'derived' AND derived_assertion_id IS NOT NULL AND user_assertion_id IS NULL)
+    OR (origin = 'user' AND user_assertion_id IS NOT NULL AND derived_assertion_id IS NULL))
+);
+INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+  SELECT generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id FROM projection_generation_transaction_fields_v20;
+DROP TABLE current_transaction_fields_v20;
+DROP TABLE projection_generation_transaction_fields_v20;
+DROP TABLE assertion_provenance_v20;
+DROP TABLE assertion_transitions_v20;
+DROP TABLE assertions_v20;
+`);
+    db.exec(SCHEMA_SHARED_ASSERTION_SPINE_INDEXES);
+    db.exec(SCHEMA_V7_APPEND);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_current_transaction_fields_projection ON current_transaction_fields(field_name, origin, projection_commit_id, transaction_id)");
+    ensureV6ProjectionOriginConstraints(db);
+    convertV6CompatibilityTables(db);
+  }
+  db.exec(`
+DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_insert;
+DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_update;
+DROP TRIGGER IF EXISTS trg_assertion_provenance_integrity_insert;
+DROP TRIGGER IF EXISTS trg_assertion_provenance_integrity_update;
+CREATE TRIGGER trg_assertion_transitions_integrity_insert
+BEFORE INSERT ON assertion_transitions
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND assertion.transaction_id = NEW.transaction_id
+    AND assertion.field_name = NEW.field_name
+    AND (
+      assertion.origin = 'source'
+      OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+          AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
+          AND NEW.user_id = assertion.producer_id)
+      OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+          AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run
+        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+          AND registered.contract_version = 'v1'
+      ))
+      OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+          AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
+          AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM enrichment_runs run
+            JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+            WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+              AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+              AND output.assertion_id = assertion.assertion_id
+              AND output.transaction_id = assertion.transaction_id
+              AND output.field_name = assertion.field_name
+          ))
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'assertion transition coordinate mismatch'); END;
+CREATE TRIGGER trg_assertion_transitions_integrity_update
+BEFORE UPDATE OF assertion_id, transaction_id, field_name, enrichment_run_id ON assertion_transitions
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND assertion.transaction_id = NEW.transaction_id
+    AND assertion.field_name = NEW.field_name
+    AND (
+      assertion.origin = 'source'
+      OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+          AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
+          AND NEW.user_id = assertion.producer_id)
+      OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+          AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run
+        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+          AND registered.contract_version = 'v1'
+      ))
+      OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+          AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
+          AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM enrichment_runs run
+            JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+            WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+              AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+              AND output.transaction_id = assertion.transaction_id
+              AND output.field_name = assertion.field_name
+          ))
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'assertion transition coordinate mismatch'); END;
+CREATE TRIGGER trg_assertion_provenance_integrity_insert
+BEFORE INSERT ON assertion_provenance
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND (
+      (assertion.origin = 'source' AND NEW.source_record_id IS NOT NULL
+        AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL)
+      OR (assertion.origin = 'user' AND NEW.source_record_id IS NULL
+        AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL)
+      OR (assertion.origin = 'derived' AND NEW.source_record_id IS NULL
+        AND NEW.enrichment_run_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run
+        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+          AND registered.contract_version = 'v1'
+      ))
+      OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+          AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+          AND NEW.enrichment_run_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM enrichment_runs run
+            JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+            WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+              AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+              AND output.assertion_id = assertion.assertion_id
+              AND output.transaction_id = assertion.transaction_id
+              AND output.field_name = assertion.field_name
+              AND (assertion.origin <> 'source' OR output.source_record_id IS NOT NULL)
+              AND output.source_record_id IS NEW.source_record_id
+          ))
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'assertion provenance coordinate mismatch'); END;
+CREATE TRIGGER trg_assertion_provenance_integrity_update
+BEFORE UPDATE OF assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id ON assertion_provenance
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+  WHERE assertion.assertion_id = NEW.assertion_id
+    AND (
+      (assertion.origin = 'source' AND NEW.source_record_id IS NOT NULL
+        AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL)
+      OR (assertion.origin = 'user' AND NEW.source_record_id IS NULL
+        AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL)
+      OR (assertion.origin = 'derived' AND NEW.source_record_id IS NULL
+        AND NEW.enrichment_run_id IS NULL AND EXISTS (
+        SELECT 1 FROM derived_import_runs run
+        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+          AND registered.contract_version = 'v1'
+      ))
+      OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+          AND NEW.run_id IS NULL AND NEW.coordinate_id IS NULL
+          AND NEW.enrichment_run_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM enrichment_runs run
+            JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+            WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+              AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+              AND output.assertion_id = assertion.assertion_id
+              AND output.transaction_id = assertion.transaction_id
+              AND output.field_name = assertion.field_name
+              AND (assertion.origin <> 'source' OR output.source_record_id IS NOT NULL)
+              AND output.source_record_id IS NEW.source_record_id
+          ))
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'assertion provenance coordinate mismatch'); END;
+`);
+}
+
+function migrateV20ToV21(db: DatabaseSync): void {
+  ensureV21AssertionSpine(db);
+  ensureCanonicalTaxonomySchema(db);
+  seedCanonicalTaxonomy(db);
+  validateCanonicalTaxonomySchema(db);
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (21, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 21");
+}
+
 type CanonicalAttestationColumn = {
   readonly name: string;
   readonly definition: string;
@@ -8085,6 +8423,14 @@ export function createCanonicalSchemaLifecyclePlan(
         migrateV19ToV20(db);
       },
     },
+    {
+      id: "canonical/v20-v21/taxonomy-package-and-enrichment/v1",
+      fromVersion: 20,
+      toVersion: 21,
+      apply(db) {
+        migrateV20ToV21(db);
+      },
+    },
     ],
   );
   return {
@@ -8387,6 +8733,7 @@ function validateReadOnlyDatabase(
   validateCanonicalInvestmentFundingRelationSchema(db);
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
+  if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   // The lifecycle validates the physical audit schema only. Whether a
   // versioned financial/source cleanup has been applied is a data-transition
   // concern checked after a validated handle exists.
