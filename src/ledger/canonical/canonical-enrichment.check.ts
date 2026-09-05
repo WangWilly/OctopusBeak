@@ -730,6 +730,53 @@ test("historical enrichment respects transaction creation, corrected financial d
   }
 });
 
+test("historical field provenance follows the knowledge cutoff for a reused assertion", async () => {
+  const state = await createFixtureState();
+  try {
+    const ruleLineage = "test/reused-assertion-provenance";
+    const first = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage,
+      observedAt: "2026-08-01T00:00:00.000Z",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
+      outputs: [derivedOutput(state, "cash.deposit", ruleLineage, { sourceValue: "first-evidence" })],
+    });
+    const second = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage,
+      observedAt: "2026-08-02T00:00:00.000Z",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
+      outputs: [derivedOutput(state, "cash.deposit", ruleLineage, { sourceValue: "second-evidence" })],
+    });
+    assert.equal(first.assertionIds.length, 1);
+    assert.deepEqual(second.assertionIds, first.assertionIds);
+    assert.ok(first.commitSequence < second.commitSequence);
+
+    const query = createCanonicalEnrichmentQuery(state.directory);
+    const current = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(current.kind.status, "supported");
+    assert.equal(current.kind.provenance.sourceValue, "second-evidence");
+    const beforeSecondRun = query.historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: first.commitSequence,
+    }).transactions[0]!;
+    assert.equal(beforeSecondRun.kind.status, "supported");
+    assert.equal(beforeSecondRun.kind.provenance.sourceValue, "first-evidence");
+    const afterSecondRun = query.historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: second.commitSequence,
+    }).transactions[0]!;
+    assert.equal(afterSecondRun.kind.status, "supported");
+    assert.equal(afterSecondRun.kind.provenance.sourceValue, "second-evidence");
+  } finally {
+    await discard(state.directory);
+  }
+});
+
 test("projection rebuild failure preserves the current typed enrichment projection", async () => {
   const state = await createFixtureState();
   try {
