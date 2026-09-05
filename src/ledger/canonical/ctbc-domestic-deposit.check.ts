@@ -27,6 +27,10 @@ import {
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
 } from "./canonical-source-store.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildCtbcDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
 
 assert.equal(
@@ -360,6 +364,31 @@ try {
       [financialInput],
     );
     assert.equal(committed[0]?.transactionCount, 1);
+    // CTBC's occurrence fence excludes the response-range and row position.
+    // Recollection through a different range/page must remain the same source
+    // occurrence when its stable content hash is unchanged.
+    const ctbcOrdinalDrift = admitCanonicalFinancialDepositCapture({
+      ...financial.capture!,
+      captureId: "ctbc-financial-ordinal-drift",
+      records: financial.capture!.records.map((record) => {
+        const compact = JSON.parse(record.compactJson) as Record<string, unknown>;
+        return {
+          ...record,
+          compactJson: JSON.stringify({
+            ...compact,
+            rangeOrdinal: 3,
+            rowOrdinal: 35,
+          }),
+        };
+      }),
+    });
+    await commitCanonicalFinancialDepositCapture(writer, ctbcOrdinalDrift);
+    assert.equal(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      1,
+    );
     assert.equal(
       buildCtbcDomesticDepositReadinessFromLedger(store.db).capability,
       "canonical-human-attested",

@@ -48,7 +48,10 @@ import {
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
 } from "./canonical-source-store.ts";
-import { admitCanonicalFinancialDepositCapture } from "./canonical-financial-deposit-writer.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildFubonDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
 
 const stableFubonConnectionScope = "FUBON-USER-001\u0000FUBON-LOGIN-001";
@@ -983,6 +986,33 @@ try {
         .get("fubon-domestic-deposit")?.count,
       2,
     );
+    assert.equal(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      1,
+    );
+
+    // The Fubon occurrence fence intentionally excludes pagination position.
+    // A recollection through an overlapping query window may therefore carry
+    // the same source content hash with different page/row ordinals. Keep the
+    // immutable Capture while admitting the stable occurrence again.
+    const fubonOrdinalDrift = admitCanonicalFinancialDepositCapture({
+      ...firstAdmission.capture!,
+      captureId: "fubon-human-attested-ordinal-drift",
+      records: firstAdmission.capture!.records.map((record) => {
+        const compact = JSON.parse(record.compactJson) as Record<string, unknown>;
+        return {
+          ...record,
+          compactJson: JSON.stringify({
+            ...compact,
+            pageOrdinal: 9,
+            rowOrdinal: 35,
+          }),
+        };
+      }),
+    });
+    await commitCanonicalFinancialDepositCapture(writer, fubonOrdinalDrift);
     assert.equal(
       store.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")

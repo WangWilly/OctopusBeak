@@ -25,6 +25,15 @@ test("source admission authority rejects legacy and unauthorized internal caller
         path: "src/ledger/canonical/provider.check.ts",
         source: "admitCanonicalSourceEvidence(evidence);",
       },
+      {
+        path: "src/ledger/canonical/canonical-schema-implementation.ts",
+        source: [
+          "function productWriter() {",
+          "  db.prepare('INSERT INTO source_records(source_record_id) VALUES (?)');",
+          "}",
+          "const productWriterArrow = () => db.prepare('INSERT INTO source_records(source_record_id) VALUES (?)');",
+        ].join("\n"),
+      },
     ]),
     [
       {
@@ -46,6 +55,16 @@ test("source admission authority rejects legacy and unauthorized internal caller
         path: "src/ledger/canonical/provider.check.ts",
         line: 1,
         identifier: "admitCanonicalSourceEvidence",
+      },
+      {
+        path: "src/ledger/canonical/canonical-schema-implementation.ts",
+        line: 2,
+        identifier: "source_records-write",
+      },
+      {
+        path: "src/ledger/canonical/canonical-schema-implementation.ts",
+        line: 4,
+        identifier: "source_records-write",
       },
     ],
   );

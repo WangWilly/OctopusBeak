@@ -31,6 +31,29 @@ database retryable and must never fall back to a second store.
 `user_version`, migration metadata, compatibility repair, and structural
 validation. It does not decide financial admission, relation semantics,
 projection contents, backup policy, or data retention.
+
+The lifecycle's private physical implementation is kept in
+`canonical-schema-implementation.ts`. It contains the v1–v20 schema
+declarations, immutable migration bodies, schema repairs, migration backfills,
+and non-mutating structural validators used to build and validate the
+lifecycle plan. Projection table names in that module therefore describe
+historical schema work or structural checks; they do not make it a live
+projection writer. Live generation rebuild and synchronization remain owned by
+the Projection Runtime under [ADR 0018](./0018-canonical-projection-runtime.md).
+
+`canonical-database.ts` is the focused open composer. It first obtains the
+lifecycle-validated database capability and then runs the post-open Contract
+Purge data transition from `canonical-contract-purge.ts`. The purge module
+owns its foreign-key closure deletion, durable purge audit, and projection
+cutoff repair. This order keeps physical schema authority in the lifecycle and
+keeps Contract Purge data mutation outside migrations and schema repairs.
+
+Provider extension schema declarations that are needed by the lifecycle are
+similarly isolated in provider schema modules such as
+`fubon-credit-card-schema.ts`; provider writer modules retain compatibility
+exports and financial admission behavior but do not create physical schema on
+the validated production path.
+
 Published source-contract purges therefore run only after `open` returns a
 validated data capability. Their durable audit rows are the completion marker:
 an absent audit is retried even when a previous process already committed the
@@ -221,22 +244,27 @@ it and every prepared statement obtained from it are revoked before commit or
 rollback, so deferred callbacks cannot write or close the store later.
 Ordinary database capabilities never receive that pragma authority.
 
-### 10. One lifecycle owner uses one bounded path lock
+### 10. Schema transitions are exclusive; validated runtime handles share a bounded path lease
 
-Writable open uses the SQLite busy timeout and `BEGIN IMMEDIATE` to serialize
-owners of a database path. Lock contention is reported rather than resolved
-by opening an alternate file. The returned handle owns the opened connection
-until `close`; callers do not get a second hidden canonical store.
-The process also holds a cross-process lease keyed by the resolved database
-path in a sidecar SQLite database. The lease keeps an independent SQLite
-connection in `BEGIN IMMEDIATE` for the lifetime of the validated handle, with
-a bounded busy timeout. A second live lifecycle open for the same path fails
-within that bound, while different paths remain independent. `close` is
-idempotent and releases both the sidecar transaction and the in-process owner;
-every open failure releases them as well. SQLite releases the sidecar lock
-when a process crashes, so the sidecar is not an immortal PID lockfile and a
-later opener can recover without guessing process liveness. The main database
-still uses its own bounded SQLite lock for migration/write serialization.
+Writable schema transitions use the SQLite busy timeout and `BEGIN IMMEDIATE`
+to serialize migration and repair work on a database path. Lock contention is
+reported rather than resolved by opening an alternate file. Once the schema is
+validated, each returned handle retains a shared cross-process lease keyed by
+the resolved database path in a sidecar SQLite database. Multiple current
+runtime handles may therefore open the same path, while a later migration or
+physical repair must acquire an exclusive lease and is blocked by every live
+shared handle. The sidecar stays in rollback-journal mode so its shared read
+transactions prevent `BEGIN EXCLUSIVE` transitions. A lease upgrade failure
+restores the prior shared lease; if restoration is impossible, the affected
+validated handle is revoked rather than continuing without schema ownership.
+
+The lease uses an independent SQLite connection with a bounded busy timeout.
+`close` is idempotent and releases the sidecar transaction and in-process
+lease state; every open or transition failure releases them as well. SQLite
+releases the sidecar lock when a process crashes, so the sidecar is not an
+immortal PID lockfile and a later opener can recover without guessing process
+liveness. The main database still uses its own bounded SQLite lock for
+migration and data-write serialization.
 
 ### 11. Retry reopens the original database
 

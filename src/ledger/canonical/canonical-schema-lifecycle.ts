@@ -8,8 +8,8 @@ import {
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
 import {
-  acquireCanonicalCrossProcessLifecycleLease,
-  acquireCanonicalLifecycleOwner,
+  acquireCanonicalLifecycleLease,
+  type CanonicalLifecycleLease,
 } from "./canonical-schema-lifecycle-lock.ts";
 
 /**
@@ -1480,6 +1480,73 @@ function runRepairs(
   }
 }
 
+/**
+ * Decide whether a current-version open needs an exclusive schema lease.
+ * Preconditions and transition predicates run through the same read-only
+ * capability used by lifecycle validation, so this probe cannot become a
+ * second schema mutation path. A healthy current schema can therefore retain
+ * a shared runtime lease and be opened by independent workflow processes.
+ */
+function currentVersionHasSchemaWork(
+  db: DatabaseSync,
+  plan: CanonicalSchemaLifecyclePlan,
+  context: { fromVersion: number; targetVersion: number },
+): boolean {
+  for (const migration of plan.currentVersionMigrations ?? []) {
+    assertCurrentVersionMigrationDescriptor(migration);
+    if (migration.version !== context.targetVersion)
+      throw new Error(
+        `Canonical current-version migration ${migration.id} targets unsupported version ${context.targetVersion}.`,
+      );
+    if (
+      runReadOnlyLifecycleCheck(db, (candidate) =>
+        migration.applies(candidate, context),
+      )
+    )
+      return true;
+  }
+  for (const repair of plan.repairs ?? []) {
+    assertRepairDescriptor(repair);
+    if (repair.version !== context.targetVersion)
+      throw new Error(
+        `Canonical schema repair ${repair.id} targets unsupported version ${context.targetVersion}.`,
+      );
+    if (repair.runOnCurrentVersion !== true) continue;
+    if (evaluateRepairPrecondition(db, repair, context)) return true;
+  }
+  return false;
+}
+
+/**
+ * Validate the connection again after an exclusive-to-shared lease handoff.
+ * The sidecar transaction has to be released and reacquired because SQLite
+ * has no transaction-level lock downgrade. Another lifecycle may therefore
+ * complete a newer transition in that small interval; the shared lease must
+ * observe and reject that connection before it is handed to a caller.
+ */
+function validateRetainedSharedLifecycleHandle(
+  db: DatabaseSync,
+  plan: CanonicalSchemaLifecyclePlan,
+  databasePath: string,
+  readOnly: boolean,
+): void {
+  const version = schemaVersion(db);
+  if (version !== plan.currentVersion)
+    throw new Error(
+      `Canonical SQLite schema changed while reacquiring its shared lifecycle lease: expected ${plan.currentVersion}, found ${version}.`,
+    );
+  try {
+    runReadOnlyLifecycleCheck(db, plan.validate);
+    if (databasePath !== ":memory:")
+      verifyCanonicalRuntime(db, { readOnly });
+  } finally {
+    // Read-only lifecycle checks deliberately clear their temporary
+    // authorizer. Restore the permanent runtime guard before this helper is
+    // used after a store has already been constructed.
+    installValidatedDatabaseAuthorizer(db);
+  }
+}
+
 function currentMigrationIdentifier(value: string): string | null {
   return unquoteRepairIdentifier(value);
 }
@@ -2269,6 +2336,9 @@ function createDeclaredRepairRunner(
   db: DatabaseSync,
   plan: CanonicalSchemaLifecyclePlan,
   readOnly: boolean,
+  lease?: {
+    switchMode(nextMode: "shared" | "exclusive"): void;
+  },
 ): (id: string) => void {
   const repairs = new Map((plan.repairs ?? []).map((repair) => [repair.id, repair]));
   return (id: string): void => {
@@ -2286,6 +2356,35 @@ function createDeclaredRepairRunner(
         `Canonical schema repair ${id} targets unsupported version ${repair.version}.`,
       );
     assertRepairDescriptor(repair);
+    const context = {
+      fromVersion: plan.currentVersion,
+      targetVersion: plan.currentVersion,
+      explicitRequest: true,
+    };
+    // A provider may call its ensure helper for every capture. Probe the
+    // declared precondition while retaining the shared runtime lease first;
+    // an already-complete extension must not request an exclusive transition
+    // and block otherwise independent workflows.
+    let needsRepair: boolean;
+    try {
+      needsRepair = evaluateRepairPrecondition(db, repair, context);
+    } finally {
+      installValidatedDatabaseAuthorizer(db);
+    }
+    if (!needsRepair) {
+      try {
+        runReadOnlyLifecycleCheck(db, repair.validate);
+      } finally {
+        installValidatedDatabaseAuthorizer(db);
+      }
+      return;
+    }
+    // A declared repair changes physical schema on an already-open runtime
+    // connection. Upgrade the shared runtime lease before establishing the
+    // repair savepoint so another process cannot use an older schema while
+    // this connection rebuilds an extension.
+    lease?.switchMode("exclusive");
+    let repairLeaseExclusive = lease !== undefined;
     const savepoint = `canonical_declared_repair_${explicitRepairOrdinal++}`;
     // The savepoint is lifecycle orchestration, not repair code. Temporarily
     // clear the permanent handle authorizer so the internal boundary can be
@@ -2296,14 +2395,17 @@ function createDeclaredRepairRunner(
       db.exec(`SAVEPOINT ${savepoint}`);
     } catch (error) {
       installValidatedDatabaseAuthorizer(db);
+      if (repairLeaseExclusive) {
+        try {
+          lease?.switchMode("shared");
+        } catch {
+          /* Preserve the savepoint failure; callers will close this handle. */
+        }
+        repairLeaseExclusive = false;
+      }
       throw error;
     }
     try {
-      const context = {
-        fromVersion: plan.currentVersion,
-        targetVersion: plan.currentVersion,
-        explicitRequest: true,
-      };
       if (evaluateRepairPrecondition(db, repair, context))
         runRepairGuarded(
           db,
@@ -2316,6 +2418,10 @@ function createDeclaredRepairRunner(
       setLifecycleAuthorizer(db, null);
       db.exec(`RELEASE SAVEPOINT ${savepoint}`);
       installValidatedDatabaseAuthorizer(db);
+      if (repairLeaseExclusive) {
+        lease?.switchMode("shared");
+        repairLeaseExclusive = false;
+      }
     } catch (error) {
       try {
         setLifecycleAuthorizer(db, null);
@@ -2323,6 +2429,13 @@ function createDeclaredRepairRunner(
         db.exec(`RELEASE SAVEPOINT ${savepoint}`);
       } finally {
         installValidatedDatabaseAuthorizer(db);
+      }
+      if (repairLeaseExclusive) {
+        try {
+          lease?.switchMode("shared");
+        } catch {
+          /* Preserve the repair failure; callers will close this handle. */
+        }
       }
       throw error;
     }
@@ -2449,6 +2562,8 @@ export class ValidatedCanonicalStore {
     openedFromVersion: number,
     release: () => void,
     repair: (id: string) => void,
+    lease?: CanonicalLifecycleLease,
+    validateAfterRepair?: () => void,
   ) {
     if (token !== CONSTRUCTION_TOKEN)
       throw new Error("ValidatedCanonicalStore can only be created by the lifecycle.");
@@ -2456,7 +2571,35 @@ export class ValidatedCanonicalStore {
     this.openedFromVersion = openedFromVersion;
     this.#raw = db;
     this.#release = release;
-    this.db = validatedDatabaseCapability(db, () => this.close(), repair);
+    this.db = validatedDatabaseCapability(db, () => this.close(), (id) => {
+      // A repair may have committed its savepoint before its exclusive lease
+      // was downgraded. Validate only after the repair runner returns, so a
+      // failed upgrade still restores the existing handle as promised.
+      repair(id);
+      if (!validateAfterRepair) return;
+      try {
+        validateAfterRepair();
+      } catch (error) {
+        // The shared lease is held at this point. A changed version or schema
+        // means this connection cannot safely remain a runtime handle.
+        this.close();
+        throw error;
+      }
+    });
+    lease?.onLost(() => {
+      // A failed shared-to-exclusive transition cannot leave an otherwise
+      // live handle running without its schema guard. Close the native
+      // connection so any prepared statements fail closed as well.
+      if (this.#closed) return;
+      this.#closed = true;
+      VALIDATED_DATABASES.delete(this.db);
+      VALIDATED_REPAIRERS.delete(this.db);
+      try {
+        this.#raw.close();
+      } catch {
+        /* Preserve the transition failure that caused lease loss. */
+      }
+    });
     Object.freeze(this);
   }
 
@@ -2531,6 +2674,8 @@ function createValidatedCanonicalStore(
   openedFromVersion: number,
   release: () => void,
   repair: (id: string) => void,
+  lease?: CanonicalLifecycleLease,
+  validateAfterRepair?: () => void,
 ): ValidatedCanonicalStore {
   return new ValidatedCanonicalStore(
     CONSTRUCTION_TOKEN,
@@ -2539,6 +2684,8 @@ function createValidatedCanonicalStore(
     openedFromVersion,
     release,
     repair,
+    lease,
+    validateAfterRepair,
   );
 }
 
@@ -2574,21 +2721,18 @@ export function openCanonicalSchemaLifecycle(
   if (!options.readOnly && databasePath !== ":memory:")
     mkdirSync(dirname(databasePath), { recursive: true });
   const lifecyclePlan = freezeLifecyclePlan(plan);
-  const releaseProcessOwner = acquireCanonicalLifecycleOwner(databasePath);
-  let releaseCrossProcessLease: () => void = () => {};
-  const releaseOwner = (): void => {
-    try {
-      releaseCrossProcessLease();
-    } finally {
-      releaseProcessOwner();
-    }
-  };
+  // Every open starts with a shared lease. If the on-disk schema is behind the
+  // plan, or a declared current-version transition is needed, the lease is
+  // upgraded to exclusive before any physical schema mutation. A successful
+  // open retains shared mode for the lifetime of its validated handle.
+  const lifecycleLease = acquireCanonicalLifecycleLease(
+    databasePath,
+    "shared",
+    options.busyTimeoutMs,
+  );
+  const releaseOwner = (): void => lifecycleLease.release();
   let db: DatabaseSync;
   try {
-    releaseCrossProcessLease = acquireCanonicalCrossProcessLifecycleLease(
-      databasePath,
-      options.busyTimeoutMs,
-    );
     db = new DatabaseSync(
       databasePath,
       options.readOnly ? { readOnly: true } : {},
@@ -2599,6 +2743,13 @@ export function openCanonicalSchemaLifecycle(
   }
   let committed = false;
   let handedOff = false;
+  const validateSharedHandle = (): void =>
+    validateRetainedSharedLifecycleHandle(
+      db,
+      lifecyclePlan,
+      databasePath,
+      options.readOnly === true,
+    );
   try {
     configureCanonicalRuntime(db, {
       readOnly: options.readOnly,
@@ -2608,7 +2759,8 @@ export function openCanonicalSchemaLifecycle(
     // tricks even while a declared repair is temporarily authorizing DDL.
     // It is a connection-level invariant, not a caller-configurable option.
     db.enableDefensive(true);
-    const fromVersion = schemaVersion(db);
+    const openedFromVersion = schemaVersion(db);
+    let fromVersion = openedFromVersion;
     if (fromVersion > lifecyclePlan.currentVersion)
       throw new Error(
         `Canonical SQLite schema ${fromVersion} is newer than supported ${lifecyclePlan.currentVersion}.`,
@@ -2619,20 +2771,67 @@ export function openCanonicalSchemaLifecycle(
         throw new Error(
           "Canonical SQLite schema is missing or unsupported for read-only access.",
         );
-      runReadOnlyLifecycleCheck(db, lifecyclePlan.validate);
-      if (databasePath !== ":memory:") verifyCanonicalRuntime(db, { readOnly: true });
+      validateSharedHandle();
       const store = createValidatedCanonicalStore(
         db,
         databasePath,
-        fromVersion,
+        openedFromVersion,
         releaseOwner,
-        createDeclaredRepairRunner(db, lifecyclePlan, true),
+        createDeclaredRepairRunner(db, lifecyclePlan, true, lifecycleLease),
+        lifecycleLease,
+        validateSharedHandle,
       );
       handedOff = true;
       return store;
     }
 
+    // Upgrade the shared lease before a historical migration. Another opener
+    // may have completed the same migration while this process was waiting;
+    // re-read the version under the exclusive lease so current-version
+    // predicates never receive a stale pre-upgrade context.
+    if (fromVersion < lifecyclePlan.currentVersion) {
+      lifecycleLease.switchMode("exclusive");
+      fromVersion = schemaVersion(db);
+      if (fromVersion > lifecyclePlan.currentVersion)
+        throw new Error(
+          `Canonical SQLite schema ${fromVersion} is newer than supported ${lifecyclePlan.currentVersion}.`,
+        );
+    }
+
     if (fromVersion === lifecyclePlan.currentVersion) {
+      // A current, structurally valid schema normally needs no physical
+      // transition. Probe all declared transition predicates while this
+      // handle holds a shared lease; only a positive result requires the
+      // exclusive schema lease below.
+      runReadOnlyLifecycleCheck(
+        db,
+        lifecyclePlan.validateBeforeRepairs ?? lifecyclePlan.validate,
+      );
+      const needsSchemaTransition = currentVersionHasSchemaWork(
+        db,
+        lifecyclePlan,
+        { fromVersion, targetVersion: lifecyclePlan.currentVersion },
+      );
+      if (!needsSchemaTransition) {
+        validateSharedHandle();
+        const store = createValidatedCanonicalStore(
+          db,
+          databasePath,
+          openedFromVersion,
+          releaseOwner,
+          createDeclaredRepairRunner(db, lifecyclePlan, false, lifecycleLease),
+          lifecycleLease,
+          validateSharedHandle,
+        );
+        handedOff = true;
+        return store;
+      }
+      lifecycleLease.switchMode("exclusive");
+      fromVersion = schemaVersion(db);
+      if (fromVersion !== lifecyclePlan.currentVersion)
+        throw new Error(
+          "Canonical SQLite schema changed while acquiring its exclusive lifecycle lease.",
+        );
       db.exec("PRAGMA foreign_keys = OFF");
       db.exec("BEGIN IMMEDIATE");
       const migrationDb = migrationTransactionView(db);
@@ -2667,10 +2866,14 @@ export function openCanonicalSchemaLifecycle(
         const store = createValidatedCanonicalStore(
           db,
           databasePath,
-          fromVersion,
+          openedFromVersion,
           releaseOwner,
-          createDeclaredRepairRunner(db, lifecyclePlan, false),
+          createDeclaredRepairRunner(db, lifecyclePlan, false, lifecycleLease),
+          lifecycleLease,
+          validateSharedHandle,
         );
+        lifecycleLease.switchMode("shared");
+        validateSharedHandle();
         handedOff = true;
         return store;
       } catch (error) {
@@ -2713,10 +2916,14 @@ export function openCanonicalSchemaLifecycle(
       const store = createValidatedCanonicalStore(
         db,
         databasePath,
-        fromVersion,
+        openedFromVersion,
         releaseOwner,
-        createDeclaredRepairRunner(db, lifecyclePlan, false),
+        createDeclaredRepairRunner(db, lifecyclePlan, false, lifecycleLease),
+        lifecycleLease,
+        validateSharedHandle,
       );
+      lifecycleLease.switchMode("shared");
+      validateSharedHandle();
       handedOff = true;
       return store;
     } catch (error) {
@@ -2730,7 +2937,16 @@ export function openCanonicalSchemaLifecycle(
       throw error;
     }
   } catch (error) {
-    if (!handedOff) db.close();
+    if (!handedOff) {
+      // A failed shared-lease handoff may already have revoked and closed the
+      // connection through the lease's onLost callback. Preserve the original
+      // lifecycle error instead of masking it with a second close failure.
+      try {
+        db.close();
+      } catch {
+        /* Preserve the lifecycle error that caused the open to fail. */
+      }
+    }
     releaseOwner();
     throw error;
   }

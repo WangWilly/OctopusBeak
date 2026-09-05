@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import test from "node:test";
 import { registerHooks } from "node:module";
+import type { Frame, Locator, Page } from "playwright";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -20,6 +22,8 @@ registerHooks({
 const {
   buildFubonCanonicalCreditCardCaptures,
   fubonCreditCardStatementsInputSchema,
+  iterateFubonStatementPeriodProbes,
+  isFubonCreditCardStatementUnavailableText,
   isFubonStatementSummaryRow,
   parseFubonStatementCardLabel,
   parseFubonSettledStatementSummary,
@@ -47,6 +51,9 @@ const source = await readFile(
   new URL("./fubon-credit-card-statements.ts", import.meta.url),
   "utf8",
 );
+const runSource = source.slice(
+  source.indexOf("export async function runFubonCreditCardStatements"),
+);
 const loginEntry = source.slice(
   source.indexOf("async function openCreditCardLoginForm"),
   source.indexOf("async function openStatementDetailsPage"),
@@ -55,6 +62,10 @@ assert.match(loginEntry, /openFubonLoginForm\(page\)/);
 assert.match(source, /findStatementDetailsScope/);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);
+assert.match(source, /isFubonCreditCardStatementUnavailableText/);
+assert.match(runSource, /iterateFubonStatementPeriodProbes/);
+assert.match(runSource, /capture\.snapshotMode === "full"/);
+assert.match(runSource, /available downloads were saved/);
 assert.doesNotMatch(
   loginEntry,
   /#menu_CCC|menu_CCC02|task_CCCQU002|landingFrame\.goto|txnFrame\.goto/,
@@ -71,6 +82,155 @@ for (const row of summaryRows) {
   assert.equal(isFubonStatementSummaryRow(row), true);
 }
 assert.equal(isFubonStatementSummaryRow(transactionRow), false);
+assert.equal(
+  isFubonCreditCardStatementUnavailableText(
+    "目前帳單產製中，暫時無法查詢",
+  ),
+  true,
+);
+assert.equal(
+  isFubonCreditCardStatementUnavailableText(
+    "目前\n\t帳單產製中，暫時無法查詢",
+  ),
+  true,
+);
+assert.equal(
+  isFubonCreditCardStatementUnavailableText("帳單明細查詢"),
+  false,
+);
+
+type PeriodMode = "available" | "no-record" | "temporarily-unavailable";
+
+class TestHTMLElement {
+  click(): void {}
+}
+
+(globalThis as unknown as { HTMLElement: typeof TestHTMLElement }).HTMLElement =
+  TestHTMLElement;
+
+type FakePeriodFrameState = {
+  currentPeriod: number;
+  mode: PeriodMode;
+  modeByPeriod: Readonly<Record<number, PeriodMode>>;
+  transitions: number[];
+  availableBodies: Readonly<Record<number, string>>;
+};
+
+function fakePeriodLocator(
+  state: FakePeriodFrameState | null,
+  selector: string,
+  filters: string[] = [],
+): Locator {
+  const locator = {
+    selector,
+    first() {
+      return this;
+    },
+    filter(options: { hasText?: string }) {
+      return fakePeriodLocator(
+        state,
+        selector,
+        options.hasText ? [...filters, options.hasText] : filters,
+      );
+    },
+    async waitFor() {
+      if (selector === "#form1\\:period" && state) return;
+      if (
+        selector === "table" &&
+        state?.mode === "available" &&
+        ["消費日期", "外幣折算日/幣別", "臺幣金額"].every((header) =>
+          filters.includes(header),
+        )
+      )
+        return;
+      if (selector === "a" && state) return;
+      throw new Error("fixture locator is not attached");
+    },
+    async count() {
+      if (selector === "div._mask, ._mask") return 0;
+      if (selector === "#form1\\:period" && state) return 1;
+      return 0;
+    },
+    async getAttribute(name: string) {
+      assert.equal(name, "value");
+      return state ? String(state.currentPeriod) : null;
+    },
+    async textContent() {
+      if (selector !== "body" || !state) return "";
+      if (state.mode === "temporarily-unavailable")
+        return "目前帳單產製中，暫時無法查詢";
+      if (state.mode === "no-record") return "查無資料";
+      return state.availableBodies[state.currentPeriod] ?? "消費日期 外幣折算日/幣別 臺幣金額";
+    },
+    async evaluate(callback: (element: HTMLElement) => unknown) {
+      const element = new TestHTMLElement();
+      element.click = () => {
+        if (selector !== "a" || !state) return;
+        const label = filters.at(-1);
+        const period =
+          label === "前一期" ? 2 : label === "前二期" ? 3 : undefined;
+        if (period === undefined) return;
+        state.currentPeriod = period;
+        state.mode = state.modeByPeriod[period] ?? "no-record";
+        state.transitions.push(period);
+      };
+      return callback(element as unknown as HTMLElement);
+    },
+  } as unknown as Locator;
+  return locator;
+}
+
+function fakePeriodPage(state: FakePeriodFrameState): Page {
+  const frame = {
+    name: () => "txnFrame",
+    locator: (selector: string) => fakePeriodLocator(state, selector),
+  } as unknown as Frame;
+  const pageState = null;
+  return {
+    locator: (selector: string) => fakePeriodLocator(pageState, selector),
+    frames: () => [frame],
+    async waitForTimeout() {},
+  } as unknown as Page;
+}
+
+test("re-probes and consumes each Fubon period before switching frames", async () => {
+  const state: FakePeriodFrameState = {
+    currentPeriod: 1,
+    mode: "temporarily-unavailable",
+    modeByPeriod: {
+      1: "temporarily-unavailable",
+      2: "available",
+      3: "no-record",
+    },
+    transitions: [],
+    availableBodies: {
+      2: "period-2 消費日期 外幣折算日/幣別 臺幣金額",
+    },
+  };
+  const probes: Array<{ periodOffset: number; status: PeriodMode }> = [];
+  const extractedBodies: string[] = [];
+  for await (const probe of iterateFubonStatementPeriodProbes(
+    fakePeriodPage(state),
+    [1, 2, 3],
+  )) {
+    probes.push({ periodOffset: probe.periodOffset, status: probe.status });
+    if (probe.status === "available")
+      extractedBodies.push((await probe.scope.locator("body").textContent()) ?? "");
+  }
+  assert.deepEqual(
+    probes.map(({ periodOffset, status }) => ({ periodOffset, status })),
+    [
+      { periodOffset: 1, status: "temporarily-unavailable" },
+      { periodOffset: 2, status: "available" },
+      { periodOffset: 3, status: "no-record" },
+    ],
+  );
+  assert.deepEqual(extractedBodies, [
+    "period-2 消費日期 外幣折算日/幣別 臺幣金額",
+  ]);
+  assert.deepEqual(state.transitions, [2, 3]);
+});
+
 assert.deepEqual(parseFubonStatementCardLabel("正卡 4111 1111 1111 1111"), {
   cardNumber: "1111",
   cardLabel: "正卡",

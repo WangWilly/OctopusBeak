@@ -44,6 +44,10 @@ import {
   queryCanonicalSourceCurrent,
   queryCanonicalSourceLineage,
 } from "./canonical-source-store.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildYuantaDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
 import { recordInitialYuantaHumanAttestationIfMissing } from "./yuanta-human-attestation.ts";
 
@@ -323,6 +327,43 @@ assert.doesNotMatch(
   admittedFinancial.capture.records[0]?.compactJson ?? "",
   /123456|SYNTHETIC DESCRIPTION|SYNTHETIC NOTE/,
 );
+
+// The Yuanta CSV row's page and row positions are transport evidence. A
+// repeated source occurrence can shift when the provider inserts or removes a
+// row before it, while the observed financial content and occurrence fence
+// remain unchanged. Keep both immutable captures and one current source row.
+const yuantaOrdinalStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitCanonicalFinancialDepositCapture(
+    yuantaOrdinalStore,
+    admittedFinancial.capture,
+  );
+  const yuantaOrdinalDrift = admitCanonicalFinancialDepositCapture({
+    ...admittedFinancial.capture,
+    captureId: "yuanta-financial-ordinal-drift",
+    records: admittedFinancial.capture.records.map((record) => {
+      const compact = JSON.parse(record.compactJson) as Record<string, unknown>;
+      return {
+        ...record,
+        compactJson: JSON.stringify({
+          ...compact,
+          pageOrdinal: 4,
+          rowOrdinal: 9,
+        }),
+      };
+    }),
+  });
+  await commitCanonicalFinancialDepositCapture(
+    yuantaOrdinalStore,
+    yuantaOrdinalDrift,
+  );
+  const yuantaOrdinalCurrent = queryCanonicalSourceCurrent(yuantaOrdinalStore);
+  assert.equal(yuantaOrdinalCurrent.records.length, 1);
+  assert.equal(yuantaOrdinalCurrent.observations.length, 2);
+  assert.equal(yuantaOrdinalCurrent.provenanceCount, 2);
+} finally {
+  yuantaOrdinalStore.close();
+}
 
 for (const sourceIdentity of [
   {},
