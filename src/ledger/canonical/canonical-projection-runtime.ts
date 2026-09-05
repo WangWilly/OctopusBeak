@@ -14,6 +14,7 @@ import type {
   CanonicalProjectionRebuildResult,
 } from "./canonical-projection-contract.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import { refreshCanonicalEnrichmentProjection } from "./canonical-enrichment-projection.ts";
 
 type ProjectionSqlInput =
   | null
@@ -51,6 +52,7 @@ const CANONICAL_PROJECTION_COMMIT_IMPACTS: Readonly<
 const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
   "transactions",
   "transaction-fields",
+  "transaction-enrichment",
   "loan-accounts",
   "loan-balances",
   "loan-relations",
@@ -75,6 +77,8 @@ export type CanonicalProjectionScope = Readonly<{
   sourceConnectionKey?: string;
   /** A caller may instead scope by canonical account IDs. */
   accountIds?: readonly string[];
+  /** A caller may instead scope by canonical transaction IDs. */
+  transactionIds?: readonly string[];
   startDate?: string;
   endDate?: string;
 }>;
@@ -108,6 +112,22 @@ export type CanonicalProjectionTransactionField = Readonly<{
   fieldName: string;
   value: string;
   origin: string;
+  projectionCommitId: string | null;
+  projectionCommitSequence: number;
+}>;
+export type CanonicalProjectionTransactionEnrichment = Readonly<{
+  transactionId: string;
+  fieldName: string;
+  assertionId: string;
+  value: string;
+  origin: string;
+  producerId: string;
+  producerVersion: string;
+  routeId: string;
+  taxonomyId: string;
+  taxonomyVersion: string;
+  taxonomyDimension: string | null;
+  taxonomyCode: string | null;
   projectionCommitId: string | null;
   projectionCommitSequence: number;
 }>;
@@ -188,6 +208,7 @@ export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
 export type CanonicalProjectionFamilyRows = Readonly<{
   transactions: CanonicalProjectionTransaction;
   "transaction-fields": CanonicalProjectionTransactionField;
+  "transaction-enrichment": CanonicalProjectionTransactionEnrichment;
   "loan-accounts": CanonicalProjectionLoanAccount;
   "loan-balances": CanonicalProjectionLoanBalance;
   "loan-relations": CanonicalProjectionLoanRelation;
@@ -272,13 +293,19 @@ function requireScope(scope: CanonicalProjectionScope): void {
     throw new Error("Canonical projection reads require a bounded scope.");
   const sourceConnectionKey = scope.sourceConnectionKey?.trim();
   const accountIds = scope.accountIds ?? [];
+  const transactionIds = scope.transactionIds ?? [];
   const hasAccountScope = Object.prototype.hasOwnProperty.call(
     scope,
     "accountIds",
   );
+  const hasTransactionScope = Object.prototype.hasOwnProperty.call(
+    scope,
+    "transactionIds",
+  );
   if (
     !sourceConnectionKey &&
     !hasAccountScope &&
+    !hasTransactionScope &&
     !scope.startDate &&
     !scope.endDate
   )
@@ -294,6 +321,13 @@ function requireScope(scope: CanonicalProjectionScope): void {
     )
   )
     throw new Error("Canonical projection account scope contains an invalid ID.");
+  if (
+    transactionIds.some(
+      (value) =>
+        typeof value !== "string" || (!UUID.test(value) && !HEX_ID.test(value)),
+    )
+  )
+    throw new Error("Canonical projection transaction scope contains an invalid ID.");
   if (scope.startDate !== undefined && !ISO_DATE.test(scope.startDate))
     throw new Error("Canonical projection scope start date is invalid.");
   if (scope.endDate !== undefined && !ISO_DATE.test(scope.endDate))
@@ -778,6 +812,7 @@ function applyCommitInTransaction(
     return;
   refreshTransactionProjection(db, token.commitId, targetSequence);
   canonicalProjectionRuntimeSyncInternal(db, token.commitId);
+  refreshCanonicalEnrichmentProjection(db, token.commitId, targetSequence);
   markCurrentProjectionCommit(db, token.commitId);
   refreshLoanProjection(db, token.commitId, targetSequence);
 }
@@ -810,6 +845,11 @@ function readFamily(
     Object.prototype.hasOwnProperty.call(request.scope, "accountIds") &&
     accountIds.length === 0;
   const accountIdPlaceholders = accountIds.map(() => "?").join(",");
+  const transactionIds = (request.scope.transactionIds ?? []).map(accountScopeId);
+  const hasExplicitEmptyTransactionScope =
+    Object.prototype.hasOwnProperty.call(request.scope, "transactionIds") &&
+    transactionIds.length === 0;
+  const transactionIdPlaceholders = transactionIds.map(() => "?").join(",");
   const accountParameter: ProjectionSqlInput[] = sourceConnectionKey
     ? [sourceConnectionKey]
     : [];
@@ -823,6 +863,13 @@ function readFamily(
     ...accountParameter,
     ...accountIds,
   ];
+  const transactionFilter = (alias: string): string =>
+    hasExplicitEmptyTransactionScope
+      ? " AND 0"
+      : transactionIds.length > 0
+      ? ` AND ${alias}.transaction_id IN (${transactionIdPlaceholders})`
+      : "";
+  const transactionParameters = (): ProjectionSqlInput[] => [...transactionIds];
   const groupScopedFilter = hasExplicitEmptyAccountScope
     ? `${accountFilter} AND 0`
     : accountIds.length
@@ -859,12 +906,13 @@ function readFamily(
                ON connection_scope.source_connection_id = account.source_connection_id
              JOIN transaction_revisions revision
                ON revision.revision_id = projected.revision_id
-            WHERE projected.generation_id = ? ${scopedFilter("account")}
+            WHERE projected.generation_id = ? ${scopedFilter("account")}${transactionFilter("projected")}
               AND (? IS NULL OR revision.effective_on >= ?)
               AND (? IS NULL OR revision.effective_on <= ?)
             ORDER BY revision.effective_on, projected.transaction_id`,
           generation,
           ...scopedParameters(),
+          ...transactionParameters(),
           dateStart ?? null,
           dateStart ?? null,
           dateEnd ?? null,
@@ -886,7 +934,7 @@ function readFamily(
              ON revision.transaction_id = transaction_row.transaction_id
            JOIN canonical_commits revision_commit
              ON revision_commit.commit_id = revision.commit_id
-          WHERE revision_commit.commit_sequence <= ? ${scopedFilter("account")}
+          WHERE revision_commit.commit_sequence <= ? ${scopedFilter("account")}${transactionFilter("transaction_row")}
             AND (? IS NULL OR revision.effective_on >= ?)
             AND (? IS NULL OR revision.effective_on <= ?)
             AND (? IS NULL OR revision.effective_on <= ?)
@@ -937,6 +985,7 @@ function readFamily(
           ORDER BY revision.effective_on, transaction_row.transaction_id`,
         knowledgeAt,
         ...scopedParameters(),
+        ...transactionParameters(),
         dateStart ?? null,
         dateStart ?? null,
         dateEnd ?? null,
@@ -1066,6 +1115,37 @@ function readFamily(
         knowledgeAt,
         knowledgeAt,
         ...scopedParameters(),
+      );
+    }
+    case "transaction-enrichment": {
+      if (request.kind !== "current")
+        throw new Error(
+          "Historical transaction enrichment must be resolved from assertion lineage, not the current projection.",
+        );
+      if (generation === null) return [];
+      return rows(
+        db,
+        `SELECT current_row.transaction_id, current_row.field_name,
+                current_row.assertion_id, current_row.value_text,
+                current_row.origin, current_row.producer_id,
+                current_row.producer_version, current_row.route_id,
+                current_row.taxonomy_id, current_row.taxonomy_version,
+                current_row.taxonomy_dimension, current_row.taxonomy_code,
+                current_row.projection_commit_id,
+                projection_commit.commit_sequence AS projection_commit_sequence
+           FROM current_transaction_enrichment current_row
+           JOIN canonical_commits projection_commit
+             ON projection_commit.commit_id = current_row.projection_commit_id
+           JOIN financial_transactions transaction_row
+             ON transaction_row.transaction_id = current_row.transaction_id
+           JOIN financial_accounts account
+             ON account.account_id = transaction_row.account_id
+           JOIN source_connections connection_scope
+             ON connection_scope.source_connection_id = account.source_connection_id
+          WHERE 1 = 1 ${scopedFilter("account")}${transactionFilter("current_row")}
+          ORDER BY current_row.transaction_id, current_row.field_name`,
+        ...scopedParameters(),
+        ...transactionParameters(),
       );
     }
     case "loan-accounts":
@@ -1571,6 +1651,23 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           projectionCommitId: nullableTextValue(row, "projection_commit_id"),
           projectionCommitSequence: Number(row.projection_commit_sequence),
         };
+      case "transaction-enrichment":
+        return {
+          transactionId: textValue(row, "transaction_id"),
+          fieldName: textValue(row, "field_name"),
+          assertionId: textValue(row, "assertion_id"),
+          value: textValue(row, "value_text"),
+          origin: textValue(row, "origin"),
+          producerId: textValue(row, "producer_id"),
+          producerVersion: textValue(row, "producer_version"),
+          routeId: textValue(row, "route_id"),
+          taxonomyId: textValue(row, "taxonomy_id"),
+          taxonomyVersion: textValue(row, "taxonomy_version"),
+          taxonomyDimension: nullableTextValue(row, "taxonomy_dimension"),
+          taxonomyCode: nullableTextValue(row, "taxonomy_code"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          projectionCommitSequence: Number(row.projection_commit_sequence),
+        };
       case "loan-accounts":
         return { accountId: textValue(row, "account_id") };
       case "loan-balances":
@@ -1721,6 +1818,7 @@ function readSnapshotInTransaction(
   const families = {
     transactions: familyRows("transactions"),
     "transaction-fields": familyRows("transaction-fields"),
+    "transaction-enrichment": familyRows("transaction-enrichment"),
     "loan-accounts": familyRows("loan-accounts"),
     "loan-balances": familyRows("loan-balances"),
     "loan-relations": familyRows("loan-relations"),

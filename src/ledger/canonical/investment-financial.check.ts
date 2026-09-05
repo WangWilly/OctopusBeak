@@ -29,7 +29,10 @@ import {
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
-import { queryCanonicalSourceCurrent } from "./canonical-source-store.ts";
+import {
+  CANONICAL_SOURCE_SCHEMA_VERSION,
+  queryCanonicalSourceCurrent,
+} from "./canonical-source-store.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const token = (label: string) =>
@@ -2098,7 +2101,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
           }
         ).user_version,
       ),
-      20,
+      CANONICAL_SOURCE_SCHEMA_VERSION,
     );
     assert.deepEqual(
       migrated.db

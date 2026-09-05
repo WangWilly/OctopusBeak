@@ -25,6 +25,7 @@ import type {
   CanonicalProjectionRebuildOptions,
   CanonicalProjectionRebuildResult,
 } from "./canonical-projection-contract.ts";
+import { rebuildCanonicalEnrichmentProjection } from "./canonical-enrichment-projection.ts";
 
 function parseRfc3339UtcMicros(value: string, label: string): number {
   const match = value.match(
@@ -450,6 +451,11 @@ function rebuildCathayCanonicalProjectionOnce(
     db.prepare(
       "INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id",
     ).run(commitId);
+    // Enrichment is a Runtime-owned projection as well. Rebuild it from the
+    // immutable routed assertions in the same transaction so route changes,
+    // lifecycle cutoffs, and a failed generation switch cannot expose a
+    // mixed current state.
+    rebuildCanonicalEnrichmentProjection(db, commitId, cutoff);
     validateProjectionGenerationProvenance(db, generation);
     db.exec("COMMIT");
     inTransaction = false;
