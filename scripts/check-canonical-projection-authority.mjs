@@ -87,6 +87,7 @@ const SCHEMA_IMPLEMENTATION_CONTEXT_ALLOWLIST = new Set([
   "validateActiveProjectionBoundary",
   "validateReadOnlyDatabase",
   "ensureV7ProjectionSchema",
+  "ensureV21AssertionSpine",
   "ensureV6ProjectionOriginConstraints",
   "ensureProjectionGenerationProvenanceSchema",
   "ensureProjectionGenerationProvenanceTriggers",

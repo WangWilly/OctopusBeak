@@ -211,8 +211,11 @@ test("production schema registry declares every published version transition", (
     steps.map(({ id, fromVersion, toVersion }) => ({ id, fromVersion, toVersion })),
     [
       { id: "canonical/fresh-v1-baseline/v1", fromVersion: 0, toVersion: 1 },
-      ...Array.from({ length: 19 }, (_, index) => ({
-        id: `canonical/v${index + 1}-v${index + 2}/v1`,
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id:
+          index === 19
+            ? "canonical/v20-v21/taxonomy-package-and-enrichment/v1"
+            : `canonical/v${index + 1}-v${index + 2}/v1`,
         fromVersion: index + 1,
         toVersion: index + 2,
       })),
@@ -226,7 +229,7 @@ test("production schema registry declares every published version transition", (
     createHash("sha256")
       .update(JSON.stringify(steps))
       .digest("hex"),
-    "7722e07e06668adb6574ce78cb07ee2de254b0ceef58d43152b0756d3bc3291d",
+    "96d9126d9dc6fe7ffd425ec20ed911544fa845a0987986154a96a446f6ec5c14",
     "published migration ids and version ordering are immutable during the architecture refactor",
   );
   assert.deepEqual(
@@ -508,7 +511,7 @@ test("the retired Fubon v18 bridge rejects every near-match and read-only open",
       markSyntheticFixtureAsSchemaV20(join(directory, "canonical.sqlite"));
       assert.throws(
         () => openCanonicalDatabase(directory, { readOnly: true }),
-        /durable source provenance evidence/i,
+        /durable source provenance evidence|missing or unsupported for read-only access/i,
       );
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -1163,7 +1166,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (21, 0)", /migration metadata/i],
+    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (22, 0)", /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(
@@ -2490,7 +2493,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
         (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
           .user_version,
       ),
-      20,
+      CANONICAL_SOURCE_SCHEMA_VERSION,
     );
     assert.equal(countCaptures(migrated.db, "yuanta-trade", "investment"), 0);
     assert.equal(
@@ -4629,7 +4632,7 @@ test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", asyn
 });
 
 test("a v19 investment schema gains crypto account, security, and cost fields", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v20-"));
+  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v21-"));
   const path = join(dir, "canonical.sqlite");
   try {
     const current = createCanonicalSourceStore(path);
@@ -4655,7 +4658,7 @@ test("a v19 investment schema gains crypto account, security, and cost fields", 
           (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
             .user_version,
         ),
-        20,
+        CANONICAL_SOURCE_SCHEMA_VERSION,
       );
       const columns = (table: string) =>
         migrated.db
@@ -4676,8 +4679,8 @@ test("a v19 investment schema gains crypto account, security, and cost fields", 
   }
 });
 
-test("a genuine v15 investment schema migrates through v20 before crypto validation", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v15-to-v20-"));
+test("a genuine v15 investment schema migrates through v21 before crypto validation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v15-to-v21-"));
   const path = join(dir, "canonical.sqlite");
   try {
     const current = createCanonicalSourceStore(path);
@@ -4707,7 +4710,7 @@ test("a genuine v15 investment schema migrates through v20 before crypto validat
           (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
             .user_version,
         ),
-        20,
+        CANONICAL_SOURCE_SCHEMA_VERSION,
       );
       assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
       for (const [table, columns] of [
