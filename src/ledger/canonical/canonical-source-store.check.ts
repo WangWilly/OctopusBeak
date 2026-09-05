@@ -6,15 +6,16 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
-  admitCanonicalSourceEvidence,
   type CanonicalSourceEvidence,
-  type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-evidence.ts";
+import {
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  commitCanonicalSourceEvidence,
   createCanonicalFinancialQuery,
   createCanonicalSourceStore,
   createCathayCanonicalFinancialQuery,
@@ -26,6 +27,7 @@ import {
   queryCanonicalSourceLineage,
   openCanonicalDatabase,
   validateCanonicalSourceStore,
+  type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
@@ -66,6 +68,22 @@ import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
 } from "./yuanta-credit-card-human-attestation.ts";
+
+function sourceEvidenceForCommit(
+  evidence: CanonicalSourceEvidence,
+): CanonicalSourceEvidence {
+  return evidence;
+}
+
+async function commitSourceCapture(
+  store: CanonicalSourceStore,
+  evidence: CanonicalSourceEvidence,
+): Promise<CanonicalSourceCommitResult> {
+  const admitted = await createCanonicalSourceCaptureAdmission(store).admit(
+    evidence,
+  );
+  return canonicalSourceAdmissionCommitResult(admitted, evidence.records.length);
+}
 
 function markSyntheticFixtureAsSchemaV20(path: string): void {
   const db = new DatabaseSync(path);
@@ -609,7 +627,7 @@ test("public source-store validation requires the shared v19 V3 purge audit", as
   }
 });
 
-test("canonical source entry points reject structural stores without lifecycle brand", () => {
+test("canonical source entry points reject structural stores without lifecycle brand", async () => {
   const legitimate = createCanonicalSourceStore(":memory:");
   const forged = {
     db: legitimate.db,
@@ -626,12 +644,11 @@ test("canonical source entry points reject structural stores without lifecycle b
       () => queryCanonicalSourceCurrent(forged),
       /lifecycle-created and validated/u,
     );
-    assert.throws(
-      () =>
-        commitCanonicalSourceEvidence(
-          forged,
-          admitCanonicalSourceEvidence(evidence("forged-source-store")),
-        ),
+    await assert.rejects(
+      commitSourceCapture(
+        forged,
+        sourceEvidenceForCommit(evidence("forged-source-store")),
+      ),
       /lifecycle-created and validated/u,
     );
   } finally {
@@ -1735,7 +1752,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
 
     const correctedConnectionKey =
       LOAN_CONTRACT_FIXTURES.fubon.identity.sourceConnectionKey;
-    const corrected = admitCanonicalSourceEvidence({
+    const corrected = sourceEvidenceForCommit({
       ...evidence("post-v11-fubon-recollection"),
       integrationNamespace: "fubon",
       sourceConnectionKey: correctedConnectionKey,
@@ -1754,7 +1771,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
         },
       ],
     });
-    await commitCanonicalSourceEvidence(migrated, corrected);
+    await commitSourceCapture(migrated, corrected);
     assert.equal(
       queryCanonicalSourceCurrent(migrated).records.filter(
         (record) => record.identity.integrationNamespace === "fubon",
@@ -1842,13 +1859,13 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
       routeKey: "yuanta/domestic-deposit/preserved-v12-test",
       subjectDigest: token("4"),
     };
-    await commitCanonicalSourceEvidence(
+    await commitSourceCapture(
       legacy,
-      admitCanonicalSourceEvidence(preservedFubon),
+      sourceEvidenceForCommit(preservedFubon),
     );
-    await commitCanonicalSourceEvidence(
+    await commitSourceCapture(
       legacy,
-      admitCanonicalSourceEvidence(preservedYuanta),
+      sourceEvidenceForCommit(preservedYuanta),
     );
 
     // Include provider extension rows as well as the shared canonical rows so
@@ -2697,23 +2714,24 @@ try {
   );
   await assert.rejects(
     () =>
-      commitCanonicalSourceEvidence(
+      commitSourceCapture(
         store,
-        evidence(
-          "capture-unbranded",
-        ) as unknown as CanonicalValidatedSourceEvidence,
+        sourceEvidenceForCommit({
+          ...evidence("capture-invalid"),
+          captureId: "",
+        }),
       ),
-    /runtime|validated|admission/i,
+    /required|invalid|admission/i,
   );
 
-  const first = await commitCanonicalSourceEvidence(
+  const first = await commitSourceCapture(
     store,
-    admitCanonicalSourceEvidence(evidence("capture-1")),
+    sourceEvidenceForCommit(evidence("capture-1")),
   );
   assert.equal(first.status, "durable-source-evidence");
-  const repeat = await commitCanonicalSourceEvidence(
+  const repeat = await commitSourceCapture(
     store,
-    admitCanonicalSourceEvidence(evidence("capture-2")),
+    sourceEvidenceForCommit(evidence("capture-2")),
   );
   assert.equal(repeat.status, "durable-source-evidence");
   const current = queryCanonicalSourceCurrent(store);
@@ -2765,9 +2783,9 @@ try {
 
   await assert.rejects(
     () =>
-      commitCanonicalSourceEvidence(
+      commitSourceCapture(
         store,
-        admitCanonicalSourceEvidence({
+        sourceEvidenceForCommit({
           ...evidence("capture-conflict"),
           records: [
             {
@@ -2782,9 +2800,9 @@ try {
   assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
   await assert.rejects(
     () =>
-      commitCanonicalSourceEvidence(
+      commitSourceCapture(
         store,
-        admitCanonicalSourceEvidence({
+        sourceEvidenceForCommit({
           ...evidence("capture-collision"),
           records: [
             {
@@ -3038,18 +3056,18 @@ try {
   const store = createCanonicalSourceStore(path, {
     commitClock: () => clock--,
   });
-  await commitCanonicalSourceEvidence(
+  await commitSourceCapture(
     store,
-    admitCanonicalSourceEvidence(evidence("fence-base")),
+    sourceEvidenceForCommit(evidence("fence-base")),
   );
   for (const [captureId, overrides] of [
     ["fence-connection", { sourceConnectionKey: token("1") }],
     ["fence-epoch", { identityEpoch: token("2") }],
     ["fence-subject", { subjectDigest: token("3") }],
   ] as const) {
-    await commitCanonicalSourceEvidence(
+    await commitSourceCapture(
       store,
-      admitCanonicalSourceEvidence({
+      sourceEvidenceForCommit({
         ...evidence(captureId),
         ...overrides,
         records: [
@@ -3120,9 +3138,9 @@ try {
     ).count,
     4,
   );
-  await commitCanonicalSourceEvidence(
+  await commitSourceCapture(
     store,
-    admitCanonicalSourceEvidence({
+    sourceEvidenceForCommit({
       ...evidence("fence-snapshot"),
       subjectDigest: token("4"),
     }),
@@ -4138,9 +4156,9 @@ try {
   });
   const path = join(mixedDirectory, "canonical.sqlite");
   const mixed = createCanonicalSourceStore(path);
-  await commitCanonicalSourceEvidence(
+  await commitSourceCapture(
     mixed,
-    admitCanonicalSourceEvidence(evidence("capture-mixed-source-only")),
+    sourceEvidenceForCommit(evidence("capture-mixed-source-only")),
   );
   mixed.close();
   const reopened = createCanonicalSourceStore(path);

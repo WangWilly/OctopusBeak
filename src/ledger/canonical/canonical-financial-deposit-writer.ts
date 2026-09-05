@@ -1,11 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionRequest,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+  type CanonicalSourceCaptureAdmissionTransactionResult,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 
 export type FinancialDepositAmount = {
   coefficient: string;
@@ -75,11 +81,11 @@ export type CanonicalFinancialDepositRecord = {
   conversionEvidence?: CanonicalFinancialDepositConversionEvidence | null;
 };
 
-/** Source evidence that is not a monetary transaction. The first supported
- * kind is an investment holding observation; it must never enter the generic
- * financial transaction tables. */
+/** Source evidence that is not a monetary transaction. Holding observations
+ * and credit-card statement evidence never enter generic transaction tables. */
 export type CanonicalFinancialNonTransactionRecord = {
-  recordType: "holding-observation";
+  recordType: "holding-observation" | "statement-evidence";
+  recordKind?: string;
   occurrenceKey: string;
   collisionKey: string;
   providerKey: string;
@@ -94,7 +100,7 @@ function isNonTransactionRecord(
     | CanonicalFinancialDepositRecord
     | CanonicalFinancialNonTransactionRecord,
 ): record is CanonicalFinancialNonTransactionRecord {
-  return "recordType" in record && record.recordType === "holding-observation";
+  return "recordType" in record;
 }
 
 export type CanonicalFinancialDepositCapture = {
@@ -1036,7 +1042,12 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     );
   const nonTransactionRecords = capture.nonTransactionRecords ?? [];
   if (nonTransactionRecords.length > 0) {
-    if (capture.identity.stream !== "investment")
+    if (
+      capture.identity.stream !== "investment" &&
+      !nonTransactionRecords.every(
+        (record) => record.recordType === "statement-evidence",
+      )
+    )
       throw new Error(
         "Non-transaction source records are only supported for investment captures.",
       );
@@ -1044,7 +1055,7 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       throw new Error(
         "Non-transaction source records require a never-infer capture scope.",
       );
-    if (isForeignCurrencyCapture || isHumanAttestedCreditCardCapture)
+    if (isForeignCurrencyCapture)
       throw new Error(
         "Non-transaction source records are not supported by this financial route.",
       );
@@ -1184,11 +1195,15 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     }
   }
   for (const record of nonTransactionRecords) {
-    if (record.recordType !== "holding-observation")
+    if (
+      record.recordType !== "holding-observation" &&
+      record.recordType !== "statement-evidence"
+    )
       throw new Error("Non-transaction source record kind is unsupported.");
     validateOpaque(record.occurrenceKey, "Occurrence key");
     validateOpaque(record.collisionKey, "Collision key");
-    validateOpaque(record.providerKey, "Provider key");
+    if (record.providerKey !== "human-attested:no-provider-key")
+      validateOpaque(record.providerKey, "Provider key");
     validateOpaque(record.contentHash, "Content hash");
     if (occurrences.has(record.occurrenceKey))
       throw new CanonicalFinancialDepositConflictError(
@@ -1283,34 +1298,88 @@ function latestLifecycle(
   return row?.event_kind ?? null;
 }
 
-/**
- * Content-overwrite errors must be useful in a live integration without
- * putting financial values, account numbers, or descriptions in its log.
- */
-function compactPayloadDifferenceKeys(
-  priorPayloadJson: string,
-  currentPayloadJson: string,
-): string {
+function compactSourcePayload(value: string): Record<string, unknown> {
+  let parsed: unknown;
   try {
-    const prior = JSON.parse(priorPayloadJson) as Record<string, unknown>;
-    const current = JSON.parse(currentPayloadJson) as Record<string, unknown>;
-    const keys = new Set([...Object.keys(prior), ...Object.keys(current)]);
-    const changed = [...keys]
-      .filter(
-        (key) => JSON.stringify(prior[key]) !== JSON.stringify(current[key]),
-      )
-      .sort()
-      .slice(0, 8);
-    return changed.length > 0 ? changed.join(",") : "opaque-compact-payload";
+    parsed = JSON.parse(value);
   } catch {
-    return "opaque-compact-payload";
+    throw new Error("Financial compact source payload must be valid JSON.");
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("Financial compact source payload must be an object.");
+  return parsed as Record<string, unknown>;
+}
+
+function sourceAdmissionRequestFromFinancialCapture(
+  capture: CanonicalFinancialDepositCapture,
+): CanonicalSourceCaptureAdmissionRequest {
+  const records = [
+    ...capture.records,
+    ...(capture.nonTransactionRecords ?? []).filter(
+      (record) => record.recordType === "holding-observation",
+    ),
+  ].map((record) => ({
+    occurrenceKey: record.occurrenceKey,
+    collisionKey: record.collisionKey,
+    providerKey: record.providerKey,
+    contentHash: record.contentHash,
+    compact: compactSourcePayload(record.compactJson),
+    sequenceLexeme: record.sequenceLexeme,
+    description: record.description ?? null,
+    compactJson: record.compactJson,
+  }));
+  return {
+    captureId: capture.captureId,
+    integrationNamespace: capture.identity.integrationNamespace,
+    sourceConnectionKey: capture.identity.sourceConnectionKey,
+    identityEpoch: capture.identity.identityEpochKey,
+    stream: capture.identity.stream,
+    recordKind: capture.identity.recordKind,
+    routeKey: capture.authorityRoute,
+    contractVersion: capture.contractVersion,
+    subjectDigest: capture.identity.subjectDigest,
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      dateFormat: "YYYY-MM-DD",
+      kind: capture.scope.scopeKind,
+      completeness: capture.scope.completeness,
+      ruleVersion: capture.scope.completenessRuleVersion,
+      completenessBasis: capture.scope.completenessBasis,
+      contractFingerprint: capture.scope.contractFingerprint,
+      preflightFingerprint: capture.scope.preflightFingerprint,
+      pageTerminalPolicy: capture.pages.every((page) => page.terminal)
+        ? "each"
+        : "last",
+      absenceAuthority:
+        capture.scope.absenceAuthority === null
+          ? undefined
+          : (capture.scope.absenceAuthority as
+              | "comparable-complete-range"
+              | "provider-explicit-no-data"),
+      accountNo: capture.identity.accountNo,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: page.responseCode as "200",
+      rowCount: page.rowCount,
+      terminal: page.terminal,
+      metadata: compactSourcePayload(page.metadataJson),
+      responseDigest: page.responseDigest,
+      proofKind: page.proofKind,
+      contractFingerprint: page.contractFingerprint,
+      preflightFingerprint: page.preflightFingerprint,
+      metadataJson: page.metadataJson,
+    })),
+    records,
+  };
 }
 
 function commitOnce(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
-  managesTransaction = true,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
 ): CanonicalFinancialDepositCommitResult {
   if (!hasValidatedBrand(capture))
     throw new CanonicalFinancialDepositConflictError(
@@ -1318,186 +1387,41 @@ function commitOnce(
     );
   validateCapture(capture);
   const db = store.db;
-  if (managesTransaction) db.exec("BEGIN IMMEDIATE");
   try {
-    if (
-      db
-        .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
-        .get(capture.captureId)
-    )
-      throw new CanonicalFinancialDepositConflictError(
-        "Capture overwrite is forbidden.",
-      );
-
-    const commitId = id();
-    const commitSequence = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? 1,
+    const additionalRecords = (capture.nonTransactionRecords ?? [])
+      .filter((record) => record.recordType === "statement-evidence")
+      .map(
+      (record) => ({
+        occurrenceKey: record.occurrenceKey,
+        collisionKey: record.collisionKey,
+        providerKey: record.providerKey,
+        contentHash: record.contentHash,
+        compact: compactSourcePayload(record.compactJson),
+        sequenceLexeme: record.sequenceLexeme,
+        description: record.description ?? null,
+        compactJson: record.compactJson,
+        recordKind: record.recordKind,
+      }),
     );
-    const previousKnowledge = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? -1,
+    const sourceContext = capability.admit(
+      sourceAdmissionRequestFromFinancialCapture(capture),
+      additionalRecords,
     );
-    const clockValue = store.commitClock();
-    if (!Number.isSafeInteger(clockValue) || clockValue < 0)
-      throw new Error("Canonical admission clock returned invalid UTC micros.");
-    db.prepare(
-      `INSERT INTO canonical_commits(
-        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-      ) VALUES (?, ?, ?, ?, 'source_capture')`,
-    ).run(
+    const {
+      receipt: sourceReceipt,
+      captureId,
+      scopeId,
       commitId,
-      commitSequence,
-      Math.max(clockValue, previousKnowledge + 1),
-      capture.authorityRoute,
-    );
-    db.prepare(
-      `INSERT INTO source_authority_routes(
-        authority_route, integration_namespace, stream, contract_version, created_commit_id
-      ) VALUES (?, ?, ?, ?, ?) ON CONFLICT(authority_route) DO NOTHING`,
-    ).run(
-      capture.authorityRoute,
-      capture.identity.integrationNamespace,
-      capture.identity.stream,
-      capture.contractVersion,
-      commitId,
-    );
-
-    const existingConnection = db
-      .prepare(
-        `SELECT source_connection_id FROM source_connections
-         WHERE integration_namespace = ? AND source_connection_key = ?`,
-      )
-      .get(
-        capture.identity.integrationNamespace,
-        capture.identity.sourceConnectionKey,
-      ) as { source_connection_id?: unknown } | undefined;
-    const connectionId = existingConnection
-      ? (existingConnection.source_connection_id as Uint8Array)
-      : id();
-    if (!existingConnection)
-      db.prepare(
-        `INSERT INTO source_connections(
-          source_connection_id, integration_namespace, source_connection_key, created_commit_id
-        ) VALUES (?, ?, ?, ?)`,
-      ).run(
-        connectionId,
-        capture.identity.integrationNamespace,
-        capture.identity.sourceConnectionKey,
-        commitId,
-      );
-
-    const existingEpoch = db
-      .prepare(
-        `SELECT identity_epoch_id FROM identity_epochs
-         WHERE source_connection_id = ? AND epoch_key = ?`,
-      )
-      .get(connectionId, capture.identity.identityEpochKey) as
-      { identity_epoch_id?: unknown } | undefined;
-    const epochId = existingEpoch
-      ? (existingEpoch.identity_epoch_id as Uint8Array)
-      : id();
-    if (!existingEpoch)
-      db.prepare(
-        `INSERT INTO identity_epochs(
-          identity_epoch_id, source_connection_id, epoch_key, created_commit_id
-        ) VALUES (?, ?, ?, ?)`,
-      ).run(epochId, connectionId, capture.identity.identityEpochKey, commitId);
-    db.prepare(
-      `INSERT INTO source_route_bindings(
-        authority_route, source_connection_id, created_commit_id
-      ) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
-    ).run(capture.authorityRoute, connectionId, commitId);
-
-    const existingSubject = db
-      .prepare(
-        `SELECT source_subject_id FROM source_subjects
-         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ?
-           AND record_kind = ? AND subject_digest = ?`,
-      )
-      .get(
-        connectionId,
-        epochId,
-        capture.identity.stream,
-        capture.identity.recordKind,
-        capture.identity.subjectDigest,
-      ) as { source_subject_id?: unknown } | undefined;
-    const subjectId = existingSubject
-      ? (existingSubject.source_subject_id as Uint8Array)
-      : id();
-    if (!existingSubject)
-      db.prepare(
-        `INSERT INTO source_subjects(
-          source_subject_id, source_connection_id, identity_epoch_id, stream,
-          record_kind, subject_digest, created_commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        subjectId,
-        connectionId,
-        epochId,
-        capture.identity.stream,
-        capture.identity.recordKind,
-        capture.identity.subjectDigest,
-        commitId,
-      );
-
+      sourceConnectionId: connectionId,
+      identityEpochId: epochId,
+      sourceSubjectId: subjectId,
+      sourceRecordIds,
+    } = sourceContext;
+    const commitSequence = sourceReceipt.knowledgePoint;
     const sourceRecords = [
       ...capture.records,
       ...(capture.nonTransactionRecords ?? []),
     ];
-    for (const record of sourceRecords) {
-      const collisions = db
-        .prepare(
-          `SELECT occurrence_key FROM source_records
-           WHERE source_subject_id = ? AND collision_key = ?`,
-        )
-        .all(subjectId, record.collisionKey) as Array<{
-        occurrence_key?: unknown;
-      }>;
-      if (
-        collisions.some(
-          (row) => String(row.occurrence_key) !== record.occurrenceKey,
-        )
-      )
-        throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence collision is forbidden.",
-        );
-      const prior = db
-        .prepare(
-          `SELECT provider_key, content_hash, payload_json AS payloadJson FROM source_records
-           WHERE source_subject_id = ? AND occurrence_key = ?`,
-        )
-        .all(subjectId, record.occurrenceKey) as Array<{
-        provider_key?: unknown;
-        content_hash?: unknown;
-        payloadJson?: unknown;
-      }>;
-      if (
-        capture.authorityRoute !== "fubon/credit-card/human-attested-v1" &&
-        prior.some((row) => String(row.provider_key) !== record.providerKey)
-      )
-        throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence provider identity overwrite is forbidden.",
-        );
-      const contentOverwrite = prior.find(
-        (row) => String(row.content_hash) !== record.contentHash,
-      );
-      if (!capture.authorityRoute.includes("/foreign-currency/") && contentOverwrite)
-        throw new CanonicalFinancialDepositConflictError(
-          `Source occurrence content overwrite is forbidden; changed compact fields: ${compactPayloadDifferenceKeys(String(contentOverwrite.payloadJson ?? ""), record.compactJson)}.`,
-        );
-    }
-
     const existingAccount = db
       .prepare(
         `SELECT account_id, currency, account_type FROM financial_accounts
@@ -1541,129 +1465,18 @@ function commitOnce(
         capture.identity.currency,
         commitId,
       );
-
-    const captureId = id();
-    const scopeId = id();
-    db.prepare(
-      `INSERT INTO source_captures(
-        capture_id, capture_key, source_connection_id, identity_epoch_id,
-        authority_route, source_subject_id, stream, record_kind, account_no,
-        observed_at, scope_start, scope_end, completeness, completeness_basis,
-        completeness_rule_version, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      captureId,
-      capture.captureId,
-      connectionId,
-      epochId,
-      capture.authorityRoute,
-      subjectId,
-      capture.identity.stream,
-      capture.identity.recordKind,
-      capture.identity.accountNo,
-      capture.observedAt,
-      capture.scope.startDate,
-      capture.scope.endDate,
-      capture.scope.completeness,
-      capture.scope.completenessBasis,
-      capture.scope.completenessRuleVersion,
-      commitId,
-    );
-    db.prepare(
-      `INSERT INTO capture_scopes(
-        scope_id, capture_id, source_connection_id, identity_epoch_id, account_id,
-        source_subject_id, account_no, stream, scope_start, scope_end, scope_kind,
-        completeness, completeness_basis, completeness_rule_version,
-        absence_authority, contract_fingerprint, preflight_fingerprint,
-        page_count, terminal, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      scopeId,
-      captureId,
-      connectionId,
-      epochId,
+    capability.linkFinancialAccount({
       accountId,
-      subjectId,
-      capture.identity.accountNo,
-      capture.identity.stream,
-      capture.scope.startDate,
-      capture.scope.endDate,
-      capture.scope.scopeKind,
-      capture.scope.completeness,
-      capture.scope.completenessBasis,
-      capture.scope.completenessRuleVersion,
-      capture.scope.absenceAuthority,
-      capture.scope.contractFingerprint,
-      capture.scope.preflightFingerprint,
-      capture.scope.pageCount,
-      capture.pages.at(-1)?.terminal ? 1 : 0,
-      commitId,
-    );
-    for (const page of capture.pages)
-      db.prepare(
-        `INSERT INTO capture_scope_pages(
-          scope_page_id, scope_id, page_ordinal, response_code, terminal,
-          row_count, response_digest, proof_kind, contract_fingerprint,
-          preflight_fingerprint, metadata_json, commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        id(),
-        scopeId,
-        page.pageOrdinal,
-        page.responseCode,
-        page.terminal ? 1 : 0,
-        page.rowCount,
-        page.responseDigest,
-        page.proofKind,
-        page.contractFingerprint,
-        page.preflightFingerprint,
-        page.metadataJson,
-        commitId,
-      );
+      scopeId,
+      sourceRecordIds,
+    });
 
     const seen = new Set<string>();
-    for (const record of sourceRecords) {
+    for (const [sourceRecordIndex, record] of sourceRecords.entries()) {
       if (!isNonTransactionRecord(record)) seen.add(record.occurrenceKey);
-      const sourceRecordId = id();
-      db.prepare(
-        `INSERT INTO source_records(
-          source_record_id, capture_id, source_subject_id, commit_id, record_kind,
-          sequence_lexeme, provider_key, content_hash, occurrence_key,
-          collision_key, description, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        sourceRecordId,
-        captureId,
-        subjectId,
-        commitId,
-        capture.identity.recordKind,
-        record.sequenceLexeme,
-        record.providerKey,
-        record.contentHash,
-        record.occurrenceKey,
-        record.collisionKey,
-        record.description ?? null,
-        record.compactJson,
-      );
-      db.prepare(
-        `INSERT INTO source_record_scopes(
-          source_record_id, scope_id, capture_id, account_id, source_subject_id,
-          sequence_lexeme, occurrence_key, commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        sourceRecordId,
-        scopeId,
-        captureId,
-        accountId,
-        subjectId,
-        record.sequenceLexeme,
-        record.occurrenceKey,
-        commitId,
-      );
-      db.prepare(
-        "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
-      ).run(sourceRecordId, captureId, commitId);
-
+      const sourceRecordId = sourceRecordIds[sourceRecordIndex];
+      if (!sourceRecordId)
+        throw new Error("Canonical source admission record identity is missing.");
       if (isNonTransactionRecord(record)) continue;
 
       const existingTransaction = db
@@ -1990,7 +1803,6 @@ function commitOnce(
                 .get(accountId, captureId) as { count?: number }
             ).count ?? 0,
           );
-    if (managesTransaction) db.exec("COMMIT");
     return {
       status: "canonical-live",
       canonicalAdmission: "admitted",
@@ -2000,12 +1812,6 @@ function commitOnce(
       provenanceCount,
     };
   } catch (error) {
-    if (managesTransaction)
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* preserve original failure */
-      }
     throw error;
   }
 }
@@ -2015,8 +1821,9 @@ export async function commitCanonicalFinancialDepositCapture(
   capture: CanonicalFinancialDepositValidatedCapture,
 ): Promise<CanonicalFinancialDepositCommitResult> {
   requireValidatedFinancialWriterStore(store);
-  return withCanonicalWriterQueue(store.databasePath, () =>
-    commitOnce(store, capture),
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as CanonicalSourceStore,
+    (capability) => commitOnce(store, capture, capability),
   );
 }
 
@@ -2033,29 +1840,21 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
   requireValidatedFinancialWriterStore(store);
   if (captures.length === 0)
     throw new Error("Financial deposit capture batch cannot be empty.");
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as CanonicalSourceStore,
+    (capability) => {
     for (const capture of captures) {
       if (!hasValidatedBrand(capture))
         throw new CanonicalFinancialDepositConflictError(
           "Financial deposit batch contains a capture outside the runtime-validated seam.",
         );
-      validateCapture(capture);
+        validateCapture(capture);
     }
-    store.db.exec("BEGIN IMMEDIATE");
-    try {
-      const results = captures.map((capture) =>
-        commitOnce(store, capture, false),
-      );
-      beforeCommit?.(store.db, results);
-      store.db.exec("COMMIT");
-      return results;
-    } catch (error) {
-      try {
-        store.db.exec("ROLLBACK");
-      } catch {
-        /* preserve original failure */
-      }
-      throw error;
-    }
-  });
+    const results = captures.map((capture) =>
+      commitOnce(store, capture, capability),
+    );
+    beforeCommit?.(store.db, results);
+    return results;
+    },
+  );
 }

@@ -799,7 +799,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_record_provenance").get() as { n: number }).n),
-      20,
+      32,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM assertion_provenance").get() as { n: number }).n),
@@ -857,7 +857,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_record_provenance").get() as { n: number }).n),
-      30,
+      48,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM assertion_provenance").get() as { n: number }).n),

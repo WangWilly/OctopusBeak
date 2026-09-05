@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   assertValidatedCanonicalDatabase,
@@ -389,43 +389,8 @@ function statementEvidenceRecord(
   namespace: string,
   statement: CanonicalCreditCardPersistenceCapture["statements"][number],
 ): Uint8Array {
-  try {
-    return sourceRecord(db, scope, statement.evidence.sourceRecordKey);
-  } catch (error) {
-    if (!(error instanceof CanonicalCreditCardPersistenceError)) throw error;
-  }
-  const sourceRecordId = id();
-  const payload = JSON.stringify({
-    statementKey: statement.statementKey,
-    revisionKey: statement.revisionKey,
-    cycleStart: statement.cycleStart,
-    cycleEnd: statement.cycleEnd,
-    issueDate: statement.issueDate,
-    dueDate: statement.dueDate,
-    currency: statement.currency,
-    balance: statement.balance,
-    minimumPayment: statement.minimumPayment,
-  });
-  const sequence = `statement-summary:${statement.statementKey}`;
-  db.prepare(`INSERT INTO source_records(
-    source_record_id, capture_id, source_subject_id, commit_id, record_kind,
-    sequence_lexeme, provider_key, content_hash, occurrence_key, collision_key,
-    description, payload_json
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    sourceRecordId, scope.capture_id, scope.source_subject_id, scope.commit_id,
-    `${namespace}-credit-card-statement-summary`, sequence,
-    "human-attested:no-provider-key",
-    `sha256:${createHash("sha256").update(payload).digest("hex")}`,
-    statement.evidence.sourceRecordKey, statement.evidence.sourceRecordKey, null, payload,
-  );
-  db.prepare(`INSERT INTO source_record_scopes(
-    source_record_id, scope_id, capture_id, account_id, source_subject_id,
-    sequence_lexeme, occurrence_key, commit_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    sourceRecordId, scope.scope_id, scope.capture_id, scope.account_id,
-    scope.source_subject_id, sequence, statement.evidence.sourceRecordKey, scope.commit_id,
-  );
-  return sourceRecordId;
+  void namespace;
+  return sourceRecord(db, scope, statement.evidence.sourceRecordKey);
 }
 
 function sourceRecord(

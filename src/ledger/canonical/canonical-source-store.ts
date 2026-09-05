@@ -27,18 +27,16 @@ import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-de
 import {
   CANONICAL_SOURCE_ADMISSION,
   CANONICAL_SOURCE_STAGE,
-  CanonicalSourceConflictError,
-  isAdmittedCanonicalSourceEvidence,
   requireCanonicalSourceText,
   requireCanonicalSourceToken,
-  stableCanonicalSourceJson,
-  validateCanonicalSourceEvidence,
   type CanonicalSourceRecord,
-  type CanonicalValidatedSourceEvidence,
 } from "./canonical-source-evidence.ts";
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
+import {
+  withCanonicalSourceCaptureAdmissionExistingTransaction,
+} from "./canonical-source-capture-admission.ts";
 
 export const CATHAY_INTEGRATION_NAMESPACE = "cathay";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit";
@@ -10835,6 +10833,13 @@ function commitCathayDomesticDepositSyncOnce(
     );
     db.exec("BEGIN IMMEDIATE");
     inTransaction = true;
+    return withCanonicalSourceCaptureAdmissionExistingTransaction(
+      {
+        db,
+        databasePath: canonicalSqlitePath(ledgerDir),
+        commitClock: () => recordedAtUtcUs(admissionClock()),
+      } as CanonicalSourceStore,
+      (sourceAdmissionCapability) => {
     const commitId = uuidV7();
     const maxSequence = Number(
       (
@@ -10855,50 +10860,24 @@ function commitCathayDomesticDepositSyncOnce(
       input.authorityRoute,
       "source_capture",
     );
-    db.prepare(
-      "INSERT OR IGNORE INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)",
-    ).run(
-      input.authorityRoute,
-      CATHAY_INTEGRATION_NAMESPACE,
-      input.stream,
-      CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
+    sourceAdmissionCapability.persistLegacyAuthorityRoute({
+      authorityRoute: input.authorityRoute,
+      integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
+      stream: input.stream,
+      contractVersion: CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
       commitId,
-    );
-    const connectionExisting = db
-      .prepare(
-        "SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?",
-      )
-      .get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId);
-    const sourceConnectionId = connectionExisting
-      ? blob(
-          dbRow<{ source_connection_id: unknown }>(connectionExisting)
-            .source_connection_id,
-        )
-      : uuidV7();
-    if (!connectionExisting)
-      db.prepare(
-        "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, ?, ?, ?)",
-      ).run(
-        sourceConnectionId,
-        CATHAY_INTEGRATION_NAMESPACE,
-        input.sourceConnectionId,
+    });
+    const sourceConnectionId =
+      sourceAdmissionCapability.ensureLegacySourceConnection({
+        integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
+        sourceConnectionKey: input.sourceConnectionId,
         commitId,
-      );
-    const epochExisting = db
-      .prepare(
-        "SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?",
-      )
-      .get(sourceConnectionId, input.identityEpoch);
-    const identityEpochId = epochExisting
-      ? blob(
-          dbRow<{ identity_epoch_id: unknown }>(epochExisting)
-            .identity_epoch_id,
-        )
-      : uuidV7();
-    if (!epochExisting)
-      db.prepare(
-        "INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES (?, ?, ?, ?)",
-      ).run(identityEpochId, sourceConnectionId, input.identityEpoch, commitId);
+      });
+    const identityEpochId = sourceAdmissionCapability.ensureLegacyIdentityEpoch({
+      sourceConnectionId,
+      epochKey: input.identityEpoch,
+      commitId,
+    });
     const accountIds = new Map<string, CanonicalId>();
     for (const scope of input.scopes) {
       const existing = db
@@ -10946,90 +10925,79 @@ function commitCathayDomesticDepositSyncOnce(
       .map((scope) => scope.endDate)
       .sort()
       .at(-1)!;
-    db.prepare(
-      "INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(
+    sourceAdmissionCapability.persistLegacyCapture({
       captureId,
       sourceConnectionId,
       identityEpochId,
-      input.authorityRoute,
-      input.stream,
-      input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
-      input.observedAt,
-      captureStart,
-      captureEnd,
-      CATHAY_COMPLETENESS_PROOF.kind,
-      CATHAY_COMPLETENESS_PROOF.basis,
-      CATHAY_COMPLETENESS_PROOF.ruleVersion,
+      authorityRoute: input.authorityRoute,
+      stream: input.stream,
+      accountNo: input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
+      observedAt: input.observedAt,
+      scopeStart: captureStart,
+      scopeEnd: captureEnd,
+      completeness: CATHAY_COMPLETENESS_PROOF.kind,
+      completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
+      completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
       commitId,
-    );
+    });
     const allTransactions: CathayCommitTransactionResult[] = [];
     const scopeResults: CathayCanonicalCommitScopeResult[] = [];
     for (const scope of input.scopes) {
       const accountId = accountIds.get(scope.accountNo)!;
       const scopeId = uuidV7();
-      db.prepare(
-        "INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
+      sourceAdmissionCapability.persistLegacyScope({
         scopeId,
         captureId,
         sourceConnectionId,
         identityEpochId,
         accountId,
-        scope.accountNo,
-        input.stream,
-        scope.startDate,
-        scope.endDate,
-        "bounded-range",
-        CATHAY_COMPLETENESS_PROOF.kind,
-        CATHAY_COMPLETENESS_PROOF.basis,
-        CATHAY_COMPLETENESS_PROOF.ruleVersion,
-        scope.absenceAuthority ?? null,
-        scope.contractFingerprint,
-        scope.preflightFingerprint,
-        scope.pages.length,
-        1,
+        accountNo: scope.accountNo,
+        stream: input.stream,
+        scopeStart: scope.startDate,
+        scopeEnd: scope.endDate,
+        scopeKind: "bounded-range",
+        completeness: CATHAY_COMPLETENESS_PROOF.kind,
+        completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
+        completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
+        absenceAuthority: scope.absenceAuthority ?? null,
+        contractFingerprint: scope.contractFingerprint,
+        preflightFingerprint: scope.preflightFingerprint,
+        pageCount: scope.pages.length,
         commitId,
-      );
+      });
       for (const page of scope.pages)
-        db.prepare(
-          "INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ).run(
-          uuidV7(),
+        sourceAdmissionCapability.persistLegacyPage({
+          scopePageId: uuidV7(),
           scopeId,
-          page.pageOrdinal,
-          page.terminal ? 1 : 0,
-          page.rowCount,
-          page.responseDigest,
-          CATHAY_COMPLETENESS_PROOF.basis,
-          scope.contractFingerprint,
-          scope.preflightFingerprint,
+          pageOrdinal: page.pageOrdinal,
+          terminal: page.terminal,
+          rowCount: page.rowCount,
+          responseDigest: page.responseDigest,
+          proofKind: CATHAY_COMPLETENESS_PROOF.basis,
+          contractFingerprint: scope.contractFingerprint,
+          preflightFingerprint: scope.preflightFingerprint,
           commitId,
-        );
+        });
       const seenSequences = new Set(scope.rows.map((row) => row.sequence));
       const scopeTransactions: CathayCommitTransactionResult[] = [];
       for (const detail of scope.rows) {
         const sourceRecordId = uuidV7();
-        db.prepare(
-          "INSERT INTO source_records(source_record_id, capture_id, commit_id, sequence_lexeme, description, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(
+        sourceAdmissionCapability.persistLegacyRecord({
           sourceRecordId,
           captureId,
           commitId,
-          detail.sequence,
-          detail.description,
-          detail.payload,
-        );
-        db.prepare(
-          "INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, sequence_lexeme, commit_id) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(
+          sequenceLexeme: detail.sequence,
+          description: detail.description,
+          payloadJson: detail.payload,
+        });
+        sourceAdmissionCapability.persistLegacyRecordScope({
           sourceRecordId,
           scopeId,
           captureId,
           accountId,
-          detail.sequence,
+          sequenceLexeme: detail.sequence,
           commitId,
-        );
+        });
         const existingTransaction = db
           .prepare(
             "SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
@@ -11290,6 +11258,8 @@ function commitCathayDomesticDepositSyncOnce(
       transactions: allTransactions,
       scopes: scopeResults,
     };
+      },
+    );
   } catch (error) {
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
@@ -13546,395 +13516,6 @@ export function validateCanonicalSourceStore(
     store.db.prepare("PRAGMA foreign_key_check").all().length > 0
   )
     throw new Error("Canonical source store integrity failed.");
-}
-function sourceCommitSequence(db: DatabaseSync): number {
-  return (
-    Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? 0,
-    ) + 1
-  );
-}
-function sourceIdFor(...parts: string[]): Buffer {
-  return createHash("sha256")
-    .update(parts.join("\u0000"))
-    .digest()
-    .subarray(0, 16);
-}
-function nextSourceKnowledgeTime(store: CanonicalSourceStore): number {
-  const candidate = store.commitClock();
-  if (!Number.isSafeInteger(candidate) || candidate < 0)
-    throw new Error(
-      "Canonical source commit clock returned an invalid UTC microsecond value.",
-    );
-  const latest = Number(
-    (
-      store.db
-        .prepare(
-          "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-        )
-        .get() as { value?: number }
-    ).value ?? -1,
-  );
-  return Math.max(candidate, latest + 1);
-}
-function commitCanonicalSourceEvidenceOnce(
-  store: CanonicalSourceStore,
-  evidence: CanonicalValidatedSourceEvidence,
-  transactionBoundary = true,
-): CanonicalSourceCommitResult {
-  if (!isAdmittedCanonicalSourceEvidence(evidence))
-    throw new CanonicalSourceConflictError(
-      "Source evidence is not runtime-validated.",
-    );
-  validateCanonicalSourceEvidence(evidence);
-  const db = store.db;
-  if (transactionBoundary) db.exec("BEGIN IMMEDIATE");
-  try {
-    if (
-      db
-        .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
-        .get(evidence.captureId)
-    )
-      throw new CanonicalSourceConflictError("Capture overwrite is forbidden.");
-    for (const record of evidence.records) {
-      if (record.collisionKey !== undefined) {
-        const collisions = db
-          .prepare(
-            `SELECT record.occurrence_key FROM source_records record
-            JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
-            JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
-            JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
-            WHERE connection.integration_namespace = ? AND connection.source_connection_key = ?
-              AND epoch.epoch_key = ? AND subject.stream = ? AND subject.record_kind = ?
-              AND subject.subject_digest = ? AND record.collision_key = ?`,
-          )
-          .all(
-            evidence.integrationNamespace,
-            evidence.sourceConnectionKey,
-            evidence.identityEpoch,
-            evidence.stream,
-            evidence.recordKind,
-            evidence.subjectDigest,
-            record.collisionKey,
-          ) as Array<{ occurrence_key?: unknown }>;
-        if (
-          collisions.some(
-            (row) => String(row.occurrence_key) !== record.occurrenceKey,
-          )
-        ) {
-          throw new CanonicalSourceConflictError(
-            "Source collision key maps to another occurrence; overwrite is forbidden.",
-          );
-        }
-      }
-      const rows = db
-        .prepare(
-          `SELECT record.provider_key, record.content_hash, record.payload_json
-          FROM source_records record
-          JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
-          JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
-          JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
-          WHERE connection.integration_namespace = ? AND connection.source_connection_key = ?
-            AND epoch.epoch_key = ? AND subject.stream = ? AND subject.record_kind = ?
-            AND subject.subject_digest = ? AND record.occurrence_key = ?`,
-        )
-        .all(
-          evidence.integrationNamespace,
-          evidence.sourceConnectionKey,
-          evidence.identityEpoch,
-          evidence.stream,
-          evidence.recordKind,
-          evidence.subjectDigest,
-          record.occurrenceKey,
-        ) as Array<Record<string, unknown>>;
-      for (const row of rows)
-        if (
-          String(row.provider_key) !== record.providerKey ||
-          String(row.content_hash) !== record.contentHash ||
-          String(row.payload_json) !== stableCanonicalSourceJson(record.compact)
-        ) {
-          throw new CanonicalSourceConflictError(
-            "Source occurrence conflict; overwrite is forbidden.",
-          );
-        }
-    }
-    const sequence = sourceCommitSequence(db);
-    const commitId = uuidV7();
-    const connectionId = sourceIdFor(
-      "connection",
-      evidence.integrationNamespace,
-      evidence.sourceConnectionKey,
-    );
-    const epochId = sourceIdFor(
-      "epoch",
-      evidence.integrationNamespace,
-      evidence.sourceConnectionKey,
-      evidence.identityEpoch,
-    );
-    const subjectId = sourceIdFor(
-      "subject",
-      evidence.integrationNamespace,
-      evidence.sourceConnectionKey,
-      evidence.identityEpoch,
-      evidence.stream,
-      evidence.recordKind,
-      evidence.subjectDigest,
-    );
-    const captureId = uuidV7();
-    const scopeId = uuidV7();
-    db.prepare(
-      "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'source_capture')",
-    ).run(
-      commitId,
-      sequence,
-      nextSourceKnowledgeTime(store),
-      evidence.routeKey,
-    );
-    db.prepare(
-      "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(authority_route) DO NOTHING",
-    ).run(
-      evidence.routeKey,
-      evidence.integrationNamespace,
-      evidence.stream,
-      evidence.contractVersion,
-      commitId,
-    );
-    const route = db
-      .prepare(
-        "SELECT integration_namespace, stream, contract_version FROM source_authority_routes WHERE authority_route = ?",
-      )
-      .get(evidence.routeKey) as Record<string, unknown>;
-    if (
-      String(route.integration_namespace) !== evidence.integrationNamespace ||
-      String(route.stream) !== evidence.stream ||
-      String(route.contract_version) !== evidence.contractVersion
-    )
-      throw new CanonicalSourceConflictError(
-        "Authority route contract drifted.",
-      );
-    db.prepare(
-      "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES (?, ?, ?, ?) ON CONFLICT(integration_namespace, source_connection_key) DO NOTHING",
-    ).run(
-      connectionId,
-      evidence.integrationNamespace,
-      evidence.sourceConnectionKey,
-      commitId,
-    );
-    const connection = db
-      .prepare(
-        "SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?",
-      )
-      .get(evidence.integrationNamespace, evidence.sourceConnectionKey) as {
-      source_connection_id?: unknown;
-    };
-    const actualConnectionId = blob(connection.source_connection_id);
-    db.prepare(
-      "INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES (?, ?, ?, ?) ON CONFLICT(source_connection_id, epoch_key) DO NOTHING",
-    ).run(epochId, actualConnectionId, evidence.identityEpoch, commitId);
-    const epoch = db
-      .prepare(
-        "SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?",
-      )
-      .get(actualConnectionId, evidence.identityEpoch) as {
-      identity_epoch_id?: unknown;
-    };
-    const actualEpochId = blob(epoch.identity_epoch_id);
-    db.prepare(
-      "INSERT INTO source_route_bindings(authority_route, source_connection_id, created_commit_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-    ).run(evidence.routeKey, actualConnectionId, commitId);
-    db.prepare(
-      "INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_connection_id, identity_epoch_id, stream, record_kind, subject_digest) DO NOTHING",
-    ).run(
-      subjectId,
-      actualConnectionId,
-      actualEpochId,
-      evidence.stream,
-      evidence.recordKind,
-      evidence.subjectDigest,
-      commitId,
-    );
-    const subject = db
-      .prepare(
-        "SELECT source_subject_id FROM source_subjects WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND record_kind = ? AND subject_digest = ?",
-      )
-      .get(
-        actualConnectionId,
-        actualEpochId,
-        evidence.stream,
-        evidence.recordKind,
-        evidence.subjectDigest,
-      ) as { source_subject_id?: unknown };
-    const actualSubjectId = blob(subject.source_subject_id);
-    db.prepare(
-      `INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, source_subject_id, stream, record_kind, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'contract-versioned-source-evidence', ?, ?)`,
-    ).run(
-      captureId,
-      evidence.captureId,
-      actualConnectionId,
-      actualEpochId,
-      evidence.routeKey,
-      actualSubjectId,
-      evidence.stream,
-      evidence.recordKind,
-      evidence.observedAt,
-      evidence.scope.startDate,
-      evidence.scope.endDate,
-      evidence.scope.completeness,
-      evidence.scope.ruleVersion,
-      commitId,
-    );
-    const contractFingerprint = createHash("sha256")
-      .update(`${evidence.routeKey}\u0000${evidence.contractVersion}`)
-      .digest("hex");
-    const preflightFingerprint = createHash("sha256")
-      .update(`${evidence.subjectDigest}\u0000${evidence.scope.ruleVersion}`)
-      .digest("hex");
-    db.prepare(
-      `INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, source_subject_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id)
-      VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 'contract-versioned-source-evidence', ?, ?, ?, ?, ?, 1, ?)`,
-    ).run(
-      scopeId,
-      captureId,
-      actualConnectionId,
-      actualEpochId,
-      actualSubjectId,
-      evidence.stream,
-      evidence.scope.startDate,
-      evidence.scope.endDate,
-      evidence.scope.kind,
-      evidence.scope.completeness,
-      evidence.scope.ruleVersion,
-      evidence.scope.absenceAuthority ?? null,
-      contractFingerprint,
-      preflightFingerprint,
-      evidence.pages.length,
-      commitId,
-    );
-    for (const page of evidence.pages) {
-      const metadata = stableCanonicalSourceJson(page.metadata);
-      const digest = createHash("sha256").update(metadata).digest("hex");
-      db.prepare(
-        `INSERT INTO capture_scope_pages(scope_page_id, scope_id, page_ordinal, response_code, terminal, row_count, response_digest, proof_kind, contract_fingerprint, preflight_fingerprint, metadata_json, commit_id)
-        VALUES (?, ?, ?, '200', ?, ?, ?, 'contract-versioned-source-evidence', ?, ?, ?, ?)`,
-      ).run(
-        uuidV7(),
-        scopeId,
-        page.pageOrdinal,
-        page.terminal ? 1 : 0,
-        page.rowCount,
-        digest,
-        contractFingerprint,
-        preflightFingerprint,
-        metadata,
-        commitId,
-      );
-    }
-    for (const record of evidence.records) {
-      const sourceRecordId = uuidV7();
-      db.prepare(
-        `INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, provider_key, content_hash, occurrence_key, collision_key, description, payload_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      ).run(
-        sourceRecordId,
-        captureId,
-        actualSubjectId,
-        commitId,
-        evidence.recordKind,
-        record.providerKey,
-        record.providerKey,
-        record.contentHash,
-        record.occurrenceKey,
-        record.collisionKey ?? null,
-        stableCanonicalSourceJson(record.compact),
-      );
-      db.prepare(
-        "INSERT INTO source_record_scopes(source_record_id, scope_id, capture_id, account_id, source_subject_id, sequence_lexeme, occurrence_key, commit_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
-      ).run(
-        sourceRecordId,
-        scopeId,
-        captureId,
-        actualSubjectId,
-        record.providerKey,
-        record.occurrenceKey,
-        commitId,
-      );
-      db.prepare(
-        "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
-      ).run(sourceRecordId, captureId, commitId);
-    }
-    if (transactionBoundary) db.exec("COMMIT");
-    return {
-      status: CANONICAL_SOURCE_STAGE,
-      canonicalAdmission: CANONICAL_SOURCE_ADMISSION,
-      captureId: evidence.captureId,
-      commitSequence: sequence,
-      observationCount: evidence.records.length,
-      provenanceCount: Number(
-        (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS value FROM source_captures WHERE record_kind = ?",
-            )
-            .get(evidence.recordKind) as { value?: number }
-        ).value ?? 0,
-      ),
-    };
-  } catch (error) {
-    if (transactionBoundary) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* preserve original error */
-      }
-    }
-    throw error;
-  }
-}
-export function commitCanonicalSourceEvidence(
-  store: CanonicalSourceStore,
-  evidence: CanonicalValidatedSourceEvidence,
-): Promise<CanonicalSourceCommitResult> {
-  requireValidatedCanonicalSourceStore(store);
-  return withCanonicalWriterQueue(store.databasePath, () =>
-    commitCanonicalSourceEvidenceOnce(store, evidence),
-  );
-}
-
-/** Commit several already-admitted source captures as one visibility unit.
- * Every capture is validated and written under the same SQLite transaction, so
- * a later conflict or storage error leaves no earlier capture durable. */
-export function commitCanonicalSourceEvidenceBatch(
-  store: CanonicalSourceStore,
-  evidences: readonly CanonicalValidatedSourceEvidence[],
-): Promise<CanonicalSourceCommitResult[]> {
-  requireValidatedCanonicalSourceStore(store);
-  if (evidences.length === 0)
-    throw new Error("Canonical source evidence batch cannot be empty.");
-  return withCanonicalWriterQueue(store.databasePath, () => {
-    const db = store.db;
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const results = evidences.map((evidence) =>
-        commitCanonicalSourceEvidenceOnce(store, evidence, false),
-      );
-      db.exec("COMMIT");
-      return results;
-    } catch (error) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* preserve original error */
-      }
-      throw error;
-    }
-  });
 }
 function canonicalSourceObservationRows(
   store: CanonicalSourceStore,

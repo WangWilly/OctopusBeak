@@ -5,11 +5,11 @@ import {
   type AdvertisedDomesticDepositPreflightInput,
 } from "./advertised-domestic-deposit-preflight.ts";
 import {
-  admitCanonicalSourceEvidence,
-  type CanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  commitCanonicalSourceEvidence,
   type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
@@ -640,12 +640,12 @@ export async function commitHncbDomesticDepositSourceEvidence(
   capture: HncbDomesticDepositValidatedEvidence,
   captureId: string,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createHncbDomesticDepositSourceEvidence(capture, captureId),
-    ),
-  );
+  const evidence = createHncbDomesticDepositSourceEvidence(capture, captureId);
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 /**
@@ -806,12 +806,15 @@ export async function commitHncbDomesticDepositSourceEvidenceBatch(
   captures: readonly HncbDomesticDepositValidatedEvidence[],
   captureId: string,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createHncbDomesticDepositBatchSourceEvidence(captures, captureId),
-    ),
+  const evidence = createHncbDomesticDepositBatchSourceEvidence(
+    captures,
+    captureId,
   );
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export type HncbDomesticDepositFinancialSemantics = {

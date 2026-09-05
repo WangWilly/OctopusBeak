@@ -5,12 +5,11 @@ import {
   type AdvertisedDomesticDepositPreflightInput,
 } from "./advertised-domestic-deposit-preflight.ts";
 import {
-  admitCanonicalSourceEvidence,
-  type CanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  commitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidenceBatch,
   type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
@@ -416,12 +415,12 @@ export async function commitPostDomesticDepositSourceEvidence(
   capture: PostDomesticDepositValidatedEvidence,
   captureId: string,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createPostDomesticDepositSourceEvidence(capture, captureId),
-    ),
-  );
+  const evidence = createPostDomesticDepositSourceEvidence(capture, captureId);
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export async function commitPostDomesticDepositSourceEvidenceBatch(
@@ -433,12 +432,16 @@ export async function commitPostDomesticDepositSourceEvidenceBatch(
 ): Promise<CanonicalSourceCommitResult[]> {
   if (captures.length === 0)
     throw new Error("Post source evidence batch cannot be empty.");
-  return commitCanonicalSourceEvidenceBatch(
-    store,
-    captures.map(({ capture, captureId }) =>
-      admitCanonicalSourceEvidence(
-        createPostDomesticDepositSourceEvidence(capture, captureId),
-      ),
+  const evidences = captures.map(({ capture, captureId }) =>
+    createPostDomesticDepositSourceEvidence(capture, captureId),
+  );
+  const receipts = await createCanonicalSourceCaptureAdmission(store).admitBatch(
+    evidences,
+  );
+  return receipts.map((receipt, index) =>
+    canonicalSourceAdmissionCommitResult(
+      receipt,
+      evidences[index]!.records.length,
     ),
   );
 }

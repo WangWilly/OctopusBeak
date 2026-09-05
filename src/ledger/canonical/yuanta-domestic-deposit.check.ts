@@ -38,11 +38,8 @@ import {
   yuantaHumanAttestedV2IdentityEpochKey,
   yuantaHumanAttestedIdentityEpochKey,
 } from "./yuanta-human-attestation.ts";
+import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
-  admitCanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
-import {
-  commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceLineage,
@@ -955,10 +952,7 @@ try {
       amountShape: "conflict",
     },
   }));
-  await commitCanonicalSourceEvidence(
-    sourceStore,
-    admitCanonicalSourceEvidence(legacyEvidence),
-  );
+  await createCanonicalSourceCaptureAdmission(sourceStore).admit(legacyEvidence);
   await commitYuantaDomesticDepositSourceEvidence(
     sourceStore,
     financialAdmitted.capture,

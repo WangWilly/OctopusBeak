@@ -5,11 +5,11 @@ import {
   type AdvertisedDomesticDepositPreflightInput,
 } from "./advertised-domestic-deposit-preflight.ts";
 import {
-  admitCanonicalSourceEvidence,
-  type CanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  commitCanonicalSourceEvidenceBatch,
   type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
@@ -475,12 +475,15 @@ export async function commitCtbcDomesticDepositSourceEvidenceBatch(
 ): Promise<CanonicalSourceCommitResult[]> {
   if (!inputs.length)
     throw new Error("CTBC source evidence batch cannot be empty.");
-  return commitCanonicalSourceEvidenceBatch(
-    store,
-    inputs.map(({ capture, captureId }) =>
-      admitCanonicalSourceEvidence(
-        createCtbcDomesticDepositSourceEvidence(capture, captureId),
-      ),
+  const evidences = inputs.map(({ capture, captureId }) =>
+    createCtbcDomesticDepositSourceEvidence(capture, captureId),
+  );
+  const admission = createCanonicalSourceCaptureAdmission(store);
+  const receipts = await admission.admitBatch(evidences);
+  return receipts.map((receipt, index) =>
+    canonicalSourceAdmissionCommitResult(
+      receipt,
+      evidences[index]!.records.length,
     ),
   );
 }

@@ -1145,6 +1145,29 @@ function yuantaCanonicalSpineCapture(
     contractVersion: capture.contractVersion,
     periods: capture.scope.completeness.billedPeriods,
   });
+  const nonTransactionRecords = capture.statements.map((statement) => {
+    const compactJson = JSON.stringify({
+      statementKey: statement.statementKey,
+      cycleStart: statement.cycleStart,
+      cycleEnd: statement.cycleEnd,
+      issueDate: statement.issueDate,
+      dueDate: statement.dueDate,
+      currency: statement.currency,
+      balance: statement.balance,
+      minimumPayment: statement.minimumPayment,
+    });
+    return {
+      recordType: "statement-evidence" as const,
+      recordKind: "yuanta-credit-card-statement-summary",
+      occurrenceKey: statement.evidence.sourceRecordKey,
+      collisionKey: statement.evidence.sourceRecordKey,
+      providerKey: "human-attested:no-provider-key",
+      contentHash: `sha256:${createHash("sha256").update(compactJson).digest("hex")}`,
+      sequenceLexeme: `statement-summary:${statement.statementKey}`,
+      compactJson,
+      description: null,
+    };
+  });
   return admitCanonicalFinancialDepositCapture({
     captureId: capture.captureId,
     authorityRoute: capture.authorityRoute,
@@ -1215,6 +1238,7 @@ function yuantaCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    nonTransactionRecords,
   });
 }
 

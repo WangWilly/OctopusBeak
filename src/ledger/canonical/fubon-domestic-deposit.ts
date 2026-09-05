@@ -13,11 +13,11 @@ import {
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  admitCanonicalSourceEvidence,
-  type CanonicalSourceEvidence,
-} from "./canonical-source-evidence.ts";
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
-  commitCanonicalSourceEvidence,
   type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
@@ -873,16 +873,16 @@ export async function commitFubonDomesticDepositSourceEvidence(
     sourceConnectionKey?: string;
   }>,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createFubonDomesticDepositSourceEvidence(
-        capture,
-        captureId,
-        sourceIdentity,
-      ),
-    ),
+  const evidence = createFubonDomesticDepositSourceEvidence(
+    capture,
+    captureId,
+    sourceIdentity,
   );
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export const FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =

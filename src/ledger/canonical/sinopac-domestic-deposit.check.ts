@@ -3,9 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { admitCanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
-  commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
@@ -258,13 +257,15 @@ try {
       foreignAdmitted.capture,
       "sinopac-foreign-capture-1",
     );
-    const emptyCommit = await commitCanonicalSourceEvidence(
-      store,
-      admitCanonicalSourceEvidence(foreignEmptyEvidence),
+    const emptyCommit = await createCanonicalSourceCaptureAdmission(store).admit(
+      foreignEmptyEvidence,
     );
     assert.equal(first.status, "durable-source-evidence");
     assert.equal(repeated.status, "durable-source-evidence");
-    assert.equal(emptyCommit.observationCount, 0);
+    assert.equal(
+      emptyCommit.captureId,
+      "sinopac-foreign-explicit-no-data-capture",
+    );
     const emptyScope = store.db
       .prepare(
         `SELECT scope.completeness, scope.terminal
@@ -318,14 +319,11 @@ try {
     }
     await assert.rejects(
       () =>
-        commitCanonicalSourceEvidence(
-          store,
-          admitCanonicalSourceEvidence({
+        createCanonicalSourceCaptureAdmission(store).admit({
             ...sourceEvidence,
             captureId: "sinopac-capture-conflict",
             records: [{ ...record, occurrenceKey: digest("b") }],
           }),
-        ),
       /collision|conflict|overwrite/i,
     );
     assert.equal(queryCanonicalSourceCurrent(store).observations.length, 3);
@@ -755,6 +753,33 @@ try {
         ).count ?? 0,
       ),
       2,
+    );
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare("SELECT COUNT(*) AS count FROM source_captures")
+            .get() as { count?: number }
+        ).count ?? 0,
+      ),
+      2,
+      "the failed financial batch rolls back both Source Captures",
+    );
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM source_captures WHERE capture_key IN (?, ?)",
+            )
+            .get(
+              "sinopac-batch-rollback-first",
+              "sinopac-batch-rollback-second",
+            ) as { count?: number }
+        ).count ?? 0,
+      ),
+      0,
+      "no Source Capture from the failed outer transaction remains visible",
     );
   } finally {
     store.close();
