@@ -535,7 +535,7 @@ test("transaction enrichment is a Runtime family at current and historical cutof
     assert.equal(enrichment.length, 3);
     const taxonomyTuples = enrichment
       .map((row) => [row.fieldName, row.taxonomyId, row.taxonomyVersion, row.taxonomyCode] as const)
-      .sort((left, right) => left[3].localeCompare(right[3]));
+      .sort((left, right) => String(left[3]).localeCompare(String(right[3])));
     assert.deepEqual(taxonomyTuples, [
       ["kind", "transaction-taxonomy", "v1", "cash.deposit"],
       ["kind", "transaction-taxonomy", "v1", "payment.credit_card"],
